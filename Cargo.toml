@@ -1,0 +1,17 @@
+[package]
+name        = "runner"
+version     = "0.1.0"
+edition     = "2024"
+description = "Universal project task runner — auto-detects your toolchain and runs the right thing"
+
+[dependencies]
+anyhow        = "1"
+clap          = { version = "4", features = ["derive", "string"] }
+clap_complete = "4"
+colored       = "3"
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
+
+[profile.release]
+strip = true
+lto   = true
