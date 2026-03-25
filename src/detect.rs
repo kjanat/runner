@@ -274,42 +274,42 @@ fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
     }
 
     // .tool-versions (asdf)
-    if ctx.node_version.is_none() {
-        if let Some(content) = read_trimmed(dir, ".tool-versions") {
-            for line in content.lines() {
-                if let Some(rest) = line.strip_prefix("nodejs") {
-                    let v = rest.trim();
-                    if !v.is_empty() {
-                        ctx.node_version = Some(NodeVersion {
-                            expected: v.to_string(),
-                            source: ".tool-versions",
-                        });
-                        break;
-                    }
+    if ctx.node_version.is_none()
+        && let Some(content) = read_trimmed(dir, ".tool-versions")
+    {
+        for line in content.lines() {
+            if let Some(rest) = line.strip_prefix("nodejs") {
+                let v = rest.trim();
+                if !v.is_empty() {
+                    ctx.node_version = Some(NodeVersion {
+                        expected: v.to_string(),
+                        source: ".tool-versions",
+                    });
+                    break;
                 }
             }
         }
     }
 
     // package.json engines.node
-    if ctx.node_version.is_none() {
-        if let Some(content) = read_trimmed(dir, "package.json") {
-            #[derive(Deserialize)]
-            struct Engines {
-                node: Option<String>,
-            }
-            #[derive(Deserialize)]
-            struct Partial {
-                engines: Option<Engines>,
-            }
-            if let Ok(p) = serde_json::from_str::<Partial>(&content) {
-                if let Some(v) = p.engines.and_then(|e| e.node) {
-                    ctx.node_version = Some(NodeVersion {
-                        expected: v,
-                        source: "package.json engines",
-                    });
-                }
-            }
+    if ctx.node_version.is_none()
+        && let Some(content) = read_trimmed(dir, "package.json")
+    {
+        #[derive(Deserialize)]
+        struct Engines {
+            node: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Partial {
+            engines: Option<Engines>,
+        }
+        if let Ok(p) = serde_json::from_str::<Partial>(&content)
+            && let Some(v) = p.engines.and_then(|e| e.node)
+        {
+            ctx.node_version = Some(NodeVersion {
+                expected: v,
+                source: "package.json engines",
+            });
         }
     }
 
@@ -342,22 +342,17 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
         ctx.is_monorepo = true;
     }
     // Cargo workspace
-    if let Some(content) = read_trimmed(dir, "Cargo.toml") {
-        if content.contains("[workspace]") {
-            ctx.is_monorepo = true;
-        }
+    if let Some(content) = read_trimmed(dir, "Cargo.toml")
+        && content.contains("[workspace]")
+    {
+        ctx.is_monorepo = true;
     }
     // package.json workspaces
-    if let Some(content) = read_trimmed(dir, "package.json") {
-        #[derive(Deserialize)]
-        struct Partial {
-            workspaces: Option<serde_json::Value>,
-        }
-        if let Ok(p) = serde_json::from_str::<Partial>(&content) {
-            if p.workspaces.is_some() {
-                ctx.is_monorepo = true;
-            }
-        }
+    if let Some(content) = read_trimmed(dir, "package.json")
+        && let Ok(p) = serde_json::from_str::<serde_json::Value>(&content)
+        && p.get("workspaces").is_some()
+    {
+        ctx.is_monorepo = true;
     }
 }
 
@@ -517,23 +512,22 @@ fn extract_taskfile_tasks(dir: &Path, ctx: &mut ProjectContext) {
             }
             // Task name: exactly 2-space or 1-tab indent, then "name:"
             let stripped = line.strip_prefix("  ").or_else(|| line.strip_prefix('\t'));
-            if let Some(rest) = stripped {
-                // Must not have further indentation
-                if !rest.starts_with(' ') && !rest.starts_with('\t') {
-                    if let Some(colon) = rest.find(':') {
-                        let name = rest[..colon].trim();
-                        if !name.is_empty()
-                            && !name.starts_with('#')
-                            && name
-                                .chars()
-                                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                        {
-                            ctx.tasks.push(Task {
-                                name: name.to_string(),
-                                source: TaskSource::Taskfile,
-                            });
-                        }
-                    }
+            if let Some(rest) = stripped
+                && !rest.starts_with(' ')
+                && !rest.starts_with('\t')
+                && let Some(colon) = rest.find(':')
+            {
+                let name = rest[..colon].trim();
+                if !name.is_empty()
+                    && !name.starts_with('#')
+                    && name
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                {
+                    ctx.tasks.push(Task {
+                        name: name.to_string(),
+                        source: TaskSource::Taskfile,
+                    });
                 }
             }
         }

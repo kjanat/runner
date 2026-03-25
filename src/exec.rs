@@ -222,17 +222,17 @@ pub fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
     }
 
     // Node version check
-    if let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node) {
-        if !version_matches(&nv.expected, cur) {
-            eprintln!(
-                "{} node expected {} ({}), current {}",
-                "warn:".yellow().bold(),
-                nv.expected,
-                nv.source,
-                cur,
-            );
-            suggest_version_switch(ctx);
-        }
+    if let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)
+        && !version_matches(&nv.expected, cur)
+    {
+        eprintln!(
+            "{} node expected {} ({}), current {}",
+            "warn:".yellow().bold(),
+            nv.expected,
+            nv.source,
+            cur,
+        );
+        suggest_version_switch(ctx);
     }
 
     for pm in &ctx.package_managers {
