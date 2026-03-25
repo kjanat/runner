@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// A dependency manager detected via lockfile or config presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PackageManager {
+pub(crate) enum PackageManager {
     /// npm — detected via `package-lock.json`.
     Npm,
     /// Yarn — detected via `yarn.lock`.
@@ -33,7 +33,7 @@ pub enum PackageManager {
 
 /// A task runner detected via config file presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TaskRunner {
+pub(crate) enum TaskRunner {
     /// Turborepo — detected via `turbo.json`.
     Turbo,
     /// Nx — detected via `nx.json`.
@@ -50,7 +50,7 @@ pub enum TaskRunner {
 
 /// A runnable task extracted from a project config file.
 #[derive(Debug, Clone)]
-pub struct Task {
+pub(crate) struct Task {
     /// Name as it appears in the config (e.g. `"dev"`, `"build"`).
     pub name: String,
     /// Which config file this task was extracted from.
@@ -59,7 +59,7 @@ pub struct Task {
 
 /// Identifies the config file a [`Task`] was extracted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TaskSource {
+pub(crate) enum TaskSource {
     /// `package.json` `"scripts"` field.
     PackageJson,
     /// Makefile target.
@@ -76,7 +76,7 @@ pub enum TaskSource {
 
 /// Expected Node.js version parsed from a version file.
 #[derive(Debug, Clone)]
-pub struct NodeVersion {
+pub(crate) struct NodeVersion {
     /// The version string (e.g. `"20.11.0"`, `">=18"`).
     pub expected: String,
     /// Which file it was read from (e.g. `".nvmrc"`, `"package.json engines"`).
@@ -84,7 +84,7 @@ pub struct NodeVersion {
 }
 
 /// Everything detected about the current project directory.
-pub struct ProjectContext {
+pub(crate) struct ProjectContext {
     /// Absolute path to the project root that was scanned.
     pub root: PathBuf,
     /// Detected package managers, ordered by detection priority.
@@ -103,7 +103,7 @@ pub struct ProjectContext {
 
 impl ProjectContext {
     /// Returns the first Node-ecosystem package manager, if any.
-    pub fn primary_node_pm(&self) -> Option<PackageManager> {
+    pub(crate) fn primary_node_pm(&self) -> Option<PackageManager> {
         self.package_managers
             .iter()
             .copied()
@@ -111,19 +111,19 @@ impl ProjectContext {
     }
 
     /// Returns the first detected package manager of any ecosystem.
-    pub fn primary_pm(&self) -> Option<PackageManager> {
+    pub(crate) fn primary_pm(&self) -> Option<PackageManager> {
         self.package_managers.first().copied()
     }
 }
 
 impl PackageManager {
     /// Returns `true` for Node.js package managers (npm, yarn, pnpm, bun).
-    pub const fn is_node(self) -> bool {
+    pub(crate) const fn is_node(self) -> bool {
         matches!(self, Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun)
     }
 
     /// Human-readable CLI name (e.g. `"pnpm"`, `"cargo"`).
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Npm => "npm",
             Self::Yarn => "yarn",
@@ -143,7 +143,7 @@ impl PackageManager {
 
 impl TaskRunner {
     /// Human-readable CLI name (e.g. `"turbo"`, `"just"`).
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Turbo => "turbo",
             Self::Nx => "nx",
@@ -157,7 +157,7 @@ impl TaskRunner {
 
 impl TaskSource {
     /// Config filename shown to the user (e.g. `"package.json"`, `"Makefile"`).
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::PackageJson => "package.json",
             Self::Makefile => "Makefile",
@@ -177,7 +177,7 @@ impl TaskSource {
 ///
 /// This intentionally ignores operator semantics — use the `semver` crate
 /// for precise constraint evaluation.
-pub fn version_matches(expected: &str, current: &str) -> bool {
+pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
     let expected = expected.trim();
     let current = current.trim();
 

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use crate::types::PackageManager;
 
 /// Directories commonly produced by Node.js toolchains.
-pub const CLEAN_DIRS: &[&str] = &[
+pub(crate) const CLEAN_DIRS: &[&str] = &[
     "node_modules",
     ".next",
     "dist",
@@ -18,14 +18,14 @@ pub const CLEAN_DIRS: &[&str] = &[
 ];
 
 /// Returns `true` if `dir` contains a `package.json`.
-pub fn has_package_json(dir: &Path) -> bool {
+pub(crate) fn has_package_json(dir: &Path) -> bool {
     dir.join("package.json").exists()
 }
 
 /// Detect the Node package manager from the `"packageManager"` field in
 /// `package.json`. Falls back to [`PackageManager::Npm`] when absent or
 /// unparseable.
-pub fn detect_pm_from_field(dir: &Path) -> PackageManager {
+pub(crate) fn detect_pm_from_field(dir: &Path) -> PackageManager {
     #[derive(Deserialize)]
     struct Partial {
         #[serde(rename = "packageManager")]
@@ -46,7 +46,7 @@ pub fn detect_pm_from_field(dir: &Path) -> PackageManager {
 }
 
 /// Parse `package.json` and return all keys from the `"scripts"` object.
-pub fn extract_scripts(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_scripts(dir: &Path) -> Vec<String> {
     #[derive(Deserialize)]
     struct Partial {
         scripts: Option<HashMap<String, String>>,

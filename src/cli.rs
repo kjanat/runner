@@ -11,7 +11,7 @@ use clap_complete::Shell;
     version,
     arg_required_else_help = false
 )]
-pub struct Cli {
+pub(crate) struct Cli {
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -19,7 +19,7 @@ pub struct Cli {
 
 /// Available subcommands.
 #[derive(Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Run a task/script (or just `runner <task>`)
     #[command(alias = "r")]
     Run {

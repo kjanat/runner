@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Common Python artifact directories.
-pub const CLEAN_DIRS: &[&str] = &[
+pub(crate) const CLEAN_DIRS: &[&str] = &[
     ".venv",
     "__pycache__",
     ".mypy_cache",
@@ -13,12 +13,12 @@ pub const CLEAN_DIRS: &[&str] = &[
 ];
 
 /// Detected via `uv.lock`.
-pub fn detect(dir: &Path) -> bool {
+pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("uv.lock").exists()
 }
 
 /// `uv sync [--frozen]`
-pub fn install_cmd(frozen: bool) -> Command {
+pub(crate) fn install_cmd(frozen: bool) -> Command {
     let mut c = Command::new("uv");
     c.arg("sync");
     if frozen {
@@ -28,7 +28,7 @@ pub fn install_cmd(frozen: bool) -> Command {
 }
 
 /// `uv run <args...>`
-pub fn exec_cmd(args: &[String]) -> Command {
+pub(crate) fn exec_cmd(args: &[String]) -> Command {
     let mut c = Command::new("uv");
     c.arg("run").args(args);
     c

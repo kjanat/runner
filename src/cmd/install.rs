@@ -12,7 +12,7 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 ///
 /// Warns when the current Node.js version doesn't match the project's
 /// expected version before proceeding.
-pub fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
+pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
     if ctx.package_managers.is_empty() {
         bail!("No package manager detected.");
     }

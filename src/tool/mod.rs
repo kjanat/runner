@@ -13,40 +13,40 @@
 //! Not every module exposes every function; only what the tool supports.
 
 /// Bun JavaScript runtime and package manager.
-pub mod bun;
+pub(crate) mod bun;
 /// Bundler, the Ruby dependency manager (`Gemfile`).
-pub mod bundler;
+pub(crate) mod bundler;
 /// Cargo, the Rust package manager and build tool (`Cargo.toml`).
-pub mod cargo_pm;
+pub(crate) mod cargo_pm;
 /// Composer, the PHP dependency manager (`composer.json`).
-pub mod composer;
+pub(crate) mod composer;
 /// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
-pub mod deno;
+pub(crate) mod deno;
 /// Go modules (`go.mod`).
-pub mod go_pm;
+pub(crate) mod go_pm;
 /// go-task, a task runner using `Taskfile.yml`.
-pub mod go_task;
+pub(crate) mod go_task;
 /// just, a command runner using `justfile`.
-pub mod just;
+pub(crate) mod just;
 /// GNU Make (`Makefile`).
-pub mod make;
+pub(crate) mod make;
 /// mise, a polyglot dev tool manager (`mise.toml`).
-pub mod mise;
+pub(crate) mod mise;
 /// Shared Node.js helpers: `package.json` parsing, script extraction, PM detection.
-pub mod node;
+pub(crate) mod node;
 /// npm, the default Node.js package manager (`package-lock.json`).
-pub mod npm;
+pub(crate) mod npm;
 /// Nx monorepo build system (`nx.json`).
-pub mod nx;
+pub(crate) mod nx;
 /// Pipenv, a Python dependency manager (`Pipfile`).
-pub mod pipenv;
+pub(crate) mod pipenv;
 /// pnpm, a fast Node.js package manager (`pnpm-lock.yaml`).
-pub mod pnpm;
+pub(crate) mod pnpm;
 /// Poetry, a Python dependency manager (`poetry.lock`).
-pub mod poetry;
+pub(crate) mod poetry;
 /// Turborepo monorepo build system (`turbo.json`).
-pub mod turbo;
+pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).
-pub mod uv;
+pub(crate) mod uv;
 /// Yarn, a Node.js package manager (`yarn.lock`).
-pub mod yarn;
+pub(crate) mod yarn;

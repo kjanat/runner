@@ -11,7 +11,7 @@ use crate::types::{ProjectContext, TaskSource};
 /// In `raw` mode, prints deduplicated task names one per line (for piping
 /// into scripts or shell completions). Otherwise prints a human-readable
 /// table grouped by source file.
-pub fn list(ctx: &ProjectContext, raw: bool) {
+pub(crate) fn list(ctx: &ProjectContext, raw: bool) {
     if raw {
         let mut seen = HashSet::new();
         for task in &ctx.tasks {

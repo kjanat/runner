@@ -7,10 +7,10 @@ use std::process::Command;
 use serde::Deserialize;
 
 /// Directories produced by Turborepo.
-pub const CLEAN_DIRS: &[&str] = &[".turbo"];
+pub(crate) const CLEAN_DIRS: &[&str] = &[".turbo"];
 
 /// Detected via `turbo.json`.
-pub fn detect(dir: &Path) -> bool {
+pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("turbo.json").exists()
 }
 
@@ -18,7 +18,7 @@ pub fn detect(dir: &Path) -> bool {
 ///
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Scoped
 /// tasks like `"my-app#build"` are filtered out.
-pub fn extract_tasks(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -40,7 +40,7 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
 }
 
 /// `turbo run <task> [-- args...]`
-pub fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("turbo");
     c.arg("run").arg(task);
     if !args.is_empty() {

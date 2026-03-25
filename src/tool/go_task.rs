@@ -19,7 +19,7 @@ const FILENAMES: &[&str] = &[
 ];
 
 /// Detected via any supported Taskfile variant.
-pub fn detect(dir: &Path) -> bool {
+pub(crate) fn detect(dir: &Path) -> bool {
     FILENAMES.iter().any(|n| dir.join(n).exists())
 }
 
@@ -27,7 +27,7 @@ pub fn detect(dir: &Path) -> bool {
 /// immediate child keys (2-space or tab indented).
 ///
 /// Does not use a full YAML parser — relies on consistent indentation.
-pub fn extract_tasks(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
     let Some(content) = find_file(dir).and_then(|p| std::fs::read_to_string(p).ok()) else {
         return vec![];
     };
@@ -64,7 +64,7 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
 }
 
 /// `task <task> [args...]`
-pub fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("task");
     c.arg(task).args(args);
     c

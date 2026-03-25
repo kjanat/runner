@@ -12,7 +12,7 @@ use crate::types::{PackageManager, ProjectContext, TaskSource};
 /// match, build the appropriate command, and execute it.
 ///
 /// Returns the child process exit code.
-pub fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i32> {
+pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i32> {
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task).collect();
 
     if found.is_empty() {

@@ -8,10 +8,10 @@ mod install;
 mod list;
 mod run;
 
-pub use clean::clean;
-pub use completions::completions;
-pub use exec::exec;
-pub use info::info;
-pub use install::install;
-pub use list::list;
-pub use run::run;
+pub(crate) use clean::clean;
+pub(crate) use completions::completions;
+pub(crate) use exec::exec;
+pub(crate) use info::info;
+pub(crate) use install::install;
+pub(crate) use list::list;
+pub(crate) use run::run;

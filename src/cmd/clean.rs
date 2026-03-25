@@ -12,7 +12,7 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner};
 
 /// Collect ecosystem-specific directories that exist under the project root,
 /// prompt for confirmation (unless `skip_confirm`), then delete them.
-pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
+pub(crate) fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
     let mut targets: Vec<&str> = Vec::new();
 
     for pm in &ctx.package_managers {

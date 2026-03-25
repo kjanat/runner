@@ -17,7 +17,7 @@ use crate::types::{NodeVersion, PackageManager, ProjectContext, Task, TaskRunner
 /// 3. Node.js version constraints
 /// 4. Monorepo indicators
 /// 5. Task extraction (conditional on detected tools)
-pub fn detect(dir: &Path) -> ProjectContext {
+pub(crate) fn detect(dir: &Path) -> ProjectContext {
     let mut ctx = ProjectContext {
         root: dir.to_path_buf(),
         package_managers: Vec::new(),

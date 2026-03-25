@@ -7,10 +7,10 @@ use std::process::Command;
 use serde::Deserialize;
 
 /// Directories produced by Deno.
-pub const CLEAN_DIRS: &[&str] = &[".deno"];
+pub(crate) const CLEAN_DIRS: &[&str] = &[".deno"];
 
 /// Detected via `deno.json` or `deno.jsonc`.
-pub fn detect(dir: &Path) -> bool {
+pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("deno.json").exists() || dir.join("deno.jsonc").exists()
 }
 
@@ -19,7 +19,7 @@ pub fn detect(dir: &Path) -> bool {
 /// Note: `.jsonc` files with comments will fail `serde_json` parsing and
 /// return an empty list. A JSONC-aware parser would be needed for full
 /// support.
-pub fn extract_tasks(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -41,21 +41,21 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
 }
 
 /// `deno task <task> [args...]`
-pub fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("deno");
     c.arg("task").arg(task).args(args);
     c
 }
 
 /// `deno install`
-pub fn install_cmd() -> Command {
+pub(crate) fn install_cmd() -> Command {
     let mut c = Command::new("deno");
     c.arg("install");
     c
 }
 
 /// `deno run <args...>`
-pub fn exec_cmd(args: &[String]) -> Command {
+pub(crate) fn exec_cmd(args: &[String]) -> Command {
     let mut c = Command::new("deno");
     c.arg("run").args(args);
     c

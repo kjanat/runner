@@ -12,7 +12,7 @@ use crate::types::{PackageManager, ProjectContext};
 ///
 /// Falls back to running the command directly when no PM is detected.
 /// Returns the child process exit code.
-pub fn exec(ctx: &ProjectContext, args: &[String]) -> Result<i32> {
+pub(crate) fn exec(ctx: &ProjectContext, args: &[String]) -> Result<i32> {
     if args.is_empty() {
         bail!("usage: runner exec <command> [args...]");
     }
