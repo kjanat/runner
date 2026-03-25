@@ -1,12 +1,14 @@
 //! # Runner
 //!
+//! ## Overview
+//!
 //! Universal project task runner.
 //!
 //! `runner` auto-detects your project's toolchain (package managers, task
 //! runners, version constraints) and provides a unified interface to run
 //! tasks, install dependencies, clean artifacts, and execute ad-hoc commands.
 //!
-//! # Supported ecosystems
+//! ## Supported Ecosystems
 //!
 //! **Package managers/ecosystems:** [npm], [yarn], [pnpm], [bun], [cargo],
 //! [deno], [uv], [poetry], [pipenv], [go], [bundler], [composer]
@@ -32,13 +34,13 @@
 //! [go-task]: https://taskfile.dev/
 //! [mise]: https://mise.jdx.dev/
 //!
-//! # Library API
+//! ## Library API
 //!
 //! - [`run_from_env`] parses process args and dispatches in current dir.
 //! - [`run_from_args`] parses explicit args and dispatches in current dir.
 //! - [`run_in_dir`] parses explicit args and dispatches against a given dir.
 //!
-//! # CLI usage
+//! ## CLI Usage
 //!
 //! ```text
 //! runner              # show detected project info
