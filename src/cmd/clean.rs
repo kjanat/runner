@@ -1,3 +1,5 @@
+//! `runner clean` — remove caches and build artifacts for detected tools.
+
 use std::io::Write as _;
 use std::path::Path;
 use std::{fs, io};
@@ -8,6 +10,8 @@ use colored::Colorize;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner};
 
+/// Collect ecosystem-specific directories that exist under the project root,
+/// prompt for confirmation (unless `skip_confirm`), then delete them.
 pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
     let mut targets: Vec<&str> = Vec::new();
 
@@ -26,7 +30,7 @@ pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
             PackageManager::Bundler | PackageManager::Composer => &[],
         };
         for d in dirs {
-            push_if_exists(&mut targets, d);
+            push_if_exists(&mut targets, d, &ctx.root);
         }
     }
 
@@ -37,7 +41,7 @@ pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
             _ => &[],
         };
         for d in dirs {
-            push_if_exists(&mut targets, d);
+            push_if_exists(&mut targets, d, &ctx.root);
         }
     }
 
@@ -67,19 +71,24 @@ pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
 
     for t in &targets {
         let path = ctx.root.join(t);
-        if path.is_dir() {
-            fs::remove_dir_all(&path)?;
-        } else if path.is_file() {
-            fs::remove_file(&path)?;
+        let result = if path.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+        match result {
+            Ok(()) => println!("  {} {}", "removed".red(), t),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
         }
-        println!("  {} {}", "removed".red(), t);
     }
 
     Ok(())
 }
 
-fn push_if_exists<'a>(targets: &mut Vec<&'a str>, name: &'a str) {
-    if Path::new(name).exists() && !targets.contains(&name) {
+/// Append `name` to `targets` if `root/name` exists on disk.
+fn push_if_exists<'a>(targets: &mut Vec<&'a str>, name: &'a str, root: &Path) {
+    if root.join(name).exists() && !targets.contains(&name) {
         targets.push(name);
     }
 }

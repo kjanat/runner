@@ -1,6 +1,9 @@
+//! Command-line interface definition via [`clap`].
+
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
+/// Universal project task runner.
 #[derive(Parser)]
 #[command(
     name = "runner",
@@ -9,10 +12,12 @@ use clap_complete::Shell;
     arg_required_else_help = false
 )]
 pub struct Cli {
+    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
+/// Available subcommands.
 #[derive(Subcommand)]
 pub enum Command {
     /// Run a task/script (or just `runner <task>`)
@@ -65,7 +70,7 @@ pub enum Command {
         shell: Shell,
     },
 
-    /// (hidden) catch-all — treat unknown subcommands as task names
+    /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),
 }

@@ -1,3 +1,5 @@
+//! Subcommand implementations: info, run, install, clean, list, exec, completions.
+
 mod clean;
 mod completions;
 mod exec;

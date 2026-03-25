@@ -1,3 +1,5 @@
+//! `runner install` — install dependencies via every detected package manager.
+
 use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
@@ -6,6 +8,10 @@ use colored::Colorize;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 
+/// Install dependencies for each detected package manager.
+///
+/// Warns when the current Node.js version doesn't match the project's
+/// expected version before proceeding.
 pub fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
     if ctx.package_managers.is_empty() {
         bail!("No package manager detected.");
@@ -42,6 +48,7 @@ pub fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
     Ok(())
 }
 
+/// Map a [`PackageManager`] to its install [`Command`].
 fn build_install_command(pm: PackageManager, frozen: bool) -> Command {
     match pm {
         PackageManager::Npm => tool::npm::install_cmd(frozen),
@@ -59,6 +66,7 @@ fn build_install_command(pm: PackageManager, frozen: bool) -> Command {
     }
 }
 
+/// Print a hint about which version manager command to run.
 fn suggest_version_switch(ctx: &ProjectContext) {
     let hint = if ctx
         .node_version
@@ -69,7 +77,7 @@ fn suggest_version_switch(ctx: &ProjectContext) {
     } else if ctx.task_runners.contains(&TaskRunner::Mise) {
         "mise install"
     } else {
-        "fnm use"
+        "switch to the expected Node version"
     };
     eprintln!("       {} {}", "hint:".dimmed(), hint);
 }

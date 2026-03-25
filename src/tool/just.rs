@@ -1,12 +1,20 @@
+//! just — a handy command runner using `justfile`.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const FILENAMES: &[&str] = &["justfile", "Justfile", ".justfile"];
 
+/// Detected via `justfile`, `Justfile`, or `.justfile`.
 pub fn detect(dir: &Path) -> bool {
     FILENAMES.iter().any(|n| dir.join(n).exists())
 }
 
+/// Parse public recipe names from a justfile.
+///
+/// Skips private recipes (prefixed with `_`), comments, directives
+/// (`set`, `alias`, `import`, `mod`, `export`), and recipe body lines.
+/// Strips the leading `@` from quiet recipes.
 pub fn extract_tasks(dir: &Path) -> Vec<String> {
     let Some(content) = find_file(dir).and_then(|p| std::fs::read_to_string(p).ok()) else {
         return vec![];
@@ -44,6 +52,7 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
     recipes
 }
 
+/// `just <task> [args...]`
 pub fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("just");
     c.arg(task).args(args);

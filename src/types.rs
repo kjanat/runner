@@ -1,64 +1,108 @@
+//! Shared types used across detection, commands, and tool modules.
+
 use std::path::PathBuf;
 
+/// A dependency manager detected via lockfile or config presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PackageManager {
+    /// npm — detected via `package-lock.json`.
     Npm,
+    /// Yarn — detected via `yarn.lock`.
     Yarn,
+    /// pnpm — detected via `pnpm-lock.yaml`.
     Pnpm,
+    /// Bun — detected via `bun.lockb` or `bun.lock`.
     Bun,
+    /// Cargo (Rust) — detected via `Cargo.toml`.
     Cargo,
+    /// Deno — detected via `deno.json` / `deno.jsonc`.
     Deno,
+    /// uv (Python) — detected via `uv.lock`.
     Uv,
+    /// Poetry (Python) — detected via `poetry.lock`.
     Poetry,
+    /// Pipenv (Python) — detected via `Pipfile` / `Pipfile.lock`.
     Pipenv,
+    /// Go modules — detected via `go.mod`.
     Go,
+    /// Bundler (Ruby) — detected via `Gemfile`.
     Bundler,
+    /// Composer (PHP) — detected via `composer.json`.
     Composer,
 }
 
+/// A task runner detected via config file presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskRunner {
+    /// Turborepo — detected via `turbo.json`.
     Turbo,
+    /// Nx — detected via `nx.json`.
     Nx,
+    /// GNU Make — detected via `Makefile` / `GNUmakefile` / `makefile`.
     Make,
+    /// just — detected via `justfile` / `Justfile` / `.justfile`.
     Just,
+    /// go-task — detected via `Taskfile.yml` and variants.
     GoTask,
+    /// mise — detected via `mise.toml` / `.mise.toml`.
     Mise,
 }
 
+/// A runnable task extracted from a project config file.
 #[derive(Debug, Clone)]
 pub struct Task {
+    /// Name as it appears in the config (e.g. `"dev"`, `"build"`).
     pub name: String,
+    /// Which config file this task was extracted from.
     pub source: TaskSource,
 }
 
+/// Identifies the config file a [`Task`] was extracted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskSource {
+    /// `package.json` `"scripts"` field.
     PackageJson,
+    /// Makefile target.
     Makefile,
+    /// justfile recipe.
     Justfile,
+    /// go-task `Taskfile.yml` task.
     Taskfile,
+    /// `turbo.json` `"tasks"` (v2) or `"pipeline"` (v1).
     TurboJson,
+    /// `deno.json` / `deno.jsonc` `"tasks"` field.
     DenoJson,
 }
 
+/// Expected Node.js version parsed from a version file.
 #[derive(Debug, Clone)]
 pub struct NodeVersion {
+    /// The version string (e.g. `"20.11.0"`, `">=18"`).
     pub expected: String,
+    /// Which file it was read from (e.g. `".nvmrc"`, `"package.json engines"`).
     pub source: &'static str,
 }
 
+/// Everything detected about the current project directory.
 pub struct ProjectContext {
+    /// Absolute path to the project root that was scanned.
     pub root: PathBuf,
+    /// Detected package managers, ordered by detection priority.
     pub package_managers: Vec<PackageManager>,
+    /// Detected task runners.
     pub task_runners: Vec<TaskRunner>,
+    /// All extracted tasks, sorted by source then name.
     pub tasks: Vec<Task>,
+    /// Expected Node.js version from `.nvmrc`, `.node-version`, etc.
     pub node_version: Option<NodeVersion>,
+    /// Currently installed Node.js version (from `node --version`).
     pub current_node: Option<String>,
+    /// Whether the project appears to be a monorepo.
     pub is_monorepo: bool,
 }
 
 impl ProjectContext {
+    /// Returns the first Node-ecosystem package manager, if any.
     pub fn primary_node_pm(&self) -> Option<PackageManager> {
         self.package_managers
             .iter()
@@ -66,16 +110,19 @@ impl ProjectContext {
             .find(|pm| pm.is_node())
     }
 
+    /// Returns the first detected package manager of any ecosystem.
     pub fn primary_pm(&self) -> Option<PackageManager> {
         self.package_managers.first().copied()
     }
 }
 
 impl PackageManager {
+    /// Returns `true` for Node.js package managers (npm, yarn, pnpm, bun).
     pub fn is_node(self) -> bool {
         matches!(self, Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun)
     }
 
+    /// Human-readable CLI name (e.g. `"pnpm"`, `"cargo"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Npm => "npm",
@@ -95,6 +142,7 @@ impl PackageManager {
 }
 
 impl TaskRunner {
+    /// Human-readable CLI name (e.g. `"turbo"`, `"just"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::Turbo => "turbo",
@@ -108,6 +156,7 @@ impl TaskRunner {
 }
 
 impl TaskSource {
+    /// Config filename shown to the user (e.g. `"package.json"`, `"Makefile"`).
     pub fn label(self) -> &'static str {
         match self {
             Self::PackageJson => "package.json",
@@ -120,7 +169,14 @@ impl TaskSource {
     }
 }
 
-/// Loose semver match: "20" matches "20.x.y", ">=18" matches "18+", etc.
+/// Loose semver prefix match.
+///
+/// Strips leading range operators (`>=`, `~`, `^`, etc.) and checks whether
+/// `current` starts with the cleaned `expected` value. A bare major version
+/// like `"20"` matches `"20.x.y"`.
+///
+/// This intentionally ignores operator semantics — use the `semver` crate
+/// for precise constraint evaluation.
 pub fn version_matches(expected: &str, current: &str) -> bool {
     let expected = expected.trim();
     let current = current.trim();

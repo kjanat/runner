@@ -1,3 +1,5 @@
+//! `runner run <task>` — resolve a task name to the right tool and execute it.
+
 use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
@@ -6,14 +8,18 @@ use colored::Colorize;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskSource};
 
-pub fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<()> {
+/// Look up `task` across all detected sources, pick the highest-priority
+/// match, build the appropriate command, and execute it.
+///
+/// Returns the child process exit code.
+pub fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i32> {
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task).collect();
 
     if found.is_empty() {
         bail!("task {task:?} not found. Run `runner list` to see available tasks.");
     }
 
-    // Priority: turbo > package.json > makefile > justfile > taskfile > deno
+    // Priority: turbo > package.json > first match (insertion order)
     let entry = found
         .iter()
         .find(|t| t.source == TaskSource::TurboJson)
@@ -34,9 +40,10 @@ pub fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<()> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
     let status = cmd.status()?;
-    std::process::exit(status.code().unwrap_or(1));
+    Ok(status.code().unwrap_or(1))
 }
 
+/// Build a [`Command`] for the given task source and package manager.
 fn build_run_command(
     ctx: &ProjectContext,
     source: TaskSource,

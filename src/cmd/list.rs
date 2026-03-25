@@ -1,3 +1,5 @@
+//! `runner list` — display available tasks from all detected sources.
+
 use std::collections::HashSet;
 
 use anyhow::Result;
@@ -5,6 +7,11 @@ use colored::Colorize;
 
 use crate::types::{ProjectContext, TaskSource};
 
+/// Print tasks to stdout.
+///
+/// In `raw` mode, prints deduplicated task names one per line (for piping
+/// into scripts or shell completions). Otherwise prints a human-readable
+/// table grouped by source file.
 pub fn list(ctx: &ProjectContext, raw: bool) -> Result<()> {
     if raw {
         let mut seen = HashSet::new();
@@ -21,6 +28,7 @@ pub fn list(ctx: &ProjectContext, raw: bool) -> Result<()> {
     Ok(())
 }
 
+/// Print tasks grouped by [`TaskSource`], one line per source.
 pub fn print_tasks_grouped(ctx: &ProjectContext) {
     let sources = [
         TaskSource::PackageJson,

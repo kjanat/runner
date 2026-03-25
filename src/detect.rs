@@ -1,3 +1,6 @@
+//! Project detection: scans the working directory for config/lock files and
+//! builds a [`ProjectContext`] describing the detected toolchain.
+
 use std::path::Path;
 use std::process;
 
@@ -7,6 +10,14 @@ use serde::Deserialize;
 use crate::tool;
 use crate::types::{NodeVersion, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
+/// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
+///
+/// Detection order:
+/// 1. Package managers (Node lockfiles take priority over `package.json` field)
+/// 2. Task runners
+/// 3. Node.js version constraints
+/// 4. Monorepo indicators
+/// 5. Task extraction (conditional on detected tools)
 pub fn detect(dir: &Path) -> Result<ProjectContext> {
     let mut ctx = ProjectContext {
         root: dir.to_path_buf(),
@@ -33,10 +44,13 @@ pub fn detect(dir: &Path) -> Result<ProjectContext> {
     Ok(ctx)
 }
 
-// ── Package managers ───────────────────────────────────────────────────
+// Package managers
 
+/// Detect package managers by checking for lockfiles and config files.
+///
+/// Node PM priority: bun > pnpm > yarn > npm > `packageManager` field.
+/// Within non-Node ecosystems, multiple PMs can coexist (e.g. Cargo + npm).
 fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
-    // Node — lockfile takes priority
     let node_pm = if tool::bun::detect(dir) {
         Some(PackageManager::Bun)
     } else if tool::pnpm::detect(dir) {
@@ -78,8 +92,9 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
-// ── Task runners ───────────────────────────────────────────────────────
+// Task runners
 
+/// Detect task runners by checking for their config files.
 fn detect_task_runners(dir: &Path, ctx: &mut ProjectContext) {
     if tool::turbo::detect(dir) {
         ctx.task_runners.push(TaskRunner::Turbo);
@@ -101,8 +116,16 @@ fn detect_task_runners(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
-// ── Node version ───────────────────────────────────────────────────────
+// Node version
 
+/// Detect the expected Node.js version from version files and the current
+/// installed version via `node --version`.
+///
+/// Sources checked (first match wins):
+/// 1. `.nvmrc`
+/// 2. `.node-version`
+/// 3. `.tool-versions` (asdf `nodejs` key)
+/// 4. `package.json` `"engines.node"`
 fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
     for (file, source) in [(".nvmrc", ".nvmrc"), (".node-version", ".node-version")] {
         if let Ok(raw) = std::fs::read_to_string(dir.join(file)) {
@@ -160,6 +183,7 @@ fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
+/// Shell out to `node --version` and parse the result.
 fn detect_current_node() -> Option<String> {
     let out = process::Command::new("node")
         .arg("--version")
@@ -173,8 +197,9 @@ fn detect_current_node() -> Option<String> {
     Some(v.to_string())
 }
 
-// ── Monorepo ───────────────────────────────────────────────────────────
+// Monorepo
 
+/// Check for monorepo indicators: workspace configs, turbo, nx, cargo workspace.
 fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
     if dir.join("pnpm-workspace.yaml").exists() || dir.join("lerna.json").exists() {
         ctx.is_monorepo = true;
@@ -193,41 +218,56 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
-// ── Task extraction ────────────────────────────────────────────────────
+// Task extraction
 
+/// Extract tasks only from tools that were actually detected, avoiding
+/// unnecessary filesystem reads.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    push_tasks(
-        &mut ctx.tasks,
-        TaskSource::PackageJson,
-        tool::node::extract_scripts(dir),
-    );
-    push_tasks(
-        &mut ctx.tasks,
-        TaskSource::TurboJson,
-        tool::turbo::extract_tasks(dir),
-    );
-    push_tasks(
-        &mut ctx.tasks,
-        TaskSource::Makefile,
-        tool::make::extract_tasks(dir),
-    );
-    push_tasks(
-        &mut ctx.tasks,
-        TaskSource::Justfile,
-        tool::just::extract_tasks(dir),
-    );
-    push_tasks(
-        &mut ctx.tasks,
-        TaskSource::Taskfile,
-        tool::go_task::extract_tasks(dir),
-    );
-    push_tasks(
-        &mut ctx.tasks,
-        TaskSource::DenoJson,
-        tool::deno::extract_tasks(dir),
-    );
+    if ctx.package_managers.iter().any(|pm| pm.is_node()) {
+        push_tasks(
+            &mut ctx.tasks,
+            TaskSource::PackageJson,
+            tool::node::extract_scripts(dir),
+        );
+    }
+    if ctx.task_runners.contains(&TaskRunner::Turbo) {
+        push_tasks(
+            &mut ctx.tasks,
+            TaskSource::TurboJson,
+            tool::turbo::extract_tasks(dir),
+        );
+    }
+    if ctx.task_runners.contains(&TaskRunner::Make) {
+        push_tasks(
+            &mut ctx.tasks,
+            TaskSource::Makefile,
+            tool::make::extract_tasks(dir),
+        );
+    }
+    if ctx.task_runners.contains(&TaskRunner::Just) {
+        push_tasks(
+            &mut ctx.tasks,
+            TaskSource::Justfile,
+            tool::just::extract_tasks(dir),
+        );
+    }
+    if ctx.task_runners.contains(&TaskRunner::GoTask) {
+        push_tasks(
+            &mut ctx.tasks,
+            TaskSource::Taskfile,
+            tool::go_task::extract_tasks(dir),
+        );
+    }
+    if ctx.package_managers.contains(&PackageManager::Deno) {
+        push_tasks(
+            &mut ctx.tasks,
+            TaskSource::DenoJson,
+            tool::deno::extract_tasks(dir),
+        );
+    }
 }
 
+/// Convert a vec of task names into [`Task`] structs and append them.
 fn push_tasks(tasks: &mut Vec<Task>, source: TaskSource, names: Vec<String>) {
     for name in names {
         tasks.push(Task { name, source });

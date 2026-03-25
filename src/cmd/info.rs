@@ -1,9 +1,13 @@
+//! `runner info` — print detected project context to stdout.
+
 use anyhow::Result;
 use colored::Colorize;
 
 use super::list::print_tasks_grouped;
 use crate::types::{ProjectContext, version_matches};
 
+/// Display detected package managers, task runners, Node version, monorepo
+/// status, and available tasks.
 pub fn info(ctx: &ProjectContext) -> Result<()> {
     println!("{}", "runner".bold());
     println!();

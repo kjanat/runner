@@ -1,12 +1,32 @@
+//! go-task — a task runner using YAML-based Taskfiles.
+//!
+//! Supports all [official filename variants](https://taskfile.dev/usage/#supported-file-names),
+//! including `.dist` overrides.
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const FILENAMES: &[&str] = &["Taskfile.yml", "Taskfile.yaml", "taskfile.yml"];
+/// Priority order per the Taskfile specification.
+const FILENAMES: &[&str] = &[
+    "Taskfile.yml",
+    "taskfile.yml",
+    "Taskfile.yaml",
+    "taskfile.yaml",
+    "Taskfile.dist.yml",
+    "taskfile.dist.yml",
+    "Taskfile.dist.yaml",
+    "taskfile.dist.yaml",
+];
 
+/// Detected via any supported Taskfile variant.
 pub fn detect(dir: &Path) -> bool {
     FILENAMES.iter().any(|n| dir.join(n).exists())
 }
 
+/// Lightweight YAML extraction: finds the `tasks:` block and collects
+/// immediate child keys (2-space or tab indented).
+///
+/// Does not use a full YAML parser — relies on consistent indentation.
 pub fn extract_tasks(dir: &Path) -> Vec<String> {
     let Some(content) = find_file(dir).and_then(|p| std::fs::read_to_string(p).ok()) else {
         return vec![];
@@ -43,6 +63,7 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
     tasks
 }
 
+/// `task <task> [args...]`
 pub fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("task");
     c.arg(task).args(args);

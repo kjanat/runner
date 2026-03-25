@@ -1,20 +1,27 @@
+//! Turborepo — monorepo build system.
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
 use serde::Deserialize;
 
+/// Directories produced by Turborepo.
 pub const CLEAN_DIRS: &[&str] = &[".turbo"];
 
+/// Detected via `turbo.json`.
 pub fn detect(dir: &Path) -> bool {
     dir.join("turbo.json").exists()
 }
 
+/// Parse task names from `turbo.json`.
+///
+/// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Scoped
+/// tasks like `"my-app#build"` are filtered out.
 pub fn extract_tasks(dir: &Path) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(dir.join("turbo.json")) else {
         return vec![];
     };
-    // turbo v2 uses "tasks", v1 used "pipeline"
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -32,6 +39,7 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// `turbo run <task> [-- args...]`
 pub fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("turbo");
     c.arg("run").arg(task);
