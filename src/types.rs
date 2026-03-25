@@ -118,12 +118,12 @@ impl ProjectContext {
 
 impl PackageManager {
     /// Returns `true` for Node.js package managers (npm, yarn, pnpm, bun).
-    pub fn is_node(self) -> bool {
+    pub const fn is_node(self) -> bool {
         matches!(self, Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun)
     }
 
     /// Human-readable CLI name (e.g. `"pnpm"`, `"cargo"`).
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Npm => "npm",
             Self::Yarn => "yarn",
@@ -143,7 +143,7 @@ impl PackageManager {
 
 impl TaskRunner {
     /// Human-readable CLI name (e.g. `"turbo"`, `"just"`).
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Turbo => "turbo",
             Self::Nx => "nx",
@@ -157,7 +157,7 @@ impl TaskRunner {
 
 impl TaskSource {
     /// Config filename shown to the user (e.g. `"package.json"`, `"Makefile"`).
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::PackageJson => "package.json",
             Self::Makefile => "Makefile",

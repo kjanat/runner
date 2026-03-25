@@ -45,7 +45,7 @@ pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
         }
     }
 
-    targets.sort();
+    targets.sort_unstable();
     targets.dedup();
 
     if targets.is_empty() {
@@ -55,7 +55,7 @@ pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
 
     println!("Will remove:");
     for t in &targets {
-        println!("  {}", t);
+        println!("  {t}");
     }
 
     if !skip_confirm {

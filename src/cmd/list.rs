@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
 use colored::Colorize;
 
 use crate::types::{ProjectContext, TaskSource};
@@ -12,7 +11,7 @@ use crate::types::{ProjectContext, TaskSource};
 /// In `raw` mode, prints deduplicated task names one per line (for piping
 /// into scripts or shell completions). Otherwise prints a human-readable
 /// table grouped by source file.
-pub fn list(ctx: &ProjectContext, raw: bool) -> Result<()> {
+pub fn list(ctx: &ProjectContext, raw: bool) {
     if raw {
         let mut seen = HashSet::new();
         for task in &ctx.tasks {
@@ -25,11 +24,10 @@ pub fn list(ctx: &ProjectContext, raw: bool) -> Result<()> {
     } else {
         print_tasks_grouped(ctx);
     }
-    Ok(())
 }
 
 /// Print tasks grouped by [`TaskSource`], one line per source.
-pub fn print_tasks_grouped(ctx: &ProjectContext) {
+pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
     let sources = [
         TaskSource::PackageJson,
         TaskSource::TurboJson,

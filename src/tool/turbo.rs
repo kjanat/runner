@@ -19,14 +19,14 @@ pub fn detect(dir: &Path) -> bool {
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Scoped
 /// tasks like `"my-app#build"` are filtered out.
 pub fn extract_tasks(dir: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(dir.join("turbo.json")) else {
-        return vec![];
-    };
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
         pipeline: Option<HashMap<String, serde_json::Value>>,
     }
+    let Ok(content) = std::fs::read_to_string(dir.join("turbo.json")) else {
+        return vec![];
+    };
     let Ok(p) = serde_json::from_str::<Partial>(&content) else {
         return vec![];
     };

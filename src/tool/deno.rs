@@ -20,6 +20,10 @@ pub fn detect(dir: &Path) -> bool {
 /// return an empty list. A JSONC-aware parser would be needed for full
 /// support.
 pub fn extract_tasks(dir: &Path) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Partial {
+        tasks: Option<HashMap<String, serde_json::Value>>,
+    }
     let path = if dir.join("deno.json").exists() {
         dir.join("deno.json")
     } else if dir.join("deno.jsonc").exists() {
@@ -27,10 +31,6 @@ pub fn extract_tasks(dir: &Path) -> Vec<String> {
     } else {
         return vec![];
     };
-    #[derive(Deserialize)]
-    struct Partial {
-        tasks: Option<HashMap<String, serde_json::Value>>,
-    }
     let Ok(content) = std::fs::read_to_string(path) else {
         return vec![];
     };

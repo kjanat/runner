@@ -4,7 +4,6 @@
 use std::path::Path;
 use std::process;
 
-use anyhow::Result;
 use serde::Deserialize;
 
 use crate::tool;
@@ -18,7 +17,7 @@ use crate::types::{NodeVersion, PackageManager, ProjectContext, Task, TaskRunner
 /// 3. Node.js version constraints
 /// 4. Monorepo indicators
 /// 5. Task extraction (conditional on detected tools)
-pub fn detect(dir: &Path) -> Result<ProjectContext> {
+pub fn detect(dir: &Path) -> ProjectContext {
     let mut ctx = ProjectContext {
         root: dir.to_path_buf(),
         package_managers: Vec::new(),
@@ -41,7 +40,7 @@ pub fn detect(dir: &Path) -> Result<ProjectContext> {
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    Ok(ctx)
+    ctx
 }
 
 // Package managers
@@ -193,7 +192,8 @@ fn detect_current_node() -> Option<String> {
         return None;
     }
     let raw = String::from_utf8_lossy(&out.stdout);
-    let v = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
+    let trimmed = raw.trim();
+    let v = trimmed.strip_prefix('v').unwrap_or(trimmed);
     Some(v.to_string())
 }
 
