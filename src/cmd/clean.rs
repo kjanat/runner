@@ -5,45 +5,39 @@ use std::{fs, io};
 use anyhow::Result;
 use colored::Colorize;
 
-use crate::detect::{PackageManager, ProjectContext, TaskRunner};
+use crate::tool;
+use crate::types::{PackageManager, ProjectContext, TaskRunner};
 
 pub fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
     let mut targets: Vec<&str> = Vec::new();
 
     for pm in &ctx.package_managers {
-        match pm {
+        let dirs: &[&str] = match pm {
             PackageManager::Npm
             | PackageManager::Yarn
             | PackageManager::Pnpm
-            | PackageManager::Bun => {
-                for d in &[
-                    "node_modules",
-                    ".next",
-                    "dist",
-                    ".cache",
-                    ".parcel-cache",
-                    ".svelte-kit",
-                ] {
-                    push_if_exists(&mut targets, d);
-                }
-            }
-            PackageManager::Cargo => push_if_exists(&mut targets, "target"),
-            PackageManager::Deno => push_if_exists(&mut targets, ".deno"),
-            PackageManager::Uv | PackageManager::Poetry | PackageManager::Pipenv => {
-                for d in &[".venv", "__pycache__", ".mypy_cache", ".ruff_cache"] {
-                    push_if_exists(&mut targets, d);
-                }
-            }
-            PackageManager::Go => push_if_exists(&mut targets, "vendor"),
-            _ => {}
+            | PackageManager::Bun => tool::node::CLEAN_DIRS,
+            PackageManager::Cargo => tool::cargo_pm::CLEAN_DIRS,
+            PackageManager::Deno => tool::deno::CLEAN_DIRS,
+            PackageManager::Uv => tool::uv::CLEAN_DIRS,
+            PackageManager::Poetry => tool::poetry::CLEAN_DIRS,
+            PackageManager::Pipenv => tool::pipenv::CLEAN_DIRS,
+            PackageManager::Go => tool::go_pm::CLEAN_DIRS,
+            PackageManager::Bundler | PackageManager::Composer => &[],
+        };
+        for d in dirs {
+            push_if_exists(&mut targets, d);
         }
     }
 
     for tr in &ctx.task_runners {
-        match tr {
-            TaskRunner::Turbo => push_if_exists(&mut targets, ".turbo"),
-            TaskRunner::Nx => push_if_exists(&mut targets, ".nx"),
-            _ => {}
+        let dirs: &[&str] = match tr {
+            TaskRunner::Turbo => tool::turbo::CLEAN_DIRS,
+            TaskRunner::Nx => tool::nx::CLEAN_DIRS,
+            _ => &[],
+        };
+        for d in dirs {
+            push_if_exists(&mut targets, d);
         }
     }
 

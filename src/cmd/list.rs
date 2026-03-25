@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use colored::Colorize;
 
-use crate::detect::{ProjectContext, TaskSource};
+use crate::types::{ProjectContext, TaskSource};
 
 pub fn list(ctx: &ProjectContext, raw: bool) -> Result<()> {
     if raw {

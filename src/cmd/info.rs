@@ -2,8 +2,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use super::list::print_tasks_grouped;
-use crate::cmd::install::version_matches;
-use crate::detect::ProjectContext;
+use crate::types::{ProjectContext, version_matches};
 
 pub fn info(ctx: &ProjectContext) -> Result<()> {
     println!("{}", "runner".bold());
