@@ -1,6 +1,6 @@
 mod cli;
+mod cmd;
 mod detect;
-mod exec;
 
 use anyhow::Result;
 use clap::Parser;
@@ -11,19 +11,19 @@ fn main() -> Result<()> {
     let ctx = detect::detect(&cwd)?;
 
     match cli.command {
-        None | Some(cli::Command::Info) => exec::info(&ctx),
-        Some(cli::Command::Run { task, args }) => exec::run(&ctx, &task, &args),
+        None | Some(cli::Command::Info) => cmd::info(&ctx),
+        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &task, &args),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
-                exec::info(&ctx)
+                cmd::info(&ctx)
             } else {
-                exec::run(&ctx, &args[0], &args[1..])
+                cmd::run(&ctx, &args[0], &args[1..])
             }
         }
-        Some(cli::Command::Install { frozen }) => exec::install(&ctx, frozen),
-        Some(cli::Command::Clean { yes }) => exec::clean(&ctx, yes),
-        Some(cli::Command::List { raw }) => exec::list(&ctx, raw),
-        Some(cli::Command::Exec { args }) => exec::exec(&ctx, &args),
-        Some(cli::Command::Completions { shell }) => exec::completions(shell),
+        Some(cli::Command::Install { frozen }) => cmd::install(&ctx, frozen),
+        Some(cli::Command::Clean { yes }) => cmd::clean(&ctx, yes),
+        Some(cli::Command::List { raw }) => cmd::list(&ctx, raw),
+        Some(cli::Command::Exec { args }) => cmd::exec(&ctx, &args),
+        Some(cli::Command::Completions { shell }) => cmd::completions(shell),
     }
 }
