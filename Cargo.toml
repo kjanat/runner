@@ -3,7 +3,23 @@ name        = "runner"
 version     = "0.1.0"
 edition     = "2024"
 description = "Universal project task runner"
+readme      = "README.md"
+homepage    = "https://github.com/kjanat/runner/#readme"
 repository  = "https://github.com/kjanat/runner/"
+license     = "MIT"
+keywords    = ["automation", "build-tool", "cli", "task-runner"]
+categories  = ["command-line-utilities", "development-tools"]
+default-run = "runner"
+autobins    = false
+
+[[bin]]
+name = "runner"
+path = "src/main.rs"
+
+[[bin]]
+name              = "run"
+path              = "src/bin/run.rs"
+required-features = ["run-alias"]
 
 [dependencies.anyhow]
 version = "1"
@@ -30,6 +46,10 @@ version = "1"
 
 [dependencies.yaml-rust2]
 version = "0.11"
+
+[features]
+default   = ["run-alias"]
+run-alias = []
 
 [lints.clippy]
 cargo_common_metadata = "allow"
