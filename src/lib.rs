@@ -45,6 +45,7 @@
 //! ```text
 //! runner              # show detected project info
 //! runner <task>       # run a task (auto-routed to the right tool)
+//! run <task>          # alias binary for quicker task execution
 //! runner install      # install dependencies via detected PM
 //! runner clean        # remove caches and build artifacts
 //! runner list         # list available tasks from all sources
@@ -63,7 +64,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
@@ -114,11 +115,35 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = match cli::Cli::try_parse_from(args) {
+    let cli = match parse_cli(args) {
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err),
     };
     dispatch(cli, dir)
+}
+
+fn parse_cli<I, T>(args: I) -> Result<cli::Cli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+
+    let mut command = cli::Cli::command();
+    if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
+        command = command.name(bin_name.clone()).bin_name(bin_name);
+    }
+
+    let matches = command.try_get_matches_from(args)?;
+    cli::Cli::from_arg_matches(&matches)
+}
+
+fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
+    let name = Path::new(arg0)
+        .file_name()
+        .map(|segment| segment.to_string_lossy().into_owned())?;
+
+    (!name.is_empty()).then_some(name)
 }
 
 fn render_clap_error(err: &clap::Error) -> Result<i32> {
@@ -169,9 +194,10 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::path::Path;
 
-    use super::run_in_dir;
+    use super::{bin_name_from_arg0, run_in_dir};
 
     #[test]
     fn help_returns_zero_instead_of_exiting() {
@@ -195,5 +221,12 @@ mod tests {
             .expect("version should return an exit code");
 
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn bin_name_from_arg0_uses_path_file_name() {
+        let name = bin_name_from_arg0(&OsString::from("/tmp/run"));
+
+        assert_eq!(name.as_deref(), Some("run"));
     }
 }

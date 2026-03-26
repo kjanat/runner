@@ -28,6 +28,7 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 ```sh
 runner                              # show detected project info
 runner <task> [-- <args...>]        # run task (auto-routed)
+run <task> [-- <args...>]           # alias binary for quicker access
 runner run <task> [-- <args...>]    # explicit run form
 runner install [--frozen]           # install deps via detected PM
 runner clean [-y] [--include-framework]
@@ -39,6 +40,7 @@ runner completions <shell>
 ## Install
 
 ```sh
+# installs both binaries: runner + run
 cargo install --path .
 
 # Or from git
@@ -49,6 +51,7 @@ Or use the dev wrapper:
 
 ```sh
 ./bin/runner <args>
+./bin/run <args>
 
 # If direnv is set up, just run:
 runner <args>
@@ -68,6 +71,9 @@ runner completions zsh > ~/.zfunc/_runner
 
 mkdir -p ~/.config/fish/completions
 runner completions fish > ~/.config/fish/completions/runner.fish
+
+# If you use the `run` alias binary, replace `runner` with `run`
+# and output to matching completion filenames.
 ```
 
 ## License
