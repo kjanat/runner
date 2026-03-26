@@ -179,8 +179,8 @@ impl TaskSource {
         }
     }
 
-    /// Sort priority for grouped task listings.
-    pub(crate) const fn priority(self) -> u8 {
+    /// Display order for grouped task listings.
+    pub(crate) const fn display_order(self) -> u8 {
         match self {
             Self::PackageJson => 0,
             Self::Makefile => 1,

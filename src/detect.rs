@@ -39,8 +39,8 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
 
     ctx.tasks.sort_by(|a, b| {
         a.source
-            .priority()
-            .cmp(&b.source.priority())
+            .display_order()
+            .cmp(&b.source.display_order())
             .then_with(|| a.name.cmp(&b.name))
     });
 
