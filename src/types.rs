@@ -19,7 +19,7 @@ pub(crate) enum PackageManager {
     Deno,
     /// uv (Python) — detected via `uv.lock`.
     Uv,
-    /// Poetry (Python) — detected via `poetry.lock`.
+    /// Poetry (Python) — detected via `poetry.lock` or Poetry `pyproject.toml` markers.
     Poetry,
     /// Pipenv (Python) — detected via `Pipfile` / `Pipfile.lock`.
     Pipenv,

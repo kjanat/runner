@@ -44,7 +44,7 @@ pub(crate) mod nx;
 pub(crate) mod pipenv;
 /// pnpm, a fast Node.js package manager (`pnpm-lock.yaml`).
 pub(crate) mod pnpm;
-/// Poetry, a Python dependency manager (`poetry.lock`).
+/// Poetry, a Python dependency manager (`poetry.lock`, `pyproject.toml`).
 pub(crate) mod poetry;
 /// Shared Python tooling constants.
 pub(crate) mod python;
