@@ -1,17 +1,23 @@
-use anyhow::Result;
+//! `runner info` — print detected project context to stdout.
+
+use std::fmt::Write as _;
+
 use colored::Colorize;
 
 use super::list::print_tasks_grouped;
-use crate::cmd::install::version_matches;
-use crate::detect::ProjectContext;
+use crate::types::{ProjectContext, version_matches};
 
-pub fn info(ctx: &ProjectContext) -> Result<()> {
+/// Display detected package managers, task runners, Node version, monorepo
+/// status, and available tasks.
+pub(crate) fn info(ctx: &ProjectContext) {
+    super::print_warnings(ctx);
+
     println!("{}", "runner".bold());
     println!();
 
     if ctx.package_managers.is_empty() && ctx.task_runners.is_empty() && ctx.tasks.is_empty() {
         println!("  {}", "No project detected in current directory.".dimmed());
-        return Ok(());
+        return;
     }
 
     if !ctx.package_managers.is_empty() {
@@ -28,9 +34,9 @@ pub fn info(ctx: &ProjectContext) -> Result<()> {
         let mut line = format!("{} ({})", nv.expected, nv.source);
         if let Some(cur) = &ctx.current_node {
             if version_matches(&nv.expected, cur) {
-                line.push_str(&format!(", current {} {}", cur, "(ok)".green()));
+                let _ = write!(line, ", current {cur} {}", "(ok)".green());
             } else {
-                line.push_str(&format!(", current {} {}", cur, "(mismatch)".red()));
+                let _ = write!(line, ", current {cur} {}", "(mismatch)".red());
             }
         }
         println!("  {:<20}{}", "Node".dimmed(), line);
@@ -46,6 +52,4 @@ pub fn info(ctx: &ProjectContext) -> Result<()> {
         println!();
         print_tasks_grouped(ctx);
     }
-
-    Ok(())
 }

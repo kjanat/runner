@@ -1,136 +1,25 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::{fs, process};
+//! Project detection: scans the working directory for config/lock files and
+//! builds a [`ProjectContext`] describing the detected toolchain.
 
-use anyhow::Result;
+use std::path::Path;
+use std::process;
+
 use serde::Deserialize;
 
-// ── Types ──────────────────────────────────────────────────────────────
+use crate::tool;
+use crate::types::{
+    DetectionWarning, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PackageManager {
-    Npm,
-    Yarn,
-    Pnpm,
-    Bun,
-    Cargo,
-    Deno,
-    Uv,
-    Poetry,
-    Pipenv,
-    Go,
-    Bundler,
-    Composer,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TaskRunner {
-    Turbo,
-    Nx,
-    Make,
-    Just,
-    GoTask,
-    Mise,
-}
-
-#[derive(Debug, Clone)]
-pub struct Task {
-    pub name: String,
-    pub source: TaskSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TaskSource {
-    PackageJson,
-    Makefile,
-    Justfile,
-    Taskfile,
-    TurboJson,
-    DenoJson,
-}
-
-#[derive(Debug, Clone)]
-pub struct NodeVersion {
-    pub expected: String,
-    pub source: &'static str,
-}
-
-pub struct ProjectContext {
-    pub root: PathBuf,
-    pub package_managers: Vec<PackageManager>,
-    pub task_runners: Vec<TaskRunner>,
-    pub tasks: Vec<Task>,
-    pub node_version: Option<NodeVersion>,
-    pub current_node: Option<String>,
-    pub is_monorepo: bool,
-}
-
-impl ProjectContext {
-    /// First Node-ecosystem PM, or first PM of any kind.
-    pub fn primary_node_pm(&self) -> Option<PackageManager> {
-        self.package_managers
-            .iter()
-            .copied()
-            .find(|pm| pm.is_node())
-    }
-
-    pub fn primary_pm(&self) -> Option<PackageManager> {
-        self.package_managers.first().copied()
-    }
-}
-
-impl PackageManager {
-    pub fn is_node(self) -> bool {
-        matches!(self, Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun)
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Npm => "npm",
-            Self::Yarn => "yarn",
-            Self::Pnpm => "pnpm",
-            Self::Bun => "bun",
-            Self::Cargo => "cargo",
-            Self::Deno => "deno",
-            Self::Uv => "uv",
-            Self::Poetry => "poetry",
-            Self::Pipenv => "pipenv",
-            Self::Go => "go",
-            Self::Bundler => "bundler",
-            Self::Composer => "composer",
-        }
-    }
-}
-
-impl TaskRunner {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Turbo => "turbo",
-            Self::Nx => "nx",
-            Self::Make => "make",
-            Self::Just => "just",
-            Self::GoTask => "task",
-            Self::Mise => "mise",
-        }
-    }
-}
-
-impl TaskSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::PackageJson => "package.json",
-            Self::Makefile => "Makefile",
-            Self::Justfile => "justfile",
-            Self::Taskfile => "Taskfile",
-            Self::TurboJson => "turbo.json",
-            Self::DenoJson => "deno.json",
-        }
-    }
-}
-
-// ── Detection entry point ──────────────────────────────────────────────
-
-pub fn detect(dir: &Path) -> Result<ProjectContext> {
+/// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
+///
+/// Detection order:
+/// 1. Package managers (Node lockfiles take priority over `package.json` field)
+/// 2. Task runners
+/// 3. Node.js version constraints
+/// 4. Monorepo indicators
+/// 5. Task extraction (conditional on detected tools)
+pub(crate) fn detect(dir: &Path) -> ProjectContext {
     let mut ctx = ProjectContext {
         root: dir.to_path_buf(),
         package_managers: Vec::new(),
@@ -139,6 +28,7 @@ pub fn detect(dir: &Path) -> Result<ProjectContext> {
         node_version: None,
         current_node: None,
         is_monorepo: false,
+        warnings: Vec::new(),
     };
 
     detect_package_managers(dir, &mut ctx);
@@ -147,30 +37,33 @@ pub fn detect(dir: &Path) -> Result<ProjectContext> {
     detect_monorepo(dir, &mut ctx);
     extract_tasks(dir, &mut ctx);
 
-    // Sort tasks: by source ordinal, then name
     ctx.tasks.sort_by(|a, b| {
-        (a.source as u8)
-            .cmp(&(b.source as u8))
+        a.source
+            .display_order()
+            .cmp(&b.source.display_order())
             .then_with(|| a.name.cmp(&b.name))
     });
 
-    Ok(ctx)
+    ctx
 }
 
-// ── Package manager detection ──────────────────────────────────────────
+// Package managers
 
+/// Detect package managers by checking for lockfiles and config files.
+///
+/// Node PM priority: bun > pnpm > yarn > npm > `packageManager` field.
+/// Within non-Node ecosystems, multiple PMs can coexist (e.g. Cargo + npm).
 fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
-    // Node — lockfile takes priority
-    let node_pm = if exists(dir, "bun.lockb") || exists(dir, "bun.lock") {
+    let node_pm = if tool::bun::detect(dir) {
         Some(PackageManager::Bun)
-    } else if exists(dir, "pnpm-lock.yaml") {
+    } else if tool::pnpm::detect(dir) {
         Some(PackageManager::Pnpm)
-    } else if exists(dir, "yarn.lock") {
+    } else if tool::yarn::detect(dir) {
         Some(PackageManager::Yarn)
-    } else if exists(dir, "package-lock.json") {
+    } else if tool::npm::detect(dir) {
         Some(PackageManager::Npm)
-    } else if exists(dir, "package.json") {
-        Some(detect_node_pm_from_package_json(dir))
+    } else if tool::node::has_package_json(dir) {
+        Some(tool::node::detect_pm_from_field(dir))
     } else {
         None
     };
@@ -178,90 +71,67 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
         ctx.package_managers.push(pm);
     }
 
-    // Rust
-    if exists(dir, "Cargo.toml") {
+    if tool::cargo_pm::detect(dir) {
         ctx.package_managers.push(PackageManager::Cargo);
     }
-
-    // Deno
-    if exists(dir, "deno.json") || exists(dir, "deno.jsonc") {
+    if tool::deno::detect(dir) {
         ctx.package_managers.push(PackageManager::Deno);
     }
-
-    // Python
-    if exists(dir, "uv.lock") {
+    if tool::uv::detect(dir) {
         ctx.package_managers.push(PackageManager::Uv);
-    } else if exists(dir, "poetry.lock") {
+    } else if tool::poetry::detect(dir) {
         ctx.package_managers.push(PackageManager::Poetry);
-    } else if exists(dir, "Pipfile") || exists(dir, "Pipfile.lock") {
+    } else if tool::pipenv::detect(dir) {
         ctx.package_managers.push(PackageManager::Pipenv);
     }
-
-    // Go
-    if exists(dir, "go.mod") {
+    if tool::go_pm::detect(dir) {
         ctx.package_managers.push(PackageManager::Go);
     }
-
-    // Ruby
-    if exists(dir, "Gemfile") {
+    if tool::bundler::detect(dir) {
         ctx.package_managers.push(PackageManager::Bundler);
     }
-
-    // PHP
-    if exists(dir, "composer.json") {
+    if tool::composer::detect(dir) {
         ctx.package_managers.push(PackageManager::Composer);
     }
 }
 
-fn detect_node_pm_from_package_json(dir: &Path) -> PackageManager {
-    #[derive(Deserialize)]
-    struct Partial {
-        #[serde(rename = "packageManager")]
-        package_manager: Option<String>,
-    }
-    let Ok(bytes) = fs::read_to_string(dir.join("package.json")) else {
-        return PackageManager::Npm;
-    };
-    let Ok(p) = serde_json::from_str::<Partial>(&bytes) else {
-        return PackageManager::Npm;
-    };
-    match p.package_manager.as_deref() {
-        Some(s) if s.starts_with("pnpm") => PackageManager::Pnpm,
-        Some(s) if s.starts_with("yarn") => PackageManager::Yarn,
-        Some(s) if s.starts_with("bun") => PackageManager::Bun,
-        _ => PackageManager::Npm,
-    }
-}
+// Task runners
 
-// ── Task runner detection ──────────────────────────────────────────────
-
+/// Detect task runners by checking for their config files.
 fn detect_task_runners(dir: &Path, ctx: &mut ProjectContext) {
-    if exists(dir, "turbo.json") {
+    if tool::turbo::detect(dir) {
         ctx.task_runners.push(TaskRunner::Turbo);
     }
-    if exists(dir, "nx.json") {
+    if tool::nx::detect(dir) {
         ctx.task_runners.push(TaskRunner::Nx);
     }
-    if any_exists(dir, &["Makefile", "GNUmakefile", "makefile"]) {
+    if tool::make::detect(dir) {
         ctx.task_runners.push(TaskRunner::Make);
     }
-    if any_exists(dir, &["justfile", "Justfile", ".justfile"]) {
+    if tool::just::detect(dir) {
         ctx.task_runners.push(TaskRunner::Just);
     }
-    if any_exists(dir, &["Taskfile.yml", "Taskfile.yaml", "taskfile.yml"]) {
+    if tool::go_task::detect(dir) {
         ctx.task_runners.push(TaskRunner::GoTask);
     }
-    if exists(dir, "mise.toml") || exists(dir, ".mise.toml") {
+    if tool::mise::detect(dir) {
         ctx.task_runners.push(TaskRunner::Mise);
     }
 }
 
-// ── Node version detection ─────────────────────────────────────────────
+// Node version
 
+/// Detect the expected Node.js version from version files and the current
+/// installed version via `node --version`.
+///
+/// Sources checked (first match wins):
+/// 1. `.nvmrc`
+/// 2. `.node-version`
+/// 3. `.tool-versions` (asdf `nodejs` key)
+/// 4. `package.json` `"engines.node"`
 fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
-    // .nvmrc / .node-version
     for (file, source) in [(".nvmrc", ".nvmrc"), (".node-version", ".node-version")] {
-        if let Some(raw) = read_trimmed(dir, file) {
+        if let Ok(raw) = std::fs::read_to_string(dir.join(file)) {
             let v = raw.trim();
             if !v.is_empty() {
                 ctx.node_version = Some(NodeVersion {
@@ -273,27 +143,22 @@ fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
         }
     }
 
-    // .tool-versions (asdf)
     if ctx.node_version.is_none()
-        && let Some(content) = read_trimmed(dir, ".tool-versions")
+        && let Ok(content) = std::fs::read_to_string(dir.join(".tool-versions"))
     {
         for line in content.lines() {
-            if let Some(rest) = line.strip_prefix("nodejs") {
-                let v = rest.trim();
-                if !v.is_empty() {
-                    ctx.node_version = Some(NodeVersion {
-                        expected: v.to_string(),
-                        source: ".tool-versions",
-                    });
-                    break;
-                }
+            if let Some(v) = parse_tool_versions_node(line) {
+                ctx.node_version = Some(NodeVersion {
+                    expected: v.to_string(),
+                    source: ".tool-versions",
+                });
+                break;
             }
         }
     }
 
-    // package.json engines.node
     if ctx.node_version.is_none()
-        && let Some(content) = read_trimmed(dir, "package.json")
+        && let Ok(content) = std::fs::read_to_string(dir.join("package.json"))
     {
         #[derive(Deserialize)]
         struct Engines {
@@ -313,12 +178,12 @@ fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
         }
     }
 
-    // Current node version (only bother if we found an expected version)
     if ctx.node_version.is_some() || ctx.package_managers.iter().any(|pm| pm.is_node()) {
         ctx.current_node = detect_current_node();
     }
 }
 
+/// Shell out to `node --version` and parse the result.
 fn detect_current_node() -> Option<String> {
     let out = process::Command::new("node")
         .arg("--version")
@@ -328,27 +193,33 @@ fn detect_current_node() -> Option<String> {
         return None;
     }
     let raw = String::from_utf8_lossy(&out.stdout);
-    let v = raw.trim().strip_prefix('v').unwrap_or(raw.trim());
+    let trimmed = raw.trim();
+    let v = trimmed.strip_prefix('v').unwrap_or(trimmed);
     Some(v.to_string())
 }
 
-// ── Monorepo detection ─────────────────────────────────────────────────
+fn parse_tool_versions_node(line: &str) -> Option<&str> {
+    let content = line.split('#').next()?.trim();
+    let mut parts = content.split_whitespace();
+    let tool = parts.next()?;
+    let version = parts.next()?;
+    (tool == "nodejs").then_some(version)
+}
 
+// Monorepo
+
+/// Check for monorepo indicators: workspace configs, turbo, nx, cargo workspace.
 fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
-    if exists(dir, "pnpm-workspace.yaml") || exists(dir, "lerna.json") {
+    if dir.join("pnpm-workspace.yaml").exists() || dir.join("lerna.json").exists() {
         ctx.is_monorepo = true;
     }
     if ctx.task_runners.contains(&TaskRunner::Turbo) || ctx.task_runners.contains(&TaskRunner::Nx) {
         ctx.is_monorepo = true;
     }
-    // Cargo workspace
-    if let Some(content) = read_trimmed(dir, "Cargo.toml")
-        && content.contains("[workspace]")
-    {
+    if tool::cargo_pm::detect_workspace(dir) {
         ctx.is_monorepo = true;
     }
-    // package.json workspaces
-    if let Some(content) = read_trimmed(dir, "package.json")
+    if let Ok(content) = std::fs::read_to_string(dir.join("package.json"))
         && let Ok(p) = serde_json::from_str::<serde_json::Value>(&content)
         && p.get("workspaces").is_some()
     {
@@ -356,222 +227,90 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
-// ── Task extraction ────────────────────────────────────────────────────
+// Task extraction
 
+/// Extract tasks only from tools that were actually detected, avoiding
+/// unnecessary filesystem reads.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    extract_package_json_scripts(dir, ctx);
-    extract_turbo_tasks(dir, ctx);
-    extract_makefile_targets(dir, ctx);
-    extract_justfile_recipes(dir, ctx);
-    extract_taskfile_tasks(dir, ctx);
-    extract_deno_tasks(dir, ctx);
-}
-
-fn extract_package_json_scripts(dir: &Path, ctx: &mut ProjectContext) {
-    let Some(content) = read_trimmed(dir, "package.json") else {
-        return;
-    };
-    #[derive(Deserialize)]
-    struct Partial {
-        scripts: Option<HashMap<String, String>>,
+    if ctx.package_managers.iter().any(|pm| pm.is_node()) {
+        push_extracted_tasks(
+            ctx,
+            TaskSource::PackageJson,
+            tool::node::extract_scripts(dir),
+        );
     }
-    let Ok(p) = serde_json::from_str::<Partial>(&content) else {
-        return;
-    };
-    if let Some(scripts) = p.scripts {
-        for name in scripts.keys() {
-            ctx.tasks.push(Task {
-                name: name.clone(),
-                source: TaskSource::PackageJson,
-            });
-        }
+    if ctx.task_runners.contains(&TaskRunner::Turbo) {
+        push_extracted_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
+    }
+    if ctx.task_runners.contains(&TaskRunner::Make) {
+        push_extracted_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
+    }
+    if ctx.task_runners.contains(&TaskRunner::Just) {
+        push_extracted_tasks(ctx, TaskSource::Justfile, tool::just::extract_tasks(dir));
+    }
+    if ctx.task_runners.contains(&TaskRunner::GoTask) {
+        push_extracted_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
+    }
+    if ctx.package_managers.contains(&PackageManager::Deno) {
+        push_extracted_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
     }
 }
 
-fn extract_turbo_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    let Some(content) = read_trimmed(dir, "turbo.json") else {
-        return;
-    };
-    // turbo v2 uses "tasks", v1 used "pipeline"
-    #[derive(Deserialize)]
-    struct Partial {
-        tasks: Option<HashMap<String, serde_json::Value>>,
-        pipeline: Option<HashMap<String, serde_json::Value>>,
-    }
-    let Ok(p) = serde_json::from_str::<Partial>(&content) else {
-        return;
-    };
-    let Some(tasks) = p.tasks.or(p.pipeline) else {
-        return;
-    };
-    for name in tasks.keys() {
-        // Skip scoped tasks (workspace#task)
-        if !name.contains('#') {
-            ctx.tasks.push(Task {
-                name: name.clone(),
-                source: TaskSource::TurboJson,
-            });
-        }
+fn push_extracted_tasks(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<String>>,
+) {
+    match result {
+        Ok(names) => push_tasks(&mut ctx.tasks, source, names),
+        Err(err) => ctx.warnings.push(DetectionWarning {
+            source: source.label(),
+            detail: format!("failed to read tasks: {err:#}"),
+        }),
     }
 }
 
-fn extract_makefile_targets(dir: &Path, ctx: &mut ProjectContext) {
-    let path = first_existing(dir, &["Makefile", "GNUmakefile", "makefile"]);
-    let Some(content) = path.and_then(|p| fs::read_to_string(p).ok()) else {
-        return;
-    };
-    for line in content.lines() {
-        if line.starts_with('\t') || line.starts_with(' ') || line.starts_with('#') {
-            continue;
-        }
-        // Skip special targets
-        if line.starts_with('.') {
-            continue;
-        }
-        let Some(colon) = line.find(':') else {
-            continue;
-        };
-        // Skip := and ::=
-        let after = &line[colon..];
-        if after.starts_with(":=") || after.starts_with("::") {
-            continue;
-        }
-        let target = line[..colon].trim();
-        if !target.is_empty()
-            && !target.contains(' ')
-            && !target.contains('$')
-            && !target.contains('%')
-        {
-            ctx.tasks.push(Task {
-                name: target.to_string(),
-                source: TaskSource::Makefile,
-            });
-        }
+/// Convert a vec of task names into [`Task`] structs and append them.
+fn push_tasks(tasks: &mut Vec<Task>, source: TaskSource, names: Vec<String>) {
+    for name in names {
+        tasks.push(Task { name, source });
     }
 }
 
-fn extract_justfile_recipes(dir: &Path, ctx: &mut ProjectContext) {
-    let path = first_existing(dir, &["justfile", "Justfile", ".justfile"]);
-    let Some(content) = path.and_then(|p| fs::read_to_string(p).ok()) else {
-        return;
-    };
-    for line in content.lines() {
-        // Skip indented lines (recipe bodies), comments, directives
-        if line.starts_with(' ') || line.starts_with('\t') {
-            continue;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("set ")
-            || trimmed.starts_with("alias ")
-            || trimmed.starts_with("import ")
-            || trimmed.starts_with("mod ")
-            || trimmed.starts_with("export ")
-        {
-            continue;
-        }
-        // Strip leading @ (quiet recipe)
-        let recipe = trimmed.strip_prefix('@').unwrap_or(trimmed);
-        // Recipe declaration: "name:" or "name arg:" or "name arg='default':"
-        if let Some(colon) = recipe.find(':') {
-            let before = &recipe[..colon];
-            let name = before.split_whitespace().next().unwrap_or("");
-            if !name.is_empty()
-                && !name.starts_with('_')
-                && name
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-            {
-                ctx.tasks.push(Task {
-                    name: name.to_string(),
-                    source: TaskSource::Justfile,
-                });
-            }
-        }
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::parse_tool_versions_node;
+    use crate::detect::detect;
+    use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn parses_tool_versions_node_entry() {
+        assert_eq!(parse_tool_versions_node("nodejs 20.11.1"), Some("20.11.1"));
     }
-}
 
-fn extract_taskfile_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    let path = first_existing(dir, &["Taskfile.yml", "Taskfile.yaml", "taskfile.yml"]);
-    let Some(content) = path.and_then(|p| fs::read_to_string(p).ok()) else {
-        return;
-    };
-    // Lightweight YAML parse: look for top-level keys under "tasks:"
-    // Lines like "  taskname:" after a "tasks:" line
-    let mut in_tasks = false;
-    for line in content.lines() {
-        if line.trim() == "tasks:" {
-            in_tasks = true;
-            continue;
-        }
-        if in_tasks {
-            // End of tasks block: line is a top-level key (no leading space) or empty
-            if !line.starts_with(' ') && !line.starts_with('\t') && !line.trim().is_empty() {
-                break;
-            }
-            // Task name: exactly 2-space or 1-tab indent, then "name:"
-            let stripped = line.strip_prefix("  ").or_else(|| line.strip_prefix('\t'));
-            if let Some(rest) = stripped
-                && !rest.starts_with(' ')
-                && !rest.starts_with('\t')
-                && let Some(colon) = rest.find(':')
-            {
-                let name = rest[..colon].trim();
-                if !name.is_empty()
-                    && !name.starts_with('#')
-                    && name
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                {
-                    ctx.tasks.push(Task {
-                        name: name.to_string(),
-                        source: TaskSource::Taskfile,
-                    });
-                }
-            }
-        }
+    #[test]
+    fn ignores_malformed_tool_versions_entry() {
+        assert_eq!(parse_tool_versions_node("nodejs20.11.1"), None);
     }
-}
 
-fn extract_deno_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    let path = first_existing(dir, &["deno.json", "deno.jsonc"]);
-    let Some(p) = path else { return };
-    let Ok(content) = fs::read_to_string(p) else {
-        return;
-    };
-    // deno.jsonc may contain comments — serde_json will fail on those, which is fine
-    #[derive(Deserialize)]
-    struct Partial {
-        tasks: Option<HashMap<String, serde_json::Value>>,
+    #[test]
+    fn strips_tool_versions_inline_comments() {
+        assert_eq!(
+            parse_tool_versions_node("nodejs 20.11.1 # pinned for ci"),
+            Some("20.11.1")
+        );
     }
-    let Ok(d) = serde_json::from_str::<Partial>(&content) else {
-        return;
-    };
-    if let Some(tasks) = d.tasks {
-        for name in tasks.keys() {
-            ctx.tasks.push(Task {
-                name: name.clone(),
-                source: TaskSource::DenoJson,
-            });
-        }
+
+    #[test]
+    fn detect_records_warnings_for_invalid_task_configs() {
+        let dir = TempDir::new("detect-warning");
+        fs::write(dir.path().join("turbo.json"), "{").expect("turbo.json should be written");
+
+        let ctx = detect(dir.path());
+
+        assert_eq!(ctx.warnings.len(), 1);
+        assert_eq!(ctx.warnings[0].source, "turbo.json");
     }
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────
-
-fn exists(dir: &Path, name: &str) -> bool {
-    dir.join(name).exists()
-}
-
-fn any_exists(dir: &Path, names: &[&str]) -> bool {
-    names.iter().any(|n| exists(dir, n))
-}
-
-fn first_existing(dir: &Path, names: &[&str]) -> Option<PathBuf> {
-    names.iter().map(|n| dir.join(n)).find(|p| p.exists())
-}
-
-fn read_trimmed(dir: &Path, name: &str) -> Option<String> {
-    fs::read_to_string(dir.join(name)).ok()
 }
