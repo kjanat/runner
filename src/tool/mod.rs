@@ -46,7 +46,7 @@ pub(crate) mod pipenv;
 pub(crate) mod pnpm;
 /// Poetry, a Python dependency manager (`poetry.lock`, `pyproject.toml`).
 pub(crate) mod poetry;
-/// Shared Python tooling constants.
+/// Shared Python tooling helpers.
 pub(crate) mod python;
 /// Turborepo monorepo build system (`turbo.json`).
 pub(crate) mod turbo;

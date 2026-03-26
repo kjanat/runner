@@ -57,8 +57,8 @@ pub(crate) fn clean(
     Ok(())
 }
 
-fn collect_targets(ctx: &ProjectContext, include_framework: bool) -> Vec<&'static str> {
-    let mut targets: Vec<&'static str> = Vec::new();
+fn collect_targets(ctx: &ProjectContext, include_framework: bool) -> Vec<String> {
+    let mut targets: Vec<String> = Vec::new();
     let mut seen = HashSet::new();
 
     for pm in &ctx.package_managers {
@@ -93,14 +93,19 @@ fn collect_targets(ctx: &ProjectContext, include_framework: bool) -> Vec<&'stati
             PackageManager::Deno => {
                 push_dirs_if_exist(&mut targets, &mut seen, tool::deno::CLEAN_DIRS, &ctx.root);
             }
-            PackageManager::Uv | PackageManager::Poetry | PackageManager::Pipenv => {
-                push_dirs_if_exist(&mut targets, &mut seen, tool::python::CLEAN_DIRS, &ctx.root);
-            }
             PackageManager::Go => {
                 push_dirs_if_exist(&mut targets, &mut seen, tool::go_pm::CLEAN_DIRS, &ctx.root);
             }
-            PackageManager::Bundler | PackageManager::Composer => {}
+            PackageManager::Uv
+            | PackageManager::Poetry
+            | PackageManager::Pipenv
+            | PackageManager::Bundler
+            | PackageManager::Composer => {}
         }
+    }
+
+    if tool::python::detect(&ctx.root) {
+        push_dirs(&mut targets, &mut seen, tool::python::clean_dirs(&ctx.root));
     }
 
     for tr in &ctx.task_runners {
@@ -117,9 +122,9 @@ fn collect_targets(ctx: &ProjectContext, include_framework: bool) -> Vec<&'stati
 }
 
 fn push_dirs_if_exist(
-    targets: &mut Vec<&'static str>,
-    seen: &mut HashSet<&'static str>,
-    dirs: &[&'static str],
+    targets: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    dirs: &[&str],
     root: &Path,
 ) {
     for dir in dirs {
@@ -127,15 +132,21 @@ fn push_dirs_if_exist(
     }
 }
 
+fn push_dirs(targets: &mut Vec<String>, seen: &mut HashSet<String>, dirs: Vec<String>) {
+    for dir in dirs {
+        if seen.insert(dir.clone()) {
+            targets.push(dir);
+        }
+    }
+}
+
 /// Append `name` to `targets` if `root/name` exists on disk.
-fn push_if_exists(
-    targets: &mut Vec<&'static str>,
-    seen: &mut HashSet<&'static str>,
-    name: &'static str,
-    root: &Path,
-) {
-    if root.join(name).is_dir() && seen.insert(name) {
-        targets.push(name);
+fn push_if_exists(targets: &mut Vec<String>, seen: &mut HashSet<String>, name: &str, root: &Path) {
+    if root.join(name).is_dir() {
+        let name = name.to_string();
+        if seen.insert(name.clone()) {
+            targets.push(name);
+        }
     }
 }
 
@@ -206,5 +217,21 @@ mod tests {
         let targets = collect_targets(&context(dir.path()), false);
 
         assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn collect_targets_includes_python_artifacts_without_python_pm() {
+        let dir = TempDir::new("clean-python-generic");
+        fs::write(dir.path().join("requirements.txt"), "pytest\n")
+            .expect("requirements.txt should be written");
+        fs::create_dir(dir.path().join("dist")).expect("dist should be created");
+        fs::create_dir(dir.path().join("pkg.egg-info")).expect("pkg.egg-info should be created");
+
+        let mut ctx = context(dir.path());
+        ctx.package_managers.clear();
+
+        let targets = collect_targets(&ctx, false);
+
+        assert_eq!(targets, ["dist", "pkg.egg-info"]);
     }
 }

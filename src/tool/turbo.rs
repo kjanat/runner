@@ -51,3 +51,72 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     }
     c
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::extract_tasks;
+    use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn extract_tasks_returns_empty_when_turbo_json_is_missing() {
+        let dir = TempDir::new("turbo-missing");
+
+        assert!(
+            extract_tasks(dir.path())
+                .expect("missing turbo.json should be ok")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn extract_tasks_errors_on_malformed_json() {
+        let dir = TempDir::new("turbo-malformed");
+        fs::write(dir.path().join("turbo.json"), "{").expect("turbo.json should be written");
+
+        assert!(extract_tasks(dir.path()).is_err());
+    }
+
+    #[test]
+    fn extract_tasks_returns_empty_when_no_task_table_exists() {
+        let dir = TempDir::new("turbo-empty");
+        fs::write(dir.path().join("turbo.json"), "{}").expect("turbo.json should be written");
+
+        assert!(
+            extract_tasks(dir.path())
+                .expect("empty turbo config should parse")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn extract_tasks_reads_v2_tasks_schema() {
+        let dir = TempDir::new("turbo-v2");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"tasks":{"build":{},"lint":{},"web#build":{}}}"#,
+        )
+        .expect("turbo.json should be written");
+
+        let mut tasks = extract_tasks(dir.path()).expect("v2 turbo config should parse");
+        tasks.sort_unstable();
+
+        assert_eq!(tasks, ["build", "lint"]);
+    }
+
+    #[test]
+    fn extract_tasks_reads_v1_pipeline_schema() {
+        let dir = TempDir::new("turbo-v1");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"pipeline":{"test":{},"typecheck":{},"pkg#build":{}}}"#,
+        )
+        .expect("turbo.json should be written");
+
+        let mut tasks = extract_tasks(dir.path()).expect("v1 turbo config should parse");
+        tasks.sort_unstable();
+
+        assert_eq!(tasks, ["test", "typecheck"]);
+    }
+}
