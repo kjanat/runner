@@ -7,12 +7,17 @@ use std::process::Command;
 use anyhow::Context as _;
 use serde::Deserialize;
 
+use crate::tool::files;
+
 /// Directories produced by Deno.
 pub(crate) const CLEAN_DIRS: &[&str] = &[".deno"];
 
+/// Supported Deno config filenames (priority order).
+pub(crate) const FILENAMES: &[&str] = &["deno.json", "deno.jsonc"];
+
 /// Detected via `deno.json` or `deno.jsonc`.
 pub(crate) fn detect(dir: &Path) -> bool {
-    dir.join("deno.json").exists() || dir.join("deno.jsonc").exists()
+    files::find_first(dir, FILENAMES).is_some()
 }
 
 /// Parse task names from `deno.json` / `deno.jsonc`.
@@ -21,11 +26,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
     }
-    let path = if dir.join("deno.json").exists() {
-        dir.join("deno.json")
-    } else if dir.join("deno.jsonc").exists() {
-        dir.join("deno.jsonc")
-    } else {
+    let Some(path) = files::find_first(dir, FILENAMES) else {
         return Ok(vec![]);
     };
     let content = std::fs::read_to_string(&path)

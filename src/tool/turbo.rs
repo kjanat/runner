@@ -10,9 +10,12 @@ use serde::Deserialize;
 /// Directories produced by Turborepo.
 pub(crate) const CLEAN_DIRS: &[&str] = &[".turbo"];
 
+/// Main Turborepo config filename.
+pub(crate) const FILENAME: &str = "turbo.json";
+
 /// Detected via `turbo.json`.
 pub(crate) fn detect(dir: &Path) -> bool {
-    dir.join("turbo.json").exists()
+    dir.join(FILENAME).exists()
 }
 
 /// Parse task names from `turbo.json`.
@@ -25,7 +28,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
         tasks: Option<HashMap<String, serde_json::Value>>,
         pipeline: Option<HashMap<String, serde_json::Value>>,
     }
-    let path = dir.join("turbo.json");
+    let path = dir.join(FILENAME);
     if !path.exists() {
         return Ok(vec![]);
     }

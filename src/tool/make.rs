@@ -7,7 +7,7 @@ use anyhow::Context as _;
 
 use crate::tool::files;
 
-const FILENAMES: &[&str] = &["Makefile", "GNUmakefile", "makefile"];
+pub(crate) const FILENAMES: &[&str] = &["Makefile", "GNUmakefile", "makefile"];
 const SPECIAL_TARGETS: &[&str] = &[
     ".PHONY",
     ".SUFFIXES",

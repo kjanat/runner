@@ -1,7 +1,7 @@
 //! just — a handy command runner using `justfile`.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context as _;
@@ -9,16 +9,16 @@ use serde::Deserialize;
 
 use crate::tool::files;
 
-const FILENAMES: &[&str] = &["justfile", "Justfile", ".justfile"];
+pub(crate) const FILENAMES: &[&str] = &["justfile", "Justfile", ".justfile"];
 
 /// Detected via `justfile`, `Justfile`, or `.justfile`.
 pub(crate) fn detect(dir: &Path) -> bool {
-    FILENAMES.iter().any(|n| dir.join(n).exists())
+    find_file(dir).is_some()
 }
 
 /// Parse public recipe names from a justfile.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
-    let Some(path) = files::find_first(dir, FILENAMES) else {
+    let Some(path) = find_file(dir) else {
         return Ok(vec![]);
     };
 
@@ -57,6 +57,31 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<String>> {
         .collect();
     recipes.sort_unstable();
     Some(recipes)
+}
+
+/// Resolve the active justfile path in the current directory.
+///
+/// Honors standard filenames and falls back to an ASCII case-insensitive
+/// `justfile` match (e.g. `JUSTFILE`).
+pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
+    if let Some(path) = files::find_first(dir, FILENAMES).filter(|path| path.is_file()) {
+        return Some(path);
+    }
+
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("justfile"))
+        })
+        .collect();
+
+    paths.sort_unstable();
+    paths.into_iter().next()
 }
 
 fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
@@ -132,7 +157,7 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use super::{extract_tasks, extract_tasks_from_source, is_private_attr};
+    use super::{detect, extract_tasks, extract_tasks_from_source, is_private_attr};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -176,5 +201,14 @@ mod tests {
             extract_tasks(dir.path()).expect("justfile tasks should parse"),
             ["build", "quiet"]
         );
+    }
+
+    #[test]
+    fn detect_supports_uppercase_justfile_name() {
+        let dir = TempDir::new("just-uppercase");
+        fs::write(dir.path().join("JUSTFILE"), "build:\n  echo build\n")
+            .expect("JUSTFILE should be written");
+
+        assert!(detect(dir.path()));
     }
 }

@@ -28,6 +28,9 @@ features = ["derive"]
 [dependencies.serde_json]
 version = "1"
 
+[dependencies.yaml-rust2]
+version = "0.11"
+
 [lints.clippy]
 cargo_common_metadata = "allow"
 redundant_pub_crate   = "allow"
