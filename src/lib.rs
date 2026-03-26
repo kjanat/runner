@@ -116,12 +116,12 @@ where
 {
     let cli = match cli::Cli::try_parse_from(args) {
         Ok(cli) => cli,
-        Err(err) => return render_clap_error(err),
+        Err(err) => return render_clap_error(&err),
     };
     dispatch(cli, dir)
 }
 
-fn render_clap_error(err: clap::Error) -> Result<i32> {
+fn render_clap_error(err: &clap::Error) -> Result<i32> {
     let exit_code = err.exit_code();
     err.print()?;
     Ok(exit_code)
@@ -148,8 +148,11 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::install(&ctx, frozen)?;
             Ok(0)
         }
-        Some(cli::Command::Clean { yes }) => {
-            cmd::clean(&ctx, yes)?;
+        Some(cli::Command::Clean {
+            yes,
+            include_framework,
+        }) => {
+            cmd::clean(&ctx, yes, include_framework)?;
             Ok(0)
         }
         Some(cli::Command::List { raw }) => {

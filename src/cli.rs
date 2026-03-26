@@ -43,6 +43,9 @@ pub(crate) enum Command {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
+        /// Include framework-specific Node build dirs like `.next`
+        #[arg(long)]
+        include_framework: bool,
     },
 
     /// List available tasks across all detected sources

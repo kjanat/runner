@@ -144,15 +144,12 @@ fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
         && let Ok(content) = std::fs::read_to_string(dir.join(".tool-versions"))
     {
         for line in content.lines() {
-            if let Some(rest) = line.strip_prefix("nodejs") {
-                let v = rest.trim();
-                if !v.is_empty() {
-                    ctx.node_version = Some(NodeVersion {
-                        expected: v.to_string(),
-                        source: ".tool-versions",
-                    });
-                    break;
-                }
+            if let Some(v) = parse_tool_versions_node(line) {
+                ctx.node_version = Some(NodeVersion {
+                    expected: v.to_string(),
+                    source: ".tool-versions",
+                });
+                break;
             }
         }
     }
@@ -196,6 +193,14 @@ fn detect_current_node() -> Option<String> {
     let trimmed = raw.trim();
     let v = trimmed.strip_prefix('v').unwrap_or(trimmed);
     Some(v.to_string())
+}
+
+fn parse_tool_versions_node(line: &str) -> Option<&str> {
+    let content = line.split('#').next()?.trim();
+    let mut parts = content.split_whitespace();
+    let tool = parts.next()?;
+    let version = parts.next()?;
+    (tool == "nodejs").then_some(version)
 }
 
 // Monorepo
@@ -272,5 +277,28 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
 fn push_tasks(tasks: &mut Vec<Task>, source: TaskSource, names: Vec<String>) {
     for name in names {
         tasks.push(Task { name, source });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_tool_versions_node;
+
+    #[test]
+    fn parses_tool_versions_node_entry() {
+        assert_eq!(parse_tool_versions_node("nodejs 20.11.1"), Some("20.11.1"));
+    }
+
+    #[test]
+    fn ignores_malformed_tool_versions_entry() {
+        assert_eq!(parse_tool_versions_node("nodejs20.11.1"), None);
+    }
+
+    #[test]
+    fn strips_tool_versions_inline_comments() {
+        assert_eq!(
+            parse_tool_versions_node("nodejs 20.11.1 # pinned for ci"),
+            Some("20.11.1")
+        );
     }
 }

@@ -16,7 +16,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 ///
 /// Extracts lines matching `target:` while skipping recipe lines (tab-
 /// indented), special targets (`.PHONY` etc.), variable assignments (`:=`,
-/// `::=`), and pattern rules (`%`).
+/// `:::=`), and pattern rules (`%`).
 pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
     let Some(content) =
         files::find_first(dir, FILENAMES).and_then(|p| std::fs::read_to_string(p).ok())
@@ -36,7 +36,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
             continue;
         };
         let after = &line[colon..];
-        if after.starts_with(":=") || after.starts_with("::") {
+        if after.starts_with(":=") || after.starts_with(":::=") {
             continue;
         }
         let target = line[..colon].trim();
@@ -56,4 +56,24 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("make");
     c.arg(task).args(args);
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::extract_tasks;
+    use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn extract_tasks_keeps_double_colon_rules() {
+        let dir = TempDir::new("make-double-colon");
+        fs::write(
+            dir.path().join("Makefile"),
+            "build::\n\t@echo first\nvalue :::= thing\n",
+        )
+        .expect("Makefile should be written");
+
+        assert_eq!(extract_tasks(dir.path()), ["build"]);
+    }
 }

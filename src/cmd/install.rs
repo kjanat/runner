@@ -32,7 +32,7 @@ pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
 
     for pm in &ctx.package_managers {
         eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
-        let mut cmd = build_install_command(*pm, frozen);
+        let mut cmd = build_install_command(ctx, *pm, frozen);
         super::configure_command(&mut cmd, &ctx.root);
         let status = cmd.status()?;
         if !status.success() {
@@ -47,10 +47,10 @@ pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
 }
 
 /// Map a [`PackageManager`] to its install [`Command`].
-fn build_install_command(pm: PackageManager, frozen: bool) -> Command {
+fn build_install_command(ctx: &ProjectContext, pm: PackageManager, frozen: bool) -> Command {
     match pm {
         PackageManager::Npm => tool::npm::install_cmd(frozen),
-        PackageManager::Yarn => tool::yarn::install_cmd(frozen),
+        PackageManager::Yarn => tool::yarn::install_cmd(&ctx.root, frozen),
         PackageManager::Pnpm => tool::pnpm::install_cmd(frozen),
         PackageManager::Bun => tool::bun::install_cmd(frozen),
         PackageManager::Cargo => tool::cargo_pm::install_cmd(frozen),

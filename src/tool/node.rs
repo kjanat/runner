@@ -8,14 +8,10 @@ use serde::Deserialize;
 use crate::types::PackageManager;
 
 /// Directories commonly produced by Node.js toolchains.
-pub(crate) const CLEAN_DIRS: &[&str] = &[
-    "node_modules",
-    ".next",
-    "dist",
-    ".cache",
-    ".parcel-cache",
-    ".svelte-kit",
-];
+pub(crate) const DEFAULT_CLEAN_DIRS: &[&str] = &["node_modules", ".cache", "dist"];
+
+/// Framework-specific Node build directories removed only on explicit opt-in.
+pub(crate) const FRAMEWORK_CLEAN_DIRS: &[&str] = &[".next", ".parcel-cache", ".svelte-kit"];
 
 /// Returns `true` if `dir` contains a `package.json`.
 pub(crate) fn has_package_json(dir: &Path) -> bool {

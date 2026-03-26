@@ -8,7 +8,7 @@
 //! - `run_cmd(task, args)` — builds a [`std::process::Command`] to run a task
 //! - `install_cmd(frozen)` — builds a [`std::process::Command`] to install deps
 //! - `exec_cmd(args)` — builds a [`std::process::Command`] for ad-hoc execution
-//! - `CLEAN_DIRS` — directories to remove on `runner clean`
+//! - clean-dir constants — directories to remove on `runner clean`
 //!
 //! Not every module exposes every function; only what the tool supports.
 

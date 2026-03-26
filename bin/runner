@@ -9,4 +9,9 @@ while [ -L "$SOURCE_PATH" ]; do
   esac
 done
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE_PATH")" && pwd)"
-exec cargo run --quiet --bin runner --manifest-path="$SCRIPT_DIR/../Cargo.toml" -- "$@"
+MANIFEST="$SCRIPT_DIR/../Cargo.toml"
+[ -f "$MANIFEST" ] || {
+  printf 'error: %s not found\n' "$MANIFEST" >&2
+  exit 1
+}
+exec cargo run --quiet --bin runner --manifest-path="$MANIFEST" -- "$@"
