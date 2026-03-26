@@ -1,6 +1,6 @@
 //! `runner run <task>` — resolve a task name to the right tool and execute it.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
@@ -36,9 +36,7 @@ pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i
     );
 
     let mut cmd = build_run_command(ctx, entry.source, task, args)?;
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    super::configure_command(&mut cmd, &ctx.root);
     let status = cmd.status()?;
     Ok(status.code().unwrap_or(1))
 }

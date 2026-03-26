@@ -1,6 +1,6 @@
 //! `runner install` — install dependencies via every detected package manager.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
@@ -33,9 +33,7 @@ pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
     for pm in &ctx.package_managers {
         eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
         let mut cmd = build_install_command(*pm, frozen);
-        cmd.stdin(Stdio::inherit())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit());
+        super::configure_command(&mut cmd, &ctx.root);
         let status = cmd.status()?;
         if !status.success() {
             bail!(

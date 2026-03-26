@@ -69,20 +69,26 @@ use clap::Parser;
 ///
 /// # Errors
 ///
-/// Returns an error when reading current dir fails, argument parsing fails,
-/// project detection fails, or command execution fails.
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
 pub fn run_from_env() -> Result<i32> {
     run_from_args(std::env::args_os())
 }
 
 /// Parse explicit args, detect current dir, dispatch, return exit code.
 ///
-/// `args` must include argv[0] as first item.
+/// `args` must include `argv\[0\]` as first item.
 ///
 /// # Errors
 ///
-/// Returns an error when reading current dir fails, argument parsing fails,
-/// project detection fails, or command execution fails.
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
 pub fn run_from_args<I, T>(args: I) -> Result<i32>
 where
     I: IntoIterator<Item = T>,
@@ -94,19 +100,31 @@ where
 
 /// Parse explicit args and run against `dir`.
 ///
-/// `args` must include argv[0] as first item.
+/// `args` must include `argv\[0\]` as first item.
 ///
 /// # Errors
 ///
-/// Returns an error when argument parsing fails, project detection fails,
-/// or command execution fails.
+/// Returns an error when project detection fails, command execution fails, or
+/// writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
 pub fn run_in_dir<I, T>(args: I, dir: &Path) -> Result<i32>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = cli::Cli::parse_from(args);
+    let cli = match cli::Cli::try_parse_from(args) {
+        Ok(cli) => cli,
+        Err(err) => return render_clap_error(err),
+    };
     dispatch(cli, dir)
+}
+
+fn render_clap_error(err: clap::Error) -> Result<i32> {
+    let exit_code = err.exit_code();
+    err.print()?;
+    Ok(exit_code)
 }
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
@@ -143,5 +161,36 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::completions(shell);
             Ok(0)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::run_in_dir;
+
+    #[test]
+    fn help_returns_zero_instead_of_exiting() {
+        let code = run_in_dir(["runner", "--help"], Path::new("."))
+            .expect("help should return an exit code");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn invalid_args_return_non_zero_instead_of_exiting() {
+        let code = run_in_dir(["runner", "--definitely-invalid"], Path::new("."))
+            .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn version_returns_zero_instead_of_exiting() {
+        let code = run_in_dir(["runner", "--version"], Path::new("."))
+            .expect("version should return an exit code");
+
+        assert_eq!(code, 0);
     }
 }

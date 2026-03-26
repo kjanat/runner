@@ -1,6 +1,6 @@
 //! `runner exec` — run an ad-hoc command through the detected package manager.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use anyhow::{Result, bail};
 
@@ -34,9 +34,7 @@ pub(crate) fn exec(ctx: &ProjectContext, args: &[String]) -> Result<i32> {
         }
     };
 
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    super::configure_command(&mut cmd, &ctx.root);
 
     let status = cmd.status()?;
     Ok(status.code().unwrap_or(1))
