@@ -26,18 +26,10 @@ pub(crate) fn has_package_json(dir: &Path) -> bool {
 /// `package.json`. Falls back to [`PackageManager::Npm`] when absent or
 /// unparseable.
 pub(crate) fn detect_pm_from_field(dir: &Path) -> PackageManager {
-    #[derive(Deserialize)]
-    struct Partial {
-        #[serde(rename = "packageManager")]
-        package_manager: Option<String>,
-    }
-    let Ok(content) = std::fs::read_to_string(dir.join("package.json")) else {
-        return PackageManager::Npm;
-    };
-    let Ok(p) = serde_json::from_str::<Partial>(&content) else {
-        return PackageManager::Npm;
-    };
-    match p.package_manager.as_deref() {
+    match parse_package_json(dir)
+        .and_then(|package_json| package_json.package_manager)
+        .as_deref()
+    {
         Some(s) if s.starts_with("pnpm") => PackageManager::Pnpm,
         Some(s) if s.starts_with("yarn") => PackageManager::Yarn,
         Some(s) if s.starts_with("bun") => PackageManager::Bun,
@@ -47,15 +39,19 @@ pub(crate) fn detect_pm_from_field(dir: &Path) -> PackageManager {
 
 /// Parse `package.json` and return all keys from the `"scripts"` object.
 pub(crate) fn extract_scripts(dir: &Path) -> Vec<String> {
-    #[derive(Deserialize)]
-    struct Partial {
-        scripts: Option<HashMap<String, String>>,
-    }
-    let Ok(content) = std::fs::read_to_string(dir.join("package.json")) else {
-        return vec![];
-    };
-    let Ok(p) = serde_json::from_str::<Partial>(&content) else {
-        return vec![];
-    };
-    p.scripts.map_or(vec![], |s| s.into_keys().collect())
+    parse_package_json(dir)
+        .and_then(|package_json| package_json.scripts)
+        .map_or_else(Vec::new, |scripts| scripts.into_keys().collect())
+}
+
+#[derive(Deserialize)]
+struct PackageJson {
+    #[serde(rename = "packageManager")]
+    package_manager: Option<String>,
+    scripts: Option<HashMap<String, String>>,
+}
+
+fn parse_package_json(dir: &Path) -> Option<PackageJson> {
+    let content = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    serde_json::from_str(&content).ok()
 }

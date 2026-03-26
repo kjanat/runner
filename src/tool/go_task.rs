@@ -3,8 +3,10 @@
 //! Supports all [official filename variants](https://taskfile.dev/usage/#supported-file-names),
 //! including `.dist` overrides.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+
+use crate::tool::files;
 
 /// Priority order per the Taskfile specification.
 const FILENAMES: &[&str] = &[
@@ -24,30 +26,49 @@ pub(crate) fn detect(dir: &Path) -> bool {
 }
 
 /// Lightweight YAML extraction: finds the `tasks:` block and collects
-/// immediate child keys (2-space or tab indented).
+/// immediate child keys with the first detected task indentation.
 ///
 /// Does not use a full YAML parser — relies on consistent indentation.
 pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
-    let Some(content) = find_file(dir).and_then(|p| std::fs::read_to_string(p).ok()) else {
+    let Some(content) =
+        files::find_first(dir, FILENAMES).and_then(|p| std::fs::read_to_string(p).ok())
+    else {
         return vec![];
     };
     let mut tasks = Vec::new();
     let mut in_tasks = false;
+    let mut task_indent: Option<String> = None;
     for line in content.lines() {
         if line.trim() == "tasks:" {
             in_tasks = true;
+            task_indent = None;
             continue;
         }
         if in_tasks {
             if !line.starts_with(' ') && !line.starts_with('\t') && !line.trim().is_empty() {
                 break;
             }
-            let stripped = line.strip_prefix("  ").or_else(|| line.strip_prefix('\t'));
+            let indent: String = line
+                .chars()
+                .take_while(|ch| *ch == ' ' || *ch == '\t')
+                .collect();
+            let stripped = task_indent
+                .as_deref()
+                .and_then(|expected_indent| line.strip_prefix(expected_indent))
+                .or_else(|| {
+                    (((indent.chars().filter(|ch| *ch == ' ').count() >= 2)
+                        || indent.contains('\t'))
+                        && !indent.is_empty())
+                    .then_some(&line[indent.len()..])
+                });
             if let Some(rest) = stripped
                 && !rest.starts_with(' ')
                 && !rest.starts_with('\t')
                 && let Some(colon) = rest.find(':')
             {
+                if task_indent.is_none() {
+                    task_indent = Some(indent);
+                }
                 let name = rest[..colon].trim();
                 if !name.is_empty()
                     && !name.starts_with('#')
@@ -70,6 +91,23 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
-fn find_file(dir: &Path) -> Option<PathBuf> {
-    FILENAMES.iter().map(|n| dir.join(n)).find(|p| p.exists())
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::extract_tasks;
+    use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn extract_tasks_supports_four_space_indentation() {
+        let dir = TempDir::new("go-task-indent");
+
+        fs::write(
+            dir.path().join("Taskfile.yml"),
+            "version: '3'\ntasks:\n    build:\n      cmds:\n        - cargo build\n    test:\n      cmds:\n        - cargo test\n",
+        )
+        .expect("Taskfile.yml should be written");
+
+        assert_eq!(extract_tasks(dir.path()), ["build", "test"]);
+    }
 }

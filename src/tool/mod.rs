@@ -22,6 +22,8 @@ pub(crate) mod cargo_pm;
 pub(crate) mod composer;
 /// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
 pub(crate) mod deno;
+/// Shared filesystem helpers for tool modules.
+pub(crate) mod files;
 /// Go modules (`go.mod`).
 pub(crate) mod go_pm;
 /// go-task, a task runner using `Taskfile.yml`.
@@ -44,9 +46,14 @@ pub(crate) mod pipenv;
 pub(crate) mod pnpm;
 /// Poetry, a Python dependency manager (`poetry.lock`).
 pub(crate) mod poetry;
+/// Shared Python tooling constants.
+pub(crate) mod python;
 /// Turborepo monorepo build system (`turbo.json`).
 pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).
 pub(crate) mod uv;
 /// Yarn, a Node.js package manager (`yarn.lock`).
 pub(crate) mod yarn;
+
+#[cfg(test)]
+pub(crate) mod test_support;

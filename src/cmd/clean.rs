@@ -1,5 +1,6 @@
 //! `runner clean` — remove caches and build artifacts for detected tools.
 
+use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::Path;
 use std::{fs, io};
@@ -14,6 +15,7 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner};
 /// prompt for confirmation (unless `skip_confirm`), then delete them.
 pub(crate) fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
     let mut targets: Vec<&str> = Vec::new();
+    let mut seen = HashSet::new();
 
     for pm in &ctx.package_managers {
         let dirs: &[&str] = match pm {
@@ -23,14 +25,14 @@ pub(crate) fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
             | PackageManager::Bun => tool::node::CLEAN_DIRS,
             PackageManager::Cargo => tool::cargo_pm::CLEAN_DIRS,
             PackageManager::Deno => tool::deno::CLEAN_DIRS,
-            PackageManager::Uv => tool::uv::CLEAN_DIRS,
-            PackageManager::Poetry => tool::poetry::CLEAN_DIRS,
-            PackageManager::Pipenv => tool::pipenv::CLEAN_DIRS,
+            PackageManager::Uv | PackageManager::Poetry | PackageManager::Pipenv => {
+                tool::python::CLEAN_DIRS
+            }
             PackageManager::Go => tool::go_pm::CLEAN_DIRS,
             PackageManager::Bundler | PackageManager::Composer => &[],
         };
         for d in dirs {
-            push_if_exists(&mut targets, d, &ctx.root);
+            push_if_exists(&mut targets, &mut seen, d, &ctx.root);
         }
     }
 
@@ -41,12 +43,11 @@ pub(crate) fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
             _ => &[],
         };
         for d in dirs {
-            push_if_exists(&mut targets, d, &ctx.root);
+            push_if_exists(&mut targets, &mut seen, d, &ctx.root);
         }
     }
 
     targets.sort_unstable();
-    targets.dedup();
 
     if targets.is_empty() {
         println!("{}", "Nothing to clean.".dimmed());
@@ -87,8 +88,13 @@ pub(crate) fn clean(ctx: &ProjectContext, skip_confirm: bool) -> Result<()> {
 }
 
 /// Append `name` to `targets` if `root/name` exists on disk.
-fn push_if_exists<'a>(targets: &mut Vec<&'a str>, name: &'a str, root: &Path) {
-    if root.join(name).exists() && !targets.contains(&name) {
+fn push_if_exists<'a>(
+    targets: &mut Vec<&'a str>,
+    seen: &mut HashSet<&'a str>,
+    name: &'a str,
+    root: &Path,
+) {
+    if root.join(name).exists() && seen.insert(name) {
         targets.push(name);
     }
 }

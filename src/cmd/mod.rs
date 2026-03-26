@@ -29,18 +29,17 @@ fn configure_command(command: &mut Command, dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::process::Command;
 
     use super::configure_command;
 
     #[test]
     fn configure_command_sets_current_dir() {
-        let dir = Path::new("/tmp");
+        let dir = std::env::temp_dir();
         let mut command = Command::new("runner-test-command");
 
-        configure_command(&mut command, dir);
+        configure_command(&mut command, dir.as_path());
 
-        assert_eq!(command.get_current_dir(), Some(dir));
+        assert_eq!(command.get_current_dir(), Some(dir.as_path()));
     }
 }

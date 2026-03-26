@@ -167,6 +167,18 @@ impl TaskSource {
             Self::DenoJson => "deno.json",
         }
     }
+
+    /// Sort priority for grouped task listings.
+    pub(crate) const fn priority(self) -> u8 {
+        match self {
+            Self::PackageJson => 0,
+            Self::Makefile => 1,
+            Self::Justfile => 2,
+            Self::Taskfile => 3,
+            Self::TurboJson => 4,
+            Self::DenoJson => 5,
+        }
+    }
 }
 
 /// Loose semver prefix match.
@@ -200,4 +212,19 @@ pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
     }
 
     current.starts_with(expected_clean)
+        && current[expected_clean.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| c == '.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_matches;
+
+    #[test]
+    fn dotted_versions_match_segment_boundaries_only() {
+        assert!(version_matches("20.11", "20.11.0"));
+        assert!(!version_matches("20.11", "20.110.0"));
+    }
 }

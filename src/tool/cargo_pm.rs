@@ -42,35 +42,9 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::detect_workspace;
-
-    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(prefix: &str) -> Self {
-            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!("runner-{prefix}-{id}"));
-            fs::create_dir(&path).expect("temp dir should be created");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::tool::test_support::TempDir;
 
     #[test]
     fn workspace_detection_allows_inline_comments() {

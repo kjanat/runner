@@ -1,10 +1,12 @@
 //! just — a handy command runner using `justfile`.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde::Deserialize;
+
+use crate::tool::files;
 
 const FILENAMES: &[&str] = &["justfile", "Justfile", ".justfile"];
 
@@ -15,7 +17,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// Parse public recipe names from a justfile.
 pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
-    let Some(path) = find_file(dir) else {
+    let Some(path) = files::find_first(dir, FILENAMES) else {
         return vec![];
     };
 
@@ -71,8 +73,10 @@ fn extract_tasks_from_source(path: &Path) -> Vec<String> {
             || trimmed.starts_with("set ")
             || trimmed.starts_with("alias ")
             || trimmed.starts_with("import ")
+            || trimmed.starts_with("include ")
             || trimmed.starts_with("mod ")
             || trimmed.starts_with("export ")
+            || trimmed.starts_with('[')
         {
             continue;
         }
@@ -103,43 +107,13 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
-fn find_file(dir: &Path) -> Option<PathBuf> {
-    FILENAMES.iter().map(|n| dir.join(n)).find(|p| p.exists())
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::{extract_tasks, extract_tasks_from_source};
-
-    static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(prefix: &str) -> Self {
-            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!("runner-{prefix}-{id}"));
-            fs::create_dir(&path).expect("temp dir should be created");
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::tool::test_support::TempDir;
 
     #[test]
     fn fallback_parser_skips_private_and_directive_lines() {
@@ -148,7 +122,7 @@ mod tests {
 
         fs::write(
             &path,
-            "set shell := [\"bash\", \"-cu\"]\nfoo := \"bar\"\n\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\n@quiet name=\"world\":\n  echo hi {{name}}\n",
+            "set shell := [\"bash\", \"-cu\"]\ninclude \"common.just\"\n[private]\nfoo := \"bar\"\n\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\n@quiet name=\"world\":\n  echo hi {{name}}\n",
         )
         .expect("justfile should be written");
 

@@ -16,6 +16,8 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 }
 
 /// `yarn install [--frozen-lockfile]`
+///
+/// Uses the classic flag for compatibility with Yarn 1 lockfile semantics.
 pub(crate) fn install_cmd(frozen: bool) -> Command {
     let mut c = Command::new("yarn");
     c.arg("install");

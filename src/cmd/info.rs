@@ -32,9 +32,9 @@ pub(crate) fn info(ctx: &ProjectContext) {
         let mut line = format!("{} ({})", nv.expected, nv.source);
         if let Some(cur) = &ctx.current_node {
             if version_matches(&nv.expected, cur) {
-                write!(line, ", current {cur} {}", "(ok)".green()).unwrap();
+                let _ = write!(line, ", current {cur} {}", "(ok)".green());
             } else {
-                write!(line, ", current {cur} {}", "(mismatch)".red()).unwrap();
+                let _ = write!(line, ", current {cur} {}", "(mismatch)".red());
             }
         }
         println!("  {:<20}{}", "Node".dimmed(), line);
