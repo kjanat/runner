@@ -113,7 +113,11 @@ fn is_private_attr(trimmed: &str) -> bool {
     trimmed
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
-        .is_some_and(|attr| attr.trim_start().starts_with("private"))
+        .is_some_and(|attr| {
+            attr.split(',')
+                .map(str::trim)
+                .any(|segment| segment.starts_with("private"))
+        })
 }
 
 /// `just <task> [args...]`
@@ -128,7 +132,7 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use super::{extract_tasks, extract_tasks_from_source};
+    use super::{extract_tasks, extract_tasks_from_source, is_private_attr};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -146,6 +150,13 @@ mod tests {
             extract_tasks_from_source(&path).expect("justfile source should parse"),
             ["build", "quiet"]
         );
+    }
+
+    #[test]
+    fn private_attr_matches_comma_separated_lists() {
+        assert!(is_private_attr("[unix, private]"));
+        assert!(is_private_attr("[private(no-cd), unix]"));
+        assert!(!is_private_attr("[unix, linux]"));
     }
 
     #[test]
