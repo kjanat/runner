@@ -11,6 +11,9 @@ use crate::types::{PackageManager, ProjectContext, TaskSource};
 /// Look up `task` across all detected sources, pick the highest-priority
 /// match, build the appropriate command, and execute it.
 ///
+/// Bun special case: when `task == "test"` and no package-manifest `test`
+/// script exists, falls back to `bun test`.
+///
 /// Returns the child process exit code.
 pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i32> {
     super::print_warnings(ctx);

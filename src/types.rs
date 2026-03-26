@@ -60,7 +60,8 @@ pub(crate) struct Task {
 /// Identifies the config file a [`Task`] was extracted from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TaskSource {
-    /// `package.json` `"scripts"` field.
+    /// Node package manifest `"scripts"` field (`package.json`,
+    /// `package.json5`, `package.yaml`).
     PackageJson,
     /// Makefile target.
     Makefile,

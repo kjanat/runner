@@ -1,14 +1,18 @@
+//! Shared test-only helpers for tool module unit tests.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
+/// Temporary directory wrapper removed on drop.
 pub(crate) struct TempDir {
     path: PathBuf,
 }
 
 impl TempDir {
+    /// Create a uniquely named temp directory with the given `prefix`.
     pub(crate) fn new(prefix: &str) -> Self {
         let pid = std::process::id();
 
@@ -25,6 +29,7 @@ impl TempDir {
         panic!("temp dir should be created")
     }
 
+    /// Borrow the temporary directory path.
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
