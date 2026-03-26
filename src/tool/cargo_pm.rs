@@ -25,10 +25,13 @@ pub(crate) fn detect_workspace(dir: &Path) -> bool {
     })
 }
 
-/// `cargo build` or `cargo fetch` when `frozen`.
+/// `cargo fetch [--locked]`.
 pub(crate) fn install_cmd(frozen: bool) -> Command {
     let mut c = Command::new("cargo");
-    c.arg(if frozen { "fetch" } else { "build" });
+    c.arg("fetch");
+    if frozen {
+        c.arg("--locked");
+    }
     c
 }
 
@@ -43,7 +46,7 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 mod tests {
     use std::fs;
 
-    use super::detect_workspace;
+    use super::{detect_workspace, install_cmd};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -57,5 +60,15 @@ mod tests {
         .expect("Cargo.toml should be written");
 
         assert!(detect_workspace(dir.path()));
+    }
+
+    #[test]
+    fn frozen_install_checks_lockfile_without_building() {
+        let args: Vec<_> = install_cmd(true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, ["fetch", "--locked"]);
     }
 }

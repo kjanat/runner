@@ -12,6 +12,8 @@ use crate::types::{ProjectContext, TaskSource};
 /// into scripts or shell completions). Otherwise prints a human-readable
 /// table grouped by source file.
 pub(crate) fn list(ctx: &ProjectContext, raw: bool) {
+    super::print_warnings(ctx);
+
     if raw {
         let mut seen = HashSet::new();
         for task in &ctx.tasks {

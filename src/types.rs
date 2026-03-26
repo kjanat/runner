@@ -83,6 +83,15 @@ pub(crate) struct NodeVersion {
     pub source: &'static str,
 }
 
+/// Non-fatal issue found while detecting project metadata.
+#[derive(Debug, Clone)]
+pub(crate) struct DetectionWarning {
+    /// Which config or subsystem produced the warning.
+    pub source: &'static str,
+    /// Human-readable detail for the user.
+    pub detail: String,
+}
+
 /// Everything detected about the current project directory.
 pub(crate) struct ProjectContext {
     /// Absolute path to the project root that was scanned.
@@ -99,6 +108,8 @@ pub(crate) struct ProjectContext {
     pub current_node: Option<String>,
     /// Whether the project appears to be a monorepo.
     pub is_monorepo: bool,
+    /// Non-fatal detection issues surfaced to task-facing commands.
+    pub warnings: Vec<DetectionWarning>,
 }
 
 impl ProjectContext {

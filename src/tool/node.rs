@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use anyhow::Context as _;
 use serde::Deserialize;
 
 use crate::types::PackageManager;
@@ -34,10 +35,17 @@ pub(crate) fn detect_pm_from_field(dir: &Path) -> PackageManager {
 }
 
 /// Parse `package.json` and return all keys from the `"scripts"` object.
-pub(crate) fn extract_scripts(dir: &Path) -> Vec<String> {
-    parse_package_json(dir)
-        .and_then(|package_json| package_json.scripts)
-        .map_or_else(Vec::new, |scripts| scripts.into_keys().collect())
+pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let Some(content) = read_package_json(dir)? else {
+        return Ok(vec![]);
+    };
+
+    let package_json = serde_json::from_str::<PackageJson>(&content)
+        .with_context(|| format!("{} is not valid JSON", dir.join("package.json").display()))?;
+
+    Ok(package_json
+        .scripts
+        .map_or_else(Vec::new, |scripts| scripts.into_keys().collect()))
 }
 
 #[derive(Deserialize)]
@@ -48,6 +56,17 @@ struct PackageJson {
 }
 
 fn parse_package_json(dir: &Path) -> Option<PackageJson> {
-    let content = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let content = read_package_json(dir).ok()??;
     serde_json::from_str(&content).ok()
+}
+
+fn read_package_json(dir: &Path) -> anyhow::Result<Option<String>> {
+    let path = dir.join("package.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))
+        .map(Some)
 }

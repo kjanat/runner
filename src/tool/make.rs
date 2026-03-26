@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context as _;
+
 use crate::tool::files;
 
 const FILENAMES: &[&str] = &["Makefile", "GNUmakefile", "makefile"];
@@ -17,12 +19,12 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// Extracts lines matching `target:` while skipping recipe lines (tab-
 /// indented), special targets (`.PHONY` etc.), variable assignments (`:=`,
 /// `:::=`), and pattern rules (`%`).
-pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
-    let Some(content) =
-        files::find_first(dir, FILENAMES).and_then(|p| std::fs::read_to_string(p).ok())
-    else {
-        return vec![];
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let Some(path) = files::find_first(dir, FILENAMES) else {
+        return Ok(vec![]);
     };
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     let mut targets = Vec::new();
     for line in content.lines() {
         if line.starts_with('\t')
@@ -36,7 +38,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
             continue;
         };
         let after = &line[colon..];
-        if after.starts_with(":=") || after.starts_with(":::=") {
+        if after.starts_with("::=") || after.starts_with(":=") || after.starts_with(":::=") {
             continue;
         }
         let target = line[..colon].trim();
@@ -48,7 +50,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
             targets.push(target.to_string());
         }
     }
-    targets
+    Ok(targets)
 }
 
 /// `make <task> [args...]`
@@ -74,6 +76,9 @@ mod tests {
         )
         .expect("Makefile should be written");
 
-        assert_eq!(extract_tasks(dir.path()), ["build"]);
+        assert_eq!(
+            extract_tasks(dir.path()).expect("Makefile targets should parse"),
+            ["build"]
+        );
     }
 }

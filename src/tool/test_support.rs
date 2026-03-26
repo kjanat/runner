@@ -10,10 +10,19 @@ pub(crate) struct TempDir {
 
 impl TempDir {
     pub(crate) fn new(prefix: &str) -> Self {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("runner-{prefix}-{id}"));
-        fs::create_dir(&path).expect("temp dir should be created");
-        Self { path }
+        let pid = std::process::id();
+
+        for _ in 0..1024 {
+            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("runner-{prefix}-{pid}-{id}"));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self { path },
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => panic!("temp dir should be created: {e}"),
+            }
+        }
+
+        panic!("temp dir should be created")
     }
 
     pub(crate) fn path(&self) -> &Path {

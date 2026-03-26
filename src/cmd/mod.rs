@@ -3,6 +3,10 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use colored::Colorize;
+
+use crate::types::ProjectContext;
+
 mod clean;
 mod completions;
 mod exec;
@@ -25,6 +29,17 @@ fn configure_command(command: &mut Command, dir: &Path) {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+}
+
+fn print_warnings(ctx: &ProjectContext) {
+    for warning in &ctx.warnings {
+        eprintln!(
+            "{} {}: {}",
+            "warn:".yellow().bold(),
+            warning.source,
+            warning.detail,
+        );
+    }
 }
 
 #[cfg(test)]

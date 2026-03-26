@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context as _;
 use serde::Deserialize;
 
 use crate::tool::files;
@@ -16,12 +17,12 @@ pub(crate) fn detect(dir: &Path) -> bool {
 }
 
 /// Parse public recipe names from a justfile.
-pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     let Some(path) = files::find_first(dir, FILENAMES) else {
-        return vec![];
+        return Ok(vec![]);
     };
 
-    extract_tasks_with_just(&path).unwrap_or_else(|| extract_tasks_from_source(&path))
+    extract_tasks_with_just(&path).map_or_else(|| extract_tasks_from_source(&path), Ok)
 }
 
 fn extract_tasks_with_just(path: &Path) -> Option<Vec<String>> {
@@ -58,10 +59,9 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<String>> {
     Some(recipes)
 }
 
-fn extract_tasks_from_source(path: &Path) -> Vec<String> {
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return vec![];
-    };
+fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     let mut recipes = Vec::new();
     for line in content.lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
@@ -97,7 +97,7 @@ fn extract_tasks_from_source(path: &Path) -> Vec<String> {
             }
         }
     }
-    recipes
+    Ok(recipes)
 }
 
 /// `just <task> [args...]`
@@ -126,7 +126,10 @@ mod tests {
         )
         .expect("justfile should be written");
 
-        assert_eq!(extract_tasks_from_source(&path), ["build", "quiet"]);
+        assert_eq!(
+            extract_tasks_from_source(&path).expect("justfile source should parse"),
+            ["build", "quiet"]
+        );
     }
 
     #[test]
@@ -142,6 +145,9 @@ mod tests {
         )
         .expect("justfile should be written");
 
-        assert_eq!(extract_tasks(dir.path()), ["build", "quiet"]);
+        assert_eq!(
+            extract_tasks(dir.path()).expect("justfile tasks should parse"),
+            ["build", "quiet"]
+        );
     }
 }

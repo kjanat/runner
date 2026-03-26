@@ -6,6 +6,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context as _;
+
 use crate::tool::files;
 
 /// Priority order per the Taskfile specification.
@@ -29,12 +31,12 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// immediate child keys with the first detected task indentation.
 ///
 /// Does not use a full YAML parser — relies on consistent indentation.
-pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
-    let Some(content) =
-        files::find_first(dir, FILENAMES).and_then(|p| std::fs::read_to_string(p).ok())
-    else {
-        return vec![];
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let Some(path) = files::find_first(dir, FILENAMES) else {
+        return Ok(vec![]);
     };
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
     let mut tasks = Vec::new();
     let mut in_tasks = false;
     let mut task_indent: Option<String> = None;
@@ -81,7 +83,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
             }
         }
     }
-    tasks
+    Ok(tasks)
 }
 
 /// `task <task> [args...]`
@@ -108,6 +110,9 @@ mod tests {
         )
         .expect("Taskfile.yml should be written");
 
-        assert_eq!(extract_tasks(dir.path()), ["build", "test"]);
+        assert_eq!(
+            extract_tasks(dir.path()).expect("Taskfile tasks should parse"),
+            ["build", "test"]
+        );
     }
 }

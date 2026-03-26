@@ -10,6 +10,8 @@ use crate::types::{ProjectContext, version_matches};
 /// Display detected package managers, task runners, Node version, monorepo
 /// status, and available tasks.
 pub(crate) fn info(ctx: &ProjectContext) {
+    super::print_warnings(ctx);
+
     println!("{}", "runner".bold());
     println!();
 

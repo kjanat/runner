@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context as _;
 use serde::Deserialize;
 
 /// Directories produced by Deno.
@@ -15,7 +16,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 }
 
 /// Parse task names from `deno.json` / `deno.jsonc`.
-pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -25,15 +26,13 @@ pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
     } else if dir.join("deno.jsonc").exists() {
         dir.join("deno.jsonc")
     } else {
-        return vec![];
+        return Ok(vec![]);
     };
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return vec![];
-    };
-    let Ok(d) = json5::from_str::<Partial>(&content) else {
-        return vec![];
-    };
-    d.tasks.map_or(vec![], |t| t.into_keys().collect())
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let d = json5::from_str::<Partial>(&content)
+        .with_context(|| format!("{} is not valid JSON/JSONC", path.display()))?;
+    Ok(d.tasks.map_or_else(Vec::new, |t| t.into_keys().collect()))
 }
 
 /// `deno task <task> [args...]`
@@ -82,7 +81,7 @@ mod tests {
         )
         .expect("deno.jsonc should be written");
 
-        let mut tasks = extract_tasks(dir.path());
+        let mut tasks = extract_tasks(dir.path()).expect("deno tasks should parse");
         tasks.sort_unstable();
 
         assert_eq!(tasks, ["build", "test"]);

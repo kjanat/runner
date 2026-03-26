@@ -7,7 +7,9 @@ use std::process;
 use serde::Deserialize;
 
 use crate::tool;
-use crate::types::{NodeVersion, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+use crate::types::{
+    DetectionWarning, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+};
 
 /// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
 ///
@@ -26,6 +28,7 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
         node_version: None,
         current_node: None,
         is_monorepo: false,
+        warnings: Vec::new(),
     };
 
     detect_package_managers(dir, &mut ctx);
@@ -230,46 +233,40 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 /// unnecessary filesystem reads.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     if ctx.package_managers.iter().any(|pm| pm.is_node()) {
-        push_tasks(
-            &mut ctx.tasks,
+        push_extracted_tasks(
+            ctx,
             TaskSource::PackageJson,
             tool::node::extract_scripts(dir),
         );
     }
     if ctx.task_runners.contains(&TaskRunner::Turbo) {
-        push_tasks(
-            &mut ctx.tasks,
-            TaskSource::TurboJson,
-            tool::turbo::extract_tasks(dir),
-        );
+        push_extracted_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Make) {
-        push_tasks(
-            &mut ctx.tasks,
-            TaskSource::Makefile,
-            tool::make::extract_tasks(dir),
-        );
+        push_extracted_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Just) {
-        push_tasks(
-            &mut ctx.tasks,
-            TaskSource::Justfile,
-            tool::just::extract_tasks(dir),
-        );
+        push_extracted_tasks(ctx, TaskSource::Justfile, tool::just::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::GoTask) {
-        push_tasks(
-            &mut ctx.tasks,
-            TaskSource::Taskfile,
-            tool::go_task::extract_tasks(dir),
-        );
+        push_extracted_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
     }
     if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_tasks(
-            &mut ctx.tasks,
-            TaskSource::DenoJson,
-            tool::deno::extract_tasks(dir),
-        );
+        push_extracted_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
+    }
+}
+
+fn push_extracted_tasks(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<String>>,
+) {
+    match result {
+        Ok(names) => push_tasks(&mut ctx.tasks, source, names),
+        Err(err) => ctx.warnings.push(DetectionWarning {
+            source: source.label(),
+            detail: format!("failed to read tasks: {err:#}"),
+        }),
     }
 }
 
@@ -282,7 +279,11 @@ fn push_tasks(tasks: &mut Vec<Task>, source: TaskSource, names: Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::parse_tool_versions_node;
+    use crate::detect::detect;
+    use crate::tool::test_support::TempDir;
 
     #[test]
     fn parses_tool_versions_node_entry() {
@@ -300,5 +301,16 @@ mod tests {
             parse_tool_versions_node("nodejs 20.11.1 # pinned for ci"),
             Some("20.11.1")
         );
+    }
+
+    #[test]
+    fn detect_records_warnings_for_invalid_task_configs() {
+        let dir = TempDir::new("detect-warning");
+        fs::write(dir.path().join("turbo.json"), "{").expect("turbo.json should be written");
+
+        let ctx = detect(dir.path());
+
+        assert_eq!(ctx.warnings.len(), 1);
+        assert_eq!(ctx.warnings[0].source, "turbo.json");
     }
 }

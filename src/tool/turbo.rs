@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+use anyhow::Context as _;
 use serde::Deserialize;
 
 /// Directories produced by Turborepo.
@@ -18,25 +19,27 @@ pub(crate) fn detect(dir: &Path) -> bool {
 ///
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Scoped
 /// tasks like `"my-app#build"` are filtered out.
-pub(crate) fn extract_tasks(dir: &Path) -> Vec<String> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
         pipeline: Option<HashMap<String, serde_json::Value>>,
     }
-    let Ok(content) = std::fs::read_to_string(dir.join("turbo.json")) else {
-        return vec![];
-    };
-    let Ok(p) = serde_json::from_str::<Partial>(&content) else {
-        return vec![];
-    };
+    let path = dir.join("turbo.json");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let p = serde_json::from_str::<Partial>(&content)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
     let Some(tasks) = p.tasks.or(p.pipeline) else {
-        return vec![];
+        return Ok(vec![]);
     };
-    tasks
+    Ok(tasks
         .into_keys()
         .filter(|name| !name.contains('#'))
-        .collect()
+        .collect())
 }
 
 /// `turbo run <task> [-- args...]`

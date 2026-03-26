@@ -158,6 +158,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            warnings: Vec::new(),
         }
     }
 
