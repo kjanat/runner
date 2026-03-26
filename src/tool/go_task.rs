@@ -57,12 +57,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
             let stripped = task_indent
                 .as_deref()
                 .and_then(|expected_indent| line.strip_prefix(expected_indent))
-                .or_else(|| {
-                    (((indent.chars().filter(|ch| *ch == ' ').count() >= 2)
-                        || indent.contains('\t'))
-                        && !indent.is_empty())
-                    .then_some(&line[indent.len()..])
-                });
+                .or_else(|| (!indent.is_empty()).then_some(&line[indent.len()..]));
             if let Some(rest) = stripped
                 && !rest.starts_with(' ')
                 && !rest.starts_with('\t')
@@ -107,6 +102,22 @@ mod tests {
         fs::write(
             dir.path().join("Taskfile.yml"),
             "version: '3'\ntasks:\n    build:\n      cmds:\n        - cargo build\n    test:\n      cmds:\n        - cargo test\n",
+        )
+        .expect("Taskfile.yml should be written");
+
+        assert_eq!(
+            extract_tasks(dir.path()).expect("Taskfile tasks should parse"),
+            ["build", "test"]
+        );
+    }
+
+    #[test]
+    fn extract_tasks_supports_single_space_indentation() {
+        let dir = TempDir::new("go-task-single-indent");
+
+        fs::write(
+            dir.path().join("Taskfile.yml"),
+            "version: '3'\ntasks:\n build:\n  cmds:\n   - cargo build\n test:\n  cmds:\n   - cargo test\n",
         )
         .expect("Taskfile.yml should be written");
 

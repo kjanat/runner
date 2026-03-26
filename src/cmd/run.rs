@@ -39,8 +39,7 @@ pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i
 
     let mut cmd = build_run_command(ctx, entry.source, task, args)?;
     super::configure_command(&mut cmd, &ctx.root);
-    let status = cmd.status()?;
-    Ok(status.code().unwrap_or(1))
+    Ok(super::exit_code(cmd.status()?))
 }
 
 /// Build a [`Command`] for the given task source and package manager.

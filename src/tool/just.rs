@@ -63,26 +63,33 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut recipes = Vec::new();
+    let mut saw_private_attr = false;
     for line in content.lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
             continue;
         }
         let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("set ")
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            saw_private_attr |= is_private_attr(trimmed);
+            continue;
+        }
+        if trimmed.starts_with("set ")
             || trimmed.starts_with("alias ")
             || trimmed.starts_with("import ")
             || trimmed.starts_with("include ")
             || trimmed.starts_with("mod ")
             || trimmed.starts_with("export ")
-            || trimmed.starts_with('[')
         {
+            saw_private_attr = false;
             continue;
         }
         let recipe = trimmed.strip_prefix('@').unwrap_or(trimmed);
         if let Some(colon) = recipe.find(':') {
             if recipe[colon..].starts_with(":=") {
+                saw_private_attr = false;
                 continue;
             }
             let before = &recipe[..colon];
@@ -92,12 +99,21 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
                 && name
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                && !saw_private_attr
             {
                 recipes.push(name.to_string());
             }
         }
+        saw_private_attr = false;
     }
     Ok(recipes)
+}
+
+fn is_private_attr(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .is_some_and(|attr| attr.trim_start().starts_with("private"))
 }
 
 /// `just <task> [args...]`
@@ -122,7 +138,7 @@ mod tests {
 
         fs::write(
             &path,
-            "set shell := [\"bash\", \"-cu\"]\ninclude \"common.just\"\n[private]\nfoo := \"bar\"\n\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\n@quiet name=\"world\":\n  echo hi {{name}}\n",
+            "set shell := [\"bash\", \"-cu\"]\ninclude \"common.just\"\n[private]\nfoo := \"bar\"\n\n[private]\nsecret:\n  echo nope\n\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\n@quiet name=\"world\":\n  echo hi {{name}}\n",
         )
         .expect("justfile should be written");
 

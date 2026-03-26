@@ -43,15 +43,14 @@ pub(crate) fn clean(
 
     for t in &targets {
         let path = ctx.root.join(t);
-        let result = if path.is_dir() {
-            fs::remove_dir_all(&path)
-        } else {
-            fs::remove_file(&path)
-        };
-        match result {
-            Ok(()) => println!("  {} {}", "removed".red(), t),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        if path.is_dir() {
+            match fs::remove_dir_all(&path) {
+                Ok(()) => println!("  {} {}", "removed".red(), t),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        } else if path.exists() {
+            eprintln!("  {} {} (not a dir)", "skipped".yellow(), t);
         }
     }
 
@@ -135,7 +134,7 @@ fn push_if_exists(
     name: &'static str,
     root: &Path,
 ) {
-    if root.join(name).exists() && seen.insert(name) {
+    if root.join(name).is_dir() && seen.insert(name) {
         targets.push(name);
     }
 }
@@ -196,5 +195,16 @@ mod tests {
         let targets = collect_targets(&ctx, false);
 
         assert_eq!(targets, [".turbo"]);
+    }
+
+    #[test]
+    fn collect_targets_skips_files_named_like_artifact_dirs() {
+        let dir = TempDir::new("clean-file-target");
+        fs::write(dir.path().join("node_modules"), "nope")
+            .expect("node_modules file should be written");
+
+        let targets = collect_targets(&context(dir.path()), false);
+
+        assert!(targets.is_empty());
     }
 }

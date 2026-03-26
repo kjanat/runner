@@ -36,6 +36,5 @@ pub(crate) fn exec(ctx: &ProjectContext, args: &[String]) -> Result<i32> {
 
     super::configure_command(&mut cmd, &ctx.root);
 
-    let status = cmd.status()?;
-    Ok(status.code().unwrap_or(1))
+    Ok(super::exit_code(cmd.status()?))
 }

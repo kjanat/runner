@@ -8,6 +8,24 @@ use anyhow::Context as _;
 use crate::tool::files;
 
 const FILENAMES: &[&str] = &["Makefile", "GNUmakefile", "makefile"];
+const SPECIAL_TARGETS: &[&str] = &[
+    ".PHONY",
+    ".SUFFIXES",
+    ".DEFAULT",
+    ".PRECIOUS",
+    ".INTERMEDIATE",
+    ".NOTINTERMEDIATE",
+    ".SECONDARY",
+    ".SECONDEXPANSION",
+    ".DELETE_ON_ERROR",
+    ".SILENT",
+    ".IGNORE",
+    ".LOW_RESOLUTION_TIME",
+    ".EXPORT_ALL_VARIABLES",
+    ".NOTPARALLEL",
+    ".ONESHELL",
+    ".POSIX",
+];
 
 /// Detected via `Makefile`, `GNUmakefile`, or `makefile`.
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -27,11 +45,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut targets = Vec::new();
     for line in content.lines() {
-        if line.starts_with('\t')
-            || line.starts_with(' ')
-            || line.starts_with('#')
-            || line.starts_with('.')
-        {
+        if line.starts_with('\t') || line.starts_with(' ') || line.starts_with('#') {
             continue;
         }
         let Some(colon) = line.find(':') else {
@@ -42,6 +56,9 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
             continue;
         }
         let target = line[..colon].trim();
+        if SPECIAL_TARGETS.contains(&target) || is_suffix_rule(target) {
+            continue;
+        }
         if !target.is_empty()
             && !target.contains(' ')
             && !target.contains('$')
@@ -51,6 +68,10 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
         }
     }
     Ok(targets)
+}
+
+fn is_suffix_rule(target: &str) -> bool {
+    target.starts_with('.') && target[1..].contains('.')
 }
 
 /// `make <task> [args...]`
@@ -79,6 +100,21 @@ mod tests {
         assert_eq!(
             extract_tasks(dir.path()).expect("Makefile targets should parse"),
             ["build"]
+        );
+    }
+
+    #[test]
+    fn extract_tasks_keeps_dot_prefixed_targets() {
+        let dir = TempDir::new("make-dot-target");
+        fs::write(
+            dir.path().join("Makefile"),
+            ".PHONY: build\n.DELETE_ON_ERROR:\n.NOTPARALLEL:\n.c.o:\n.dev:\n\t@echo hi\n",
+        )
+        .expect("Makefile should be written");
+
+        assert_eq!(
+            extract_tasks(dir.path()).expect("Makefile targets should parse"),
+            [".dev"]
         );
     }
 }
