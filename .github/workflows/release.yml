@@ -1,0 +1,84 @@
+name: release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+    tags:
+      - v*
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D clippy::all
+
+      - name: cargo test
+        run: cargo test
+
+  create-release:
+    name: create draft release
+    needs: verify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: create github release
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          changelog: CHANGELOG.md
+          draft: true
+          branch: ^master$
+
+  upload-assets:
+    name: upload ${{ matrix.target }}
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: build and upload binaries
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          bin: runner,run
+          target: ${{ matrix.target }}
+          build-tool: cross
+          archive: runner-$tag-$target
+          tar: unix
+          zip: none
+          checksum: sha256
+          include: README.md,LICENSE
+          locked: true
