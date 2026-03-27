@@ -94,19 +94,20 @@ main() {
 	target="$(resolve_target)"
 
 	local asset="runner-${version}-${target}.tar.gz"
+	local checksum_asset="runner-${version}-${target}.sha256"
 	local base_url="https://github.com/${REPO}/releases/download/${version}"
 
 	local tmp_dir
 	tmp_dir="$(mktemp -d)"
-	trap 'rm -rf "${tmp_dir}"' EXIT
+	trap '[[ -n "${tmp_dir:-}" ]] && rm -rf "${tmp_dir}"' EXIT
 
 	printf '→ downloading %s\n' "${asset}"
 	curl -fL --retry 3 --retry-delay 1 -o "${tmp_dir}/${asset}" "${base_url}/${asset}"
-	curl -fL --retry 3 --retry-delay 1 -o "${tmp_dir}/${asset}.sha256" "${base_url}/${asset}.sha256"
+	curl -fL --retry 3 --retry-delay 1 -o "${tmp_dir}/${checksum_asset}" "${base_url}/${checksum_asset}"
 
 	(
 		cd "${tmp_dir}"
-		sha256sum -c "${asset}.sha256"
+		sha256sum -c "${checksum_asset}"
 	)
 
 	tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
