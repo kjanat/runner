@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `install.sh` convenience installer for Linux release assets, including
+  latest/pinned version resolution, checksum verification, and arch selection.
+
+### Changed
+
+- Make installer destination fallback explicit as nested precedence:
+  `RUNNER_INSTALL_DIR` -> `XDG_BIN_HOME` -> `~/.local/bin`.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

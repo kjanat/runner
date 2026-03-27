@@ -45,11 +45,14 @@ resolve_latest_version() {
 }
 
 resolve_target() {
-	case "$(uname -m)" in
+	local arch
+	arch="$(uname -m)"
+
+	case "${arch}" in
 	x86_64) printf 'x86_64-unknown-linux-musl\n' ;;
 	aarch64 | arm64) printf 'aarch64-unknown-linux-musl\n' ;;
 	*)
-		printf 'error: unsupported architecture: %s\n' "$(uname -m)" >&2
+		printf 'error: unsupported architecture: %s\n' "${arch}" >&2
 		exit 1
 		;;
 	esac
@@ -66,7 +69,10 @@ main() {
 		exit 1
 	fi
 
-	if [[ "$(uname -s)" != "Linux" ]]; then
+	local os_name
+	os_name="$(uname -s)"
+
+	if [[ "${os_name}" != "Linux" ]]; then
 		printf 'error: install.sh currently supports Linux only\n' >&2
 		exit 1
 	fi
