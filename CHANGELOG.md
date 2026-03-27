@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
 ## [0.1.0] - 2026-03-27
 
 ### Added

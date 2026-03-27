@@ -47,6 +47,45 @@ cargo install --path .
 cargo install --git=https://github.com/kjanat/runner/ runner
 ```
 
+Or use the convenience installer script (latest or pinned version):
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
+bash install.sh          # latest release
+bash install.sh v0.1.0   # pinned release
+
+# Optional: custom destination dir
+RUNNER_INSTALL_DIR="$HOME/.local/bin" bash install.sh
+
+# Install dir precedence:
+# RUNNER_INSTALL_DIR -> XDG_BIN_HOME -> ~/.local/bin
+```
+
+Manual release-asset install (Linux x86_64/aarch64):
+
+```sh
+VERSION="v0.1.0"
+ARCH="$(uname -m)"
+
+case "${ARCH}" in
+  x86_64) TARGET="x86_64-unknown-linux-musl" ;;
+  aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
+  *)
+    echo "unsupported arch: ${ARCH}" >&2
+    exit 1
+    ;;
+esac
+
+BASE_URL="https://github.com/kjanat/runner/releases/download/${VERSION}"
+ASSET="runner-${VERSION}-${TARGET}.tar.gz"
+
+curl -fsSLO "${BASE_URL}/${ASSET}"
+curl -fsSLO "${BASE_URL}/${ASSET}.sha256"
+sha256sum -c "${ASSET}.sha256"
+tar -xzf "${ASSET}"
+install -m 0755 runner run ~/.local/bin/
+```
+
 Or use the dev wrapper:
 
 ```sh
