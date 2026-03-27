@@ -52,7 +52,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           changelog: CHANGELOG.md
           draft: true
-          branch: ^master$
+          branch: master
 
   upload-assets:
     name: upload ${{ matrix.target }}
