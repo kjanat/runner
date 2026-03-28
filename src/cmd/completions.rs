@@ -1,21 +1,63 @@
-//! `runner completions` — generate shell completion scripts.
+//! `runner completions` — generate dynamic shell completion scripts.
 
 use std::ffi::OsString;
-use std::io;
+use std::io::Write as _;
 use std::path::Path;
 
-use clap::CommandFactory;
+use anyhow::{Context as _, Result, bail};
+use clap_complete::aot::Shell;
 
-/// Write shell completions for the given `shell` to stdout.
-pub(crate) fn completions(shell: clap_complete::Shell) {
+/// Write the dynamic completion registration script to stdout.
+///
+/// Resolves the target shell from the explicit argument or `$SHELL`, then
+/// spawns the current binary with `COMPLETE=<shell>` set, which activates
+/// [`clap_complete::CompleteEnv`] and emits the registration script. This
+/// avoids `unsafe` env-var mutation in our own process.
+pub(crate) fn completions(shell: Option<Shell>) -> Result<()> {
+    let shell = shell.or_else(detect_shell).context(
+        "could not detect shell — set $SHELL or pass explicitly: runner completions zsh",
+    )?;
+
     let bin_name = completion_bin_name(std::env::args_os().next());
+    let shell_name = env_shell_name(shell);
 
-    clap_complete::generate(
-        shell,
-        &mut crate::cli::Cli::command(),
-        bin_name,
-        &mut io::stdout(),
-    );
+    let exe = std::env::current_exe().context("failed to resolve current executable")?;
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.env("COMPLETE", shell_name);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        cmd.arg0(&bin_name);
+    }
+
+    let output = cmd
+        .output()
+        .context("failed to spawn completion subprocess")?;
+
+    if !output.status.success() && output.stdout.is_empty() {
+        bail!("completion subprocess failed");
+    }
+
+    std::io::stdout()
+        .write_all(&output.stdout)
+        .context("failed to write completion script")?;
+
+    Ok(())
+}
+
+/// Detect the current shell from `$SHELL`.
+fn detect_shell() -> Option<Shell> {
+    let raw = std::env::var_os("SHELL")?;
+    let stem = Path::new(&raw).file_stem()?.to_string_lossy().into_owned();
+    match stem.as_str() {
+        "bash" => Some(Shell::Bash),
+        "zsh" => Some(Shell::Zsh),
+        "fish" => Some(Shell::Fish),
+        "elvish" => Some(Shell::Elvish),
+        "pwsh" | "powershell" => Some(Shell::PowerShell),
+        _ => None,
+    }
 }
 
 fn completion_bin_name(arg0: Option<OsString>) -> String {
@@ -26,6 +68,16 @@ fn completion_bin_name(arg0: Option<OsString>) -> String {
     })
     .filter(|name| !name.is_empty())
     .unwrap_or_else(|| "runner".to_string())
+}
+
+const fn env_shell_name(shell: Shell) -> &'static str {
+    match shell {
+        Shell::Elvish => "elvish",
+        Shell::Fish => "fish",
+        Shell::PowerShell => "powershell",
+        Shell::Zsh => "zsh",
+        _ => "bash",
+    }
 }
 
 #[cfg(test)]

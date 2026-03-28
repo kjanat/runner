@@ -233,47 +233,62 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 /// unnecessary filesystem reads.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     if ctx.package_managers.iter().any(|pm| pm.is_node()) {
-        push_extracted_tasks(
+        push_named_tasks(
             ctx,
             TaskSource::PackageJson,
             tool::node::extract_scripts(dir),
         );
     }
     if ctx.task_runners.contains(&TaskRunner::Turbo) {
-        push_extracted_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
+        push_named_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Make) {
-        push_extracted_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
+        push_named_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Just) {
-        push_extracted_tasks(ctx, TaskSource::Justfile, tool::just::extract_tasks(dir));
+        push_described_tasks(ctx, TaskSource::Justfile, tool::just::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::GoTask) {
-        push_extracted_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
+        push_described_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
     }
     if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_extracted_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
+        push_named_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
     }
 }
 
-fn push_extracted_tasks(
+/// Append tasks from sources that only provide names (no descriptions).
+fn push_named_tasks(
     ctx: &mut ProjectContext,
     source: TaskSource,
     result: anyhow::Result<Vec<String>>,
 ) {
+    push_described_tasks(
+        ctx,
+        source,
+        result.map(|names| names.into_iter().map(|name| (name, None)).collect()),
+    );
+}
+
+/// Append tasks from sources that provide names with optional descriptions.
+fn push_described_tasks(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<(String, Option<String>)>>,
+) {
     match result {
-        Ok(names) => push_tasks(&mut ctx.tasks, source, names),
+        Ok(entries) => {
+            for (name, description) in entries {
+                ctx.tasks.push(Task {
+                    name,
+                    source,
+                    description,
+                });
+            }
+        }
         Err(err) => ctx.warnings.push(DetectionWarning {
             source: source.label(),
             detail: format!("failed to read tasks: {err:#}"),
         }),
-    }
-}
-
-/// Convert a vec of task names into [`Task`] structs and append them.
-fn push_tasks(tasks: &mut Vec<Task>, source: TaskSource, names: Vec<String>) {
-    for name in names {
-        tasks.push(Task { name, source });
     }
 }
 

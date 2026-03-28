@@ -55,6 +55,9 @@ pub(crate) struct Task {
     pub name: String,
     /// Which config file this task was extracted from.
     pub source: TaskSource,
+    /// Optional human-readable description (e.g. justfile doc comment,
+    /// go-task `desc` field).
+    pub description: Option<String>,
 }
 
 /// Identifies the config file a [`Task`] was extracted from.

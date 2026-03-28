@@ -133,6 +133,7 @@ mod tests {
             vec![Task {
                 name: "test".to_string(),
                 source: TaskSource::PackageJson,
+                description: None,
             }],
         );
 

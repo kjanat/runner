@@ -28,11 +28,11 @@ pub(crate) fn detect(dir: &Path) -> bool {
     files::find_first(dir, FILENAMES).is_some()
 }
 
-/// Extract task names.
+/// Extract task names with optional descriptions.
 ///
 /// Prefers `task --list-all --json` when available for parity with go-task's
 /// own file resolution behavior, then falls back to lightweight source parsing.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     if let Some(tasks) = extract_tasks_with_task(dir) {
         return Ok(tasks);
     }
@@ -40,7 +40,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     extract_tasks_from_source(dir)
 }
 
-fn extract_tasks_with_task(dir: &Path) -> Option<Vec<String>> {
+fn extract_tasks_with_task(dir: &Path) -> Option<Vec<(String, Option<String>)>> {
     let output = Command::new("task")
         .arg("--list-all")
         .arg("--json")
@@ -55,7 +55,7 @@ fn extract_tasks_with_task(dir: &Path) -> Option<Vec<String>> {
     parse_task_list_json(&output.stdout)
 }
 
-fn parse_task_list_json(stdout: &[u8]) -> Option<Vec<String>> {
+fn parse_task_list_json(stdout: &[u8]) -> Option<Vec<(String, Option<String>)>> {
     #[derive(Deserialize)]
     struct ListOutput {
         tasks: Vec<ListTask>,
@@ -64,6 +64,8 @@ fn parse_task_list_json(stdout: &[u8]) -> Option<Vec<String>> {
     #[derive(Deserialize)]
     struct ListTask {
         name: String,
+        #[serde(default)]
+        desc: String,
     }
 
     let output = serde_json::from_slice::<ListOutput>(stdout).ok()?;
@@ -71,19 +73,22 @@ fn parse_task_list_json(stdout: &[u8]) -> Option<Vec<String>> {
         output
             .tasks
             .into_iter()
-            .map(|task| task.name)
-            .filter(|name| !name.is_empty())
+            .filter(|task| !task.name.is_empty())
+            .map(|task| {
+                let desc = (!task.desc.is_empty()).then_some(task.desc);
+                (task.name, desc)
+            })
             .collect(),
     )
 }
 
-fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<String>> {
+fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let Some(path) = files::find_first(dir, FILENAMES) else {
         return Ok(vec![]);
     };
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let mut tasks = Vec::new();
+    let mut tasks: Vec<(String, Option<String>)> = Vec::new();
     let mut in_tasks = false;
     let mut task_indent: Option<String> = None;
     for line in content.lines() {
@@ -119,7 +124,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<String>> {
                         .chars()
                         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
                 {
-                    tasks.push(name.to_string());
+                    tasks.push((name.to_string(), None));
                 }
             }
         }
@@ -142,13 +147,19 @@ mod tests {
     use crate::tool::test_support::TempDir;
 
     #[test]
-    fn parse_task_list_json_extracts_names() {
+    fn parse_task_list_json_extracts_names_and_descriptions() {
         let tasks = parse_task_list_json(
-            br#"{"tasks":[{"name":"default"},{"name":"test"}],"location":"/tmp/Taskfile.yml"}"#,
+            br#"{"tasks":[{"name":"default","desc":"Run default"},{"name":"test","desc":""}],"location":"/tmp/Taskfile.yml"}"#,
         )
         .expect("task --json output should parse");
 
-        assert_eq!(tasks, ["default", "test"]);
+        assert_eq!(
+            tasks,
+            [
+                ("default".to_string(), Some("Run default".to_string())),
+                ("test".to_string(), None),
+            ]
+        );
     }
 
     #[test]
@@ -158,7 +169,8 @@ mod tests {
         )
         .expect("task --json output should parse");
 
-        assert_eq!(tasks, ["lint"]);
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["lint"]);
     }
 
     #[test]
@@ -171,10 +183,9 @@ mod tests {
         )
         .expect("Taskfile.yml should be written");
 
-        assert_eq!(
-            extract_tasks(dir.path()).expect("Taskfile tasks should parse"),
-            ["build", "test"]
-        );
+        let tasks = extract_tasks(dir.path()).expect("Taskfile tasks should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["build", "test"]);
     }
 
     #[test]
@@ -187,9 +198,8 @@ mod tests {
         )
         .expect("Taskfile.yml should be written");
 
-        assert_eq!(
-            extract_tasks(dir.path()).expect("Taskfile tasks should parse"),
-            ["build", "test"]
-        );
+        let tasks = extract_tasks(dir.path()).expect("Taskfile tasks should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["build", "test"]);
     }
 }

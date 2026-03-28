@@ -16,8 +16,8 @@ pub(crate) fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
 
-/// Parse public recipe names from a justfile.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+/// Parse public recipe names (with optional doc comments) from a justfile.
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let Some(path) = find_file(dir) else {
         return Ok(vec![]);
     };
@@ -25,7 +25,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     extract_tasks_with_just(&path).map_or_else(|| extract_tasks_from_source(&path), Ok)
 }
 
-fn extract_tasks_with_just(path: &Path) -> Option<Vec<String>> {
+fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>> {
     #[derive(Deserialize)]
     struct Dump {
         recipes: HashMap<String, Recipe>,
@@ -34,6 +34,7 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<String>> {
     #[derive(Deserialize)]
     struct Recipe {
         private: bool,
+        doc: Option<String>,
     }
 
     let output = Command::new("just")
@@ -50,12 +51,12 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<String>> {
     }
 
     let dump = serde_json::from_slice::<Dump>(&output.stdout).ok()?;
-    let mut recipes: Vec<String> = dump
+    let mut recipes: Vec<(String, Option<String>)> = dump
         .recipes
         .into_iter()
-        .filter_map(|(name, recipe)| (!recipe.private).then_some(name))
+        .filter_map(|(name, recipe)| (!recipe.private).then_some((name, recipe.doc)))
         .collect();
-    recipes.sort_unstable();
+    recipes.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     Some(recipes)
 }
 
@@ -84,17 +85,23 @@ pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
     paths.into_iter().next()
 }
 
-fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
+fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut recipes = Vec::new();
     let mut saw_private_attr = false;
+    let mut last_doc: Option<String> = None;
     for line in content.lines() {
         if line.starts_with(' ') || line.starts_with('\t') {
             continue;
         }
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
+            last_doc = None;
+            continue;
+        }
+        if let Some(comment) = trimmed.strip_prefix('#') {
+            last_doc = Some(comment.trim().to_string());
             continue;
         }
         if trimmed.starts_with('[') {
@@ -109,12 +116,14 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
             || trimmed.starts_with("export ")
         {
             saw_private_attr = false;
+            last_doc = None;
             continue;
         }
         let recipe = trimmed.strip_prefix('@').unwrap_or(trimmed);
         if let Some(colon) = recipe.find(':') {
             if recipe[colon..].starts_with(":=") {
                 saw_private_attr = false;
+                last_doc = None;
                 continue;
             }
             let before = &recipe[..colon];
@@ -126,10 +135,12 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<String>> {
                     .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
                 && !saw_private_attr
             {
-                recipes.push(name.to_string());
+                let doc = last_doc.take().filter(|d| !d.is_empty());
+                recipes.push((name.to_string(), doc));
             }
         }
         saw_private_attr = false;
+        last_doc = None;
     }
     Ok(recipes)
 }
@@ -171,10 +182,9 @@ mod tests {
         )
         .expect("justfile should be written");
 
-        assert_eq!(
-            extract_tasks_from_source(&path).expect("justfile source should parse"),
-            ["build", "quiet"]
-        );
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["build", "quiet"]);
     }
 
     #[test]
@@ -197,10 +207,9 @@ mod tests {
         )
         .expect("justfile should be written");
 
-        assert_eq!(
-            extract_tasks(dir.path()).expect("justfile tasks should parse"),
-            ["build", "quiet"]
-        );
+        let tasks = extract_tasks(dir.path()).expect("justfile tasks should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["build", "quiet"]);
     }
 
     #[test]

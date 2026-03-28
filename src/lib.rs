@@ -68,6 +68,10 @@ use clap::{CommandFactory, FromArgMatches};
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
+/// When the `COMPLETE` environment variable is set (e.g. `COMPLETE=zsh`),
+/// this function writes shell completions to stdout and exits without
+/// running the normal command dispatch.
+///
 /// # Errors
 ///
 /// Returns an error when reading current dir fails, project detection fails,
@@ -76,6 +80,7 @@ use clap::{CommandFactory, FromArgMatches};
 /// Argument parsing/help/version flows are rendered by clap and returned as an
 /// exit code instead of terminating the host process.
 pub fn run_from_env() -> Result<i32> {
+    clap_complete::CompleteEnv::with_factory(cli::Cli::command).complete();
     run_from_args(std::env::args_os())
 }
 
@@ -186,7 +191,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }
         Some(cli::Command::Exec { args }) => cmd::exec(&ctx, &args),
         Some(cli::Command::Completions { shell }) => {
-            cmd::completions(shell);
+            cmd::completions(shell)?;
             Ok(0)
         }
     }
