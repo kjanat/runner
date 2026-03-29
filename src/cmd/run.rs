@@ -8,6 +8,19 @@ use colored::Colorize;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskSource};
 
+/// Parse `"source:task"` syntax. Returns `(Some(source), task_name)` if the
+/// prefix before the first `:` is a known source label, or `(None, original)`
+/// for bare names and names with colons that don't match a source.
+fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
+    if let Some(colon) = input.find(':') {
+        let prefix = &input[..colon];
+        if let Some(source) = TaskSource::from_label(prefix) {
+            return (Some(source), &input[colon + 1..]);
+        }
+    }
+    (None, input)
+}
+
 /// Look up `task` across all detected sources, pick the highest-priority
 /// match, build the appropriate command, and execute it.
 ///
@@ -18,33 +31,42 @@ use crate::types::{PackageManager, ProjectContext, TaskSource};
 pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i32> {
     super::print_warnings(ctx);
 
-    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task).collect();
+    let (qualifier, task_name) = parse_qualified_task(task);
+
+    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
     if found.is_empty() {
-        if let Some(code) = run_bun_test_fallback(ctx, task, args)? {
+        if let Some(code) = run_bun_test_fallback(ctx, task_name, args)? {
             return Ok(code);
         }
 
         bail!("task {task:?} not found. Run `runner list` to see available tasks.");
     }
 
-    // Priority: turbo > package.json > first match (insertion order)
-    let entry = found
-        .iter()
-        .find(|t| t.source == TaskSource::TurboJson)
-        .or_else(|| found.iter().find(|t| t.source == TaskSource::PackageJson))
-        .or_else(|| found.first())
-        .unwrap();
+    let entry = if let Some(source) = qualifier {
+        found
+            .iter()
+            .find(|t| t.source == source)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("task {task_name:?} not found in {}", source.label()))?
+    } else {
+        found
+            .iter()
+            .find(|t| t.source == TaskSource::TurboJson)
+            .or_else(|| found.iter().find(|t| t.source == TaskSource::PackageJson))
+            .or_else(|| found.first())
+            .unwrap()
+    };
 
     eprintln!(
         "{} {} {} {}",
         "→".dimmed(),
         entry.source.label().dimmed(),
-        task.bold(),
+        task_name.bold(),
         args.join(" ").dimmed(),
     );
 
-    let mut cmd = build_run_command(ctx, entry.source, task, args)?;
+    let mut cmd = build_run_command(ctx, entry.source, task_name, args)?;
     super::configure_command(&mut cmd, &ctx.root);
     Ok(super::exit_code(cmd.status()?))
 }
@@ -116,8 +138,43 @@ fn build_run_command(
 mod tests {
     use std::path::PathBuf;
 
-    use super::should_use_bun_test_fallback;
+    use super::{parse_qualified_task, should_use_bun_test_fallback};
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+
+    #[test]
+    fn parse_qualified_task_splits_source_and_name() {
+        let (source, name) = parse_qualified_task("justfile:fmt");
+        assert_eq!(source, Some(TaskSource::Justfile));
+        assert_eq!(name, "fmt");
+    }
+
+    #[test]
+    fn parse_qualified_task_returns_bare_name() {
+        let (source, name) = parse_qualified_task("build");
+        assert_eq!(source, None);
+        assert_eq!(name, "build");
+    }
+
+    #[test]
+    fn parse_qualified_task_handles_unknown_source() {
+        let (source, name) = parse_qualified_task("unknown:build");
+        assert_eq!(source, None);
+        assert_eq!(name, "unknown:build");
+    }
+
+    #[test]
+    fn parse_qualified_task_with_colons_in_task_name() {
+        let (source, name) = parse_qualified_task("package.json:helix:sync");
+        assert_eq!(source, Some(TaskSource::PackageJson));
+        assert_eq!(name, "helix:sync");
+    }
+
+    #[test]
+    fn parse_qualified_task_preserves_colons_in_bare_name() {
+        let (source, name) = parse_qualified_task("helix:sync");
+        assert_eq!(source, None);
+        assert_eq!(name, "helix:sync");
+    }
 
     #[test]
     fn bun_test_fallback_enabled_when_no_test_script() {

@@ -183,6 +183,19 @@ impl TaskSource {
         }
     }
 
+    /// Parse a source label back to a [`TaskSource`].
+    pub(crate) fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "package.json" => Some(Self::PackageJson),
+            "Makefile" => Some(Self::Makefile),
+            "justfile" => Some(Self::Justfile),
+            "Taskfile" => Some(Self::Taskfile),
+            "turbo.json" => Some(Self::TurboJson),
+            "deno.json" => Some(Self::DenoJson),
+            _ => None,
+        }
+    }
+
     /// Display order for grouped task listings.
     pub(crate) const fn display_order(self) -> u8 {
         match self {
