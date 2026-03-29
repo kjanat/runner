@@ -243,7 +243,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         push_named_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Make) {
-        push_named_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
+        push_described_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Just) {
         push_described_tasks(ctx, TaskSource::Justfile, tool::just::extract_tasks(dir));
