@@ -13,19 +13,86 @@ fn task_candidates() -> Vec<CompletionCandidate> {
         return vec![];
     };
     let ctx = crate::detect::detect(&dir);
-    ctx.tasks
-        .into_iter()
-        .map(|task| {
-            let help = match task.description {
-                Some(desc) => format!("{}: {desc}", task.source.label()),
-                None => task.source.label().to_string(),
-            };
+    task_candidates_from(&ctx.tasks)
+}
+
+/// Build [`CompletionCandidate`]s from a task list.
+///
+/// When a task name appears in more than one source, both the bare name *and*
+/// a `source:name` qualified form are emitted for each occurrence, enabling
+/// disambiguation via tab-completion.
+fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for task in tasks {
+        *counts.entry(&task.name).or_default() += 1;
+    }
+
+    let mut candidates = Vec::new();
+    for task in tasks {
+        let help = task.description.as_ref().map_or_else(
+            || task.source.label().to_string(),
+            |desc| format!("{}: {desc}", task.source.label()),
+        );
+        let tag = task.source.label();
+
+        candidates.push(
             CompletionCandidate::new(&task.name)
-                .help(Some(help.into()))
-                .tag(Some(task.source.label().into()))
-                .display_order(Some(usize::from(task.source.display_order())))
-        })
-        .collect()
+                .help(Some(help.clone().into()))
+                .tag(Some(tag.into()))
+                .display_order(Some(usize::from(task.source.display_order()))),
+        );
+
+        if counts.get(task.name.as_str()).copied().unwrap_or(0) > 1 {
+            let qualified = format!("{}:{}", task.source.label(), task.name);
+            candidates.push(
+                CompletionCandidate::new(qualified)
+                    .help(Some(help.into()))
+                    .tag(Some(tag.into()))
+                    .display_order(Some(usize::from(task.source.display_order()))),
+            );
+        }
+    }
+    candidates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_candidates_from;
+    use crate::types::{Task, TaskSource};
+
+    #[test]
+    fn qualified_candidates_emitted_for_duplicates() {
+        let tasks = vec![
+            Task {
+                name: "test".into(),
+                source: TaskSource::PackageJson,
+                description: None,
+            },
+            Task {
+                name: "test".into(),
+                source: TaskSource::Makefile,
+                description: None,
+            },
+            Task {
+                name: "build".into(),
+                source: TaskSource::PackageJson,
+                description: None,
+            },
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+        // "test" appears as bare + both qualified forms; "build" is bare only
+        assert!(values.contains(&"test".to_string()));
+        assert!(values.contains(&"package.json:test".to_string()));
+        assert!(values.contains(&"Makefile:test".to_string()));
+        assert!(values.contains(&"build".to_string()));
+        assert!(!values.contains(&"package.json:build".to_string()));
+    }
 }
 
 /// Universal project task runner.
