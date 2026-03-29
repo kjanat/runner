@@ -30,21 +30,27 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     }
 
     let mut candidates = Vec::new();
+    let mut seen_bare = std::collections::HashSet::new();
     for task in tasks {
         let help = task.description.as_ref().map_or_else(
             || task.source.label().to_string(),
             |desc| format!("{}: {desc}", task.source.label()),
         );
         let tag = task.source.label();
+        let is_duplicate = counts.get(task.name.as_str()).copied().unwrap_or(0) > 1;
 
-        candidates.push(
-            CompletionCandidate::new(&task.name)
-                .help(Some(help.clone().into()))
-                .tag(Some(tag.into()))
-                .display_order(Some(usize::from(task.source.display_order()))),
-        );
+        // Emit bare candidate only once (first source wins for the bare name)
+        if seen_bare.insert(&task.name) {
+            candidates.push(
+                CompletionCandidate::new(&task.name)
+                    .help(Some(help.clone().into()))
+                    .tag(Some(tag.into()))
+                    .display_order(Some(usize::from(task.source.display_order()))),
+            );
+        }
 
-        if counts.get(task.name.as_str()).copied().unwrap_or(0) > 1 {
+        // For duplicate names, also emit "source:name" qualified form
+        if is_duplicate {
             let qualified = format!("{}:{}", task.source.label(), task.name);
             candidates.push(
                 CompletionCandidate::new(qualified)
@@ -86,8 +92,12 @@ mod tests {
             .iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
             .collect();
-        // "test" appears as bare + both qualified forms; "build" is bare only
-        assert!(values.contains(&"test".to_string()));
+        // "test" appears as bare (once) + both qualified forms; "build" is bare only
+        assert_eq!(
+            values.iter().filter(|v| *v == "test").count(),
+            1,
+            "bare 'test' should appear exactly once"
+        );
         assert!(values.contains(&"package.json:test".to_string()));
         assert!(values.contains(&"Makefile:test".to_string()));
         assert!(values.contains(&"build".to_string()));

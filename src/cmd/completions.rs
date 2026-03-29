@@ -109,6 +109,11 @@ mod tests {
     }
 
     #[test]
+    fn shell_from_path_parses_bash() {
+        assert_eq!(shell_from_path(Path::new("/bin/bash")), Some(Shell::Bash));
+    }
+
+    #[test]
     fn shell_from_path_parses_zsh() {
         assert_eq!(shell_from_path(Path::new("/usr/bin/zsh")), Some(Shell::Zsh));
     }
