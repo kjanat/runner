@@ -88,13 +88,17 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
     };
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
     let mut tasks: Vec<(String, Option<String>)> = Vec::new();
     let mut in_tasks = false;
     let mut task_indent: Option<String> = None;
-    for line in content.lines() {
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
         if line.trim() == "tasks:" {
             in_tasks = true;
             task_indent = None;
+            i += 1;
             continue;
         }
         if in_tasks {
@@ -115,7 +119,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
                 && let Some(colon) = rest.find(':')
             {
                 if task_indent.is_none() {
-                    task_indent = Some(indent);
+                    task_indent = Some(indent.clone());
                 }
                 let name = rest[..colon].trim();
                 if !name.is_empty()
@@ -124,12 +128,35 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
                         .chars()
                         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
                 {
-                    tasks.push((name.to_string(), None));
+                    let desc = scan_desc(&lines, i + 1, &indent);
+                    tasks.push((name.to_string(), desc));
                 }
             }
         }
+        i += 1;
     }
     Ok(tasks)
+}
+
+/// Scan lines after a task definition for a `desc:` field at deeper indentation.
+fn scan_desc(lines: &[&str], start: usize, task_indent: &str) -> Option<String> {
+    for line in &lines[start..] {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !line.starts_with(task_indent) || !line[task_indent.len()..].starts_with([' ', '\t']) {
+            break;
+        }
+        if let Some(rest) = trimmed.strip_prefix("desc:") {
+            let val = rest.trim().trim_matches(|c| c == '\'' || c == '"');
+            return (!val.is_empty()).then(|| val.to_string());
+        }
+        if trimmed.contains(':') && !trimmed.starts_with('#') {
+            break;
+        }
+    }
+    None
 }
 
 /// `task <task> [args...]`
@@ -186,6 +213,28 @@ mod tests {
         let tasks = extract_tasks(dir.path()).expect("Taskfile tasks should parse");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["build", "test"]);
+    }
+
+    #[test]
+    fn extract_tasks_from_source_captures_desc() {
+        let dir = TempDir::new("go-task-desc");
+
+        fs::write(
+            dir.path().join("Taskfile.yml"),
+            "version: '3'\ntasks:\n  build:\n    desc: Build the project\n    cmds:\n      - cargo build\n  lint:\n    cmds:\n      - cargo clippy\n",
+        )
+        .expect("Taskfile.yml should be written");
+
+        let tasks =
+            super::extract_tasks_from_source(dir.path()).expect("Taskfile tasks should parse");
+
+        assert_eq!(
+            tasks,
+            [
+                ("build".to_string(), Some("Build the project".to_string())),
+                ("lint".to_string(), None),
+            ]
+        );
     }
 
     #[test]
