@@ -13,46 +13,49 @@
 # where \x1f (ASCII Unit Separator) delimits the group tag from the
 # standard zsh "value:description" pair.  Each unique TAG becomes a
 # separate _describe call, which zsh renders as a "-- TAG --" header.
+#
+# NOTE: All local variables use the __runner_ prefix to avoid collisions
+# with zsh's completion system internals (_tags, _describe, etc.).
 
 function _clap_dynamic_completer_NAME() {
     # CURRENT is 1-based in zsh; the completion engine expects 0-based.
-    local _CLAP_COMPLETE_INDEX=$(expr $CURRENT - 1)
-    local _CLAP_IFS=$'\n'
+    local __runner_idx=$(expr $CURRENT - 1)
+    local __runner_ifs=$'\n'
 
     # Invoke the binary in completion mode.  The VAR env-var tells
     # CompleteEnv to emit completions instead of running normally.
     # Words after "--" are the command line tokens typed so far.
-    local raw=("${(@f)$( \
-        _CLAP_IFS="$_CLAP_IFS" \
-        _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
+    local __runner_raw=("${(@f)$( \
+        _CLAP_IFS="$__runner_ifs" \
+        _CLAP_COMPLETE_INDEX="$__runner_idx" \
         VAR="zsh" \
         COMPLETER -- "${words[@]}" 2>/dev/null \
     )}")
 
-    [[ -z "$raw" ]] && return
+    [[ -z "$__runner_raw" ]] && return
 
     # --- Pass 1: collect unique tags in insertion order ---------------
-    local -a _tags=()
-    local _line
-    for _line in "${raw[@]}"; do
-        local _tag="${_line%%$'\x1f'*}"          # everything before \x1f
-        if (( ! ${_tags[(Ie)$_tag]} )); then     # (Ie) = exact-match index
-            _tags+=("$_tag")
+    local -a __runner_grps=()
+    local __runner_ln
+    for __runner_ln in "${__runner_raw[@]}"; do
+        local __runner_g="${__runner_ln%%$'\x1f'*}"          # everything before \x1f
+        if (( ! ${__runner_grps[(Ie)$__runner_g]} )); then   # (Ie) = exact-match index
+            __runner_grps+=("$__runner_g")
         fi
     done
 
     # --- Pass 2: group entries by tag and _describe each group -------
-    local _tag
-    for _tag in "${_tags[@]}"; do
-        local -a _entries=()
-        for _line in "${raw[@]}"; do
-            if [[ "${_line%%$'\x1f'*}" == "$_tag" ]]; then
-                _entries+=("${_line#*$'\x1f'}")   # everything after \x1f
+    local __runner_g
+    for __runner_g in "${__runner_grps[@]}"; do
+        local -a __runner_ent=()
+        for __runner_ln in "${__runner_raw[@]}"; do
+            if [[ "${__runner_ln%%$'\x1f'*}" == "$__runner_g" ]]; then
+                __runner_ent+=("${__runner_ln#*$'\x1f'}")    # everything after \x1f
             fi
         done
         # _describe renders the group header ("-- TAG --") and lists
         # entries as "value -- description".
-        (( ${#_entries} )) && _describe "$_tag" _entries
+        (( ${#__runner_ent} )) && _describe "$__runner_g" __runner_ent
     done
 }
 
