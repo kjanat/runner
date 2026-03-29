@@ -81,9 +81,13 @@ use clap::{CommandFactory, FromArgMatches};
 /// Argument parsing/help/version flows are rendered by clap and returned as an
 /// exit code instead of terminating the host process.
 pub fn run_from_env() -> Result<i32> {
-    clap_complete::CompleteEnv::with_factory(cli::Cli::command)
-        .shells(complete::SHELLS)
-        .complete();
+    let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
+        .unwrap_or_else(|| "runner".to_string());
+    clap_complete::CompleteEnv::with_factory(move || {
+        cli::Cli::command().name(bin.clone()).bin_name(bin.clone())
+    })
+    .shells(complete::SHELLS)
+    .complete();
     run_from_args(std::env::args_os())
 }
 
