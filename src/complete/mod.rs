@@ -84,15 +84,24 @@ impl EnvCompleter for GroupedZsh {
                 escape_value(&candidate.get_value().to_string_lossy()),
             )?;
             if let Some(help) = candidate.get_help() {
-                write!(
-                    buf,
-                    ":{}",
-                    escape_help(help.to_string().lines().next().unwrap_or_default()),
-                )?;
+                let raw = help.to_string();
+                let line = raw.lines().next().unwrap_or_default();
+                let stripped = strip_tag_prefix(line, &tag);
+                if !stripped.is_empty() {
+                    write!(buf, ":{}", escape_help(stripped))?;
+                }
             }
         }
         Ok(())
     }
+}
+
+/// Strip a leading `"TAG: "` or `"TAG"` prefix from help text when it
+/// matches the completion group tag (avoids redundancy in grouped output).
+fn strip_tag_prefix<'a>(help: &'a str, tag: &str) -> &'a str {
+    help.strip_prefix(tag)
+        .map_or(help, |rest| rest.strip_prefix(": ").unwrap_or(rest))
+        .trim()
 }
 
 fn escape_value(string: &str) -> String {
@@ -101,4 +110,42 @@ fn escape_value(string: &str) -> String {
 
 fn escape_help(string: &str) -> String {
     string.replace('\\', "\\\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape_help, escape_value, strip_tag_prefix};
+
+    #[test]
+    fn strip_tag_prefix_removes_matching_source() {
+        assert_eq!(
+            strip_tag_prefix("justfile: Format code", "justfile"),
+            "Format code"
+        );
+    }
+
+    #[test]
+    fn strip_tag_prefix_leaves_non_matching_help_unchanged() {
+        assert_eq!(strip_tag_prefix("Run a task", "Commands"), "Run a task");
+    }
+
+    #[test]
+    fn strip_tag_prefix_returns_empty_for_bare_source() {
+        assert_eq!(strip_tag_prefix("package.json", "package.json"), "");
+    }
+
+    #[test]
+    fn escape_value_escapes_colons_and_backslashes() {
+        assert_eq!(escape_value("helix:sync"), "helix\\:sync");
+        assert_eq!(escape_value("path\\thing"), "path\\\\thing");
+    }
+
+    #[test]
+    fn escape_help_escapes_backslashes_only() {
+        assert_eq!(
+            escape_help("justfile: format \\ lint"),
+            "justfile: format \\\\ lint"
+        );
+        assert_eq!(escape_help("no:escaping:here"), "no:escaping:here");
+    }
 }
