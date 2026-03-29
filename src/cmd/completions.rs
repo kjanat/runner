@@ -48,9 +48,13 @@ pub(crate) fn completions(shell: Option<Shell>) -> Result<()> {
 
 /// Detect the current shell from `$SHELL`.
 fn detect_shell() -> Option<Shell> {
-    let raw = std::env::var_os("SHELL")?;
-    let stem = Path::new(&raw).file_stem()?.to_string_lossy().into_owned();
-    match stem.as_str() {
+    shell_from_path(Path::new(&std::env::var_os("SHELL")?))
+}
+
+/// Map a shell binary path to a [`Shell`] variant.
+fn shell_from_path(path: &Path) -> Option<Shell> {
+    let stem = path.file_stem()?.to_string_lossy();
+    match stem.as_ref() {
         "bash" => Some(Shell::Bash),
         "zsh" => Some(Shell::Zsh),
         "fish" => Some(Shell::Fish),
@@ -83,8 +87,11 @@ const fn env_shell_name(shell: Shell) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::Path;
 
-    use super::completion_bin_name;
+    use clap_complete::aot::Shell;
+
+    use super::{completion_bin_name, shell_from_path};
 
     #[test]
     fn completion_bin_name_uses_file_name_from_path() {
@@ -99,5 +106,31 @@ mod tests {
     #[test]
     fn completion_bin_name_falls_back_to_runner_when_empty() {
         assert_eq!(completion_bin_name(Some(OsString::from(""))), "runner");
+    }
+
+    #[test]
+    fn shell_from_path_parses_zsh() {
+        assert_eq!(shell_from_path(Path::new("/usr/bin/zsh")), Some(Shell::Zsh));
+    }
+
+    #[test]
+    fn shell_from_path_parses_fish() {
+        assert_eq!(
+            shell_from_path(Path::new("/usr/local/bin/fish")),
+            Some(Shell::Fish)
+        );
+    }
+
+    #[test]
+    fn shell_from_path_returns_none_for_unknown() {
+        assert_eq!(shell_from_path(Path::new("/usr/bin/ksh")), None);
+    }
+
+    #[test]
+    fn shell_from_path_handles_pwsh() {
+        assert_eq!(
+            shell_from_path(Path::new("/usr/bin/pwsh")),
+            Some(Shell::PowerShell)
+        );
     }
 }
