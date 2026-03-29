@@ -45,6 +45,9 @@ features = ["derive"]
 [dependencies.serde_json]
 version = "1"
 
+[dependencies.shlex]
+version = "1"
+
 [dependencies.yaml-rust2]
 version = "0.11"
 

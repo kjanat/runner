@@ -56,6 +56,7 @@
 
 mod cli;
 mod cmd;
+mod complete;
 mod detect;
 mod tool;
 mod types;
@@ -80,7 +81,9 @@ use clap::{CommandFactory, FromArgMatches};
 /// Argument parsing/help/version flows are rendered by clap and returned as an
 /// exit code instead of terminating the host process.
 pub fn run_from_env() -> Result<i32> {
-    clap_complete::CompleteEnv::with_factory(cli::Cli::command).complete();
+    clap_complete::CompleteEnv::with_factory(cli::Cli::command)
+        .shells(complete::SHELLS)
+        .complete();
     run_from_args(std::env::args_os())
 }
 

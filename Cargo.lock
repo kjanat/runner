@@ -248,6 +248,7 @@ dependencies = [
  "json5",
  "serde",
  "serde_json",
+ "shlex",
  "yaml-rust2",
 ]
 
