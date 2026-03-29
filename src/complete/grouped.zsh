@@ -60,7 +60,7 @@ function _clap_dynamic_completer_{NAME}() {
                 __runner_ent+=("${__runner_ln#*$'\x1f'}")    # everything after \x1f
             fi
         done
-        (( ${#__runner_ent} )) && _describe -V "$__runner_g" "$__runner_g" __runner_ent
+        (( ${#__runner_ent} )) && _describe -V "$__runner_g" __runner_ent
     done
 }
 
