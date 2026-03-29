@@ -56,8 +56,9 @@ default   = ["run-alias"]
 run-alias = []
 
 [lints.clippy]
-cargo_common_metadata = "allow"
-redundant_pub_crate   = "allow"
+cargo_common_metadata   = "allow"
+multiple_crate_versions = "allow"  # is_executable 1.0.5 pins windows-sys 0.60
+redundant_pub_crate     = "allow"
 
 [lints.clippy.all]
 level    = "deny"
