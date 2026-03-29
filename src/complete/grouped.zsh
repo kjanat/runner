@@ -4,32 +4,26 @@
 #
 # Placeholders replaced at registration time by the Rust binary:
 #   {NAME}       — sanitised binary name (function identifier)
-#   {BIN}        — binary name as seen by the shell (e.g. "runner", "run")
+#   {BIN}        — binary name as seen by the shell
 #   {COMPLETER}  — path to the binary that produces completions
 #   {VAR}        — env-var that activates CompleteEnv (default: COMPLETE)
 #
-# The binary outputs one candidate per line in the format:
-#   TAG\x1fVALUE:DESCRIPTION
-# where \x1f (ASCII Unit Separator) delimits the group tag from the
-# standard zsh "value:description" pair.  Each unique TAG becomes a
-# separate _describe call, which zsh renders as a "-- TAG --" header.
+# The binary outputs one candidate per line:
+#   TAG \x1f VALUE [\t DESCRIPTION]
+# where \x1f separates the group tag from the entry, and \t separates
+# the completion value from its optional description.
 #
-# All local variables use the __runner_ prefix to avoid collisions
-# with zsh's completion system internals (_tags, _describe, etc.).
-
-# Enable group headers for this command — scoped so other completions
-# are not affected.
-zstyle ':completion:*:*:{BIN}:*' group-name ''
-zstyle ':completion:*:*:{BIN}:*:descriptions' format '-- %d --'
+# Each unique TAG gets its own `compadd -V` group with a `-X` header,
+# producing visible "-- TAG --" sections in the completion menu.
+#
+# All locals use the __runner_ prefix to avoid shadowing zsh builtins
+# like _tags, _describe, etc.
 
 function _clap_dynamic_completer_{NAME}() {
-    # CURRENT is 1-based in zsh; the completion engine expects 0-based.
-    local __runner_idx=$(expr $CURRENT - 1)
+    local __runner_idx=$(( CURRENT - 1 ))
     local __runner_ifs=$'\n'
 
-    # Invoke the binary in completion mode.  The env-var tells
-    # CompleteEnv to emit completions instead of running normally.
-    # Words after "--" are the command line tokens typed so far.
+    # Call the binary in completion mode.
     local __runner_raw=("${(@f)$( \
         _CLAP_IFS="$__runner_ifs" \
         _CLAP_COMPLETE_INDEX="$__runner_idx" \
@@ -43,24 +37,34 @@ function _clap_dynamic_completer_{NAME}() {
     local -a __runner_grps=()
     local __runner_ln
     for __runner_ln in "${__runner_raw[@]}"; do
-        local __runner_g="${__runner_ln%%$'\x1f'*}"          # everything before \x1f
-        if (( ! ${__runner_grps[(Ie)$__runner_g]} )); then   # (Ie) = exact-match index
+        local __runner_g="${__runner_ln%%$'\x1f'*}"
+        if (( ! ${__runner_grps[(Ie)$__runner_g]} )); then
             __runner_grps+=("$__runner_g")
         fi
     done
 
-    # --- Pass 2: group entries by tag and _describe each group -------
-    # -V creates an explicit named group so zsh keeps them separate
-    # and the group-name zstyle renders a header for each.
+    # --- Pass 2: build per-group arrays and compadd each -------------
     local __runner_g
     for __runner_g in "${__runner_grps[@]}"; do
-        local -a __runner_ent=()
+        local -a __runner_vals=()
+        local -a __runner_dsps=()
         for __runner_ln in "${__runner_raw[@]}"; do
             if [[ "${__runner_ln%%$'\x1f'*}" == "$__runner_g" ]]; then
-                __runner_ent+=("${__runner_ln#*$'\x1f'}")    # everything after \x1f
+                local __runner_e="${__runner_ln#*$'\x1f'}"
+                # Split value and optional description on \t
+                if [[ "$__runner_e" == *$'\t'* ]]; then
+                    __runner_vals+=("${__runner_e%%$'\t'*}")
+                    __runner_dsps+=("${(r:30:)${__runner_e%%$'\t'*}} -- ${__runner_e#*$'\t'}")
+                else
+                    __runner_vals+=("$__runner_e")
+                    __runner_dsps+=("$__runner_e")
+                fi
             fi
         done
-        (( ${#__runner_ent} )) && _describe -V "$__runner_g" __runner_ent
+        if (( ${#__runner_vals} )); then
+            compadd -V "$__runner_g" -X "-- $__runner_g --" \
+                -d __runner_dsps -a -- __runner_vals
+        fi
     done
 }
 
