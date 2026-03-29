@@ -44,18 +44,30 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
         TaskSource::DenoJson,
     ];
     for source in sources {
-        let names: Vec<&str> = ctx
+        let tasks: Vec<(&str, Option<&str>)> = ctx
             .tasks
             .iter()
             .filter(|t| t.source == source)
-            .map(|t| t.name.as_str())
+            .map(|t| (t.name.as_str(), t.description.as_deref()))
             .collect();
-        if names.is_empty() {
+        if tasks.is_empty() {
             continue;
         }
 
         let label = source_label(source, &ctx.root, stdout_is_terminal);
-        println!("  {}{}", label, names.join(", "));
+        let has_any_desc = tasks.iter().any(|(_, d)| d.is_some());
+        if has_any_desc {
+            for (name, desc) in &tasks {
+                if let Some(desc) = desc {
+                    println!("  {label}{name:<20} {}", desc.dimmed());
+                } else {
+                    println!("  {label}{name}");
+                }
+            }
+        } else {
+            let names: Vec<&str> = tasks.iter().map(|(n, _)| *n).collect();
+            println!("  {}{}", label, names.join(", "));
+        }
     }
 }
 
