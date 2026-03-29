@@ -42,10 +42,10 @@ impl EnvCompleter for GroupedZsh {
             shlex::try_quote(completer).unwrap_or(std::borrow::Cow::Borrowed(completer));
 
         let script = include_str!("grouped.zsh")
-            .replace("NAME", &escaped_name)
-            .replace("COMPLETER", &completer)
-            .replace("BIN", &bin)
-            .replace("VAR", var);
+            .replace("{NAME}", &escaped_name)
+            .replace("{COMPLETER}", &completer)
+            .replace("{BIN}", &bin)
+            .replace("{VAR}", var);
 
         writeln!(buf, "{script}")?;
         Ok(())
