@@ -41,44 +41,7 @@ impl EnvCompleter for GroupedZsh {
         let completer =
             shlex::try_quote(completer).unwrap_or(std::borrow::Cow::Borrowed(completer));
 
-        // The script collects `TAG\x1fvalue:desc` lines, extracts unique tags
-        // in insertion order, then calls `_describe TAG entries` per group.
-        let script = r#"#compdef BIN
-function _clap_dynamic_completer_NAME() {
-    local _CLAP_COMPLETE_INDEX=$(expr $CURRENT - 1)
-    local _CLAP_IFS=$'\n'
-
-    local raw=("${(@f)$( \
-        _CLAP_IFS="$_CLAP_IFS" \
-        _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
-        VAR="zsh" \
-        COMPLETER -- "${words[@]}" 2>/dev/null \
-    )}")
-
-    [[ -z "$raw" ]] && return
-
-    local -a _tags=()
-    local _line
-    for _line in "${raw[@]}"; do
-        local _tag="${_line%%$'\x1f'*}"
-        if (( ! ${_tags[(Ie)$_tag]} )); then
-            _tags+=("$_tag")
-        fi
-    done
-
-    local _tag
-    for _tag in "${_tags[@]}"; do
-        local -a _entries=()
-        for _line in "${raw[@]}"; do
-            if [[ "${_line%%$'\x1f'*}" == "$_tag" ]]; then
-                _entries+=("${_line#*$'\x1f'}")
-            fi
-        done
-        (( ${#_entries} )) && _describe "$_tag" _entries
-    done
-}
-
-compdef _clap_dynamic_completer_NAME BIN"#
+        let script = include_str!("grouped.zsh")
             .replace("NAME", &escaped_name)
             .replace("COMPLETER", &completer)
             .replace("BIN", &bin)
