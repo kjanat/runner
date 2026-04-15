@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Limit task source OSC8 hyperlinks to visible filename text so alignment
   padding is not clickable.
+- Add repo and release-tag hyperlinks to `runner --version` and the `runner`
+  info header version display.
 
 ### Post-release checklist
 

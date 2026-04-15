@@ -62,10 +62,14 @@ mod tool;
 mod types;
 
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::Path;
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches};
+
+const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
@@ -127,6 +131,13 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+
+    if requests_version(&args) {
+        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+        return Ok(0);
+    }
+
     let cli = match parse_cli(args) {
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err),
@@ -156,6 +167,40 @@ fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
         .map(|segment| segment.to_string_lossy().into_owned())?;
 
     (!name.is_empty()).then_some(name)
+}
+
+fn requests_version(args: &[OsString]) -> bool {
+    if args.len() != 2 {
+        return false;
+    }
+
+    let flag = args[1].to_string_lossy();
+    flag == "--version" || flag == "-V"
+}
+
+fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
+    let bin = args
+        .first()
+        .and_then(bin_name_from_arg0)
+        .unwrap_or_else(|| "runner".to_string());
+
+    if !stdout_is_terminal {
+        return format!("{bin} {VERSION}");
+    }
+
+    format!(
+        "{} {}",
+        osc8_link(&bin, REPOSITORY_URL),
+        osc8_link(VERSION, &release_url(VERSION))
+    )
+}
+
+fn release_url(version: &str) -> String {
+    format!("{REPOSITORY_URL}releases/tag/v{version}")
+}
+
+fn osc8_link(label: &str, url: &str) -> String {
+    format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
 }
 
 fn render_clap_error(err: &clap::Error) -> Result<i32> {
@@ -209,7 +254,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::Path;
 
-    use super::{bin_name_from_arg0, run_in_dir};
+    use super::{bin_name_from_arg0, release_url, requests_version, run_in_dir, version_line};
 
     #[test]
     fn help_returns_zero_instead_of_exiting() {
@@ -233,6 +278,41 @@ mod tests {
             .expect("version should return an exit code");
 
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn requests_version_detects_top_level_version_flags() {
+        assert!(requests_version(&[
+            OsString::from("runner"),
+            OsString::from("--version")
+        ]));
+        assert!(requests_version(&[
+            OsString::from("runner"),
+            OsString::from("-V")
+        ]));
+        assert!(!requests_version(&[
+            OsString::from("runner"),
+            OsString::from("info"),
+            OsString::from("--version"),
+        ]));
+    }
+
+    #[test]
+    fn release_url_points_to_version_tag() {
+        assert_eq!(
+            release_url("0.2.1"),
+            "https://github.com/kjanat/runner/releases/tag/v0.2.1"
+        );
+    }
+
+    #[test]
+    fn version_line_wraps_bin_and_version_with_separate_links() {
+        let line = version_line(&[OsString::from("runner")], true);
+
+        assert!(line.contains(
+            "\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
+        ));
+        assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.2.1\u{1b}\\0.2.1\u{1b}]8;;\u{1b}\\"));
     }
 
     #[test]

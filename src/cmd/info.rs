@@ -11,6 +11,7 @@ use super::list::print_tasks_grouped;
 use crate::types::{ProjectContext, version_matches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Display detected package managers, task runners, Node version, monorepo
 /// status, and available tasks.
@@ -64,12 +65,21 @@ pub(crate) fn info(ctx: &ProjectContext) {
 
 fn title_line(arg0: Option<OsString>, stdout_is_terminal: bool) -> String {
     let label = bin_name_from_arg0(arg0).bold().to_string();
+    let version = VERSION.to_string();
 
     if stdout_is_terminal {
-        osc8_link(&label, REPOSITORY_URL)
+        format!(
+            "{} {}",
+            osc8_link(&label, REPOSITORY_URL),
+            osc8_link(&version, &release_url())
+        )
     } else {
-        label
+        format!("{label} {version}")
     }
+}
+
+fn release_url() -> String {
+    format!("{REPOSITORY_URL}releases/tag/v{VERSION}")
 }
 
 fn bin_name_from_arg0(arg0: Option<OsString>) -> String {
@@ -90,7 +100,7 @@ fn osc8_link(label: &str, url: &str) -> String {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{bin_name_from_arg0, title_line};
+    use super::{bin_name_from_arg0, release_url, title_line};
 
     #[test]
     fn bin_name_from_arg0_uses_path_file_name() {
@@ -103,6 +113,9 @@ mod tests {
 
         assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\"));
         assert!(line.contains("run"));
+        assert!(line.contains(
+            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.2.1\u{1b}\\0.2.1\u{1b}]8;;\u{1b}\\"
+        ));
     }
 
     #[test]
@@ -110,6 +123,15 @@ mod tests {
         let line = title_line(Some(OsString::from("run")), false);
 
         assert!(line.contains("run"));
+        assert!(line.contains("0.2.1"));
         assert!(!line.contains("\u{1b}]8;;"));
+    }
+
+    #[test]
+    fn release_url_points_to_version_tag() {
+        assert_eq!(
+            release_url(),
+            "https://github.com/kjanat/runner/releases/tag/v0.2.1"
+        );
     }
 }
