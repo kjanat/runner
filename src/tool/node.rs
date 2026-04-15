@@ -33,10 +33,19 @@ pub(crate) fn find_manifest(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
 }
 
+/// Resolve the nearest supported package manifest path while walking upward.
+pub(crate) fn find_manifest_upwards(dir: &Path) -> Option<PathBuf> {
+    files::find_first_upwards(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
+}
+
 /// Detect the package manager named by the `"packageManager"` field in the
 /// supported package manifest.
 pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
-    match parse_package_json(dir)
+    detect_pm(parse_package_json(dir))
+}
+
+fn detect_pm(package_json: Option<PackageJson>) -> Option<PackageManager> {
+    match package_json
         .and_then(|package_json| package_json.package_manager)
         .as_deref()
     {
@@ -52,6 +61,20 @@ pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
 /// Parse the supported package manifest and return all script names.
 pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<String>> {
     let Some((path, content)) = read_manifest(dir)? else {
+        return Ok(vec![]);
+    };
+
+    let package_json = parse_manifest(&path, &content)
+        .with_context(|| format!("{} is not valid {}", path.display(), manifest_format(&path)))?;
+
+    Ok(package_json
+        .scripts
+        .map_or_else(Vec::new, |scripts| scripts.into_keys().collect()))
+}
+
+/// Parse scripts from the nearest supported package manifest while walking upward.
+pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let Some((path, content)) = read_manifest_upwards(dir)? else {
         return Ok(vec![]);
     };
 
@@ -80,9 +103,21 @@ fn read_manifest(dir: &Path) -> anyhow::Result<Option<(PathBuf, String)>> {
         return Ok(None);
     };
 
-    std::fs::read_to_string(&path)
+    read_manifest_file(&path)
+}
+
+fn read_manifest_upwards(dir: &Path) -> anyhow::Result<Option<(PathBuf, String)>> {
+    let Some(path) = find_manifest_upwards(dir) else {
+        return Ok(None);
+    };
+
+    read_manifest_file(&path)
+}
+
+fn read_manifest_file(path: &Path) -> anyhow::Result<Option<(PathBuf, String)>> {
+    std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))
-        .map(|content| Some((path, content)))
+        .map(|content| Some((path.to_path_buf(), content)))
 }
 
 fn parse_manifest(path: &Path, content: &str) -> Option<PackageJson> {
@@ -151,7 +186,9 @@ fn manifest_format(path: &Path) -> &'static str {
 mod tests {
     use std::fs;
 
-    use super::{detect_pm_from_field, extract_scripts};
+    use super::{
+        detect_pm_from_field, extract_scripts, extract_scripts_upwards, find_manifest_upwards,
+    };
     use crate::tool::test_support::TempDir;
     use crate::types::PackageManager;
 
@@ -237,5 +274,47 @@ mod tests {
         scripts.sort_unstable();
 
         assert_eq!(scripts, ["build", "test"]);
+    }
+
+    #[test]
+    fn find_manifest_upwards_prefers_nearest_manifest() {
+        let dir = TempDir::new("node-manifest-upwards");
+        let nested = dir.path().join("apps").join("site").join("src");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "root": "1" } }"#,
+        )
+        .expect("root package.json should be written");
+        fs::write(
+            dir.path().join("apps").join("site").join("package.json"),
+            r#"{ "scripts": { "member": "1" } }"#,
+        )
+        .expect("member package.json should be written");
+
+        let path = find_manifest_upwards(&nested).expect("nearest manifest should resolve");
+
+        assert!(path.ends_with("apps/site/package.json"));
+    }
+
+    #[test]
+    fn extract_scripts_upwards_reads_nearest_manifest() {
+        let dir = TempDir::new("node-scripts-upwards");
+        let nested = dir.path().join("apps").join("site").join("src");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "root": "1" } }"#,
+        )
+        .expect("root package.json should be written");
+        fs::write(
+            dir.path().join("apps").join("site").join("package.json"),
+            r#"{ "scripts": { "member": "1" } }"#,
+        )
+        .expect("member package.json should be written");
+
+        let tasks = extract_scripts_upwards(&nested).expect("nearest scripts should parse");
+
+        assert_eq!(tasks, ["member"]);
     }
 }

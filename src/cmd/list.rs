@@ -103,7 +103,7 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
 
 fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
     let path = match source {
-        TaskSource::PackageJson => tool::node::find_manifest(root),
+        TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
         TaskSource::TurboJson => {
             let candidate = root.join(tool::turbo::FILENAME);
             candidate.is_file().then_some(candidate)
@@ -115,9 +115,7 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Taskfile => {
             tool::files::find_first(root, tool::go_task::FILENAMES).filter(|path| path.is_file())
         }
-        TaskSource::DenoJson => {
-            tool::files::find_first(root, tool::deno::FILENAMES).filter(|path| path.is_file())
-        }
+        TaskSource::DenoJson => tool::deno::find_config_upwards(root),
     }?;
 
     Some(path.canonicalize().unwrap_or(path))

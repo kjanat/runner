@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve Deno tasks, `deno.json(c)` configs, and `package.json` scripts from
+  the nearest applicable ancestor config, while stopping at VCS boundaries and
+  ignoring workspace roots that do not list the current path as a member.
+- Prefer the nearest Deno task source when duplicate task names exist across
+  ancestor configs.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
@@ -22,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Resolve Deno tasks and configs from the nearest applicable ancestor config,
+  while stopping at VCS boundaries and ignoring workspace roots that do not
+  list the current path as a member.
 - Limit task source OSC8 hyperlinks to visible filename text so alignment
   padding is not clickable.
 - Add repo and release-tag hyperlinks to `runner --version` and the `runner`

@@ -241,7 +241,17 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         push_named_tasks(
             ctx,
             TaskSource::PackageJson,
-            tool::node::extract_scripts(dir),
+            if ctx.package_managers.contains(&PackageManager::Deno) {
+                tool::node::extract_scripts_upwards(dir)
+            } else {
+                tool::node::extract_scripts(dir)
+            },
+        );
+    } else if ctx.package_managers.contains(&PackageManager::Deno) {
+        push_named_tasks(
+            ctx,
+            TaskSource::PackageJson,
+            tool::node::extract_scripts_upwards(dir),
         );
     }
     if ctx.task_runners.contains(&TaskRunner::Turbo) {
@@ -354,5 +364,36 @@ mod tests {
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
+    }
+
+    #[test]
+    fn detect_uses_nearest_deno_sources_from_nested_dir() {
+        let dir = TempDir::new("detect-deno-nearest");
+        let nested = dir.path().join("apps").join("site").join("src");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(dir.path().join("deno.lock"), "{}").expect("deno.lock should be written");
+        fs::write(
+            dir.path().join("deno.jsonc"),
+            r#"{ tasks: { root: "deno task root" } }"#,
+        )
+        .expect("root deno.jsonc should be written");
+        fs::write(
+            dir.path().join("apps").join("site").join("package.json"),
+            r#"{
+  "scripts": {
+    "member": "deno task member"
+  }
+}"#,
+        )
+        .expect("member package.json should be written");
+
+        let ctx = detect(&nested);
+
+        assert!(
+            ctx.package_managers
+                .contains(&crate::types::PackageManager::Deno)
+        );
+        assert!(ctx.tasks.iter().any(|task| task.name == "member"));
+        assert!(ctx.tasks.iter().any(|task| task.name == "root"));
     }
 }

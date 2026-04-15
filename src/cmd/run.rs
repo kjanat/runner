@@ -1,5 +1,6 @@
 //! `runner run <task>` — resolve a task name to the right tool and execute it.
 
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Result, bail};
@@ -50,12 +51,7 @@ pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i
             .copied()
             .ok_or_else(|| anyhow::anyhow!("task {task_name:?} not found in {}", source.label()))?
     } else {
-        found
-            .iter()
-            .find(|t| t.source == TaskSource::TurboJson)
-            .or_else(|| found.iter().find(|t| t.source == TaskSource::PackageJson))
-            .or_else(|| found.first())
-            .unwrap()
+        select_task_entry(ctx, &found)
     };
 
     eprintln!(
@@ -69,6 +65,54 @@ pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i
     let mut cmd = build_run_command(ctx, entry.source, task_name, args)?;
     super::configure_command(&mut cmd, &ctx.root);
     Ok(super::exit_code(cmd.status()?))
+}
+
+fn select_task_entry<'a>(
+    ctx: &ProjectContext,
+    found: &[&'a crate::types::Task],
+) -> &'a crate::types::Task {
+    if ctx.package_managers.contains(&PackageManager::Deno) {
+        return found
+            .iter()
+            .min_by_key(|task| deno_task_priority(ctx, task.source))
+            .copied()
+            .expect("task selection should have at least one match");
+    }
+
+    found
+        .iter()
+        .find(|t| t.source == TaskSource::TurboJson)
+        .or_else(|| found.iter().find(|t| t.source == TaskSource::PackageJson))
+        .or_else(|| found.first())
+        .copied()
+        .expect("task selection should have at least one match")
+}
+
+fn deno_task_priority(ctx: &ProjectContext, source: TaskSource) -> (usize, u8) {
+    let depth = source_dir(source, &ctx.root)
+        .and_then(|dir| {
+            ctx.root
+                .ancestors()
+                .position(|ancestor| ancestor == dir.as_path())
+        })
+        .unwrap_or(usize::MAX);
+
+    (depth, source.display_order())
+}
+
+fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
+    match source {
+        TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
+        TaskSource::DenoJson => tool::deno::find_config_upwards(root),
+        TaskSource::TurboJson => {
+            let candidate = root.join(tool::turbo::FILENAME);
+            candidate.is_file().then_some(candidate)
+        }
+        TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
+        TaskSource::Justfile => tool::just::find_file(root),
+        TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
+    }
+    .and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
 fn run_bun_test_fallback(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<Option<i32>> {
@@ -136,9 +180,11 @@ fn build_run_command(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
 
-    use super::{parse_qualified_task, should_use_bun_test_fallback};
+    use super::{parse_qualified_task, select_task_entry, should_use_bun_test_fallback};
+    use crate::tool::test_support::TempDir;
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
     #[test]
@@ -209,6 +255,49 @@ mod tests {
         let ctx = context(vec![PackageManager::Bun], vec![]);
 
         assert!(!should_use_bun_test_fallback(&ctx, "build"));
+    }
+
+    #[test]
+    fn select_task_entry_prefers_nearest_deno_source() {
+        let dir = TempDir::new("run-deno-nearest");
+        let nested = dir.path().join("apps").join("site").join("src");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(
+            dir.path().join("deno.jsonc"),
+            r#"{ tasks: { build: "deno task build" } }"#,
+        )
+        .expect("root deno.jsonc should be written");
+        fs::write(
+            dir.path().join("apps").join("site").join("package.json"),
+            r#"{ "scripts": { "build": "deno task build" } }"#,
+        )
+        .expect("member package.json should be written");
+        let ctx = ProjectContext {
+            root: nested,
+            package_managers: vec![PackageManager::Deno],
+            task_runners: Vec::new(),
+            tasks: vec![
+                Task {
+                    name: "build".to_string(),
+                    source: TaskSource::DenoJson,
+                    description: None,
+                },
+                Task {
+                    name: "build".to_string(),
+                    source: TaskSource::PackageJson,
+                    description: None,
+                },
+            ],
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let entry = select_task_entry(&ctx, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
     }
 
     fn context(package_managers: Vec<PackageManager>, tasks: Vec<Task>) -> ProjectContext {
