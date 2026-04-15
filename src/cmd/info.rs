@@ -114,7 +114,7 @@ mod tests {
         assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\"));
         assert!(line.contains("run"));
         assert!(line.contains(
-            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.2.1\u{1b}\\0.2.1\u{1b}]8;;\u{1b}\\"
+            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.3.0\u{1b}\\0.3.0\u{1b}]8;;\u{1b}\\"
         ));
     }
 
@@ -123,7 +123,7 @@ mod tests {
         let line = title_line(Some(OsString::from("run")), false);
 
         assert!(line.contains("run"));
-        assert!(line.contains("0.2.1"));
+        assert!(line.contains("0.3.0"));
         assert!(!line.contains("\u{1b}]8;;"));
     }
 
@@ -131,7 +131,7 @@ mod tests {
     fn release_url_points_to_version_tag() {
         assert_eq!(
             release_url(),
-            "https://github.com/kjanat/runner/releases/tag/v0.2.1"
+            "https://github.com/kjanat/runner/releases/tag/v0.3.0"
         );
     }
 }

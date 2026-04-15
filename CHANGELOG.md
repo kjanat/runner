@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.3.0] - 2026-04-15
+
 ### Added
 
 - Add global `--dir <PATH>` and `RUNNER_DIR` overrides to scan and run tasks
@@ -18,12 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   padding is not clickable.
 - Add repo and release-tag hyperlinks to `runner --version` and the `runner`
   info header version display.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.2.1] - 2026-04-15
 
@@ -71,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kjanat/runner/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kjanat/runner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kjanat/runner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0

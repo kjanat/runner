@@ -339,8 +339,8 @@ mod tests {
     #[test]
     fn release_url_points_to_version_tag() {
         assert_eq!(
-            release_url("0.2.1"),
-            "https://github.com/kjanat/runner/releases/tag/v0.2.1"
+            release_url("0.3.0"),
+            "https://github.com/kjanat/runner/releases/tag/v0.3.0"
         );
     }
 
@@ -351,7 +351,7 @@ mod tests {
         assert!(line.contains(
             "\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
         ));
-        assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.2.1\u{1b}\\0.2.1\u{1b}]8;;\u{1b}\\"));
+        assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.3.0\u{1b}\\0.3.0\u{1b}]8;;\u{1b}\\"));
     }
 
     #[test]
