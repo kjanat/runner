@@ -1,5 +1,7 @@
 //! Command-line interface definition via [`clap`].
 
+use std::path::{Path, PathBuf};
+
 use clap::{Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
@@ -9,11 +11,27 @@ use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandC
 /// when the shell is actually requesting completions, never during normal
 /// execution.
 fn task_candidates() -> Vec<CompletionCandidate> {
-    let Ok(dir) = std::env::current_dir() else {
+    let Ok(dir) = completion_dir() else {
         return vec![];
     };
     let ctx = crate::detect::detect(&dir);
     task_candidates_from(&ctx.tasks)
+}
+
+fn completion_dir() -> std::io::Result<PathBuf> {
+    let cwd = std::env::current_dir()?;
+    Ok(resolve_completion_dir(
+        &cwd,
+        std::env::var_os("RUNNER_DIR").as_deref(),
+    ))
+}
+
+fn resolve_completion_dir(cwd: &Path, env_dir: Option<&std::ffi::OsStr>) -> PathBuf {
+    match env_dir.map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => cwd.join(path),
+        None => cwd.to_path_buf(),
+    }
 }
 
 /// Build [`CompletionCandidate`]s from a task list.
@@ -65,7 +83,10 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
 
 #[cfg(test)]
 mod tests {
-    use super::task_candidates_from;
+    use std::ffi::OsStr;
+    use std::path::{Path, PathBuf};
+
+    use super::{resolve_completion_dir, task_candidates_from};
     use crate::types::{Task, TaskSource};
 
     #[test]
@@ -103,6 +124,16 @@ mod tests {
         assert!(values.contains(&"build".to_string()));
         assert!(!values.contains(&"package.json:build".to_string()));
     }
+
+    #[test]
+    fn resolve_completion_dir_uses_absolute_runner_dir_env() {
+        let dir = resolve_completion_dir(
+            Path::new("/tmp/workspace"),
+            Some(OsStr::new("/tmp/runner-target")),
+        );
+
+        assert_eq!(dir, PathBuf::from("/tmp/runner-target"));
+    }
 }
 
 /// Universal project task runner.
@@ -115,6 +146,10 @@ mod tests {
     add = SubcommandCandidates::new(task_candidates)
 )]
 pub(crate) struct Cli {
+    /// Scan and run tasks from this directory instead of the current working directory.
+    #[arg(long = "dir", global = true, value_name = "PATH")]
+    pub project_dir: Option<PathBuf>,
+
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,

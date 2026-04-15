@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add global `--dir <PATH>` and `RUNNER_DIR` overrides to scan and run tasks
+  against another project directory.
+
 ### Fixed
 
 - Limit task source OSC8 hyperlinks to visible filename text so alignment

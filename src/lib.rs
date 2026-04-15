@@ -63,9 +63,9 @@ mod types;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{CommandFactory, FromArgMatches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
@@ -142,7 +142,15 @@ where
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err),
     };
-    dispatch(cli, dir)
+    let project_dir = resolve_project_dir(
+        configured_project_dir(
+            cli.project_dir.as_deref(),
+            std::env::var_os("RUNNER_DIR").as_deref(),
+        )
+        .as_deref(),
+        dir,
+    )?;
+    dispatch(cli, &project_dir)
 }
 
 fn parse_cli<I, T>(args: I) -> Result<cli::Cli, clap::Error>
@@ -203,6 +211,32 @@ fn osc8_link(label: &str, url: &str) -> String {
     format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
 }
 
+fn configured_project_dir(
+    project_dir: Option<&Path>,
+    env_dir: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    project_dir
+        .map(Path::to_path_buf)
+        .or_else(|| env_dir.map(PathBuf::from))
+}
+
+fn resolve_project_dir(project_dir: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
+    let dir = match project_dir {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => cwd.join(path),
+        None => cwd.to_path_buf(),
+    };
+
+    if !dir.exists() {
+        bail!("project dir does not exist: {}", dir.display());
+    }
+    if !dir.is_dir() {
+        bail!("project dir is not a directory: {}", dir.display());
+    }
+
+    Ok(dir)
+}
+
 fn render_clap_error(err: &clap::Error) -> Result<i32> {
     let exit_code = err.exit_code();
     err.print()?;
@@ -252,9 +286,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
-    use super::{bin_name_from_arg0, release_url, requests_version, run_in_dir, version_line};
+    use super::{
+        bin_name_from_arg0, configured_project_dir, release_url, requests_version,
+        resolve_project_dir, run_in_dir, version_line,
+    };
+    use crate::tool::test_support::TempDir;
 
     #[test]
     fn help_returns_zero_instead_of_exiting() {
@@ -313,6 +352,55 @@ mod tests {
             "\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
         ));
         assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.2.1\u{1b}\\0.2.1\u{1b}]8;;\u{1b}\\"));
+    }
+
+    #[test]
+    fn resolve_project_dir_uses_cwd_when_not_overridden() {
+        let cwd = TempDir::new("runner-project-dir-default");
+
+        assert_eq!(
+            resolve_project_dir(None, cwd.path()).expect("cwd should be accepted"),
+            cwd.path()
+        );
+    }
+
+    #[test]
+    fn resolve_project_dir_resolves_relative_paths_from_cwd() {
+        let cwd = TempDir::new("runner-project-dir-cwd");
+        fs::create_dir(cwd.path().join("child")).expect("child dir should be created");
+
+        let resolved = resolve_project_dir(Some(Path::new("child")), cwd.path())
+            .expect("relative dir should resolve");
+
+        assert_eq!(resolved, cwd.path().join("child"));
+    }
+
+    #[test]
+    fn resolve_project_dir_rejects_missing_directories() {
+        let cwd = TempDir::new("runner-project-dir-missing");
+        let err = resolve_project_dir(Some(Path::new("missing")), cwd.path())
+            .expect_err("missing dir should error");
+
+        assert!(err.to_string().contains("project dir does not exist"));
+    }
+
+    #[test]
+    fn configured_project_dir_prefers_flag_over_env() {
+        let dir = configured_project_dir(
+            Some(Path::new("flag-dir")),
+            Some(std::ffi::OsStr::new("env-dir")),
+        )
+        .expect("dir should be selected");
+
+        assert_eq!(dir, PathBuf::from("flag-dir"));
+    }
+
+    #[test]
+    fn configured_project_dir_falls_back_to_env() {
+        let dir = configured_project_dir(None, Some(std::ffi::OsStr::new("env-dir")))
+            .expect("env dir should be selected");
+
+        assert_eq!(dir, PathBuf::from("env-dir"));
     }
 
     #[test]
