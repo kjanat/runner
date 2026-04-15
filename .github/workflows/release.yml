@@ -1,4 +1,10 @@
 name: release
+run-name: >-
+  ${{ github.event_name == 'pull_request'
+      && format('verify PR #{0}', github.event.pull_request.number)
+      || github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      && format('release {0}', github.ref_name)
+      || format('verify {0}', github.ref_name) }}
 
 on:
   pull_request:
@@ -55,7 +61,7 @@ jobs:
           branch: master
 
   upload-assets:
-    name: upload ${{ matrix.target }}
+    name: build+upload ${{ matrix.target }}
     needs: create-release
     runs-on: ubuntu-latest
     permissions:
