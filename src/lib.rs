@@ -69,7 +69,7 @@ use anyhow::{Result, bail};
 use clap::{CommandFactory, FromArgMatches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = clap::crate_version!();
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
@@ -88,7 +88,9 @@ pub fn run_from_env() -> Result<i32> {
     let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
         .unwrap_or_else(|| "runner".to_string());
     clap_complete::CompleteEnv::with_factory(move || {
-        cli::Cli::command().name(bin.clone()).bin_name(bin.clone())
+        configure_cli_command(cli::Cli::command(), true)
+            .name(bin.clone())
+            .bin_name(bin.clone())
     })
     .shells(complete::SHELLS)
     .complete();
@@ -160,7 +162,7 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    let mut command = cli::Cli::command();
+    let mut command = configure_cli_command(cli::Cli::command(), std::io::stdout().is_terminal());
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
@@ -175,6 +177,47 @@ fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
         .map(|segment| segment.to_string_lossy().into_owned())?;
 
     (!name.is_empty()).then_some(name)
+}
+
+fn configure_cli_command(mut command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
+    if let Some(byline) = help_byline(stdout_is_terminal) {
+        command = command.before_help(byline);
+    }
+    command
+}
+
+fn help_byline(stdout_is_terminal: bool) -> Option<String> {
+    let (name, mail) = primary_author(authors())?;
+    let name = if stdout_is_terminal {
+        mail.map_or_else(
+            || name.to_string(),
+            |mail| osc8_link(name, &format!("mailto:{mail}")),
+        )
+    } else {
+        name.to_string()
+    };
+    Some(format!("by {name}"))
+}
+
+fn primary_author(authors: &str) -> Option<(&str, Option<&str>)> {
+    let author = authors.lines().next()?.trim();
+    if author.is_empty() {
+        return None;
+    }
+
+    if let Some((name, rest)) = author.split_once('<') {
+        let name = name.trim();
+        let mail = rest.strip_suffix('>')?.trim();
+        if !name.is_empty() {
+            return Some((name, (!mail.is_empty()).then_some(mail)));
+        }
+    }
+
+    Some((author, None))
+}
+
+fn authors() -> &'static str {
+    clap::crate_authors!("\n")
 }
 
 fn requests_version(args: &[OsString]) -> bool {
@@ -290,7 +333,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        bin_name_from_arg0, configured_project_dir, release_url, requests_version,
+        VERSION, bin_name_from_arg0, configured_project_dir, release_url, requests_version,
         resolve_project_dir, run_in_dir, version_line,
     };
     use crate::tool::test_support::TempDir;
@@ -339,8 +382,8 @@ mod tests {
     #[test]
     fn release_url_points_to_version_tag() {
         assert_eq!(
-            release_url("0.3.0"),
-            "https://github.com/kjanat/runner/releases/tag/v0.3.0"
+            release_url(VERSION),
+            format!("https://github.com/kjanat/runner/releases/tag/v{VERSION}")
         );
     }
 
@@ -351,7 +394,9 @@ mod tests {
         assert!(line.contains(
             "\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
         ));
-        assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.3.0\u{1b}\\0.3.0\u{1b}]8;;\u{1b}\\"));
+        assert!(line.contains(&format!(
+            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
+        )));
     }
 
     #[test]

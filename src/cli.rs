@@ -140,14 +140,21 @@ mod tests {
 #[derive(Parser)]
 #[command(
     name = "runner",
-    about = "Universal project task runner",
+    about = clap::crate_description!(),
+    help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     version,
     arg_required_else_help = false,
     add = SubcommandCandidates::new(task_candidates)
 )]
 pub(crate) struct Cli {
-    /// Scan and run tasks from this directory instead of the current working directory.
-    #[arg(long = "dir", global = true, value_name = "PATH")]
+    /// Use this directory instead of the current one.
+    #[arg(
+        long = "dir",
+        global = true,
+        env = "RUNNER_DIR",
+        value_name = "PATH",
+        value_parser = clap::value_parser!(PathBuf)
+    )]
     pub project_dir: Option<PathBuf>,
 
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
@@ -206,9 +213,10 @@ pub(crate) enum Command {
     /// Show detected project info
     Info,
 
-    /// Generate shell completions (auto-detects shell from $SHELL)
+    /// Generate shell completions
     Completions {
         /// Target shell (defaults to $SHELL)
+        #[arg(value_parser = clap::value_parser!(Shell))]
         shell: Option<Shell>,
     },
 

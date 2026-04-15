@@ -11,7 +11,7 @@ use super::list::print_tasks_grouped;
 use crate::types::{ProjectContext, version_matches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
-const VERSION: &str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = clap::crate_version!();
 
 /// Display detected package managers, task runners, Node version, monorepo
 /// status, and available tasks.
@@ -100,7 +100,7 @@ fn osc8_link(label: &str, url: &str) -> String {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{bin_name_from_arg0, release_url, title_line};
+    use super::{VERSION, bin_name_from_arg0, release_url, title_line};
 
     #[test]
     fn bin_name_from_arg0_uses_path_file_name() {
@@ -113,9 +113,9 @@ mod tests {
 
         assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\"));
         assert!(line.contains("run"));
-        assert!(line.contains(
-            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v0.3.0\u{1b}\\0.3.0\u{1b}]8;;\u{1b}\\"
-        ));
+        assert!(line.contains(&format!(
+            "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
+        )));
     }
 
     #[test]
@@ -123,7 +123,7 @@ mod tests {
         let line = title_line(Some(OsString::from("run")), false);
 
         assert!(line.contains("run"));
-        assert!(line.contains("0.3.0"));
+        assert!(line.contains(VERSION));
         assert!(!line.contains("\u{1b}]8;;"));
     }
 
@@ -131,7 +131,7 @@ mod tests {
     fn release_url_points_to_version_tag() {
         assert_eq!(
             release_url(),
-            "https://github.com/kjanat/runner/releases/tag/v0.3.0"
+            format!("https://github.com/kjanat/runner/releases/tag/v{VERSION}")
         );
     }
 }

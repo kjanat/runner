@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.3.1] - 2026-04-15
+
+### Added
+
+- Help output now includes a quiet `by Kaj Kowalski` attribution line, with an
+  OSC8 `mailto:` link when rendered to a terminal.
+
+### Changed
+
+- Enable clap's `cargo`, `env`, and `wrap_help` features, and use clap cargo
+  macros for package description/version metadata.
+- Shorten help copy for `runner completions` and `--dir`, and show
+  `RUNNER_DIR` directly in `--help` output.
+- Make clap value parsers explicit for `--dir <PATH>` and the optional
+  completions shell argument.
+
 ### Fixed
 
 - Resolve Deno tasks, `deno.json(c)` configs, and `package.json` scripts from
@@ -14,12 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignoring workspace roots that do not list the current path as a member.
 - Prefer the nearest Deno task source when duplicate task names exist across
   ancestor configs.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.3.0] - 2026-04-15
 
@@ -84,7 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/kjanat/runner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/kjanat/runner/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/kjanat/runner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kjanat/runner/compare/v0.1.0...v0.2.0
