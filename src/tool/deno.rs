@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use serde::Deserialize;
 
 use crate::tool::files;
+use crate::tool::node;
 
 /// Directories produced by Deno.
 pub(crate) const CLEAN_DIRS: &[&str] = &[".deno"];
@@ -15,9 +16,13 @@ pub(crate) const CLEAN_DIRS: &[&str] = &[".deno"];
 /// Supported Deno config filenames (priority order).
 pub(crate) const FILENAMES: &[&str] = &["deno.json", "deno.jsonc"];
 
-/// Detected via `deno.json` or `deno.jsonc`.
+/// Detected via `deno.json`, `deno.jsonc`, `deno.lock`, or `packageManager:
+/// deno@...` in a supported package manifest.
 pub(crate) fn detect(dir: &Path) -> bool {
     files::find_first(dir, FILENAMES).is_some()
+        || dir.join("deno.lock").exists()
+        || node::detect_pm_from_field(dir)
+            .is_some_and(|pm| pm == crate::types::PackageManager::Deno)
 }
 
 /// Parse task names from `deno.json` / `deno.jsonc`.
@@ -61,7 +66,7 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 mod tests {
     use std::fs;
 
-    use super::extract_tasks;
+    use super::{detect, extract_tasks};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -86,5 +91,25 @@ mod tests {
         tasks.sort_unstable();
 
         assert_eq!(tasks, ["build", "test"]);
+    }
+
+    #[test]
+    fn detect_supports_package_manager_field() {
+        let dir = TempDir::new("deno-package-manager-field");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "deno@2.7.12" }"#,
+        )
+        .expect("package.json should be written");
+
+        assert!(detect(dir.path()));
+    }
+
+    #[test]
+    fn detect_supports_deno_lock() {
+        let dir = TempDir::new("deno-lock-detect");
+        fs::write(dir.path().join("deno.lock"), "{}").expect("deno.lock should be written");
+
+        assert!(detect(dir.path()));
     }
 }

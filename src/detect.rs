@@ -51,7 +51,7 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
 
 /// Detect package managers by checking for lockfiles and config files.
 ///
-/// Node PM priority: bun > pnpm > yarn > npm > `packageManager` field.
+/// Node PM priority: bun > pnpm > yarn > npm > Node `packageManager` field.
 /// Within non-Node ecosystems, multiple PMs can coexist (e.g. Cargo + npm).
 fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     let node_pm = if tool::bun::detect(dir) {
@@ -63,7 +63,7 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     } else if tool::npm::detect(dir) {
         Some(PackageManager::Npm)
     } else if tool::node::has_package_json(dir) {
-        Some(tool::node::detect_pm_from_field(dir))
+        tool::node::detect_pm_from_field(dir).filter(|pm| pm.is_node())
     } else {
         None
     };
@@ -232,7 +232,12 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 /// Extract tasks only from tools that were actually detected, avoiding
 /// unnecessary filesystem reads.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    if ctx.package_managers.iter().any(|pm| pm.is_node()) {
+    if tool::node::has_package_json(dir)
+        && ctx
+            .package_managers
+            .iter()
+            .any(|pm| pm.is_node() || *pm == PackageManager::Deno)
+    {
         push_named_tasks(
             ctx,
             TaskSource::PackageJson,
@@ -327,5 +332,27 @@ mod tests {
 
         assert_eq!(ctx.warnings.len(), 1);
         assert_eq!(ctx.warnings[0].source, "turbo.json");
+    }
+
+    #[test]
+    fn detect_uses_deno_for_package_json_deno_projects() {
+        let dir = TempDir::new("detect-package-json-deno");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{
+  "packageManager": "deno@2.7.12",
+  "scripts": {
+    "build": "vite build"
+  }
+}"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path());
+
+        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Deno]);
+        assert!(ctx.tasks.iter().any(
+            |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
+        ));
     }
 }

@@ -33,18 +33,19 @@ pub(crate) fn find_manifest(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
 }
 
-/// Detect the Node package manager from the `"packageManager"` field in the
-/// supported package manifest. Falls back to [`PackageManager::Npm`] when
-/// absent or unparseable.
-pub(crate) fn detect_pm_from_field(dir: &Path) -> PackageManager {
+/// Detect the package manager named by the `"packageManager"` field in the
+/// supported package manifest.
+pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
     match parse_package_json(dir)
         .and_then(|package_json| package_json.package_manager)
         .as_deref()
     {
-        Some(s) if s.starts_with("pnpm") => PackageManager::Pnpm,
-        Some(s) if s.starts_with("yarn") => PackageManager::Yarn,
-        Some(s) if s.starts_with("bun") => PackageManager::Bun,
-        _ => PackageManager::Npm,
+        Some(s) if s.starts_with("npm") => Some(PackageManager::Npm),
+        Some(s) if s.starts_with("pnpm") => Some(PackageManager::Pnpm),
+        Some(s) if s.starts_with("yarn") => Some(PackageManager::Yarn),
+        Some(s) if s.starts_with("bun") => Some(PackageManager::Bun),
+        Some(s) if s.starts_with("deno") => Some(PackageManager::Deno),
+        _ => None,
     }
 }
 
@@ -163,7 +164,7 @@ mod tests {
         )
         .expect("package.json5 should be written");
 
-        assert_eq!(detect_pm_from_field(dir.path()), PackageManager::Pnpm);
+        assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Pnpm));
     }
 
     #[test]
@@ -191,7 +192,19 @@ mod tests {
         )
         .expect("package.yaml should be written");
 
-        assert_eq!(detect_pm_from_field(dir.path()), PackageManager::Yarn);
+        assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Yarn));
+    }
+
+    #[test]
+    fn detect_pm_from_field_supports_deno_package_manager() {
+        let dir = TempDir::new("node-package-json-deno-pm");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "deno@2.7.12" }"#,
+        )
+        .expect("package.json should be written");
+
+        assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Deno));
     }
 
     #[test]

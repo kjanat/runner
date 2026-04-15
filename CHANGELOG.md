@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.2.1] - 2026-04-15
+
+### Changed
+
+- Bump `clap_complete` to `4.6.2`.
+
+### Fixed
+
+- Detect Deno projects from `packageManager: "deno@..."` and `deno.lock`
+  instead of defaulting those repos to `npm`.
+- Keep `package.json` tasks available for Deno projects during task discovery.
+
 ## [0.2.0] - 2026-03-29
 
 ### Added
@@ -47,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kjanat/runner/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/kjanat/runner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0
