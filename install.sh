@@ -9,16 +9,24 @@ usage() {
 Install runner binaries from GitHub Releases.
 
 Usage:
-  install.sh [vX.Y.Z]
+  install.sh [X.Y.Z|vX.Y.Z]
 
 Arguments:
-  vX.Y.Z  Optional release tag. If omitted, installs latest release.
+  X.Y.Z|vX.Y.Z  Optional release tag. If omitted, installs latest release.
 
 Environment:
-  RUNNER_VERSION      Release tag override (e.g. v0.1.0)
+  RUNNER_VERSION      Release tag override (e.g. 0.1.0 or v0.1.0)
   RUNNER_INSTALL_DIR  Destination directory (highest precedence)
   XDG_BIN_HOME        Destination directory fallback before ~/.local/bin
 EOF
+}
+
+print_step() {
+	printf '==> %s\n' "$1"
+}
+
+print_item() {
+	printf '  - %s\n' "$1"
 }
 
 require_command() {
@@ -32,7 +40,7 @@ require_command() {
 resolve_latest_version() {
 	local latest_url version
 
-	latest_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+	latest_url="$(curl -fsSLS -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
 	version="${latest_url##*/}"
 	version="${version%%\?*}"
 
@@ -101,13 +109,14 @@ main() {
 	tmp_dir="$(mktemp -d)"
 	trap '[[ -n "${tmp_dir:-}" ]] && rm -rf "${tmp_dir}"' EXIT
 
-	printf '→ downloading %s\n' "${asset}"
-	curl -fL --retry 3 --retry-delay 1 -o "${tmp_dir}/${asset}" "${base_url}/${asset}"
-	curl -fL --retry 3 --retry-delay 1 -o "${tmp_dir}/${checksum_asset}" "${base_url}/${checksum_asset}"
+	print_step "Downloading release assets"
+	print_item "archive: ${asset}"
+	curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${asset}" "${base_url}/${asset}"
+	curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${checksum_asset}" "${base_url}/${checksum_asset}"
 
 	(
 		cd "${tmp_dir}"
-		sha256sum -c "${checksum_asset}"
+		sha256sum -c --status "${checksum_asset}"
 	)
 
 	tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
@@ -122,8 +131,30 @@ main() {
 	mkdir -p "${INSTALL_DIR}"
 	install -m 0755 "${tmp_dir}/runner" "${tmp_dir}/run" "${INSTALL_DIR}/"
 
-	printf '✓ installed runner + run to %s\n' "${INSTALL_DIR}"
-	printf '  ensure %s is in your PATH\n' "${INSTALL_DIR}"
+	print_step "Installation complete"
+	print_item "location: ${INSTALL_DIR}"
+
+	local resolved_runner expected_runner
+	expected_runner="${INSTALL_DIR}/runner"
+	resolved_runner="$(type -P runner || true)"
+
+	local installed_version
+	if installed_version="$(${expected_runner} -V)"; then
+		print_item "version: ${installed_version}"
+	else
+		print_item "warning: failed to execute ${expected_runner} -V"
+	fi
+
+	case ":${PATH:-}:" in
+	*:${INSTALL_DIR}:*) ;;
+	*)
+		print_item "PATH: add ${INSTALL_DIR} to your PATH"
+		;;
+	esac
+
+	if [[ -n "${resolved_runner}" && "${resolved_runner}" != "${expected_runner}" ]]; then
+		print_item 'refresh shell: run hash -r or restart the shell if needed'
+	fi
 }
 
 main "$@"

@@ -13,7 +13,8 @@
 		"commands": [
 			{ "command": "tombi format - --stdin-filename {{file_path}}", "exts": ["toml"] },
 			{ "command": "rustfmt --edition 2024", "exts": ["rs"] },
-			{ "command": "just --dump --justfile {{file_path}}", "fileNames": ["justfile"] }
+			{ "command": "just --dump --justfile {{file_path}}", "fileNames": ["justfile"] },
+			{ "command": "shfmt -i 0 -ln bash -bn -ci -filename {{file_path}}", "exts": ["sh", "bash"] }
 		]
 	},
 	"excludes": [

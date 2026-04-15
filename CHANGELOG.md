@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add `shfmt` for shell script formatting via dprint command integration.
+
+### Changed
+
+- Make `install.sh` accept both `X.Y.Z` and `vX.Y.Z` version arguments and
+  environment overrides.
+- Quiet installer downloads and checksum verification, and switch install
+  output to a more compact structured summary with the installed version.
+- Streamline install docs around the installer script and custom destination
+  override details.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
