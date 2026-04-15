@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Limit task source OSC8 hyperlinks to visible filename text so alignment
+  padding is not clickable.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

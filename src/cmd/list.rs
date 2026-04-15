@@ -80,6 +80,7 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
             || source.label().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
+    let padding = 16usize.saturating_sub(display.chars().count());
     let label = format!("{display:<16}").bold().to_string();
 
     if !stdout_is_terminal {
@@ -93,7 +94,11 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
         return label;
     };
 
-    osc8_link(&label, &url)
+    format!(
+        "{}{}",
+        osc8_link(&display.bold().to_string(), &url),
+        " ".repeat(padding)
+    )
 }
 
 fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
@@ -205,6 +210,21 @@ mod tests {
 
         assert!(label.contains("\u{1b}]8;;file://"));
         assert!(label.contains("package.json"));
+    }
+
+    #[test]
+    fn source_label_keeps_padding_outside_osc8_link() {
+        let dir = TempDir::new("list-source-label-padding");
+        fs::write(dir.path().join("package.json"), "{}").expect("package.json should be written");
+
+        let label = source_label(TaskSource::PackageJson, dir.path(), true);
+
+        let close = label
+            .rfind("\u{1b}]8;;\u{1b}\\")
+            .expect("label should contain OSC8 close sequence");
+
+        assert!(label[..close].contains("package.json"));
+        assert_eq!(&label[close + "\u{1b}]8;;\u{1b}\\".len()..], "    ");
     }
 
     #[test]
