@@ -15,7 +15,7 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
 ## Tool Support
 
-**Package managers (detect + install + exec):** npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer
+**Package managers (detect + install + run):** npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer
 
 **Task sources (list + run):** package manifests (`package.json`, `package.json5`, `package.yaml`) scripts, turbo.json tasks/pipeline, Makefile, justfile, Taskfile, deno.json, deno.jsonc
 
@@ -27,15 +27,27 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
 ```sh
 runner                              # show detected project info
-runner <task> [-- <args...>]        # run task (auto-routed)
-run <task> [-- <args...>]           # alias binary for quicker access
-runner run <task> [-- <args...>]    # explicit run form
+runner <task> [-- <args...>]        # run task (falls back to PM exec)
+run <task> [-- <args...>]           # alias binary: always runs as task/exec
+runner run <target> [-- <args...>]  # explicit unified task/exec form
 runner install [--frozen]           # install deps via detected PM
 runner clean [-y] [--include-framework]
 runner list [--raw]                 # list tasks (raw = one name per line)
-runner exec <cmd> [args...]         # run command through PM
 runner completions <shell>
 ```
+
+`runner run <target>` resolves to a defined task first; if none matches, it
+falls back to executing `<target>` as a command through the detected package
+manager (`npx`, `pnpm exec`, `bunx`, `cargo`, `uv run`, …). The `run` binary
+is a shortcut for `runner run` — unlike `runner`, it never parses positional
+arguments as built-in subcommands, so `run clean` or `run install` always
+runs the matching task/command.
+
+When a task shadows a built-in (`clean`, `install`, `list`, `info`,
+`completions`), the shorthand `runner <name>` runs the task. To force the
+built-in, pass a flag it recognises (e.g. `runner install --frozen`,
+`runner clean -y`, `runner list --raw`) or use the short alias (`runner i`,
+`runner ls`).
 
 ## Install
 

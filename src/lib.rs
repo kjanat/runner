@@ -44,12 +44,12 @@
 //!
 //! ```text
 //! runner              # show detected project info
-//! runner <task>       # run a task (auto-routed to the right tool)
-//! run <task>          # alias binary for quicker task execution
+//! runner <task>       # run a task (falls back to package-manager exec)
+//! run <task>          # alias binary: always task/exec, never a built-in
+//! runner run <target> # explicit unified run: task → PM exec fallback
 //! runner install      # install dependencies via detected PM
 //! runner clean        # remove caches and build artifacts
 //! runner list         # list available tasks from all sources
-//! runner exec <cmd>   # run a command through the package manager
 //! ```
 //!
 //! Generate docs with `cargo doc --document-private-items --open`.
@@ -171,6 +171,118 @@ where
     cli::Cli::from_arg_matches(&matches)
 }
 
+/// Parse process args as the `run` alias binary, detect the current dir,
+/// dispatch, and return the exit code.
+///
+/// Always treats positional arguments as a task or command (routed through
+/// [`cmd::run`]) — built-in subcommand names are never parsed specially, so
+/// `run clean`, `run install`, etc. run the corresponding task/command.
+///
+/// When the `COMPLETE` environment variable is set, writes shell completions
+/// to stdout and exits without running the normal command dispatch.
+///
+/// # Errors
+///
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+///
+/// Argument parsing/help/version flows are rendered by clap and returned as an
+/// exit code instead of terminating the host process.
+pub fn run_alias_from_env() -> Result<i32> {
+    let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
+        .unwrap_or_else(|| "run".to_string());
+    clap_complete::CompleteEnv::with_factory(move || {
+        configure_cli_command(cli::RunAliasCli::command(), true)
+            .name(bin.clone())
+            .bin_name(bin.clone())
+    })
+    .shells(complete::SHELLS)
+    .complete();
+    run_alias_from_args(std::env::args_os())
+}
+
+/// Parse explicit args as the `run` alias binary, detect current dir,
+/// dispatch, and return the exit code. See [`run_alias_from_env`].
+///
+/// `args` must include `argv\[0\]` as first item.
+///
+/// # Errors
+///
+/// Returns an error when reading current dir fails, project detection fails,
+/// command execution fails, or writing clap output fails.
+pub fn run_alias_from_args<I, T>(args: I) -> Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cwd = std::env::current_dir()?;
+    run_alias_in_dir(args, &cwd)
+}
+
+/// Parse explicit args as the `run` alias binary against `dir`. See
+/// [`run_alias_from_env`].
+///
+/// `args` must include `argv\[0\]` as first item.
+///
+/// # Errors
+///
+/// Returns an error when project detection fails, command execution fails, or
+/// writing clap output fails.
+pub fn run_alias_in_dir<I, T>(args: I, dir: &Path) -> Result<i32>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+
+    if requests_version(&args) {
+        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+        return Ok(0);
+    }
+
+    let cli = match parse_run_alias_cli(args) {
+        Ok(cli) => cli,
+        Err(err) => return render_clap_error(&err),
+    };
+    let project_dir = resolve_project_dir(
+        configured_project_dir(
+            cli.project_dir.as_deref(),
+            std::env::var_os("RUNNER_DIR").as_deref(),
+        )
+        .as_deref(),
+        dir,
+    )?;
+    dispatch_run_alias(cli, &project_dir)
+}
+
+fn parse_run_alias_cli<I, T>(args: I) -> Result<cli::RunAliasCli, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+
+    let mut command =
+        configure_cli_command(cli::RunAliasCli::command(), std::io::stdout().is_terminal());
+    if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
+        command = command.name(bin_name.clone()).bin_name(bin_name);
+    }
+
+    let matches = command.try_get_matches_from(args)?;
+    cli::RunAliasCli::from_arg_matches(&matches)
+}
+
+fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
+    let ctx = detect::detect(dir);
+    match cli.task {
+        None => {
+            cmd::info(&ctx);
+            Ok(0)
+        }
+        Some(task) => cmd::run(&ctx, &task, &cli.args),
+    }
+}
+
 fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     let name = Path::new(arg0)
         .file_name()
@@ -290,6 +402,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
 
     match cli.command {
+        None | Some(cli::Command::Info) if has_task(&ctx, "info") => cmd::run(&ctx, "info", &[]),
         None | Some(cli::Command::Info) => {
             cmd::info(&ctx);
             Ok(0)
@@ -303,10 +416,17 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 cmd::run(&ctx, &args[0], &args[1..])
             }
         }
+        Some(cli::Command::Install { frozen: false }) if has_task(&ctx, "install") => {
+            cmd::run(&ctx, "install", &[])
+        }
         Some(cli::Command::Install { frozen }) => {
             cmd::install(&ctx, frozen)?;
             Ok(0)
         }
+        Some(cli::Command::Clean {
+            yes: false,
+            include_framework: false,
+        }) if has_task(&ctx, "clean") => cmd::run(&ctx, "clean", &[]),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -314,16 +434,26 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::clean(&ctx, yes, include_framework)?;
             Ok(0)
         }
+        Some(cli::Command::List { raw: false }) if has_task(&ctx, "list") => {
+            cmd::run(&ctx, "list", &[])
+        }
         Some(cli::Command::List { raw }) => {
             cmd::list(&ctx, raw);
             Ok(0)
         }
-        Some(cli::Command::Exec { args }) => cmd::exec(&ctx, &args),
+        Some(cli::Command::Completions { shell: None }) if has_task(&ctx, "completions") => {
+            cmd::run(&ctx, "completions", &[])
+        }
         Some(cli::Command::Completions { shell }) => {
             cmd::completions(shell)?;
             Ok(0)
         }
     }
+}
+
+/// Whether the detected project defines a task with the given name.
+fn has_task(ctx: &types::ProjectContext, name: &str) -> bool {
+    ctx.tasks.iter().any(|task| task.name == name)
 }
 
 #[cfg(test)]
@@ -333,10 +463,13 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        VERSION, bin_name_from_arg0, configured_project_dir, release_url, requests_version,
-        resolve_project_dir, run_in_dir, version_line,
+        VERSION, bin_name_from_arg0, configured_project_dir, has_task, parse_cli,
+        parse_run_alias_cli, release_url, requests_version, resolve_project_dir, run_alias_in_dir,
+        run_in_dir, version_line,
     };
+    use crate::cli;
     use crate::tool::test_support::TempDir;
+    use crate::types::{ProjectContext, Task, TaskSource};
 
     #[test]
     fn help_returns_zero_instead_of_exiting() {
@@ -453,5 +586,113 @@ mod tests {
         let name = bin_name_from_arg0(&OsString::from("/tmp/run"));
 
         assert_eq!(name.as_deref(), Some("run"));
+    }
+
+    fn stub_context(tasks: &[&str]) -> ProjectContext {
+        ProjectContext {
+            root: PathBuf::from("."),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: tasks
+                .iter()
+                .map(|name| Task {
+                    name: (*name).to_string(),
+                    source: TaskSource::PackageJson,
+                    description: None,
+                })
+                .collect(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn has_task_returns_true_for_existing_task() {
+        let ctx = stub_context(&["clean", "install"]);
+
+        assert!(has_task(&ctx, "clean"));
+        assert!(has_task(&ctx, "install"));
+        assert!(!has_task(&ctx, "build"));
+    }
+
+    #[test]
+    fn run_alias_parses_builtin_names_as_tasks() {
+        for name in ["clean", "install", "list", "exec", "info", "completions", "run"] {
+            let cli = parse_run_alias_cli(["run", name])
+                .unwrap_or_else(|e| panic!("run {name} should parse: {e}"));
+
+            assert_eq!(cli.task.as_deref(), Some(name));
+            assert!(cli.args.is_empty());
+        }
+    }
+
+    #[test]
+    fn run_alias_forwards_trailing_args() {
+        let cli = parse_run_alias_cli(["run", "test", "--watch", "--reporter=verbose"])
+            .expect("run test --watch --reporter=verbose should parse");
+
+        assert_eq!(cli.task.as_deref(), Some("test"));
+        assert_eq!(cli.args, vec!["--watch", "--reporter=verbose"]);
+    }
+
+    #[test]
+    fn run_alias_bare_has_no_task() {
+        let cli = parse_run_alias_cli(["run"]).expect("bare run should parse");
+
+        assert!(cli.task.is_none());
+        assert!(cli.args.is_empty());
+    }
+
+    #[test]
+    fn run_alias_honours_dir_flag() {
+        let cli = parse_run_alias_cli(["run", "--dir=other", "build"])
+            .expect("run --dir=other build should parse");
+
+        assert_eq!(cli.project_dir, Some(PathBuf::from("other")));
+        assert_eq!(cli.task.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn run_alias_bare_shows_info() {
+        let dir = TempDir::new("runner-run-alias-bare");
+
+        let code = run_alias_in_dir(["run"], dir.path())
+            .expect("bare run should succeed on empty dir");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn runner_cli_still_parses_install_as_builtin_when_flag_set() {
+        let cli = parse_cli(["runner", "install", "--frozen"]).expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::Install { frozen: true }) => {}
+            other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_clean_as_builtin_when_flag_set() {
+        let cli = parse_cli(["runner", "clean", "-y"]).expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::Clean { yes: true, .. }) => {}
+            other => panic!("expected Clean {{ yes: true, .. }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_routes_unknown_name_to_external() {
+        let cli = parse_cli(["runner", "no-such-builtin"]).expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::External(args)) => {
+                assert_eq!(args, vec!["no-such-builtin"]);
+            }
+            other => panic!("expected External, got {other:?}"),
+        }
     }
 }
