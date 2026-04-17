@@ -127,10 +127,10 @@ fn strip_tag_prefix<'a>(help: &'a str, tag: &str) -> &'a str {
         .trim()
 }
 
-/// If the token at `index` is the value of a path-typed long flag (either
-/// `--flag=<value>` in a single token or `--flag` followed by a value
-/// token), return the `_files` flag string zsh should use. Otherwise return
-/// `None`, leaving completion to clap's engine.
+/// If the token at `index` is the value of a path-typed flag (either the
+/// long `--flag=<value>` / `--flag <value>` forms or the short `-o<value>`
+/// / `-o <value>` forms), return the `_files` flag string zsh should use.
+/// Otherwise return `None`, leaving completion to clap's engine.
 fn detect_path_files_flags(
     cmd: &clap::Command,
     args: &[OsString],
@@ -147,12 +147,30 @@ fn detect_path_files_flags(
         return zsh_files_flags(hint);
     }
 
-    // Previous token is `--flag` (no `=`), current token is its value.
+    // `-oVALUE` — short flag with its value attached in the same token.
+    // Only meaningful if the first char after `-` is a value-taking short.
+    if let Some(rest) = current.strip_prefix('-')
+        && !current.starts_with("--")
+        && let Some(c) = rest.chars().next()
+        && let Some(hint) = find_short_value_hint(&chain, c)
+    {
+        return zsh_files_flags(hint);
+    }
+
+    // Separated form: previous token was the flag, current token is its value.
     if index > 0 {
         let prev = args[index - 1].to_string_lossy();
         if let Some(long) = prev.strip_prefix("--")
             && !long.contains('=')
             && let Some(hint) = find_long_value_hint(&chain, long)
+        {
+            return zsh_files_flags(hint);
+        }
+        if prev.len() == 2
+            && let Some(rest) = prev.strip_prefix('-')
+            && !prev.starts_with("--")
+            && let Some(c) = rest.chars().next()
+            && let Some(hint) = find_short_value_hint(&chain, c)
         {
             return zsh_files_flags(hint);
         }
@@ -196,8 +214,17 @@ fn active_command_chain<'a>(
             continue;
         }
         if token.starts_with('-') && token.len() > 1 {
-            // Short flag cluster. We don't use short flags taking values,
-            // but be conservative and just skip the cluster.
+            // Short option. Handle two forms:
+            //   `-o value` (two tokens) → skip 2 if `-o` takes a value.
+            //   `-oPATH` / `-abc`       → value attached (if any) or
+            //                             boolean cluster — skip 1.
+            if token.len() == 2
+                && let Some(c) = token.chars().nth(1)
+                && short_flag_takes_value(&chain, c)
+            {
+                i += 2;
+                continue;
+            }
             i += 1;
             continue;
         }
@@ -228,20 +255,36 @@ fn long_flag_takes_value(chain: &[&clap::Command], name: &str) -> bool {
         .find_map(|cmd| {
             cmd.get_arguments()
                 .find(|arg| arg.get_long() == Some(name))
-                .map(|arg| {
-                    !matches!(
-                        arg.get_action(),
-                        clap::ArgAction::SetTrue
-                            | clap::ArgAction::SetFalse
-                            | clap::ArgAction::Count
-                            | clap::ArgAction::Help
-                            | clap::ArgAction::Version
-                            | clap::ArgAction::HelpShort
-                            | clap::ArgAction::HelpLong
-                    )
-                })
+                .map(action_takes_value)
         })
         .unwrap_or(false)
+}
+
+/// Short-option counterpart to [`long_flag_takes_value`]. Uses the same
+/// deepest-first shadowing rule.
+fn short_flag_takes_value(chain: &[&clap::Command], c: char) -> bool {
+    chain
+        .iter()
+        .rev()
+        .find_map(|cmd| {
+            cmd.get_arguments()
+                .find(|arg| arg.get_short() == Some(c))
+                .map(action_takes_value)
+        })
+        .unwrap_or(false)
+}
+
+fn action_takes_value(arg: &clap::Arg) -> bool {
+    !matches!(
+        arg.get_action(),
+        clap::ArgAction::SetTrue
+            | clap::ArgAction::SetFalse
+            | clap::ArgAction::Count
+            | clap::ArgAction::Help
+            | clap::ArgAction::Version
+            | clap::ArgAction::HelpShort
+            | clap::ArgAction::HelpLong
+    )
 }
 
 /// Search the active command chain (deepest first, so a subcommand-local
@@ -250,6 +293,18 @@ fn find_long_value_hint(chain: &[&clap::Command], name: &str) -> Option<ValueHin
     for cmd in chain.iter().rev() {
         for arg in cmd.get_arguments() {
             if arg.get_long() == Some(name) {
+                return Some(arg.get_value_hint());
+            }
+        }
+    }
+    None
+}
+
+/// Short-option counterpart to [`find_long_value_hint`].
+fn find_short_value_hint(chain: &[&clap::Command], c: char) -> Option<ValueHint> {
+    for cmd in chain.iter().rev() {
+        for arg in cmd.get_arguments() {
+            if arg.get_short() == Some(c) {
                 return Some(arg.get_value_hint());
             }
         }
@@ -431,46 +486,59 @@ mod tests {
         assert_eq!(zsh_files_flags(ValueHint::Unknown), None);
     }
 
-    /// The chain walker in `active_command_chain` assumes short-option
-    /// clusters never consume a following positional as their value
-    /// (`src/complete/mod.rs` line-search for `Short flag cluster`). Lock
-    /// the real CLIs to that invariant: if any arg ever gets a short
-    /// variant with a value-taking action, this test fires and the
-    /// walker must grow real short-option handling first.
+    /// `-o <value>` is the short form of a path-typed flag. The walker
+    /// must recognise `-o` as consuming a following value, and
+    /// `detect_path_files_flags` must emit the sentinel so zsh's
+    /// `_files` handles the path completion.
     #[test]
-    fn cli_has_no_short_value_taking_flags() {
-        fn assert_no_short_values(cmd: &Command, path: &str) {
-            for arg in cmd.get_arguments() {
-                if arg.get_short().is_some() {
-                    let takes_value = !matches!(
-                        arg.get_action(),
-                        clap::ArgAction::SetTrue
-                            | clap::ArgAction::SetFalse
-                            | clap::ArgAction::Count
-                            | clap::ArgAction::Help
-                            | clap::ArgAction::Version
-                            | clap::ArgAction::HelpShort
-                            | clap::ArgAction::HelpLong
-                    );
-                    assert!(
-                        !takes_value,
-                        "{path}: short option -{:?} takes a value; \
-                         active_command_chain's walker doesn't handle \
-                         short options with values — teach it or drop \
-                         the flag",
-                        arg.get_short().unwrap(),
-                    );
-                }
-            }
-            for sub in cmd.get_subcommands() {
-                let sub_path = format!("{path} {}", sub.get_name());
-                assert_no_short_values(sub, &sub_path);
-            }
-        }
+    fn detect_path_files_handles_short_value_flag_separated() {
+        let cmd = Command::new("runner").subcommand(
+            Command::new("completions").arg(
+                Arg::new("output")
+                    .short('o')
+                    .long("output")
+                    .value_hint(ValueHint::FilePath)
+                    .num_args(1),
+            ),
+        );
+        let args = to_os(&["runner", "completions", "-o", ""]);
 
-        use clap::CommandFactory;
-        assert_no_short_values(&crate::cli::Cli::command(), "runner");
-        assert_no_short_values(&crate::cli::RunAliasCli::command(), "run");
+        assert_eq!(detect_path_files_flags(&cmd, &args, 3), Some(""));
+    }
+
+    /// `-oVALUE` (short flag with value attached in the same token) should
+    /// also route to `_files`, since we're completing the value portion.
+    #[test]
+    fn detect_path_files_handles_short_value_flag_attached() {
+        let cmd = Command::new("runner").subcommand(
+            Command::new("completions").arg(
+                Arg::new("output")
+                    .short('o')
+                    .long("output")
+                    .value_hint(ValueHint::FilePath)
+                    .num_args(1),
+            ),
+        );
+        // Cursor sits at the value portion of `-ofoo`.
+        let args = to_os(&["runner", "completions", "-ofoo"]);
+
+        assert_eq!(detect_path_files_flags(&cmd, &args, 2), Some(""));
+    }
+
+    /// Boolean short flag (no value) must NOT cause the walker to skip
+    /// the next token — otherwise `runner clean -y build` would wrongly
+    /// consume `build` as `-y`'s value and never descend into it.
+    #[test]
+    fn detect_path_files_ignores_boolean_short_flag() {
+        let cmd = Command::new("runner").arg(
+            Arg::new("yes")
+                .short('y')
+                .long("yes")
+                .action(clap::ArgAction::SetTrue),
+        );
+        let args = to_os(&["runner", "-y", ""]);
+
+        assert_eq!(detect_path_files_flags(&cmd, &args, 2), None);
     }
 
     #[test]

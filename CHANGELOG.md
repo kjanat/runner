@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `runner completions <shell>` emits registration scripts for both `runner`
   and `run` in one invocation, so a single `eval "$(runner completions
   zsh)"` registers completion for both CLIs.
+- `runner completions` now accepts `--output <PATH>` (`-o`) to write the
+  script directly to a file instead of stdout. Parent directories are not
+  auto-created; an existing file is overwritten; a stderr confirmation
+  line (`wrote completion script to <PATH>`) is printed on success.
 - Zsh completion honours path hints: `--dir <TAB>` (and any arg carrying
   `ValueHint::DirPath` / `FilePath` / `AnyPath` / `ExecutablePath`)
   delegates to zsh's native `_files` so `~/`, `~named-dir/`, globs, and

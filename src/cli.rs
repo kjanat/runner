@@ -210,6 +210,17 @@ pub(crate) enum Command {
         /// Target shell (defaults to $SHELL)
         #[arg(value_parser = clap::value_parser!(Shell))]
         shell: Option<Shell>,
+
+        /// Write the completion script to <PATH> instead of stdout. Any
+        /// existing file is overwritten.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "PATH",
+            value_hint = clap::ValueHint::FilePath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
     },
 
     /// Catch-all: treat unknown subcommands as task names.

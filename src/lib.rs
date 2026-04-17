@@ -441,11 +441,12 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::list(&ctx, raw);
             Ok(0)
         }
-        Some(cli::Command::Completions { shell: None }) if has_task(&ctx, "completions") => {
-            cmd::run(&ctx, "completions", &[])
-        }
-        Some(cli::Command::Completions { shell }) => {
-            cmd::completions(shell)?;
+        Some(cli::Command::Completions {
+            shell: None,
+            output: None,
+        }) if has_task(&ctx, "completions") => cmd::run(&ctx, "completions", &[]),
+        Some(cli::Command::Completions { shell, output }) => {
+            cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
     }
@@ -701,6 +702,54 @@ mod tests {
                 assert_eq!(args, vec!["no-such-builtin"]);
             }
             other => panic!("expected External, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_completions_output_long() {
+        let cli = parse_cli(["runner", "completions", "--output", "/tmp/runner.zsh"])
+            .expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::Completions {
+                shell: None,
+                output: Some(path),
+            }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
+            other => panic!("expected Completions with --output long form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_completions_output_short() {
+        let cli =
+            parse_cli(["runner", "completions", "-o", "/tmp/runner.zsh"]).expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::Completions {
+                shell: None,
+                output: Some(path),
+            }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
+            other => panic!("expected Completions with -o short form, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_completions_shell_and_output() {
+        let cli = parse_cli([
+            "runner",
+            "completions",
+            "zsh",
+            "--output",
+            "/tmp/runner.zsh",
+        ])
+        .expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::Completions {
+                shell: Some(_),
+                output: Some(path),
+            }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
+            other => panic!("expected Completions with both shell and output set, got {other:?}"),
         }
     }
 }

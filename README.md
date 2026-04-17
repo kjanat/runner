@@ -33,7 +33,7 @@ runner run <target> [-- <args...>]  # explicit unified task/exec form
 runner install [--frozen]           # install deps via detected PM
 runner clean [-y] [--include-framework]
 runner list [--raw]                 # list tasks (raw = one name per line)
-runner completions <shell>
+runner completions [<shell>] [-o <path>]
 ```
 
 `runner run <target>` resolves to a defined task first; if none matches, it
