@@ -337,7 +337,9 @@ mod tests {
 
     use clap::{Arg, Command, ValueHint};
 
-    use super::{detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
+    use clap_complete::env::EnvCompleter as _;
+
+    use super::{GroupedZsh, detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
 
     fn dir_flag_cmd() -> Command {
         Command::new("runner").arg(
@@ -557,5 +559,24 @@ mod tests {
     #[test]
     fn strip_tag_prefix_returns_empty_for_bare_source() {
         assert_eq!(strip_tag_prefix("package.json", "package.json"), "");
+    }
+
+    /// `_files` internals (and user zstyles keyed on the `globbed-files`
+    /// tag) evaluate specs containing unquoted `*`. Under zsh's default
+    /// `NOMATCH` behaviour those raise `no matches found: *:globbed-files`
+    /// into the user's prompt. The completion function must scope
+    /// `NO_NOMATCH` via `emulate -L zsh` so those errors stay suppressed.
+    #[test]
+    fn registration_script_disables_nomatch() {
+        let mut buf = Vec::new();
+        GroupedZsh
+            .write_registration("COMPLETE", "runner", "runner", "/bin/runner", &mut buf)
+            .expect("registration should succeed");
+        let script = String::from_utf8(buf).expect("script must be utf-8");
+        assert!(
+            script.contains("emulate -L zsh -o NO_NOMATCH"),
+            "completion function must disable NOMATCH so `_files` and user \
+             zstyles don't leak `no matches found` errors; got:\n{script}"
+        );
     }
 }
