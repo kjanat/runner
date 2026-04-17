@@ -127,9 +127,15 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
 /// Falls back to running the command directly when no package manager is
 /// detected.
 fn run_pm_exec_fallback(ctx: &ProjectContext, target: &str, args: &[String]) -> Result<i32> {
-    let mut combined = Vec::with_capacity(args.len() + 1);
-    combined.push(target.to_string());
-    combined.extend(args.iter().cloned());
+    // `tool::<pm>::exec_cmd` takes a flat `&[String]` — [target, ...args].
+    // Build it lazily so the direct `Command::new(target)` fallback doesn't
+    // pay for an allocation it never uses.
+    let combined = || {
+        let mut v = Vec::with_capacity(args.len() + 1);
+        v.push(target.to_string());
+        v.extend(args.iter().cloned());
+        v
+    };
 
     // Only dispatch through a PM when its exec primitive actually runs
     // arbitrary package binaries like `npx` does. For npm/yarn/pnpm/bun/uv
@@ -143,11 +149,11 @@ fn run_pm_exec_fallback(ctx: &ProjectContext, target: &str, args: &[String]) -> 
     // For those we fall through to spawning `target` directly so PATH is
     // authoritative rather than silently doing the wrong thing.
     let (label, mut cmd) = match ctx.primary_pm() {
-        Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined)),
-        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined)),
-        Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined)),
-        Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined)),
-        Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined)),
+        Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
+        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined())),
+        Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
+        Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
+        Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined())),
         None | Some(_) => {
             let mut c = Command::new(target);
             c.args(args);

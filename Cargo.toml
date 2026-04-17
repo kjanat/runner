@@ -1,6 +1,6 @@
 [package]
 name         = "runner"
-version      = "0.3.1"
+version      = "0.4.0"
 edition      = "2024"
 # Edition 2024 is 1.85+; let-chains (used in `if let … && let …`
 # throughout the codebase) stabilised in 1.88.
