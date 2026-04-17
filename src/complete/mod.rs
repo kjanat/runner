@@ -137,11 +137,12 @@ fn detect_path_files_flags(
     index: usize,
 ) -> Option<&'static str> {
     let current = args.get(index)?.to_string_lossy();
+    let chain = active_command_chain(cmd, args, index);
 
     // `--flag=value` — the current token carries both, we're completing `value`.
     if let Some((flag, _value)) = current.split_once('=')
         && let Some(long) = flag.strip_prefix("--")
-        && let Some(hint) = find_long_value_hint(cmd, long)
+        && let Some(hint) = find_long_value_hint(&chain, long)
     {
         return zsh_files_flags(hint);
     }
@@ -151,7 +152,7 @@ fn detect_path_files_flags(
         let prev = args[index - 1].to_string_lossy();
         if let Some(long) = prev.strip_prefix("--")
             && !long.contains('=')
-            && let Some(hint) = find_long_value_hint(cmd, long)
+            && let Some(hint) = find_long_value_hint(&chain, long)
         {
             return zsh_files_flags(hint);
         }
@@ -160,17 +161,86 @@ fn detect_path_files_flags(
     None
 }
 
-/// Walk `cmd` and its (possibly nested) subcommands to find a long arg
-/// named `name`, returning its [`ValueHint`] if any.
-fn find_long_value_hint(cmd: &clap::Command, name: &str) -> Option<ValueHint> {
-    for arg in cmd.get_arguments() {
-        if arg.get_long() == Some(name) {
-            return Some(arg.get_value_hint());
+/// Walk `args[1..index]` and descend into matching subcommands to build the
+/// active command chain (root first, deepest last). Stops as soon as a
+/// positional argument fails to match any subcommand of the current node —
+/// that's where positionals for the leaf command begin. Leading options
+/// and their values are skipped.
+fn active_command_chain<'a>(
+    root: &'a clap::Command,
+    args: &[OsString],
+    index: usize,
+) -> Vec<&'a clap::Command> {
+    let mut chain = vec![root];
+    let mut current = root;
+    let mut i = 1;
+    let stop = index.min(args.len());
+    while i < stop {
+        let token = args[i].to_string_lossy();
+        if token == "--" {
+            break;
+        }
+        if token.starts_with("--") {
+            // `--flag=value` consumes one token; `--flag value` consumes two
+            // when the flag expects a value on `current`.
+            if !token.contains('=')
+                && let Some(long) = token.strip_prefix("--")
+                && long_flag_takes_value(current, long)
+            {
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if token.starts_with('-') && token.len() > 1 {
+            // Short flag cluster. We don't use short flags taking values,
+            // but be conservative and just skip the cluster.
+            i += 1;
+            continue;
+        }
+        if let Some(sub) = current.find_subcommand(token.as_ref()) {
+            chain.push(sub);
+            current = sub;
+            i += 1;
+        } else {
+            // First positional that isn't a subcommand — we've hit the
+            // leaf command's own positionals (task name, etc).
+            break;
         }
     }
-    for sub in cmd.get_subcommands() {
-        if let Some(hint) = find_long_value_hint(sub, name) {
-            return Some(hint);
+    chain
+}
+
+/// Whether the long option `name` on `cmd` consumes a following positional
+/// as its value. Globally-propagated flags (like our `--dir`) count as
+/// present on every subcommand, so only the local search is needed.
+fn long_flag_takes_value(cmd: &clap::Command, name: &str) -> bool {
+    cmd.get_arguments()
+        .chain(cmd.get_subcommands().flat_map(clap::Command::get_arguments))
+        .any(|arg| {
+            arg.get_long() == Some(name)
+                && !matches!(
+                    arg.get_action(),
+                    clap::ArgAction::SetTrue
+                        | clap::ArgAction::SetFalse
+                        | clap::ArgAction::Count
+                        | clap::ArgAction::Help
+                        | clap::ArgAction::Version
+                        | clap::ArgAction::HelpShort
+                        | clap::ArgAction::HelpLong
+                )
+        })
+}
+
+/// Search the active command chain (deepest first, so a subcommand-local
+/// definition shadows the root) for a long arg named `name`.
+fn find_long_value_hint(chain: &[&clap::Command], name: &str) -> Option<ValueHint> {
+    for cmd in chain.iter().rev() {
+        for arg in cmd.get_arguments() {
+            if arg.get_long() == Some(name) {
+                return Some(arg.get_value_hint());
+            }
         }
     }
     None
@@ -222,6 +292,44 @@ mod tests {
         let args = to_os(&["runner", "--dir=~/pro"]);
 
         assert_eq!(detect_path_files_flags(&cmd, &args, 1), Some("-/"));
+    }
+
+    /// Two sibling subcommands each define the same long flag with
+    /// different [`ValueHint`]s; the lookup should pick the one on the
+    /// subcommand the user is actually in.
+    #[test]
+    fn detect_path_files_respects_active_subcommand() {
+        let cmd = Command::new("runner")
+            .subcommand(
+                Command::new("build").arg(
+                    Arg::new("out")
+                        .long("out")
+                        .value_hint(ValueHint::DirPath)
+                        .num_args(1),
+                ),
+            )
+            .subcommand(
+                Command::new("deploy").arg(
+                    Arg::new("out")
+                        .long("out")
+                        .value_hint(ValueHint::FilePath)
+                        .num_args(1),
+                ),
+            );
+
+        let build_args = to_os(&["runner", "build", "--out", ""]);
+        assert_eq!(
+            detect_path_files_flags(&cmd, &build_args, 3),
+            Some("-/"),
+            "build's DirPath should win in build context"
+        );
+
+        let deploy_args = to_os(&["runner", "deploy", "--out", ""]);
+        assert_eq!(
+            detect_path_files_flags(&cmd, &deploy_args, 3),
+            Some(""),
+            "deploy's FilePath should win in deploy context"
+        );
     }
 
     #[test]

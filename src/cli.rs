@@ -218,8 +218,10 @@ pub(crate) enum Command {
 }
 
 /// CLI used by the `run` alias binary. Behaves as a shortcut for
-/// `runner run <task>`: every positional argument is a task (or
-/// command) to execute, never a built-in subcommand.
+/// `runner run <task>`: the first positional is the task or command,
+/// any remaining positionals are forwarded as its arguments, and
+/// built-in subcommand names are never parsed specially (so
+/// `run foo bar` runs `foo` with `bar`, not two separate targets).
 #[derive(Parser)]
 #[command(
     name = "run",
