@@ -182,10 +182,12 @@ fn active_command_chain<'a>(
         }
         if token.starts_with("--") {
             // `--flag=value` consumes one token; `--flag value` consumes two
-            // when the flag expects a value on `current`.
+            // when the flag expects a value on any command in the active
+            // chain (so a global flag like `--dir`, defined on root, is
+            // still recognised after descending into a subcommand).
             if !token.contains('=')
                 && let Some(long) = token.strip_prefix("--")
-                && long_flag_takes_value(current, long)
+                && long_flag_takes_value(&chain, long)
             {
                 i += 2;
                 continue;
@@ -212,25 +214,25 @@ fn active_command_chain<'a>(
     chain
 }
 
-/// Whether the long option `name` on `cmd` consumes a following positional
-/// as its value. Globally-propagated flags (like our `--dir`) count as
-/// present on every subcommand, so only the local search is needed.
-fn long_flag_takes_value(cmd: &clap::Command, name: &str) -> bool {
-    cmd.get_arguments()
-        .chain(cmd.get_subcommands().flat_map(clap::Command::get_arguments))
-        .any(|arg| {
-            arg.get_long() == Some(name)
-                && !matches!(
-                    arg.get_action(),
-                    clap::ArgAction::SetTrue
-                        | clap::ArgAction::SetFalse
-                        | clap::ArgAction::Count
-                        | clap::ArgAction::Help
-                        | clap::ArgAction::Version
-                        | clap::ArgAction::HelpShort
-                        | clap::ArgAction::HelpLong
-                )
-        })
+/// Whether the long option `name` consumes a following positional as its
+/// value, looking across every command in the active chain. A flag defined
+/// globally on the root (like our `--dir`) remains recognised after we've
+/// descended into a subcommand; a subcommand-local flag takes effect only
+/// once we're inside that subcommand.
+fn long_flag_takes_value(chain: &[&clap::Command], name: &str) -> bool {
+    chain.iter().flat_map(|cmd| cmd.get_arguments()).any(|arg| {
+        arg.get_long() == Some(name)
+            && !matches!(
+                arg.get_action(),
+                clap::ArgAction::SetTrue
+                    | clap::ArgAction::SetFalse
+                    | clap::ArgAction::Count
+                    | clap::ArgAction::Help
+                    | clap::ArgAction::Version
+                    | clap::ArgAction::HelpShort
+                    | clap::ArgAction::HelpLong
+            )
+    })
 }
 
 /// Search the active command chain (deepest first, so a subcommand-local
@@ -292,6 +294,25 @@ mod tests {
         let args = to_os(&["runner", "--dir=~/pro"]);
 
         assert_eq!(detect_path_files_flags(&cmd, &args, 1), Some("-/"));
+    }
+
+    /// A root-level value-taking flag must still be recognised by the
+    /// chain walker after descending into a subcommand, so the walker
+    /// correctly consumes its value token and the hint lookup returns
+    /// the root's [`ValueHint`].
+    #[test]
+    fn detect_path_files_recognises_root_flag_after_subcommand() {
+        let cmd = Command::new("runner")
+            .arg(
+                Arg::new("dir")
+                    .long("dir")
+                    .value_hint(ValueHint::DirPath)
+                    .num_args(1),
+            )
+            .subcommand(Command::new("run"));
+
+        let args = to_os(&["runner", "run", "--dir", ""]);
+        assert_eq!(detect_path_files_flags(&cmd, &args, 3), Some("-/"));
     }
 
     /// Two sibling subcommands each define the same long flag with

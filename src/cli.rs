@@ -222,7 +222,7 @@ pub(crate) enum Command {
 /// any remaining positionals are forwarded as its arguments, and
 /// built-in subcommand names are never parsed specially (so
 /// `run foo bar` runs `foo` with `bar`, not two separate targets).
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "run",
     about = "Run a project task or exec a command through the detected package manager",
