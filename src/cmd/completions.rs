@@ -1,49 +1,65 @@
 //! `runner completions` — generate dynamic shell completion scripts.
 
-use std::ffi::OsString;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use clap_complete::aot::Shell;
 
-/// Write the dynamic completion registration script to stdout.
+use crate::complete::SHELLS;
+
+/// Write dynamic completion registration scripts for both the `runner` and
+/// `run` binaries to stdout.
 ///
-/// Resolves the target shell from the explicit argument or `$SHELL`, then
-/// spawns the current binary with `COMPLETE=<shell>` set, which activates
-/// [`clap_complete::CompleteEnv`] and emits the registration script. This
-/// avoids `unsafe` env-var mutation in our own process.
+/// Resolves the target shell from the explicit argument or `$SHELL`, looks
+/// up the matching completer from our [`SHELLS`] table, and calls
+/// [`clap_complete::env::EnvCompleter::write_registration`] directly — once
+/// per binary — so users only need a single
+/// `eval "$(runner completions zsh)"` in their rc file to get completion
+/// for both CLIs.
 pub(crate) fn completions(shell: Option<Shell>) -> Result<()> {
     let shell = shell.or_else(detect_shell).context(
         "could not detect shell — set $SHELL or pass explicitly: runner completions zsh",
     )?;
 
-    let bin_name = completion_bin_name(std::env::args_os().next());
     let shell_name = env_shell_name(shell);
+    let completer = SHELLS
+        .completer(shell_name)
+        .with_context(|| format!("unsupported shell: {shell_name}"))?;
 
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let mut cmd = std::process::Command::new(&exe);
-    cmd.env("COMPLETE", shell_name);
+    let runner_completer = exe.to_string_lossy().into_owned();
+    let run_completer = sibling_run_binary(&exe).map_or_else(
+        || "run".to_string(),
+        |path| path.to_string_lossy().into_owned(),
+    );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        cmd.arg0(&bin_name);
-    }
-
-    let output = cmd
-        .output()
-        .context("failed to spawn completion subprocess")?;
-
-    if !output.status.success() && output.stdout.is_empty() {
-        bail!("completion subprocess failed");
-    }
-
-    std::io::stdout()
-        .write_all(&output.stdout)
-        .context("failed to write completion script")?;
+    let mut stdout = std::io::stdout();
+    completer
+        .write_registration("COMPLETE", "runner", "runner", &runner_completer, &mut stdout)
+        .context("failed to write runner completion script")?;
+    stdout
+        .write_all(b"\n")
+        .context("failed to write completion separator")?;
+    completer
+        .write_registration("COMPLETE", "run", "run", &run_completer, &mut stdout)
+        .context("failed to write run completion script")?;
 
     Ok(())
+}
+
+/// Resolve the sibling `run` binary next to the `runner` executable so the
+/// generated script can invoke it directly. Falls back to `None` (the
+/// caller then uses `"run"` on `$PATH`) when no sibling exists — typical
+/// for cross-compiled or split installs.
+fn sibling_run_binary(runner_exe: &Path) -> Option<PathBuf> {
+    let parent = runner_exe.parent()?;
+    let candidate = parent.join(run_binary_filename());
+    candidate.is_file().then_some(candidate)
+}
+
+const fn run_binary_filename() -> &'static str {
+    if cfg!(windows) { "run.exe" } else { "run" }
 }
 
 /// Detect the current shell from `$SHELL`.
@@ -64,16 +80,6 @@ fn shell_from_path(path: &Path) -> Option<Shell> {
     }
 }
 
-fn completion_bin_name(arg0: Option<OsString>) -> String {
-    arg0.and_then(|raw| {
-        Path::new(&raw)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-    })
-    .filter(|name| !name.is_empty())
-    .unwrap_or_else(|| "runner".to_string())
-}
-
 const fn env_shell_name(shell: Shell) -> &'static str {
     match shell {
         Shell::Elvish => "elvish",
@@ -86,26 +92,19 @@ const fn env_shell_name(shell: Shell) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
     use std::path::Path;
 
     use clap_complete::aot::Shell;
 
-    use super::{completion_bin_name, shell_from_path};
+    use super::{run_binary_filename, shell_from_path};
 
     #[test]
-    fn completion_bin_name_uses_file_name_from_path() {
-        assert_eq!(completion_bin_name(Some(OsString::from("/tmp/run"))), "run");
-    }
-
-    #[test]
-    fn completion_bin_name_falls_back_to_runner_when_missing() {
-        assert_eq!(completion_bin_name(None), "runner");
-    }
-
-    #[test]
-    fn completion_bin_name_falls_back_to_runner_when_empty() {
-        assert_eq!(completion_bin_name(Some(OsString::from(""))), "runner");
+    fn run_binary_filename_matches_platform() {
+        if cfg!(windows) {
+            assert_eq!(run_binary_filename(), "run.exe");
+        } else {
+            assert_eq!(run_binary_filename(), "run");
+        }
     }
 
     #[test]

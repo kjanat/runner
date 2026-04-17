@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
-
 /// Produce [`CompletionCandidate`]s for every detected task in the current
 /// directory. Called lazily by clap's runtime completion engine — only runs
 /// when the shell is actually requesting completions, never during normal
@@ -153,6 +152,7 @@ pub(crate) struct Cli {
         global = true,
         env = "RUNNER_DIR",
         value_name = "PATH",
+        value_hint = clap::ValueHint::DirPath,
         value_parser = clap::value_parser!(PathBuf)
     )]
     pub project_dir: Option<PathBuf>,
@@ -235,6 +235,7 @@ pub(crate) struct RunAliasCli {
         global = true,
         env = "RUNNER_DIR",
         value_name = "PATH",
+        value_hint = clap::ValueHint::DirPath,
         value_parser = clap::value_parser!(PathBuf)
     )]
     pub project_dir: Option<PathBuf>,

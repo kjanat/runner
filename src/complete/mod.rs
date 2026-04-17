@@ -6,7 +6,15 @@
 
 use std::ffi::OsString;
 
+use clap::ValueHint;
 use clap_complete::env::{Bash, Elvish, EnvCompleter, Fish, Powershell, Shells};
+
+/// Sentinel line emitted by the zsh adapter when the current argument
+/// position wants shell-native path completion (so zsh can handle `~`,
+/// named directories, globbing, `cdpath`, etc.). Format:
+/// `__CLAP_PATHFILES__<TAB><flags>` where `<flags>` is forwarded verbatim
+/// to zsh's `_files` builtin (e.g. `-/` for directories-only).
+const PATHFILES_SENTINEL: &str = "__CLAP_PATHFILES__";
 
 /// Shell completers with tag-grouped zsh output.
 pub(crate) const SHELLS: Shells<'static> =
@@ -68,6 +76,16 @@ impl EnvCompleter for GroupedZsh {
         if args.len() == index {
             args.push(OsString::new());
         }
+
+        // Short-circuit when the current position is a path-typed flag value:
+        // emit a sentinel so the zsh script can delegate to its native
+        // `_files` builtin (which understands `~`, named dirs, `cdpath`,
+        // globs — all things clap's Rust-side path lister doesn't know).
+        if let Some(flags) = detect_path_files_flags(cmd, &args, index) {
+            write!(buf, "{PATHFILES_SENTINEL}\t{flags}")?;
+            return Ok(());
+        }
+
         let completions = clap_complete::engine::complete(cmd, args, index, current_dir)?;
 
         for (i, candidate) in completions.iter().enumerate() {
@@ -109,9 +127,125 @@ fn strip_tag_prefix<'a>(help: &'a str, tag: &str) -> &'a str {
         .trim()
 }
 
+/// If the token at `index` is the value of a path-typed long flag (either
+/// `--flag=<value>` in a single token or `--flag` followed by a value
+/// token), return the `_files` flag string zsh should use. Otherwise return
+/// `None`, leaving completion to clap's engine.
+fn detect_path_files_flags(
+    cmd: &clap::Command,
+    args: &[OsString],
+    index: usize,
+) -> Option<&'static str> {
+    let current = args.get(index)?.to_string_lossy();
+
+    // `--flag=value` — the current token carries both, we're completing `value`.
+    if let Some((flag, _value)) = current.split_once('=')
+        && let Some(long) = flag.strip_prefix("--")
+        && let Some(hint) = find_long_value_hint(cmd, long)
+    {
+        return zsh_files_flags(hint);
+    }
+
+    // Previous token is `--flag` (no `=`), current token is its value.
+    if index > 0 {
+        let prev = args[index - 1].to_string_lossy();
+        if let Some(long) = prev.strip_prefix("--")
+            && !long.contains('=')
+            && let Some(hint) = find_long_value_hint(cmd, long)
+        {
+            return zsh_files_flags(hint);
+        }
+    }
+
+    None
+}
+
+/// Walk `cmd` and its (possibly nested) subcommands to find a long arg
+/// named `name`, returning its [`ValueHint`] if any.
+fn find_long_value_hint(cmd: &clap::Command, name: &str) -> Option<ValueHint> {
+    for arg in cmd.get_arguments() {
+        if arg.get_long() == Some(name) {
+            return Some(arg.get_value_hint());
+        }
+    }
+    for sub in cmd.get_subcommands() {
+        if let Some(hint) = find_long_value_hint(sub, name) {
+            return Some(hint);
+        }
+    }
+    None
+}
+
+/// Map a clap [`ValueHint`] to the flag string used with zsh's `_files`.
+/// Returns `None` for hints that aren't path-like (so regular clap
+/// completion keeps running).
+const fn zsh_files_flags(hint: ValueHint) -> Option<&'static str> {
+    match hint {
+        ValueHint::DirPath => Some("-/"),
+        ValueHint::FilePath | ValueHint::AnyPath | ValueHint::ExecutablePath => Some(""),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::strip_tag_prefix;
+    use std::ffi::OsString;
+
+    use clap::{Arg, Command, ValueHint};
+
+    use super::{detect_path_files_flags, strip_tag_prefix};
+
+    fn dir_flag_cmd() -> Command {
+        Command::new("runner").arg(
+            Arg::new("dir")
+                .long("dir")
+                .value_hint(ValueHint::DirPath)
+                .num_args(1),
+        )
+    }
+
+    fn to_os(strings: &[&str]) -> Vec<OsString> {
+        strings.iter().map(|s| OsString::from(*s)).collect()
+    }
+
+    #[test]
+    fn detect_path_files_recognises_separated_dir_flag() {
+        let cmd = dir_flag_cmd();
+        let args = to_os(&["runner", "--dir", ""]);
+
+        assert_eq!(detect_path_files_flags(&cmd, &args, 2), Some("-/"));
+    }
+
+    #[test]
+    fn detect_path_files_recognises_inline_equals_dir_flag() {
+        let cmd = dir_flag_cmd();
+        let args = to_os(&["runner", "--dir=~/pro"]);
+
+        assert_eq!(detect_path_files_flags(&cmd, &args, 1), Some("-/"));
+    }
+
+    #[test]
+    fn detect_path_files_walks_subcommands() {
+        let cmd = Command::new("runner")
+            .subcommand(Command::new("run").arg(
+                Arg::new("target")
+                    .long("target")
+                    .value_hint(ValueHint::FilePath)
+                    .num_args(1),
+            ));
+        let args = to_os(&["runner", "run", "--target", ""]);
+
+        assert_eq!(detect_path_files_flags(&cmd, &args, 3), Some(""));
+    }
+
+    #[test]
+    fn detect_path_files_ignores_non_path_flags() {
+        let cmd = Command::new("runner")
+            .arg(Arg::new("name").long("name").num_args(1));
+        let args = to_os(&["runner", "--name", ""]);
+
+        assert_eq!(detect_path_files_flags(&cmd, &args, 2), None);
+    }
 
     #[test]
     fn strip_tag_prefix_removes_matching_source() {

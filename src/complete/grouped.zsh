@@ -20,6 +20,11 @@
 # like _tags, _describe, etc.
 
 function _clap_dynamic_completer_{NAME}() {
+    # Reset to zsh defaults with local scope so caller-side settings
+    # (XTRACE, shwordsplit, nullglob, aliases, …) don't leak into us
+    # and our tracing doesn't bleed into their prompt.
+    emulate -L zsh
+
     local __runner_idx=$(( CURRENT - 1 ))
     local __runner_ifs=$'\n'
 
@@ -32,6 +37,20 @@ function _clap_dynamic_completer_{NAME}() {
     )}")
 
     [[ -z "$__runner_raw" ]] && return
+
+    # Path-hint delegation: when the Rust completer returns the path
+    # sentinel, hand off to zsh's `_files` builtin so tilde (`~/foo`,
+    # `~named-dir/`), globs, and `cdpath` all work natively.
+    if [[ "${__runner_raw[1]}" == __CLAP_PATHFILES__* ]]; then
+        local __runner_flags="${${__runner_raw[1]}#__CLAP_PATHFILES__}"
+        __runner_flags="${__runner_flags#$'\t'}"
+        if [[ -n "$__runner_flags" ]]; then
+            _files ${=__runner_flags}
+        else
+            _files
+        fi
+        return
+    fi
 
     # --- Pass 1: collect unique tags in insertion order ---------------
     local -a __runner_grps=()
