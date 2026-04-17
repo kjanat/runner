@@ -29,10 +29,7 @@ pub(crate) fn completions(shell: Option<Shell>) -> Result<()> {
 
     let exe = std::env::current_exe().context("failed to resolve current executable")?;
     let runner_completer = exe.to_string_lossy().into_owned();
-    let run_completer = sibling_run_binary(&exe).map_or_else(
-        || "run".to_string(),
-        |path| path.to_string_lossy().into_owned(),
-    );
+    let run_completer = sibling_run_binary(&exe).map(|path| path.to_string_lossy().into_owned());
 
     let mut stdout = std::io::stdout();
     completer
@@ -44,20 +41,28 @@ pub(crate) fn completions(shell: Option<Shell>) -> Result<()> {
             &mut stdout,
         )
         .context("failed to write runner completion script")?;
-    stdout
-        .write_all(b"\n")
-        .context("failed to write completion separator")?;
-    completer
-        .write_registration("COMPLETE", "run", "run", &run_completer, &mut stdout)
-        .context("failed to write run completion script")?;
+
+    // Only emit the `run` registration when this install actually ships the
+    // alias binary next to `runner`. Emitting a bare `run` completer when
+    // the sibling is missing would either hijack completion for some
+    // unrelated `run` on the user's PATH or produce a broken script that
+    // silently fails when invoked.
+    if let Some(run_completer) = run_completer {
+        stdout
+            .write_all(b"\n")
+            .context("failed to write completion separator")?;
+        completer
+            .write_registration("COMPLETE", "run", "run", &run_completer, &mut stdout)
+            .context("failed to write run completion script")?;
+    }
 
     Ok(())
 }
 
 /// Resolve the sibling `run` binary next to the `runner` executable so the
-/// generated script can invoke it directly. Falls back to `None` (the
-/// caller then uses `"run"` on `$PATH`) when no sibling exists — typical
-/// for cross-compiled or split installs.
+/// generated completion script can invoke it directly. Returns `None` when
+/// no sibling exists — the caller skips the `run` registration in that
+/// case rather than guessing at PATH resolution.
 fn sibling_run_binary(runner_exe: &Path) -> Option<PathBuf> {
     let parent = runner_exe.parent()?;
     let candidate = parent.join(run_binary_filename());
