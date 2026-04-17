@@ -35,13 +35,6 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
     c
 }
 
-/// `cargo <args...>` — pass-through to Cargo subcommands.
-pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("cargo");
-    c.args(args);
-    c
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
-
 /// Produce [`CompletionCandidate`]s for every detected task in the current
 /// directory. Called lazily by clap's runtime completion engine — only runs
 /// when the shell is actually requesting completions, never during normal
@@ -153,6 +152,7 @@ pub(crate) struct Cli {
         global = true,
         env = "RUNNER_DIR",
         value_name = "PATH",
+        value_hint = clap::ValueHint::DirPath,
         value_parser = clap::value_parser!(PathBuf)
     )]
     pub project_dir: Option<PathBuf>,
@@ -163,15 +163,15 @@ pub(crate) struct Cli {
 }
 
 /// Available subcommands.
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Run a task/script (or just `runner <task>`)
+    /// Run a task, or exec a command through the detected package manager
     #[command(alias = "r")]
     Run {
-        /// Task name
+        /// Task name or command to execute
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: String,
-        /// Arguments forwarded to the task
+        /// Arguments forwarded to the task/command
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -202,14 +202,6 @@ pub(crate) enum Command {
         raw: bool,
     },
 
-    /// Execute a command through the detected package manager
-    #[command(alias = "x")]
-    Exec {
-        /// Command and arguments
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
-        args: Vec<String>,
-    },
-
     /// Show detected project info
     Info,
 
@@ -218,9 +210,54 @@ pub(crate) enum Command {
         /// Target shell (defaults to $SHELL)
         #[arg(value_parser = clap::value_parser!(Shell))]
         shell: Option<Shell>,
+
+        /// Write the completion script to <PATH> instead of stdout. Any
+        /// existing file is overwritten.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "PATH",
+            value_hint = clap::ValueHint::FilePath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
     },
 
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// CLI used by the `run` alias binary. Behaves as a shortcut for
+/// `runner run <task>`: the first positional is the task or command,
+/// any remaining positionals are forwarded as its arguments, and
+/// built-in subcommand names are never parsed specially (so
+/// `run foo bar` runs `foo` with `bar`, not two separate targets).
+#[derive(Debug, Parser)]
+#[command(
+    name = "run",
+    about = "Run a project task or exec a command through the detected package manager",
+    help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
+    version,
+    arg_required_else_help = false
+)]
+pub(crate) struct RunAliasCli {
+    /// Use this directory instead of the current one.
+    #[arg(
+        long = "dir",
+        global = true,
+        env = "RUNNER_DIR",
+        value_name = "PATH",
+        value_hint = clap::ValueHint::DirPath,
+        value_parser = clap::value_parser!(PathBuf)
+    )]
+    pub project_dir: Option<PathBuf>,
+
+    /// Task name or command. When omitted, prints project info.
+    #[arg(add = ArgValueCandidates::new(task_candidates))]
+    pub task: Option<String>,
+
+    /// Arguments forwarded to the task/command.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub args: Vec<String>,
 }

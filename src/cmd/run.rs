@@ -1,4 +1,7 @@
-//! `runner run <task>` — resolve a task name to the right tool and execute it.
+//! `runner run <target>` — resolve a task name to the right tool and execute
+//! it. When no task matches, fall back to executing the target as an
+//! arbitrary command through the detected package manager (formerly `runner
+//! exec`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,6 +42,10 @@ pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i
     if found.is_empty() {
         if let Some(code) = run_bun_test_fallback(ctx, task_name, args)? {
             return Ok(code);
+        }
+
+        if qualifier.is_none() {
+            return run_pm_exec_fallback(ctx, task_name, args);
         }
 
         bail!("task {task:?} not found. Run `runner list` to see available tasks.");
@@ -113,6 +120,57 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
     }
     .and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
+/// Execute `target` (plus `args`) as an arbitrary command through the
+/// detected package manager (npx, bunx, pnpm exec, cargo, uv run, etc.).
+/// Falls back to running the command directly when no package manager is
+/// detected.
+fn run_pm_exec_fallback(ctx: &ProjectContext, target: &str, args: &[String]) -> Result<i32> {
+    // `tool::<pm>::exec_cmd` takes a flat `&[String]` — [target, ...args].
+    // Build it lazily so the direct `Command::new(target)` fallback doesn't
+    // pay for an allocation it never uses.
+    let combined = || {
+        let mut v = Vec::with_capacity(args.len() + 1);
+        v.push(target.to_string());
+        v.extend(args.iter().cloned());
+        v
+    };
+
+    // Only dispatch through a PM when its exec primitive actually runs
+    // arbitrary package binaries like `npx` does. For npm/yarn/pnpm/bun/uv
+    // this is the whole point of `exec`. Deno, Cargo, and the Python/Ruby/
+    // Go/PHP PMs have no such primitive:
+    //   * Deno's `deno run <target>` treats `target` as a local script.
+    //   * Cargo's `cargo <target>` dispatches to a cargo subcommand/plugin,
+    //     not a binary on PATH (so `runner run eslint` in a Rust repo
+    //     would try to invoke `cargo-eslint`).
+    //   * Poetry/Pipenv/Bundler/Composer/Go have nothing equivalent.
+    // For those we fall through to spawning `target` directly so PATH is
+    // authoritative rather than silently doing the wrong thing.
+    let (label, mut cmd) = match ctx.primary_pm() {
+        Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
+        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined())),
+        Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
+        Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
+        Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined())),
+        None | Some(_) => {
+            let mut c = Command::new(target);
+            c.args(args);
+            ("exec", c)
+        }
+    };
+
+    eprintln!(
+        "{} {} {} {}",
+        "→".dimmed(),
+        label.dimmed(),
+        target.bold(),
+        args.join(" ").dimmed(),
+    );
+
+    super::configure_command(&mut cmd, &ctx.root);
+    Ok(super::exit_code(cmd.status()?))
 }
 
 fn run_bun_test_fallback(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<Option<i32>> {

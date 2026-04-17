@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
+BIN="runner"
 SOURCE_PATH="$0"
-while [ -L "$SOURCE_PATH" ]; do
-  SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE_PATH")" && pwd)"
-  LINK_TARGET="$(readlink "$SOURCE_PATH")"
-  case "$LINK_TARGET" in
-    /*) SOURCE_PATH="$LINK_TARGET" ;;
-    *) SOURCE_PATH="$SOURCE_DIR/$LINK_TARGET" ;;
-  esac
+while [[ -L "${SOURCE_PATH}" ]]; do
+    # shellcheck disable=SC1007
+	SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "${SOURCE_PATH}")" && pwd)"
+	LINK_TARGET="$(readlink "${SOURCE_PATH}")"
+	case "${LINK_TARGET}" in
+		/*) SOURCE_PATH="${LINK_TARGET}" ;;
+		*) SOURCE_PATH="${SOURCE_DIR}/${LINK_TARGET}" ;;
+	esac
 done
-SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE_PATH")" && pwd)"
-MANIFEST="$SCRIPT_DIR/../Cargo.toml"
-[ -f "$MANIFEST" ] || {
-  printf 'error: %s not found\n' "$MANIFEST" >&2
-  exit 1
+# shellcheck disable=SC1007
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${SOURCE_PATH}")" && pwd)"
+MANIFEST="${SCRIPT_DIR}/../Cargo.toml"
+[[ -f "${MANIFEST}" ]] || {
+	printf 'error: %s not found\n' "${MANIFEST}" >&2
+	exit 1
 }
-exec cargo run --quiet --bin runner --manifest-path="$MANIFEST" -- "$@"
+exec cargo run --quiet --bin "${BIN}" --manifest-path="${MANIFEST}" -- "$@"

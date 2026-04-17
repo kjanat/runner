@@ -1,0 +1,21 @@
+#!/bin/bash
+REPO="kjanat/runner"
+REPO_URL="https://github.com/${REPO}.git"
+
+BIN=${BIN:-}
+PACKAGE=${PACKAGE:runner}
+
+BRANCH="${BRANCH:-$(git rev-parse --abbrev-ref HEAD):-}"
+
+# If BIN is not set, don't specify the --bin flag
+if [[ -z "${BIN}" ]]; then
+	cargo install --git "${REPO_URL}" \
+		--branch "${BRANCH}" \
+		--force
+else
+	cargo install --git "${REPO_URL}" \
+		--branch "${BRANCH}" \
+		"${PACKAGE}" \
+		--bin "${BIN}" \
+		--force
+fi
