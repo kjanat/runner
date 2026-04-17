@@ -215,24 +215,33 @@ fn active_command_chain<'a>(
 }
 
 /// Whether the long option `name` consumes a following positional as its
-/// value, looking across every command in the active chain. A flag defined
-/// globally on the root (like our `--dir`) remains recognised after we've
-/// descended into a subcommand; a subcommand-local flag takes effect only
-/// once we're inside that subcommand.
+/// value, using the same deepest-first shadowing rule as
+/// [`find_long_value_hint`]: the subcommand-local definition wins over an
+/// ancestor's. This matters when a subcommand reuses a root flag name
+/// with a different [`clap::ArgAction`] (e.g. root defines `--flag <VALUE>`
+/// and a subcommand redeclares `--flag` as a boolean) — the walker must
+/// honour the leaf command's semantics.
 fn long_flag_takes_value(chain: &[&clap::Command], name: &str) -> bool {
-    chain.iter().flat_map(|cmd| cmd.get_arguments()).any(|arg| {
-        arg.get_long() == Some(name)
-            && !matches!(
-                arg.get_action(),
-                clap::ArgAction::SetTrue
-                    | clap::ArgAction::SetFalse
-                    | clap::ArgAction::Count
-                    | clap::ArgAction::Help
-                    | clap::ArgAction::Version
-                    | clap::ArgAction::HelpShort
-                    | clap::ArgAction::HelpLong
-            )
-    })
+    chain
+        .iter()
+        .rev()
+        .find_map(|cmd| {
+            cmd.get_arguments()
+                .find(|arg| arg.get_long() == Some(name))
+                .map(|arg| {
+                    !matches!(
+                        arg.get_action(),
+                        clap::ArgAction::SetTrue
+                            | clap::ArgAction::SetFalse
+                            | clap::ArgAction::Count
+                            | clap::ArgAction::Help
+                            | clap::ArgAction::Version
+                            | clap::ArgAction::HelpShort
+                            | clap::ArgAction::HelpLong
+                    )
+                })
+        })
+        .unwrap_or(false)
 }
 
 /// Search the active command chain (deepest first, so a subcommand-local
@@ -313,6 +322,34 @@ mod tests {
 
         let args = to_os(&["runner", "run", "--dir", ""]);
         assert_eq!(detect_path_files_flags(&cmd, &args, 3), Some("-/"));
+    }
+
+    /// Subcommand-local redefinition shadows a root flag: if root's
+    /// `--flag` takes a value but the subcommand redeclares it as a
+    /// boolean, the walker must not consume the next token as a value
+    /// once we're inside that subcommand.
+    #[test]
+    fn detect_path_files_honours_boolean_shadow_on_subcommand() {
+        let cmd = Command::new("runner")
+            .arg(
+                Arg::new("flag")
+                    .long("flag")
+                    .value_hint(ValueHint::DirPath)
+                    .num_args(1),
+            )
+            .subcommand(
+                Command::new("leaf").arg(
+                    Arg::new("flag")
+                        .long("flag")
+                        .action(clap::ArgAction::SetTrue),
+                ),
+            );
+
+        // Inside `leaf`, `--flag` is a boolean: the next token is the
+        // positional we're completing, not `--flag`'s value, so no path
+        // sentinel should be emitted.
+        let args = to_os(&["runner", "leaf", "--flag", ""]);
+        assert_eq!(detect_path_files_flags(&cmd, &args, 3), None);
     }
 
     /// Two sibling subcommands each define the same long flag with
