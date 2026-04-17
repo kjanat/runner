@@ -2,7 +2,7 @@
 BIN="runner"
 SOURCE_PATH="$0"
 while [[ -L "${SOURCE_PATH}" ]]; do
-    # shellcheck disable=SC1007
+	# shellcheck disable=SC1007
 	SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "${SOURCE_PATH}")" && pwd)"
 	LINK_TARGET="$(readlink "${SOURCE_PATH}")"
 	case "${LINK_TARGET}" in
