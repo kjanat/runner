@@ -257,13 +257,21 @@ fn find_long_value_hint(chain: &[&clap::Command], name: &str) -> Option<ValueHin
     None
 }
 
-/// Map a clap [`ValueHint`] to the flag string used with zsh's `_files`.
+/// Map a clap [`ValueHint`] to the flag string passed to zsh's `_files`.
 /// Returns `None` for hints that aren't path-like (so regular clap
 /// completion keeps running).
+///
+/// `ExecutablePath` uses zsh's `(*)` glob qualifier — which matches files
+/// the current user has execute permission on — so completion doesn't
+/// suggest non-executable regular files for args that only accept
+/// binaries. Written without surrounding quotes because the caller
+/// (`grouped.zsh`) disables globbing locally before splitting the string
+/// with `${=...}`, so each token reaches `_files` literally.
 const fn zsh_files_flags(hint: ValueHint) -> Option<&'static str> {
     match hint {
         ValueHint::DirPath => Some("-/"),
-        ValueHint::FilePath | ValueHint::AnyPath | ValueHint::ExecutablePath => Some(""),
+        ValueHint::FilePath | ValueHint::AnyPath => Some(""),
+        ValueHint::ExecutablePath => Some("-g *(*)"),
         _ => None,
     }
 }
@@ -274,7 +282,7 @@ mod tests {
 
     use clap::{Arg, Command, ValueHint};
 
-    use super::{detect_path_files_flags, strip_tag_prefix};
+    use super::{detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
 
     fn dir_flag_cmd() -> Command {
         Command::new("runner").arg(
@@ -411,6 +419,58 @@ mod tests {
         let args = to_os(&["runner", "--name", ""]);
 
         assert_eq!(detect_path_files_flags(&cmd, &args, 2), None);
+    }
+
+    #[test]
+    fn zsh_files_flags_map_each_path_hint() {
+        assert_eq!(zsh_files_flags(ValueHint::DirPath), Some("-/"));
+        assert_eq!(zsh_files_flags(ValueHint::FilePath), Some(""));
+        assert_eq!(zsh_files_flags(ValueHint::AnyPath), Some(""));
+        assert_eq!(zsh_files_flags(ValueHint::ExecutablePath), Some("-g *(*)"));
+        assert_eq!(zsh_files_flags(ValueHint::Username), None);
+        assert_eq!(zsh_files_flags(ValueHint::Unknown), None);
+    }
+
+    /// The chain walker in `active_command_chain` assumes short-option
+    /// clusters never consume a following positional as their value
+    /// (`src/complete/mod.rs` line-search for `Short flag cluster`). Lock
+    /// the real CLIs to that invariant: if any arg ever gets a short
+    /// variant with a value-taking action, this test fires and the
+    /// walker must grow real short-option handling first.
+    #[test]
+    fn cli_has_no_short_value_taking_flags() {
+        fn assert_no_short_values(cmd: &Command, path: &str) {
+            for arg in cmd.get_arguments() {
+                if arg.get_short().is_some() {
+                    let takes_value = !matches!(
+                        arg.get_action(),
+                        clap::ArgAction::SetTrue
+                            | clap::ArgAction::SetFalse
+                            | clap::ArgAction::Count
+                            | clap::ArgAction::Help
+                            | clap::ArgAction::Version
+                            | clap::ArgAction::HelpShort
+                            | clap::ArgAction::HelpLong
+                    );
+                    assert!(
+                        !takes_value,
+                        "{path}: short option -{:?} takes a value; \
+                         active_command_chain's walker doesn't handle \
+                         short options with values — teach it or drop \
+                         the flag",
+                        arg.get_short().unwrap(),
+                    );
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                let sub_path = format!("{path} {}", sub.get_name());
+                assert_no_short_values(sub, &sub_path);
+            }
+        }
+
+        use clap::CommandFactory;
+        assert_no_short_values(&crate::cli::Cli::command(), "runner");
+        assert_no_short_values(&crate::cli::RunAliasCli::command(), "run");
     }
 
     #[test]

@@ -45,6 +45,10 @@ function _clap_dynamic_completer_{NAME}() {
         local __runner_flags="${${__runner_raw[1]}#__CLAP_PATHFILES__}"
         __runner_flags="${__runner_flags#$'\t'}"
         if [[ -n "$__runner_flags" ]]; then
+            # Disable globbing so patterns like `*(*)` reach `_files`
+            # literally (it interprets them itself); `emulate -L zsh`
+            # at the top of this function restores the option on return.
+            setopt noglob
             _files ${=__runner_flags}
         else
             _files
