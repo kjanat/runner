@@ -131,13 +131,20 @@ fn run_pm_exec_fallback(ctx: &ProjectContext, target: &str, args: &[String]) -> 
     combined.push(target.to_string());
     combined.extend(args.iter().cloned());
 
+    // Only dispatch through a PM when its exec primitive actually runs
+    // arbitrary package binaries. Deno's `deno run <target>` would treat
+    // `target` as a local script path (the equivalent of `npx` is
+    // `deno run npm:<target>` or `deno x`, which needs target rewriting);
+    // Poetry/Pipenv/Go/Bundler/Composer have no `exec`-equivalent that
+    // respects the managed environment. For those, fall through to a
+    // direct `Command::new(target)` so the user's PATH is authoritative
+    // rather than silently doing the wrong thing.
     let (label, mut cmd) = match ctx.primary_pm() {
         Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined)),
         Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined)),
         Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined)),
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined)),
         Some(PackageManager::Cargo) => ("cargo", tool::cargo_pm::exec_cmd(&combined)),
-        Some(PackageManager::Deno) => ("deno", tool::deno::exec_cmd(&combined)),
         Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined)),
         None | Some(_) => {
             let mut c = Command::new(target);

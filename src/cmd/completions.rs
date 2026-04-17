@@ -36,7 +36,13 @@ pub(crate) fn completions(shell: Option<Shell>) -> Result<()> {
 
     let mut stdout = std::io::stdout();
     completer
-        .write_registration("COMPLETE", "runner", "runner", &runner_completer, &mut stdout)
+        .write_registration(
+            "COMPLETE",
+            "runner",
+            "runner",
+            &runner_completer,
+            &mut stdout,
+        )
         .context("failed to write runner completion script")?;
     stdout
         .write_all(b"\n")

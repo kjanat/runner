@@ -186,13 +186,6 @@ pub(crate) fn install_cmd() -> Command {
     c
 }
 
-/// `deno run <args...>`
-pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("deno");
-    c.arg("run").args(args);
-    c
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;

@@ -226,13 +226,14 @@ mod tests {
 
     #[test]
     fn detect_path_files_walks_subcommands() {
-        let cmd = Command::new("runner")
-            .subcommand(Command::new("run").arg(
+        let cmd = Command::new("runner").subcommand(
+            Command::new("run").arg(
                 Arg::new("target")
                     .long("target")
                     .value_hint(ValueHint::FilePath)
                     .num_args(1),
-            ));
+            ),
+        );
         let args = to_os(&["runner", "run", "--target", ""]);
 
         assert_eq!(detect_path_files_flags(&cmd, &args, 3), Some(""));
@@ -240,8 +241,7 @@ mod tests {
 
     #[test]
     fn detect_path_files_ignores_non_path_flags() {
-        let cmd = Command::new("runner")
-            .arg(Arg::new("name").long("name").num_args(1));
+        let cmd = Command::new("runner").arg(Arg::new("name").long("name").num_args(1));
         let args = to_os(&["runner", "--name", ""]);
 
         assert_eq!(detect_path_files_flags(&cmd, &args, 2), None);

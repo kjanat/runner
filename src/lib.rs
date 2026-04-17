@@ -402,7 +402,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
 
     match cli.command {
-        None | Some(cli::Command::Info) if has_task(&ctx, "info") => cmd::run(&ctx, "info", &[]),
+        Some(cli::Command::Info) if has_task(&ctx, "info") => cmd::run(&ctx, "info", &[]),
         None | Some(cli::Command::Info) => {
             cmd::info(&ctx);
             Ok(0)
@@ -619,7 +619,15 @@ mod tests {
 
     #[test]
     fn run_alias_parses_builtin_names_as_tasks() {
-        for name in ["clean", "install", "list", "exec", "info", "completions", "run"] {
+        for name in [
+            "clean",
+            "install",
+            "list",
+            "exec",
+            "info",
+            "completions",
+            "run",
+        ] {
             let cli = parse_run_alias_cli(["run", name])
                 .unwrap_or_else(|e| panic!("run {name} should parse: {e}"));
 
@@ -658,8 +666,8 @@ mod tests {
     fn run_alias_bare_shows_info() {
         let dir = TempDir::new("runner-run-alias-bare");
 
-        let code = run_alias_in_dir(["run"], dir.path())
-            .expect("bare run should succeed on empty dir");
+        let code =
+            run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed on empty dir");
 
         assert_eq!(code, 0);
     }
