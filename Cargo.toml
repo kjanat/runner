@@ -1,20 +1,22 @@
 [package]
 name         = "runner"
 version      = "0.4.0"
+# tombi: lint.rules.unused-noqa.disabled = true
+# tombi: lint.rules.deprecated.disabled = true
+authors      = ["Kaj Kowalski <info+runner@kajkowalski.nl>"]
 edition      = "2024"
 # Edition 2024 is 1.85+; let-chains (used in `if let … && let …`
 # throughout the codebase) stabilised in 1.88.
 rust-version = "1.88"
-authors      = ["Kaj Kowalski <info+runner@kajkowalski.nl>"]
 description  = "Universal project task runner"
-readme      = "README.md"
-homepage    = "https://github.com/kjanat/runner/#readme"
-repository  = "https://github.com/kjanat/runner/"
-license     = "MIT"
-keywords    = ["automation", "build-tool", "cli", "task-runner"]
-categories  = ["command-line-utilities", "development-tools"]
-default-run = "runner"
-autobins    = false
+readme       = "README.md"
+homepage     = "https://github.com/kjanat/runner/#readme"
+repository   = "https://github.com/kjanat/runner/"
+license      = "MIT"
+keywords     = ["automation", "build-tool", "cli", "task-runner"]
+categories   = ["command-line-utilities", "development-tools"]
+default-run  = "runner"
+autobins     = false
 
 [[bin]]
 name = "runner"
