@@ -256,7 +256,10 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use super::{detect, extract_tasks, extract_tasks_from_source, is_private_attr, parse_alias};
+    use super::{
+        detect, extract_tasks, extract_tasks_from_source, extract_tasks_with_just, is_private_attr,
+        parse_alias,
+    };
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -387,13 +390,15 @@ mod tests {
         }
 
         let dir = TempDir::new("just-json-aliases");
+        let path = dir.path().join("justfile");
         fs::write(
-            dir.path().join("justfile"),
+            &path,
             "# Build the project\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\nalias b := build\nalias s := _secret\nalias _hidden := build\n",
         )
         .expect("justfile should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("justfile tasks should parse");
+        let tasks = extract_tasks_with_just(&path)
+            .expect("expected just --dump-format json parser path");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["b", "build"]);
         let b_doc = tasks
