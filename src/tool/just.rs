@@ -31,6 +31,16 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
         recipes: HashMap<String, Recipe>,
         #[serde(default)]
         aliases: HashMap<String, Alias>,
+        #[serde(default)]
+        modules: HashMap<String, Module>,
+    }
+
+    #[derive(Deserialize)]
+    struct Module {
+        #[serde(default)]
+        recipes: HashMap<String, Recipe>,
+        #[serde(default)]
+        modules: HashMap<String, Self>,
     }
 
     #[derive(Deserialize)]
@@ -44,6 +54,12 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
         #[serde(default)]
         private: bool,
         target: String,
+    }
+
+    fn any_module_has_recipe(modules: &HashMap<String, Module>, name: &str) -> bool {
+        modules
+            .values()
+            .any(|m| m.recipes.contains_key(name) || any_module_has_recipe(&m.modules, name))
     }
 
     let output = Command::new("just")
@@ -70,10 +86,16 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
         if alias.private || name.starts_with('_') {
             continue;
         }
+        // `just --dump` normalizes submodule alias targets to the leaf name
+        // (e.g. `alias b := foo::bar` becomes `target: "bar"`), so a top-level
+        // recipe of the same name is indistinguishable from a submodule one.
+        // When both exist, treat the alias as unresolved to avoid attributing
+        // the wrong recipe's doc/privacy to it.
+        let ambiguous = any_module_has_recipe(&dump.modules, &alias.target);
         match dump.recipes.get(&alias.target) {
-            Some(target) if target.private => {}
-            Some(target) => tasks.push((name.clone(), target.doc.clone())),
-            None => tasks.push((name.clone(), None)),
+            Some(target) if !ambiguous && target.private => {}
+            Some(target) if !ambiguous => tasks.push((name.clone(), target.doc.clone())),
+            _ => tasks.push((name.clone(), None)),
         }
     }
     tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
@@ -424,5 +446,35 @@ mod tests {
             .find(|(n, _)| n == "b")
             .and_then(|(_, d)| d.clone());
         assert_eq!(b_doc.as_deref(), Some("Build the project"));
+    }
+
+    #[test]
+    fn json_alias_targeting_submodule_recipe_is_unresolved() {
+        let dir = TempDir::new("just-json-alias-ambig");
+        let root = dir.path();
+        fs::create_dir_all(root.join("foo")).expect("foo dir");
+        fs::write(
+            root.join("foo/mod.just"),
+            "# submodule bar\nbar:\n  echo sub\n",
+        )
+        .expect("module justfile should be written");
+        let path = root.join("justfile");
+        fs::write(
+            &path,
+            "mod foo\n\n# top bar\nbar:\n  echo top\n\nalias b := foo::bar\n",
+        )
+        .expect("justfile should be written");
+
+        let Some(tasks) = extract_tasks_with_just(&path) else {
+            return;
+        };
+        let b = tasks
+            .iter()
+            .find(|(n, _)| n == "b")
+            .expect("alias b should be surfaced");
+        assert_eq!(
+            b.1, None,
+            "ambiguous submodule alias target must not adopt the top-level recipe's doc"
+        );
     }
 }
