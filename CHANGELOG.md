@@ -17,11 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Stop zsh completion from raising `no matches found: *:globbed-files`
-  (and similar) into the user's prompt: the completer function now
-  scopes `NO_NOMATCH` via `emulate -L zsh -o NO_NOMATCH`, so unmatched
-  globs evaluated by `_files` internals or user zstyles silently yield
-  no candidates instead of erroring.
+- Stop zsh completion from leaking unmatched glob patterns into the
+  user's prompt. The completer function now scopes `NULL_GLOB` via
+  `emulate -L zsh -o NULL_GLOB`, so globs evaluated by `_files`
+  internals or user zstyles (e.g. specs tagged `globbed-files`)
+  silently drop when they match nothing — fixing both the
+  `no matches found: *:globbed-files` error under the default
+  `NOMATCH`, and the subsequent `*(/)` / `*(-/)` residue that would
+  otherwise appear on the command line under `NO_NOMATCH` when
+  completing a directory-typed flag in a directory with no subdirs.
 
 ## [0.4.0] - 2026-04-17
 
