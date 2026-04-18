@@ -397,8 +397,8 @@ mod tests {
         )
         .expect("justfile should be written");
 
-        let tasks = extract_tasks_with_just(&path)
-            .expect("expected just --dump-format json parser path");
+        let tasks =
+            extract_tasks_with_just(&path).expect("expected just --dump-format json parser path");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["b", "build"]);
         let b_doc = tasks
