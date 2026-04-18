@@ -564,19 +564,22 @@ mod tests {
     /// `_files` internals (and user zstyles keyed on the `globbed-files`
     /// tag) evaluate specs containing unquoted `*`. Under zsh's default
     /// `NOMATCH` behaviour those raise `no matches found: *:globbed-files`
-    /// into the user's prompt. The completion function must scope
-    /// `NO_NOMATCH` via `emulate -L zsh` so those errors stay suppressed.
+    /// into the user's prompt; under `NO_NOMATCH`, the unmatched pattern
+    /// (e.g. `*(/)` from `_files -/`) instead survives as a literal and
+    /// gets inserted into the command line. The completion function must
+    /// scope `NULL_GLOB` via `emulate -L zsh` so unmatched globs silently
+    /// drop out — no error, and no literal to leak.
     #[test]
-    fn registration_script_disables_nomatch() {
+    fn registration_script_uses_null_glob() {
         let mut buf = Vec::new();
         GroupedZsh
             .write_registration("COMPLETE", "runner", "runner", "/bin/runner", &mut buf)
             .expect("registration should succeed");
         let script = String::from_utf8(buf).expect("script must be utf-8");
         assert!(
-            script.contains("emulate -L zsh -o NO_NOMATCH"),
-            "completion function must disable NOMATCH so `_files` and user \
-             zstyles don't leak `no matches found` errors; got:\n{script}"
+            script.contains("emulate -L zsh -o NULL_GLOB"),
+            "completion function must enable NULL_GLOB so unmatched globs \
+             produce neither errors nor literal residue; got:\n{script}"
         );
     }
 }
