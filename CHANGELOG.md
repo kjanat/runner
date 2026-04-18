@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Detect justfile aliases (`alias b := build`) and surface them as
+  first-class tasks in `runner list` and `runner <alias>`. Aliases
+  inherit the target recipe's doc comment; private aliases (prefixed
+  `_`, tagged `[private]`, or pointing at a private recipe) are hidden.
+  Works via `just --dump-format json` when `just` is on PATH and via the
+  regex fallback parser otherwise.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
