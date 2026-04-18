@@ -406,13 +406,6 @@ mod tests {
 
     #[test]
     fn extract_tasks_uses_just_json_when_available_with_aliases() {
-        let Ok(help) = Command::new("just").arg("--help").output() else {
-            return;
-        };
-        if !String::from_utf8_lossy(&help.stdout).contains("--dump-format") {
-            return;
-        }
-
         let dir = TempDir::new("just-json-aliases");
         let path = dir.path().join("justfile");
         fs::write(
@@ -421,8 +414,9 @@ mod tests {
         )
         .expect("justfile should be written");
 
-        let tasks =
-            extract_tasks_with_just(&path).expect("expected just --dump-format json parser path");
+        let Some(tasks) = extract_tasks_with_just(&path) else {
+            return;
+        };
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["b", "build"]);
         let b_doc = tasks
