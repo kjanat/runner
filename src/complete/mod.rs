@@ -337,7 +337,9 @@ mod tests {
 
     use clap::{Arg, Command, ValueHint};
 
-    use super::{detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
+    use clap_complete::env::EnvCompleter as _;
+
+    use super::{GroupedZsh, detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
 
     fn dir_flag_cmd() -> Command {
         Command::new("runner").arg(
@@ -557,5 +559,27 @@ mod tests {
     #[test]
     fn strip_tag_prefix_returns_empty_for_bare_source() {
         assert_eq!(strip_tag_prefix("package.json", "package.json"), "");
+    }
+
+    /// `_files` internals (and user zstyles keyed on the `globbed-files`
+    /// tag) evaluate specs containing unquoted `*`. Under zsh's default
+    /// `NOMATCH` behaviour those raise `no matches found: *:globbed-files`
+    /// into the user's prompt; under `NO_NOMATCH`, the unmatched pattern
+    /// (e.g. `*(/)` from `_files -/`) instead survives as a literal and
+    /// gets inserted into the command line. The completion function must
+    /// scope `NULL_GLOB` via `emulate -L zsh` so unmatched globs silently
+    /// drop out — no error, and no literal to leak.
+    #[test]
+    fn registration_script_uses_null_glob() {
+        let mut buf = Vec::new();
+        GroupedZsh
+            .write_registration("COMPLETE", "runner", "runner", "/bin/runner", &mut buf)
+            .expect("registration should succeed");
+        let script = String::from_utf8(buf).expect("script must be utf-8");
+        assert!(
+            script.contains("emulate -L zsh -o NULL_GLOB"),
+            "completion function must enable NULL_GLOB so unmatched globs \
+             produce neither errors nor literal residue; got:\n{script}"
+        );
     }
 }

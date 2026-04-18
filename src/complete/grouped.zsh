@@ -22,8 +22,14 @@
 function _clap_dynamic_completer_{NAME}() {
     # Reset to zsh defaults with local scope so caller-side settings
     # (XTRACE, shwordsplit, nullglob, aliases, …) don't leak into us
-    # and our tracing doesn't bleed into their prompt.
-    emulate -L zsh
+    # and our tracing doesn't bleed into their prompt. `-o NULL_GLOB`
+    # silences "no matches found" errors that `_files` internals and
+    # user zstyles (e.g. specs tagged `globbed-files`) would otherwise
+    # raise into the prompt when an unquoted `*` fails to match — and,
+    # unlike `NO_NOMATCH`, it does so without leaving the literal glob
+    # (e.g. `*(/)` from `_files -/` in a dir with no subdirectories)
+    # as a candidate that then gets inserted into the command line.
+    emulate -L zsh -o NULL_GLOB
 
     local __runner_idx=$(( CURRENT - 1 ))
     local __runner_ifs=$'\n'
