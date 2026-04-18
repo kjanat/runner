@@ -406,7 +406,10 @@ mod tests {
 
     #[test]
     fn extract_tasks_uses_just_json_when_available_with_aliases() {
-        if Command::new("just").arg("--version").output().is_err() {
+        let Ok(help) = Command::new("just").arg("--help").output() else {
+            return;
+        };
+        if !String::from_utf8_lossy(&help.stdout).contains("--dump-format") {
             return;
         }
 
