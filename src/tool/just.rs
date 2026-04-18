@@ -70,13 +70,11 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
         if alias.private || name.starts_with('_') {
             continue;
         }
-        let Some(target) = dump.recipes.get(&alias.target) else {
-            continue;
-        };
-        if target.private {
-            continue;
+        match dump.recipes.get(&alias.target) {
+            Some(target) if target.private => {}
+            Some(target) => tasks.push((name.clone(), target.doc.clone())),
+            None => tasks.push((name.clone(), None)),
         }
-        tasks.push((name.clone(), target.doc.clone()));
     }
     tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     Some(tasks)
@@ -199,13 +197,11 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<
         if alias.private {
             continue;
         }
-        let Some(target) = recipes.get(&alias.target) else {
-            continue;
-        };
-        if target.private {
-            continue;
+        match recipes.get(&alias.target) {
+            Some(target) if target.private => {}
+            Some(target) => tasks.push((alias.name, target.doc.clone())),
+            None => tasks.push((alias.name, None)),
         }
-        tasks.push((alias.name, target.doc.clone()));
     }
     tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
     Ok(tasks)
@@ -218,19 +214,19 @@ fn parse_alias(rest: &str) -> Option<(String, String)> {
     if name.is_empty() || target.is_empty() {
         return None;
     }
-    if !name
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
+    if !is_valid_ident(name) {
         return None;
     }
-    if !target
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
+    if !target.split("::").all(is_valid_ident) {
         return None;
     }
     Some((name.to_string(), target.to_string()))
+}
+
+fn is_valid_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 fn is_private_attr(trimmed: &str) -> bool {
@@ -328,6 +324,31 @@ mod tests {
         );
         assert_eq!(parse_alias("b build"), None);
         assert_eq!(parse_alias("b := "), None);
+    }
+
+    #[test]
+    fn parse_alias_accepts_submodule_target() {
+        assert_eq!(
+            parse_alias("b := foo::bar"),
+            Some(("b".to_string(), "foo::bar".to_string()))
+        );
+        assert_eq!(
+            parse_alias("q := a::b::c"),
+            Some(("q".to_string(), "a::b::c".to_string()))
+        );
+        assert_eq!(parse_alias("b := foo::"), None);
+        assert_eq!(parse_alias("b := ::bar"), None);
+    }
+
+    #[test]
+    fn fallback_parser_emits_submodule_aliases_without_doc() {
+        let dir = TempDir::new("just-alias-submodule");
+        let path = dir.path().join("justfile");
+
+        fs::write(&path, "mod foo\n\nalias b := foo::bar\n").expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        assert_eq!(tasks, vec![("b".to_string(), None)]);
     }
 
     #[test]
