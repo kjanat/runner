@@ -1,6 +1,6 @@
 [package]
 name         = "runner"
-version      = "0.4.0"
+version      = "0.4.1"
 # tombi: lint.rules.unused-noqa.disabled = true
 # tombi: lint.rules.deprecated.disabled = true
 authors      = ["Kaj Kowalski <info+runner@kajkowalski.nl>"]

@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.4.1] - 2026-04-18
+
+### Fixed
+
+- Stop zsh completion from raising `no matches found: *:globbed-files`
+  (and similar) into the user's prompt: the completer function now
+  scopes `NO_NOMATCH` via `emulate -L zsh -o NO_NOMATCH`, so unmatched
+  globs evaluated by `_files` internals or user zstyles silently yield
+  no candidates instead of erroring.
+
 ## [0.4.0] - 2026-04-17
 
 ### Added
@@ -174,7 +184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/kjanat/runner/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kjanat/runner/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/kjanat/runner/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/kjanat/runner/compare/v0.2.1...v0.3.0
