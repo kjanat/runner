@@ -29,12 +29,21 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
     #[derive(Deserialize)]
     struct Dump {
         recipes: HashMap<String, Recipe>,
+        #[serde(default)]
+        aliases: HashMap<String, Alias>,
     }
 
     #[derive(Deserialize)]
     struct Recipe {
         private: bool,
         doc: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct Alias {
+        #[serde(default)]
+        private: bool,
+        target: String,
     }
 
     let output = Command::new("just")
@@ -51,13 +60,26 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
     }
 
     let dump = serde_json::from_slice::<Dump>(&output.stdout).ok()?;
-    let mut recipes: Vec<(String, Option<String>)> = dump
+    let mut tasks: Vec<(String, Option<String>)> = dump
         .recipes
-        .into_iter()
-        .filter_map(|(name, recipe)| (!recipe.private).then_some((name, recipe.doc)))
+        .iter()
+        .filter(|(_, recipe)| !recipe.private)
+        .map(|(name, recipe)| (name.clone(), recipe.doc.clone()))
         .collect();
-    recipes.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-    Some(recipes)
+    for (name, alias) in &dump.aliases {
+        if alias.private || name.starts_with('_') {
+            continue;
+        }
+        let Some(target) = dump.recipes.get(&alias.target) else {
+            continue;
+        };
+        if target.private {
+            continue;
+        }
+        tasks.push((name.clone(), target.doc.clone()));
+    }
+    tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    Some(tasks)
 }
 
 /// Resolve the active justfile path in the current directory.
@@ -85,10 +107,22 @@ pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
     paths.into_iter().next()
 }
 
+struct ParsedRecipe {
+    doc: Option<String>,
+    private: bool,
+}
+
+struct ParsedAlias {
+    name: String,
+    target: String,
+    private: bool,
+}
+
 fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let mut recipes = Vec::new();
+    let mut recipes: HashMap<String, ParsedRecipe> = HashMap::new();
+    let mut aliases: Vec<ParsedAlias> = Vec::new();
     let mut saw_private_attr = false;
     let mut last_doc: Option<String> = None;
     for line in content.lines() {
@@ -108,8 +142,20 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<
             saw_private_attr |= is_private_attr(trimmed);
             continue;
         }
+        if let Some(rest) = trimmed.strip_prefix("alias ") {
+            if let Some((name, target)) = parse_alias(rest) {
+                let private = saw_private_attr || name.starts_with('_');
+                aliases.push(ParsedAlias {
+                    name,
+                    target,
+                    private,
+                });
+            }
+            saw_private_attr = false;
+            last_doc = None;
+            continue;
+        }
         if trimmed.starts_with("set ")
-            || trimmed.starts_with("alias ")
             || trimmed.starts_with("import ")
             || trimmed.starts_with("include ")
             || trimmed.starts_with("mod ")
@@ -129,20 +175,62 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<
             let before = &recipe[..colon];
             let name = before.split_whitespace().next().unwrap_or("");
             if !name.is_empty()
-                && !name.starts_with('_')
                 && name
                     .chars()
                     .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-                && !saw_private_attr
             {
+                let private = saw_private_attr || name.starts_with('_');
                 let doc = last_doc.take().filter(|d| !d.is_empty());
-                recipes.push((name.to_string(), doc));
+                recipes
+                    .entry(name.to_string())
+                    .or_insert(ParsedRecipe { doc, private });
             }
         }
         saw_private_attr = false;
         last_doc = None;
     }
-    Ok(recipes)
+
+    let mut tasks: Vec<(String, Option<String>)> = recipes
+        .iter()
+        .filter(|(_, r)| !r.private)
+        .map(|(name, r)| (name.clone(), r.doc.clone()))
+        .collect();
+    for alias in aliases {
+        if alias.private {
+            continue;
+        }
+        let Some(target) = recipes.get(&alias.target) else {
+            continue;
+        };
+        if target.private {
+            continue;
+        }
+        tasks.push((alias.name, target.doc.clone()));
+    }
+    tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    Ok(tasks)
+}
+
+fn parse_alias(rest: &str) -> Option<(String, String)> {
+    let (name_part, target_part) = rest.split_once(":=")?;
+    let name = name_part.trim();
+    let target = target_part.split_whitespace().next().unwrap_or("");
+    if name.is_empty() || target.is_empty() {
+        return None;
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    if !target
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some((name.to_string(), target.to_string()))
 }
 
 fn is_private_attr(trimmed: &str) -> bool {
@@ -168,7 +256,7 @@ mod tests {
     use std::fs;
     use std::process::Command;
 
-    use super::{detect, extract_tasks, extract_tasks_from_source, is_private_attr};
+    use super::{detect, extract_tasks, extract_tasks_from_source, is_private_attr, parse_alias};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -219,5 +307,99 @@ mod tests {
             .expect("JUSTFILE should be written");
 
         assert!(detect(dir.path()));
+    }
+
+    #[test]
+    fn parse_alias_accepts_standard_forms() {
+        assert_eq!(
+            parse_alias("b := build"),
+            Some(("b".to_string(), "build".to_string()))
+        );
+        assert_eq!(
+            parse_alias("b:=build"),
+            Some(("b".to_string(), "build".to_string()))
+        );
+        assert_eq!(
+            parse_alias("b := build # trailing"),
+            Some(("b".to_string(), "build".to_string()))
+        );
+        assert_eq!(parse_alias("b build"), None);
+        assert_eq!(parse_alias("b := "), None);
+    }
+
+    #[test]
+    fn fallback_parser_extracts_public_aliases() {
+        let dir = TempDir::new("just-alias-public");
+        let path = dir.path().join("justfile");
+
+        fs::write(
+            &path,
+            "# Build the project\nbuild:\n  echo build\n\nalias b := build\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        assert_eq!(
+            tasks,
+            vec![
+                ("b".to_string(), Some("Build the project".to_string())),
+                ("build".to_string(), Some("Build the project".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn fallback_parser_hides_aliases_to_private_recipes() {
+        let dir = TempDir::new("just-alias-private-target");
+        let path = dir.path().join("justfile");
+
+        fs::write(
+            &path,
+            "_secret:\n  echo nope\n\n[private]\nhush:\n  echo nope\n\nalias s := _secret\nalias h := hush\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.is_empty(), "expected no tasks, got {names:?}");
+    }
+
+    #[test]
+    fn fallback_parser_hides_private_aliases() {
+        let dir = TempDir::new("just-alias-private-alias");
+        let path = dir.path().join("justfile");
+
+        fs::write(
+            &path,
+            "build:\n  echo build\n\nalias _hidden := build\n[private]\nalias h := build\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["build"]);
+    }
+
+    #[test]
+    fn extract_tasks_uses_just_json_when_available_with_aliases() {
+        if Command::new("just").arg("--version").output().is_err() {
+            return;
+        }
+
+        let dir = TempDir::new("just-json-aliases");
+        fs::write(
+            dir.path().join("justfile"),
+            "# Build the project\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\nalias b := build\nalias s := _secret\nalias _hidden := build\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("justfile tasks should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["b", "build"]);
+        let b_doc = tasks
+            .iter()
+            .find(|(n, _)| n == "b")
+            .and_then(|(_, d)| d.clone());
+        assert_eq!(b_doc.as_deref(), Some("Build the project"));
     }
 }
