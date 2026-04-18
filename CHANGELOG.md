@@ -10,11 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Detect justfile aliases (`alias b := build`) and surface them as
-  first-class tasks in `runner list` and `runner <alias>`. Aliases
-  inherit the target recipe's doc comment; private aliases (prefixed
-  `_`, tagged `[private]`, or pointing at a private recipe) are hidden.
-  Works via `just --dump-format json` when `just` is on PATH and via the
-  regex fallback parser otherwise.
+  first-class tasks in `runner list` and `runner <alias>`. Private
+  aliases (prefixed `_`, tagged `[private]`, or pointing at a private
+  recipe) are hidden. Works via `just --dump-format json` when `just`
+  is on PATH and via the regex fallback parser otherwise.
+- Render justfile aliases distinctly from recipes in `runner list` and
+  shell tab completions: aliases appear under a dedicated
+  `justfile (aliases)` group with `name → target` annotations instead
+  of duplicating the target recipe's description.
 
 ### Post-release checklist
 

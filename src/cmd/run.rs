@@ -295,6 +295,7 @@ mod tests {
                 name: "test".to_string(),
                 source: TaskSource::PackageJson,
                 description: None,
+                alias_of: None,
             }],
         );
 
@@ -339,11 +340,13 @@ mod tests {
                     name: "build".to_string(),
                     source: TaskSource::DenoJson,
                     description: None,
+                    alias_of: None,
                 },
                 Task {
                     name: "build".to_string(),
                     source: TaskSource::PackageJson,
                     description: None,
+                    alias_of: None,
                 },
             ],
             node_version: None,
