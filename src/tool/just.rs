@@ -83,7 +83,10 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
         .map(|(name, recipe)| (name.clone(), recipe.doc.clone()))
         .collect();
     for (name, alias) in &dump.aliases {
-        if alias.private || name.starts_with('_') {
+        if alias.private
+            || name.starts_with('_')
+            || alias_target_leaf(&alias.target).starts_with('_')
+        {
             continue;
         }
         // `just --dump` normalizes submodule alias targets to the leaf name
@@ -216,7 +219,7 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<
         .map(|(name, r)| (name.clone(), r.doc.clone()))
         .collect();
     for alias in aliases {
-        if alias.private {
+        if alias.private || alias_target_leaf(&alias.target).starts_with('_') {
             continue;
         }
         match recipes.get(&alias.target) {
@@ -243,6 +246,10 @@ fn parse_alias(rest: &str) -> Option<(String, String)> {
         return None;
     }
     Some((name.to_string(), target.to_string()))
+}
+
+fn alias_target_leaf(target: &str) -> &str {
+    target.rsplit_once("::").map_or(target, |(_, leaf)| leaf)
 }
 
 fn is_valid_ident(s: &str) -> bool {
@@ -446,6 +453,22 @@ mod tests {
             .find(|(n, _)| n == "b")
             .and_then(|(_, d)| d.clone());
         assert_eq!(b_doc.as_deref(), Some("Build the project"));
+    }
+
+    #[test]
+    fn fallback_parser_hides_aliases_to_private_submodule_targets() {
+        let dir = TempDir::new("just-alias-submodule-private");
+        let path = dir.path().join("justfile");
+
+        fs::write(
+            &path,
+            "mod foo\n\nbuild:\n  echo build\n\nalias s := foo::_secret\nalias b := build\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["b", "build"]);
     }
 
     #[test]
