@@ -261,7 +261,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         push_described_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Just) {
-        push_described_tasks(ctx, TaskSource::Justfile, tool::just::extract_tasks(dir));
+        push_just_tasks(ctx, tool::just::extract_tasks(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::GoTask) {
         push_described_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
@@ -297,11 +297,35 @@ fn push_described_tasks(
                     name,
                     source,
                     description,
+                    alias_of: None,
                 });
             }
         }
         Err(err) => ctx.warnings.push(DetectionWarning {
             source: source.label(),
+            detail: format!("failed to read tasks: {err:#}"),
+        }),
+    }
+}
+
+/// Append tasks from the justfile source, preserving alias→target metadata.
+fn push_just_tasks(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<tool::just::ExtractedTask>>,
+) {
+    match result {
+        Ok(entries) => {
+            for entry in entries {
+                ctx.tasks.push(Task {
+                    name: entry.name,
+                    source: TaskSource::Justfile,
+                    description: entry.doc,
+                    alias_of: entry.alias_of,
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning {
+            source: TaskSource::Justfile.label(),
             detail: format!("failed to read tasks: {err:#}"),
         }),
     }

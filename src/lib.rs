@@ -600,6 +600,7 @@ mod tests {
                     name: (*name).to_string(),
                     source: TaskSource::PackageJson,
                     description: None,
+                    alias_of: None,
                 })
                 .collect(),
             node_version: None,

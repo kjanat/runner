@@ -44,30 +44,67 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
         TaskSource::DenoJson,
     ];
     for source in sources {
-        let tasks: Vec<(&str, Option<&str>)> = ctx
+        let (recipes, aliases): (Vec<_>, Vec<_>) = ctx
             .tasks
             .iter()
             .filter(|t| t.source == source)
-            .map(|t| (t.name.as_str(), t.description.as_deref()))
-            .collect();
-        if tasks.is_empty() {
+            .partition(|t| t.alias_of.is_none());
+        if recipes.is_empty() && aliases.is_empty() {
             continue;
         }
 
         let label = source_label(source, &ctx.root, stdout_is_terminal);
-        let has_any_desc = tasks.iter().any(|(_, d)| d.is_some());
-        if has_any_desc {
-            for (name, desc) in &tasks {
-                if let Some(desc) = desc {
-                    println!("  {label}{name:<20} {}", desc.dimmed());
-                } else {
-                    println!("  {label}{name}");
+        if !recipes.is_empty() {
+            let has_any_desc = recipes.iter().any(|t| t.description.is_some());
+            if has_any_desc {
+                for task in &recipes {
+                    if let Some(desc) = task.description.as_deref() {
+                        println!("  {label}{:<20} {}", task.name, desc.dimmed());
+                    } else {
+                        println!("  {label}{}", task.name);
+                    }
                 }
+            } else {
+                let names: Vec<&str> = recipes.iter().map(|t| t.name.as_str()).collect();
+                println!("  {}{}", label, names.join(", "));
             }
-        } else {
-            let names: Vec<&str> = tasks.iter().map(|(n, _)| *n).collect();
-            println!("  {}{}", label, names.join(", "));
         }
+        if !aliases.is_empty() {
+            println!(
+                "{}",
+                format_aliases_line(source, &aliases, stdout_is_terminal)
+            );
+        }
+    }
+}
+
+fn format_aliases_line(
+    source: TaskSource,
+    aliases: &[&crate::types::Task],
+    stdout_is_terminal: bool,
+) -> String {
+    let aliases_label = alias_label(source, stdout_is_terminal);
+    let parts: Vec<String> = aliases
+        .iter()
+        .map(|t| {
+            let target = t.alias_of.as_deref().unwrap_or("?");
+            if stdout_is_terminal {
+                format!("{} {} {}", t.name, "→".dimmed(), target.dimmed())
+            } else {
+                format!("{} → {}", t.name, target)
+            }
+        })
+        .collect();
+    format!("  {aliases_label}{}", parts.join(", "))
+}
+
+fn alias_label(source: TaskSource, stdout_is_terminal: bool) -> String {
+    let text = format!("{} (aliases)", source.label());
+    let label = format!("{text:<16}");
+    if stdout_is_terminal {
+        label.bold().to_string()
+    } else {
+        label
     }
 }
 
@@ -169,9 +206,9 @@ fn osc8_link(label: &str, url: &str) -> String {
 mod tests {
     use std::fs;
 
-    use super::{file_uri, source_label, source_path};
+    use super::{file_uri, format_aliases_line, source_label, source_path};
     use crate::tool::test_support::TempDir;
-    use crate::types::TaskSource;
+    use crate::types::{Task, TaskSource};
 
     #[test]
     fn source_path_finds_existing_config_variant() {
@@ -258,5 +295,26 @@ mod tests {
         let uri = file_uri(&dir.path().join("package.json")).expect("file URI should be generated");
 
         assert!(uri.starts_with("file://"));
+    }
+
+    #[test]
+    fn format_aliases_line_joins_aliases_with_arrow() {
+        let aliases = [
+            Task {
+                name: "b".into(),
+                source: TaskSource::Justfile,
+                description: None,
+                alias_of: Some("build".into()),
+            },
+            Task {
+                name: "br".into(),
+                source: TaskSource::Justfile,
+                description: None,
+                alias_of: Some("build-release".into()),
+            },
+        ];
+        let refs: Vec<&Task> = aliases.iter().collect();
+        let line = format_aliases_line(TaskSource::Justfile, &refs, false);
+        assert_eq!(line, "  justfile (aliases)b → build, br → build-release");
     }
 }

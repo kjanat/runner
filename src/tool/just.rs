@@ -11,13 +11,40 @@ use crate::tool::files;
 
 pub(crate) const FILENAMES: &[&str] = &["justfile", "Justfile", ".justfile"];
 
+/// A task extracted from a justfile: a public recipe, or an alias whose
+/// `alias_of` target is recorded so the UI can render `name → target`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtractedTask {
+    pub name: String,
+    pub doc: Option<String>,
+    pub alias_of: Option<String>,
+}
+
+impl ExtractedTask {
+    const fn recipe(name: String, doc: Option<String>) -> Self {
+        Self {
+            name,
+            doc,
+            alias_of: None,
+        }
+    }
+
+    const fn alias(name: String, target: String) -> Self {
+        Self {
+            name,
+            doc: None,
+            alias_of: Some(target),
+        }
+    }
+}
+
 /// Detected via `justfile`, `Justfile`, or `.justfile`.
 pub(crate) fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
 
-/// Parse public recipe names (with optional doc comments) from a justfile.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+/// Parse public recipes and aliases from a justfile.
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let Some(path) = find_file(dir) else {
         return Ok(vec![]);
     };
@@ -25,7 +52,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<St
     extract_tasks_with_just(&path).map_or_else(|| extract_tasks_from_source(&path), Ok)
 }
 
-fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>> {
+fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
     #[derive(Deserialize)]
     struct Dump {
         recipes: HashMap<String, Recipe>,
@@ -76,11 +103,11 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
     }
 
     let dump = serde_json::from_slice::<Dump>(&output.stdout).ok()?;
-    let mut tasks: Vec<(String, Option<String>)> = dump
+    let mut tasks: Vec<ExtractedTask> = dump
         .recipes
         .iter()
         .filter(|(_, recipe)| !recipe.private)
-        .map(|(name, recipe)| (name.clone(), recipe.doc.clone()))
+        .map(|(name, recipe)| ExtractedTask::recipe(name.clone(), recipe.doc.clone()))
         .collect();
     for (name, alias) in &dump.aliases {
         if alias.private
@@ -97,11 +124,10 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<(String, Option<String>)>>
         let ambiguous = any_module_has_recipe(&dump.modules, &alias.target);
         match dump.recipes.get(&alias.target) {
             Some(target) if !ambiguous && target.private => {}
-            Some(target) if !ambiguous => tasks.push((name.clone(), target.doc.clone())),
-            _ => tasks.push((name.clone(), None)),
+            _ => tasks.push(ExtractedTask::alias(name.clone(), alias.target.clone())),
         }
     }
-    tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    tasks.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     Some(tasks)
 }
 
@@ -141,7 +167,7 @@ struct ParsedAlias {
     private: bool,
 }
 
-fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let mut recipes: HashMap<String, ParsedRecipe> = HashMap::new();
@@ -213,10 +239,10 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<
         last_doc = None;
     }
 
-    let mut tasks: Vec<(String, Option<String>)> = recipes
+    let mut tasks: Vec<ExtractedTask> = recipes
         .iter()
         .filter(|(_, r)| !r.private)
-        .map(|(name, r)| (name.clone(), r.doc.clone()))
+        .map(|(name, r)| ExtractedTask::recipe(name.clone(), r.doc.clone()))
         .collect();
     for alias in aliases {
         if alias.private || alias_target_leaf(&alias.target).starts_with('_') {
@@ -224,11 +250,10 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<(String, Option<
         }
         match recipes.get(&alias.target) {
             Some(target) if target.private => {}
-            Some(target) => tasks.push((alias.name, target.doc.clone())),
-            None => tasks.push((alias.name, None)),
+            _ => tasks.push(ExtractedTask::alias(alias.name, alias.target)),
         }
     }
-    tasks.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+    tasks.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     Ok(tasks)
 }
 
@@ -282,8 +307,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        detect, extract_tasks, extract_tasks_from_source, extract_tasks_with_just, is_private_attr,
-        parse_alias,
+        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, extract_tasks_with_just,
+        is_private_attr, parse_alias,
     };
     use crate::tool::test_support::TempDir;
 
@@ -299,7 +324,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["build", "quiet"]);
     }
 
@@ -324,7 +349,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks(dir.path()).expect("justfile tasks should parse");
-        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["build", "quiet"]);
     }
 
@@ -377,7 +402,14 @@ mod tests {
         fs::write(&path, "mod foo\n\nalias b := foo::bar\n").expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        assert_eq!(tasks, vec![("b".to_string(), None)]);
+        assert_eq!(
+            tasks,
+            vec![ExtractedTask {
+                name: "b".to_string(),
+                doc: None,
+                alias_of: Some("foo::bar".to_string()),
+            }]
+        );
     }
 
     #[test]
@@ -395,8 +427,16 @@ mod tests {
         assert_eq!(
             tasks,
             vec![
-                ("b".to_string(), Some("Build the project".to_string())),
-                ("build".to_string(), Some("Build the project".to_string())),
+                ExtractedTask {
+                    name: "b".to_string(),
+                    doc: None,
+                    alias_of: Some("build".to_string()),
+                },
+                ExtractedTask {
+                    name: "build".to_string(),
+                    doc: Some("Build the project".to_string()),
+                    alias_of: None,
+                },
             ]
         );
     }
@@ -413,7 +453,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert!(names.is_empty(), "expected no tasks, got {names:?}");
     }
 
@@ -429,7 +469,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["build"]);
     }
 
@@ -446,13 +486,14 @@ mod tests {
         let Some(tasks) = extract_tasks_with_just(&path) else {
             return;
         };
-        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["b", "build"]);
-        let b_doc = tasks
+        let b = tasks
             .iter()
-            .find(|(n, _)| n == "b")
-            .and_then(|(_, d)| d.clone());
-        assert_eq!(b_doc.as_deref(), Some("Build the project"));
+            .find(|t| t.name == "b")
+            .expect("alias b should surface");
+        assert_eq!(b.doc, None);
+        assert_eq!(b.alias_of.as_deref(), Some("build"));
     }
 
     #[test]
@@ -467,7 +508,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["b", "build"]);
     }
 
@@ -493,11 +534,14 @@ mod tests {
         };
         let b = tasks
             .iter()
-            .find(|(n, _)| n == "b")
+            .find(|t| t.name == "b")
             .expect("alias b should be surfaced");
         assert_eq!(
-            b.1, None,
+            b.doc, None,
             "ambiguous submodule alias target must not adopt the top-level recipe's doc"
         );
+        // `just --dump-format json` normalizes `foo::bar` to the leaf `"bar"`,
+        // so that's what we surface to the user.
+        assert_eq!(b.alias_of.as_deref(), Some("bar"));
     }
 }
