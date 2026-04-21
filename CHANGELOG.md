@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Actually stop the `*(-/)` / `*(/)` glob-pattern residue that `--dir
+  <TAB>` in an empty directory would type into the prompt. The `0.4.1`
+  switch to `NULL_GLOB` was the right idea but was defeated by a
+  function-scoped `setopt noglob` sitting on top of the `_files` call:
+  that option disabled globbing inside `_path_files` as well, so its
+  internal `tmp1=( $~tmp1 )` never expanded `*(-/)` and the literal
+  pattern was handed to `compadd` as a candidate. Replace the option
+  with a `noglob` *precommand modifier* on the `_files` call so globs
+  like `*(*)` still reach `_files` unexpanded while its internals run
+  with `NULL_GLOB` semantics as intended.
+- Also enable `EXTENDED_GLOB` in the completer's `emulate -L zsh`
+  scope. zsh's own `_files` builds qualifier patterns like `*(#q-/)`
+  and uses `(#b)` backreferences internally; `emulate -L zsh` resets
+  to plain-zsh defaults (extended glob off), so `_files -/` would
+  emit `bad pattern: *(#q-/):globbed-files` on every TAB even once
+  the residue bug above was fixed.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
