@@ -316,11 +316,15 @@ fn push_just_tasks(
     match result {
         Ok(entries) => {
             for entry in entries {
+                let (name, description, alias_of) = match entry {
+                    tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
+                    tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+                };
                 ctx.tasks.push(Task {
-                    name: entry.name,
+                    name,
                     source: TaskSource::Justfile,
-                    description: entry.doc,
-                    alias_of: entry.alias_of,
+                    description,
+                    alias_of,
                 });
             }
         }

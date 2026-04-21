@@ -78,21 +78,36 @@ fn select_task_entry<'a>(
     ctx: &ProjectContext,
     found: &[&'a crate::types::Task],
 ) -> &'a crate::types::Task {
+    // Aliases rank last within any source tier so `runner <name>` dispatches
+    // to the real recipe when a same-named alias exists alongside it.
     if ctx.package_managers.contains(&PackageManager::Deno) {
         return found
             .iter()
-            .min_by_key(|task| deno_task_priority(ctx, task.source))
+            .min_by_key(|task| {
+                (
+                    deno_task_priority(ctx, task.source),
+                    task.alias_of.is_some(),
+                )
+            })
             .copied()
             .expect("task selection should have at least one match");
     }
 
     found
         .iter()
-        .find(|t| t.source == TaskSource::TurboJson)
-        .or_else(|| found.iter().find(|t| t.source == TaskSource::PackageJson))
-        .or_else(|| found.first())
+        .min_by_key(|task| (source_priority(task.source), task.alias_of.is_some()))
         .copied()
         .expect("task selection should have at least one match")
+}
+
+/// Ranks sources for non-Deno task resolution: `TurboJson` > `PackageJson` >
+/// others. Lower is higher priority.
+const fn source_priority(source: TaskSource) -> u8 {
+    match source {
+        TaskSource::TurboJson => 0,
+        TaskSource::PackageJson => 1,
+        _ => 2,
+    }
 }
 
 fn deno_task_priority(ctx: &ProjectContext, source: TaskSource) -> (usize, u8) {

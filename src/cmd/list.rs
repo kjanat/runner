@@ -100,7 +100,14 @@ fn format_aliases_line(
 
 fn alias_label(source: TaskSource, stdout_is_terminal: bool) -> String {
     let text = format!("{} (aliases)", source.label());
-    let label = format!("{text:<16}");
+    // Alias labels like "package.json (aliases)" exceed the 16-col recipe
+    // label, so fall through to a single trailing space rather than running
+    // directly into the first alias.
+    let label = if text.chars().count() < 16 {
+        format!("{text:<16}")
+    } else {
+        format!("{text} ")
+    };
     if stdout_is_terminal {
         label.bold().to_string()
     } else {
@@ -315,6 +322,6 @@ mod tests {
         ];
         let refs: Vec<&Task> = aliases.iter().collect();
         let line = format_aliases_line(TaskSource::Justfile, &refs, false);
-        assert_eq!(line, "  justfile (aliases)b → build, br → build-release");
+        assert_eq!(line, "  justfile (aliases) b → build, br → build-release");
     }
 }

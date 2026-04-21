@@ -1,6 +1,7 @@
 //! just — a handy command runner using `justfile`.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -11,29 +12,17 @@ use crate::tool::files;
 
 pub(crate) const FILENAMES: &[&str] = &["justfile", "Justfile", ".justfile"];
 
-/// A task extracted from a justfile: a public recipe, or an alias whose
-/// `alias_of` target is recorded so the UI can render `name → target`.
+/// A task extracted from a justfile: either a public recipe or an alias.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExtractedTask {
-    pub name: String,
-    pub doc: Option<String>,
-    pub alias_of: Option<String>,
+pub(crate) enum ExtractedTask {
+    Recipe { name: String, doc: Option<String> },
+    Alias { name: String, target: String },
 }
 
 impl ExtractedTask {
-    const fn recipe(name: String, doc: Option<String>) -> Self {
-        Self {
-            name,
-            doc,
-            alias_of: None,
-        }
-    }
-
-    const fn alias(name: String, target: String) -> Self {
-        Self {
-            name,
-            doc: None,
-            alias_of: Some(target),
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Recipe { name, .. } | Self::Alias { name, .. } => name,
         }
     }
 }
@@ -84,9 +73,16 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
     }
 
     fn any_module_has_recipe(modules: &HashMap<String, Module>, name: &str) -> bool {
-        modules
-            .values()
-            .any(|m| m.recipes.contains_key(name) || any_module_has_recipe(&m.modules, name))
+        let mut stack: Vec<&HashMap<String, Module>> = vec![modules];
+        while let Some(current) = stack.pop() {
+            for module in current.values() {
+                if module.recipes.contains_key(name) {
+                    return true;
+                }
+                stack.push(&module.modules);
+            }
+        }
+        false
     }
 
     let output = Command::new("just")
@@ -107,7 +103,10 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
         .recipes
         .iter()
         .filter(|(_, recipe)| !recipe.private)
-        .map(|(name, recipe)| ExtractedTask::recipe(name.clone(), recipe.doc.clone()))
+        .map(|(name, recipe)| ExtractedTask::Recipe {
+            name: name.clone(),
+            doc: recipe.doc.clone(),
+        })
         .collect();
     for (name, alias) in &dump.aliases {
         if alias.private
@@ -124,10 +123,13 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
         let ambiguous = any_module_has_recipe(&dump.modules, &alias.target);
         match dump.recipes.get(&alias.target) {
             Some(target) if !ambiguous && target.private => {}
-            _ => tasks.push(ExtractedTask::alias(name.clone(), alias.target.clone())),
+            _ => tasks.push(ExtractedTask::Alias {
+                name: name.clone(),
+                target: alias.target.clone(),
+            }),
         }
     }
-    tasks.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    tasks.sort_unstable_by(|a, b| a.name().cmp(b.name()));
     Some(tasks)
 }
 
@@ -167,6 +169,49 @@ struct ParsedAlias {
     private: bool,
 }
 
+fn is_top_level_directive(trimmed: &str) -> bool {
+    ["set ", "import ", "include ", "mod ", "export "]
+        .iter()
+        .any(|prefix| trimmed.starts_with(prefix))
+}
+
+fn try_upsert_recipe(
+    recipes: &mut HashMap<String, ParsedRecipe>,
+    trimmed: &str,
+    saw_private_attr: bool,
+    last_doc: Option<String>,
+) {
+    let recipe = trimmed.strip_prefix('@').unwrap_or(trimmed);
+    let Some(colon) = recipe.find(':') else {
+        return;
+    };
+    // `foo := "bar"` is a variable binding, not a recipe header.
+    if recipe[colon..].starts_with(":=") {
+        return;
+    }
+    let name = recipe[..colon].split_whitespace().next().unwrap_or("");
+    if !is_valid_ident(name) {
+        return;
+    }
+    let private = saw_private_attr || name.starts_with('_');
+    let doc = last_doc.filter(|d| !d.is_empty());
+    match recipes.entry(name.to_string()) {
+        Entry::Vacant(slot) => {
+            slot.insert(ParsedRecipe { doc, private });
+        }
+        Entry::Occupied(mut slot) => {
+            // A later `[private]` annotation on the same recipe name must
+            // promote the aggregate to private; losing the flag would surface
+            // a recipe the author hid.
+            let existing = slot.get_mut();
+            existing.private |= private;
+            if existing.doc.is_none() {
+                existing.doc = doc;
+            }
+        }
+    }
+}
+
 fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -200,40 +245,8 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> 
                     private,
                 });
             }
-            saw_private_attr = false;
-            last_doc = None;
-            continue;
-        }
-        if trimmed.starts_with("set ")
-            || trimmed.starts_with("import ")
-            || trimmed.starts_with("include ")
-            || trimmed.starts_with("mod ")
-            || trimmed.starts_with("export ")
-        {
-            saw_private_attr = false;
-            last_doc = None;
-            continue;
-        }
-        let recipe = trimmed.strip_prefix('@').unwrap_or(trimmed);
-        if let Some(colon) = recipe.find(':') {
-            if recipe[colon..].starts_with(":=") {
-                saw_private_attr = false;
-                last_doc = None;
-                continue;
-            }
-            let before = &recipe[..colon];
-            let name = before.split_whitespace().next().unwrap_or("");
-            if !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-            {
-                let private = saw_private_attr || name.starts_with('_');
-                let doc = last_doc.take().filter(|d| !d.is_empty());
-                recipes
-                    .entry(name.to_string())
-                    .or_insert(ParsedRecipe { doc, private });
-            }
+        } else if !is_top_level_directive(trimmed) {
+            try_upsert_recipe(&mut recipes, trimmed, saw_private_attr, last_doc.take());
         }
         saw_private_attr = false;
         last_doc = None;
@@ -242,7 +255,10 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> 
     let mut tasks: Vec<ExtractedTask> = recipes
         .iter()
         .filter(|(_, r)| !r.private)
-        .map(|(name, r)| ExtractedTask::recipe(name.clone(), r.doc.clone()))
+        .map(|(name, r)| ExtractedTask::Recipe {
+            name: name.clone(),
+            doc: r.doc.clone(),
+        })
         .collect();
     for alias in aliases {
         if alias.private || alias_target_leaf(&alias.target).starts_with('_') {
@@ -250,10 +266,13 @@ fn extract_tasks_from_source(path: &Path) -> anyhow::Result<Vec<ExtractedTask>> 
         }
         match recipes.get(&alias.target) {
             Some(target) if target.private => {}
-            _ => tasks.push(ExtractedTask::alias(alias.name, alias.target)),
+            _ => tasks.push(ExtractedTask::Alias {
+                name: alias.name,
+                target: alias.target,
+            }),
         }
     }
-    tasks.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    tasks.sort_unstable_by(|a, b| a.name().cmp(b.name()));
     Ok(tasks)
 }
 
@@ -261,9 +280,6 @@ fn parse_alias(rest: &str) -> Option<(String, String)> {
     let (name_part, target_part) = rest.split_once(":=")?;
     let name = name_part.trim();
     let target = target_part.split_whitespace().next().unwrap_or("");
-    if name.is_empty() || target.is_empty() {
-        return None;
-    }
     if !is_valid_ident(name) {
         return None;
     }
@@ -324,7 +340,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
         assert_eq!(names, ["build", "quiet"]);
     }
 
@@ -338,6 +354,7 @@ mod tests {
     #[test]
     fn extract_tasks_uses_just_json_when_available() {
         if Command::new("just").arg("--version").output().is_err() {
+            eprintln!("skipping: just unavailable");
             return;
         }
 
@@ -349,7 +366,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks(dir.path()).expect("justfile tasks should parse");
-        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
         assert_eq!(names, ["build", "quiet"]);
     }
 
@@ -404,10 +421,9 @@ mod tests {
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
         assert_eq!(
             tasks,
-            vec![ExtractedTask {
+            vec![ExtractedTask::Alias {
                 name: "b".to_string(),
-                doc: None,
-                alias_of: Some("foo::bar".to_string()),
+                target: "foo::bar".to_string(),
             }]
         );
     }
@@ -427,15 +443,13 @@ mod tests {
         assert_eq!(
             tasks,
             vec![
-                ExtractedTask {
+                ExtractedTask::Alias {
                     name: "b".to_string(),
-                    doc: None,
-                    alias_of: Some("build".to_string()),
+                    target: "build".to_string(),
                 },
-                ExtractedTask {
+                ExtractedTask::Recipe {
                     name: "build".to_string(),
                     doc: Some("Build the project".to_string()),
-                    alias_of: None,
                 },
             ]
         );
@@ -453,7 +467,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
         assert!(names.is_empty(), "expected no tasks, got {names:?}");
     }
 
@@ -469,7 +483,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
         assert_eq!(names, ["build"]);
     }
 
@@ -484,16 +498,19 @@ mod tests {
         .expect("justfile should be written");
 
         let Some(tasks) = extract_tasks_with_just(&path) else {
+            eprintln!("skipping: just unavailable");
             return;
         };
-        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
         assert_eq!(names, ["b", "build"]);
         let b = tasks
             .iter()
-            .find(|t| t.name == "b")
+            .find(|t| t.name() == "b")
             .expect("alias b should surface");
-        assert_eq!(b.doc, None);
-        assert_eq!(b.alias_of.as_deref(), Some("build"));
+        assert!(
+            matches!(b, ExtractedTask::Alias { target, .. } if target == "build"),
+            "expected alias b → build, got {b:?}"
+        );
     }
 
     #[test]
@@ -508,7 +525,7 @@ mod tests {
         .expect("justfile should be written");
 
         let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
-        let names: Vec<&str> = tasks.iter().map(|t| t.name.as_str()).collect();
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
         assert_eq!(names, ["b", "build"]);
     }
 
@@ -530,18 +547,16 @@ mod tests {
         .expect("justfile should be written");
 
         let Some(tasks) = extract_tasks_with_just(&path) else {
+            eprintln!("skipping: just unavailable");
             return;
         };
         let b = tasks
             .iter()
-            .find(|t| t.name == "b")
+            .find(|t| t.name() == "b")
             .expect("alias b should be surfaced");
-        assert_eq!(
-            b.doc, None,
-            "ambiguous submodule alias target must not adopt the top-level recipe's doc"
+        assert!(
+            matches!(b, ExtractedTask::Alias { target, .. } if target == "bar"),
+            "ambiguous submodule alias must surface as Alias with leaf target, got {b:?}"
         );
-        // `just --dump-format json` normalizes `foo::bar` to the leaf `"bar"`,
-        // so that's what we surface to the user.
-        assert_eq!(b.alias_of.as_deref(), Some("bar"));
     }
 }

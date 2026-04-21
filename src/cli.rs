@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
+
+/// Sort aliases after all real recipes in completion candidates by offsetting
+/// their display order beyond any realistic [`TaskSource::display_order`] value.
+const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
 /// Produce [`CompletionCandidate`]s for every detected task in the current
 /// directory. Called lazily by clap's runtime completion engine — only runs
 /// when the shell is actually requesting completions, never during normal
@@ -50,9 +54,8 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     let mut seen_bare = std::collections::HashSet::new();
     for task in tasks {
         let source_label = task.source.label();
-        // Aliases share the recipe's source but get their own tag group
-        // (e.g. "justfile (aliases)") so zsh renders them in a distinct
-        // section below the real recipes rather than interleaved.
+        // Separate tag group keeps aliases under their own zsh section instead
+        // of interleaving with real recipes.
         let (help, tag, order) = task.alias_of.as_deref().map_or_else(
             || {
                 let help = task.description.as_ref().map_or_else(
@@ -68,7 +71,7 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
             |target| {
                 let help = format!("→ {target}");
                 let tag = format!("{source_label} (aliases)");
-                let order = usize::from(task.source.display_order()) + 100;
+                let order = usize::from(task.source.display_order()) + ALIAS_DISPLAY_ORDER_OFFSET;
                 (help, tag, order)
             },
         );
