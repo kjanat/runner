@@ -22,8 +22,18 @@
 function _clap_dynamic_completer_{NAME}() {
     # Reset to zsh defaults with local scope so caller-side settings
     # (XTRACE, shwordsplit, nullglob, aliases, …) don't leak into us
-    # and our tracing doesn't bleed into their prompt.
-    emulate -L zsh
+    # and our tracing doesn't bleed into their prompt. `-o NULL_GLOB`
+    # silences "no matches found" errors that `_files` internals and
+    # user zstyles (e.g. specs tagged `globbed-files`) would otherwise
+    # raise into the prompt when an unquoted `*` fails to match — and,
+    # unlike `NO_NOMATCH`, it does so without leaving the literal glob
+    # (e.g. `*(/)` from `_files -/` in a dir with no subdirectories)
+    # as a candidate that then gets inserted into the command line.
+    # `-o EXTENDED_GLOB` is required because zsh's own `_files` builds
+    # qualifier patterns like `*(#q-/)` and uses `(#b)` backreferences
+    # internally — without extended glob, those raise
+    # `bad pattern: *(#q-/):globbed-files` the moment `_files -/` runs.
+    emulate -L zsh -o NULL_GLOB -o EXTENDED_GLOB
 
     local __runner_idx=$(( CURRENT - 1 ))
     local __runner_ifs=$'\n'
@@ -45,11 +55,16 @@ function _clap_dynamic_completer_{NAME}() {
         local __runner_flags="${${__runner_raw[1]}#__CLAP_PATHFILES__}"
         __runner_flags="${__runner_flags#$'\t'}"
         if [[ -n "$__runner_flags" ]]; then
-            # Disable globbing so patterns like `*(*)` reach `_files`
-            # literally (it interprets them itself); `emulate -L zsh`
-            # at the top of this function restores the option on return.
-            setopt noglob
-            _files ${=__runner_flags}
+            # `noglob` as a PRECOMMAND modifier (not `setopt noglob`)
+            # keeps globs like `*(*)` from expanding at the call site so
+            # they reach `_files` literally, while leaving globbing ON
+            # inside `_files` itself — `_path_files` internally does
+            # `tmp1=( $~tmp1 )` to list directories, and a function-wide
+            # `setopt noglob` would leave that pattern (e.g. `*(-/)` from
+            # `_files -/` in a dir with no subdirectories) unexpanded and
+            # thus leaked as a candidate. `NULL_GLOB` from `emulate` above
+            # then silently drops the no-match case without residue.
+            noglob _files ${=__runner_flags}
         else
             _files
         fi
