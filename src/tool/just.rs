@@ -1,7 +1,6 @@
 //! just — a handy command runner using `justfile`.
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::collections::{HashMap, hash_map::Entry};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
