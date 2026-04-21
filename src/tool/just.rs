@@ -294,9 +294,11 @@ fn alias_target_leaf(target: &str) -> &str {
 }
 
 fn is_valid_ident(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    let mut chars = s.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn is_private_attr(trimmed: &str) -> bool {
@@ -349,6 +351,26 @@ mod tests {
         assert!(is_private_attr("[unix, private]"));
         assert!(is_private_attr("[private(no-cd), unix]"));
         assert!(!is_private_attr("[unix, linux]"));
+    }
+
+    #[test]
+    fn fallback_parser_enforces_just_name_grammar() {
+        // Just's grammar is `NAME = [a-zA-Z_][a-zA-Z0-9_-]*`. Names that
+        // start with a digit or hyphen, or contain non-ASCII letters, are
+        // rejected by `just` itself and must not be surfaced by the
+        // fallback parser either.
+        let dir = TempDir::new("just-fallback-ident-grammar");
+        let path = dir.path().join("justfile");
+
+        fs::write(
+            &path,
+            "1build:\n  echo nope\n\n-build:\n  echo nope\n\néclair:\n  echo nope\n\nβuild:\n  echo nope\n\nbuild:\n  echo yes\n",
+        )
+        .expect("justfile should be written");
+
+        let tasks = extract_tasks_from_source(&path).expect("justfile source should parse");
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
+        assert_eq!(names, ["build"]);
     }
 
     #[test]
