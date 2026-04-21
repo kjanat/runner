@@ -581,4 +581,49 @@ mod tests {
             "ambiguous submodule alias must surface as Alias with leaf target, got {b:?}"
         );
     }
+
+    #[test]
+    fn json_alias_surfaces_when_top_level_private_but_submodule_shares_leaf() {
+        // `just --dump` normalizes `alias b := foo::bar` to `target: "bar"`, so
+        // when a `[private]` top-level `bar` exists alongside `foo::bar`, the
+        // JSON view can't prove which one the alias points to. The documented
+        // trade-off (see the comment on the `ambiguous` branch) is to surface
+        // the alias rather than hide it — hiding would drop a legitimate
+        // public submodule alias whenever any same-leaf private top-level
+        // recipe happens to exist. Locking the behavior in so future refactors
+        // make this call-out explicit.
+        let dir = TempDir::new("just-json-alias-private-ambig");
+        let root = dir.path();
+        fs::create_dir_all(root.join("foo")).expect("foo dir");
+        fs::write(
+            root.join("foo/mod.just"),
+            "# submodule bar\nbar:\n  echo sub\n",
+        )
+        .expect("module justfile should be written");
+        let path = root.join("justfile");
+        fs::write(
+            &path,
+            "mod foo\n\n[private]\nbar:\n  echo top\n\nalias b := foo::bar\n",
+        )
+        .expect("justfile should be written");
+
+        let Some(tasks) = extract_tasks_with_just(&path) else {
+            eprintln!("skipping: just unavailable");
+            return;
+        };
+        let b = tasks
+            .iter()
+            .find(|t| t.name() == "b")
+            .expect("alias b should still be surfaced despite private top-level `bar`");
+        assert!(
+            matches!(b, ExtractedTask::Alias { target, .. } if target == "bar"),
+            "ambiguous alias must surface as Alias with the normalized leaf target, got {b:?}"
+        );
+        assert!(
+            tasks
+                .iter()
+                .all(|t| !matches!(t, ExtractedTask::Recipe { name, .. } if name == "bar")),
+            "private top-level `bar` must still stay hidden as a recipe"
+        );
+    }
 }
