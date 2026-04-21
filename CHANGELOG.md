@@ -7,32 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Actually stop the `*(-/)` / `*(/)` glob-pattern residue that `--dir
-  <TAB>` in an empty directory would type into the prompt. The `0.4.1`
-  switch to `NULL_GLOB` was the right idea but was defeated by a
-  function-scoped `setopt noglob` sitting on top of the `_files` call:
-  that option disabled globbing inside `_path_files` as well, so its
-  internal `tmp1=( $~tmp1 )` never expanded `*(-/)` and the literal
-  pattern was handed to `compadd` as a candidate. Replace the option
-  with a `noglob` *precommand modifier* on the `_files` call so globs
-  like `*(*)` still reach `_files` unexpanded while its internals run
-  with `NULL_GLOB` semantics as intended.
-- Also enable `EXTENDED_GLOB` in the completer's `emulate -L zsh`
-  scope. zsh's own `_files` builds qualifier patterns like `*(#q-/)`
-  and uses `(#b)` backreferences internally; `emulate -L zsh` resets
-  to plain-zsh defaults (extended glob off), so `_files -/` would
-  emit `bad pattern: *(#q-/):globbed-files` on every TAB even once
-  the residue bug above was fixed.
-
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
-## [0.4.1] - 2026-04-18
+## [0.4.1] - 2026-04-21
 
 ### Fixed
 
@@ -45,6 +26,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NOMATCH`, and the subsequent `*(/)` / `*(-/)` residue that would
   otherwise appear on the command line under `NO_NOMATCH` when
   completing a directory-typed flag in a directory with no subdirs.
+- Actually stop the `*(-/)` / `*(/)` glob-pattern residue that `--dir
+  <TAB>` in an empty directory would type into the prompt. The
+  initial switch to `NULL_GLOB` was the right idea but was defeated
+  by a function-scoped `setopt noglob` sitting on top of the `_files`
+  call: that option disabled globbing inside `_path_files` as well,
+  so its internal `tmp1=( $~tmp1 )` never expanded `*(-/)` and the
+  literal pattern was handed to `compadd` as a candidate. Replace
+  the option with a `noglob` *precommand modifier* on the `_files`
+  call so globs like `*(*)` still reach `_files` unexpanded while
+  its internals run with `NULL_GLOB` semantics as intended.
+- Also enable `EXTENDED_GLOB` in the completer's `emulate -L zsh`
+  scope. zsh's own `_files` builds qualifier patterns like `*(#q-/)`
+  and uses `(#b)` backreferences internally; `emulate -L zsh` resets
+  to plain-zsh defaults (extended glob off), so `_files -/` would
+  emit `bad pattern: *(#q-/):globbed-files` on every TAB even once
+  the residue bug above was fixed.
 
 ## [0.4.0] - 2026-04-17
 
