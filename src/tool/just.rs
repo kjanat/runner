@@ -72,17 +72,21 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
         target: String,
     }
 
-    fn any_module_has_recipe(modules: &HashMap<String, Module>, name: &str) -> bool {
+    fn module_recipes_named<'a>(
+        modules: &'a HashMap<String, Module>,
+        name: &str,
+    ) -> Vec<&'a Recipe> {
+        let mut found = Vec::new();
         let mut stack: Vec<&HashMap<String, Module>> = vec![modules];
         while let Some(current) = stack.pop() {
             for module in current.values() {
-                if module.recipes.contains_key(name) {
-                    return true;
+                if let Some(recipe) = module.recipes.get(name) {
+                    found.push(recipe);
                 }
                 stack.push(&module.modules);
             }
         }
-        false
+        found
     }
 
     let output = Command::new("just")
@@ -116,18 +120,24 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
             continue;
         }
         // `just --dump` normalizes submodule alias targets to the leaf name
-        // (e.g. `alias b := foo::bar` becomes `target: "bar"`), so a top-level
-        // recipe of the same name is indistinguishable from a submodule one.
-        // When both exist, treat the alias as unresolved to avoid attributing
-        // the wrong recipe's doc/privacy to it.
-        let ambiguous = any_module_has_recipe(&dump.modules, &alias.target);
-        match dump.recipes.get(&alias.target) {
-            Some(target) if !ambiguous && target.private => {}
-            _ => tasks.push(ExtractedTask::Alias {
-                name: name.clone(),
-                target: alias.target.clone(),
-            }),
+        // (e.g. `alias b := foo::bar` becomes `target: "bar"`), so we can't
+        // tell from `target` alone which recipe an alias resolves to. Gather
+        // every candidate (top-level + any submodule recipe sharing the leaf)
+        // and hide the alias only when we can prove all candidates are
+        // private. If any candidate is public — or nothing matches (dangling
+        // target) — surface the alias.
+        let top_level = dump.recipes.get(&alias.target);
+        let module_matches = module_recipes_named(&dump.modules, &alias.target);
+        let has_candidate = top_level.is_some() || !module_matches.is_empty();
+        let any_public =
+            top_level.is_some_and(|r| !r.private) || module_matches.iter().any(|r| !r.private);
+        if has_candidate && !any_public {
+            continue;
         }
+        tasks.push(ExtractedTask::Alias {
+            name: name.clone(),
+            target: alias.target.clone(),
+        });
     }
     tasks.sort_unstable_by(|a, b| a.name().cmp(b.name()));
     Some(tasks)
@@ -624,6 +634,36 @@ mod tests {
                 .iter()
                 .all(|t| !matches!(t, ExtractedTask::Recipe { name, .. } if name == "bar")),
             "private top-level `bar` must still stay hidden as a recipe"
+        );
+    }
+
+    #[test]
+    fn json_alias_hides_private_submodule_target_without_top_level() {
+        // `alias s := foo::hush` where `foo::hush` is the only candidate and
+        // it is `[private]`. Since there is no same-leaf top-level recipe,
+        // the privacy check is unambiguous — we know exactly which recipe the
+        // alias points to, and it is private. The alias must be hidden.
+        let dir = TempDir::new("just-json-alias-submodule-private");
+        let root = dir.path();
+        fs::create_dir_all(root.join("foo")).expect("foo dir");
+        fs::write(root.join("foo/mod.just"), "[private]\nhush:\n  echo nope\n")
+            .expect("module justfile should be written");
+        let path = root.join("justfile");
+        fs::write(
+            &path,
+            "mod foo\n\nbuild:\n  echo build\n\nalias s := foo::hush\nalias b := build\n",
+        )
+        .expect("justfile should be written");
+
+        let Some(tasks) = extract_tasks_with_just(&path) else {
+            eprintln!("skipping: just unavailable");
+            return;
+        };
+        let names: Vec<&str> = tasks.iter().map(ExtractedTask::name).collect();
+        assert_eq!(
+            names,
+            ["b", "build"],
+            "alias `s` must be hidden when its only candidate submodule recipe is private"
         );
     }
 }
