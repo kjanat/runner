@@ -337,7 +337,9 @@ mod tests {
 
     use clap::{Arg, Command, ValueHint};
 
-    use super::{detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
+    use clap_complete::env::EnvCompleter as _;
+
+    use super::{GroupedZsh, detect_path_files_flags, strip_tag_prefix, zsh_files_flags};
 
     fn dir_flag_cmd() -> Command {
         Command::new("runner").arg(
@@ -557,5 +559,68 @@ mod tests {
     #[test]
     fn strip_tag_prefix_returns_empty_for_bare_source() {
         assert_eq!(strip_tag_prefix("package.json", "package.json"), "");
+    }
+
+    /// `_files` internals (and user zstyles keyed on the `globbed-files`
+    /// tag) evaluate specs containing unquoted `*`. Under zsh's default
+    /// `NOMATCH` behaviour those raise `no matches found: *:globbed-files`
+    /// into the user's prompt; under `NO_NOMATCH`, the unmatched pattern
+    /// (e.g. `*(/)` from `_files -/`) instead survives as a literal and
+    /// gets inserted into the command line. The completion function must
+    /// scope `NULL_GLOB` via `emulate -L zsh` so unmatched globs silently
+    /// drop out — no error, and no literal to leak.
+    ///
+    /// `EXTENDED_GLOB` is required on top of `NULL_GLOB` because zsh's
+    /// own `_files` builds qualifier patterns like `*(#q-/)` and uses
+    /// `(#b)` backreferences internally. Without extended glob, running
+    /// `_files -/` raises `bad pattern: *(#q-/):globbed-files` —
+    /// `emulate -L zsh` strips `EXTENDED_GLOB` from the caller's shell
+    /// unless we explicitly opt back in.
+    #[test]
+    fn registration_script_uses_null_glob_and_extended_glob() {
+        let mut buf = Vec::new();
+        GroupedZsh
+            .write_registration("COMPLETE", "runner", "runner", "/bin/runner", &mut buf)
+            .expect("registration should succeed");
+        let script = String::from_utf8(buf).expect("script must be utf-8");
+        assert!(
+            script.contains("emulate -L zsh -o NULL_GLOB -o EXTENDED_GLOB"),
+            "completion function must enable both NULL_GLOB (for unmatched \
+             globs) and EXTENDED_GLOB (so `_files`'s `*(#q-/)` qualifier \
+             parses); got:\n{script}"
+        );
+    }
+
+    /// `setopt noglob` inside the function would disable globbing in
+    /// `_path_files`'s internal `tmp1=( $~tmp1 )` expansion as well,
+    /// leaving the directory-qualifier pattern (`*(-/)`) unexpanded
+    /// and thus leaked as a candidate — defeating the `NULL_GLOB` fix.
+    /// The `noglob` *precommand modifier* only suppresses glob expansion
+    /// on the arguments of the `_files` call, not its internals, so the
+    /// two must never be confused in this script.
+    #[test]
+    fn registration_script_uses_noglob_precommand_not_setopt() {
+        let mut buf = Vec::new();
+        GroupedZsh
+            .write_registration("COMPLETE", "runner", "runner", "/bin/runner", &mut buf)
+            .expect("registration should succeed");
+        let script = String::from_utf8(buf).expect("script must be utf-8");
+        assert!(
+            script.contains("noglob _files"),
+            "path-hint delegation must use the `noglob` precommand modifier \
+             on the `_files` call so `*(*)` reaches `_files` literally while \
+             `_path_files`'s internal globbing still runs; got:\n{script}"
+        );
+        let offending = script.lines().find(|line| {
+            let trimmed = line.trim_start();
+            !trimmed.starts_with('#') && trimmed.contains("setopt noglob")
+        });
+        assert!(
+            offending.is_none(),
+            "`setopt noglob` disables globbing function-wide and blocks \
+             `_path_files` from expanding `*(-/)`, causing the literal \
+             pattern to leak as a completion candidate; offending line: \
+             {offending:?}\n\nfull script:\n{script}"
+        );
     }
 }
