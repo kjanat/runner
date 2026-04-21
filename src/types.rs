@@ -58,6 +58,9 @@ pub(crate) struct Task {
     /// Optional human-readable description (e.g. justfile doc comment,
     /// go-task `desc` field).
     pub description: Option<String>,
+    /// When this task is an alias, the name of the target recipe it
+    /// resolves to (e.g. `alias b := build` → `Some("build")`).
+    pub alias_of: Option<String>,
 }
 
 /// Identifies the config file a [`Task`] was extracted from.

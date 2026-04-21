@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.5.0] - 2026-04-21
+
+### Added
+
+- Detect justfile aliases (`alias b := build`) and surface them as
+  first-class tasks in `runner list` and `runner <alias>`. Private
+  aliases (prefixed `_`, tagged `[private]`, or pointing at a private
+  recipe) are hidden. Works via `just --dump-format json` when `just`
+  is on PATH and via the regex fallback parser otherwise.
+- Render justfile aliases distinctly from recipes in `runner list` and
+  shell tab completions: aliases appear under a dedicated
+  `justfile (aliases)` group with `name → target` annotations instead
+  of duplicating the target recipe's description.
+
 ## [0.4.1] - 2026-04-21
 
 ### Fixed
@@ -204,7 +218,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kjanat/runner/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/kjanat/runner/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kjanat/runner/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/kjanat/runner/compare/v0.3.0...v0.3.1

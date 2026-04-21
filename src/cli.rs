@@ -5,6 +5,10 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
+
+/// Sort aliases after all real recipes in completion candidates by offsetting
+/// their display order beyond any realistic [`TaskSource::display_order`] value.
+const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
 /// Produce [`CompletionCandidate`]s for every detected task in the current
 /// directory. Called lazily by clap's runtime completion engine — only runs
 /// when the shell is actually requesting completions, never during normal
@@ -49,11 +53,28 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     let mut candidates = Vec::new();
     let mut seen_bare = std::collections::HashSet::new();
     for task in tasks {
-        let help = task.description.as_ref().map_or_else(
-            || task.source.label().to_string(),
-            |desc| format!("{}: {desc}", task.source.label()),
+        let source_label = task.source.label();
+        // Separate tag group keeps aliases under their own zsh section instead
+        // of interleaving with real recipes.
+        let (help, tag, order) = task.alias_of.as_deref().map_or_else(
+            || {
+                let help = task.description.as_ref().map_or_else(
+                    || source_label.to_string(),
+                    |desc| format!("{source_label}: {desc}"),
+                );
+                (
+                    help,
+                    source_label.to_string(),
+                    usize::from(task.source.display_order()),
+                )
+            },
+            |target| {
+                let help = format!("→ {target}");
+                let tag = format!("{source_label} (aliases)");
+                let order = usize::from(task.source.display_order()) + ALIAS_DISPLAY_ORDER_OFFSET;
+                (help, tag, order)
+            },
         );
-        let tag = task.source.label();
         let is_duplicate = counts.get(task.name.as_str()).copied().unwrap_or(0) > 1;
 
         // Emit bare candidate only once (first source wins for the bare name)
@@ -61,19 +82,19 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
             candidates.push(
                 CompletionCandidate::new(&task.name)
                     .help(Some(help.clone().into()))
-                    .tag(Some(tag.into()))
-                    .display_order(Some(usize::from(task.source.display_order()))),
+                    .tag(Some(tag.clone().into()))
+                    .display_order(Some(order)),
             );
         }
 
         // For duplicate names, also emit "source:name" qualified form
         if is_duplicate {
-            let qualified = format!("{}:{}", task.source.label(), task.name);
+            let qualified = format!("{source_label}:{}", task.name);
             candidates.push(
                 CompletionCandidate::new(qualified)
                     .help(Some(help.into()))
                     .tag(Some(tag.into()))
-                    .display_order(Some(usize::from(task.source.display_order()))),
+                    .display_order(Some(order)),
             );
         }
     }
@@ -95,16 +116,19 @@ mod tests {
                 name: "test".into(),
                 source: TaskSource::PackageJson,
                 description: None,
+                alias_of: None,
             },
             Task {
                 name: "test".into(),
                 source: TaskSource::Makefile,
                 description: None,
+                alias_of: None,
             },
             Task {
                 name: "build".into(),
                 source: TaskSource::PackageJson,
                 description: None,
+                alias_of: None,
             },
         ];
         let candidates = task_candidates_from(&tasks);
@@ -122,6 +146,49 @@ mod tests {
         assert!(values.contains(&"Makefile:test".to_string()));
         assert!(values.contains(&"build".to_string()));
         assert!(!values.contains(&"package.json:build".to_string()));
+    }
+
+    #[test]
+    fn alias_candidate_uses_arrow_help_and_dedicated_tag() {
+        let tasks = vec![
+            Task {
+                name: "build".into(),
+                source: TaskSource::Justfile,
+                description: Some("Build the project".into()),
+                alias_of: None,
+            },
+            Task {
+                name: "b".into(),
+                source: TaskSource::Justfile,
+                description: None,
+                alias_of: Some("build".into()),
+            },
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let alias = candidates
+            .iter()
+            .find(|c| c.get_value() == "b")
+            .expect("alias candidate b should be emitted");
+        let help = alias
+            .get_help()
+            .expect("alias candidate should carry help text")
+            .to_string();
+        assert_eq!(help, "→ build");
+        let tag = alias
+            .get_tag()
+            .expect("alias candidate should carry a tag")
+            .to_string();
+        assert_eq!(tag, "justfile (aliases)");
+
+        let recipe = candidates
+            .iter()
+            .find(|c| c.get_value() == "build")
+            .expect("recipe candidate build should be emitted");
+        let recipe_tag = recipe
+            .get_tag()
+            .expect("recipe candidate should carry a tag")
+            .to_string();
+        assert_eq!(recipe_tag, "justfile");
     }
 
     #[test]
