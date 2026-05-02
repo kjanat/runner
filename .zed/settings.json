@@ -1,0 +1,16 @@
+// Folder-specific settings
+//
+// For a full list of overridable settings, and general information on folder-specific settings,
+// see the documentation: https://zed.dev/docs/configuring-zed#settings-files
+{
+	"formatter": [
+		{ "language_server": { "name": "dprint" } },
+		{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } }
+	],
+	"prettier": { "allowed": false },
+	"lsp": {
+		"json-language-server": {
+			"settings": { "json": { "schemas": [{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" }] } }
+		}
+	}
+}

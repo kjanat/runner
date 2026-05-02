@@ -49,14 +49,14 @@ sub-package via `require.resolve` at runtime and exec the native binary.
 
 ### Supported platforms
 
-| OS      | Architectures                          |
-| ------- | -------------------------------------- |
+| OS      | Architectures                                   |
+| ------- | ----------------------------------------------- |
 | Linux   | x64 (gnu, musl), arm64 (gnu, musl), armv7 (gnu) |
-| macOS   | x64, arm64                             |
-| Windows | x64, arm64, ia32                       |
-| FreeBSD | x64, arm64 (experimental)              |
-| NetBSD  | x64 (experimental)                     |
-| OpenBSD | x64 (experimental)                     |
+| macOS   | x64, arm64                                      |
+| Windows | x64, arm64, ia32                                |
+| FreeBSD | x64, arm64 (experimental)                       |
+| NetBSD  | x64 (experimental)                              |
+| OpenBSD | x64 (experimental)                              |
 
 If your platform isn't listed, install from source with
 `cargo install --git=https://github.com/kjanat/runner/ runner` or
