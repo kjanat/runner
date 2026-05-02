@@ -8,10 +8,10 @@ const subPackages = Object.keys(optionalDependencies || {});
 
 /** Formats text as a clickable hyperlink in supported terminals using OSC 8 escape sequences.
  * @param {string} url - The URL that the hyperlink points to.
- * @param {string | undefined} text - The display text for the hyperlink.
+ * @param {string} text - The display text for the hyperlink. Defaults to the URL if not provided.
  * @returns {string} The formatted string with OSC 8 escape sequences.
  */
-const osc8 = (url, text = undefined) => `\u001B]8;;${url}\u0007${text ?? url}\u001B]8;;\u0007`;
+const osc8 = (url, text = url) => `\u001B]8;;${url}\u0007${text}\u001B]8;;\u0007`;
 
 /**
  * Resolves the path to the prebuilt binary for the current platform and architecture.
@@ -40,16 +40,23 @@ function resolveBinary(name) {
 		? "\n\nDetails of attempted resolutions:\n  - " + errors.join("\n  - ")
 		: "";
 
-	throw new Error(
-		`${pkgName}: no prebuilt binary found for ${platform}-${arch}.
-This usually means your package manager skipped \`optionalDependencies\`
-(common with \`--no-optional\`, \`--omit=optional\`, or some Docker/CI setups).
+	const [indent, blueText, redText, yellowText, reset] = ["  ", "\x1b[36m", "\x1b[31m", "\x1b[33m", "\x1b[0m"];
+
+	const errorText =
+		`${redText}${pkgName}${reset}: no prebuilt binary found for ${yellowText}${platform}-${arch}${reset}.
+
+This usually means your package manager skipped ${blueText}optionalDependencies${reset}
+(common with ${blueText}--no-optional${reset}, ${blueText}--omit=optional${reset}, or some Docker/CI setups).
+
 Workarounds:
-  - reinstall without: \`--no-optional\` / \`--omit=optional\`
-  - install from source: \`cargo install --git=${repo}/ runner\`
-  - file an issue if your platform is unsupported: ${osc8(`${repo}/issues`)}${detail}
-`,
-	);
+${indent}- reinstall without: ${blueText}--no-optional${reset} / ${blueText}--omit=optional${reset}
+${indent}- install from source: ${blueText}cargo install --git=${repo}/ runner${reset}
+${indent}- file an issue if your platform is unsupported: ${osc8(`${repo}/issues`)}${detail}
+`;
+
+	console.error(errorText);
+
+	throw new Error("No prebuilt binary found for the current platform and architecture.");
 }
 
 module.exports = { resolveBinary };
