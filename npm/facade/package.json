@@ -1,7 +1,7 @@
 {
   "name": "runner-run",
   "version": "0.0.0-template",
-  "description": "Universal project task runner — auto-detects npm/yarn/pnpm/bun/cargo/deno/uv/poetry/go/bundler/composer projects and unifies install/run/clean.",
+  "description": "Universal project task runner. Auto-detects toolchain, provides unified CLI.",
   "license": "MIT",
   "author": "Kaj Kowalski <info+runner@kajkowalski.nl>",
   "homepage": "https://github.com/kjanat/runner#readme",
@@ -29,6 +29,9 @@
   "bin": {
     "runner": "bin/runner.js",
     "run": "bin/run.js"
+  },
+  "exports": {
+    "./package.json": "./package.json"
   },
   "files": [
     "bin/",

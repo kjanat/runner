@@ -16,24 +16,29 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const npmDir = path.resolve(here, '..');
 const distDir = path.join(npmDir, 'dist');
 
-function parseArgs(argv) {
-  const out = { tag: 'latest', dryRun: false, access: 'public' };
-  for (let i = 2; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--tag') out.tag = argv[++i];
-    else if (a.startsWith('--tag=')) out.tag = a.slice('--tag='.length);
-    else if (a === '--dry-run') out.dryRun = true;
-    else if (a === '--no-provenance') out.noProvenance = true;
-    else if (a === '--access') out.access = argv[++i];
-    else if (a.startsWith('--access=')) out.access = a.slice('--access='.length);
-    else throw new Error(`unknown arg: ${a}`);
-  }
-  return out;
+function readOpts() {
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      tag: { type: 'string', default: 'latest' },
+      'dry-run': { type: 'boolean', default: false },
+      'no-provenance': { type: 'boolean', default: false },
+      access: { type: 'string', default: 'public' },
+    },
+    strict: true,
+  });
+  return {
+    tag: values.tag,
+    dryRun: values['dry-run'],
+    noProvenance: values['no-provenance'],
+    access: values.access,
+  };
 }
 
 async function exists(p) {
@@ -63,7 +68,7 @@ function publish(pkgDir, opts) {
 }
 
 async function main() {
-  const opts = parseArgs(process.argv);
+  const opts = readOpts();
   const matrix = await readTargets();
 
   for (const target of matrix.targets) {
@@ -82,7 +87,9 @@ async function main() {
   publish(facadeDir, opts);
 }
 
-main().catch((err) => {
-  process.stderr.write(`publish: ${err.stack || err.message}\n`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    process.stderr.write(`publish: ${err.stack || err.message}\n`);
+    process.exit(1);
+  });
+}
