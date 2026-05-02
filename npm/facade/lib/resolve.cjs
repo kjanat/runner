@@ -1,7 +1,9 @@
 /// <reference types="node" />
+"use strict";
+
 const { optionalDependencies, name: pkgName } = require("#pkg");
 const { platform, arch } = require("node:process");
-const { dirname, join, resolve } = require("node:path");
+const { dirname, join } = require("node:path");
 
 const repo = "https://github.com/kjanat/runner";
 const subPackages = Object.keys(optionalDependencies || {});
@@ -28,7 +30,7 @@ function resolveBinary(name) {
 	for (const subPkg of subPackages) {
 		let pkgJsonPath;
 		try {
-			pkgJsonPath = resolve(`${subPkg}/package.json`);
+			pkgJsonPath = require.resolve(`${subPkg}/package.json`);
 		} catch (err) {
 			errors.push(`${subPkg}: ${err instanceof Error ? err.message : String(err)}`);
 			continue;
