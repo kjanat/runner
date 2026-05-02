@@ -54,6 +54,14 @@ async function readTargets() {
   return JSON.parse(await readFile(path.join(npmDir, 'targets.json'), 'utf8'));
 }
 
+async function alreadyPublished(pkgDir) {
+  const pkg = JSON.parse(await readFile(path.join(pkgDir, 'package.json'), 'utf8'));
+  const res = spawnSync('npm', ['view', `${pkg.name}@${pkg.version}`, 'version'], {
+    encoding: 'utf8',
+  });
+  return res.status === 0 && res.stdout.trim() === pkg.version;
+}
+
 function publish(pkgDir, opts) {
   const args = ['publish', '--access', opts.access, '--tag', opts.tag];
   if (opts.dryRun) args.push('--dry-run');
@@ -61,10 +69,16 @@ function publish(pkgDir, opts) {
     args.push('--provenance');
   }
   console.log(`+ npm ${args.join(' ')}  (cwd: ${path.relative(npmDir, pkgDir)})`);
-  const res = spawnSync('npm', args, { cwd: pkgDir, stdio: 'inherit' });
-  if (res.status !== 0) {
-    throw new Error(`npm publish failed for ${pkgDir} (exit ${res.status})`);
+  const res = spawnSync('npm', args, { cwd: pkgDir, stdio: ['inherit', 'inherit', 'pipe'] });
+  if (res.status === 0) return;
+  const stderr = (res.stderr || '').toString();
+  process.stderr.write(stderr);
+  // Treat "version already published" as a no-op so partial reruns succeed.
+  if (/EPUBLISHCONFLICT|cannot publish over the previously published versions/i.test(stderr)) {
+    console.log(`  -> already published, skipping`);
+    return;
   }
+  throw new Error(`npm publish failed for ${pkgDir} (exit ${res.status})`);
 }
 
 async function main() {
@@ -77,6 +91,10 @@ async function main() {
       console.warn(`skipping ${matrix.scope}/${target.pkg}: not generated`);
       continue;
     }
+    if (!opts.dryRun && (await alreadyPublished(dir))) {
+      console.log(`skipping ${matrix.scope}/${target.pkg}: version already on registry`);
+      continue;
+    }
     publish(dir, opts);
   }
 
@@ -84,7 +102,11 @@ async function main() {
   if (!(await exists(facadeDir))) {
     throw new Error(`façade not generated at ${facadeDir} — run build-packages.mjs first`);
   }
-  publish(facadeDir, opts);
+  if (!opts.dryRun && (await alreadyPublished(facadeDir))) {
+    console.log(`skipping ${matrix.facade}: version already on registry`);
+  } else {
+    publish(facadeDir, opts);
+  }
 }
 
 if (import.meta.main) {

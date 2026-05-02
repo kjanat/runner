@@ -50,12 +50,12 @@ async function clean() {
   await mkdir(path.join(npmDir, 'dist'), { recursive: true });
 }
 
-async function buildFacade(matrix, version) {
+async function buildFacade(matrix, version, builtTargets) {
   const tplPath = path.join(npmDir, 'facade', 'package.json');
   const tpl = JSON.parse(await readFile(tplPath, 'utf8'));
   tpl.version = version;
   tpl.optionalDependencies = Object.fromEntries(
-    matrix.targets.map((t) => [`${matrix.scope}/${t.pkg}`, version])
+    builtTargets.map((t) => [`${matrix.scope}/${t.pkg}`, version])
   );
   const dest = path.join(npmDir, 'dist', matrix.facade);
   await mkdir(path.join(dest, 'bin'), { recursive: true });
@@ -177,12 +177,17 @@ async function main() {
   const opts = readOpts();
   const matrix = await readTargets();
   await clean();
-  await buildFacade(matrix, opts.version);
   const filter = opts.only ? new Set(opts.only) : null;
+  const built = [];
   for (const target of matrix.targets) {
     if (filter && !filter.has(target.pkg)) continue;
-    await buildPlatformPackage(matrix, target, opts.version, opts);
+    const result = await buildPlatformPackage(matrix, target, opts.version, opts);
+    if (result) built.push(target);
   }
+  if (built.length === 0) {
+    throw new Error('no platform packages were built — refusing to publish a façade with empty optionalDependencies');
+  }
+  await buildFacade(matrix, opts.version, built);
 }
 
 if (import.meta.main) {

@@ -55,7 +55,7 @@ sub-package via `require.resolve` at runtime and exec the native binary.
 | macOS   | x64, arm64                             |
 | Windows | x64, arm64, ia32                       |
 | FreeBSD | x64, arm64 (experimental)              |
-| NetBSD  | x64                                    |
+| NetBSD  | x64 (experimental)                     |
 | OpenBSD | x64 (experimental)                     |
 
 If your platform isn't listed, install from source with
