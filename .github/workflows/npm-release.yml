@@ -26,8 +26,8 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    name: publish to npm
+  build:
+    name: build npm packages
     runs-on: ubuntu-latest
     # Only run after a successful tag-triggered release.yml, or on manual dispatch.
     if: >-
@@ -36,27 +36,51 @@ jobs:
        startsWith(github.event.workflow_run.head_branch, 'v'))
     permissions:
       contents: read
-      id-token: write  # for npm provenance
     env:
       RELEASE_TAG: >-
         ${{ github.event_name == 'workflow_dispatch'
             && inputs.tag
             || github.event.workflow_run.head_branch }}
-      DIST_TAG: >-
+      RELEASE_SHA: >-
         ${{ github.event_name == 'workflow_dispatch'
-            && inputs.dist-tag
-            || (contains(github.event.workflow_run.head_branch, '-') && 'next' || 'latest') }}
-      DRY_RUN: >-
-        ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
+            && github.sha
+            || github.event.workflow_run.head_sha }}
+    outputs:
+      dist-tag: ${{ steps.derive.outputs.dist-tag }}
+      dry-run: ${{ steps.derive.outputs.dry-run }}
     steps:
+      # Tag-supplied code is treated as untrusted in this job: no NPM_TOKEN, no
+      # id-token, no persistent git credentials. Anything malicious in the
+      # tag's scripts is contained to manipulating the artifact contents,
+      # which the privileged publish job re-validates before publishing.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ env.RELEASE_SHA }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+
+      - name: derive dist-tag and dry-run
+        id: derive
+        env:
+          INPUT_DIST_TAG: ${{ inputs.dist-tag || '' }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            dist_tag="${INPUT_DIST_TAG:-latest}"
+            dry_run="${INPUT_DRY_RUN}"
+          else
+            case "${RELEASE_TAG}" in
+              *-*) dist_tag=next ;;
+              *)   dist_tag=latest ;;
+            esac
+            dry_run=false
+          fi
+          echo "dist-tag=${dist_tag}" >> "$GITHUB_OUTPUT"
+          echo "dry-run=${dry_run}" >> "$GITHUB_OUTPUT"
 
       - name: download release archives
         env:
@@ -77,24 +101,85 @@ jobs:
             sha256sum -c --status "${sum}"
           done
 
-      - name: derive package version
-        id: version
-        run: |
-          version="${RELEASE_TAG#v}"
-          echo "value=${version}" >> "$GITHUB_OUTPUT"
-
       - name: build npm packages
         run: |
+          version="${RELEASE_TAG#v}"
           node npm/scripts/build-packages.mjs \
-            --version "${{ steps.version.outputs.value }}" \
+            --version "${version}" \
             --skip-missing
+
+      - name: upload npm/dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-dist
+          path: npm/dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      id-token: write  # for npm provenance
+    env:
+      DIST_TAG: ${{ needs.build.outputs.dist-tag }}
+      DRY_RUN: ${{ needs.build.outputs.dry-run }}
+    steps:
+      # Note: deliberately no actions/checkout — keeps tag-supplied code out of
+      # this job's filesystem. The only thing on disk is the artifact produced
+      # by the build job (a tree of generated package directories) and Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: download npm/dist artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-dist
+          path: npm/dist/
 
       - name: publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          args=(--tag "${DIST_TAG}")
-          if [[ "${DRY_RUN}" == "true" ]]; then
-            args+=(--dry-run)
+          set -euo pipefail
+          shopt -s nullglob
+
+          publish_pkg() {
+            local dir="$1" name version published
+            name=$(jq -r .name "${dir}/package.json")
+            version=$(jq -r .version "${dir}/package.json")
+
+            # Skip if the exact version is already on the registry. npm versions
+            # are immutable, so reruns after a partial publish would otherwise
+            # fail on the first sub-package that already published.
+            published=$(npm view "${name}@${version}" version 2>/dev/null || true)
+            if [ "${published}" = "${version}" ]; then
+              echo "skip ${name}@${version}: already published"
+              return 0
+            fi
+
+            local args=(publish --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
+            if [ "${DRY_RUN}" = "true" ]; then args+=(--dry-run); fi
+            echo "+ npm ${args[*]}  (cwd: ${dir})"
+            (cd "${dir}" && npm "${args[@]}")
+          }
+
+          # Sub-packages first so the façade's optionalDependencies resolve on install.
+          for dir in npm/dist/*/; do
+            dir="${dir%/}"
+            base=$(basename "${dir}")
+            if [ "${base}" = "runner-run" ]; then continue; fi
+            publish_pkg "${dir}"
+          done
+
+          # Façade last.
+          if [ -d "npm/dist/runner-run" ]; then
+            publish_pkg "npm/dist/runner-run"
+          else
+            echo "error: facade npm/dist/runner-run missing from artifact" >&2
+            exit 1
           fi
-          node npm/scripts/publish.mjs "${args[@]}"
