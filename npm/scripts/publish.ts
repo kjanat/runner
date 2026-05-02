@@ -30,6 +30,11 @@ const { values } = parseArgs({
 	args: argv.slice(2),
 	options: {
 		tag: { type: "string", default: "latest" },
+		// Pinned by default to defend a direct local invocation (with real
+		// credentials) against ambient npm config that could redirect view/
+		// publish calls to an attacker-controlled registry. Override only
+		// for testing against a private registry like Verdaccio.
+		registry: { type: "string", default: "https://registry.npmjs.org/" },
 		"dry-run": { type: "boolean", default: false },
 		"no-provenance": { type: "boolean", default: false },
 		access: { type: "string", default: "public" },
@@ -64,14 +69,14 @@ async function readTargets(): Promise<{ scope: string; facade: string; targets: 
 
 /** Checks if the package in the given directory has already been published to the npm registry.
  * @param pkgDir - The directory containing the package to check (must have package.json).
+ * @param registry - Registry URL to query (must be passed explicitly so we don't inherit ambient config).
  * @returns A promise that resolves to true if the package version is already published, or false otherwise.
  * @throws If there is an error reading the package.json or executing the npm command.
  */
-async function alreadyPublished(pkgDir: string): Promise<boolean> {
-	/** @type {{name: string, version: string}} */
+async function alreadyPublished(pkgDir: string, registry: string): Promise<boolean> {
 	const pkg: { name: string; version: string } = JSON.parse(await readFile(join(pkgDir, "package.json"), "utf8"));
 	const { name, version } = pkg;
-	const res = spawnSync("npm", ["view", `${name}@${version}`, "version"], {
+	const res = spawnSync("npm", ["view", `${name}@${version}`, "--registry", registry, "version"], {
 		encoding: "utf8",
 	});
 	return res.status === 0 && res.stdout.trim() === version;
@@ -86,10 +91,25 @@ async function alreadyPublished(pkgDir: string): Promise<boolean> {
 function publish(pkgDir: string, opts: {
 	access: "restricted" | "public";
 	tag: string;
+	registry: string;
 	"dry-run": boolean;
 	"no-provenance": boolean;
 }) {
-	const args = ["publish", "--access", opts["access"], "--tag", opts["tag"]];
+	// --registry: pin destination, don't inherit ambient .npmrc.
+	// --ignore-scripts: refuse to run lifecycle hooks (prepare/postpublish)
+	// from the package being published. Defense against a tampered or
+	// future-edited package.json adding scripts that execute with the
+	// publishing credentials in scope.
+	const args = [
+		"publish",
+		"--registry",
+		opts.registry,
+		"--access",
+		opts.access,
+		"--tag",
+		opts.tag,
+		"--ignore-scripts",
+	];
 	if (opts["dry-run"]) args.push("--dry-run");
 	if (!opts["no-provenance"] && process.env.GITHUB_ACTIONS === "true") {
 		args.push("--provenance");
@@ -117,7 +137,7 @@ async function main() {
 			console.warn(`skipping ${matrix.scope}/${target.pkg}: not generated`);
 			continue;
 		}
-		if (!opts["dry-run"] && (await alreadyPublished(dir))) {
+		if (!opts["dry-run"] && (await alreadyPublished(dir, opts.registry))) {
 			console.log(`skipping ${matrix.scope}/${target.pkg}: version already on registry`);
 			continue;
 		}
@@ -128,7 +148,7 @@ async function main() {
 	if (!(await exists(facadeDir))) {
 		throw new Error(`façade not generated at ${facadeDir} — run build-packages.ts first`);
 	}
-	if (!opts["dry-run"] && (await alreadyPublished(facadeDir))) {
+	if (!opts["dry-run"] && (await alreadyPublished(facadeDir, opts.registry))) {
 		console.log(`skipping ${matrix.facade}: version already on registry`);
 	} else {
 		publish(facadeDir, opts);
