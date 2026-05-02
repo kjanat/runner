@@ -102,11 +102,19 @@ jobs:
           done
 
       - name: build npm packages
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           version="${RELEASE_TAG#v}"
-          node npm/scripts/build-packages.mjs \
-            --version "${version}" \
-            --skip-missing
+          # build-packages.mjs is tier-aware: tier-3 (experimental) targets
+          # are silently skipped when missing, tier 1/2 fail the job. Manual
+          # backfills (workflow_dispatch) extend that leniency to every tier
+          # via --skip-missing.
+          args=(npm/scripts/build-packages.mjs --version "${version}")
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            args+=(--skip-missing)
+          fi
+          node "${args[@]}"
 
       - name: upload npm/dist artifact
         uses: actions/upload-artifact@v7
@@ -241,7 +249,21 @@ jobs:
             local args=(publish --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
             if [ "${DRY_RUN}" = "true" ]; then args+=(--dry-run); fi
             echo "+ npm ${args[*]}  (cwd: ${dir})"
-            (cd "${dir}" && npm "${args[@]}")
+            # Tolerate the TOCTOU race between the npm view check above and
+            # this publish: if another actor publishes the same version in
+            # the gap, npm exits with EPUBLISHCONFLICT and we treat that as a
+            # no-op (mirrors npm/scripts/publish.mjs).
+            local output status
+            if ! output=$(cd "${dir}" && npm "${args[@]}" 2>&1); then
+              status=$?
+              printf '%s\n' "${output}" >&2
+              if grep -Eiq 'EPUBLISHCONFLICT|cannot publish over the previously published versions' <<<"${output}"; then
+                echo "skip ${actual_name}@${version}: already published (race with concurrent publisher)"
+                return 0
+              fi
+              return "${status}"
+            fi
+            printf '%s\n' "${output}"
           }
 
           # Sub-packages first so the façade's optionalDependencies resolve on install.
