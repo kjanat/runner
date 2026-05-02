@@ -1,8 +1,17 @@
 /// <reference types="node" />
-const path = require('node:path');
-const facadePkg = require('#pkg');
+const { optionalDependencies, name: pkgName } = require("#pkg");
+const { platform, arch } = require("node:process");
+const { dirname, join, resolve } = require("node:path");
 
-const subPackages = Object.keys(facadePkg.optionalDependencies || {});
+const repo = "https://github.com/kjanat/runner";
+const subPackages = Object.keys(optionalDependencies || {});
+
+/** Formats text as a clickable hyperlink in supported terminals using OSC 8 escape sequences.
+ * @param {string} url - The URL that the hyperlink points to.
+ * @param {string | undefined} text - The display text for the hyperlink.
+ * @returns {string} The formatted string with OSC 8 escape sequences.
+ */
+const osc8 = (url, text = undefined) => `\u001B]8;;${url}\u0007${text ?? url}\u001B]8;;\u0007`;
 
 /**
  * Resolves the path to the prebuilt binary for the current platform and architecture.
@@ -14,27 +23,32 @@ const subPackages = Object.keys(facadePkg.optionalDependencies || {});
  * @throws {Error} If no suitable binary is found for the current platform and architecture.
  */
 function resolveBinary(name) {
-	const exe = process.platform === 'win32' ? `${name}.exe` : name;
+	const exe = platform === "win32" ? `${name}.exe` : name;
 	const errors = [];
 	for (const subPkg of subPackages) {
 		let pkgJsonPath;
 		try {
-			pkgJsonPath = require.resolve(`${subPkg}/package.json`);
+			pkgJsonPath = resolve(`${subPkg}/package.json`);
 		} catch (err) {
-			errors.push(`${subPkg}: ${err.code || err.message}`);
+			errors.push(`${subPkg}: ${err instanceof Error ? err.message : String(err)}`);
 			continue;
 		}
-		return path.join(path.dirname(pkgJsonPath), 'bin', exe);
+		return join(dirname(pkgJsonPath), "bin", exe);
 	}
-	const detail = errors.length ? `\nTried:\n  - ${errors.join('\n  - ')}` : '';
+
+	const detail = errors.length > 0
+		? "\n\nDetails of attempted resolutions:\n  - " + errors.join("\n  - ")
+		: "";
+
 	throw new Error(
-		`runner-run: no prebuilt binary found for ${process.platform}-${process.arch}.\n`
-			+ `This usually means your package manager skipped optionalDependencies `
-			+ `(common with --no-optional, --omit=optional, or some Docker/CI setups).\n`
-			+ `Workarounds:\n`
-			+ `  - reinstall without --no-optional / --omit=optional\n`
-			+ `  - install from source: cargo install --git=https://github.com/kjanat/runner/ runner\n`
-			+ `  - file an issue if your platform is unsupported: https://github.com/kjanat/runner/issues${detail}`,
+		`${pkgName}: no prebuilt binary found for ${platform}-${arch}.
+This usually means your package manager skipped \`optionalDependencies\`
+(common with \`--no-optional\`, \`--omit=optional\`, or some Docker/CI setups).
+Workarounds:
+  - reinstall without: \`--no-optional\` / \`--omit=optional\`
+  - install from source: \`cargo install --git=${repo}/ runner\`
+  - file an issue if your platform is unsupported: ${osc8(`${repo}/issues`)}${detail}
+`,
 	);
 }
 

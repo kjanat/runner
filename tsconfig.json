@@ -13,6 +13,7 @@
 
 		/* Strict Mode */
 		"strict": true,
+		"noImplicitAny": true,
 
 		/* Module Resolutie */
 		"moduleResolution": "bundler",
