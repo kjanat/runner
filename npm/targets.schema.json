@@ -124,6 +124,13 @@
 					"default": false
 				}
 			},
+			"dependentSchemas": {
+				"libc": {
+					"description": "libc is only meaningful on Linux. If declared, os must include linux.",
+					"properties": { "os": { "type": "array", "contains": { "const": "linux" } } },
+					"required": ["os"]
+				}
+			},
 			"allOf": [{
 				"if": {
 					"properties": { "os": { "type": "array", "contains": { "const": "linux" } } },
@@ -132,10 +139,6 @@
 				"then": {
 					"required": ["libc"],
 					"description": "Linux targets must declare libc to disambiguate glibc and musl builds at install time."
-				},
-				"else": {
-					"not": { "required": ["libc"] },
-					"description": "libc is only meaningful on Linux."
 				}
 			}, {
 				"if": {

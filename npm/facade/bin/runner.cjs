@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-'use strict';
-
-const { spawnSync } = require('node:child_process');
-const { resolveBinary } = require('#resolve');
+const { argv, exit, stderr } = require("node:process");
+const { spawnSync } = require("node:child_process");
+const { resolveBinary } = require("#resolve");
 
 try {
-  const result = spawnSync(resolveBinary('runner'), process.argv.slice(2), {
-    stdio: 'inherit',
-    windowsHide: false,
-  });
-  if (result.error) throw result.error;
-  process.exit(result.status ?? 1);
+	const result = spawnSync(resolveBinary("runner"), argv.slice(2), {
+		stdio: "inherit",
+		windowsHide: false,
+	});
+	if (result.error) throw result.error;
+	exit(result.status ?? 1);
 } catch (err) {
-  process.stderr.write(`runner: ${err.message}\n`);
-  process.exit(1);
+	stderr.write(`runner: ${err instanceof Error ? err.message : String(err)}\n`);
+	exit(1);
 }
