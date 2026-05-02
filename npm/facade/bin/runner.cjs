@@ -2,16 +2,16 @@
 'use strict';
 
 const { spawnSync } = require('node:child_process');
-const { resolveBinary } = require('../lib/resolve.js');
+const { resolveBinary } = require('#resolve');
 
 try {
-  const result = spawnSync(resolveBinary('run'), process.argv.slice(2), {
+  const result = spawnSync(resolveBinary('runner'), process.argv.slice(2), {
     stdio: 'inherit',
     windowsHide: false,
   });
   if (result.error) throw result.error;
   process.exit(result.status ?? 1);
 } catch (err) {
-  process.stderr.write(`run: ${err.message}\n`);
+  process.stderr.write(`runner: ${err.message}\n`);
   process.exit(1);
 }

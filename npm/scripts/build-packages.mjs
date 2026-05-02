@@ -63,10 +63,10 @@ async function buildFacade(matrix, version, builtTargets) {
   await writeFile(path.join(dest, 'package.json'), `${JSON.stringify(tpl, null, 2)}\n`);
   await cp(path.join(npmDir, 'facade', 'README.md'), path.join(dest, 'README.md'));
   await cp(path.join(repoDir, 'LICENSE'), path.join(dest, 'LICENSE'));
-  for (const f of ['runner.js', 'run.js']) {
+  for (const f of ['runner.cjs', 'run.cjs']) {
     await cp(path.join(npmDir, 'facade', 'bin', f), path.join(dest, 'bin', f));
   }
-  await cp(path.join(npmDir, 'facade', 'lib', 'resolve.js'), path.join(dest, 'lib', 'resolve.js'));
+  await cp(path.join(npmDir, 'facade', 'lib', 'resolve.cjs'), path.join(dest, 'lib', 'resolve.cjs'));
   console.log(`built ${matrix.facade}@${version}`);
 }
 

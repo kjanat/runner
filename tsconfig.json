@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		/* Basis Instellingen */
+		"target": "ES2022",
+		"module": "Preserve",
+		"lib": ["ES2022"],
+		"noEmit": true,
+
+		/* JS Check Instellingen */
+		"allowJs": true,
+		"checkJs": true,
+		"maxNodeModuleJsDepth": 1,
+
+		/* Strict Mode */
+		"strict": true,
+
+		/* Module Resolutie */
+		"moduleResolution": "bundler",
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"typeRoots": ["./npm/facade/node_modules/@types"]
+	},
+	"include": ["npm/**/*"],
+	"exclude": ["node_modules", "dist"]
+}

@@ -13,16 +13,23 @@ on:
       tag:
         description: Release tag to publish (e.g. v0.5.0)
         required: true
+        type: string
       dist-tag:
         description: npm dist-tag (latest, next, etc.). Leave empty to infer from the tag (prerelease → next, otherwise → latest).
         required: false
+        options: [latest, next]
+        type: choice
       dry-run:
         description: Dry run only
         required: false
-        default: 'false'
+        default: false
+        type: boolean
 
 permissions:
   contents: read
+
+env:
+  NODE_VERSION: "24"
 
 jobs:
   build:
@@ -53,13 +60,10 @@ jobs:
       # tag's scripts is contained to manipulating the artifact contents,
       # which the privileged publish job re-validates before publishing.
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ env.RELEASE_SHA }}
-          persist-credentials: false
+        with: { ref: "${{ env.RELEASE_SHA }}", persist-credentials: false }
 
       - uses: actions/setup-node@v6
-        with:
-          node-version: '24'
+        with: { node-version: "${{ env.NODE_VERSION }}" }
 
       - name: derive dist-tag and dry-run
         id: derive
@@ -87,8 +91,7 @@ jobs:
           echo "dry-run=${dry_run}" >> "$GITHUB_OUTPUT"
 
       - name: download release archives
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
           mkdir -p npm/downloads
           gh release download "${RELEASE_TAG}" \
@@ -194,8 +197,8 @@ jobs:
       # by the build job (a tree of generated package directories) and Node.
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "${{ env.NODE_VERSION }}"
+          registry-url: https://registry.npmjs.org
 
       - name: download npm/dist artifact
         uses: actions/download-artifact@v8
@@ -204,8 +207,7 @@ jobs:
           path: npm/dist/
 
       - name: publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
         run: |
           set -euo pipefail
           shopt -s nullglob

@@ -1,0 +1,152 @@
+{
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"$id": "https://github.com/kjanat/runner/blob/master/npm/targets.schema.json",
+	"title": "runner npm targets matrix",
+	"description": "Build matrix for the runner-run façade and its per-platform optionalDependencies. Consumed by npm/scripts/build-packages.mjs and the release workflow.",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["facade", "scope", "binaries", "targets"],
+	"properties": {
+		"$schema": {
+			"type": "string",
+			"description": "Pointer to this schema for editor tooling.",
+			"examples": ["https://github.com/kjanat/runner/blob/master/npm/targets.schema.json", "./targets.schema.json"]
+		},
+		"facade": {
+			"type": "string",
+			"description": "npm package name of the façade (the package users install). \nResolves to the correct platform sub-package via \"optionalDependencies\".",
+			"markdownDescription": "# Facade package name  \nnpm `package` name of the façade (the package users install). \nResolves to the correct platform sub-package via `optionalDependencies`.",
+			"minLength": 1,
+			"default": "runner-run",
+			"examples": ["runner-run"]
+		},
+		"scope": {
+			"type": "string",
+			"description": "npm scope under which platform sub-packages are published. \nEach sub-package is published as \"<scope>/<pkg>\".",
+			"markdownDescription": "# npm scope  \nScope under which platform sub-packages are published.  \nEach sub-package is published as `<scope>/<pkg>`.",
+			"pattern": "^@[a-z0-9][a-z0-9-]*$",
+			"default": "@runner-run",
+			"examples": ["@runner-run"]
+		},
+		"binaries": {
+			"type": "array",
+			"description": "Binary names extracted from each release tarball and shipped in every platform sub-package's \"bin/\" directory. \nOn Windows, \".exe\" is appended automatically.",
+			"markdownDescription": "# Binary names  \nBinary names extracted from each release tarball and shipped in every platform sub-package's `bin/` directory.  \nOn Windows, `.exe` is appended automatically.",
+			"minItems": 1,
+			"uniqueItems": true,
+			"items": {
+				"type": "string",
+				"pattern": "^[a-zA-Z0-9_-]+$"
+			}
+		},
+		"targets": {
+			"type": "array",
+			"description": "Per-platform build targets. \nOne entry per published sub-package.",
+			"markdownDescription": "# Build targets  \nPer-platform build targets. One entry per published sub-package.",
+			"minItems": 1,
+			"items": { "$ref": "#/$defs/target" }
+		}
+	},
+	"$defs": {
+		"target": {
+			"type": "object",
+			"description": "Build target for a specific platform/configuration. \nUsed to generate release tarballs and platform-specific sub-packages.",
+			"markdownDescription": "# Build target  \nBuild target for a specific platform/configuration.  \nUsed to generate release tarballs and platform-specific sub-packages.",
+			"additionalProperties": false,
+			"required": ["pkg", "rust", "os", "cpu", "runner", "build", "tier"],
+			"properties": {
+				"pkg": {
+					"type": "string",
+					"description": "Final package name is \"<scope>/<pkg>\".",
+					"markdownDescription": "# Sub-package name suffix.  \nFinal package name is `<scope>/<pkg>`.  \n- [NPM Scope](https://docs.npmjs.com/cli/v11/using-npm/scope)\n- [NPM Package name rules](https://docs.npmjs.com/cli/v11/using-npm/package-spec#package-name)\n- [NPM `package.json#name`](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#name)",
+					"pattern": "^[a-z0-9][a-z0-9-]*$"
+				},
+				"rust": {
+					"type": "string",
+					"description": "Passed to \"cargo build --target\" / \"cross build --target\". \nAlso used to locate the release tarball: \"runner-<tag>-<rust>.tar.gz\".",
+					"markdownDescription": "# Rust target triple  \nPassed to `cargo build --target` / `cross build --target`.  \nAlso used to locate the release tarball: `runner-<tag>-<rust>.tar.gz`.",
+					"pattern": "^[a-z0-9_]+(-[a-z0-9_]+){2,3}$"
+				},
+				"os": {
+					"type": "array",
+					"markdownTitle": "# Operating system",
+					"description": "npm \"os\" field — values from Node's \"process.platform\". \nnpm uses this to select the correct \"optionalDependency\" at install time.",
+					"markdownDescription": "# Operating system  \n[npm `os` field](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#os) — values from Node's [`process.platform`](https://nodejs.org/api/process.html#processplatform).  \nUsed to select the correct [`optionalDependency`](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#optionaldependencies) at install time.",
+					"minItems": 1,
+					"uniqueItems": true,
+					"items": {
+						"type": "string",
+						"enum": ["aix", "darwin", "freebsd", "linux", "openbsd", "sunos", "win32"]
+					}
+				},
+				"cpu": {
+					"type": "array",
+					"description": "npm \"cpu\" field — values from Node's \"process.arch\".",
+					"markdownDescription": "# CPU architecture  \n[npm `cpu` field](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#cpu) — values from Node's [`process.arch`](https://nodejs.org/api/process.html#processarch).",
+					"minItems": 1,
+					"uniqueItems": true,
+					"items": {
+						"type": "string",
+						"enum": ["arm", "arm64", "ia32", "loong64", "mips", "mipsel", "ppc64", "riscv64", "s390", "s390x", "x64"]
+					}
+				},
+				"libc": {
+					"type": "array",
+					"description": "npm \"libc\" field — only meaningful on Linux. \nDistinguishes glibc and musl builds so the right sub-package is installed on Alpine etc.",
+					"markdownDescription": "# libc variant  \n[npm `libc` field](https://docs.npmjs.com/cli/v11/configuring-npm/package-json#libc) — only meaningful on Linux.  \nDistinguishes glibc and musl builds so the right sub-package is installed on Alpine etc.",
+					"minItems": 1,
+					"uniqueItems": true,
+					"items": { "type": "string", "enum": ["glibc", "musl"] }
+				},
+				"runner": {
+					"type": "string",
+					"description": "Hosted/self-hosted runner labels.",
+					"markdownDescription": "# GitHub Actions runner label  \nHosted/self-hosted runner labels.",
+					"minLength": 1,
+					"examples": ["ubuntu-latest", "macos-latest", "macos-15-intel", "windows-latest", "windows-11-arm"]
+				},
+				"build": {
+					"type": "string",
+					"description": "- \"cargo\" for native compilation on a matching runner; \n- \"cross\" for cross-compilation via the \"cross\" crate (typically Linux → { Linux, *BSD }).",
+					"markdownDescription": "# Build tool  \n- `cargo` for native compilation on a matching runner;  \n- `cross` for cross-compilation via the `cross` crate (typically Linux → { Linux, *BSD }).",
+					"enum": ["cargo", "cross"]
+				},
+				"tier": {
+					"type": "integer",
+					"description": "1 = first-class (release-blocking), \n2 = best-effort, \n3 = experimental (failures don't block release).",
+					"markdownDescription": "# Support tier  \n1 = first-class (release-blocking),  \n2 = best-effort,  \n3 = experimental (failures don't block release).",
+					"enum": [1, 2, 3]
+				},
+				"experimental": {
+					"type": "boolean",
+					"title": "Experimental flag",
+					"description": "Used by the release workflow as \"continue-on-error\". \nOnly valid on tier-3 targets.",
+					"default": false
+				}
+			},
+			"allOf": [{
+				"if": {
+					"properties": { "os": { "type": "array", "contains": { "const": "linux" } } },
+					"required": ["os"]
+				},
+				"then": {
+					"required": ["libc"],
+					"description": "Linux targets must declare libc to disambiguate glibc and musl builds at install time."
+				},
+				"else": {
+					"not": { "required": ["libc"] },
+					"description": "libc is only meaningful on Linux."
+				}
+			}, {
+				"if": {
+					"properties": { "experimental": { "const": true } },
+					"required": ["experimental"]
+				},
+				"then": {
+					"properties": { "tier": { "const": 3 } },
+					"description": "Only tier-3 targets may be marked experimental."
+				}
+			}]
+		}
+	}
+}
