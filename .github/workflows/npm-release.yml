@@ -151,11 +151,11 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           version="${RELEASE_TAG#v}"
-          # build-packages.mjs is tier-aware: tier-3 (experimental) targets
+          # build-packages.ts is tier-aware: tier-3 (experimental) targets
           # are silently skipped when missing, tier 1/2 fail the job. Manual
           # backfills (workflow_dispatch) extend that leniency to every tier
           # via --skip-missing.
-          args=(npm/scripts/build-packages.mjs --version "${version}")
+          args=(npm/scripts/build-packages.ts --version "${version}")
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             args+=(--skip-missing)
           fi
@@ -175,7 +175,7 @@ jobs:
     needs: build
     permissions:
       contents: read
-      id-token: write  # for npm provenance
+      id-token: write # for npm provenance
     env:
       # RELEASE_TAG is recomputed here (not consumed from build job outputs) so
       # the value comes straight from trigger metadata — never from anything an
@@ -321,7 +321,7 @@ jobs:
             # Tolerate the TOCTOU race between the npm view check above and
             # this publish: if another actor publishes the same version in
             # the gap, npm exits with EPUBLISHCONFLICT and we treat that as a
-            # no-op (mirrors npm/scripts/publish.mjs).
+            # no-op (mirrors npm/scripts/publish.ts).
             #
             # The `|| status=$?` form is required: under `set -e`,
             # `output=$(cmd); status=$?` would exit on a failing cmd before

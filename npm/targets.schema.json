@@ -2,7 +2,7 @@
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
 	"$id": "https://github.com/kjanat/runner/blob/master/npm/targets.schema.json",
 	"title": "runner npm targets matrix",
-	"description": "Build matrix for the runner-run façade and its per-platform optionalDependencies. Consumed by npm/scripts/build-packages.mjs and the release workflow.",
+	"description": "Build matrix for the runner-run façade and its per-platform optionalDependencies. Consumed by npm/scripts/build-packages.ts and the release workflow.",
 	"type": "object",
 	"additionalProperties": false,
 	"required": ["facade", "scope", "binaries", "targets"],
