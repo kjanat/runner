@@ -13,27 +13,31 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import { createGunzip } from 'node:zlib';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const npmDir = path.resolve(here, '..');
 const repoDir = path.resolve(npmDir, '..');
 
-function parseArgs(argv) {
-  const out = { only: null, skipMissing: false };
-  for (let i = 2; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--version') out.version = argv[++i];
-    else if (a.startsWith('--version=')) out.version = a.slice('--version='.length);
-    else if (a === '--only') out.only = argv[++i].split(',');
-    else if (a.startsWith('--only=')) out.only = a.slice('--only='.length).split(',');
-    else if (a === '--skip-missing') out.skipMissing = true;
-    else if (a === '--downloads') out.downloads = argv[++i];
-    else if (a.startsWith('--downloads=')) out.downloads = a.slice('--downloads='.length);
-    else throw new Error(`unknown arg: ${a}`);
-  }
-  if (!out.version) throw new Error('missing --version');
-  return out;
+function readOpts() {
+  const { values } = parseArgs({
+    args: process.argv.slice(2),
+    options: {
+      version: { type: 'string' },
+      only: { type: 'string' },
+      'skip-missing': { type: 'boolean', default: false },
+      downloads: { type: 'string' },
+    },
+    strict: true,
+  });
+  if (!values.version) throw new Error('missing --version');
+  return {
+    version: values.version,
+    only: values.only ? values.only.split(',') : null,
+    skipMissing: values['skip-missing'],
+    downloads: values.downloads,
+  };
 }
 
 async function readTargets() {
@@ -170,7 +174,7 @@ async function buildPlatformPackage(matrix, target, version, opts) {
 }
 
 async function main() {
-  const opts = parseArgs(process.argv);
+  const opts = readOpts();
   const matrix = await readTargets();
   await clean();
   await buildFacade(matrix, opts.version);
@@ -181,7 +185,9 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  process.stderr.write(`build-packages: ${err.stack || err.message}\n`);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    process.stderr.write(`build-packages: ${err.stack || err.message}\n`);
+    process.exit(1);
+  });
+}

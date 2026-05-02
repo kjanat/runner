@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const facadePkg = require('../package.json');
+const facadePkg = require('runner-run/package.json');
 
 const subPackages = Object.keys(facadePkg.optionalDependencies || {});
 
@@ -25,7 +25,7 @@ function resolveBinary(name) {
       `(common with --no-optional, --omit=optional, or some Docker/CI setups).\n` +
       `Workarounds:\n` +
       `  - reinstall without --no-optional / --omit=optional\n` +
-      `  - install from source: cargo install runner\n` +
+      `  - install from source: cargo install --git=https://github.com/kjanat/runner/ runner\n` +
       `  - file an issue if your platform is unsupported: https://github.com/kjanat/runner/issues${detail}`
   );
 }
