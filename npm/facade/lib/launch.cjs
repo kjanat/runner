@@ -1,3 +1,5 @@
+"use strict";
+
 const { argv, exit, stderr } = require("node:process");
 const { spawnSync } = require("node:child_process");
 const { resolveBinary } = require("#resolve");
