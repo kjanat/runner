@@ -109,7 +109,7 @@ async function main() {
   }
 }
 
-if (import.meta.main) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`publish: ${err.stack || err.message}\n`);
     process.exit(1);

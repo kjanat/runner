@@ -190,7 +190,7 @@ async function main() {
   await buildFacade(matrix, opts.version, built);
 }
 
-if (import.meta.main) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     process.stderr.write(`build-packages: ${err.stack || err.message}\n`);
     process.exit(1);
