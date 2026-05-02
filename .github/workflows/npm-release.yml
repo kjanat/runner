@@ -58,7 +58,7 @@ jobs:
           ref: ${{ env.RELEASE_SHA }}
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
 
@@ -109,7 +109,7 @@ jobs:
             --skip-missing
 
       - name: upload npm/dist artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: npm-dist
           path: npm/dist/
@@ -130,13 +130,13 @@ jobs:
       # Note: deliberately no actions/checkout — keeps tag-supplied code out of
       # this job's filesystem. The only thing on disk is the artifact produced
       # by the build job (a tree of generated package directories) and Node.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: download npm/dist artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: npm-dist
           path: npm/dist/
