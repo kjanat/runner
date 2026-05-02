@@ -27,8 +27,9 @@
 	"author": "Kaj Kowalski <info+runner@kajkowalski.nl>",
 	"type": "module",
 	"imports": {
-		"#resolve": "./lib/resolve.cjs",
-		"#pkg": "./package.json"
+		"#launch": "./lib/launch.cjs",
+		"#pkg": "./package.json",
+		"#resolve": "./lib/resolve.cjs"
 	},
 	"exports": {
 		"./package.json": "./package.json"
