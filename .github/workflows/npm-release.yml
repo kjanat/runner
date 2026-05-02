@@ -14,9 +14,8 @@ on:
         description: Release tag to publish (e.g. v0.5.0)
         required: true
       dist-tag:
-        description: npm dist-tag (latest, next, etc.)
+        description: npm dist-tag (latest, next, etc.). Leave empty to infer from the tag (prerelease → next, otherwise → latest).
         required: false
-        default: latest
       dry-run:
         description: Dry run only
         required: false
@@ -69,14 +68,19 @@ jobs:
           INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
           EVENT_NAME: ${{ github.event_name }}
         run: |
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            dist_tag="${INPUT_DIST_TAG:-latest}"
-            dry_run="${INPUT_DRY_RUN}"
+          if [ -n "${INPUT_DIST_TAG}" ]; then
+            # Manual override always wins.
+            dist_tag="${INPUT_DIST_TAG}"
           else
+            # Infer from the tag: prerelease (e.g. v1.0.0-rc.1) → next, else latest.
             case "${RELEASE_TAG}" in
               *-*) dist_tag=next ;;
               *)   dist_tag=latest ;;
             esac
+          fi
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            dry_run="${INPUT_DRY_RUN}"
+          else
             dry_run=false
           fi
           echo "dist-tag=${dist_tag}" >> "$GITHUB_OUTPUT"
@@ -177,6 +181,7 @@ jobs:
         ${{ github.event_name == 'workflow_dispatch'
             && inputs.tag
             || github.event.workflow_run.head_branch }}
+      EVENT_NAME: ${{ github.event_name }}
       DIST_TAG: ${{ needs.build.outputs.dist-tag }}
       DRY_RUN: ${{ needs.build.outputs.dry-run }}
       # Hardcoded registry — every npm view/publish call below passes this
@@ -217,8 +222,11 @@ jobs:
           #      stamping arbitrary versions onto allowed packages.
           # Lists must be kept in sync with npm/targets.json. Tier-3 entries
           # (release.yml's `experimental: true`) may legitimately be missing
-          # because their build job uses `continue-on-error`; everything else
-          # is required and a missing required package fails the job.
+          # because their build job uses `continue-on-error`. Tier-1/2 are
+          # mandatory for release-triggered runs; for manual workflow_dispatch
+          # backfills (which run build with --skip-missing) we relax this so
+          # missing tier-1/2 packages are skipped instead of aborting. The
+          # façade itself remains mandatory either way.
           FACADE="runner-run"
           SCOPE="@runner-run"
           REQUIRED_PLATFORMS=(
@@ -331,13 +339,23 @@ jobs:
             printf '%s\n' "${output}"
           }
 
+          # On manual backfills (workflow_dispatch + --skip-missing in build),
+          # treat tier-1/2 as optional too — the user explicitly opted into a
+          # partial publish. The façade stays mandatory regardless.
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            tier12_required=false
+          else
+            tier12_required=true
+          fi
+
           # Sub-packages first so the façade's optionalDependencies resolve on install.
           for platform in "${REQUIRED_PLATFORMS[@]}"; do
-            publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" true
+            publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" "${tier12_required}"
           done
           for platform in "${OPTIONAL_PLATFORMS[@]}"; do
             publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" false
           done
 
-          # Façade last and required.
+          # Façade is mandatory either way — no point publishing a half-empty
+          # set of platform packages with no entry point.
           publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
