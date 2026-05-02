@@ -1,0 +1,139 @@
+name: npm-release
+run-name: >-
+  ${{ github.event_name == 'workflow_run'
+      && format('npm publish {0}', github.event.workflow_run.head_branch)
+      || format('npm publish {0}', github.ref_name) }}
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.5.0)
+        required: true
+        type: string
+      dist-tag:
+        description: npm dist-tag (latest, next, etc.). Leave empty to infer from the tag (prerelease → next, otherwise → latest).
+        required: false
+        options: [latest, next]
+        type: choice
+      dry-run:
+        description: Dry run only
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24"
+
+jobs:
+  build:
+    name: build npm packages
+    runs-on: ubuntu-latest
+    # Only run after a successful tag-triggered release.yml, or on manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.tag
+            || github.event.workflow_run.head_branch }}
+      RELEASE_SHA: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.tag
+            || github.event.workflow_run.head_sha }}
+    outputs:
+      dist-tag: ${{ steps.derive.outputs.dist-tag }}
+      dry-run: ${{ steps.derive.outputs.dry-run }}
+    steps:
+      # Tag-supplied code is treated as untrusted in this job: no NPM_TOKEN, no
+      # id-token, no persistent git credentials. Anything malicious in the
+      # tag's scripts is contained to manipulating the artifact contents,
+      # which the privileged publish job re-validates before publishing.
+      - uses: actions/checkout@v6
+        with: { ref: "${{ env.RELEASE_SHA }}", persist-credentials: false }
+
+      - uses: actions/setup-node@v6
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+
+      - name: derive dist-tag and dry-run
+        id: derive
+        env:
+          INPUT_DIST_TAG: ${{ inputs.dist-tag || '' }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/derive-dist-dry.sh"
+
+      - name: download release archives
+        env: { GH_TOKEN: "${{ github.token }}", WS: "${{ GITHUB_WORKSPACE }}" }
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/download-release-archives.sh"
+
+      - name: verify checksums
+        working-directory: npm/downloads
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/verify-checksum.sh"
+
+      - name: build npm packages
+        env: { EVENT_NAME: "${{ github.event_name }}" }
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/build-npm-packages.sh"
+
+      - name: upload npm/dist artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: npm-dist
+          path: npm/dist/
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      id-token: write # for npm provenance
+    environment:
+      name: npm
+      url: ${{ steps.publish.outputs.package-url }}
+    env:
+      # RELEASE_TAG is recomputed here (not consumed from build job outputs) so
+      # the value comes straight from trigger metadata — never from anything an
+      # untrusted build step could influence.
+      RELEASE_TAG: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.tag
+            || github.event.workflow_run.head_branch }}
+      EVENT_NAME: ${{ github.event_name }}
+      DIST_TAG: ${{ needs.build.outputs.dist-tag }}
+      DRY_RUN: ${{ needs.build.outputs.dry-run }}
+      # Hardcoded registry — every npm view/publish call below passes this
+      # explicitly via --registry so any per-package config that did slip
+      # past the rejection checks couldn't redirect the publish.
+      REGISTRY: https://registry.npmjs.org/
+    steps:
+      # Note: deliberately no actions/checkout — keeps tag-supplied code out of
+      # this job's filesystem. The only thing on disk is the artifact produced
+      # by the build job (a tree of generated package directories) and Node.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "${{ env.NODE_VERSION }}"
+          registry-url: https://registry.npmjs.org
+
+      - name: download npm/dist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: npm-dist
+          path: npm/dist/
+
+      - name: publish to npm
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/npm.sh"
+        id: publish

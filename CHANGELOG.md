@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- npm distribution: install prebuilt binaries via `npm install -g
+  runner-run` (or `pnpm`/`yarn`/`bun`). The façade package
+  (`runner-run`) declares one `@runner-run/<platform>-<arch>[-<libc>]`
+  package per supported target in `optionalDependencies`; npm/pnpm/yarn
+  filter at install time using each sub-package's `os` / `cpu` /
+  `libc` fields, so only the matching binary is fetched. No
+  `postinstall` script and no network access during install.
+- Release matrix expanded from Linux musl x86_64/aarch64 to 14 targets
+  across Linux (gnu/musl × x64/arm64 + armv7), macOS (x64, arm64),
+  Windows (x64, arm64, ia32), FreeBSD (x64, arm64), NetBSD x64, and
+  OpenBSD x64. Tier-3 BSD targets are marked `experimental: true` and
+  do not block the release.
+- New `npm-release` workflow downloads the GitHub Release tarballs,
+  verifies SHA-256 checksums, generates per-platform packages from
+  `npm/targets.json`, and publishes to npm with provenance.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

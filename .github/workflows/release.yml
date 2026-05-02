@@ -63,15 +63,64 @@ jobs:
   upload-assets:
     name: build+upload ${{ matrix.target }}
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
+        include:
+          # Linux (Tier 1)
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            build-tool: cross
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            build-tool: cross
+          - target: armv7-unknown-linux-gnueabihf
+            runner: ubuntu-latest
+            build-tool: cross
+          # macOS (Tier 1)
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            build-tool: cargo
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            build-tool: cargo
+          # Windows (Tier 1 / 2)
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            build-tool: cargo
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            build-tool: cargo
+          - target: i686-pc-windows-msvc
+            runner: windows-latest
+            build-tool: cargo
+          # FreeBSD (Tier 2 / 3)
+          - target: x86_64-unknown-freebsd
+            runner: ubuntu-latest
+            build-tool: cross
+          - target: aarch64-unknown-freebsd
+            runner: ubuntu-latest
+            build-tool: cross
+            experimental: true
+          # NetBSD / OpenBSD (Tier 2 / 3, best effort)
+          - target: x86_64-unknown-netbsd
+            runner: ubuntu-latest
+            build-tool: cross
+            experimental: true
+          - target: x86_64-unknown-openbsd
+            runner: ubuntu-latest
+            build-tool: cross
+            experimental: true
+    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v6
 
@@ -81,9 +130,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           bin: runner,run
           target: ${{ matrix.target }}
-          build-tool: cross
+          build-tool: ${{ matrix.build-tool }}
           archive: runner-$tag-$target
-          tar: unix
+          tar: all
           zip: none
           checksum: sha256
           include: README.md,LICENSE

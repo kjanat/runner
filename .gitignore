@@ -1,1 +1,5 @@
 target/
+npm/dist/
+npm/downloads/
+package-lock.json
+node_modules/

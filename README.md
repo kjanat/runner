@@ -51,6 +51,23 @@ built-in, pass a flag it recognises (e.g. `runner install --frozen`,
 
 ## Install
 
+From npm (prebuilt binaries, no Rust toolchain required):
+
+```sh
+npm install -g runner-run
+# or: pnpm add -g runner-run
+# or: yarn global add runner-run
+```
+
+The npm package is a façade that pulls in a per-platform sub-package
+(`@runner-run/<platform>-<arch>`) via `optionalDependencies`. npm filters by
+each sub-package's `os`/`cpu`/`libc` fields, so only the binary for your
+machine is installed — no postinstall script, no network at install time.
+Supports Linux (gnu+musl, x64/arm64/armv7), macOS (x64/arm64), Windows
+(x64/arm64/ia32), and BSDs (FreeBSD, NetBSD, OpenBSD).
+
+From source via Cargo:
+
 ```sh
 # installs both binaries: runner + run
 cargo install --path .

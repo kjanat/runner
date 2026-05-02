@@ -1,0 +1,3 @@
+*.cjs diff linguist-language=JAVASCRIPT
+*.rs linguist-language=Rust
+npm/scripts/** diff
