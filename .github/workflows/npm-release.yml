@@ -1,0 +1,100 @@
+name: npm-release
+run-name: >-
+  ${{ github.event_name == 'workflow_run'
+      && format('npm publish {0}', github.event.workflow_run.head_branch)
+      || format('npm publish {0}', github.ref_name) }}
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.5.0)
+        required: true
+      dist-tag:
+        description: npm dist-tag (latest, next, etc.)
+        required: false
+        default: latest
+      dry-run:
+        description: Dry run only
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    # Only run after a successful tag-triggered release.yml, or on manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    permissions:
+      contents: read
+      id-token: write  # for npm provenance
+    env:
+      RELEASE_TAG: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.tag
+            || github.event.workflow_run.head_branch }}
+      DIST_TAG: >-
+        ${{ github.event_name == 'workflow_dispatch'
+            && inputs.dist-tag
+            || (contains(github.event.workflow_run.head_branch, '-') && 'next' || 'latest') }}
+      DRY_RUN: >-
+        ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: download release archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p npm/downloads
+          gh release download "${RELEASE_TAG}" \
+            --repo "${{ github.repository }}" \
+            --pattern 'runner-*-*.tar.gz' \
+            --pattern 'runner-*-*.sha256' \
+            --dir npm/downloads
+          ls -la npm/downloads
+
+      - name: verify checksums
+        working-directory: npm/downloads
+        run: |
+          for sum in *.sha256; do
+            sha256sum -c --status "${sum}"
+          done
+
+      - name: derive package version
+        id: version
+        run: |
+          version="${RELEASE_TAG#v}"
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: build npm packages
+        run: |
+          node npm/scripts/build-packages.mjs \
+            --version "${{ steps.version.outputs.value }}" \
+            --skip-missing
+
+      - name: publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          args=(--tag "${DIST_TAG}")
+          if [[ "${DRY_RUN}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          node npm/scripts/publish.mjs "${args[@]}"
