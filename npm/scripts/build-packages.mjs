@@ -116,11 +116,17 @@ async function buildPlatformPackage(matrix, target, version, opts) {
   const tag = version.startsWith('v') ? version : `v${version}`;
   const tarball = path.join(downloadsDir, `runner-${tag}-${target.rust}.tar.gz`);
 
+  // Tier 3 entries (FreeBSD arm64, NetBSD, OpenBSD) run with
+  // continue-on-error: true in release.yml — their tarballs may legitimately
+  // be absent. --skip-missing extends this leniency to all tiers (manual
+  // backfill).
+  const isOptional = target.tier === 3 || opts.skipMissing;
+
   let binaries;
   try {
     binaries = await extractBinariesFromTarball(tarball, matrix.binaries);
   } catch (err) {
-    if (opts.skipMissing) {
+    if (isOptional) {
       console.warn(`skipping ${pkgName}: ${err.code || err.message}`);
       await rm(dest, { recursive: true, force: true });
       return null;
@@ -133,7 +139,7 @@ async function buildPlatformPackage(matrix, target, version, opts) {
     const file = isWin ? `${name}.exe` : name;
     const data = binaries[file];
     if (!data) {
-      if (opts.skipMissing) {
+      if (isOptional) {
         console.warn(`skipping ${pkgName}: missing ${file} in archive`);
         await rm(dest, { recursive: true, force: true });
         return null;
