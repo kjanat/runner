@@ -43,7 +43,7 @@ jobs:
             || github.event.workflow_run.head_branch }}
       RELEASE_SHA: >-
         ${{ github.event_name == 'workflow_dispatch'
-            && github.sha
+            && inputs.tag
             || github.event.workflow_run.head_sha }}
     outputs:
       dist-tag: ${{ steps.derive.outputs.dist-tag }}
@@ -148,17 +148,66 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
-          publish_pkg() {
-            local dir="$1" name version published
-            name=$(jq -r .name "${dir}/package.json")
+          # The artifact is produced by the unprivileged build job from
+          # tag-supplied scripts and must be treated as untrusted.
+          # Hardcoded allowlist (mirrors npm/targets.json on master) bounds
+          # what this privileged job will publish — a malicious build cannot
+          # smuggle extra packages into the publish loop.
+          FACADE="runner-run"
+          SCOPE="@runner-run"
+          PLATFORMS=(
+            linux-x64-gnu
+            linux-x64-musl
+            linux-arm64-gnu
+            linux-arm64-musl
+            linux-armv7-gnueabihf
+            darwin-x64
+            darwin-arm64
+            win32-x64-msvc
+            win32-arm64-msvc
+            win32-ia32-msvc
+            freebsd-x64
+            freebsd-arm64
+            openbsd-x64
+            netbsd-x64
+          )
+
+          # Refuse to proceed if the artifact contains anything outside the
+          # allowlist — that's either a misconfiguration or an attack.
+          allowed_set=" ${FACADE} ${PLATFORMS[*]} "
+          for dir in npm/dist/*/; do
+            base=$(basename "${dir%/}")
+            if [[ "${allowed_set}" != *" ${base} "* ]]; then
+              echo "error: artifact contains unexpected directory '${base}' (not in allowlist)" >&2
+              exit 1
+            fi
+          done
+
+          publish_allowed() {
+            local dir="$1" expected_name="$2"
+            local actual_name version published
+
+            if [ ! -d "${dir}" ]; then
+              echo "skip ${expected_name}: not in artifact (likely a build target was skipped)"
+              return 0
+            fi
+            if [ ! -f "${dir}/package.json" ]; then
+              echo "error: ${dir}/package.json missing" >&2
+              exit 1
+            fi
+            actual_name=$(jq -r .name "${dir}/package.json")
+            if [ "${actual_name}" != "${expected_name}" ]; then
+              echo "error: ${dir}/package.json declares name '${actual_name}', expected '${expected_name}'" >&2
+              exit 1
+            fi
             version=$(jq -r .version "${dir}/package.json")
 
-            # Skip if the exact version is already on the registry. npm versions
-            # are immutable, so reruns after a partial publish would otherwise
-            # fail on the first sub-package that already published.
-            published=$(npm view "${name}@${version}" version 2>/dev/null || true)
+            # Skip if already published — npm versions are immutable, so reruns
+            # after a partial publish would otherwise fail on the first
+            # sub-package that already published.
+            published=$(npm view "${actual_name}@${version}" version 2>/dev/null || true)
             if [ "${published}" = "${version}" ]; then
-              echo "skip ${name}@${version}: already published"
+              echo "skip ${actual_name}@${version}: already published"
               return 0
             fi
 
@@ -169,17 +218,13 @@ jobs:
           }
 
           # Sub-packages first so the façade's optionalDependencies resolve on install.
-          for dir in npm/dist/*/; do
-            dir="${dir%/}"
-            base=$(basename "${dir}")
-            if [ "${base}" = "runner-run" ]; then continue; fi
-            publish_pkg "${dir}"
+          for platform in "${PLATFORMS[@]}"; do
+            publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}"
           done
 
-          # Façade last.
-          if [ -d "npm/dist/runner-run" ]; then
-            publish_pkg "npm/dist/runner-run"
-          else
-            echo "error: facade npm/dist/runner-run missing from artifact" >&2
+          # Façade last and required.
+          if [ ! -d "npm/dist/${FACADE}" ]; then
+            echo "error: facade npm/dist/${FACADE} missing from artifact" >&2
             exit 1
           fi
+          publish_allowed "npm/dist/${FACADE}" "${FACADE}"
