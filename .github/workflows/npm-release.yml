@@ -253,9 +253,15 @@ jobs:
             # this publish: if another actor publishes the same version in
             # the gap, npm exits with EPUBLISHCONFLICT and we treat that as a
             # no-op (mirrors npm/scripts/publish.mjs).
-            local output status
-            if ! output=$(cd "${dir}" && npm "${args[@]}" 2>&1); then
-              status=$?
+            #
+            # The `|| status=$?` form is required: under `set -e`,
+            # `output=$(cmd); status=$?` would exit on a failing cmd before
+            # status was captured, and `if ! output=$(cmd); then status=$?`
+            # captures the negation status (always 0), not npm's real exit
+            # code — silently masking real publish failures.
+            local output status=0
+            output=$(cd "${dir}" && npm "${args[@]}" 2>&1) || status=$?
+            if [ "${status}" -ne 0 ]; then
               printf '%s\n' "${output}" >&2
               if grep -Eiq 'EPUBLISHCONFLICT|cannot publish over the previously published versions' <<<"${output}"; then
                 echo "skip ${actual_name}@${version}: already published (race with concurrent publisher)"
