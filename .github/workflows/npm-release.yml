@@ -141,6 +141,10 @@ jobs:
             || github.event.workflow_run.head_branch }}
       DIST_TAG: ${{ needs.build.outputs.dist-tag }}
       DRY_RUN: ${{ needs.build.outputs.dry-run }}
+      # Hardcoded registry — every npm view/publish call below passes this
+      # explicitly via --registry so any per-package config that did slip
+      # past the rejection checks couldn't redirect the publish.
+      REGISTRY: https://registry.npmjs.org/
     steps:
       # Note: deliberately no actions/checkout — keeps tag-supplied code out of
       # this job's filesystem. The only thing on disk is the artifact produced
@@ -226,6 +230,23 @@ jobs:
               echo "error: ${dir}/package.json missing" >&2
               exit 1
             fi
+
+            # Reject per-package registry overrides. A malicious build could
+            # drop a .npmrc or set publishConfig in package.json to redirect
+            # the publish (and NPM_TOKEN) to an attacker-controlled registry.
+            # CLI --registry does NOT override scoped publishConfig.registry,
+            # so the rejection here is the primary defense; the explicit
+            # --registry flag below is belt-and-suspenders for non-scoped
+            # overrides.
+            if [ -e "${dir}/.npmrc" ]; then
+              echo "error: ${dir}/.npmrc is forbidden (could redirect publish)" >&2
+              exit 1
+            fi
+            if jq -e 'has("publishConfig")' "${dir}/package.json" >/dev/null; then
+              echo "error: ${dir}/package.json has publishConfig (could redirect publish)" >&2
+              exit 1
+            fi
+
             actual_name=$(jq -r .name "${dir}/package.json")
             if [ "${actual_name}" != "${expected_name}" ]; then
               echo "error: ${dir}/package.json declares name '${actual_name}', expected '${expected_name}'" >&2
@@ -240,13 +261,13 @@ jobs:
             # Skip if already published — npm versions are immutable, so reruns
             # after a partial publish would otherwise fail on the first
             # sub-package that already published.
-            published=$(npm view "${actual_name}@${version}" version 2>/dev/null || true)
+            published=$(npm view "${actual_name}@${version}" --registry "${REGISTRY}" version 2>/dev/null || true)
             if [ "${published}" = "${version}" ]; then
               echo "skip ${actual_name}@${version}: already published"
               return 0
             fi
 
-            local args=(publish --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
+            local args=(publish --registry "${REGISTRY}" --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
             if [ "${DRY_RUN}" = "true" ]; then args+=(--dry-run); fi
             echo "+ npm ${args[*]}  (cwd: ${dir})"
             # Tolerate the TOCTOU race between the npm view check above and
