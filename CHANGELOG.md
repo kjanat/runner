@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.6.0] - 2026-05-05
+
 ### Added
 
 - npm distribution: install prebuilt binaries via `npm install -g
@@ -15,21 +23,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package per supported target in `optionalDependencies`; npm/pnpm/yarn
   filter at install time using each sub-package's `os` / `cpu` /
   `libc` fields, so only the matching binary is fetched. No
-  `postinstall` script and no network access during install.
+  `postinstall` script and no network access during install. Façade
+  shims (`bin/runner.cjs`, `bin/run.cjs`) resolve the platform
+  sub-package via `require.resolve()` at runtime through
+  `lib/resolve.cjs` and `lib/launch.cjs`, with helpful diagnostics when
+  no matching sub-package is installed.
 - Release matrix expanded from Linux musl x86_64/aarch64 to 14 targets
   across Linux (gnu/musl × x64/arm64 + armv7), macOS (x64, arm64),
   Windows (x64, arm64, ia32), FreeBSD (x64, arm64), NetBSD x64, and
   OpenBSD x64. Tier-3 BSD targets are marked `experimental: true` and
-  do not block the release.
+  do not block the release. Per-target runner / build-tool
+  (`cargo` vs `cross`) selection is data-driven from `npm/targets.json`
+  (validated by `npm/targets.schema.json`).
 - New `npm-release` workflow downloads the GitHub Release tarballs,
   verifies SHA-256 checksums, generates per-platform packages from
-  `npm/targets.json`, and publishes to npm with provenance.
+  `npm/targets.json`, and publishes to npm with provenance, optional
+  dry-run, and configurable dist-tag.
+- `build.rs` build script reads `[[package.metadata.authors]]` from
+  `Cargo.toml` and exposes the primary author as compile-time env vars
+  `RUNNER_AUTHOR_NAME` (always) and `RUNNER_AUTHOR_EMAIL` (when set),
+  consumed by the help byline via `env!` / `option_env!`.
+- Pin Rust toolchain via `rust-toolchain.toml` (channel `1.95`,
+  components `rustfmt` / `clippy` / `rust-analyzer`, profile
+  `minimal`).
+- Add `justfile` with developer recipes for building both bins,
+  generating per-target npm packages (`build-packages`), and
+  end-to-end-testing the façade resolution against the host triple
+  (`test-release`).
+- README documents the npm install path and the façade pattern
+  (per-platform sub-package via `optionalDependencies`, install-time
+  filtering, no postinstall, no network).
+- `.github/scripts/build/` helpers: `build-npm-packages.sh`,
+  `derive-dist-dry.sh`, `download-release-archives.sh`,
+  `verify-checksum.sh`, plus `.github/scripts/publish/npm.sh` for the
+  publish path.
 
-### Post-release checklist
+### Changed
 
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- Move authors metadata from `package.authors` to a structured
+  `[[package.metadata.authors]]` table (with `name` / `email` fields)
+  consumed by the new build script; `src/lib.rs` drops the runtime
+  `primary_author` / `authors` regex-style parser in favour of
+  `env!("RUNNER_AUTHOR_NAME")` / `option_env!("RUNNER_AUTHOR_EMAIL")`.
+  `help_byline(stdout_is_terminal: bool) -> String` replaces the prior
+  `Option<String>`-returning helper and is now part of the public API
+  along with `requests_version`.
+- **Breaking (Cargo features):** rename feature `run-alias` → `run`;
+  the `run` binary's `required-features` follows. Builds passing
+  `--features run-alias` no longer enable the alias.
+- Bump MSRV from `1.88` to `1.95` (matches the pinned toolchain).
+- Add `build = "build.rs"` and a `[package.metadata.npm]` block
+  (`name`, `subpkgscope`, `bugs`, `repository`, `engines`) consumed by
+  the npm build pipeline so target naming / scope live in one place.
+- Promote `colored`, `json5`, `serde_json`, `shlex`, and `yaml-rust2`
+  into a single `[dependencies]` table; add `serde` + `toml` as
+  `[build-dependencies]` for the build script.
+- Migrate npm build/publish scripts from `.mjs` to TypeScript
+  (`npm/scripts/build-packages.ts`, `npm/scripts/publish.ts`); add
+  `tsconfig.json`. Build-script type narrowing (`narrowRepository` /
+  `narrowBugs` / `narrowAuthor`) now throws on wrong-typed optional
+  fields instead of silently dropping them, so Cargo metadata drift
+  fails the build instead of shipping a façade with missing fields.
+- Release workflow archive layout updated to package per-target
+  artifacts consumable by the npm build, and adds an experimental flag
+  so tier-3 BSD targets do not block a release.
+- Editor / formatting config: `.dprint.json` plugin update,
+  `.gitattributes` added for line-ending consistency, `.gitignore`
+  ignores generated npm artefacts, `.zed/settings.json` checked in.
+
+### Fixed
+
+- Help-byline rendering no longer depends on parsing
+  `clap::crate_authors!()` at runtime; the email-aware OSC-8 hyperlink
+  path is driven by `option_env!("RUNNER_AUTHOR_EMAIL")` set at compile
+  time, removing the runtime string-split fallback.
+
+### Security
+
+- Harden the npm release pipeline with five fail-loud input-validation
+  guards (commit `b404098`):
+  - `derive-dist-dry.sh` validates `INPUT_DIST_TAG` against
+    `^[A-Za-z][A-Za-z0-9._-]*$` so a malformed override cannot smuggle
+    flag-like or whitespace values into `npm publish --tag`, and
+    normalises `INPUT_DRY_RUN` to strict `true` / `false` (previously
+    `True` / `1` / `yes` fell through as `dry_run=false`, i.e. a real
+    publish disguised as a dry run).
+  - `release.yml` smoke-tests the packaged `linux-x64-gnu` binary with
+    `--version` before uploading the `npm/dist` artefact, catching a
+    broken bin at build time instead of as `ENOENT` post-publish.
+  - `npm.sh` validates `optionalDependencies` in `publish_allowed`:
+    the façade must list every required platform under the scope at
+    exactly `EXPECTED_VERSION`, and platform sub-packages must declare
+    none — closing a vector where a tampered platform package could
+    smuggle attacker-controlled transitive deps.
+  - `npm view` and `npm publish` are wrapped in `timeout 120s` with
+    explicit `124` handling so a hung registry cannot burn the full
+    job budget.
 
 ## [0.5.0] - 2026-04-21
 
@@ -236,7 +325,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/kjanat/runner/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kjanat/runner/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/kjanat/runner/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/kjanat/runner/compare/v0.3.1...v0.4.0
