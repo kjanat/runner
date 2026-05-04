@@ -76,7 +76,7 @@
 					"uniqueItems": true,
 					"items": {
 						"type": "string",
-						"enum": ["aix", "darwin", "freebsd", "linux", "openbsd", "sunos", "win32"]
+						"enum": ["aix", "darwin", "freebsd", "linux", "netbsd", "openbsd", "sunos", "win32"]
 					}
 				},
 				"cpu": {
