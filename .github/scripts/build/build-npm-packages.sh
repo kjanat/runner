@@ -3,15 +3,12 @@
 set -euo pipefail
 
 RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required}"
-EVENT_NAME="${EVENT_NAME:?EVENT_NAME required}"
 
 version="${RELEASE_TAG#v}"
-# build-packages.ts is tier-aware: tier-3 (experimental) targets
-# are silently skipped when missing, tier 1/2 fail the job. Manual
-# backfills (workflow_dispatch) extend that leniency to every tier
-# via --skip-missing.
-args=(npm/scripts/build-packages.ts --version "${version}")
-if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-	args+=(--skip-missing)
-fi
-node "${args[@]}"
+# build-packages.ts is tier-aware: tier-3 (experimental) targets are
+# silently skipped when missing; tier-1/2 missing fails the job. This
+# script is only invoked from release.yml's build-npm-dist (tag-push
+# context), so a missing tier-1/2 tarball is always a real failure —
+# no --skip-missing relaxation. The flag still exists in the script
+# for local dev partial builds.
+node npm/scripts/build-packages.ts --version "${version}"

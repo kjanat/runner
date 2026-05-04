@@ -7,18 +7,19 @@ shopt -s nullglob
 # self-assignments with ${VAR:?} both fails fast on missing values
 # and resolves shellcheck's "referenced but not assigned" warnings.
 RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required}"
-EVENT_NAME="${EVENT_NAME:?EVENT_NAME required}"
 DIST_TAG="${DIST_TAG:?DIST_TAG required}"
 DRY_RUN="${DRY_RUN:?DRY_RUN required}"
 REGISTRY="${REGISTRY:?REGISTRY required}"
 # Optional: set by GHA, absent for local runs.
 GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 
-# The artifact is produced by the unprivileged build job from
-# tag-supplied scripts and must be treated as untrusted. Three
-# defenses run here before NPM_TOKEN is used:
-#   1. Hardcoded allowlist of expected directory names — a malicious
-#      build cannot smuggle extra package directories.
+# The artifact is built by release.yml's `build-npm-dist` job (tag-push
+# context) and downloaded here via cross-workflow `download-artifact`.
+# We still treat it as untrusted: defense-in-depth against a tampered
+# artifact at the cross-workflow handoff or a malicious tag committer.
+# Three defenses run before NPM_TOKEN is used:
+#   1. Hardcoded allowlist of expected directory names — a tampered
+#      artifact cannot smuggle extra package directories.
 #   2. Each package.json's `name` field must equal the expected
 #      scope/key — prevents republishing as an unexpected package.
 #   3. Each package.json's `version` field must equal the version
@@ -26,11 +27,10 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 #      stamping arbitrary versions onto allowed packages.
 # Lists must be kept in sync with npm/targets.json. Tier-3 entries
 # (release.yml's `experimental: true`) may legitimately be missing
-# because their build job uses `continue-on-error`. Tier-1/2 are
+# because their build matrix uses `continue-on-error`. Tier-1/2 are
 # mandatory for release-triggered runs; for manual workflow_dispatch
-# backfills (which run build with --skip-missing) we relax this so
-# missing tier-1/2 packages are skipped instead of aborting. The
-# façade itself remains mandatory either way.
+# backfills we relax this so missing tier-1/2 packages are skipped
+# instead of aborting. The façade itself remains mandatory either way.
 FACADE="runner-run"
 SCOPE="@runner-run"
 REQUIRED_PLATFORMS=(
@@ -150,18 +150,13 @@ publish_allowed() {
 	printf '%s\n' "${output}"
 }
 
-# On manual backfills (workflow_dispatch + --skip-missing in build),
-# treat tier-1/2 as optional too — the user explicitly opted into a
-# partial publish. The façade stays mandatory regardless.
-if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-	tier12_required=false
-else
-	tier12_required=true
-fi
-
+# Tier-1/2 are always required: the artifact is built by release.yml's
+# build-npm-dist (where missing tier-1/2 tarballs already fail loud),
+# so a missing dir here means the artifact was tampered with or the
+# build silently dropped a target — either case warrants a hard fail.
 # Sub-packages first so the façade's optionalDependencies resolve on install.
 for platform in "${REQUIRED_PLATFORMS[@]}"; do
-	publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" "${tier12_required}"
+	publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" true
 done
 for platform in "${OPTIONAL_PLATFORMS[@]}"; do
 	publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" false
