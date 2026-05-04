@@ -15,6 +15,9 @@ dowloads-dir := "npm" / "downloads"
 default bin=env("BIN", "runner") profile="dev" *args:
     just shim {{ bin }} {{ profile }} {{ args }}
 
+install:
+    cargo install --path . --bin=runner --bin=run --profile=release
+
 [group('bins')]
 run *args:
     cargo run --bin=run --profile={{ env("PROFILE", "release") }} -- {{ args }}
