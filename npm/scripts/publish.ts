@@ -42,6 +42,9 @@ const { values } = parseArgs({
 	strict: true,
 });
 
+/** Narrows the `--access` CLI string to npm's accepted enum.
+ * @throws If the value is anything other than `"public"` or `"restricted"`.
+ */
 function parseAccess(v: string): "public" | "restricted" {
 	if (v === "public" || v === "restricted") return v;
 	throw new Error(`--access must be "public" or "restricted", got "${v}"`);
@@ -127,6 +130,11 @@ function publish(pkgDir: string, opts: {
 	throw new Error(`npm publish failed for ${pkgDir} (exit ${res.status})`);
 }
 
+/** Entry point: publishes every per-platform sub-package found under
+ * `npm/dist/`, then the facade last. Skips packages whose version is already
+ * on the registry so partial reruns are idempotent. Throws if the facade
+ * directory is missing entirely (means `build-packages.ts` never ran).
+ */
 async function main() {
 	const opts = { ...values, access: parseAccess(values.access) };
 	const matrix = await readTargets();
