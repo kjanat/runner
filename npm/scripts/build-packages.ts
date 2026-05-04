@@ -85,8 +85,18 @@ function narrowRepository(v: unknown, where: string): RepositoryField | undefine
 	if (typeof v === "string") return v;
 	if (isObject(v) && typeof v.url === "string") {
 		const out: { type?: string; url: string; directory?: string } = { url: v.url };
-		if (typeof v.type === "string") out.type = v.type;
-		if (typeof v.directory === "string") out.directory = v.directory;
+		if (v.type !== undefined) {
+			if (typeof v.type !== "string") {
+				throw new Error(`${where}.type must be a string when present, got ${JSON.stringify(v.type)}`);
+			}
+			out.type = v.type;
+		}
+		if (v.directory !== undefined) {
+			if (typeof v.directory !== "string") {
+				throw new Error(`${where}.directory must be a string when present, got ${JSON.stringify(v.directory)}`);
+			}
+			out.directory = v.directory;
+		}
 		return out;
 	}
 	throw new Error(`${where} must be a URL string or { url: string, … }, got ${JSON.stringify(v)}`);
@@ -105,7 +115,12 @@ function narrowBugs(v: unknown, where: string): BugsField | undefined {
 	if (typeof v === "string") return v;
 	if (isObject(v) && typeof v.url === "string") {
 		const out: { url: string; email?: string } = { url: v.url };
-		if (typeof v.email === "string") out.email = v.email;
+		if (v.email !== undefined) {
+			if (typeof v.email !== "string") {
+				throw new Error(`${where}.email must be a string when present, got ${JSON.stringify(v.email)}`);
+			}
+			out.email = v.email;
+		}
 		return out;
 	}
 	throw new Error(`${where} must be a URL string or { url: string, … }, got ${JSON.stringify(v)}`);
@@ -153,8 +168,18 @@ function narrowAuthor(v: unknown, where: string): AuthorField | undefined {
 	if (typeof v === "string") return v;
 	if (isObject(v) && typeof v.name === "string") {
 		const out: { name: string; email?: string; url?: string } = { name: v.name };
-		if (typeof v.email === "string") out.email = v.email;
-		if (typeof v.url === "string") out.url = v.url;
+		if (v.email !== undefined) {
+			if (typeof v.email !== "string") {
+				throw new Error(`${where}.email must be a string when present, got ${JSON.stringify(v.email)}`);
+			}
+			out.email = v.email;
+		}
+		if (v.url !== undefined) {
+			if (typeof v.url !== "string") {
+				throw new Error(`${where}.url must be a string when present, got ${JSON.stringify(v.url)}`);
+			}
+			out.url = v.url;
+		}
 		return out;
 	}
 	throw new Error(`${where} must be a string or { name: string, … }, got ${JSON.stringify(v)}`);

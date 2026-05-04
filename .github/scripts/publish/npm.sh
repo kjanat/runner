@@ -112,6 +112,44 @@ publish_allowed() {
 		exit 1
 	fi
 
+	# optionalDependencies validation. The facade is the only package that
+	# legitimately ships optionalDependencies (one entry per built platform
+	# package, all pinned to EXPECTED_VERSION). Platform packages must have
+	# none — a tampered platform package could otherwise smuggle attacker-
+	# controlled deps that npm would happily install transitively.
+	if [[ "${expected_name}" == "${FACADE}" ]]; then
+		local dep_name dep_version platform expected_dep_set=" ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
+		while IFS=$'\t' read -r dep_name dep_version; do
+			[[ -z "${dep_name}" ]] && continue
+			if [[ "${dep_name}" != "${SCOPE}/"* ]]; then
+				echo "error: facade optionalDependencies entry '${dep_name}' not under scope '${SCOPE}'" >&2
+				exit 1
+			fi
+			platform="${dep_name#"${SCOPE}/"}"
+			if [[ "${expected_dep_set}" != *" ${platform} "* ]]; then
+				echo "error: facade optionalDependencies references unexpected package '${dep_name}'" >&2
+				exit 1
+			fi
+			if [[ "${dep_version}" != "${EXPECTED_VERSION}" ]]; then
+				echo "error: facade optionalDependencies['${dep_name}'] = '${dep_version}', expected '${EXPECTED_VERSION}'" >&2
+				exit 1
+			fi
+		done < <(jq -r '(.optionalDependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' "${dir}/package.json")
+
+		# Required platforms must all be referenced.
+		for platform in "${REQUIRED_PLATFORMS[@]}"; do
+			if ! jq -e --arg dep "${SCOPE}/${platform}" '(.optionalDependencies // {}) | has($dep)' "${dir}/package.json" >/dev/null; then
+				echo "error: facade optionalDependencies missing required package '${SCOPE}/${platform}'" >&2
+				exit 1
+			fi
+		done
+	else
+		if jq -e '(.optionalDependencies // {}) | length > 0' "${dir}/package.json" >/dev/null; then
+			echo "error: ${dir}/package.json has optionalDependencies; only ${FACADE} may declare any" >&2
+			exit 1
+		fi
+	fi
+
 	# Surface the package URL to the workflow. Repeated writes to the
 	# same key resolve last-wins in GITHUB_OUTPUT, so the façade (which
 	# publishes last) ends up as the canonical value.
@@ -121,8 +159,16 @@ publish_allowed() {
 
 	# Skip if already published — npm versions are immutable, so reruns
 	# after a partial publish would otherwise fail on the first
-	# sub-package that already published.
-	published=$(npm view "${actual_name}@${version}" --registry "${REGISTRY}" version 2>/dev/null || true)
+	# sub-package that already published. Bound the probe at 120s so a
+	# hung registry can't stall the whole publish job. Non-timeout
+	# failures (e.g. E404 when the version isn't published yet) drop
+	# through to the publish step, which surfaces real errors.
+	local view_status=0
+	published=$(timeout 120s npm view "${actual_name}@${version}" --registry "${REGISTRY}" version 2>/dev/null) || view_status=$?
+	if [[ ${view_status} -eq 124 ]]; then
+		echo "error: 'npm view ${actual_name}@${version}' timed out after 120s" >&2
+		return 1
+	fi
 	if [[ "${published}" == "${version}" ]]; then
 		echo "skip ${actual_name}@${version}: already published"
 		return 0
@@ -142,7 +188,12 @@ publish_allowed() {
 	# captures the negation status (always 0), not npm's real exit
 	# code — silently masking real publish failures.
 	local output status=0
-	output=$(cd "${dir}" && npm "${args[@]}" 2>&1) || status=$?
+	output=$(cd "${dir}" && timeout 120s npm "${args[@]}" 2>&1) || status=$?
+	if [[ "${status}" -eq 124 ]]; then
+		printf '%s\n' "${output}" >&2
+		echo "error: 'npm publish' for ${actual_name}@${version} timed out after 120s" >&2
+		return 1
+	fi
 	if [[ "${status}" -ne 0 ]]; then
 		printf '%s\n' "${output}" >&2
 		if grep -Eiq 'EPUBLISHCONFLICT|cannot publish over the previously published versions' <<<"${output}"; then

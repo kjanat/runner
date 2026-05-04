@@ -145,6 +145,20 @@ jobs:
       - name: build npm packages
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/build-npm-packages.sh"
 
+      - name: smoke-test packaged linux-x64-gnu binary
+        # Sanity-check that the binary we just packaged actually runs
+        # before we upload it for the publish job. linux-x64-gnu is the
+        # only target executable on ubuntu-latest; cross-target binaries
+        # are exercised by the publish job's install-time checks.
+        run: |
+          set -euo pipefail
+          bin="${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin/runner"
+          if [[ ! -x "${bin}" ]]; then
+            echo "error: ${bin} missing or not executable" >&2
+            exit 1
+          fi
+          "${bin}" --version
+
       - name: upload npm/dist artifact
         uses: actions/upload-artifact@v7
         with:
