@@ -38,6 +38,10 @@
 		"run": "bin/run.cjs",
 		"runner": "bin/runner.cjs"
 	},
+	"directories": {
+		"lib": "./lib",
+		"bin": "./bin"
+	},
 	"files": [
 		"bin/",
 		"lib/",

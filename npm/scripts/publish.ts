@@ -30,10 +30,6 @@ const { values } = parseArgs({
 	args: argv.slice(2),
 	options: {
 		tag: { type: "string", default: "latest" },
-		// Pinned by default to defend a direct local invocation (with real
-		// credentials) against ambient npm config that could redirect view/
-		// publish calls to an attacker-controlled registry. Override only
-		// for testing against a private registry like Verdaccio.
 		registry: { type: "string", default: "https://registry.npmjs.org/" },
 		"dry-run": { type: "boolean", default: false },
 		"no-provenance": { type: "boolean", default: false },
@@ -50,16 +46,20 @@ function parseAccess(v: string): "public" | "restricted" {
 	throw new Error(`--access must be "public" or "restricted", got "${v}"`);
 }
 
-/** Checks if the given path exists and is accessible.
+/** Checks if the given path exists. Only treats `ENOENT` as "doesn't exist";
+ * permission/IO errors propagate so the publish flow fails loud instead of
+ * silently skipping a generated package because of a misconfigured runner.
  * @param p - The path to check.
- * @returns Promise resolves to true if path exists.
+ * @returns `true` if path exists, `false` if it's missing.
+ * @throws Any non-`ENOENT` `stat()` error (`EACCES`, `EIO`, `ELOOP`, …).
  */
 async function exists(p: PathLike): Promise<boolean> {
 	try {
 		await stat(p);
 		return true;
-	} catch {
-		return false;
+	} catch (err) {
+		if (err instanceof Error && "code" in err && err.code === "ENOENT") return false;
+		throw err;
 	}
 }
 /** Reads and parses the targets.json file from the npm directory.
@@ -70,11 +70,17 @@ async function readTargets(): Promise<{ scope: string; facade: string; targets: 
 	return JSON.parse(await readFile(join(npmDir, "targets.json"), "utf8"));
 }
 
-/** Checks if the package in the given directory has already been published to the npm registry.
+/** Checks if the package in the given directory has already been published to
+ * the npm registry. Distinguishes "version genuinely not yet published"
+ * (`E404`) from auth/network failures so the latter aren't silently treated
+ * as "go ahead and publish" — which would either fail later with the same
+ * error, or worse, succeed in a wrong direction if the env shifts mid-flow.
+ *
  * @param pkgDir - The directory containing the package to check (must have package.json).
  * @param registry - Registry URL to query (must be passed explicitly so we don't inherit ambient config).
- * @returns A promise that resolves to true if the package version is already published, or false otherwise.
- * @throws If there is an error reading the package.json or executing the npm command.
+ * @returns `true` if `name@version` is already on the registry, `false` if it's a clean `E404`.
+ * @throws On auth (`E401`, `ENEEDAUTH`), network (`ENOTFOUND`, `ETIMEDOUT`, `EAI_AGAIN`),
+ * or any other unrecognized npm CLI failure — with the captured stderr in the message.
  */
 async function alreadyPublished(pkgDir: string, registry: string): Promise<boolean> {
 	const pkg: { name: string; version: string } = JSON.parse(await readFile(join(pkgDir, "package.json"), "utf8"));
@@ -82,7 +88,13 @@ async function alreadyPublished(pkgDir: string, registry: string): Promise<boole
 	const res = spawnSync("npm", ["view", `${name}@${version}`, "--registry", registry, "version"], {
 		encoding: "utf8",
 	});
-	return res.status === 0 && res.stdout.trim() === version;
+	if (res.status === 0) return res.stdout.trim() === version;
+	const errOut = (res.stderr || "").toString();
+	// `npm view foo@missing-version` prints an `E404` line and exits non-zero.
+	// That's the only non-zero we want to swallow — everything else (auth,
+	// network, malformed registry response) bubbles up.
+	if (/E404|404 Not Found/i.test(errOut)) return false;
+	throw new Error(`npm view ${name}@${version} failed (exit ${res.status}): ${errOut.trim() || "no stderr"}`);
 }
 
 /** Publishes the package at `pkgDir` to the npm registry, with the given options.

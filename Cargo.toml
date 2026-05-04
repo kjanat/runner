@@ -1,13 +1,8 @@
 [package]
 name         = "runner"
 version      = "0.6.0"
-# tombi: lint.rules.unused-noqa.disabled = true
-# tombi: lint.rules.deprecated.disabled = true
-authors      = ["Kaj Kowalski <info+runner@kajkowalski.nl>"]
 edition      = "2024"
-# Edition 2024 is 1.85+; let-chains (used in `if let … && let …`
-# throughout the codebase) stabilised in 1.88.
-rust-version = "1.88"
+rust-version = "1.97"
 description  = "Universal project task runner"
 readme       = "README.md"
 homepage     = "https://github.com/kjanat/runner/#readme"
@@ -15,8 +10,20 @@ repository   = "https://github.com/kjanat/runner/"
 license      = "MIT"
 keywords     = ["automation", "build-tool", "cli", "task-runner"]
 categories   = ["command-line-utilities", "development-tools"]
+build        = "build.rs"
 default-run  = "runner"
 autobins     = false
+
+[[package.metadata.authors]]
+name  = "Kaj Kowalski"
+email = "info+runner@kajkowalski.nl"
+
+[package.metadata.npm]
+name        = "runner-run"
+subpkgscope = "@runner-run"
+bugs        = { "url" = "https://github.com/kjanat/runner/issues" }
+repository  = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }
+engines     = { "node" = ">=18" }
 
 [[bin]]
 name = "runner"
@@ -25,7 +32,7 @@ path = "src/main.rs"
 [[bin]]
 name              = "run"
 path              = "src/bin/run.rs"
-required-features = ["run-alias"]
+required-features = ["run"]
 
 [dependencies.anyhow]
 version = "1"
@@ -57,9 +64,18 @@ version = "1"
 [dependencies.yaml-rust2]
 version = "0.11"
 
+[build-dependencies.serde]
+version  = "1"
+features = ["derive"]
+
+[build-dependencies.toml]
+version          = "1.1"
+default-features = false
+features         = ["parse", "serde"]
+
 [features]
-default   = ["run-alias"]
-run-alias = []
+default = ["run"]
+run     = []
 
 [lints.clippy]
 cargo_common_metadata   = "allow"

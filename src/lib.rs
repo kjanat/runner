@@ -291,45 +291,21 @@ fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn configure_cli_command(mut command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
-    if let Some(byline) = help_byline(stdout_is_terminal) {
-        command = command.before_help(byline);
-    }
-    command
+fn configure_cli_command(command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
+    command.before_help(help_byline(stdout_is_terminal))
 }
 
-fn help_byline(stdout_is_terminal: bool) -> Option<String> {
-    let (name, mail) = primary_author(authors())?;
-    let name = if stdout_is_terminal {
-        mail.map_or_else(
+fn help_byline(stdout_is_terminal: bool) -> String {
+    let name = env!("RUNNER_AUTHOR_NAME");
+    let rendered = if stdout_is_terminal {
+        option_env!("RUNNER_AUTHOR_EMAIL").map_or_else(
             || name.to_string(),
             |mail| osc8_link(name, &format!("mailto:{mail}")),
         )
     } else {
         name.to_string()
     };
-    Some(format!("by {name}"))
-}
-
-fn primary_author(authors: &str) -> Option<(&str, Option<&str>)> {
-    let author = authors.lines().next()?.trim();
-    if author.is_empty() {
-        return None;
-    }
-
-    if let Some((name, rest)) = author.split_once('<') {
-        let name = name.trim();
-        let mail = rest.strip_suffix('>')?.trim();
-        if !name.is_empty() {
-            return Some((name, (!mail.is_empty()).then_some(mail)));
-        }
-    }
-
-    Some((author, None))
-}
-
-fn authors() -> &'static str {
-    clap::crate_authors!("\n")
+    format!("by {rendered}")
 }
 
 fn requests_version(args: &[OsString]) -> bool {
@@ -666,7 +642,7 @@ mod tests {
 
     #[test]
     fn run_alias_bare_shows_info() {
-        let dir = TempDir::new("runner-run-alias-bare");
+        let dir = TempDir::new("runner-run-bare");
 
         let code =
             run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed on empty dir");

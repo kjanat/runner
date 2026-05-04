@@ -4,6 +4,7 @@
 const { optionalDependencies, name: pkgName } = require("#pkg");
 const { platform, arch } = require("node:process");
 const { dirname, join } = require("node:path");
+const { existsSync } = require("node:fs");
 
 const repo = "https://github.com/kjanat/runner";
 const subPackages = Object.keys(optionalDependencies || {});
@@ -35,7 +36,16 @@ function resolveBinary(name) {
 			errors.push(`${subPkg}: ${err instanceof Error ? err.message : String(err)}`);
 			continue;
 		}
-		return join(dirname(pkgJsonPath), "bin", exe);
+		const binPath = join(dirname(pkgJsonPath), "bin", exe);
+		// `require.resolve` proves the package.json exists, not the binary.
+		// Could mismatch if a user manually deletes the bin, or a partial
+		// install half-succeeded. Prefer a clear error here over an opaque
+		// `ENOENT` from `spawnSync` later in `launch.cjs`.
+		if (!existsSync(binPath)) {
+			errors.push(`${subPkg}: package present but bin missing at ${binPath}`);
+			continue;
+		}
+		return binPath;
 	}
 
 	const detail = errors.length > 0
