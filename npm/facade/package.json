@@ -51,8 +51,5 @@
 	"devDependencies": {
 		"@types/node": ">=22.18.0"
 	},
-	"optionalDependencies": {},
-	"engines": {
-		"node": ">=22.18.0"
-	}
+	"optionalDependencies": {}
 }
