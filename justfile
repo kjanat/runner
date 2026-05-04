@@ -1,7 +1,6 @@
 # https://just.systems
 set unstable
 
-targets := `jq . -c npm/targets.json`
 cargo-version := `cargo read-manifest | jq -r .version`
 triple := `rustc --print host-tuple`
 npm-pkg-name := `cargo read-manifest | jq -r .metadata.npm.name`
@@ -10,27 +9,30 @@ build-pkgscript := "npm" / "scripts" / "build-packages.ts"
 cargobuildboth := "cargo build --bin runner --bin run"
 dowloads-dir := "npm" / "downloads"
 
-# npm-pkg := "{{ npm-pkg-scope }}/{{ npm-pkg-name }}"
+[arg('bin', pattern='run|runner')]
+[arg('profile', pattern='dev|release|')]
+[group('bins')]
+default bin=env("BIN", "runner") profile="dev" *args:
+    just shim {{ bin }} {{ profile }} {{ args }}
 
-[arg('bin', pattern='[-]*(run|runner)')]
-default bin=env("BIN", "runner") $profile="release" *args:
-    just {{ trim_start_matches(bin, '') }} #-- {{ args }}
+[group('bins')]
+run *args:
+    cargo run --bin=run --profile={{ env("PROFILE", "release") }} -- {{ args }}
 
-run bin="run" profile="release" *args:
-    @cargo run --{{ profile }} --bin={{ bin }} -- {{ args }}
+[group('bins')]
+runner *args:
+    cargo run --bin=runner --profile={{ env("PROFILE", "release") }} -- {{ args }}
 
-runner bin="runner" profile="release" *args:
-    @cargo run --{{ profile }} --bin={{ bin }} -- {{ args }}
+[arg('bin', pattern='run|runner|')]
+[arg('profile', pattern='dev|release|')]
+[private]
+shim bin="runner" profile="release" *args:
+    env PROFILE={{ profile }} just {{ bin }} {{ args }}
 
 list:
     @just --list
-    @echo "✓ justfile is valid {{ cargo-version }}"
 
-sys:
-    echo "→ os: {{ os() }}"
-    echo "→ osfam: {{ os_family() }}"
-    echo "→ arch: {{ arch() }}"
-
+[group('npm')]
 build-packages only="" skip="false" version=cargo-version:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -47,6 +49,7 @@ build-packages only="" skip="false" version=cargo-version:
     echo "✓ built packages for {{ MAGENTA }}${VERSION}{{ NORMAL }}"
 
 # Build release bin and verify the facade shims spawn the native binary.
+[group('npm')]
 test-release version=cargo-version host-triple=triple:
     #!/usr/bin/env bash
     set -euo pipefail
