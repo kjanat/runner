@@ -63,8 +63,6 @@ From npm (prebuilt binaries, no Rust toolchain required):
 
 ```sh
 npm install -g runner-run
-# or: pnpm add -g runner-run
-# or: yarn global add runner-run
 ```
 
 The npm package is a façade that pulls in a per-platform sub-package
