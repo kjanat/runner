@@ -6,22 +6,30 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
 - **Auto-detection**: Scans for lockfiles/configs and picks the right tool
 - **Unified interface**: Same workflow across npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer
-- **Task aggregation**: Lists tasks from package.json/package.json5/package.yaml, Makefile, justfile, Taskfile, turbo.json, deno.json, deno.jsonc
-- **Deterministic task routing**: Prefers turbo task, then package.json, then other matching sources
-- **Monorepo aware**: Detects workspaces (turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces)
-- **Resilient detection**: Surfaces non-fatal parse/read warnings in info/list/run output
+- **Task aggregation**: Lists tasks from package.json/package.json5/package.yaml,
+  Makefile, justfile, Taskfile, turbo.json, deno.json, deno.jsonc
+- **Deterministic task routing**: Prefers turbo task, then package.json, then
+  other matching sources
+- **Monorepo aware**: Detects workspaces (turbo, nx, pnpm, npm/yarn workspaces,
+  Cargo workspaces)
+- **Resilient detection**: Surfaces non-fatal parse/read warnings in
+  info/list/run output
 - **Safe clean defaults**: Skips framework build dirs unless explicitly requested
 - **Node version checking**: Warns on .nvmrc/.node-version mismatch
 
 ## Tool Support
 
-**Package managers (detect + install + run):** npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer
+**Package managers (detect + install + run):** npm, yarn, pnpm, bun, cargo,
+deno, uv, poetry, pipenv, go, bundler, composer
 
-**Task sources (list + run):** package manifests (`package.json`, `package.json5`, `package.yaml`) scripts, turbo.json tasks/pipeline, Makefile, justfile, Taskfile, deno.json, deno.jsonc
+**Task sources (list + run):** package manifests (`package.json`,
+`package.json5`, `package.yaml`) scripts, turbo.json tasks/pipeline, Makefile,
+justfile, Taskfile, deno.json, deno.jsonc
 
 **Task-runner detection signals:** turbo, nx, make, just, go-task, mise
 
-> Note: nx and mise are currently detection-only (metadata/monorepo context), not direct task execution backends.
+> Note: nx and mise are currently detection-only (metadata/monorepo context),
+> not direct task execution backends.
 
 ## Usage
 
@@ -50,6 +58,22 @@ built-in, pass a flag it recognises (e.g. `runner install --frozen`,
 `runner ls`).
 
 ## Install
+
+From npm (prebuilt binaries, no Rust toolchain required):
+
+```sh
+npm install -g runner-run
+```
+
+The npm package is a façade that pulls in a per-platform sub-package
+(`@runner-run/<platform>-<arch>`) via `optionalDependencies`. npm filters by
+each sub-package's `os`/`cpu`/`libc` fields, so only the binary for your
+machine is installed — no postinstall script, no network at install time.
+Supports Linux (gnu+musl, x64/arm64/armv7), macOS (x64/arm64), Windows
+(x64/arm64/ia32), and experimental BSD builds (FreeBSD, NetBSD, OpenBSD;
+see `npm/targets.json` for per-target tier).
+
+From source via Cargo:
 
 ```sh
 # installs both binaries: runner + run
@@ -114,3 +138,5 @@ runner completions fish > ~/.config/fish/completions/runner.fish
 [MIT][LICENSE] © 2026 Kaj Kowalski
 
 [LICENSE]: https://github.com/kjanat/runner/blob/master/LICENSE
+
+<!-- markdownlint-disable-file MD033 -->

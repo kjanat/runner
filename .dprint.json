@@ -33,6 +33,8 @@
 		"https://plugins.dprint.dev/g-plane/malva-v0.15.2.wasm",
 		"https://plugins.dprint.dev/g-plane/markup_fmt-v0.27.0.wasm",
 		"https://plugins.dprint.dev/g-plane/pretty_yaml-v0.6.0.wasm",
-		"https://plugins.dprint.dev/exec-0.6.2.json@df98f54ffd3092b8a841aedd6d098a2651f16d0a796a40535774f1a8b4b9d463"
+		"https://plugins.dprint.dev/exec-0.6.2.json@df98f54ffd3092b8a841aedd6d098a2651f16d0a796a40535774f1a8b4b9d463",
+		"https://plugins.dprint.dev/kjanat/sortpackagejson-0.2.1.wasm",
+		"https://plugins.dprint.dev/typescript-0.95.15.wasm"
 	]
 }

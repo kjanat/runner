@@ -42,7 +42,7 @@
 //!
 //! ## CLI Usage
 //!
-//! ```text
+//! ```bash
 //! runner              # show detected project info
 //! runner <task>       # run a task (falls back to package-manager exec)
 //! run <task>          # alias binary: always task/exec, never a built-in
@@ -99,7 +99,7 @@ pub fn run_from_env() -> Result<i32> {
 
 /// Parse explicit args, detect current dir, dispatch, return exit code.
 ///
-/// `args` must include `argv\[0\]` as first item.
+/// `args` must include `argv[0]` as first item.
 ///
 /// # Errors
 ///
@@ -119,7 +119,7 @@ where
 
 /// Parse explicit args and run against `dir`.
 ///
-/// `args` must include `argv\[0\]` as first item.
+/// `args` must include `argv[0]` as first item.
 ///
 /// # Errors
 ///
@@ -174,8 +174,8 @@ where
 /// Parse process args as the `run` alias binary, detect the current dir,
 /// dispatch, and return the exit code.
 ///
-/// Always treats positional arguments as a task or command (routed through
-/// [`cmd::run`]) — built-in subcommand names are never parsed specially, so
+/// Always treats positional arguments as a task or command (routed through [`cmd::run`])
+/// — built-in subcommand names are never parsed specially, so
 /// `run clean`, `run install`, etc. run the corresponding task/command.
 ///
 /// When the `COMPLETE` environment variable is set, writes shell completions
@@ -204,7 +204,7 @@ pub fn run_alias_from_env() -> Result<i32> {
 /// Parse explicit args as the `run` alias binary, detect current dir,
 /// dispatch, and return the exit code. See [`run_alias_from_env`].
 ///
-/// `args` must include `argv\[0\]` as first item.
+/// `args` must include `argv[0]` as first item.
 ///
 /// # Errors
 ///
@@ -219,10 +219,10 @@ where
     run_alias_in_dir(args, &cwd)
 }
 
-/// Parse explicit args as the `run` alias binary against `dir`. See
-/// [`run_alias_from_env`].
+/// Parse explicit args as the `run` alias binary against `dir`.\
+/// See [`run_alias_from_env`].
 ///
-/// `args` must include `argv\[0\]` as first item.
+/// `args` must include `argv[0]` as first item.
 ///
 /// # Errors
 ///
@@ -283,7 +283,19 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     }
 }
 
-fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
+/// Extracts the filename portion from an argv[0]-style `OsString`, returning it when non-empty.
+///
+/// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::ffi::OsString;
+/// let name = runner::bin_name_from_arg0(&OsString::from("/usr/bin/runner"));
+/// assert_eq!(name.as_deref(), Some("runner"));
+/// ```
+#[must_use]
+pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     let name = Path::new(arg0)
         .file_name()
         .map(|segment| segment.to_string_lossy().into_owned())?;
@@ -291,48 +303,80 @@ fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
-fn configure_cli_command(mut command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
-    if let Some(byline) = help_byline(stdout_is_terminal) {
-        command = command.before_help(byline);
-    }
-    command
+/// Attaches the generated help byline to a clap command.
+///
+/// The byline text is produced by `help_byline` using `stdout_is_terminal` and is
+/// applied via `Command::before_help`.
+///
+/// # Examples
+///
+/// ```rust
+/// let cmd = clap::Command::new("app");
+/// let cmd = runner::configure_cli_command(cmd, true);
+/// assert!(cmd.get_before_help().is_some());
+/// ```
+#[must_use]
+pub fn configure_cli_command(command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
+    command.before_help(help_byline(stdout_is_terminal))
 }
 
-fn help_byline(stdout_is_terminal: bool) -> Option<String> {
-    let (name, mail) = primary_author(authors())?;
-    let name = if stdout_is_terminal {
-        mail.map_or_else(
+/// Render the CLI help byline using the build-time author metadata.
+///
+/// When `stdout_is_terminal` is true and `RUNNER_AUTHOR_EMAIL` is set, the
+/// author name is wrapped in an OSC-8 `mailto:` hyperlink; otherwise the plain
+/// author name is used. The returned string is prefixed with `"by "`.
+///
+/// # Examples
+///
+/// ```rust
+/// // Without a terminal, output is plain "by <name>" using the build-time author.
+/// let s = runner::help_byline(false);
+/// assert!(s.starts_with("by "));
+///
+/// // With a terminal, the name may be wrapped in an OSC-8 mailto: hyperlink,
+/// // but the byline still begins with "by ".
+/// let t = runner::help_byline(true);
+/// assert!(t.starts_with("by "));
+/// ```
+#[must_use]
+pub fn help_byline(stdout_is_terminal: bool) -> String {
+    let name = env!("RUNNER_AUTHOR_NAME");
+    let rendered = if stdout_is_terminal {
+        option_env!("RUNNER_AUTHOR_EMAIL").map_or_else(
             || name.to_string(),
             |mail| osc8_link(name, &format!("mailto:{mail}")),
         )
     } else {
         name.to_string()
     };
-    Some(format!("by {name}"))
+    format!("by {rendered}")
 }
 
-fn primary_author(authors: &str) -> Option<(&str, Option<&str>)> {
-    let author = authors.lines().next()?.trim();
-    if author.is_empty() {
-        return None;
-    }
-
-    if let Some((name, rest)) = author.split_once('<') {
-        let name = name.trim();
-        let mail = rest.strip_suffix('>')?.trim();
-        if !name.is_empty() {
-            return Some((name, (!mail.is_empty()).then_some(mail)));
-        }
-    }
-
-    Some((author, None))
-}
-
-fn authors() -> &'static str {
-    clap::crate_authors!("\n")
-}
-
-fn requests_version(args: &[OsString]) -> bool {
+/// Detects whether the provided argv-style slice specifically requests the program version.
+///
+/// # Returns
+///
+/// `true` if `args` has exactly two elements and the second element is `--version` or `-V`, `false` otherwise.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::ffi::OsString;
+///
+/// let args = vec![OsString::from("runner"), OsString::from("--version")];
+/// assert!(runner::requests_version(&args));
+///
+/// let args2 = vec![OsString::from("runner"), OsString::from("-V")];
+/// assert!(runner::requests_version(&args2));
+///
+/// let args3 = vec![OsString::from("runner")];
+/// assert!(!runner::requests_version(&args3));
+///
+/// let args4 = vec![OsString::from("runner"), OsString::from("--version"), OsString::from("extra")];
+/// assert!(!runner::requests_version(&args4));
+/// ```
+#[must_use]
+pub fn requests_version(args: &[OsString]) -> bool {
     if args.len() != 2 {
         return false;
     }
@@ -666,7 +710,7 @@ mod tests {
 
     #[test]
     fn run_alias_bare_shows_info() {
-        let dir = TempDir::new("runner-run-alias-bare");
+        let dir = TempDir::new("runner-run-bare");
 
         let code =
             run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed on empty dir");
