@@ -17,12 +17,13 @@ const subPackages = Object.keys(optionalDependencies || {});
 const osc8 = (url, text = url) => `\u001B]8;;${url}\u0007${text}\u001B]8;;\u0007`;
 
 /**
- * Resolves the path to the prebuilt binary for the current platform and architecture.
- * It checks each optional sub-package for a `bin` directory containing the executable.
- * If no suitable binary is found, it throws an error with troubleshooting steps.
+ * Locate the prebuilt executable matching the current platform and architecture.
  *
- * @param {string} name - The base name of the binary (without extension).
- * @returns {string} The resolved path to the binary executable.
+ * Searches optional-dependency sub-packages for a matching `bin/<exe>` and returns its filesystem path.
+ * If no candidate is found, an explanatory error message is written to stderr and an `Error` is thrown.
+ *
+ * @param {string} name - Base name of the executable (without platform-specific extension).
+ * @returns {string} The filesystem path to the resolved executable.
  * @throws {Error} If no suitable binary is found for the current platform and architecture.
  */
 function resolveBinary(name) {

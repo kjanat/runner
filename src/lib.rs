@@ -283,6 +283,17 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     }
 }
 
+/// Extracts the filename portion from an argv[0]-style `OsString`, returning it when non-empty.
+///
+/// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use std::ffi::OsString;
+/// let name = bin_name_from_arg0(&OsString::from("/usr/bin/runner"));
+/// assert_eq!(name.as_deref(), Some("runner"));
+/// ```
 fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     let name = Path::new(arg0)
         .file_name()
@@ -291,10 +302,39 @@ fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// Attaches the generated help byline to a clap command.
+///
+/// The byline text is produced by `help_byline` using `stdout_is_terminal` and is
+/// applied via `Command::before_help`.
+///
+/// # Examples
+///
+/// ```
+/// let cmd = clap::Command::new("app");
+/// let cmd = configure_cli_command(cmd, true);
+/// assert!(cmd.get_before_help().is_some());
+/// ```
 fn configure_cli_command(command: clap::Command, stdout_is_terminal: bool) -> clap::Command {
     command.before_help(help_byline(stdout_is_terminal))
 }
 
+/// Render the CLI help byline using the build-time author metadata.
+///
+/// When `stdout_is_terminal` is true and `RUNNER_AUTHOR_EMAIL` is set, the
+/// author name is wrapped in an OSC-8 `mailto:` hyperlink; otherwise the plain
+/// author name is used. The returned string is prefixed with `"by "`.
+///
+/// # Examples
+///
+/// ```
+/// // If RUNNER_AUTHOR_NAME = "Acme" and RUNNER_AUTHOR_EMAIL is unset:
+/// let s = help_byline(false);
+/// assert_eq!(s, "by Acme");
+///
+/// // With a terminal and an email set the output contains the name and "by ":
+/// let t = help_byline(true);
+/// assert!(t.starts_with("by "));
+/// ```
 fn help_byline(stdout_is_terminal: bool) -> String {
     let name = env!("RUNNER_AUTHOR_NAME");
     let rendered = if stdout_is_terminal {
@@ -308,6 +348,29 @@ fn help_byline(stdout_is_terminal: bool) -> String {
     format!("by {rendered}")
 }
 
+/// Detects whether the provided argv-style slice specifically requests the program version.
+///
+/// # Returns
+///
+/// `true` if `args` has exactly two elements and the second element is `--version` or `-V`, `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use std::ffi::OsString;
+///
+/// let args = vec![OsString::from("runner"), OsString::from("--version")];
+/// assert!(requests_version(&args));
+///
+/// let args2 = vec![OsString::from("runner"), OsString::from("-V")];
+/// assert!(requests_version(&args2));
+///
+/// let args3 = vec![OsString::from("runner")];
+/// assert!(!requests_version(&args3));
+///
+/// let args4 = vec![OsString::from("runner"), OsString::from("--version"), OsString::from("extra")];
+/// assert!(!requests_version(&args4));
+/// ```
 fn requests_version(args: &[OsString]) -> bool {
     if args.len() != 2 {
         return false;

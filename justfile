@@ -92,7 +92,7 @@ test-release version=cargo-version host-triple=triple:
         "node npm/dist/{{ npm-pkg-name }}/bin/run.cjs --version"
     )
     for cmd in "${commands[@]}"; do
-        output="$(${cmd})"
+    	output="$(eval "${cmd}")"
         echo "→ {{ BLUE }}${cmd}{{ NORMAL }}	output: {{ GREEN }}${output}{{ NORMAL }}"
         if [[ "${output}" != *"${VERSION}"* ]]; then
             echo "✗ ${cmd} did not output version ${VERSION}"
