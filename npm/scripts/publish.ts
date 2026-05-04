@@ -15,7 +15,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { PathLike } from "node:fs";
+import type { PathLike } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { argv, exit, stderr } from "node:process";
