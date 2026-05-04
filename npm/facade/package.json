@@ -1,6 +1,6 @@
 {
 	"name": "runner-run",
-	"version": "0.0.0-template",
+	"version": "0.6.0",
 	"description": "Universal project task runner. Auto-detects toolchain, provides unified CLI.",
 	"keywords": [
 		"automation",
