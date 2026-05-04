@@ -74,7 +74,7 @@ jobs:
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/derive-dist-dry.sh"
 
       - name: download release archives
-        env: { GH_TOKEN: "${{ github.token }}", WS: "${{ GITHUB_WORKSPACE }}" }
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/download-release-archives.sh"
 
       - name: verify checksums
