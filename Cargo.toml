@@ -2,7 +2,7 @@
 name         = "runner"
 version      = "0.6.0"
 edition      = "2024"
-rust-version = "1.97"
+rust-version = "1.95"
 description  = "Universal project task runner"
 readme       = "README.md"
 homepage     = "https://github.com/kjanat/runner/#readme"
@@ -34,8 +34,13 @@ name              = "run"
 path              = "src/bin/run.rs"
 required-features = ["run"]
 
-[dependencies.anyhow]
-version = "1"
+[dependencies]
+anyhow     = "1"
+colored    = "3"
+json5      = "1"
+serde_json = "1"
+shlex      = "1"
+yaml-rust2 = "0.11"
 
 [dependencies.clap]
 version  = "4"
@@ -45,24 +50,9 @@ features = ["cargo", "derive", "env", "string", "wrap_help"]
 version  = "4"
 features = ["unstable-dynamic"]
 
-[dependencies.colored]
-version = "3"
-
-[dependencies.json5]
-version = "1"
-
 [dependencies.serde]
 version  = "1"
 features = ["derive"]
-
-[dependencies.serde_json]
-version = "1"
-
-[dependencies.shlex]
-version = "1"
-
-[dependencies.yaml-rust2]
-version = "0.11"
 
 [build-dependencies.serde]
 version  = "1"
