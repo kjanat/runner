@@ -77,6 +77,42 @@ async function readTargets(): Promise<{ scope: string; facade: string; targets: 
 	return JSON.parse(await readFile(join(npmDir, "targets.json"), "utf8"));
 }
 
+/** Structural assertion that a `npm/dist/<pkg>` directory only contains
+ * what `build-packages.ts` is supposed to emit. Refuses to publish if:
+ *
+ * - A per-package `.npmrc` is present (could redirect publish via registry config).
+ * - `package.json` declares `publishConfig` (same threat — overrides we can't see).
+ * - `package.json#name` doesn't match the expected scoped/facade name (catches
+ *   build-time mistakes where a sub-package was scribbled into the wrong dir).
+ *
+ * The CLI flags `--registry` and `--access` already override `.npmrc` /
+ * `publishConfig` for the actual publish call, but rejecting the unexpected
+ * file structure outright is cheaper than reasoning about precedence — and
+ * stops a tampered artifact from publishing under the wrong name in the
+ * first place.
+ *
+ * @param pkgDir - Directory containing `package.json` to validate.
+ * @param expectedName - Fully-qualified npm name we expect (e.g. `@runner-run/linux-x64-gnu`).
+ */
+async function validatePackageDir(pkgDir: string, expectedName: string): Promise<void> {
+	if (await exists(join(pkgDir, ".npmrc"))) {
+		throw new Error(`${pkgDir}/.npmrc is forbidden — could redirect publish via per-package registry config`);
+	}
+	const pkg = JSON.parse(await readFile(join(pkgDir, "package.json"), "utf8")) as {
+		name?: unknown;
+		publishConfig?: unknown;
+	};
+	if (pkg.publishConfig !== undefined) {
+		throw new Error(`${pkgDir}/package.json has publishConfig — could redirect publish or change access`);
+	}
+	if (typeof pkg.name !== "string") {
+		throw new Error(`${pkgDir}/package.json missing string \`name\` field`);
+	}
+	if (pkg.name !== expectedName) {
+		throw new Error(`${pkgDir}/package.json declares '${pkg.name}', expected '${expectedName}'`);
+	}
+}
+
 /** Checks if the package in the given directory has already been published to
  * the npm registry. Distinguishes "version genuinely not yet published"
  * (`E404`) from auth/network failures so the latter aren't silently treated
@@ -171,12 +207,14 @@ async function main() {
 
 	for (const target of matrix.targets) {
 		const dir = join(distDir, target.pkg);
+		const expectedName = `${matrix.scope}/${target.pkg}`;
 		if (!(await exists(dir))) {
-			console.warn(`skipping ${matrix.scope}/${target.pkg}: not generated`);
+			console.warn(`skipping ${expectedName}: not generated`);
 			continue;
 		}
+		await validatePackageDir(dir, expectedName);
 		if (!opts["dry-run"] && (await alreadyPublished(dir, opts.registry))) {
-			console.log(`skipping ${matrix.scope}/${target.pkg}: version already on registry`);
+			console.log(`skipping ${expectedName}: version already on registry`);
 			continue;
 		}
 		publish(dir, opts);
@@ -186,6 +224,7 @@ async function main() {
 	if (!(await exists(facadeDir))) {
 		throw new Error(`façade not generated at ${facadeDir} — run build-packages.ts first`);
 	}
+	await validatePackageDir(facadeDir, matrix.facade);
 	if (!opts["dry-run"] && (await alreadyPublished(facadeDir, opts.registry))) {
 		console.log(`skipping ${matrix.facade}: version already on registry`);
 	} else {
