@@ -313,14 +313,27 @@ async function cleanDist(): Promise<void> {
 	await mkdir(distDir, { recursive: true });
 }
 
-async function buildFacade(matrix: Matrix, version: string, builtTargets: Target[]): Promise<void> {
+async function buildFacade(
+	matrix: Matrix,
+	version: string,
+	builtTargets: Target[],
+	meta: Record<string, unknown>,
+): Promise<void> {
 	const templatePath = join(npmDir, "facade", "package.json");
-	const packageJson = JSON.parse(await readFile(templatePath, "utf8")) as Record<string, unknown>;
+	const template = JSON.parse(await readFile(templatePath, "utf8")) as Record<string, unknown>;
 
-	packageJson.version = version;
-	packageJson.optionalDependencies = Object.fromEntries(
-		builtTargets.map((target) => [`${matrix.scope}/${target.pkg}`, version]),
-	);
+	// Cargo metadata wins over the template for fields it owns (license,
+	// author, homepage, repository, bugs, engines). Keeps the facade and
+	// sub-packages in lockstep on engines/runtime contract — drop those
+	// fields from the template so there's only one source of truth.
+	const packageJson = {
+		...template,
+		...meta,
+		version,
+		optionalDependencies: Object.fromEntries(
+			builtTargets.map((target) => [`${matrix.scope}/${target.pkg}`, version]),
+		),
+	};
 
 	const dest = join(distDir, matrix.facade);
 
@@ -593,7 +606,7 @@ async function main(): Promise<void> {
 		);
 	}
 
-	await buildFacade(matrix, opts.version, builtTargets);
+	await buildFacade(matrix, opts.version, builtTargets, meta);
 }
 
 if (import.meta.main) {

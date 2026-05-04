@@ -26,6 +26,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const npmDir = resolve(here, "..");
 const distDir = join(npmDir, "dist");
 
+// Hard cap on every npm subprocess. Stops a stuck DNS/TCP/registry path
+// from burning the whole CI job timeout (default 6h on GitHub Actions).
+// 2 min is generous: our tarballs are ~1.5MB, so even on slow networks
+// the upload portion is seconds. If this ever bites in practice (extreme
+// flake on a real network), retry the job rather than raising the cap.
+const NPM_TIMEOUT_MS = 120_000;
+
 const { values } = parseArgs({
 	args: argv.slice(2),
 	options: {
@@ -87,7 +94,11 @@ async function alreadyPublished(pkgDir: string, registry: string): Promise<boole
 	const { name, version } = pkg;
 	const res = spawnSync("npm", ["view", `${name}@${version}`, "--registry", registry, "version"], {
 		encoding: "utf8",
+		timeout: NPM_TIMEOUT_MS,
 	});
+	if (res.signal) {
+		throw new Error(`npm view ${name}@${version} timed out after ${NPM_TIMEOUT_MS}ms (killed with ${res.signal})`);
+	}
 	if (res.status === 0) return res.stdout.trim() === version;
 	const errOut = (res.stderr || "").toString();
 	// `npm view foo@missing-version` prints an `E404` line and exits non-zero.
@@ -130,7 +141,14 @@ function publish(pkgDir: string, opts: {
 		args.push("--provenance");
 	}
 	console.log(`+ npm ${args.join(" ")}  (cwd: ${relative(npmDir, pkgDir)})`);
-	const res = spawnSync("npm", args, { cwd: pkgDir, stdio: ["inherit", "inherit", "pipe"] });
+	const res = spawnSync("npm", args, {
+		cwd: pkgDir,
+		stdio: ["inherit", "inherit", "pipe"],
+		timeout: NPM_TIMEOUT_MS,
+	});
+	if (res.signal) {
+		throw new Error(`npm publish for ${pkgDir} timed out after ${NPM_TIMEOUT_MS}ms (killed with ${res.signal})`);
+	}
 	if (res.status === 0) return;
 	const stderrR = (res.stderr || "").toString();
 	stderr.write(stderrR);
