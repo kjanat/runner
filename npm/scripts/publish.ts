@@ -45,8 +45,12 @@ const { values } = parseArgs({
 	strict: true,
 });
 
-/** Narrows the `--access` CLI string to npm's accepted enum.
- * @throws If the value is anything other than `"public"` or `"restricted"`.
+/**
+ * Validate and normalize an npm access option to the allowed values.
+ *
+ * @param v - The raw `--access` value provided by the caller
+ * @returns The validated access string: `public` or `restricted`
+ * @throws Error if `v` is not `"public"` or `"restricted"`
  */
 function parseAccess(v: string): "public" | "restricted" {
 	if (v === "public" || v === "restricted") return v;
@@ -69,11 +73,11 @@ async function exists(p: PathLike): Promise<boolean> {
 		throw err;
 	}
 }
-/** Reads and parses the targets.json file from the npm directory.
- * `tier` is preserved in the type so the publish flow can distinguish
- * required (tier-1/2) from optional-on-miss (tier-3) sub-packages.
- * @returns The parsed targets configuration.
- * @throws If the file cannot be read or parsed.
+/**
+ * Load and parse npm/targets.json to obtain the publish matrix and tiered package list.
+ *
+ * @returns An object with `scope`, `facade`, and `targets` (each target has `pkg` and `tier` as 1 | 2 | 3).
+ * @throws If the targets.json file cannot be read or contains invalid JSON.
  */
 async function readTargets(): Promise<{
 	scope: string;
@@ -119,17 +123,13 @@ async function validatePackageDir(pkgDir: string, expectedName: string): Promise
 	}
 }
 
-/** Checks if the package in the given directory has already been published to
- * the npm registry. Distinguishes "version genuinely not yet published"
- * (`E404`) from auth/network failures so the latter aren't silently treated
- * as "go ahead and publish" — which would either fail later with the same
- * error, or worse, succeed in a wrong direction if the env shifts mid-flow.
+/**
+ * Determine whether the package in the given directory (package.json) is already published to the specified registry.
  *
- * @param pkgDir - The directory containing the package to check (must have package.json).
- * @param registry - Registry URL to query (must be passed explicitly so we don't inherit ambient config).
- * @returns `true` if `name@version` is already on the registry, `false` if it's a clean `E404`.
- * @throws On auth (`E401`, `ENEEDAUTH`), network (`ENOTFOUND`, `ETIMEDOUT`, `EAI_AGAIN`),
- * or any other unrecognized npm CLI failure — with the captured stderr in the message.
+ * @param pkgDir - Directory containing package.json; used to read the package `name` and `version`.
+ * @param registry - Registry URL to query explicitly (does not rely on ambient npm config).
+ * @returns `true` if the registry already hosts `name@version`, `false` if the registry reports the version is not found (404).
+ * @throws On npm CLI timeout or for any npm failure other than a 404 (for example authentication or network errors); the thrown error message includes captured npm stderr.
  */
 async function alreadyPublished(pkgDir: string, registry: string): Promise<boolean> {
 	const pkg: { name: string; version: string } = JSON.parse(await readFile(join(pkgDir, "package.json"), "utf8"));
@@ -150,11 +150,19 @@ async function alreadyPublished(pkgDir: string, registry: string): Promise<boole
 	throw new Error(`npm view ${name}@${version} failed (exit ${res.status}): ${errOut.trim() || "no stderr"}`);
 }
 
-/** Publishes the package at `pkgDir` to the npm registry, with the given options.
- * Throws if the publish fails for any reason other than "version already published".
+/**
+ * Publish the package located at `pkgDir` to the configured npm registry using the provided options.
  *
- * @param pkgDir - The directory containing the package to publish (must have package.json).
- * @param opts - Publish options.
+ * Attempts an `npm publish` with the registry, access level, and tag supplied on `opts`. Treats a publish failure caused by an already-published version as a successful no-op; all other publish failures (including timeouts and npm errors) cause an exception.
+ *
+ * @param pkgDir - Path to the package directory (must contain a valid package.json).
+ * @param opts - Publish options:
+ *   - `registry`: npm registry URL to target.
+ *   - `access`: `"public"` or `"restricted"` publish access.
+ *   - `tag`: release tag to apply.
+ *   - `dry-run`: when true, run `npm publish --dry-run`.
+ *   - `no-provenance`: when false and running under GitHub Actions, add `--provenance`.
+ * @throws Error when `npm publish` times out or exits non-zero for reasons other than an already-published version.
  */
 function publish(pkgDir: string, opts: {
 	access: "restricted" | "public";
@@ -202,10 +210,14 @@ function publish(pkgDir: string, opts: {
 	throw new Error(`npm publish failed for ${pkgDir} (exit ${res.status})`);
 }
 
-/** Entry point: publishes every per-platform sub-package found under
- * `npm/dist/`, then the facade last. Skips packages whose version is already
- * on the registry so partial reruns are idempotent. Throws if the facade
- * directory is missing entirely (means `build-packages.ts` never ran).
+/**
+ * Publish built npm packages from npm/dist in order: sub-packages first, then the facade.
+ *
+ * Validates required (tier-1/2) packages are present before publishing, allows tier-3 packages to be absent,
+ * validates each package directory, skips publishing packages whose exact name@version already exist on the
+ * target registry (making reruns idempotent), and publishes the facade last. Throws if required packages
+ * are missing or the facade directory is absent. Honors CLI options such as `--dry-run`, `--registry`,
+ * `--tag`, `--access`, and provenance toggling.
  */
 async function main() {
 	const opts = { ...values, access: parseAccess(values.access) };

@@ -64,6 +64,7 @@ for dir in npm/dist/*/; do
 	fi
 done
 
+# publish_allowed publishes a single package from a built artifact directory when it exists and its package.json matches the expected name and version, skips optional or already-published packages, and exits on integrity or policy failures.
 publish_allowed() {
 	local dir="$1" expected_name="$2" required="$3"
 	local actual_name version published

@@ -28,6 +28,23 @@ struct Author {
     email: Option<String>,
 }
 
+/// Reads the package metadata from Cargo.toml, selects the first author entry, and exports
+/// the author's name (and, if present and non-empty, email) as compile-time environment variables
+/// for dependent crates.
+///
+/// This build script also instructs Cargo to re-run the build script when Cargo.toml changes.
+/// It will panic if `CARGO_MANIFEST_DIR` is not set, if Cargo.toml cannot be read or parsed,
+/// or if `package.metadata.authors` is empty.
+///
+/// # Examples
+///
+/// ```no_run
+/// // When run as a build script, this prints lines like:
+/// // cargo:rerun-if-changed=Cargo.toml
+/// // cargo:rustc-env=RUNNER_AUTHOR_NAME=Alice
+/// // cargo:rustc-env=RUNNER_AUTHOR_EMAIL=alice@example.com
+/// main();
+/// ```
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
 
