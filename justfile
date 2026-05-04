@@ -43,7 +43,7 @@ build-packages only="" skip="false" version=cargo-version:
     args=("--version" "${VERSION}")
 
     if [[ -n "${ONLY}" ]]; then args+=("--only=${ONLY}"); fi
-    if [[ "${SKIP}" == "true" || "${SKIP}" == "1" ]]; then args+=("--skip-missing"); else args+=("--no-skip-missing"); fi
+    if [[ "${SKIP}" == "true" || "${SKIP}" == "1" ]]; then args+=("--skip-missing"); fi
     echo "→ building packages with args: {{ BLUE }}${args[*]}{{ NORMAL }}"
     node "${SCRIPT}" "${args[@]}"
     echo "✓ built packages for {{ MAGENTA }}${VERSION}{{ NORMAL }}"
@@ -66,8 +66,21 @@ test-release version=cargo-version host-triple=triple:
     # Build the release bins so we have them to test against.
     {{ cargobuildboth }} --release
     mkdir -p {{ dowloads-dir }}
+
+    if [[ "{{ os_family() }}" == "windows" ]]; then
+    	files=("runner.exe" "run.exe")
+    else
+    	files=("runner" "run")
+    fi
+    for file in "${files[@]}"; do
+        if [[ ! -f "target/release/${file}" ]]; then
+            echo "✗ expected target/release/${file} to exist after build"
+            exit 1
+        fi
+    done
+
     tar czf "{{ dowloads-dir }}/runner-v${VERSION}-${HOST_TARGET}.tar.gz" \
-        -C target/release runner run
+        -C target/release "${files[@]}"
     just build-packages "${pkg}" "true" "${VERSION}"
     # Wire up the optional sub-package so resolve.cjs's `require.resolve`
     # walks node_modules and finds it. In a real install, npm does this.
