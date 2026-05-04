@@ -13,8 +13,6 @@ npm install -g runner-run
 # or
 pnpm add -g runner-run
 # or
-yarn global add runner-run
-# or
 bun add -g runner-run
 # or per-project
 npm install --save-dev runner-run
