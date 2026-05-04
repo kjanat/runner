@@ -70,10 +70,16 @@ async function exists(p: PathLike): Promise<boolean> {
 	}
 }
 /** Reads and parses the targets.json file from the npm directory.
+ * `tier` is preserved in the type so the publish flow can distinguish
+ * required (tier-1/2) from optional-on-miss (tier-3) sub-packages.
  * @returns The parsed targets configuration.
  * @throws If the file cannot be read or parsed.
  */
-async function readTargets(): Promise<{ scope: string; facade: string; targets: Array<{ pkg: string }> }> {
+async function readTargets(): Promise<{
+	scope: string;
+	facade: string;
+	targets: Array<{ pkg: string; tier: 1 | 2 | 3 }>;
+}> {
 	return JSON.parse(await readFile(join(npmDir, "targets.json"), "utf8"));
 }
 
@@ -204,6 +210,28 @@ function publish(pkgDir: string, opts: {
 async function main() {
 	const opts = { ...values, access: parseAccess(values.access) };
 	const matrix = await readTargets();
+
+	// Refuse to publish a partial matrix. Tier-1/2 targets are required;
+	// missing ones mean someone ran build-packages.ts with --only or
+	// --skip-missing covering tier-1/2, which would ship a facade with
+	// truncated `optionalDependencies` — bricking install for the omitted
+	// platforms. Tier-3 (FreeBSD arm64, NetBSD, OpenBSD) is explicitly
+	// allowed to be absent: those run with `continue-on-error: true` in
+	// the build matrix and the facade omits them from optionalDeps.
+	const missingRequired: string[] = [];
+	for (const target of matrix.targets) {
+		if (target.tier === 3) continue;
+		if (!(await exists(join(distDir, target.pkg)))) {
+			missingRequired.push(`${matrix.scope}/${target.pkg}`);
+		}
+	}
+	if (missingRequired.length > 0) {
+		throw new Error(
+			`refusing to publish: required (tier-1/2) packages missing from ${distDir}:\n  - ${
+				missingRequired.join("\n  - ")
+			}\nrun build-packages.ts without --only/--skip-missing covering these targets.`,
+		);
+	}
 
 	for (const target of matrix.targets) {
 		const dir = join(distDir, target.pkg);
