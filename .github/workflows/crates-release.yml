@@ -26,8 +26,11 @@ on:
       dry-run:
         description: Dry run only (no upload to crates.io)
         required: false
-        default: false
-        type: boolean
+        default: "false"
+        type: choice
+        options:
+          - true
+          - false
 
 permissions:
   contents: read
