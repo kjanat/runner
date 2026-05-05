@@ -14,6 +14,7 @@
 		"check": "biome check",
 		"deploy": "bun run build && wrangler deploy",
 		"dev": "bun run dev.ts",
+		"fmt": "bunx dprint fmt",
 		"lint": "biome lint",
 		"prestart": "bun run build",
 		"start": "wrangler preview",
