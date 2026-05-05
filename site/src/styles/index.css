@@ -149,10 +149,11 @@ hr.rule {
 	font-weight: 700;
 }
 .term .green {
-	color: #9bea9b;
+	color: var(--term-bold);
+	font-weight: 700;
 }
 .term .link {
-	color: #b9d4b3;
+	color: var(--term-fg);
 	text-decoration: underline;
 	text-underline-offset: 0.2em;
 	background: transparent;
