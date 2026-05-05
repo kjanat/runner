@@ -311,7 +311,7 @@ interface Target {
 	cpu: NodeJS.Architecture[];
 	libc?: Libc[];
 	runner: string;
-	build: "cargo" | "cross";
+	build: "cargo" | "cross" | "cargo-cross-toolchain" | "cargo-build-std" | "vm";
 	tier: 1 | 2 | 3;
 	experimental?: boolean;
 }

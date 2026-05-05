@@ -27,9 +27,21 @@ set -euo pipefail
 : "${BIN_DIR:?BIN_DIR required}"
 : "${GH_TOKEN:?GH_TOKEN required}"
 
+# Defensive: this script doesn't handle .exe binaries. The release.yml
+# matrix only routes BSDs through cargo-build-std today, but a future
+# config could route a Windows target here and silently produce a
+# broken archive. Bail loudly instead.
+if [[ "${TARGET}" == *windows* ]]; then
+	echo "error: ${0##*/} does not handle Windows targets (.exe naming)" >&2
+	exit 1
+fi
+
 archive_basename="runner-${RELEASE_TAG}-${TARGET}"
 archive="${archive_basename}.tar.gz"
-checksum="${archive}.sha256"
+# `<basename>.sha256`, NOT `<basename>.tar.gz.sha256`. Matches the
+# convention `taiki-e/upload-rust-binary-action` uses, which is what
+# verify-checksum.sh enforces (`expected="${t%.tar.gz}.sha256"`).
+checksum="${archive_basename}.sha256"
 
 staging=$(mktemp -d)
 trap 'rm -rf "${staging}"' EXIT

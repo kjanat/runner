@@ -56,8 +56,8 @@ jobs:
       - id: gen
         # Same single-source-of-truth as release.yml. Adds an inputs.target
         # filter so a user can dispatch a single target without spinning the
-        # entire matrix. `vm` targets are excluded here for the same reason
-        # as release.yml — handled in the dedicated dryrun-openbsd job.
+        # entire matrix. `vm`-typed targets are excluded here for the same
+        # reason as release.yml — they need a dedicated VM-driven job.
         env:
           INPUT_TARGET: ${{ inputs.target }}
         run: |

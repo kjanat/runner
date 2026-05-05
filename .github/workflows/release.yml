@@ -78,11 +78,16 @@ jobs:
 
       - id: gen
         # Single source of truth: npm/targets.json. Each entry maps to the
-        # fields upload-assets consumes. `vm` targets (OpenBSD) are filtered
-        # out — they're built by the dedicated upload-openbsd job because the
-        # build runs inside a VM that taiki-e/upload-rust-binary-action can't
-        # reach. Missing `experimental` coerces to false so `continue-on-error`
+        # fields upload-assets consumes. `vm`-typed targets are filtered out
+        # because they need a target-OS VM that taiki-e/upload-rust-binary-action
+        # can't reach; if any are reintroduced they need a dedicated job.
+        # Missing `experimental` coerces to false so `continue-on-error`
         # evaluates cleanly.
+        # NOTE: `target: .rust` (the Rust triple) is mandatory — both
+        # taiki-e and npm/scripts/build-packages.ts derive the release-asset
+        # filename `runner-<tag>-<rust>.tar.gz` from this exact field. Don't
+        # swap it for `.pkg` (npm package suffix) without updating both
+        # consumers in lockstep.
         run: |
           include=$(jq -c '[.targets[] | select(.build != "vm") | {
             target: .rust,
