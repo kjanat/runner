@@ -2,6 +2,8 @@
 
 Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
+Website: <https://runner.kjanat.com/>
+
 ## Features
 
 - **Auto-detection**: Scans for lockfiles/configs and picks the right tool
