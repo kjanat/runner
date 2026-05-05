@@ -106,7 +106,6 @@ jobs:
       - name: publish to npm
         id: publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           DIST_TAG: ${{ steps.derive.outputs.dist-tag }}
           DRY_RUN: ${{ steps.derive.outputs.dry-run }}
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/npm.sh"

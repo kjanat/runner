@@ -17,7 +17,7 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 # context) and downloaded here via cross-workflow `download-artifact`.
 # We still treat it as untrusted: defense-in-depth against a tampered
 # artifact at the cross-workflow handoff or a malicious tag committer.
-# Three defenses run before NPM_TOKEN is used:
+# Three defenses run before npm is invoked:
 #   1. Hardcoded allowlist of expected directory names — a tampered
 #      artifact cannot smuggle extra package directories.
 #   2. Each package.json's `name` field must equal the expected
@@ -49,7 +49,6 @@ REQUIRED_PLATFORMS=(
 OPTIONAL_PLATFORMS=(
 	freebsd-arm64
 	netbsd-x64
-	openbsd-x64
 )
 EXPECTED_VERSION="${RELEASE_TAG#v}"
 
