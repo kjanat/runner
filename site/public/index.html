@@ -159,19 +159,13 @@
 		}
 
 		/* ─── install row ────────────────────────────── */
+		/* stacked full-width — every command gets the whole column,
+		   so the longest ones aren't squeezed against the shortest. */
 		.install {
 			display: grid;
 			grid-template-columns: 1fr;
 			gap: 0.625rem;
 			margin: 0.75rem 0 0;
-		}
-		@media (min-width: 44rem) {
-			.install {
-				grid-template-columns: repeat(2, 1fr);
-			}
-			.install .pri {
-				grid-column: 1 / -1;
-			}
 		}
 
 		.copy {
@@ -287,9 +281,11 @@
 			color: var(--term-link);
 			text-decoration: underline;
 			text-underline-offset: 0.2em;
+			background: transparent;
 		}
 		.term .link:hover {
 			color: var(--term-bold);
+			background: transparent;
 		}
 		.term .arrow {
 			color: var(--term-dim);
@@ -449,8 +445,8 @@
 						<span class="toast">copied</span>
 					</button>
 					<button class="copy" type="button" data-cmd="cargo install --git=https://github.com/kjanat/runner/ runner">
-						<span class="label">cargo</span>
-						<span class="cmd">cargo install --git=…/runner/ runner</span>
+						<span class="label">cargo · from source</span>
+						<span class="cmd">cargo install --git=https://github.com/kjanat/runner/ runner</span>
 						<span class="toast">copied</span>
 					</button>
 					<button
@@ -478,7 +474,7 @@
 			<section aria-labelledby="demo-tag">
 				<span class="section-tag" id="demo-tag">what it looks like</span>
 				<pre class="term"><span class="prompt"></span><span>runner</span>
-<span class="bold link">runner</span> <span class="link">0.6.0</span>
+<a class="bold link" href="https://github.com/kjanat/runner/">runner</a> <a class="link" href="https://github.com/kjanat/runner/releases/tag/v0.6.0">0.6.0</a>
   <span class="dim">Package Managers</span>    bun, pnpm
   <span class="dim">Task Runners</span>        turbo, just
   <span class="dim">Node</span>                22 (.nvmrc), current v22.11.0 <span class="green">(ok)</span>
