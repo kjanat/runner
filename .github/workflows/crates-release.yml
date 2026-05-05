@@ -1,18 +1,22 @@
 name: crates-release
 run-name: >-
-  ${{ github.event_name == 'workflow_run'
-      && format('crates publish {0}', github.event.workflow_run.head_branch)
+  ${{ github.event_name == 'release'
+      && format('crates publish {0}', github.event.release.tag_name)
       || format('crates publish {0}', inputs.tag) }}
 
-# Publishes the runner-run crate to crates.io after a successful tag-triggered
-# release.yml run, or on manual dispatch. Mirrors the npm-release.yml shape:
-# trusted scripts only (sparse-checkout from the default branch), explicit
-# RELEASE_TAG sourced from trigger metadata, dry-run support for verification.
+# Publishes the runner-run crate to crates.io when a maintainer publishes
+# a GitHub release (release.yml creates the release as a draft, so this
+# fires only after a human reviews and clicks publish), or on manual
+# dispatch. Avoids `workflow_run` to sidestep the CodeQL "untrusted code
+# in a privileged context" pattern: that trigger runs with secrets while
+# checking out a tag-controlled ref, which would let a malicious build.rs
+# in a tag exfiltrate CARGO_REGISTRY_TOKEN. Here, the human gate on
+# publishing the draft release plus the `crates-io` environment's
+# required reviewers are the trust anchors.
 
 on:
-  workflow_run:
-    workflows: [release]
-    types: [completed]
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -35,28 +39,25 @@ jobs:
   publish:
     name: publish to crates.io
     runs-on: ubuntu-latest
-    # Only run after a successful tag-triggered release.yml, or on manual dispatch.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
     permissions:
       contents: read
     environment:
       name: crates-io
       url: https://crates.io/crates/runner-run
     env:
-      # RELEASE_TAG comes from trusted trigger metadata only — never from
-      # anything build-time scripts could influence.
+      # RELEASE_TAG comes from trusted trigger metadata only — for `release`
+      # events the tag is set at release-creation time by release.yml, and
+      # for `workflow_dispatch` the maintainer typed it.
       RELEASE_TAG: >-
         ${{ github.event_name == 'workflow_dispatch'
             && inputs.tag
-            || github.event.workflow_run.head_branch }}
+            || github.event.release.tag_name }}
       INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
     steps:
       # Check out the tag the release was cut from so the published artifact
-      # matches the GitHub release. Pulls the trusted ref (the tag itself is
-      # protected by the release workflow's validation steps).
+      # matches the GitHub release exactly. Trust model: a maintainer
+      # explicitly published this release (or dispatched the workflow), so
+      # running build.rs from this ref is intentional.
       - uses: actions/checkout@v6
         with:
           ref: ${{ env.RELEASE_TAG }}
