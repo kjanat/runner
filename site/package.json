@@ -12,7 +12,7 @@
 	"scripts": {
 		"build": "bun build.ts",
 		"check": "biome check",
-		"deploy": "wrangler deploy",
+		"deploy": "bun run build && wrangler deploy",
 		"dev": "bun run dev.ts",
 		"lint": "biome lint",
 		"prestart": "bun run build",
