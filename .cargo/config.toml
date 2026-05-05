@@ -1,8 +1,19 @@
-#:schema /home/kjanat/projects/gist/cargo-config.schema/cargo-config.schema.json
+#:schema https://gist.githubusercontent.com/kjanat/1172d9d2d6dbe7c6d9983aaabef2eea5/raw/cargo-config.bundle.json
 
 [alias]
-l          = "lint"
-lint       = "clippy --all-targets --all-features -- -D warnings -D clippy::all"
-bin-run    = "run --bin run"
-bin-runner = "run --bin runner"
-t          = "test --all-features"
+bb          = ["build", "--bin", "run", "--bin", "runner"]
+bbr         = ["bb", "--release"]
+bin-run     = ["r", "--bin", "run"]
+bin-runner  = ["r", "--bin", "runner"]
+cl          = ["clippy", "--all-targets", "--all-features"]
+i           = ["install", "--path", "."]
+l           = ["cl", "--", "-D", "warnings", "-D", "clippy::all"]
+meta        = ["metadata", "--format-version", "1"]
+r           = "run"
+rbin-run    = ["bin-run", "--release"]
+rbin-runner = ["bin-runner", "--release"]
+rr          = ["run", "--release"]
+t           = ["test", "--all-features", "--all-targets"]
+
+[term]
+hyperlinks = false

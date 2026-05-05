@@ -16,15 +16,15 @@ default bin=env("BIN", "runner") profile="dev" *args:
     just shim {{ bin }} {{ profile }} {{ args }}
 
 install:
-    cargo install --path . --bin=runner --bin=run --profile=release
+    cargo i
 
 [group('bins')]
 run *args:
-    cargo run --bin=run --profile={{ env("PROFILE", "release") }} -- {{ args }}
+    cargo bin-run --profile={{ env("PROFILE", "release") }} -- {{ args }}
 
 [group('bins')]
 runner *args:
-    cargo run --bin=runner --profile={{ env("PROFILE", "release") }} -- {{ args }}
+    cargo bin-runner --profile={{ env("PROFILE", "release") }} -- {{ args }}
 
 [arg('bin', pattern='run|runner|')]
 [arg('profile', pattern='dev|release|')]
