@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- crates.io publishing: new `crates-release` workflow publishes the
+  crate to crates.io when a maintainer publishes the GitHub release
+  that `release.yml` cuts as a draft. Verifies the tag matches
+  `Cargo.toml`, runs `cargo publish --locked --dry-run` first, then
+  publishes via `CARGO_REGISTRY_TOKEN` under the `crates-io`
+  environment. `workflow_dispatch` is preserved for manual republishes.
+
+### Changed
+
+- Renamed the published package from `runner` to `runner-run` (the
+  bare `runner` name is taken on crates.io). The library crate name
+  is pinned to `runner` via `[lib]` so existing `runner::…` imports
+  in `src/main.rs` and `src/bin/run.rs` keep working unchanged.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
