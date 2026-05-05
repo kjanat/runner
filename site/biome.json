@@ -18,10 +18,18 @@
 			"a11y": "on",
 			"complexity": "on",
 			"correctness": "on",
-			"nursery": "info",
+			"nursery": {
+				"recommended": true,
+				"noExcessiveLinesPerFile": "off",
+				"noHexColors": "off",
+				"useBaseline": "off"
+			},
 			"performance": "on",
 			"security": "on",
-			"style": "on",
+			"style": {
+				"recommended": true,
+				"noMagicNumbers": "off"
+			},
 			"suspicious": "warn"
 		},
 		"domains": {

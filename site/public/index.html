@@ -601,15 +601,18 @@
 		</main>
 
 		<script>
+		"use strict";
+
 		// click-to-copy. that's the whole script.
+		const TOAST_MS = 1400;
+
 		for (const btn of document.querySelectorAll(".copy")) {
 			btn.addEventListener("click", async () => {
-				const cmd = btn.dataset.cmd;
+				const { cmd } = btn.dataset;
 				try {
 					await navigator.clipboard.writeText(cmd);
 				} catch {
 					// selection fallback for ancient browsers / non-secure contexts
-					const r = document.createRange();
 					const tmp = document.createElement("textarea");
 					tmp.value = cmd;
 					tmp.setAttribute("readonly", "");
@@ -619,11 +622,13 @@
 					tmp.select();
 					try {
 						document.execCommand("copy");
-					} catch {}
+					} catch {
+						// best-effort: nothing else to try
+					}
 					tmp.remove();
 				}
 				btn.classList.add("copied");
-				setTimeout(() => btn.classList.remove("copied"), 1400);
+				setTimeout(() => btn.classList.remove("copied"), TOAST_MS);
 			});
 		}
 		</script>
