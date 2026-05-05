@@ -18,7 +18,9 @@
 			"recommended": true,
 			"a11y": "on",
 			"complexity": "on",
-			"correctness": "on",
+			"correctness": {
+				"recommended": true
+			},
 			"nursery": {
 				"recommended": true,
 				"noExcessiveLinesPerFile": "off",
@@ -31,7 +33,9 @@
 				"recommended": true,
 				"noMagicNumbers": "off"
 			},
-			"suspicious": "warn"
+			"suspicious": {
+				"recommended": true
+			}
 		},
 		"domains": {
 			"project": "recommended"
@@ -43,7 +47,10 @@
 		"enabled": true,
 		"actions": {
 			"source": {
-				"organizeImports": "on",
+				"organizeImports": "off",
+				"useSortedProperties": "on",
+				"noDuplicateClasses": "on",
+				"useSortedInterfaceMembers": "on",
 				"recommended": true
 			}
 		}

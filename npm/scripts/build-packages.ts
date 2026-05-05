@@ -188,38 +188,56 @@ function narrowAuthor(v: unknown, where: string): AuthorField | undefined {
 /**
  * Read the crate's Cargo manifest and return its parsed JSON; `metadata` is left unvalidated.
  *
+ * Uses `cargo metadata --no-deps` (the `cargo read-manifest` replacement) and
+ * picks the workspace's default member.
+ *
  * @returns The parsed Cargo manifest object; the `metadata` property is preserved
  *   as-is and must be narrowed before use.
- * @throws If `cargo read-manifest` fails (the error message includes the command's stderr).
- * @throws If the manifest is missing required `name` or `version` string fields.
+ * @throws If `cargo metadata` fails (the error message includes the command's stderr).
+ * @throws If the workspace's default package is missing or lacks required `name`/`version` string fields.
  */
 function readCargoManifest(): CargoManifest {
-	const result = spawnSync("cargo", ["read-manifest"], {
+	const result = spawnSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], {
 		cwd: repoDir,
 		encoding: "utf8",
+		// metadata output for a workspace can dwarf the 1 MiB Node default.
+		maxBuffer: 64 * 1024 * 1024,
 	});
 	if (result.status !== 0) {
 		const err = (result.stderr || "").trim();
-		throw new Error(`cargo read-manifest failed${err ? `: ${err}` : ""}`);
+		throw new Error(`cargo metadata failed${err ? `: ${err}` : ""}`);
 	}
-	const parsed = JSON.parse(result.stdout) as {
-		name?: unknown;
-		version?: unknown;
-		license?: unknown;
-		homepage?: unknown;
-		repository?: unknown;
-		metadata?: unknown;
+	const envelope = JSON.parse(result.stdout) as {
+		packages?: unknown;
+		workspace_default_members?: unknown;
 	};
-	if (typeof parsed.name !== "string" || typeof parsed.version !== "string") {
-		throw new Error(`cargo read-manifest produced unexpected shape (missing name/version)`);
+	if (!Array.isArray(envelope.packages) || envelope.packages.length === 0) {
+		throw new Error(`cargo metadata produced unexpected shape (no packages)`);
+	}
+	const defaults = Array.isArray(envelope.workspace_default_members)
+		? envelope.workspace_default_members.filter((id): id is string => typeof id === "string")
+		: [];
+	// Single workspace member: that's the package. Multi-member workspace:
+	// match the first default member by id (Cargo's own "what does a bare
+	// `cargo build` build" answer) — falls back to the first package so a
+	// non-virtual workspace without explicit defaults still resolves.
+	const pickById = defaults[0]
+		? envelope.packages.find((p): p is Record<string, unknown> => isObject(p) && p.id === defaults[0])
+		: undefined;
+	const pkg = pickById ?? (isObject(envelope.packages[0]) ? envelope.packages[0] : undefined);
+	if (!pkg) {
+		throw new Error(`cargo metadata produced unexpected shape (no usable package entry)`);
+	}
+	if (typeof pkg.name !== "string" || typeof pkg.version !== "string") {
+		throw new Error(`cargo metadata produced unexpected shape (missing name/version)`);
 	}
 	return {
-		name: parsed.name,
-		version: parsed.version,
-		license: typeof parsed.license === "string" ? parsed.license : undefined,
-		homepage: typeof parsed.homepage === "string" ? parsed.homepage : undefined,
-		repository: typeof parsed.repository === "string" ? parsed.repository : undefined,
-		metadata: parsed.metadata,
+		name: pkg.name,
+		version: pkg.version,
+		license: typeof pkg.license === "string" ? pkg.license : undefined,
+		homepage: typeof pkg.homepage === "string" ? pkg.homepage : undefined,
+		repository: typeof pkg.repository === "string" ? pkg.repository : undefined,
+		metadata: pkg.metadata,
 	};
 }
 
@@ -253,7 +271,7 @@ function formatFirstAuthor(authorsRaw: unknown): string | undefined {
  * `repository`, `bugs`, and `engines` when those values are present and valid.
  * Fields under `metadata.npm` override top-level Cargo values when provided.
  *
- * @param manifest - The Cargo manifest object (as returned by `cargo read-manifest`)
+ * @param manifest - The Cargo manifest object (as returned by `readCargoManifest`)
  * @returns A plain object with npm package fields to merge into `package.json`
  */
 function packageMetadata(manifest: CargoManifest): Record<string, unknown> {

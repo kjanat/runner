@@ -49,14 +49,15 @@ export async function build(options: BuildOptions = {}): Promise<void> {
 		throw new Error("build failed");
 	}
 
+	const emptyJsOutputs = result.outputs.filter(
+		(out) => out.size === 0 && out.path.endsWith(".js"),
+	);
 	const emptyChunks = new Set<string>();
-	for (const out of result.outputs) {
-		if (out.size === 0 && out.path.endsWith(".js")) {
-			const name = out.path.split("/").pop();
-			if (name) emptyChunks.add(name);
-			await rm(out.path, { force: true });
-		}
+	for (const out of emptyJsOutputs) {
+		const name = out.path.split("/").pop();
+		if (name) emptyChunks.add(name);
 	}
+	await Promise.all(emptyJsOutputs.map((out) => rm(out.path, { force: true })));
 	const emptyScript = emptyChunks.size
 		? new RegExp(
 			`<script[^>]+src="\\.?/?(?:${[...emptyChunks].join("|")})"[^>]*></script>`,
@@ -66,20 +67,22 @@ export async function build(options: BuildOptions = {}): Promise<void> {
 
 	const placeholder = /\{\{(\w+)\}\}/g;
 	const htmls = (await readdir(dist)).filter((f) => f.endsWith(".html"));
-	for (const file of htmls) {
-		const path = join(dist, file);
-		let html = await Bun.file(path).text();
-		if (emptyScript) html = html.replace(emptyScript, "");
-		html = html.replace(placeholder, (raw, key: string) => {
-			const value = tokens[key];
-			if (value === undefined) {
-				throw new Error(`unknown placeholder ${raw} in ${file}`);
-			}
-			return value;
-		});
-		html = applyAnalytics(html, file, options.analytics);
-		await Bun.write(path, html);
-	}
+	await Promise.all(
+		htmls.map(async (file) => {
+			const path = join(dist, file);
+			let html = await Bun.file(path).text();
+			if (emptyScript) html = html.replace(emptyScript, "");
+			html = html.replace(placeholder, (raw, key: string) => {
+				const value = tokens[key];
+				if (value === undefined) {
+					throw new Error(`unknown placeholder ${raw} in ${file}`);
+				}
+				return value;
+			});
+			html = applyAnalytics(html, file, options.analytics);
+			await Bun.write(path, html);
+		}),
+	);
 
 	await cp(pub, dist, { recursive: true });
 }

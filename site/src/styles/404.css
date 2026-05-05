@@ -3,16 +3,18 @@ main {
 }
 .term {
 	margin: 2rem 0 0;
-	white-space: pre;
 }
 .term .red {
-	color: #ec6b48;
+	color: var(--term-red);
 }
 .meta {
 	margin: 1.5rem 0 0;
-	color: var(--dim);
 	font-size: 0.9375rem;
+	color: var(--dim);
 }
 .meta a {
 	color: var(--ink);
+}
+.meta a:hover {
+	color: var(--bg);
 }
