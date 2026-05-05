@@ -30,6 +30,7 @@ self-contained file.
 site/
 ├── public/
 │   ├── index.html        # the whole site
+│   ├── 404.html          # branded not-found page
 │   ├── _headers          # cache + security headers (CF native)
 │   └── robots.txt
 └── wrangler.jsonc        # Static Assets binding, custom domain

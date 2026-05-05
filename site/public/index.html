@@ -38,6 +38,9 @@
 		*, *::before, *::after {
 			box-sizing: border-box;
 		}
+		html, body {
+			overflow-x: hidden;
+		}
 		body {
 			margin: 0;
 			background: var(--bg);
@@ -45,6 +48,17 @@
 			font-family: var(--mono);
 			font-size: 16px;
 			line-height: 1.55;
+		}
+		.visually-hidden {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip: rect(0, 0, 0, 0);
+			white-space: nowrap;
+			border: 0;
 		}
 		::selection {
 			background: var(--ink);
@@ -122,6 +136,8 @@
 			cursor: pointer;
 			position: relative;
 			transition: background 80ms linear, color 80ms linear;
+			min-width: 0;
+			max-width: 100%;
 		}
 		.copy:hover {
 			background: var(--ink);
@@ -344,7 +360,12 @@
 			.copy .cmd {
 				white-space: normal;
 				overflow-wrap: anywhere;
+				word-break: break-word;
+				overflow-x: visible;
 				font-size: 0.85rem;
+			}
+			.copy .label {
+				white-space: normal;
 			}
 			.term {
 				font-size: 0.78rem;
@@ -358,6 +379,7 @@
 	</head>
 	<body>
 		<main>
+			<p id="copy-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
 			<header>
 				<h1 class="wordmark">runner</h1>
 				<p class="tagline">
@@ -536,11 +558,18 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 
 		<script>
 		"use strict";
+		const status = document.getElementById("copy-status");
 		for (const btn of document.querySelectorAll(".copy")) {
 			btn.addEventListener("click", async () => {
+				const cmd = btn.dataset.cmd;
+				if (!cmd) return;
+				let ok = false;
 				try {
-					await navigator.clipboard.writeText(btn.dataset.cmd);
+					await navigator.clipboard.writeText(cmd);
+					ok = true;
 				} catch {}
+				if (status) status.textContent = ok ? "Copied to clipboard" : "Copy failed";
+				if (!ok) return;
 				btn.classList.add("copied");
 				setTimeout(() => btn.classList.remove("copied"), 1400);
 			});
