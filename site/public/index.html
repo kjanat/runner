@@ -9,7 +9,7 @@
 		<meta property="og:title" content="runner — universal project task runner">
 		<meta property="og:description" content="One CLI for every toolchain. npm install -g runner-run">
 		<link rel="canonical" href="https://runner.kjanat.com/">
-		<link rel="icon" href="data:,">
+		<link rel="icon" href="favicon.svg">
 
 		<style>
 		:root {
@@ -23,7 +23,7 @@
 			--term-fg: #e5e5e5;
 			--term-dim: #888;
 			--term-bold: #fff;
-			--mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+			--mono: ui-monospace, Menlo, Consolas, monospace;
 		}
 		@media (prefers-color-scheme: dark) {
 			:root {
@@ -341,13 +341,11 @@
 			<header>
 				<h1 class="wordmark">runner</h1>
 				<p class="tagline">
-					Universal project task runner. Auto-detects toolchain, provides
-					unified CLI.
+					Universal project task runner. Auto-detects toolchain, provides unified CLI.
 				</p>
 				<p class="meta">
 					v0.6.0 ·
-					<a href="https://github.com/kjanat/runner"
-					>github.com/kjanat/runner</a> · MIT
+					<a href="https://github.com/kjanat/runner">github.com/kjanat/runner</a> · MIT
 				</p>
 			</header>
 
@@ -356,41 +354,25 @@
 			<section aria-labelledby="install-tag">
 				<span class="section-tag" id="install-tag">install</span>
 				<div class="install">
-					<button
-						class="copy pri"
-						type="button"
-						data-cmd="npm install -g runner-run"
-					>
+					<button class="copy pri" type="button" data-cmd="npm install -g runner-run">
 						<span class="label">npm · primary</span>
 						<span class="cmd">npm install -g runner-run</span>
 						<span class="toast">copied</span>
 					</button>
-					<button
-						class="copy"
-						type="button"
-						data-cmd="cargo install --git=https://github.com/kjanat/runner/ runner"
-					>
+					<button class="copy" type="button" data-cmd="cargo install --git=https://github.com/kjanat/runner/ runner">
 						<span class="label">cargo · from source</span>
-						<span class="cmd"
-						>cargo install --git=https://github.com/kjanat/runner/ runner</span>
+						<span class="cmd">cargo install --git=https://github.com/kjanat/runner/ runner</span>
 						<span class="toast">copied</span>
 					</button>
-					<button
-						class="copy"
-						type="button"
-						data-cmd="curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh"
-					>
+					<button class="copy" type="button" data-cmd="curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh">
 						<span class="label">linux installer</span>
 						<span class="cmd">curl -fsSL …/install.sh | sh</span>
 						<span class="toast">copied</span>
 					</button>
 				</div>
 				<p class="meta">
-					The npm package is a façade — installs only the <a
-						href="https://github.com/kjanat/runner/tree/master/npm"
-					>prebuilt binary</a> for your platform via <code
-					>optionalDependencies</code>. No postinstall, no network at install
-					time.
+					The npm package is a façade — installs only the <a href="https://github.com/kjanat/runner/tree/master/npm">prebuilt binary</a> for your platform via
+					<code>optionalDependencies</code>. No postinstall, no network at install time.
 				</p>
 			</section>
 
@@ -420,7 +402,8 @@
 			<section aria-labelledby="completion-tag">
 				<span class="section-tag" id="completion-tag">tab-fucking completion</span>
 				<p class="tagline">
-					Drop one line in your shell rc. Now <code>&lt;TAB&gt;</code> hits the binary and asks <em>this</em> project what tasks it knows about — grouped by source, with descriptions. Same line registers both <code>runner</code> and <code>run</code>.
+					Drop one line in your shell rc. Now <code>&lt;TAB&gt;</code> hits the binary and asks <em>this</em> project what tasks it knows about — grouped by
+					source, with descriptions. Same line registers both <code>runner</code> and <code>run</code>.
 				</p>
 				<div class="install">
 					<button class="copy pri" type="button" data-cmd='eval "$(runner completions)"'>
@@ -452,7 +435,8 @@ list       <span class="dim">list tasks</span>
 info       <span class="dim">show detected project</span>
 clean      <span class="dim">clean build artefacts</span><span class="cursor"> </span></pre>
 				<p class="meta">
-					Path-typed flags like <code>--dir &lt;TAB&gt;</code> delegate to the shell's own file completer — <code>~/</code>, globs, and <code>cdpath</code> all work.
+					Path-typed flags like <code>--dir &lt;TAB&gt;</code> delegate to the shell's own file completer — <code>~/</code>, globs, and <code>cdpath</code> all
+					work.
 				</p>
 			</section>
 
@@ -510,32 +494,29 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 				<span class="section-tag" id="why-tag">why it's not shit</span>
 				<ol class="why">
 					<li>
-						Auto-detection picks the right tool from your lockfiles. No flags,
-						no config.
+						Auto-detection picks the right tool from your lockfiles. No flags, no config.
 					</li>
 					<li>
-						One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry,
-						pipenv, go, bundler, composer.
+						One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer.
 					</li>
 					<li>
-						Aggregates tasks from package.json, turbo.json, Makefile, justfile,
-						Taskfile, deno.json — qualified syntax (<code>run
-							package.json:test</code>) when names collide.
+						Aggregates tasks from package.json, turbo.json, Makefile, justfile, Taskfile, deno.json — qualified syntax (<code>run package.json:test</code>) when
+						names collide.
 					</li>
 					<li>
-						Monorepo-aware: turbo, nx, pnpm, npm/yarn workspaces, Cargo
-						workspaces.
+						Monorepo-aware: turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces.
 					</li>
 					<li>
-						No task by that name? Falls through to the package manager's exec
-						primitive — <code>npx</code>, <code>bunx</code>, <code>pnpm
-							exec</code>, <code>uv run</code>, etc.
+						No task by that name? Falls through to the package manager's exec primitive — <code>npx</code>, <code>bunx</code>, <code>pnpm exec</code>, <code>uv
+							run</code>, etc.
 					</li>
 				</ol>
 			</section>
 
 			<footer>
-				MIT · v0.6.0 · by <a href="mailto:info+runner@kajkowalski.nl">Kaj Kowalski</a> · <a href="https://github.com/kjanat/runner">source</a> · <a href="https://github.com/kjanat/runner/blob/master/CHANGELOG.md">changelog</a>
+				MIT · v0.6.0 · by <a href="mailto:info+runner@kajkowalski.nl">Kaj Kowalski</a> · <a href="https://github.com/kjanat/runner">source</a> · <a
+					href="https://github.com/kjanat/runner/blob/master/CHANGELOG.md"
+				>changelog</a>
 			</footer>
 		</main>
 
@@ -543,7 +524,9 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 		"use strict";
 		for (const btn of document.querySelectorAll(".copy")) {
 			btn.addEventListener("click", async () => {
-				try { await navigator.clipboard.writeText(btn.dataset.cmd); } catch { /**/ }
+				try {
+					await navigator.clipboard.writeText(btn.dataset.cmd);
+				} catch { /**/ }
 				btn.classList.add("copied");
 				setTimeout(() => btn.classList.remove("copied"), 1400);
 			});

@@ -6,7 +6,8 @@
 	"markup": {
 		"associations": ["!**/*.svg"],
 		"ignoreCommentDirective": "dprint-ignore",
-		"ignoreFileCommentDirective": "dprint-ignore-file"
+		"ignoreFileCommentDirective": "dprint-ignore-file",
+		"printWidth": 160
 	},
 	"yaml": { "printWidth": 160 },
 	"exec": {
