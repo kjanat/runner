@@ -1,0 +1,16 @@
+{
+	"name": "runner-site",
+	"version": "0.0.0",
+	"private": true,
+	"description": "runner.kjanat.com — static site for the runner CLI",
+	"homepage": "https://runner.kjanat.com",
+	"scripts": {
+		"biome": "bunx -p @biomejs/biome -b biome",
+		"check": "bun biome check",
+		"deploy": "bun wrangler deploy",
+		"dev": "bun wrangler dev",
+		"lint": "bun biome lint",
+		"tail": "bun wrangler tail",
+		"wrangler": "bunx wrangler"
+	}
+}
