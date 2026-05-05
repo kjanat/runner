@@ -23,7 +23,18 @@ const tokens: Record<string, string> = {
 	authorEmail: author.email,
 };
 
-export async function build(): Promise<void> {
+const analyticsSnippet = [
+	"\t\t<!-- Cloudflare Web Analytics -->",
+	// biome-ignore lint/security/noSecrets: Cloudflare Web Analytics token is public page config.
+	"\t\t<script defer src=\"https://static.cloudflareinsights.com/beacon.min.js\" data-cf-beacon='{\"token\": \"092edc6dde124fe4816fd2d95c16db39\"}'></script>",
+	"\t\t<!-- End Cloudflare Web Analytics -->",
+].join("\n");
+
+interface BuildOptions {
+	analytics?: boolean;
+}
+
+export async function build(options: BuildOptions = {}): Promise<void> {
 	await rm(dist, { recursive: true, force: true });
 
 	const result = await Bun.build({
@@ -66,15 +77,33 @@ export async function build(): Promise<void> {
 			}
 			return value;
 		});
+		html = applyAnalytics(html, file, options.analytics);
 		await Bun.write(path, html);
 	}
 
 	await cp(pub, dist, { recursive: true });
 }
 
+function applyAnalytics(
+	html: string,
+	file: string,
+	enabled: boolean | undefined,
+): string {
+	if (enabled !== true) return html;
+	return injectAnalytics(html, file);
+}
+
+function injectAnalytics(html: string, file: string): string {
+	const closingBody = "</body>";
+	if (!html.includes(closingBody)) {
+		throw new Error(`missing ${closingBody} in ${file}`);
+	}
+	return html.replace(closingBody, `${analyticsSnippet}\n\t</body>`);
+}
+
 export const meta = { dist, src, pub, root, version: tokens.version };
 
 if (import.meta.main) {
-	await build();
+	await build({ analytics: true });
 	console.log(`built v${tokens.version} → ${dist}`);
 }
