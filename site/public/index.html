@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>runner — universal project task runner</title>
+<meta name="description" content="One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, go, and more. Auto-detects toolchain. Aggregates tasks from package.json, turbo, Makefile, justfile, Taskfile, deno.json.">
+<meta name="theme-color" content="#f4ede1">
+<meta property="og:title" content="runner — universal project task runner">
+<meta property="og:description" content="One CLI for every toolchain. Install: npm install -g runner-run">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://runner.kjanat.com/">
+<link rel="canonical" href="https://runner.kjanat.com/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23f4ede1'/%3E%3Ctext x='50%25' y='58%25' font-family='ui-monospace,Menlo,monospace' font-size='20' font-weight='700' text-anchor='middle' fill='%230e0e0e'%3Er%3C/text%3E%3C/svg%3E">
+
+<!-- yes the whole site is one file. fight me. -->
+
+<style>
+  /* ─────────────────────────────────────────────
+     palette: cream paper, near-black ink,
+     lichen moss for links, tomato for one button.
+     ───────────────────────────────────────────── */
+  :root {
+    --bg:     #f4ede1;
+    --ink:    #0e0e0e;
+    --dim:    #5a5a52;
+    --moss:   #3d5a36;
+    --tomato: #d94e2c;
+    --rule:   #1a1a1a14;
+
+    --term-bg:    #0a0a0a;
+    --term-fg:    #e5e5e5;
+    --term-dim:   #888888;
+    --term-bold:  #ffffff;
+    --term-green: #7ec27e;
+    --term-link:  #b9d4b3;
+
+    --mono: ui-monospace, "JetBrains Mono", "IBM Plex Mono",
+            SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 16px;
+    line-height: 1.55;
+    font-feature-settings: "ss01", "calt", "liga";
+    text-rendering: geometricPrecision;
+  }
+
+  ::selection { background: var(--ink); color: var(--bg); }
+
+  /* the column. scrappy rule: do not exceed 72ch. */
+  main {
+    max-width: 72ch;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+  }
+
+  a {
+    color: var(--moss);
+    text-decoration: underline;
+    text-decoration-thickness: from-font;
+    text-underline-offset: 0.18em;
+  }
+  a:hover { background: var(--moss); color: var(--bg); }
+
+  h1, h2, h3 { font-weight: 700; margin: 0; }
+
+  /* ─── header ─────────────────────────────────── */
+  .wordmark {
+    font-size: clamp(3.25rem, 11vw, 6.5rem);
+    line-height: 0.95;
+    letter-spacing: -0.045em;
+    margin: 0;
+  }
+  .wordmark::after {
+    content: "_";
+    color: var(--tomato);
+    animation: blink 1.05s steps(1) infinite;
+  }
+  .tagline {
+    margin: 1.25rem 0 0;
+    font-size: 1.0625rem;
+    max-width: 52ch;
+  }
+  .meta {
+    margin: 0.75rem 0 0;
+    color: var(--dim);
+    font-size: 0.875rem;
+  }
+  .meta a { color: var(--dim); }
+
+  hr.rule {
+    border: 0;
+    border-top: 1px solid var(--ink);
+    opacity: 0.18;
+    margin: 3rem 0 2rem;
+  }
+  .section-tag {
+    display: block;
+    color: var(--dim);
+    font-size: 0.75rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin: 0 0 0.75rem;
+  }
+
+  /* ─── install row ────────────────────────────── */
+  .install {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.625rem;
+    margin: 0.75rem 0 0;
+  }
+  @media (min-width: 44rem) {
+    .install { grid-template-columns: repeat(2, 1fr); }
+    .install .pri { grid-column: 1 / -1; }
+  }
+
+  .copy {
+    appearance: none;
+    -webkit-appearance: none;
+    font: inherit;
+    text-align: left;
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--ink);
+    border-radius: 2px;
+    padding: 0.85rem 1rem;
+    cursor: pointer;
+    position: relative;
+    transition: background 80ms linear, color 80ms linear;
+  }
+  .copy:hover { background: var(--ink); color: var(--bg); }
+  .copy:focus-visible { outline: 2px solid var(--tomato); outline-offset: 3px; }
+  .copy.pri { border-color: var(--tomato); }
+  .copy.pri:hover { background: var(--tomato); color: var(--bg); border-color: var(--tomato); }
+
+  .copy .label {
+    display: block;
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 0.25rem;
+  }
+  .copy:hover .label { color: inherit; opacity: 0.7; }
+  .copy .cmd {
+    display: block;
+    font-size: 0.95rem;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .copy .cmd::before { content: "$ "; opacity: 0.5; }
+
+  .copy .toast {
+    position: absolute;
+    top: 0.4rem;
+    right: 0.55rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--moss);
+    opacity: 0;
+    transform: translateY(-2px);
+    transition: opacity 120ms linear, transform 120ms linear;
+    pointer-events: none;
+  }
+  .copy.copied .toast { opacity: 1; transform: translateY(0); }
+  .copy:hover .toast { color: var(--bg); }
+
+  /* ─── fake terminal ─────────────────────────── */
+  .term {
+    background: var(--term-bg);
+    color: var(--term-fg);
+    border-radius: 4px;
+    padding: 1.1rem 1.25rem 1.4rem;
+    overflow-x: auto;
+    font-size: 0.875rem;
+    line-height: 1.55;
+    margin: 0;
+    box-shadow: 0 1px 0 var(--rule), 0 8px 24px -16px rgba(0,0,0,0.35);
+  }
+  .term pre { margin: 0; font: inherit; white-space: pre; }
+  .term .prompt { color: var(--term-dim); }
+  .term .prompt::before { content: "$ "; color: var(--term-dim); }
+  .term .dim   { color: var(--term-dim); }
+  .term .bold  { color: var(--term-bold); font-weight: 700; }
+  .term .green { color: var(--term-green); }
+  .term .link  { color: var(--term-link); text-decoration: underline; text-underline-offset: 0.2em; }
+  .term .link:hover { color: var(--term-bold); }
+  .term .arrow { color: var(--term-dim); }
+  .term .cursor { display: inline-block; width: 0.6em; background: var(--term-fg); animation: blink 1.05s steps(1) infinite; color: transparent; }
+
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .wordmark::after, .term .cursor { animation: none; }
+  }
+
+  /* ─── grid of supported things ──────────────── */
+  .matrix {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1.75rem;
+    margin: 0.5rem 0 0;
+  }
+  @media (min-width: 44rem) {
+    .matrix { grid-template-columns: 1.4fr 1fr 1.4fr; gap: 2rem; }
+  }
+  .matrix h3 {
+    font-size: 0.75rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--dim);
+    margin-bottom: 0.5rem;
+  }
+  .matrix ul {
+    margin: 0; padding: 0; list-style: none;
+    columns: 2;
+    column-gap: 1.25rem;
+  }
+  .matrix .single ul { columns: 1; }
+  .matrix li { break-inside: avoid; padding: 0.05rem 0; }
+
+  /* ─── why bullets ───────────────────────────── */
+  .why {
+    margin: 0.5rem 0 0;
+    padding: 0;
+    list-style: none;
+    counter-reset: why;
+  }
+  .why li {
+    counter-increment: why;
+    padding: 0.5rem 0 0.5rem 3.25rem;
+    position: relative;
+    border-top: 1px dashed var(--rule);
+  }
+  .why li:first-child { border-top: 0; padding-top: 0.25rem; }
+  .why li:last-child { padding-bottom: 0.25rem; }
+  .why li::before {
+    content: counter(why, decimal-leading-zero);
+    position: absolute;
+    left: 0;
+    top: 0.55rem;
+    font-size: 0.78rem;
+    color: var(--dim);
+    letter-spacing: 0.06em;
+  }
+  .why li:first-child::before { top: 0.3rem; }
+
+  /* ─── footer ────────────────────────────────── */
+  footer {
+    margin-top: 4rem;
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--ink);
+    color: var(--dim);
+    font-size: 0.85rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+  }
+  footer a { color: var(--dim); }
+  footer .sep { opacity: 0.5; }
+
+  .meta-tight { margin-top: 0.75rem; }
+  .meta-loose { margin-top: 1rem; }
+
+  /* ─── view-source easter ────────────────────── */
+  /* if you're reading this: hi. it's all one file. */
+</style>
+</head>
+<body>
+<main>
+
+  <header>
+    <h1 class="wordmark">runner</h1>
+    <p class="tagline">Universal project task runner. Auto-detects toolchain, provides unified CLI.</p>
+    <p class="meta">
+      v0.6.0 ·
+      <a href="https://github.com/kjanat/runner">github.com/kjanat/runner</a> ·
+      MIT
+    </p>
+  </header>
+
+  <hr class="rule">
+
+  <!-- install ──────────────────────────────────── -->
+  <section aria-labelledby="install-tag">
+    <span class="section-tag" id="install-tag">install</span>
+    <div class="install">
+      <button class="copy pri" type="button" data-cmd="npm install -g runner-run">
+        <span class="label">npm · primary</span>
+        <span class="cmd">npm install -g runner-run</span>
+        <span class="toast">copied</span>
+      </button>
+      <button class="copy" type="button" data-cmd="cargo install runner">
+        <span class="label">cargo</span>
+        <span class="cmd">cargo install runner</span>
+        <span class="toast">copied</span>
+      </button>
+      <button class="copy" type="button" data-cmd="curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh">
+        <span class="label">linux installer</span>
+        <span class="cmd">curl -fsSL …/install.sh | sh</span>
+        <span class="toast">copied</span>
+      </button>
+    </div>
+    <p class="meta meta-tight">
+      The npm package is a façade — installs only the <a href="https://github.com/kjanat/runner/tree/master/npm">prebuilt binary</a> for your platform via <code>optionalDependencies</code>. No postinstall, no network at install time.
+    </p>
+  </section>
+
+  <hr class="rule">
+
+  <!-- demo ──────────────────────────────────────── -->
+  <section aria-labelledby="demo-tag">
+    <span class="section-tag" id="demo-tag">what it looks like</span>
+    <pre class="term"><span class="prompt"></span><span>runner</span>
+<span class="bold link">runner</span> <span class="link">0.6.0</span>
+  <span class="dim">Package Managers</span>    bun, pnpm
+  <span class="dim">Task Runners</span>        turbo, just
+  <span class="dim">Node</span>                22 (.nvmrc), current v22.11.0 <span class="green">(ok)</span>
+  <span class="dim">Monorepo</span>            <span class="green">yes</span>
+
+  <span class="bold link">package.json</span>    build               <span class="dim">compile the thing</span>
+  <span class="bold link">package.json</span>    test                <span class="dim">run tests</span>
+  <span class="bold link">package.json</span>    dev                 <span class="dim">start dev server</span>
+  <span class="bold link">justfile</span>        ci, fmt, release
+  <span class="bold">justfile (aliases)</span> b <span class="arrow">→</span> <span class="dim">build</span>, t <span class="arrow">→</span> <span class="dim">test</span>
+
+<span class="prompt"></span><span>run test</span>
+<span class="dim">› bun test</span><span class="cursor"> </span></pre>
+  </section>
+
+  <hr class="rule">
+
+  <!-- matrix ────────────────────────────────────── -->
+  <section aria-labelledby="matrix-tag">
+    <span class="section-tag" id="matrix-tag">it speaks</span>
+    <div class="matrix">
+      <div>
+        <h3>Package managers · 12</h3>
+        <ul>
+          <li>npm</li><li>yarn</li><li>pnpm</li><li>bun</li>
+          <li>cargo</li><li>deno</li><li>uv</li><li>poetry</li>
+          <li>pipenv</li><li>go</li><li>bundler</li><li>composer</li>
+        </ul>
+      </div>
+      <div class="single">
+        <h3>Task runners · 6</h3>
+        <ul>
+          <li>turbo</li><li>nx</li><li>make</li>
+          <li>just</li><li>go-task</li><li>mise</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Task sources · 6</h3>
+        <ul>
+          <li>package.json</li><li>turbo.json</li>
+          <li>Makefile</li><li>justfile</li>
+          <li>Taskfile</li><li>deno.json</li>
+        </ul>
+      </div>
+    </div>
+    <p class="meta meta-loose">nx and mise are detection-only for now — task execution backends not wired up.</p>
+  </section>
+
+  <hr class="rule">
+
+  <!-- why ──────────────────────────────────────── -->
+  <section aria-labelledby="why-tag">
+    <span class="section-tag" id="why-tag">why it's not shit</span>
+    <ol class="why">
+      <li>Auto-detection picks the right tool from your lockfiles. No flags, no config.</li>
+      <li>One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer.</li>
+      <li>Aggregates tasks from package.json, turbo.json, Makefile, justfile, Taskfile, deno.json — qualified syntax (<code>run package.json:test</code>) when names collide.</li>
+      <li>Monorepo-aware: turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces.</li>
+      <li>No task by that name? Falls through to the package manager's exec primitive — <code>npx</code>, <code>bunx</code>, <code>pnpm exec</code>, <code>uv run</code>, etc.</li>
+    </ol>
+  </section>
+
+  <footer>
+    <span>MIT</span>
+    <span class="sep">·</span>
+    <span>v0.6.0</span>
+    <span class="sep">·</span>
+    <span>by <a href="mailto:info+runner@kajkowalski.nl">Kaj Kowalski</a></span>
+    <span class="sep">·</span>
+    <a href="https://github.com/kjanat/runner">source</a>
+    <span class="sep">·</span>
+    <a href="https://github.com/kjanat/runner/blob/master/CHANGELOG.md">changelog</a>
+  </footer>
+
+</main>
+
+<script>
+  // click-to-copy. that's the whole script.
+  for (const btn of document.querySelectorAll(".copy")) {
+    btn.addEventListener("click", async () => {
+      const cmd = btn.dataset.cmd;
+      try {
+        await navigator.clipboard.writeText(cmd);
+      } catch {
+        // selection fallback for ancient browsers / non-secure contexts
+        const r = document.createRange();
+        const tmp = document.createElement("textarea");
+        tmp.value = cmd; tmp.setAttribute("readonly", "");
+        tmp.style.position = "fixed"; tmp.style.opacity = "0";
+        document.body.appendChild(tmp);
+        tmp.select();
+        try { document.execCommand("copy"); } catch {}
+        tmp.remove();
+      }
+      btn.classList.add("copied");
+      setTimeout(() => btn.classList.remove("copied"), 1400);
+    });
+  }
+</script>
+</body>
+</html>
