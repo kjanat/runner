@@ -107,9 +107,9 @@
 				},
 				"build": {
 					"type": "string",
-					"description": "- \"cargo\" for native compilation on a matching runner; \n- \"cross\" for cross-compilation via the \"cross\" crate (typically Linux → { Linux, *BSD }).",
-					"markdownDescription": "# Build tool  \n- `cargo` for native compilation on a matching runner;  \n- `cross` for cross-compilation via the `cross` crate (typically Linux → { Linux, *BSD }).",
-					"enum": ["cargo", "cross"]
+					"description": "- \"cargo\" for native compilation on a matching runner; \n- \"cross\" for cross-compilation via the \"cross\" crate (typically Linux → { Linux, *BSD }); \n- \"cargo-cross-toolchain\" for stable cross-compilation via taiki-e/setup-cross-toolchain-action (Linux → tier-2 BSD/illumos with prebuilt std); \n- \"cargo-build-std\" for tier-3 cross-compilation via setup-cross-toolchain-action + nightly + -Z build-std (Linux → tier-3 BSD without prebuilt std); \n- \"vm\" for builds that run inside a target-OS VM (e.g. OpenBSD on a vmactions/openbsd-vm sidecar) and bypass the standard upload-assets matrix.",
+					"markdownDescription": "# Build tool  \n- `cargo` — native compilation on a matching runner.  \n- `cross` — cross-compilation via the `cross` crate (Linux → { Linux, *BSD } where cross has a maintained image).  \n- `cargo-cross-toolchain` — cross-compilation via [`taiki-e/setup-cross-toolchain-action`](https://github.com/taiki-e/setup-cross-toolchain-action) on a Linux runner; uses host `cargo` with a real cross C toolchain. For tier-2 BSD/illumos targets where `std` is prebuilt.  \n- `cargo-build-std` — tier-3 cross-compilation: `setup-cross-toolchain-action` + nightly Rust + `-Z build-std`. The release workflow handles the manual build/package/upload because `taiki-e/upload-rust-binary-action` cannot inject `-Z build-std`.  \n- `vm` — built inside a target-OS VM (e.g. OpenBSD via [`vmactions/openbsd-vm`](https://github.com/vmactions/openbsd-vm)). Bypasses the matrix-driven upload-assets job; handled by a dedicated workflow job.",
+					"enum": ["cargo", "cross", "cargo-cross-toolchain", "cargo-build-std", "vm"]
 				},
 				"tier": {
 					"type": "integer",

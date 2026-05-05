@@ -77,12 +77,14 @@ jobs:
           persist-credentials: false
 
       - id: gen
-        # Single source of truth: npm/targets.json. Each entry is mapped to the
-        # fields upload-assets consumes (target / runner / build-tool /
-        # experimental). Missing experimental coerces to false so the
-        # `continue-on-error` expression evaluates cleanly.
+        # Single source of truth: npm/targets.json. Each entry maps to the
+        # fields upload-assets consumes. `vm` targets (OpenBSD) are filtered
+        # out — they're built by the dedicated upload-openbsd job because the
+        # build runs inside a VM that taiki-e/upload-rust-binary-action can't
+        # reach. Missing `experimental` coerces to false so `continue-on-error`
+        # evaluates cleanly.
         run: |
-          include=$(jq -c '[.targets[] | {
+          include=$(jq -c '[.targets[] | select(.build != "vm") | {
             target: .rust,
             runner: .runner,
             "build-tool": .build,
@@ -101,16 +103,52 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.matrix.outputs.include) }}
     continue-on-error: ${{ matrix.experimental == true }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: build and upload binaries
+      # Rust toolchain has to land BEFORE setup-cross-toolchain-action: the
+      # latter calls rustup against whatever's active. Tier-2 paths use
+      # stable; tier-3 paths float on `nightly` because pinning to a snapshot
+      # rots — and these targets are `experimental: true`, so a transient
+      # nightly regression is absorbed by `continue-on-error` rather than
+      # blocking the release.
+      - name: install stable rust
+        if: matrix.build-tool == 'cargo-cross-toolchain'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: install nightly rust (tier-3 build-std)
+        if: matrix.build-tool == 'cargo-build-std'
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      # Tier-2 BSD targets where Rust ships prebuilt std but `cross` has no
+      # working docker image. setup-cross-toolchain-action installs the
+      # matching cross C toolchain (e.g. x86_64-unknown-netbsd-gcc) and
+      # exports CARGO_TARGET_*_LINKER so host `cargo` builds work. Tier-3
+      # `cargo-build-std` reuses the same C toolchain step but goes the
+      # nightly + -Z build-std route to construct std locally.
+      - name: setup cross toolchain
+        if: matrix.build-tool == 'cargo-cross-toolchain' || matrix.build-tool == 'cargo-build-std'
+        uses: taiki-e/setup-cross-toolchain-action@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: build and upload binaries (taiki-e)
+        if: matrix.build-tool == 'cargo' || matrix.build-tool == 'cross' || matrix.build-tool == 'cargo-cross-toolchain'
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           bin: runner,run
           target: ${{ matrix.target }}
-          build-tool: ${{ matrix.build-tool }}
+          # Map our extended enum onto values upload-rust-binary-action accepts.
+          # `cargo-cross-toolchain` builds with host cargo (the toolchain step
+          # above already configured it), so `cargo` is the right value here.
+          build-tool: ${{ matrix.build-tool == 'cargo-cross-toolchain' && 'cargo' || matrix.build-tool }}
           archive: runner-$tag-$target
           tar: all
           zip: none
@@ -118,13 +156,84 @@ jobs:
           include: README.md,LICENSE
           locked: true
 
-  build-npm-dist:
-    name: build npm dist
-    needs: upload-assets
+      # Tier-3 path: upload-rust-binary-action can't inject `-Z build-std`,
+      # so we build, archive, and upload manually. The CARGO_UNSTABLE_BUILD_STD
+      # env honors the same shape as `-Z build-std=...` on the cargo CLI.
+      - name: build (cargo + -Z build-std)
+        if: matrix.build-tool == 'cargo-build-std'
+        env:
+          CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+        run: |
+          cargo +nightly build \
+            --release --locked \
+            --bin runner --bin run \
+            --target "${{ matrix.target }}"
+
+      - name: package and upload (cargo-build-std)
+        if: matrix.build-tool == 'cargo-build-std'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+          BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
+
+  upload-openbsd:
+    name: build+upload x86_64-unknown-openbsd
+    needs: create-release
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
-      contents: read
+      contents: write
+    # Tier-3, treated like other `experimental: true` matrix entries — a
+    # transient VM hiccup shouldn't tank the whole release.
+    continue-on-error: true
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      OPENBSD_VERSION: "7.8"
+      TARGET: x86_64-unknown-openbsd
+    steps:
+      - uses: actions/checkout@v6
+
+      # Native build inside an OpenBSD VM. cross-compiling OpenBSD from
+      # Linux isn't viable: setup-cross-toolchain-action excludes OpenBSD
+      # and Rust ships no prebuilt std for it (tier 3). The VM gives us a
+      # real OpenBSD host whose `pkg_add rust` provides a working toolchain.
+      # Default `sync_files: true` is bidirectional, so the binaries we
+      # stage to ./openbsd-out inside the VM appear back on the host runner.
+      - name: build inside OpenBSD VM
+        uses: cross-platform-actions/action@v1.0.0
+        with:
+          operating_system: openbsd
+          version: ${{ env.OPENBSD_VERSION }}
+          shell: bash
+          run: |
+            set -euo pipefail
+            # OpenBSD pkg_add picks the package matching the host's OS
+            # version automatically. `rust` brings cargo, rustc, and a
+            # native std for x86_64-unknown-openbsd.
+            doas pkg_add -I rust
+            cargo build --release --locked --bin runner --bin run
+            # Stage outside `target/` so the file copy back to the host
+            # below has a stable, predictable path.
+            mkdir -p ./openbsd-out
+            cp target/release/runner target/release/run ./openbsd-out/
+
+      - name: package and upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BIN_DIR: ${{ github.workspace }}/openbsd-out
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
+
+  build-npm-dist:
+    name: build npm dist
+    needs: [upload-assets, upload-openbsd]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Need write so `gh release download` can see the still-draft release;
+    # drafts are invisible to read-only tokens, which surfaces as the
+    # misleading "release not found" error we hit on v0.6.0.
+    permissions:
+      contents: write
     env:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:

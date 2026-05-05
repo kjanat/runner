@@ -114,7 +114,7 @@
 			"os": ["freebsd"],
 			"cpu": ["arm64"],
 			"runner": "ubuntu-latest",
-			"build": "cross",
+			"build": "cargo-build-std",
 			"tier": 3,
 			"experimental": true
 		},
@@ -124,9 +124,8 @@
 			"os": ["netbsd"],
 			"cpu": ["x64"],
 			"runner": "ubuntu-latest",
-			"build": "cross",
-			"tier": 3,
-			"experimental": true
+			"build": "cargo-cross-toolchain",
+			"tier": 2
 		},
 		{
 			"pkg": "openbsd-x64",
@@ -134,7 +133,7 @@
 			"os": ["openbsd"],
 			"cpu": ["x64"],
 			"runner": "ubuntu-latest",
-			"build": "cross",
+			"build": "vm",
 			"tier": 3,
 			"experimental": true
 		}
