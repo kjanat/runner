@@ -1,0 +1,17 @@
+{
+	"$schema": "https://www.unpkg.com/wrangler/config-schema.json",
+	"name": "runner",
+	"compatibility_date": "2026-05-05",
+	"assets": {
+		"directory": "./dist",
+		"not_found_handling": "404-page",
+	},
+	"routes": [
+		{ "pattern": "runner.kjanat.com", "custom_domain": true },
+	],
+	"observability": {
+		"enabled": true,
+	},
+	"workers_dev": true,
+	"preview_urls": true,
+}

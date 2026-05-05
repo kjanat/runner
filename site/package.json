@@ -1,0 +1,31 @@
+{
+	"name": "runner-site",
+	"version": "0.0.0",
+	"private": true,
+	"description": "static site for the runner CLI",
+	"homepage": "https://runner.kjanat.com",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kjanat/runner.git",
+		"directory": "site"
+	},
+	"scripts": {
+		"bd": "bun run build",
+		"build": "bun build.ts",
+		"check": "biome check",
+		"deploy": "bun run build && wrangler deploy",
+		"dev": "bun run dev.ts",
+		"fmt": "bunx dprint fmt",
+		"lint": "biome lint",
+		"prestart": "bun run build",
+		"start": "wrangler preview",
+		"tail": "wrangler tail",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.14",
+		"@types/bun": "^1.3.13",
+		"typescript": "^6.0.3",
+		"wrangler": "^4.87.0"
+	}
+}

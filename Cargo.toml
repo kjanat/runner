@@ -81,7 +81,7 @@ level    = "deny"
 priority = -1
 
 [lints.clippy.cargo]
-level    = "warn"
+level    = "deny"
 priority = -1
 
 [lints.clippy.complexity]

@@ -1,6 +1,9 @@
 target/
-npm/dist/
-npm/downloads/
+dist/
+downloads/
 package-lock.json
 node_modules/
 .playwright-mcp/
+.wrangler/
+.dev.vars
+.dev.vars.*

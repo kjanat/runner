@@ -1,0 +1,20 @@
+main {
+	max-width: 56ch;
+}
+.term {
+	margin: 2rem 0 0;
+}
+.term .red {
+	color: var(--term-red);
+}
+.meta {
+	margin: 1.5rem 0 0;
+	font-size: 0.9375rem;
+	color: var(--dim);
+}
+.meta a {
+	color: var(--ink);
+}
+.meta a:hover {
+	color: var(--bg);
+}
