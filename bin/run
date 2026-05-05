@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-BIN="run"
 SOURCE_PATH="$0"
 while [ -L "${SOURCE_PATH}" ]; do
 	# shellcheck disable=SC1007
@@ -17,4 +16,8 @@ MANIFEST="${SCRIPT_DIR}/../Cargo.toml"
 	printf 'error: %s not found\n' "${MANIFEST}" >&2
 	exit 1
 }
-exec cargo run --quiet --bin "${BIN}" --manifest-path="${MANIFEST}" -- "$@"
+
+exec env CARGO_TERM_QUIET=true \
+	cargo run --release --bin run \
+	--manifest-path="${MANIFEST}" \
+	-- "$@"
