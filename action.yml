@@ -8,17 +8,15 @@ branding:
 inputs:
   version:
     description: >-
-      Release tag to install (e.g. `v0.6.0`) or `latest`. Defaults to
-      the action's own ref, so `uses: kjanat/runner@v0.6.0` installs
-      v0.6.0 automatically. Use `latest` to always pull the newest
-      release.
+      Release tag (e.g. `v0.6.0`) or `latest`. Defaults to the action's
+      own ref, so `uses: kjanat/runner@v0.6.0` installs v0.6.0 with
+      zero API calls. Use `latest` to resolve newest at runtime.
     required: false
     default: ""
   target:
     description: >-
       Rust target triple override (e.g. `x86_64-unknown-linux-musl`).
-      Empty = auto-detect from runner OS/arch (defaults Linux to gnu;
-      use this input to pick musl).
+      Empty = auto-detect.
     required: false
     default: ""
   cache:
@@ -26,21 +24,19 @@ inputs:
     required: false
     default: "true"
   github-token:
-    description: >-
-      Token used for `gh release download`. Defaults to the workflow
-      token. Override only if you hit cross-repo rate limits.
+    description: Token for the `latest` API lookup (only needed when version=latest).
     required: false
     default: ${{ github.token }}
 
 outputs:
   version:
-    description: Resolved release tag (e.g. `v0.6.0`).
+    description: Resolved release tag.
     value: ${{ steps.resolve.outputs.tag }}
   target:
     description: Rust target triple used.
     value: ${{ steps.resolve.outputs.triple }}
   bin-dir:
-    description: Directory containing the installed `runner` and `run` binaries (also added to PATH).
+    description: Directory containing the installed binaries (also added to PATH).
     value: ${{ steps.resolve.outputs.dest }}
 
 runs:
@@ -55,13 +51,15 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
-
-        tag="${INPUT_VERSION}"
-        if [[ -z "${tag}" ]]; then
-          tag="${ACTION_REF}"
-        fi
+        tag="${INPUT_VERSION:-${ACTION_REF}}"
+        # API call only if we don't already have a vX.Y.Z tag in hand.
         if [[ -z "${tag}" || "${tag}" == "latest" || ! "${tag}" =~ ^v[0-9] ]]; then
-          tag=$(gh release view --repo kjanat/runner --json tagName -q .tagName)
+          tag=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
+                  --connect-timeout 3 --max-time 8 \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer ${GH_TOKEN}" \
+                  https://api.github.com/repos/kjanat/runner/releases/latest \
+                | grep -m1 '"tag_name":' | cut -d'"' -f4)
         fi
 
         triple="${INPUT_TARGET}"
@@ -98,7 +96,7 @@ runs:
 
     - id: cache
       if: inputs.cache == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ steps.resolve.outputs.dest }}
         key: runner-${{ steps.resolve.outputs.tag }}-${{ steps.resolve.outputs.triple }}
@@ -109,30 +107,38 @@ runs:
         TAG: ${{ steps.resolve.outputs.tag }}
         TRIPLE: ${{ steps.resolve.outputs.triple }}
         DEST: ${{ steps.resolve.outputs.dest }}
-        GH_TOKEN: ${{ inputs.github-token }}
+        EXT: ${{ steps.resolve.outputs.ext }}
       run: |
         set -euo pipefail
         archive="runner-${TAG}-${TRIPLE}.tar.gz"
         sum="runner-${TAG}-${TRIPLE}.sha256"
+        base="https://github.com/kjanat/runner/releases/download/${TAG}"
 
         tmp=$(mktemp -d)
         trap 'rm -rf "${tmp}"' EXIT
         cd "${tmp}"
 
-        gh release download "${TAG}" --repo kjanat/runner -p "${archive}" -p "${sum}"
-        sha256sum -c "${sum}"
+        # Parallel fetch; both retry on transient failures. --max-time
+        # caps each download at 20s so a stuck connection can't hang
+        # the workflow.
+        fetch() {
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
+               --connect-timeout 5 --max-time 20 \
+               -o "$1" "${base}/$1"
+        }
+        fetch "${archive}" &
+        a=$!
+        fetch "${sum}" &
+        s=$!
+        wait "${a}" "${s}"
 
+        sha256sum -c "${sum}"
         mkdir -p "${DEST}"
         tar -xzf "${archive}" -C "${DEST}"
-        chmod +x "${DEST}/runner"* "${DEST}/run"* 2>/dev/null || true
+        chmod +x "${DEST}/runner${EXT}" "${DEST}/run${EXT}" 2>/dev/null || true
+        "${DEST}/runner${EXT}" --version
 
     - shell: bash
       env:
         DEST: ${{ steps.resolve.outputs.dest }}
-        EXT: ${{ steps.resolve.outputs.ext }}
-      run: |
-        set -euo pipefail
-        echo "${DEST}" >> "${GITHUB_PATH}"
-        # Smoke-test the installed binary so the action fails loudly here
-        # rather than at the consumer's first `runner` invocation.
-        "${DEST}/runner${EXT}" --version
+      run: echo "${DEST}" >> "${GITHUB_PATH}"
