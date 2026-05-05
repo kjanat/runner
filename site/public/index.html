@@ -25,10 +25,10 @@
 		<!-- yes the whole site is one file. fight me. -->
 
 		<style>
-		/* ─────────────────────────────────────────────
-		   palette: cream paper, near-black ink,
-		   lichen moss for links, tomato for one button.
-		   ───────────────────────────────────────────── */
+		/**
+		 *  palette: cream paper, near-black ink,
+		 *  lichen moss for links, tomato for one button.
+		 */
 		:root {
 			color-scheme: light dark;
 
@@ -116,7 +116,7 @@
 			margin: 0;
 		}
 
-		/* ─── header ─────────────────────────────────── */
+		/* header */
 		.wordmark {
 			font-size: clamp(3.25rem, 11vw, 6.5rem);
 			line-height: 0.95;
@@ -158,7 +158,7 @@
 			margin: 0 0 0.75rem;
 		}
 
-		/* ─── install row ────────────────────────────── */
+		/* install row */
 		/* stacked full-width — every command gets the whole column,
 		   so the longest ones aren't squeezed against the shortest. */
 		.install {
@@ -243,7 +243,7 @@
 			color: var(--bg);
 		}
 
-		/* ─── fake terminal ─────────────────────────── */
+		/* fake terminal */
 		.term {
 			background: var(--term-bg);
 			color: var(--term-fg);
@@ -327,7 +327,7 @@
 			}
 		}
 
-		/* ─── grid of supported things ──────────────── */
+		/* grid of supported things */
 		.matrix {
 			display: grid;
 			grid-template-columns: 1fr;
@@ -362,7 +362,7 @@
 			padding: 0.05rem 0;
 		}
 
-		/* ─── why bullets ───────────────────────────── */
+		/* why bullets */
 		.why {
 			margin: 0.5rem 0 0;
 			padding: 0;
@@ -395,7 +395,7 @@
 			top: 0.3rem;
 		}
 
-		/* ─── footer ────────────────────────────────── */
+		/* footer */
 		footer {
 			margin-top: 4rem;
 			padding-top: 1.25rem;
@@ -420,7 +420,7 @@
 			margin-top: 1rem;
 		}
 
-		/* ─── view-source easter ────────────────────── */
+		/* view-source easter  */
 		/* if you're reading this: hi. it's all one file. */
 		</style>
 	</head>
@@ -441,7 +441,7 @@
 
 			<hr class="rule">
 
-			<!-- install ──────────────────────────────────── -->
+			<!-- install -->
 			<section aria-labelledby="install-tag">
 				<span class="section-tag" id="install-tag">install</span>
 				<div class="install">
@@ -485,7 +485,7 @@
 
 			<hr class="rule">
 
-			<!-- demo ──────────────────────────────────────── -->
+			<!-- demo -->
 			<section aria-labelledby="demo-tag">
 				<span class="section-tag" id="demo-tag">what it looks like</span>
 				<pre class="term"><span class="prompt"></span><span>runner</span>
@@ -507,7 +507,7 @@
 
 			<hr class="rule">
 
-			<!-- matrix ────────────────────────────────────── -->
+			<!-- matrix -->
 			<section aria-labelledby="matrix-tag">
 				<span class="section-tag" id="matrix-tag">it speaks</span>
 				<div class="matrix">
@@ -556,7 +556,7 @@
 
 			<hr class="rule">
 
-			<!-- why ──────────────────────────────────────── -->
+			<!-- why -->
 			<section aria-labelledby="why-tag">
 				<span class="section-tag" id="why-tag">why it's not shit</span>
 				<ol class="why">
