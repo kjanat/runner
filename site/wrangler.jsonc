@@ -4,7 +4,7 @@
 	"compatibility_date": "2026-05-05",
 	"assets": {
 		"directory": "./public",
-		"not_found_handling": "single-page-application",
+		"not_found_handling": "404-page",
 	},
 	"routes": [
 		{ "pattern": "runner.kjanat.com", "custom_domain": true },
@@ -12,5 +12,5 @@
 	"observability": {
 		"enabled": true,
 	},
-	"workers_dev": false,
+	"workers_dev": true,
 }
