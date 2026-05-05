@@ -1,0 +1,138 @@
+name: Setup runner
+description: Install the runner / run CLI from GitHub Releases.
+author: Kaj Kowalski
+branding:
+  icon: play
+  color: blue
+
+inputs:
+  version:
+    description: >-
+      Release tag to install (e.g. `v0.6.0`) or `latest`. Defaults to
+      the action's own ref, so `uses: kjanat/runner@v0.6.0` installs
+      v0.6.0 automatically. Use `latest` to always pull the newest
+      release.
+    required: false
+    default: ""
+  target:
+    description: >-
+      Rust target triple override (e.g. `x86_64-unknown-linux-musl`).
+      Empty = auto-detect from runner OS/arch (defaults Linux to gnu;
+      use this input to pick musl).
+    required: false
+    default: ""
+  cache:
+    description: Cache the unpacked binary between runs.
+    required: false
+    default: "true"
+  github-token:
+    description: >-
+      Token used for `gh release download`. Defaults to the workflow
+      token. Override only if you hit cross-repo rate limits.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  version:
+    description: Resolved release tag (e.g. `v0.6.0`).
+    value: ${{ steps.resolve.outputs.tag }}
+  target:
+    description: Rust target triple used.
+    value: ${{ steps.resolve.outputs.triple }}
+  bin-dir:
+    description: Directory containing the installed `runner` and `run` binaries (also added to PATH).
+    value: ${{ steps.resolve.outputs.dest }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_TARGET: ${{ inputs.target }}
+        ACTION_REF: ${{ github.action_ref }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+
+        tag="${INPUT_VERSION}"
+        if [[ -z "${tag}" ]]; then
+          tag="${ACTION_REF}"
+        fi
+        if [[ -z "${tag}" || "${tag}" == "latest" || ! "${tag}" =~ ^v[0-9] ]]; then
+          tag=$(gh release view --repo kjanat/runner --json tagName -q .tagName)
+        fi
+
+        triple="${INPUT_TARGET}"
+        if [[ -z "${triple}" ]]; then
+          case "${RUNNER_OS}-${RUNNER_ARCH}" in
+            Linux-X64)     triple=x86_64-unknown-linux-gnu ;;
+            Linux-ARM64)   triple=aarch64-unknown-linux-gnu ;;
+            Linux-ARM)     triple=armv7-unknown-linux-gnueabihf ;;
+            macOS-X64)     triple=x86_64-apple-darwin ;;
+            macOS-ARM64)   triple=aarch64-apple-darwin ;;
+            Windows-X64)   triple=x86_64-pc-windows-msvc ;;
+            Windows-ARM64) triple=aarch64-pc-windows-msvc ;;
+            Windows-X86)   triple=i686-pc-windows-msvc ;;
+            *)
+              echo "::error::No prebuilt for ${RUNNER_OS}-${RUNNER_ARCH}; pass an explicit \`target\` input."
+              exit 1
+              ;;
+          esac
+        fi
+
+        if [[ "${RUNNER_OS}" == "Windows" ]]; then
+          ext=.exe
+        else
+          ext=""
+        fi
+        dest="${RUNNER_TOOL_CACHE}/runner/${tag}/${triple}"
+
+        {
+          echo "tag=${tag}"
+          echo "triple=${triple}"
+          echo "ext=${ext}"
+          echo "dest=${dest}"
+        } >> "${GITHUB_OUTPUT}"
+
+    - id: cache
+      if: inputs.cache == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.resolve.outputs.dest }}
+        key: runner-${{ steps.resolve.outputs.tag }}-${{ steps.resolve.outputs.triple }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        TAG: ${{ steps.resolve.outputs.tag }}
+        TRIPLE: ${{ steps.resolve.outputs.triple }}
+        DEST: ${{ steps.resolve.outputs.dest }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        archive="runner-${TAG}-${TRIPLE}.tar.gz"
+        sum="runner-${TAG}-${TRIPLE}.sha256"
+
+        tmp=$(mktemp -d)
+        trap 'rm -rf "${tmp}"' EXIT
+        cd "${tmp}"
+
+        gh release download "${TAG}" --repo kjanat/runner -p "${archive}" -p "${sum}"
+        sha256sum -c "${sum}"
+
+        mkdir -p "${DEST}"
+        tar -xzf "${archive}" -C "${DEST}"
+        chmod +x "${DEST}/runner"* "${DEST}/run"* 2>/dev/null || true
+
+    - shell: bash
+      env:
+        DEST: ${{ steps.resolve.outputs.dest }}
+        EXT: ${{ steps.resolve.outputs.ext }}
+      run: |
+        set -euo pipefail
+        echo "${DEST}" >> "${GITHUB_PATH}"
+        # Smoke-test the installed binary so the action fails loudly here
+        # rather than at the consumer's first `runner` invocation.
+        "${DEST}/runner${EXT}" --version
