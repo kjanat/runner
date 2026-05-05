@@ -1,9 +1,9 @@
 {
 	"$schema": "https://www.unpkg.com/wrangler/config-schema.json",
-	"name": "runner-site",
+	"name": "runner",
 	"compatibility_date": "2026-05-05",
 	"assets": {
-		"directory": "./public",
+		"directory": "./dist",
 		"not_found_handling": "404-page",
 	},
 	"routes": [
@@ -13,4 +13,5 @@
 		"enabled": true,
 	},
 	"workers_dev": true,
+	"preview_urls": true,
 }

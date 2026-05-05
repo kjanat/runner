@@ -1,0 +1,27 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "Preserve",
+		"moduleResolution": "bundler",
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"types": ["bun"],
+
+		"strict": true,
+		"noImplicitAny": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+
+		"allowImportingTsExtensions": true,
+		"resolveJsonModule": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true,
+		"skipLibCheck": true,
+
+		"noEmit": true,
+		"isolatedModules": true,
+		"verbatimModuleSyntax": true
+	},
+	"exclude": ["node_modules", "dist", ".wrangler"]
+}

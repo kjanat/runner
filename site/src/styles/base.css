@@ -1,0 +1,95 @@
+:root {
+	color-scheme: light dark;
+	--bg: #f4ede1;
+	--ink: #0e0e0e;
+	--dim: #5a5a52;
+	--moss: #3d5a36;
+	--tomato: #d94e2c;
+	--rule: #1a1a1a14;
+	--term-fg: #e5e5e5;
+	--term-dim: #888;
+	--term-bold: #fff;
+	--mono: ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #221d15;
+		--ink: #f4ecd9;
+		--dim: #c0b8a8;
+		--moss: #a3cf95;
+		--tomato: #f47a59;
+		--rule: #ffffff40;
+	}
+}
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--ink);
+	font-family: var(--mono);
+	font-size: 16px;
+	line-height: 1.55;
+}
+::selection {
+	background: var(--ink);
+	color: var(--bg);
+}
+a {
+	color: var(--moss);
+	text-underline-offset: 0.18em;
+}
+a:hover {
+	background: var(--moss);
+	color: var(--bg);
+}
+main {
+	margin: 0 auto;
+	padding: 4rem 1.5rem 6rem;
+}
+.wordmark {
+	font-size: clamp(3.25rem, 11vw, 6.5rem);
+	line-height: 0.95;
+	letter-spacing: -0.045em;
+	margin: 0;
+	font-weight: 700;
+}
+.wordmark::after {
+	content: "_";
+	color: var(--tomato);
+}
+.tagline {
+	margin: 1.25rem 0 0;
+	font-size: 1.0625rem;
+	max-width: 52ch;
+}
+.term {
+	background: #0a0a0a;
+	color: var(--term-fg);
+	border: 1px solid var(--rule);
+	border-radius: 4px;
+	padding: 1.1rem 1.25rem 1.4rem;
+	overflow-x: auto;
+	font-size: 0.875rem;
+	line-height: 1.55;
+	margin: 0;
+}
+.term .prompt::before {
+	content: "$ ";
+	color: var(--term-dim);
+}
+.term .dim {
+	color: var(--term-dim);
+}
+@media (max-width: 40rem) {
+	main {
+		padding: 2.5rem 1.1rem 4rem;
+	}
+	.term {
+		font-size: 0.78rem;
+		padding: 0.9rem 1rem 1.1rem;
+	}
+}
