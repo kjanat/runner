@@ -208,10 +208,14 @@ jobs:
           shell: bash
           run: |
             set -euo pipefail
-            # OpenBSD pkg_add picks the package matching the host's OS
-            # version automatically. `rust` brings cargo, rustc, and a
-            # native std for x86_64-unknown-openbsd.
-            doas pkg_add -I rust
+            # cross-platform-actions wires the runner user to passwordless
+            # sudo on every VM image (incl. OpenBSD via sudo-pkg) — its own
+            # bootstrap uses `sudo mkdir`. Native OpenBSD `doas` is NOT
+            # configured in these images, so use sudo.
+            #
+            # `pkg_add rust` brings cargo, rustc, and native std for
+            # x86_64-unknown-openbsd.
+            sudo pkg_add -I rust
             cargo build --release --locked --bin runner --bin run
             # Stage outside `target/` so the file copy back to the host
             # below has a stable, predictable path.
