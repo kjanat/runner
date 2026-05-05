@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- GitHub composite action: `uses: kjanat/runner@vX.Y.Z` installs the
+  `runner` and `run` binaries on PATH in CI. Pinned tag refs make zero
+  API calls (tag resolved from `github.action_ref`); `version: latest`
+  triggers a single `releases/latest` lookup. Parallel `curl` of
+  archive + sha256 with `--retry-all-errors --retry 5`, sha256
+  verification before extract, `actions/cache@v4` keyed on `tag +
+  triple` (cache hits ~250 ms, cold install 600–900 ms), and a
+  `runner --version` smoke test on every install so a bad cache or
+  missing asset surfaces here, not at the consumer's first task.
+- Landing page at <https://runner.kjanat.com>, deployed to Cloudflare
+  Workers Assets from `site/`. Single static page, dark mode via
+  `prefers-color-scheme`, click-to-copy install commands with polite
+  ARIA live-region announcements, tab-completion section, custom 404
+  styled as a fake `runner <path>` error line. Page weight squeezed
+  under TCP IW10 (~14.5 KB uncompressed, ~3.6 KB brotli) so the whole
+  first response lands in a single round-trip; `_headers` ships
+  strict CSP, HSTS, and edge cache.
+- Templated site build (`site/build.ts` + `site/dev.ts`): Bun bundles
+  `index.html` / `404.html` from `src/` into `dist/` and substitutes
+  `{{version}}`, `{{repo}}`, `{{authorName}}` from `Cargo.toml`, so
+  the site and the crate share one source of truth for metadata.
+  `dev.ts` serves `dist/`, watches `src/` / `public/` / `Cargo.toml`
+  with an 80 ms debounce, and injects a WebSocket live-reload snippet
+  into served HTML.
+- README links the landing page and npm package, and adds shields.io
+  badges for the `runner-run` npm version and the MIT licence.
+
+### Changed
+
+- `.github/scripts/publish/npm.sh` derives `REQUIRED_PLATFORMS` and
+  `OPTIONAL_PLATFORMS` from `npm/targets.json` at runtime via `jq`
+  instead of hardcoding two parallel lists; `npm-release.yml`
+  sparse-checkout adds `npm/targets.json` so the script can read it.
+  Optional == `experimental: true`, matching the workflow's existing
+  `continue-on-error` semantic. One source of truth for the platform
+  matrix.
+- Drop the unused `NODE_AUTH_TOKEN` env from the npm publish step;
+  auth flows through the OIDC token via `id-token: write` and
+  `npm publish --provenance`, not a long-lived `NPM_TOKEN`.
+
+### Fixed
+
+- `.github/scripts/build/package-release-asset.sh` writes checksum
+  files as `<basename>.sha256` (not `<basename>.tar.gz.sha256`),
+  matching `taiki-e/upload-rust-binary-action`'s convention and what
+  `verify-checksum.sh` enforces — the previous mismatch would have
+  broken the npm pipeline's checksum verification on release.
+- `npm/scripts/build-packages.ts`: `Target.build` union now covers
+  all five schema enum values (previously only `cargo` | `cross`,
+  missing the three variants added when the BSD build paths landed)
+  so type narrowing matches reality and a stray build-tool name
+  fails the build instead of silently shipping.
+- Remove the stale `openbsd-x64` entry from `npm.sh`'s
+  `OPTIONAL_PLATFORMS` and the matching matrix-gen comments in
+  `release.yml` / `release-dryrun.yml`; the openbsd build path was
+  scrapped earlier and the residue would have failed
+  `optionalDependencies` validation if the platform was ever
+  re-expected.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

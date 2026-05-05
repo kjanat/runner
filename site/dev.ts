@@ -6,8 +6,26 @@ import { build, meta } from "./build.ts";
 
 const port = Number(process.env.PORT ?? 3000);
 const reloadPath = "/__reload";
-const reloadSnippet =
-	`<script>(()=>{const u=(location.protocol==="https:"?"wss":"ws")+"://"+location.host+"${reloadPath}";let d=400;const c=()=>{const w=new WebSocket(u);w.onmessage=e=>{if(e.data==="reload")location.reload()};w.onclose=()=>{setTimeout(c,d=Math.min(d*1.5,5000))};w.onopen=()=>{d=400}};c()})()</script>`;
+const reloadSnippet = `\
+<script>
+	(() => {
+		const u = (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "${reloadPath}";
+		let d = 400;
+		const c = () => {
+			const w = new WebSocket(u);
+			w.onmessage = e => {
+				if (e.data === "reload") location.reload();
+			};
+			w.onclose = () => {
+				setTimeout(c, d = Math.min(d * 1.5, 5000));
+			};
+			w.onopen = () => {
+				d = 400;
+			};
+		};
+		c();
+	})();
+</script>`;
 
 await build();
 console.log(`built v${meta.version}`);

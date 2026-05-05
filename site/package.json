@@ -4,6 +4,11 @@
 	"private": true,
 	"description": "static site for the runner CLI",
 	"homepage": "https://runner.kjanat.com",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/kjanat/runner.git",
+		"directory": "site"
+	},
 	"scripts": {
 		"build": "bun build.ts",
 		"check": "biome check",
