@@ -4,62 +4,29 @@
 		<meta charset="utf-8">
 		<meta name="viewport" content="width=device-width,initial-scale=1">
 		<title>runner — universal project task runner</title>
-		<meta
-			name="description"
-			content="One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, go, and more. Auto-detects toolchain. Aggregates tasks from package.json, turbo, Makefile, justfile, Taskfile, deno.json."
-		>
+		<meta name="description" content="One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, and more. Auto-detects toolchain.">
 		<meta name="theme-color" content="#f4ede1">
 		<meta property="og:title" content="runner — universal project task runner">
-		<meta
-			property="og:description"
-			content="One CLI for every toolchain. Install: npm install -g runner-run"
-		>
-		<meta property="og:type" content="website">
-		<meta property="og:url" content="https://runner.kjanat.com/">
+		<meta property="og:description" content="One CLI for every toolchain. npm install -g runner-run">
 		<link rel="canonical" href="https://runner.kjanat.com/">
-		<link
-			rel="icon"
-			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23f4ede1'/%3E%3Ctext x='50%25' y='58%25' font-family='ui-monospace,Menlo,monospace' font-size='20' font-weight='700' text-anchor='middle' fill='%230e0e0e'%3Er%3C/text%3E%3C/svg%3E"
-		>
-
-		<!-- yes the whole site is one file. fight me. -->
+		<link rel="icon" href="data:,">
 
 		<style>
-		/**
-		 *  palette: cream paper, near-black ink,
-		 *  lichen moss for links, tomato for one button.
-		 */
 		:root {
 			color-scheme: light dark;
-
 			--bg: #f4ede1;
 			--ink: #0e0e0e;
 			--dim: #5a5a52;
 			--moss: #3d5a36;
 			--tomato: #d94e2c;
 			--rule: #1a1a1a14;
-
-			--term-bg: #0a0a0a;
 			--term-fg: #e5e5e5;
-			--term-dim: #888888;
-			--term-bold: #ffffff;
-			--term-green: #7ec27e;
-			--term-link: #b9d4b3;
-
-			--mono:
-				ui-monospace,
-				"JetBrains Mono",
-				"IBM Plex Mono",
-				SFMono-Regular,
-				Menlo,
-				Consolas,
-				"DejaVu Sans Mono",
-				monospace;
+			--term-dim: #888;
+			--term-bold: #fff;
+			--mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
 		}
-
 		@media (prefers-color-scheme: dark) {
 			:root {
-				/* warm graphite, not pure black — keeps the paper energy */
 				--bg: #181613;
 				--ink: #e8e1d2;
 				--dim: #9a958c;
@@ -68,15 +35,9 @@
 				--rule: #ffffff14;
 			}
 		}
-
 		*, *::before, *::after {
 			box-sizing: border-box;
 		}
-
-		html {
-			-webkit-text-size-adjust: 100%;
-		}
-
 		body {
 			margin: 0;
 			background: var(--bg);
@@ -84,39 +45,28 @@
 			font-family: var(--mono);
 			font-size: 16px;
 			line-height: 1.55;
-			font-feature-settings: "ss01", "calt", "liga";
-			text-rendering: geometricPrecision;
 		}
-
 		::selection {
 			background: var(--ink);
 			color: var(--bg);
 		}
-
-		/* the column. scrappy rule: do not exceed 72ch. */
 		main {
 			max-width: 72ch;
 			margin: 0 auto;
 			padding: 4rem 1.5rem 6rem;
 		}
-
 		a {
 			color: var(--moss);
-			text-decoration: underline;
-			text-decoration-thickness: from-font;
 			text-underline-offset: 0.18em;
 		}
 		a:hover {
 			background: var(--moss);
 			color: var(--bg);
 		}
-
 		h1, h2, h3 {
 			font-weight: 700;
 			margin: 0;
 		}
-
-		/* header */
 		.wordmark {
 			font-size: clamp(3.25rem, 11vw, 6.5rem);
 			line-height: 0.95;
@@ -126,7 +76,6 @@
 		.wordmark::after {
 			content: "_";
 			color: var(--tomato);
-			/* sit solid for ~10s, then a quick double-blink, then loop */
 			animation: idle-double-blink 11s steps(1) infinite;
 		}
 		.tagline {
@@ -142,7 +91,6 @@
 		.meta a {
 			color: var(--dim);
 		}
-
 		hr.rule {
 			border: 0;
 			border-top: 1px solid var(--ink);
@@ -157,20 +105,13 @@
 			text-transform: uppercase;
 			margin: 0 0 0.75rem;
 		}
-
-		/* install row */
-		/* stacked full-width — every command gets the whole column,
-		   so the longest ones aren't squeezed against the shortest. */
 		.install {
 			display: grid;
 			grid-template-columns: 1fr;
 			gap: 0.625rem;
 			margin: 0.75rem 0 0;
 		}
-
 		.copy {
-			appearance: none;
-			-webkit-appearance: none;
 			font: inherit;
 			text-align: left;
 			background: transparent;
@@ -198,7 +139,6 @@
 			color: var(--bg);
 			border-color: var(--tomato);
 		}
-
 		.copy .label {
 			display: block;
 			font-size: 0.7rem;
@@ -221,7 +161,6 @@
 			content: "$ ";
 			opacity: 0.5;
 		}
-
 		.copy .toast {
 			position: absolute;
 			top: 0.4rem;
@@ -242,10 +181,8 @@
 		.copy:hover .toast {
 			color: var(--bg);
 		}
-
-		/* fake terminal */
 		.term {
-			background: var(--term-bg);
+			background: #0a0a0a;
 			color: var(--term-fg);
 			border-radius: 4px;
 			padding: 1.1rem 1.25rem 1.4rem;
@@ -253,7 +190,6 @@
 			font-size: 0.875rem;
 			line-height: 1.55;
 			margin: 0;
-			box-shadow: 0 1px 0 var(--rule), 0 8px 24px -16px rgba(0, 0, 0, 0.35);
 		}
 		.term pre {
 			margin: 0;
@@ -275,10 +211,10 @@
 			font-weight: 700;
 		}
 		.term .green {
-			color: var(--term-green);
+			color: #7ec27e;
 		}
 		.term .link {
-			color: var(--term-link);
+			color: #b9d4b3;
 			text-decoration: underline;
 			text-underline-offset: 0.2em;
 			background: transparent;
@@ -294,11 +230,9 @@
 			display: inline-block;
 			width: 0.6em;
 			background: var(--term-fg);
-			/* blink 5 times on load, then settle solid like a real prompt */
 			animation: blink 1.05s steps(1) 5;
 			color: transparent;
 		}
-
 		@keyframes blink {
 			50% {
 				opacity: 0;
@@ -326,8 +260,6 @@
 				animation: none;
 			}
 		}
-
-		/* grid of supported things */
 		.matrix {
 			display: grid;
 			grid-template-columns: 1fr;
@@ -361,8 +293,6 @@
 			break-inside: avoid;
 			padding: 0.05rem 0;
 		}
-
-		/* why bullets */
 		.why {
 			margin: 0.5rem 0 0;
 			padding: 0;
@@ -394,34 +324,16 @@
 		.why li:first-child::before {
 			top: 0.3rem;
 		}
-
-		/* footer */
 		footer {
 			margin-top: 4rem;
 			padding-top: 1.25rem;
 			border-top: 1px solid var(--ink);
 			color: var(--dim);
 			font-size: 0.85rem;
-			display: flex;
-			flex-wrap: wrap;
-			gap: 0.4rem 0.9rem;
 		}
 		footer a {
 			color: var(--dim);
 		}
-		footer .sep {
-			opacity: 0.5;
-		}
-
-		.meta-tight {
-			margin-top: 0.75rem;
-		}
-		.meta-loose {
-			margin-top: 1rem;
-		}
-
-		/* view-source easter  */
-		/* if you're reading this: hi. it's all one file. */
 		</style>
 	</head>
 	<body>
@@ -441,7 +353,6 @@
 
 			<hr class="rule">
 
-			<!-- install -->
 			<section aria-labelledby="install-tag">
 				<span class="section-tag" id="install-tag">install</span>
 				<div class="install">
@@ -474,7 +385,7 @@
 						<span class="toast">copied</span>
 					</button>
 				</div>
-				<p class="meta meta-tight">
+				<p class="meta">
 					The npm package is a façade — installs only the <a
 						href="https://github.com/kjanat/runner/tree/master/npm"
 					>prebuilt binary</a> for your platform via <code
@@ -485,7 +396,6 @@
 
 			<hr class="rule">
 
-			<!-- demo -->
 			<section aria-labelledby="demo-tag">
 				<span class="section-tag" id="demo-tag">what it looks like</span>
 				<pre class="term"><span class="prompt"></span><span>runner</span>
@@ -507,7 +417,6 @@
 
 			<hr class="rule">
 
-			<!-- completion -->
 			<section aria-labelledby="completion-tag">
 				<span class="section-tag" id="completion-tag">tab-fucking completion</span>
 				<p class="tagline">
@@ -542,14 +451,13 @@ t          <span class="dim">→ test</span>
 list       <span class="dim">list tasks</span>
 info       <span class="dim">show detected project</span>
 clean      <span class="dim">clean build artefacts</span><span class="cursor"> </span></pre>
-				<p class="meta meta-tight">
+				<p class="meta">
 					Path-typed flags like <code>--dir &lt;TAB&gt;</code> delegate to the shell's own file completer — <code>~/</code>, globs, and <code>cdpath</code> all work.
 				</p>
 			</section>
 
 			<hr class="rule">
 
-			<!-- matrix -->
 			<section aria-labelledby="matrix-tag">
 				<span class="section-tag" id="matrix-tag">it speaks</span>
 				<div class="matrix">
@@ -593,12 +501,11 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 						</ul>
 					</div>
 				</div>
-				<p class="meta meta-loose">nx and mise are detection-only for now.</p>
+				<p class="meta">nx and mise are detection-only for now.</p>
 			</section>
 
 			<hr class="rule">
 
-			<!-- why -->
 			<section aria-labelledby="why-tag">
 				<span class="section-tag" id="why-tag">why it's not shit</span>
 				<ol class="why">
@@ -628,49 +535,17 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 			</section>
 
 			<footer>
-				<span>MIT</span>
-				<span class="sep">·</span>
-				<span>v0.6.0</span>
-				<span class="sep">·</span>
-				<span>by <a href="mailto:info+runner@kajkowalski.nl"
-					>Kaj Kowalski</a></span>
-				<span class="sep">·</span>
-				<a href="https://github.com/kjanat/runner">source</a>
-				<span class="sep">·</span>
-				<a href="https://github.com/kjanat/runner/blob/master/CHANGELOG.md"
-				>changelog</a>
+				MIT · v0.6.0 · by <a href="mailto:info+runner@kajkowalski.nl">Kaj Kowalski</a> · <a href="https://github.com/kjanat/runner">source</a> · <a href="https://github.com/kjanat/runner/blob/master/CHANGELOG.md">changelog</a>
 			</footer>
 		</main>
 
 		<script>
 		"use strict";
-
-		// click-to-copy. that's the whole script.
-		const TOAST_MS = 1400;
-
 		for (const btn of document.querySelectorAll(".copy")) {
 			btn.addEventListener("click", async () => {
-				const { cmd } = btn.dataset;
-				try {
-					await navigator.clipboard.writeText(cmd);
-				} catch {
-					// selection fallback for ancient browsers / non-secure contexts
-					const tmp = document.createElement("textarea");
-					tmp.value = cmd;
-					tmp.setAttribute("readonly", "");
-					tmp.style.position = "fixed";
-					tmp.style.opacity = "0";
-					document.body.appendChild(tmp);
-					tmp.select();
-					try {
-						document.execCommand("copy");
-					} catch {
-						// best-effort: nothing else to try
-					}
-					tmp.remove();
-				}
+				try { await navigator.clipboard.writeText(btn.dataset.cmd); } catch { /**/ }
 				btn.classList.add("copied");
-				setTimeout(() => btn.classList.remove("copied"), TOAST_MS);
+				setTimeout(() => btn.classList.remove("copied"), 1400);
 			});
 		}
 		</script>
