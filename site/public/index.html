@@ -305,11 +305,21 @@
 			}
 		}
 		@keyframes idle-double-blink {
-			0%, 90% { opacity: 1; }
-			91% { opacity: 0; }
-			92% { opacity: 1; }
-			93% { opacity: 0; }
-			94%, 100% { opacity: 1; }
+			0%, 90% {
+				opacity: 1;
+			}
+			91% {
+				opacity: 0;
+			}
+			92% {
+				opacity: 1;
+			}
+			93% {
+				opacity: 0;
+			}
+			94%, 100% {
+				opacity: 1;
+			}
 		}
 		@media (prefers-reduced-motion: reduce) {
 			.wordmark::after, .term .cursor {
@@ -444,9 +454,14 @@
 						<span class="cmd">npm install -g runner-run</span>
 						<span class="toast">copied</span>
 					</button>
-					<button class="copy" type="button" data-cmd="cargo install --git=https://github.com/kjanat/runner/ runner">
+					<button
+						class="copy"
+						type="button"
+						data-cmd="cargo install --git=https://github.com/kjanat/runner/ runner"
+					>
 						<span class="label">cargo · from source</span>
-						<span class="cmd">cargo install --git=https://github.com/kjanat/runner/ runner</span>
+						<span class="cmd"
+						>cargo install --git=https://github.com/kjanat/runner/ runner</span>
 						<span class="toast">copied</span>
 					</button>
 					<button
@@ -536,10 +551,7 @@
 						</ul>
 					</div>
 				</div>
-				<p class="meta meta-loose">
-					nx and mise are detection-only for now — task execution backends not
-					wired up.
-				</p>
+				<p class="meta meta-loose">nx and mise are detection-only for now.</p>
 			</section>
 
 			<hr class="rule">
