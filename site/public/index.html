@@ -30,6 +30,8 @@
 		   lichen moss for links, tomato for one button.
 		   ───────────────────────────────────────────── */
 		:root {
+			color-scheme: light dark;
+
 			--bg: #f4ede1;
 			--ink: #0e0e0e;
 			--dim: #5a5a52;
@@ -53,6 +55,18 @@
 				Consolas,
 				"DejaVu Sans Mono",
 				monospace;
+		}
+
+		@media (prefers-color-scheme: dark) {
+			:root {
+				/* warm graphite, not pure black — keeps the paper energy */
+				--bg: #181613;
+				--ink: #e8e1d2;
+				--dim: #9a958c;
+				--moss: #86a87a;
+				--tomato: #ec6b48;
+				--rule: #ffffff14;
+			}
 		}
 
 		*, *::before, *::after {
@@ -112,7 +126,8 @@
 		.wordmark::after {
 			content: "_";
 			color: var(--tomato);
-			animation: blink 1.05s steps(1) infinite;
+			/* sit solid for ~10s, then a quick double-blink, then loop */
+			animation: idle-double-blink 11s steps(1) infinite;
 		}
 		.tagline {
 			margin: 1.25rem 0 0;
@@ -283,7 +298,8 @@
 			display: inline-block;
 			width: 0.6em;
 			background: var(--term-fg);
-			animation: blink 1.05s steps(1) infinite;
+			/* blink 5 times on load, then settle solid like a real prompt */
+			animation: blink 1.05s steps(1) 5;
 			color: transparent;
 		}
 
@@ -291,6 +307,13 @@
 			50% {
 				opacity: 0;
 			}
+		}
+		@keyframes idle-double-blink {
+			0%, 90% { opacity: 1; }
+			91% { opacity: 0; }
+			92% { opacity: 1; }
+			93% { opacity: 0; }
+			94%, 100% { opacity: 1; }
 		}
 		@media (prefers-reduced-motion: reduce) {
 			.wordmark::after, .term .cursor {
@@ -425,9 +448,9 @@
 						<span class="cmd">npm install -g runner-run</span>
 						<span class="toast">copied</span>
 					</button>
-					<button class="copy" type="button" data-cmd="cargo install runner">
+					<button class="copy" type="button" data-cmd="cargo install --git=https://github.com/kjanat/runner/ runner">
 						<span class="label">cargo</span>
-						<span class="cmd">cargo install runner</span>
+						<span class="cmd">cargo install --git=…/runner/ runner</span>
 						<span class="toast">copied</span>
 					</button>
 					<button
