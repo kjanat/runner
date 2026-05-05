@@ -10,7 +10,7 @@
 		"directory": "site"
 	},
 	"scripts": {
-		"bd": "bun run build",
+		"bd": "bun --silent run build",
 		"build": "bun build.ts",
 		"check": "biome check",
 		"deploy": "bun run build && wrangler deploy",

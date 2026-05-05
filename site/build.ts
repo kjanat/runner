@@ -13,6 +13,8 @@ const pkg = cargo.package;
 const author = pkg.metadata.authors[0];
 const repo = pkg.repository.replace(/\/$/, "");
 
+const CF_BEACON_TOKEN = "092edc6dde124fe4816fd2d95c16db39";
+
 const tokens: Record<string, string> = {
 	version: pkg.version,
 	repo,
@@ -24,32 +26,59 @@ const tokens: Record<string, string> = {
 	authorEmail: author.email,
 };
 
-const analyticsSnippet = [
-	"\t\t<!-- Cloudflare Web Analytics -->",
-	// biome-ignore lint/security/noSecrets: Cloudflare Web Analytics token is public page config.
-	"\t\t<script defer src=\"https://static.cloudflareinsights.com/beacon.min.js\" data-cf-beacon='{\"token\": \"092edc6dde124fe4816fd2d95c16db39\"}'></script>",
-	"\t\t<!-- End Cloudflare Web Analytics -->",
-].join("\n");
+const analyticsSnippet = `
+	<!-- Cloudflare Web Analytics -->
+	<script defer src=\"https://static.cloudflareinsights.com/beacon.min.js\" data-cf-beacon='{\"token\": \"${
+	env["CF_BEACON_TOKEN"] || CF_BEACON_TOKEN
+}\"}'></script>
+	<!-- End Cloudflare Web Analytics -->
+`;
+
+type DirMode = "full" | "relative";
 
 interface BuildOptions {
 	analytics?: boolean;
+	dir?: DirMode;
 }
 
 export interface DistFile {
 	bytes: Uint8Array;
 	path: string;
 }
+const isCI = env["CI"] === "true" || env["CI"] === "1";
+const isGithubActions = env["GITHUB_ACTIONS"] === "true";
+function getGitHubRepo(_repo: string | unknown = env["GITHUB_REPOSITORY"]) {
+	if (typeof _repo !== "string") return;
+
+	function isGitHubRepo(_value: string): _value is `${string}/${string}` {
+		const parts = _value.split("/");
+		// Check of er exact 2 delen zijn en of beide delen content bevatten
+		return parts.length === 2 && parts.every(part => part.length > 0);
+	}
+
+	if (isGitHubRepo(_repo)) {
+		console.log(`Working in: ${_repo}`);
+		// Omdat isGitHubRepo true is, weten we dat split() exact 2 delen geeft
+		return _repo.split("/") as [string, string];
+	}
+}
+
+const githubRepo = getGitHubRepo();
+const isGitHubRepo = typeof githubRepo !== "undefined";
+
+const isCIorGHactions = isCI || (isGithubActions && isGitHubRepo);
 
 export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 	await rm(dist, { recursive: true, force: true });
 
 	const publicPath = env["PUBLIC_PATH"]
-		? env["PUBLIC_PATH"]
-		: env["CI"] === "true" || env["CI"] === "1"
-		? env["GITHUB_ACTIONS"] === "true" && env["GITHUB_REPOSITORY"]
-			? `/${env["GITHUB_REPOSITORY"].split("/").at(-1)}`
+			|| isCI
+		? isGithubActions && githubRepo
+			? `https://${githubRepo[0]}.github.io/${githubRepo[1]}`
 			: "https://runner.kjanat.com/"
 		: "./";
+
+	console.debug(publicPath);
 
 	const result = await Bun.build({
 		entrypoints: [join(src, "index.html"), join(src, "404.html")],
@@ -57,9 +86,8 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 		target: "browser",
 		minify: true,
 		publicPath,
+		sourcemap: env["SENTRY_DSN"] ? "external" : false,
 	});
-
-	console.debug("public path:", publicPath);
 
 	if (!result.success) {
 		for (const log of result.logs) console.error(log);
@@ -84,6 +112,8 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 
 	const placeholder = /\{\{(\w+)\}\}/g;
 	const encoder = new TextEncoder();
+	const dirMode: DirMode = options.dir ?? "relative";
+	const display = (abs: string, base: string) => dirMode === "full" ? abs : relative(base, abs);
 
 	// Bun.build's outputs already hold the bundled bytes in memory — no re-read from disk.
 	// HTMLs get post-processed (placeholders, analytics, dead-script pruning)
@@ -92,7 +122,7 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 		result.outputs
 			.filter((out) => !emptyJsOutputs.has(out))
 			.map(async (out): Promise<DistFile> => {
-				const path = relative(dist, out.path);
+				const path = display(out.path, dist);
 				if (out.path.endsWith(".html")) {
 					let html = await out.text();
 					if (emptyScript) html = html.replace(emptyScript, "");
@@ -108,27 +138,33 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 					await Bun.write(out.path, bytes);
 					return { path, bytes };
 				}
+
 				return { path, bytes: new Uint8Array(await out.arrayBuffer()) };
 			}),
 	);
 
-	const fromPublic = await copyTree(pub, dist);
+	const fromPublic = await copyTree(pub, dist, dirMode);
 	return [...fromBundle, ...fromPublic];
 }
 
 // Copy `srcDir` into `destDir` recursively, returning each file's final bytes
 // so the caller can compute sizes without a second read pass.
-async function copyTree(srcDir: string, destDir: string): Promise<DistFile[]> {
+async function copyTree(
+	srcDir: string,
+	destDir: string,
+	dirMode: DirMode,
+): Promise<DistFile[]> {
 	const entries = await readdir(srcDir, { recursive: true, withFileTypes: true });
 	return Promise.all(
 		entries
 			.filter((e) => e.isFile())
 			.map(async (e): Promise<DistFile> => {
 				const full = join(e.parentPath, e.name);
-				const path = relative(srcDir, full);
+				const rel = relative(srcDir, full);
+				const dest = join(destDir, rel);
 				const bytes = await Bun.file(full).bytes();
-				await Bun.write(join(destDir, path), bytes);
-				return { path, bytes };
+				await Bun.write(dest, bytes);
+				return { path: dirMode === "full" ? dest : rel, bytes };
 			}),
 	);
 }
@@ -143,11 +179,15 @@ function applyAnalytics(
 }
 
 function injectAnalytics(html: string, file: string): string {
+	if (!isCIorGHactions) return html;
 	const closingBody = "</body>";
+
 	if (!html.includes(closingBody)) {
-		throw new Error(`missing ${closingBody} in ${file}`);
+		console.error(`missing ${closingBody} in ${file}`);
+		return html;
 	}
-	return html.replace(closingBody, `${analyticsSnippet}\n\t</body>`);
+
+	return html.replace(closingBody, `${analyticsSnippet}</body>`);
 }
 
 export const meta = { dist, src, pub, root, version: tokens.version };
@@ -178,10 +218,17 @@ export function summarize(files: DistFile[]): void {
 	const body = sizes.map((f) => [f.path, fmtSize(f.raw), fmtSize(f.gzip), fmtSize(f.brotli)]);
 	const total = ["total", fmtSize(totals.raw), fmtSize(totals.gzip), fmtSize(totals.brotli)];
 	const rows = [header, ...body, total];
-	const widths = header.map((_, i) => Math.max(...rows.map((r) => r[i].length)));
-	const fmtRow = (r: string[]) => r.map((c, i) => (i === 0 ? c.padEnd(widths[i]) : c.padStart(widths[i]))).join("  ");
+	const widths = header.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)));
+	const fmtRow = (r: string[]) =>
+		r
+			.map((c, i) => {
+				const w = widths[i] ?? 0;
+				return i === 0 ? c.padEnd(w) : c.padStart(w);
+			})
+			.join("  ");
 	const sep = "─".repeat(widths.reduce((a, b) => a + b, 0) + (widths.length - 1) * 2);
 
+	console.log();
 	console.log(fmtRow(header));
 	console.log(sep);
 	for (const r of body) console.log(fmtRow(r));
@@ -196,7 +243,11 @@ function fmtSize(n: number): string {
 }
 
 if (import.meta.main) {
-	const files = await build({ analytics: true });
+	const files = await build({
+		analytics: true,
+		dir: env["FULL"] ? "full" : "relative",
+	});
 	summarize(files);
-	console.log(`built v${tokens.version} → ${dist}`);
+	console.log(`
+built v${tokens.version} → ${dist}`);
 }
