@@ -38,7 +38,9 @@
 			}
 		},
 		"domains": {
-			"project": "recommended"
+			"project": "recommended",
+			"test": "recommended",
+			"types": "recommended"
 		}
 	},
 	"javascript": {},
