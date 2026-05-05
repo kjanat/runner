@@ -8,8 +8,7 @@ binding. No build step, no deps — `public/index.html` ships as-is.
 ## Deploy
 
 ```sh
-cd site
-wrangler deploy
+bun --cwd=site deploy
 ```
 
 First deploy creates the `runner-site` Worker and provisions the
@@ -19,7 +18,7 @@ TLS cert; DNS is managed in the same zone).
 ## Local
 
 ```sh
-wrangler dev          # http://localhost:8787
+bun --cwd=site dev          # http://localhost:8787
 ```
 
 Or open `public/index.html` directly in a browser — it's a single,
@@ -27,7 +26,7 @@ self-contained file.
 
 ## Layout
 
-```
+```text
 site/
 ├── public/
 │   ├── index.html        # the whole site
