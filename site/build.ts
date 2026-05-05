@@ -70,13 +70,14 @@ const isCIorGHactions = isCI || (isGithubActions && isGitHubRepo);
 
 export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 	await rm(dist, { recursive: true, force: true });
+	const githubPagesUrl = () => {
+		if (githubRepo) {
+			const [owner, repo] = githubRepo;
+			return `https://${owner}.github.io/${repo}/`;
+		}
+	};
 
-	const publicPath = env["PUBLIC_PATH"]
-			|| isCI
-		? isGithubActions && githubRepo
-			? `https://${githubRepo[0]}.github.io/${githubRepo[1]}`
-			: "https://runner.kjanat.com/"
-		: "./";
+	const publicPath = env["PUBLIC_PATH"] || githubPagesUrl() || "/";
 
 	console.debug(publicPath);
 
