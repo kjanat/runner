@@ -571,7 +571,11 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 					await navigator.clipboard.writeText(cmd);
 					ok = true;
 				} catch {}
-				if (status) status.textContent = ok ? "Copied to clipboard" : "Copy failed";
+				if (status) {
+					const msg = ok ? "Copied to clipboard" : "Copy failed";
+					status.textContent = "";
+					setTimeout(() => { status.textContent = msg; }, 50);
+				}
 				if (!ok) return;
 				btn.classList.add("copied");
 				setTimeout(() => btn.classList.remove("copied"), 1400);
