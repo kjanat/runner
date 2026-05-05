@@ -12,5 +12,6 @@
 		"json-language-server": {
 			"settings": { "json": { "schemas": [{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" }] } }
 		}
-	}
+	},
+	"file_types": { "SVG": ["*.ico"] }
 }

@@ -1,6 +1,12 @@
 # runner
 
+[![npm version](https://img.shields.io/npm/v/runner-run?label=npm&color=cb3837)](https://www.npmjs.com/package/runner-run)
+[![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)](https://github.com/kjanat/runner/blob/master/LICENSE)
+
 Universal project task runner. Auto-detects toolchain, provides unified CLI.
+
+- Site: **<https://runner.kjanat.com/>** — landing page; source in [`site/`](./site/)
+- npm: **[`runner-run`](https://www.npmjs.com/package/runner-run)** — `npm install -g runner-run`
 
 ## Features
 
