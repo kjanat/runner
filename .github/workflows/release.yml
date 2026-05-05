@@ -208,14 +208,18 @@ jobs:
           shell: bash
           run: |
             set -euo pipefail
-            # cross-platform-actions wires the runner user to passwordless
-            # sudo on every VM image (incl. OpenBSD via sudo-pkg) — its own
-            # bootstrap uses `sudo mkdir`. Native OpenBSD `doas` is NOT
-            # configured in these images, so use sudo.
-            #
-            # `pkg_add rust` brings cargo, rustc, and native std for
-            # x86_64-unknown-openbsd.
-            sudo pkg_add -I rust
+            # OpenBSD 7.8 ships rust-1.90 in pkg, but the project's MSRV
+            # is 1.95 (Cargo.toml). pkg_add would fail at rustc invocation,
+            # so install via rustup-init.sh instead. OpenBSD is tier-3 in
+            # rustup so the script falls through to a community mirror.
+            # `--profile minimal` skips docs/clippy/rustfmt for faster
+            # install under QEMU; the build doesn't need them.
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --profile minimal --default-toolchain stable
+            # Each `run:` block executes in a fresh non-login shell — no
+            # ~/.profile sourcing — so cargo isn't on PATH unless we add
+            # it explicitly here.
+            . "$HOME/.cargo/env"
             cargo build --release --locked --bin runner --bin run
             # Stage outside `target/` so the file copy back to the host
             # below has a stable, predictable path.

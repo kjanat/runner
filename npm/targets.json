@@ -125,7 +125,8 @@
 			"cpu": ["x64"],
 			"runner": "ubuntu-latest",
 			"build": "cargo-cross-toolchain",
-			"tier": 2
+			"tier": 3,
+			"experimental": true
 		},
 		{
 			"pkg": "openbsd-x64",
