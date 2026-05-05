@@ -55,7 +55,7 @@ jobs:
       - name: create github release
         uses: taiki-e/create-gh-release-action@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           changelog: CHANGELOG.md
           draft: true
           branch: master
@@ -138,16 +138,16 @@ jobs:
       # `cargo-build-std` reuses the same C toolchain step but goes the
       # nightly + -Z build-std route to construct std locally.
       - name: setup cross toolchain
-        if: matrix.build-tool == 'cargo-cross-toolchain' || matrix.build-tool == 'cargo-build-std'
+        if: contains(fromJSON('["cargo-cross-toolchain", "cargo-build-std"]'), matrix.build-tool)
         uses: taiki-e/setup-cross-toolchain-action@v1
         with:
           target: ${{ matrix.target }}
 
       - name: build and upload binaries (taiki-e)
-        if: matrix.build-tool == 'cargo' || matrix.build-tool == 'cross' || matrix.build-tool == 'cargo-cross-toolchain'
+        if: contains(fromJSON('["cargo", "cross", "cargo-cross-toolchain"]'), matrix.build-tool)
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           bin: runner,run
           target: ${{ matrix.target }}
           # Map our extended enum onto values upload-rust-binary-action accepts.
@@ -177,7 +177,7 @@ jobs:
       - name: package and upload (cargo-build-std)
         if: matrix.build-tool == 'cargo-build-std'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
           BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
@@ -231,5 +231,5 @@ jobs:
         with:
           name: npm-dist
           path: npm/dist/
-          retention-days: 7
+          retention-days: 14
           if-no-files-found: error

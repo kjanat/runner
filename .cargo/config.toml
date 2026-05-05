@@ -15,5 +15,26 @@ rbin-runner = ["bin-runner", "--release"]
 rr          = ["run", "--release"]
 t           = ["test", "--all-features", "--all-targets"]
 
+# [target.<triple>]
+# linker = "…"              # linker to use
+# runner = "…"              # wrapper to run executables
+# rustflags = ["…", "…"]    # custom flags for `rustc`
+# rustdocflags = ["…", "…"] # custom flags for `rustdoc`
+
+# [target.<cfg>]
+# linker = "…"            # linker to use
+# runner = "…"            # wrapper to run executables
+# rustflags = ["…", "…"]  # custom flags for `rustc`
+
+# [target.<triple>.<links>] # `links` build script override
+# rustc-link-lib = ["foo"]
+# rustc-link-search = ["/path/to/foo"]
+# rustc-flags = "-L /some/path"
+# rustc-cfg = ['key="value"']
+# rustc-env = {key = "value"}
+# rustc-cdylib-link-arg = ["…"]
+# metadata_key1 = "value"
+# metadata_key2 = "value"
+
 [term]
 hyperlinks = false
