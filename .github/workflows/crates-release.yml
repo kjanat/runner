@@ -56,14 +56,20 @@ jobs:
             && inputs.tag
             || github.event.release.tag_name }}
       INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
+      # Boolean-as-string of whether the publish secret is wired up. Computed
+      # at job-level so the step preflight can check it via env without ever
+      # interpolating the secret value into a shell command.
+      HAS_CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
       # Check out the tag the release was cut from so the published artifact
       # matches the GitHub release exactly. Trust model: a maintainer
       # explicitly published this release (or dispatched the workflow), so
-      # running build.rs from this ref is intentional.
+      # running build.rs from this ref is intentional. Using the explicit
+      # `refs/tags/` namespace prevents a branch sharing the tag's name
+      # from shadowing the tag during ref resolution.
       - uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
 
       - name: install rust toolchain
@@ -86,6 +92,17 @@ jobs:
 
       - name: cargo publish (dry-run verification)
         run: cargo publish --locked --dry-run
+
+      # Fail fast with a clear message if the secret isn't wired up before
+      # `cargo publish` swings at the registry and dies with an opaque auth
+      # error. The secret presence is evaluated at expression time into the
+      # job-level HAS_CARGO_REGISTRY_TOKEN boolean, so the secret value never
+      # lands in env on this step.
+      - name: verify CARGO_REGISTRY_TOKEN is set
+        if: env.INPUT_DRY_RUN != 'true' && env.HAS_CARGO_REGISTRY_TOKEN != 'true'
+        run: |
+          echo "error: CARGO_REGISTRY_TOKEN secret is missing or empty (required for non-dry-run publish)" >&2
+          exit 1
 
       - name: cargo publish
         if: env.INPUT_DRY_RUN != 'true'
