@@ -2,15 +2,23 @@
 	"name": "runner-site",
 	"version": "0.0.0",
 	"private": true,
-	"description": "runner.kjanat.com — static site for the runner CLI",
+	"description": "static site for the runner CLI",
 	"homepage": "https://runner.kjanat.com",
 	"scripts": {
-		"biome": "bunx -p @biomejs/biome -b biome",
-		"check": "bun biome check",
-		"deploy": "bun wrangler deploy",
-		"dev": "bun wrangler dev",
-		"lint": "bun biome lint",
-		"tail": "bun wrangler tail",
-		"wrangler": "bunx wrangler"
+		"build": "bun build.ts",
+		"check": "biome check",
+		"deploy": "wrangler deploy",
+		"dev": "bun run dev.ts",
+		"lint": "biome lint",
+		"prestart": "bun run build",
+		"start": "wrangler preview",
+		"tail": "wrangler tail",
+		"typecheck": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.4.14",
+		"@types/bun": "^1.3.13",
+		"typescript": "^6.0.3",
+		"wrangler": "^4.87.0"
 	}
 }

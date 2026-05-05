@@ -4,7 +4,8 @@
 		"enabled": true,
 		"clientKind": "git",
 		"useIgnoreFile": true,
-		"defaultBranch": "master"
+		"defaultBranch": "master",
+		"root": "../"
 	},
 	"files": {
 		"ignoreUnknown": true,
@@ -37,6 +38,7 @@
 		}
 	},
 	"javascript": {},
+	"html": { "experimentalFullSupportEnabled": true, "parser": { "interpolation": true } },
 	"assist": {
 		"enabled": true,
 		"actions": {

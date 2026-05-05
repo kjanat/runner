@@ -26,7 +26,8 @@
 		"**/*.lock",
 		"**/node_modules",
 		"**/samples",
-		"**/target"
+		"**/target",
+		"**/dist"
 	],
 	"plugins": [
 		"https://plugins.dprint.dev/typescript-0.95.15.wasm",
