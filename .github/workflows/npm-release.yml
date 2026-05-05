@@ -81,6 +81,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/scripts
+            npm/targets.json
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-node@v6

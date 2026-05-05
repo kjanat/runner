@@ -25,31 +25,17 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 #   3. Each package.json's `version` field must equal the version
 #      derived from the trigger tag (trusted metadata) — prevents
 #      stamping arbitrary versions onto allowed packages.
-# Lists must be kept in sync with npm/targets.json. Tier-3 entries
-# (release.yml's `experimental: true`) may legitimately be missing
-# because their build matrix uses `continue-on-error`. Tier-1/2 are
-# mandatory for release-triggered runs; for manual workflow_dispatch
-# backfills we relax this so missing tier-1/2 packages are skipped
-# instead of aborting. The façade itself remains mandatory either way.
-FACADE="runner-run"
-SCOPE="@runner-run"
-REQUIRED_PLATFORMS=(
-	linux-x64-gnu
-	linux-x64-musl
-	linux-arm64-gnu
-	linux-arm64-musl
-	linux-armv7-gnueabihf
-	darwin-x64
-	darwin-arm64
-	win32-x64-msvc
-	win32-arm64-msvc
-	win32-ia32-msvc
-	freebsd-x64
-)
-OPTIONAL_PLATFORMS=(
-	freebsd-arm64
-	netbsd-x64
-)
+# Single source of truth: npm/targets.json. `experimental: true`
+# packages may legitimately be missing because their build matrix uses
+# `continue-on-error`. Everything else is mandatory for release-triggered
+# runs; for manual workflow_dispatch backfills we relax this so missing
+# required packages are skipped instead of aborting. The façade itself
+# remains mandatory either way.
+TARGETS_JSON="${GITHUB_WORKSPACE:-.}/npm/targets.json"
+FACADE=$(jq -r '.facade' "${TARGETS_JSON}")
+SCOPE=$(jq -r '.scope' "${TARGETS_JSON}")
+mapfile -t REQUIRED_PLATFORMS < <(jq -r '.targets[] | select((.experimental // false) | not) | .pkg' "${TARGETS_JSON}")
+mapfile -t OPTIONAL_PLATFORMS < <(jq -r '.targets[] | select(.experimental // false) | .pkg' "${TARGETS_JSON}")
 EXPECTED_VERSION="${RELEASE_TAG#v}"
 
 # Refuse to proceed if the artifact contains anything outside the
@@ -86,7 +72,7 @@ publish_allowed() {
 
 	# Reject per-package registry overrides. A malicious build could
 	# drop a .npmrc or set publishConfig in package.json to redirect
-	# the publish (and NPM_TOKEN) to an attacker-controlled registry.
+	# the publish to an attacker-controlled registry.
 	# CLI --registry does NOT override scoped publishConfig.registry,
 	# so the rejection here is the primary defense; the explicit
 	# --registry flag below is belt-and-suspenders for non-scoped
