@@ -31,7 +31,6 @@ on:
           - x86_64-unknown-freebsd
           - aarch64-unknown-freebsd
           - x86_64-unknown-netbsd
-          - x86_64-unknown-openbsd
 
 permissions:
   contents: read
@@ -151,30 +150,3 @@ jobs:
             fi
             file "${path}"
           done
-
-  dryrun-openbsd:
-    name: dryrun x86_64-unknown-openbsd
-    runs-on: ubuntu-latest
-    if: inputs.target == 'all' || inputs.target == 'x86_64-unknown-openbsd'
-    permissions:
-      contents: read
-    env:
-      OPENBSD_VERSION: "7.8"
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: build inside OpenBSD VM (no upload)
-        uses: cross-platform-actions/action@v1.0.0
-        with:
-          operating_system: openbsd
-          version: ${{ env.OPENBSD_VERSION }}
-          shell: bash
-          run: |
-            set -euo pipefail
-            # Mirrors release.yml's openbsd job, minus the archive/upload.
-            # See release.yml for rationale on rustup-init vs pkg_add.
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-              sh -s -- -y --profile minimal --default-toolchain stable
-            . "$HOME/.cargo/env"
-            cargo build --release --locked --bin runner --bin run
-            ls -la target/release/runner target/release/run

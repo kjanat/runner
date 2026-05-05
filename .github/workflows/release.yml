@@ -177,64 +177,9 @@ jobs:
           BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
 
-  upload-openbsd:
-    name: build+upload x86_64-unknown-openbsd
-    needs: create-release
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    # Tier-3, treated like other `experimental: true` matrix entries — a
-    # transient VM hiccup shouldn't tank the whole release.
-    continue-on-error: true
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
-      OPENBSD_VERSION: "7.8"
-      TARGET: x86_64-unknown-openbsd
-    steps:
-      - uses: actions/checkout@v6
-
-      # Native build inside an OpenBSD VM. cross-compiling OpenBSD from
-      # Linux isn't viable: setup-cross-toolchain-action excludes OpenBSD
-      # and Rust ships no prebuilt std for it (tier 3). The VM gives us a
-      # real OpenBSD host whose `pkg_add rust` provides a working toolchain.
-      # Default `sync_files: true` is bidirectional, so the binaries we
-      # stage to ./openbsd-out inside the VM appear back on the host runner.
-      - name: build inside OpenBSD VM
-        uses: cross-platform-actions/action@v1.0.0
-        with:
-          operating_system: openbsd
-          version: ${{ env.OPENBSD_VERSION }}
-          shell: bash
-          run: |
-            set -euo pipefail
-            # OpenBSD 7.8 ships rust-1.90 in pkg, but the project's MSRV
-            # is 1.95 (Cargo.toml). pkg_add would fail at rustc invocation,
-            # so install via rustup-init.sh instead. OpenBSD is tier-3 in
-            # rustup so the script falls through to a community mirror.
-            # `--profile minimal` skips docs/clippy/rustfmt for faster
-            # install under QEMU; the build doesn't need them.
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-              sh -s -- -y --profile minimal --default-toolchain stable
-            # Each `run:` block executes in a fresh non-login shell — no
-            # ~/.profile sourcing — so cargo isn't on PATH unless we add
-            # it explicitly here.
-            . "$HOME/.cargo/env"
-            cargo build --release --locked --bin runner --bin run
-            # Stage outside `target/` so the file copy back to the host
-            # below has a stable, predictable path.
-            mkdir -p ./openbsd-out
-            cp target/release/runner target/release/run ./openbsd-out/
-
-      - name: package and upload
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BIN_DIR: ${{ github.workspace }}/openbsd-out
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
-
   build-npm-dist:
     name: build npm dist
-    needs: [upload-assets, upload-openbsd]
+    needs: [upload-assets]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # Need write so `gh release download` can see the still-draft release;

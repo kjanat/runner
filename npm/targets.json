@@ -127,16 +127,6 @@
 			"build": "cargo-cross-toolchain",
 			"tier": 3,
 			"experimental": true
-		},
-		{
-			"pkg": "openbsd-x64",
-			"rust": "x86_64-unknown-openbsd",
-			"os": ["openbsd"],
-			"cpu": ["x64"],
-			"runner": "ubuntu-latest",
-			"build": "vm",
-			"tier": 3,
-			"experimental": true
 		}
 	]
 }

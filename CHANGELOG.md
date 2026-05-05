@@ -28,13 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sub-package via `require.resolve()` at runtime through
   `lib/resolve.cjs` and `lib/launch.cjs`, with helpful diagnostics when
   no matching sub-package is installed.
-- Release matrix expanded from Linux musl x86_64/aarch64 to 14 targets
+- Release matrix expanded from Linux musl x86_64/aarch64 to 13 targets
   across Linux (gnu/musl × x64/arm64 + armv7), macOS (x64, arm64),
-  Windows (x64, arm64, ia32), FreeBSD (x64, arm64), NetBSD x64, and
-  OpenBSD x64. Tier-3 BSD targets are marked `experimental: true` and
-  do not block the release. Per-target runner / build-tool
-  (`cargo` vs `cross`) selection is data-driven from `npm/targets.json`
-  (validated by `npm/targets.schema.json`).
+  Windows (x64, arm64, ia32), FreeBSD (x64, arm64), and NetBSD x64.
+  Tier-3 BSD targets are marked `experimental: true` and do not block
+  the release. Per-target runner / build-tool selection is data-driven
+  from `npm/targets.json` (validated by `npm/targets.schema.json`).
 - New `npm-release` workflow downloads the GitHub Release tarballs,
   verifies SHA-256 checksums, generates per-platform packages from
   `npm/targets.json`, and publishes to npm with provenance, optional
