@@ -267,7 +267,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "runner"
+name = "runner-run"
 version = "0.6.0"
 dependencies = [
  "anyhow",
