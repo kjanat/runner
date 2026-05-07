@@ -1,13 +1,17 @@
 name: npm-release
 run-name: >-
-  ${{ github.event_name == 'workflow_run'
-      && format('npm publish {0}', github.event.workflow_run.head_branch)
-      || format('npm publish {0}', inputs.tag) }}
+  ${{ format('npm publish {0}',
+    	case(
+      	contains(github.event_name, 'workflow_run'),
+      	github.event.workflow_run.head_branch,
+      	inputs.tag)
+    	) }}
 
 on:
-  workflow_run:
-    workflows: [release]
-    types: [completed]
+  release: { types: [published] }
+  # todo: explore
+  # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#using-data-from-the-triggering-workflow
+  workflow_run: { workflows: [release], types: [completed], branches: [v*] }
   workflow_dispatch:
     inputs:
       tag:
@@ -15,13 +19,15 @@ on:
         required: true
         type: string
       run-id:
-        description: >-
+        description: |-
           release.yml run ID that produced the npm-dist artifact for this tag.
           Find it via `gh run list --workflow=release.yml --branch=<tag> --status=success`.
         required: true
         type: string
       dist-tag:
-        description: npm dist-tag (latest, next, etc.). Leave empty to infer from the tag (prerelease → next, otherwise → latest).
+        description: |-
+          npm dist-tag (latest, next, etc.).
+          Leave empty to infer from the tag (prerelease → next, otherwise → latest).
         required: false
         options: [latest, next]
         type: choice
@@ -36,6 +42,12 @@ permissions:
 
 env:
   NODE_VERSION: latest
+  REGISTRY: https://registry.npmjs.org/
+  RELEASE_TAG: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.tag, github.event.workflow_run.head_branch) }}
+  RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
+  EVENT_NAME: ${{ github.event_name }}
+  INPUT_DIST_TAG: ${{ inputs.dist-tag }}
+  INPUT_DRY_RUN: ${{ fromJSON(inputs.dry-run) }}
 
 jobs:
   publish:
@@ -43,34 +55,27 @@ jobs:
     runs-on: ubuntu-latest
     # Only run after a successful tag-triggered release.yml, or on manual dispatch.
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      contains(github.event_name, 'workflow_dispatch') ||
       (github.event.workflow_run.conclusion == 'success' &&
        startsWith(github.event.workflow_run.head_branch, 'v'))
     permissions:
       contents: read
       id-token: write # for npm provenance
       actions: read # for cross-workflow artifact download
-    environment:
-      name: npm
-      url: ${{ steps.publish.outputs.package-url }}
-    env:
-      # RELEASE_TAG comes from trusted trigger metadata only — never from
-      # anything build-time scripts could influence.
-      RELEASE_TAG: >-
-        ${{ github.event_name == 'workflow_dispatch'
-            && inputs.tag
-            || github.event.workflow_run.head_branch }}
-      RUN_ID: >-
-        ${{ github.event_name == 'workflow_dispatch'
-            && inputs.run-id
-            || github.event.workflow_run.id }}
-      EVENT_NAME: ${{ github.event_name }}
-      INPUT_DIST_TAG: ${{ inputs.dist-tag || '' }}
-      INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
-      # Hardcoded registry — every npm view/publish call passes this
-      # explicitly via --registry so any per-package config that slipped
-      # past the rejection checks couldn't redirect the publish.
-      REGISTRY: https://registry.npmjs.org/
+    environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
+    # env:
+    # RELEASE_TAG comes from trusted trigger metadata only — never from
+    # anything build-time scripts could influence.
+    #   RELEASE_TAG: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.tag, github.event.workflow_run.head_branch) }}
+    #   RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
+    #   EVENT_NAME: ${{ github.event_name }}
+    #   INPUT_DIST_TAG: ${{ inputs.dist-tag || '' }}
+    #   INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
+    # ---
+    # Hardcoded registry — every npm view/publish call passes this
+    # explicitly via --registry so any per-package config that slipped
+    # past the rejection checks couldn't redirect the publish.
+    #   REGISTRY: https://registry.npmjs.org/
     steps:
       # Sparse-checkout from the DEFAULT BRANCH gets us the trusted publish
       # scripts only. No tag-supplied code on disk → no untrusted code
@@ -86,8 +91,8 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "${{ env.NODE_VERSION }}"
-          registry-url: https://registry.npmjs.org
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: ${{ env.REGISTRY }}
 
       # Cross-workflow artifact download: the npm-dist was built by the
       # release.yml run identified by RUN_ID (in tag-push context, where
