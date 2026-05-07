@@ -1,7 +1,7 @@
 name: release-dryrun
 run-name: >-
   ${{ format('release-dryrun {0}',
-      inputs.target == 'all' && 'full matrix' || inputs.target) }}
+      case(inputs.target == 'all', 'full matrix', inputs.target)) }}
 
 # Tag-free verification of the release build matrix. Mirrors release.yml's
 # build paths but never creates a draft release, never uploads assets, and
@@ -111,7 +111,7 @@ jobs:
           token: ${{ github.token }}
           bin: runner,run
           target: ${{ matrix.target }}
-          build-tool: ${{ matrix.build-tool == 'cargo-cross-toolchain' && 'cargo' || matrix.build-tool }}
+          build-tool: ${{ case(matrix.build-tool == 'cargo-cross-toolchain', 'cargo', matrix.build-tool) }}
           archive: runner-$tag-$target
           tar: all
           zip: none
