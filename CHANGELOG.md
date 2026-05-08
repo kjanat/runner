@@ -124,6 +124,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scrapped earlier and the residue would have failed
   `optionalDependencies` validation if the platform was ever
   re-expected.
+- Tab completion for turborepo monorepos no longer triple-emits
+  the same task. When a `package.json` script shares its name with
+  a `turbo.json` task — the canonical `"build": "turbo run build"`
+  passthrough — the `package.json` entry is now dropped from
+  completion candidates, leaving just the bare name. `runner list`
+  still surfaces both sources for transparency, `runner build`
+  already dispatched through turbo per `source_priority`, and a
+  third source (e.g. Makefile) keeps its qualified form alongside
+  `turbo.json:build` for disambiguation.
 
 ### Post-release checklist
 
