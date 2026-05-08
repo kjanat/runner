@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Drop redundant `package.json:<task>` qualified entries from shell
+  completion when the same name exists in `turbo.json`. In a Turborepo
+  monorepo the root `package.json` script is canonically a passthrough
+  (`"build": "turbo run build"`), so emitting both `package.json:build`
+  and `turbo.json:build` alongside the bare `build` produced three
+  candidates for one effective task. The package.json entry is now
+  swallowed in completion output; `runner list` still surfaces both
+  sources, and a typed `package.json:<task>` still resolves manually.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
