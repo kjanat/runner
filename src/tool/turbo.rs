@@ -55,6 +55,34 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
+/// Returns `true` if `command` is a thin invocation of `turbo` that targets
+/// the same task name — i.e. `turbo run <name>` or the shorthand
+/// `turbo <name>`, with any extra flags afterward (e.g. `--filter`).
+///
+/// This is purely a textual heuristic on the script body. Indirect
+/// invocations (`npx turbo run build`, `pnpm exec turbo run build`) are
+/// intentionally not matched: a wrapper that goes through a package-manager
+/// shim is a step removed from the canonical Turborepo pattern, and matching
+/// it would risk false positives for unrelated `npx`/`pnpm exec` scripts.
+pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
+    let mut tokens = command.split_whitespace();
+    if tokens.next() != Some("turbo") {
+        return false;
+    }
+    let Some(second) = tokens.next() else {
+        return false;
+    };
+    let target = if second == "run" {
+        let Some(third) = tokens.next() else {
+            return false;
+        };
+        third
+    } else {
+        second
+    };
+    target == name
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -121,5 +149,54 @@ mod tests {
         tasks.sort_unstable();
 
         assert_eq!(tasks, ["test", "typecheck"]);
+    }
+
+    use super::is_self_passthrough;
+
+    #[test]
+    fn is_self_passthrough_matches_canonical_run_form() {
+        assert!(is_self_passthrough("build", "turbo run build"));
+    }
+
+    #[test]
+    fn is_self_passthrough_matches_with_trailing_flags() {
+        assert!(is_self_passthrough(
+            "build",
+            "turbo run build --filter=web --concurrency=4"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_matches_shorthand_form() {
+        assert!(is_self_passthrough("build", "turbo build"));
+    }
+
+    #[test]
+    fn is_self_passthrough_tolerates_irregular_whitespace() {
+        assert!(is_self_passthrough("build", "  turbo   run    build  "));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_real_script() {
+        assert!(!is_self_passthrough("build", "vite build"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_passthrough_to_different_target() {
+        assert!(!is_self_passthrough("build", "turbo run lint"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_indirect_invocation_via_pm() {
+        // npx/pnpm exec wrappers are intentionally not matched.
+        assert!(!is_self_passthrough("build", "npx turbo run build"));
+        assert!(!is_self_passthrough("build", "pnpm exec turbo run build"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_empty_or_partial_command() {
+        assert!(!is_self_passthrough("build", ""));
+        assert!(!is_self_passthrough("build", "turbo"));
+        assert!(!is_self_passthrough("build", "turbo run"));
     }
 }
