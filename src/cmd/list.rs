@@ -161,17 +161,7 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
             tool::files::find_first(root, tool::go_task::FILENAMES).filter(|path| path.is_file())
         }
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        // Pick the deepest applicable cargo config so the OSC8 link goes to
-        // the file the user is most likely editing. When no project-local
-        // file exists (built-ins-only case), falling back to `Cargo.toml`
-        // keeps the label clickable instead of dropping it entirely.
-        TaskSource::CargoAliases => tool::cargo_aliases::find_configs(root)
-            .into_iter()
-            .next()
-            .or_else(|| {
-                let cargo_toml = root.join("Cargo.toml");
-                cargo_toml.is_file().then_some(cargo_toml)
-            }),
+        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
     }?;
 
     Some(path.canonicalize().unwrap_or(path))
