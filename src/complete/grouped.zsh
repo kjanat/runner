@@ -82,7 +82,14 @@ function _clap_dynamic_completer_{NAME}() {
     done
 
     # --- Pass 2: build per-group arrays and compadd each -------------
-    local __runner_g
+    # Empty assignment matters: `local NAME` with no value, on an
+    # already-set local (Pass 1 localized __runner_g), is the typeset
+    # display form and prints `__runner_g=<last value>` to the terminal.
+    # Normally invisible — zle redisplay redraws the line — but with
+    # oh-my-zsh's `COMPLETION_WAITING_DOTS` indicator already on the
+    # line, the spurious print survives the redraw and lingers next to
+    # the dots after the menu opens.
+    local __runner_g=
     for __runner_g in "${__runner_grps[@]}"; do
         local -a __runner_vals=()
         local -a __runner_dsps=()
