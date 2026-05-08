@@ -57,7 +57,15 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 
 /// Returns `true` if `command` is a thin invocation of `turbo` that targets
 /// the same task name — i.e. `turbo run <name>` or the shorthand
-/// `turbo <name>`, with any extra flags afterward (e.g. `--filter`).
+/// `turbo <name>`, optionally followed by flag tokens (e.g. `--filter web`,
+/// `--concurrency=4`).
+///
+/// The tail after the target name must consist solely of flag tokens
+/// (`-x`, `--long`, `--key=value`) or values immediately following a
+/// non-`=` flag. Any other positional, shell metacharacter (`&&`, `||`,
+/// `;`, `|`, `&`), or redirect (`>`, `>>`, `<`, …) rejects the match —
+/// those tokens mean the script does more than just dispatch to turbo,
+/// so swallowing it from completion would hide real behavior.
 ///
 /// This is purely a textual heuristic on the script body. Indirect
 /// invocations (`npx turbo run build`, `pnpm exec turbo run build`) are
@@ -80,7 +88,29 @@ pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
     } else {
         second
     };
-    target == name
+    if target != name {
+        return false;
+    }
+
+    // Tail must be flags-only (with optional space-separated values).
+    // Any bare positional or shell metachar means the script is doing
+    // extra work and is not a thin passthrough.
+    let mut expects_flag_value = false;
+    for token in tokens {
+        if matches!(token, "&&" | "||" | ";" | "|" | "&") {
+            return false;
+        }
+        if token.starts_with('-') {
+            expects_flag_value = !token.contains('=');
+            continue;
+        }
+        if expects_flag_value {
+            expects_flag_value = false;
+            continue;
+        }
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]
@@ -198,5 +228,59 @@ mod tests {
         assert!(!is_self_passthrough("build", ""));
         assert!(!is_self_passthrough("build", "turbo"));
         assert!(!is_self_passthrough("build", "turbo run"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_shell_chain_and() {
+        // `turbo run build && echo done` does extra work — not a thin
+        // passthrough; swallowing it would hide the trailing command.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build && echo done"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_shell_chain_or() {
+        assert!(!is_self_passthrough("build", "turbo run build || exit 1"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_shell_pipe() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build | tee log.txt"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_shell_redirect() {
+        // `>` is a bare positional under split_whitespace, which falls into
+        // the "non-flag, no flag-value expected" branch and rejects.
+        assert!(!is_self_passthrough("build", "turbo run build > out.log"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_shell_background() {
+        assert!(!is_self_passthrough("build", "turbo run build &"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_extra_positional_target() {
+        // `turbo run build lint` runs both `build` and `lint` — invoking
+        // through runner would silently drop `lint`, so don't classify
+        // this as a passthrough.
+        assert!(!is_self_passthrough("build", "turbo run build lint"));
+    }
+
+    #[test]
+    fn is_self_passthrough_accepts_space_separated_flag_value() {
+        assert!(is_self_passthrough("build", "turbo run build --filter web"));
+    }
+
+    #[test]
+    fn is_self_passthrough_accepts_trailing_bool_flag() {
+        // `--no-cache` takes no value; end-of-tokens exits the loop cleanly.
+        assert!(is_self_passthrough("build", "turbo run build --no-cache"));
     }
 }

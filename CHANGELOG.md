@@ -136,7 +136,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same task. A `package.json` script is classified as a turbo
   passthrough at detection time when its command body literally
   invokes `turbo run <name>` (or the shorthand `turbo <name>`) for
-  a same-named target; only those passthroughs are dropped from
+  a same-named target, optionally followed by flag tokens
+  (`--filter web`, `--concurrency=4`); shell chaining (`&&`, `||`,
+  `;`, `|`, `&`), redirects, and extra positional targets all
+  reject the match so scripts that do real work beyond dispatching
+  to turbo stay visible. Only thin passthroughs are dropped from
   completion when a same-named `turbo.json` task also exists. Real
   scripts like `"build": "vite build"` keep their qualified form
   even when they happen to share a name with a turbo task. `runner
