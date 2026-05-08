@@ -34,7 +34,7 @@ pub(crate) enum PackageManager {
 /// A task runner detected via config file presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TaskRunner {
-    /// Turborepo — detected via `turbo.json`.
+    /// Turborepo — detected via `turbo.json` / `turbo.jsonc`.
     Turbo,
     /// Nx — detected via `nx.json`.
     Nx,
@@ -75,7 +75,7 @@ pub(crate) enum TaskSource {
     Justfile,
     /// go-task `Taskfile.yml` task.
     Taskfile,
-    /// `turbo.json` `"tasks"` (v2) or `"pipeline"` (v1).
+    /// `turbo.json` / `turbo.jsonc` `"tasks"` (v2) or `"pipeline"` (v1).
     TurboJson,
     /// `deno.json` / `deno.jsonc` `"tasks"` field.
     DenoJson,
@@ -194,6 +194,7 @@ impl TaskSource {
             "justfile" => Some(Self::Justfile),
             "Taskfile" => Some(Self::Taskfile),
             "turbo.json" => Some(Self::TurboJson),
+            "turbo.jsonc" => Some(Self::TurboJson),
             "deno.json" => Some(Self::DenoJson),
             _ => None,
         }

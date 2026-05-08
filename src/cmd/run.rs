@@ -126,10 +126,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
     match source {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::TurboJson => {
-            let candidate = root.join(tool::turbo::FILENAME);
-            candidate.is_file().then_some(candidate)
-        }
+        TaskSource::TurboJson => tool::turbo::find_config(root),
         TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
         TaskSource::Justfile => tool::just::find_file(root),
         TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
@@ -293,6 +290,13 @@ mod tests {
         let (source, name) = parse_qualified_task("helix:sync");
         assert_eq!(source, None);
         assert_eq!(name, "helix:sync");
+    }
+
+    #[test]
+    fn parse_qualified_task_supports_turbo_jsonc_qualifier() {
+        let (source, name) = parse_qualified_task("turbo.jsonc:build");
+        assert_eq!(source, Some(TaskSource::TurboJson));
+        assert_eq!(name, "build");
     }
 
     #[test]
