@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context as _;
+use serde::de::IgnoredAny;
 use serde::Deserialize;
 
 use crate::tool::files;
@@ -32,8 +33,8 @@ pub(crate) fn detect(dir: &Path) -> bool {
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
-        tasks: Option<HashMap<String, serde_json::Value>>,
-        pipeline: Option<HashMap<String, serde_json::Value>>,
+        tasks: Option<HashMap<String, IgnoredAny>>,
+        pipeline: Option<HashMap<String, IgnoredAny>>,
     }
     let Some(path) = find_config(dir) else {
         return Ok(vec![]);
