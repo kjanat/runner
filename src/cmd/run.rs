@@ -133,6 +133,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
         TaskSource::Justfile => tool::just::find_file(root),
         TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
+        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
     }
     .and_then(|path| path.parent().map(Path::to_path_buf))
 }
@@ -248,6 +249,7 @@ fn build_run_command(
         TaskSource::Justfile => tool::just::run_cmd(task, args),
         TaskSource::Taskfile => tool::go_task::run_cmd(task, args),
         TaskSource::DenoJson => tool::deno::run_cmd(task, args),
+        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(task, args),
     })
 }
 

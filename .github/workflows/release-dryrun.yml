@@ -1,7 +1,7 @@
 name: release-dryrun
 run-name: >-
   ${{ format('release-dryrun {0}',
-      inputs.target == 'all' && 'full matrix' || inputs.target) }}
+      case(inputs.target == 'all', 'full matrix', inputs.target)) }}
 
 # Tag-free verification of the release build matrix. Mirrors release.yml's
 # build paths but never creates a draft release, never uploads assets, and
@@ -18,18 +18,18 @@ on:
         type: choice
         options:
           - all
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
+          - aarch64-apple-darwin
+          - aarch64-pc-windows-msvc
+          - aarch64-unknown-freebsd
           - aarch64-unknown-linux-gnu
           - aarch64-unknown-linux-musl
           - armv7-unknown-linux-gnueabihf
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
           - i686-pc-windows-msvc
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-msvc
           - x86_64-unknown-freebsd
-          - aarch64-unknown-freebsd
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
           - x86_64-unknown-netbsd
 
 permissions:
@@ -44,8 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      include: ${{ steps.gen.outputs.include }}
+    outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
       - uses: actions/checkout@v6
         with:
@@ -58,20 +57,20 @@ jobs:
         # filter so a user can dispatch a single target without spinning the
         # entire matrix. `vm`-typed targets are excluded here for the same
         # reason as release.yml — they need a dedicated VM-driven job.
-        env:
-          INPUT_TARGET: ${{ inputs.target }}
+        env: { INPUT_TARGET: "${{ inputs.target }}" }
         run: |
-          if [[ "${INPUT_TARGET}" == "all" ]]; then
-            filter='select(.build != "vm")'
-          else
-            filter='select(.build != "vm") | select(.rust == env.INPUT_TARGET)'
-          fi
-          include=$(jq -c "[.targets[] | ${filter} | {
-              target: .rust,
-              runner: .runner,
-              \"build-tool\": .build,
-              experimental: (.experimental // false)
-            }]" npm/targets.json)
+          include=$(
+            jq -c --arg t "${INPUT_TARGET}" \
+              '[.targets[]
+                | select(.build != "vm")
+                | select($t == "all" or .rust == $t)
+                | {
+                    target: .rust,
+                    runner: .runner,
+                    "build-tool": .build,
+                    experimental: (.experimental // false)
+                  }]' npm/targets.json
+            )
           echo "include=${include}" >> "${GITHUB_OUTPUT}"
 
   build:
@@ -83,40 +82,36 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+      matrix: { include: "${{ fromJSON(needs.matrix.outputs.include) }}" }
     steps:
       - uses: actions/checkout@v6
 
       - name: install stable rust
         if: matrix.build-tool == 'cargo-cross-toolchain'
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        with: { targets: "${{ matrix.target }}" }
 
       - name: install nightly rust (tier-3 build-std)
         if: matrix.build-tool == 'cargo-build-std'
         uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+        with: { components: rust-src }
 
       - name: setup cross toolchain
-        if: matrix.build-tool == 'cargo-cross-toolchain' || matrix.build-tool == 'cargo-build-std'
+        if: contains(fromJSON('["cargo-cross-toolchain", "cargo-build-std"]'), matrix.build-tool)
         uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: ${{ matrix.target }}
+        with: { target: "${{ matrix.target }}" }
 
       # `dry-run: true` builds + compresses but skips the GitHub release
       # upload entirely — perfect for verifying the build matrix without
       # creating release artifacts.
       - name: build (taiki-e dry-run)
-        if: matrix.build-tool == 'cargo' || matrix.build-tool == 'cross' || matrix.build-tool == 'cargo-cross-toolchain'
+        if: contains(fromJSON('["cargo", "cross", "cargo-cross-toolchain"]'), matrix.build-tool)
         uses: taiki-e/upload-rust-binary-action@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ github.token }}
           bin: runner,run
           target: ${{ matrix.target }}
-          build-tool: ${{ matrix.build-tool == 'cargo-cross-toolchain' && 'cargo' || matrix.build-tool }}
+          build-tool: ${{ case(matrix.build-tool == 'cargo-cross-toolchain', 'cargo', matrix.build-tool) }}
           archive: runner-$tag-$target
           tar: all
           zip: none
@@ -131,19 +126,17 @@ jobs:
       - name: build (cargo + -Z build-std)
         if: matrix.build-tool == 'cargo-build-std'
         env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
           CARGO_UNSTABLE_BUILD_STD: std,panic_abort
-        run: |
-          cargo +nightly build \
-            --release --locked \
-            --bin runner --bin run \
-            --target "${{ matrix.target }}"
+        run: cargo +nightly build --release --locked
 
       - name: verify cargo-build-std artifacts
         if: matrix.build-tool == 'cargo-build-std'
+        env: { target: "${{ matrix.target }}" }
         run: |
           set -euo pipefail
           for bin in runner run; do
-            path="target/${{ matrix.target }}/release/${bin}"
+            path="target/${target}/release/${bin}"
             if [[ ! -f "${path}" ]]; then
               echo "error: ${path} missing" >&2
               exit 1

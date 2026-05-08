@@ -1,8 +1,41 @@
-#:schema /home/kjanat/projects/gist/cargo-config.schema/cargo-config.schema.json
+#:schema https://gist.githubusercontent.com/kjanat/1172d9d2d6dbe7c6d9983aaabef2eea5/raw/cargo-config.bundle.json
 
 [alias]
-l          = "lint"
-lint       = "clippy --all-targets --all-features -- -D warnings -D clippy::all"
-bin-run    = "run --bin run"
-bin-runner = "run --bin runner"
-t          = "test --all-features"
+bb          = ["build", "--bin", "run", "--bin", "runner"]
+bbr         = ["bb", "--release"]
+bin-run     = ["r", "--bin", "run", "--quiet"]
+bin-runner  = ["r", "--bin", "runner", "--quiet"]
+cl          = ["clippy", "--all-targets", "--all-features"]
+comp        = ["bin-runner", "--", "completions"]
+i           = ["install", "--path", "."]
+l           = ["cl", "--", "-D", "warnings", "-D", "clippy::all"]
+meta        = ["metadata", "--format-version", "1"]
+r           = "run"
+rbin-run    = ["bin-run", "--release"]
+rbin-runner = ["bin-runner", "--release"]
+rr          = ["run", "--release"]
+t           = ["test", "--all-features", "--all-targets"]
+
+# [target.<triple>]
+# linker = "…"              # linker to use
+# runner = "…"              # wrapper to run executables
+# rustflags = ["…", "…"]    # custom flags for `rustc`
+# rustdocflags = ["…", "…"] # custom flags for `rustdoc`
+
+# [target.<cfg>]
+# linker = "…"            # linker to use
+# runner = "…"            # wrapper to run executables
+# rustflags = ["…", "…"]  # custom flags for `rustc`
+
+# [target.<triple>.<links>] # `links` build script override
+# rustc-link-lib = ["foo"]
+# rustc-link-search = ["/path/to/foo"]
+# rustc-flags = "-L /some/path"
+# rustc-cfg = ['key="value"']
+# rustc-env = {key = "value"}
+# rustc-cdylib-link-arg = ["…"]
+# metadata_key1 = "value"
+# metadata_key2 = "value"
+
+[term]
+hyperlinks = false

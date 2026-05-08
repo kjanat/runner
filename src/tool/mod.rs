@@ -16,6 +16,8 @@
 pub(crate) mod bun;
 /// Bundler, the Ruby dependency manager (`Gemfile`).
 pub(crate) mod bundler;
+/// Cargo `[alias]` table — `.cargo/config.toml` aliases as runnable tasks.
+pub(crate) mod cargo_aliases;
 /// Cargo, the Rust package manager and build tool (`Cargo.toml`).
 pub(crate) mod cargo_pm;
 /// Composer, the PHP dependency manager (`composer.json`).
