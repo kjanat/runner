@@ -133,6 +133,18 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
         TaskSource::Justfile => tool::just::find_file(root),
         TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
+        // Cargo aliases span an entire ancestor chain, so the "nearest"
+        // probe attaches to the deepest config that applies to `root`. When
+        // there's no project-local `.cargo/config{,.toml}` we still want
+        // built-ins surfaced from `Cargo.toml`'s directory, which keeps
+        // depth-based ranking sensible.
+        TaskSource::CargoAliases => tool::cargo_aliases::find_configs(root)
+            .into_iter()
+            .next()
+            .or_else(|| {
+                let cargo_toml = root.join("Cargo.toml");
+                cargo_toml.is_file().then_some(cargo_toml)
+            }),
     }
     .and_then(|path| path.parent().map(Path::to_path_buf))
 }
@@ -248,6 +260,7 @@ fn build_run_command(
         TaskSource::Justfile => tool::just::run_cmd(task, args),
         TaskSource::Taskfile => tool::go_task::run_cmd(task, args),
         TaskSource::DenoJson => tool::deno::run_cmd(task, args),
+        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(task, args),
     })
 }
 

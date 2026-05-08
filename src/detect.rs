@@ -269,6 +269,35 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     if ctx.package_managers.contains(&PackageManager::Deno) {
         push_named_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
     }
+    if ctx.package_managers.contains(&PackageManager::Cargo) {
+        push_cargo_aliases(ctx, tool::cargo_aliases::extract_tasks(dir));
+    }
+}
+
+/// Append cargo aliases as tasks. Each alias's fully recursion-expanded
+/// command becomes the description (rendered as `cargo <expansion>` in the
+/// final list output).
+fn push_cargo_aliases(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<tool::cargo_aliases::ExtractedAlias>>,
+) {
+    match result {
+        Ok(entries) => {
+            for entry in entries {
+                let description = Some(entry.display_command());
+                ctx.tasks.push(Task {
+                    name: entry.name,
+                    source: TaskSource::CargoAliases,
+                    description,
+                    alias_of: None,
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning {
+            source: TaskSource::CargoAliases.label(),
+            detail: format!("failed to read aliases: {err:#}"),
+        }),
+    }
 }
 
 /// Append tasks from sources that only provide names (no descriptions).
