@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   triple` (cache hits ~250 ms, cold install 600–900 ms), and a
   `runner --version` smoke test on every install so a bad cache or
   missing asset surfaces here, not at the consumer's first task.
+- Cargo aliases as a `runner` task source. The hierarchical
+  `.cargo/config.toml` chain (cwd up to filesystem root, then
+  `$CARGO_HOME/config{,.toml}`) is merged with cargo's precedence
+  rules, recursive alias chains are expanded so `runner list` shows
+  the fully-resolved command (`l → clippy --all-targets --all-features
+  -- -D warnings`, `recursive_example → run --release --example
+  recursions`), and built-ins (`b/c/d/t/r/rm`) always surface even in
+  projects without a user config. User attempts to redefine a built-in
+  are silently ignored to match cargo's own rule. `runner run <alias>`
+  shells out to `cargo <alias> <args...>` so cargo's runtime resolution
+  stays authoritative.
 - Landing page at <https://runner.kjanat.com>, deployed to Cloudflare
   Workers Assets from `site/`. Single static page, dark mode via
   `prefers-color-scheme`, click-to-copy install commands with polite
@@ -33,11 +44,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dev.ts` serves `dist/`, watches `src/` / `public/` / `Cargo.toml`
   with an 80 ms debounce, and injects a WebSocket live-reload snippet
   into served HTML.
+- `site/build.ts` returns the emitted file list with bytes; the CLI
+  prints a sorted `raw / gzip / br` table at quality 9/11 to mirror
+  what a CDN actually serves, surfacing budget regressions next to
+  the build. HTML post-processing reads from `Bun.build` outputs in
+  memory instead of re-reading `dist/`, and `copyTree` returns the
+  bytes it copied so `public/` files land in the same `DistFile[]`
+  the summary walks.
+- `BuildOptions.dir` (`"relative" | "full"`) toggles the size-summary
+  path column between `dist/`-relative and absolute, surfaced via the
+  `FULL` env in the local build script. Public files respect the
+  toggle too so the rendered table is consistent across sources.
+- GitHub Pages-aware `publicPath`: under GitHub Actions the asset
+  prefix derives to `https://<owner>.github.io/<repo>/` from
+  `GITHUB_REPOSITORY`, so PR previews of forks load their own assets
+  without a config flag. `PUBLIC_PATH` env still overrides everything.
+- `CF_BEACON_TOKEN` env overrides the inlined Cloudflare Web
+  Analytics token; the literal stays as a fallback so production
+  builds without the env still report correctly.
+- External sourcemaps emit when `SENTRY_DSN` is set; otherwise the
+  build skips them entirely so the published site stays
+  one-round-trip-sized for end users.
 - README links the landing page and npm package, and adds shields.io
   badges for the `runner-run` npm version and the MIT licence.
 
 ### Changed
 
+- Cloudflare Web Analytics beacon now only injects in CI / GitHub
+  Actions builds. Local `bun run build` and library imports leave the
+  snippet out so dev previews don't phone home, and a missing
+  `</body>` warns instead of throwing so partial HTML fragments don't
+  fail the build.
+- `npm/scripts/build-packages.ts` swaps the deprecated
+  `cargo read-manifest` for
+  `cargo metadata --no-deps --format-version 1`, picking the
+  workspace's `workspace_default_members[0]` by id (falls back to the
+  first package for non-virtual single-member workspaces). `maxBuffer`
+  bumped to 64 MiB so large workspaces don't trip Node's 1 MiB
+  default.
 - `.github/scripts/publish/npm.sh` derives `REQUIRED_PLATFORMS` and
   `OPTIONAL_PLATFORMS` from `npm/targets.json` at runtime via `jq`
   instead of hardcoding two parallel lists; `npm-release.yml`
@@ -51,6 +95,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `site/build.ts` `publicPath` precedence: the original
+  `env["PUBLIC_PATH"] || isCI ? X : Y` parsed as
+  `(... || ...) ? X : Y`, so a literal `PUBLIC_PATH` value never
+  reached `Bun.build` — it acted as a boolean toggle. The hardcoded
+  `runner.kjanat.com/` fallback also leaked into Cloudflare Workers
+  preview deploys (`*.workers.dev`) and tripped CSP `'self'`,
+  blocking every asset on every PR preview. Replaced with
+  `env["PUBLIC_PATH"] || githubPagesUrl() || "/"`: explicit override
+  wins, GitHub Pages still gets its `/<repo>/` prefix, everything
+  else stays same-origin.
+- `public/_headers` drops the dead `/favicon.ico` Content-Type
+  override block; the icon ships as an SVG via `<link rel="icon">`,
+  so nothing routes through `/favicon.ico` to need it.
 - `.github/scripts/build/package-release-asset.sh` writes checksum
   files as `<basename>.sha256` (not `<basename>.tar.gz.sha256`),
   matching `taiki-e/upload-rust-binary-action`'s convention and what

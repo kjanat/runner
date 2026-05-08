@@ -79,6 +79,9 @@ pub(crate) enum TaskSource {
     TurboJson,
     /// `deno.json` / `deno.jsonc` `"tasks"` field.
     DenoJson,
+    /// Cargo `[alias]` table — built-ins plus user aliases merged across the
+    /// hierarchical `.cargo/config.toml` chain.
+    CargoAliases,
 }
 
 /// Expected Node.js version parsed from a version file.
@@ -183,6 +186,10 @@ impl TaskSource {
             Self::Taskfile => "Taskfile",
             Self::TurboJson => "turbo.json",
             Self::DenoJson => "deno.json",
+            // Synthetic source — aliases merge across the hierarchical
+            // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
+            // file name represents it.
+            Self::CargoAliases => "cargo",
         }
     }
 
@@ -195,6 +202,7 @@ impl TaskSource {
             "Taskfile" => Some(Self::Taskfile),
             "turbo.json" => Some(Self::TurboJson),
             "deno.json" => Some(Self::DenoJson),
+            "cargo" => Some(Self::CargoAliases),
             _ => None,
         }
     }
@@ -208,6 +216,7 @@ impl TaskSource {
             Self::Taskfile => 3,
             Self::TurboJson => 4,
             Self::DenoJson => 5,
+            Self::CargoAliases => 6,
         }
     }
 }

@@ -25,7 +25,7 @@ run *args:
 runner *args:
     cargo bin-runner --profile={{ env("PROFILE", "dev") }} -- {{ args }}
 
-list:
+ls:
     @just --list
 
 [group('npm')]
