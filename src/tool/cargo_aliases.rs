@@ -126,6 +126,18 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedAlias>> {
     Ok(expand_all(&raw))
 }
 
+/// Pick one path to represent the cargo-aliases source for `root` — the
+/// deepest applicable `.cargo/config{,.toml}` if one exists, otherwise
+/// `<root>/Cargo.toml` so built-ins-only projects still anchor at a real
+/// file. Used by `runner list` for the OSC8 link target and by `runner
+/// run`'s nearest-source ranking.
+pub(crate) fn find_anchor(root: &Path) -> Option<PathBuf> {
+    find_configs(root).into_iter().next().or_else(|| {
+        let cargo_toml = root.join("Cargo.toml");
+        cargo_toml.is_file().then_some(cargo_toml)
+    })
+}
+
 /// Cargo emits `cargo <name> <user-args...>`; recursion expansion is cargo's
 /// own concern at execution time, so we just shell out to the literal name.
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
