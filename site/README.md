@@ -2,36 +2,49 @@
 
 Source for [runner.kjanat.dev](https://runner.kjanat.dev/).
 
-One static page, served by a Cloudflare Worker via the Static Assets
-binding. No build step, no deps — `public/index.html` ships as-is.
+Static site bundled with Bun (`build.ts`) and deployed to a Cloudflare
+Worker (`name = "runner"` in `wrangler.jsonc`) via the Static Assets
+binding. `src/` is the editable source; `dist/` is the build output and
+the directory the Worker actually serves.
 
-## Deploy
+## Build
 
 ```sh
-bun --cwd=site deploy
+bun --cwd=site build      # bundles src/ → dist/, copies public/ on top
+bun --cwd=site dev        # local dev server with WS live-reload
+bun --cwd=site deploy     # build + wrangler deploy
 ```
 
-First deploy creates the `runner-site` Worker and provisions the
+The build templates `{{version}}`, `{{repo}}`, `{{authorName}}` etc.
+from the workspace `Cargo.toml` so the site and the crate share one
+source of truth for metadata. Other scripts live in
+[`package.json`](./package.json) (`check`, `lint`, `fmt`, `typecheck`,
+`tail`).
+
+First deploy creates the `runner` Worker and provisions the
 custom-domain route `runner.kjanat.dev` (Cloudflare auto-issues the
-TLS cert; DNS is managed in the same zone).
-
-## Local
-
-```sh
-bun --cwd=site dev          # http://localhost:8787
-```
-
-Or open `public/index.html` directly in a browser — it's a single,
-self-contained file.
+TLS cert; DNS is managed in the same zone). The `.com` route remains
+active as a secondary alias.
 
 ## Layout
 
 ```text
 site/
-├── public/
-│   ├── index.html        # the whole site
+├── src/
+│   ├── index.html        # landing page (templated by build.ts)
 │   ├── 404.html          # branded not-found page
+│   ├── app/copy.ts       # client-side click-to-copy
+│   ├── assets/icon.svg
+│   └── styles/
+├── public/
 │   ├── _headers          # cache + security headers (CF native)
 │   └── robots.txt
+├── build.ts              # Bun bundler + token substitution
+├── dev.ts                # dev server + watcher + WS live-reload
+├── biome.json            # lint config
+├── package.json          # scripts
 └── wrangler.jsonc        # Static Assets binding, custom domain
 ```
+
+`dist/` is gitignored — produced by `build.ts`, consumed by
+`wrangler deploy`.

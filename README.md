@@ -86,7 +86,7 @@ From source via Cargo:
 cargo install --path .
 
 # Or from git
-cargo install --git=https://github.com/kjanat/runner/ runner
+cargo install --git=https://github.com/kjanat/runner/ runner-run
 ```
 
 Or use the convenience installer script (latest or pinned version):

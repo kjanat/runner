@@ -45,9 +45,11 @@ pub(crate) struct ExtractedAlias {
 }
 
 impl ExtractedAlias {
-    /// Render the expansion as a space-separated string for descriptions.
+    /// Render the expansion as a shell-quoted string for descriptions, so
+    /// whitespace-bearing tokens round-trip with `tokenize`.
     pub(crate) fn display_command(&self) -> String {
-        self.expansion.join(" ")
+        shlex::try_join(self.expansion.iter().map(String::as_str))
+            .unwrap_or_else(|_| self.expansion.join(" "))
     }
 }
 
@@ -158,7 +160,10 @@ fn merge_alias_tables(paths: &[PathBuf]) -> anyhow::Result<HashMap<String, Vec<S
             read_alias_table(path).with_context(|| format!("reading {}", path.display()))?;
         for (name, value) in aliases {
             let Some(tokens) = tokenize(&value) else {
-                continue;
+                anyhow::bail!(
+                    "cargo alias `{name}` in {} is unparseable or empty",
+                    path.display()
+                );
             };
             merged.insert(name, tokens);
         }
@@ -411,5 +416,17 @@ mod tests {
         };
 
         assert_eq!(alias.display_command(), "clippy --all-targets -D warnings");
+    }
+
+    #[test]
+    fn display_command_round_trips_whitespace_tokens() {
+        let alias = ExtractedAlias {
+            name: "x".into(),
+            expansion: vec!["run".into(), "--".into(), "a b".into()],
+        };
+
+        let rendered = alias.display_command();
+        let reparsed = tokenize(&AliasValue::Str(rendered.clone())).unwrap();
+        assert_eq!(reparsed, alias.expansion, "rendered: {rendered}");
     }
 }

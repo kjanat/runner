@@ -27,7 +27,8 @@
 		"**/node_modules",
 		"**/samples",
 		"**/target",
-		"**/dist"
+		"**/dist",
+		"**/downloads"
 	],
 	"plugins": [
 		"https://plugins.dprint.dev/typescript-0.95.15.wasm",

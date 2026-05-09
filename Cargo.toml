@@ -1,6 +1,6 @@
 [package]
-name         = "runner"
-version      = "0.6.1"
+name         = "runner-run"
+version      = "0.7.0"
 edition      = "2024"
 rust-version = "1.95"
 description  = "Universal project task runner"
@@ -24,6 +24,10 @@ subpkgscope = "@runner-run"
 bugs        = { "url" = "https://github.com/kjanat/runner/issues" }
 repository  = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }
 engines     = { "node" = ">=18" }
+
+[lib]
+name = "runner"
+path = "src/lib.rs"
 
 [[bin]]
 name = "runner"

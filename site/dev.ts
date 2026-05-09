@@ -84,10 +84,14 @@ console.log(`dev → ${server.url}`);
 
 let pending: ReturnType<typeof setTimeout> | null = null;
 let rebuilding = false;
+let queued = false;
 function scheduleRebuild(reason: string) {
+	if (rebuilding) {
+		queued = true;
+		return;
+	}
 	if (pending) clearTimeout(pending);
 	pending = setTimeout(async () => {
-		if (rebuilding) return;
 		rebuilding = true;
 		try {
 			const t0 = performance.now();
@@ -100,6 +104,10 @@ function scheduleRebuild(reason: string) {
 			console.error("build error:", err);
 		} finally {
 			rebuilding = false;
+			if (queued) {
+				queued = false;
+				scheduleRebuild("queued");
+			}
 		}
 	}, 80);
 }
