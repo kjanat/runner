@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
-## [0.7.0] - 2026-05-08
+## [0.7.0]
 
 ### Added
 
