@@ -1,11 +1,8 @@
 name: npm-release
 run-name: >-
-  ${{ format('npm publish {0}',
-    	case(
-      	contains(github.event_name, 'workflow_run'),
-      	github.event.workflow_run.head_branch,
-      	inputs.tag)
-    	) }}
+  ${{ format('npm publish {0}', case(
+        contains(github.event_name, 'workflow_run'), github.event.workflow_run.head_branch,
+      	inputs.tag)) }}
 
 on:
   release: { types: [published] }
@@ -33,7 +30,7 @@ on:
         type: choice
       dry-run:
         description: Dry run only
-        required: false
+        required: true
         default: false
         type: boolean
 
@@ -47,7 +44,7 @@ env:
   RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
   EVENT_NAME: ${{ github.event_name }}
   INPUT_DIST_TAG: ${{ inputs.dist-tag }}
-  INPUT_DRY_RUN: ${{ fromJSON(inputs.dry-run) }}
+  INPUT_DRY_RUN: ${{ fromJSON(inputs.dry-run) || false }}
 
 jobs:
   publish:
