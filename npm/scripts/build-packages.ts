@@ -18,7 +18,7 @@
 import { spawnSync } from "node:child_process";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, resolve } from "node:path";
-import { argv, exit, stderr, stdout } from "node:process";
+import { argv, env, exit, stderr, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
 import { parseArgs, promisify } from "node:util";
 import { gunzip } from "node:zlib";
@@ -377,6 +377,28 @@ function errorCode(error: unknown): string | undefined {
 	}
 
 	return undefined;
+}
+
+/**
+ * Run `fn` inside a GitHub Actions log group when executing under Actions
+ * (`GITHUB_ACTIONS=true`); otherwise just run `fn` with no extra output.
+ *
+ * Emits `::group::<title>` before and `::endgroup::` after, even on throw,
+ * so each per-package build collapses cleanly in the workflow log without
+ * altering local-dev output.
+ *
+ * @param title - Group title shown in the collapsed Actions log row
+ * @param fn - Async work to execute inside the group
+ * @returns Whatever `fn` resolves to
+ */
+async function withLogGroup<T>(title: string, fn: () => Promise<T>): Promise<T> {
+	const inActions = env.GITHUB_ACTIONS === "true";
+	if (inActions) stdout.write(`::group::${title}\n`);
+	try {
+		return await fn();
+	} finally {
+		if (inActions) stdout.write("::endgroup::\n");
+	}
 }
 
 /**
@@ -897,7 +919,10 @@ async function main(): Promise<void> {
 	for (const target of matrix.targets) {
 		if (opts.only && !opts.only.has(target.pkg)) continue;
 
-		const built = await buildPlatformPackage(matrix, target, opts, meta);
+		const built = await withLogGroup(
+			`${matrix.scope}/${target.pkg}`,
+			() => buildPlatformPackage(matrix, target, opts, meta),
+		);
 		if (built) builtTargets.push(built);
 	}
 
@@ -907,7 +932,7 @@ async function main(): Promise<void> {
 		);
 	}
 
-	await buildFacade(matrix, opts.version, builtTargets, meta);
+	await withLogGroup(matrix.facade, () => buildFacade(matrix, opts.version, builtTargets, meta));
 }
 
 if (import.meta.main) {
