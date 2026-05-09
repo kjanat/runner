@@ -5,8 +5,8 @@
 
 Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
-- Site: **<https://runner.kjanat.com/>** — landing page; source in [`site/`](./site/)
-- npm: **[`runner-run`](https://www.npmjs.com/package/runner-run)** — `npm install -g runner-run`
+- Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
+- npm: **[`runner-run`](https://npm.im/runner-run)** — `npm install -g runner-run`
 
 ## Features
 

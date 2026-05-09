@@ -7,6 +7,7 @@
 		"not_found_handling": "404-page",
 	},
 	"routes": [
+		{ "pattern": "runner.kjanat.dev", "custom_domain": true },
 		{ "pattern": "runner.kjanat.com", "custom_domain": true },
 	],
 	"observability": {

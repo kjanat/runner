@@ -1,6 +1,6 @@
 # site
 
-Source for [runner.kjanat.com](https://runner.kjanat.com/).
+Source for [runner.kjanat.dev](https://runner.kjanat.dev/).
 
 One static page, served by a Cloudflare Worker via the Static Assets
 binding. No build step, no deps — `public/index.html` ships as-is.
@@ -12,7 +12,7 @@ bun --cwd=site deploy
 ```
 
 First deploy creates the `runner-site` Worker and provisions the
-custom-domain route `runner.kjanat.com` (Cloudflare auto-issues the
+custom-domain route `runner.kjanat.dev` (Cloudflare auto-issues the
 TLS cert; DNS is managed in the same zone).
 
 ## Local
