@@ -44,7 +44,7 @@ env:
   RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
   EVENT_NAME: ${{ github.event_name }}
   INPUT_DIST_TAG: ${{ inputs.dist-tag }}
-  INPUT_DRY_RUN: ${{ fromJSON(inputs.dry-run) || false }}
+  INPUT_DRY_RUN: ${{ inputs.dry-run || false }}
 
 jobs:
   publish:
@@ -60,6 +60,8 @@ jobs:
       id-token: write # for npm provenance
       actions: read # for cross-workflow artifact download
     environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
+    outputs:
+      dry-run: ${{ steps.derive.outputs.dry-run }}
     # env:
     # RELEASE_TAG comes from trusted trigger metadata only — never from
     # anything build-time scripts could influence.
@@ -112,3 +114,21 @@ jobs:
           DIST_TAG: ${{ steps.derive.outputs.dist-tag }}
           DRY_RUN: ${{ steps.derive.outputs.dry-run }}
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/npm.sh"
+
+  # Flip the draft GitHub release that release.yml created (taiki-e
+  # action defaults `draft: true`) to published once npm publish has
+  # actually shipped. Idempotent — `gh release edit --draft=false` on an
+  # already-published release is a no-op, so the `release.published`
+  # trigger path stays safe.
+  publish-release:
+    name: publish github release
+    needs: publish
+    if: needs.publish.outputs.dry-run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: flip draft to published
+        run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
