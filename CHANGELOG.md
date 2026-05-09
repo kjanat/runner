@@ -137,21 +137,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passthrough at detection time when its command body literally
   invokes `turbo run <name>` (or the shorthand `turbo <name>`) for
   a same-named target, optionally followed by flag tokens
-  (`--filter web`, `--concurrency=4`); the full bash control set
+  (`--filter web`, `--concurrency=4`) or — after a bare `--`
+  end-of-options separator (POSIX/getopt convention) — args
+  forwarded to the underlying task; the full bash control set
   (`&&`, `||`, `;`, `;;`, `;&`, `;;&`, `|`, `|&`, `&`, `!`, `{`,
   `}`, `(`, `)`), fd-style redirects (bare `>`/`<`/`>>`/`<<<`,
   combined-fd `&>`/`>&`, fd-prefixed `2>`, composite `2>&1`,
-  `2>/dev/null`, `&>file.log`) — including those positioned after
-  a value-expecting flag — and extra positional targets all reject
-  the match so scripts that do real work beyond dispatching to
-  turbo stay visible. Only thin passthroughs are dropped from
-  completion when a same-named `turbo.json` task also exists. Real
-  scripts like `"build": "vite build"` keep their qualified form
-  even when they happen to share a name with a turbo task. `runner
-  list` still surfaces both sources for transparency, `runner build`
-  already dispatched through turbo per `source_priority`, and a
-  third source (e.g. Makefile) keeps its qualified form alongside
-  `turbo.json:build` for disambiguation.
+  `2>/dev/null`, `&>file.log`), shell expansion (parameter
+  `$X`/`${X}`/`${X:-def}`/`${X//a/b}`, special vars `$@`/`$*`/
+  `$#`/`$?`, command substitution `$(cmd)` and backtick
+  `` `cmd` ``, arithmetic `$((expr))`, double-quoted forms with
+  embedded expansion `"${X}"`) — including those positioned after
+  a value-expecting flag or after `--` — and extra positional
+  targets all reject the match so scripts that do real work
+  beyond dispatching to turbo stay visible. Only thin passthroughs
+  are dropped from completion when a same-named `turbo.json` task
+  also exists. Real scripts like `"build": "vite build"` keep
+  their qualified form even when they happen to share a name with
+  a turbo task. `runner list` still surfaces both sources for
+  transparency, `runner build` already dispatched through turbo
+  per `source_priority`, and a third source (e.g. Makefile) keeps
+  its qualified form alongside `turbo.json:build` for
+  disambiguation.
 
 ## [0.6.0] - 2026-05-05
 

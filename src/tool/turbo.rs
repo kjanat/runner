@@ -61,14 +61,24 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// `--concurrency=4`).
 ///
 /// The tail after the target name must consist solely of flag tokens
-/// (`-x`, `--long`, `--key=value`) or values immediately following a
-/// non-`=` flag. Any of these reject the match — they mean the script
-/// does more than just dispatch to turbo:
+/// (`-x`, `--long`, `--key=value`), values immediately following a
+/// non-`=` flag, or — after a bare `--` end-of-options separator —
+/// args forwarded to the underlying task. The `--` separator itself
+/// is recognized as a marker (POSIX/getopt convention), not as a
+/// flag; turbo's own argument-forwarding pattern is `turbo run <task>
+/// -- <args...>`. Any of these reject the match — they mean the
+/// script does more than just dispatch to turbo:
 /// - shell control operators: `&&`, `||`, `;`, `;;`, `;&`, `;;&`,
 ///   `|`, `|&`, `&`, `!`, `{`, `}`, `(`, `)`
 /// - redirect operators: bare `>`/`<`/`>>`/`<<`/`<<<`, combined-fd
 ///   `&>`/`&>>`/`>&`, fd-prefixed `2>`, `1>`, composite `2>&1`,
 ///   `1>&2`, `2>/dev/null`, `&>file.log`
+/// - shell expansion tokens (anything containing `$` or backtick):
+///   parameter expansion (`$X`, `${X}`, `${X:-def}`, `${X//a/b}`,
+///   `${!X}`, `${#X}`, `${X[@]}`), special vars (`$@`, `$*`, `$#`,
+///   `$?`), command substitution (`$(cmd)`, `` `cmd` ``), arithmetic
+///   (`$((expr))`), and quoted forms with embedded expansion
+///   (`"${X}"`)
 /// - any other bare positional that isn't consuming a flag's value
 ///
 /// This is purely a textual heuristic on the script body. Indirect
@@ -79,13 +89,18 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 ///
 /// Known limitations (deferred — rare in turbo dispatch scripts and
 /// stricter detection would over-reject legitimate patterns):
-/// - shell substitution (`$(...)`, backticks) following a flag is
-///   silently accepted as a flag value;
 /// - unquoted globs (`*`, `?`) following a flag are accepted because
 ///   `*` is legitimate in turbo filters like `@scope/*`;
+/// - tilde expansion (`~/cache`) following a flag is accepted because
+///   `~` is legitimate in path values like `--cache-dir`;
+/// - brace expansion (`{a,b,c}`) following a flag is accepted because
+///   distinguishing it from quoted JSON values is fragile;
 /// - quoted multi-word arguments (`--filter "my app"`) are split
 ///   incorrectly by `split_whitespace` and reject via the positional
-///   rule — false negative, safe direction (script stays visible).
+///   rule — false negative, safe direction (script stays visible);
+/// - single-quoted literals containing `$` or backtick (e.g. `'$X'`)
+///   are rejected even though shell-literal — extremely rare in turbo
+///   scripts, false negative, safe direction.
 pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
     let mut tokens = command.split_whitespace();
     if tokens.next() != Some("turbo") {
@@ -106,21 +121,40 @@ pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
         return false;
     }
 
-    // Tail must be flags-only (with optional space-separated values).
-    // Any bare positional, shell metachar, or redirect operator means
-    // the script is doing extra work and is not a thin passthrough.
+    // Tail must be flags-only (with optional space-separated values),
+    // or a `--` end-of-options marker followed by forwarded args.
+    // Any bare positional, shell metachar, redirect operator, or
+    // shell-expansion token means the script is doing extra work
+    // and is not a thin passthrough.
     //
-    // Order matters: redirect detection runs BEFORE flag-value
-    // consumption so that fd-style redirects like `2>&1` after a
-    // value-expecting flag are rejected, not silently swallowed as
-    // the flag's value.
+    // Order matters: control / redirect / expansion checks all run
+    // BEFORE flag-value consumption so that tokens like `2>&1`,
+    // `|&`, or `$X` positioned after a value-expecting flag are
+    // rejected, not silently swallowed as the flag's value.
+    //
+    // `--` (POSIX end-of-options separator): turbo forwards everything
+    // after `--` to the underlying task. Once seen, remaining tokens
+    // are accepted as forwarded args (still rejecting shell metachars,
+    // redirects, and expansions which would mean the script body does
+    // real work beyond dispatching to turbo).
     let mut expects_flag_value = false;
+    let mut after_double_dash = false;
     for token in tokens {
         if is_shell_control_token(token) {
             return false;
         }
         if looks_like_redirect(token) {
             return false;
+        }
+        if looks_like_shell_expansion(token) {
+            return false;
+        }
+        if after_double_dash {
+            continue;
+        }
+        if token == "--" {
+            after_double_dash = true;
+            continue;
         }
         if token.starts_with('-') {
             expects_flag_value = !token.contains('=');
@@ -165,7 +199,28 @@ fn looks_like_redirect(token: &str) -> bool {
     rest.starts_with('>') || rest.starts_with('<')
 }
 
+/// Detects tokens that perform shell expansion: parameter expansion,
+/// command substitution, or arithmetic. Any of these mean the script's
+/// effective behavior depends on shell state at run time, so it isn't
+/// a thin turbo dispatch.
+///
+/// Catches the full bash expansion family in one rule: presence of
+/// `$` covers `$X`, `${X}`, `${X:-def}`, `${X//a/b}`, `${!X}`,
+/// `${#X}`, `${X[@]}`, special vars (`$@`, `$*`, `$#`, `$?`, `$$`,
+/// `$!`, `$_`, `$0`-`$9`, `${10}+`), `$(cmd)`, `$((expr))`, and any
+/// double-quoted form with embedded expansion (`"${X}"`). Backtick
+/// covers the legacy `` `cmd` `` substitution form.
+fn looks_like_shell_expansion(token: &str) -> bool {
+    token.contains('$') || token.contains('`')
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "test fixtures embed bash parameter-expansion strings like \
+              `${X:-default}` and `${X:+alt}` as input to is_self_passthrough; \
+              the lint mistakes them for Rust format args."
+)]
 mod tests {
     use std::fs;
 
@@ -445,7 +500,98 @@ mod tests {
         ));
     }
 
-    use super::{is_shell_control_token, looks_like_redirect};
+    #[test]
+    fn is_self_passthrough_rejects_var_expansion_after_flag() {
+        // `--filter $X` was previously consumed: the value of `$X` is
+        // resolved at run time, so the script's effective filter
+        // depends on shell state — not a thin passthrough.
+        assert!(!is_self_passthrough("build", "turbo run build --filter $X"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_braced_var_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --filter ${X}"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_default_var_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --filter ${X:-web}"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_pattern_substitution_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --filter ${X//foo/bar}"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_command_substitution_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --filter $(get_filter)"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_backtick_substitution_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --filter `get_filter`"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_arithmetic_expansion_after_flag() {
+        // Whitespace in `$((CORES * 2))` splits into multiple tokens,
+        // but the first one (`$((CORES`) still trips the `$` check.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --concurrency $((CORES * 2))"
+        ));
+        // Same form without internal spaces.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --concurrency $((CORES*2))"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_special_var_after_flag() {
+        assert!(!is_self_passthrough("build", "turbo run build --filter $@"));
+        assert!(!is_self_passthrough("build", "turbo run build --filter $*"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_quoted_expansion_after_flag() {
+        // The exact form from the user's bug report:
+        // `"build": "turbo run build \"${X}\""` decodes to
+        // `turbo run build "${X}"` — the quoted form must reject too.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --filter \"${X}\""
+        ));
+        // Standalone positional case (already rejected via the
+        // positional rule, but pin behavior under the new rule too).
+        assert!(!is_self_passthrough("build", "turbo run build \"${X}\""));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_bare_var_positional() {
+        // Standalone `$X` after the target — already rejected by the
+        // positional rule; under the new rule it now rejects via the
+        // explicit shell-expansion check, which is clearer.
+        assert!(!is_self_passthrough("build", "turbo run build $X"));
+    }
+
+    use super::{is_shell_control_token, looks_like_redirect, looks_like_shell_expansion};
 
     #[test]
     fn is_shell_control_token_matches_full_bash_set() {
@@ -468,6 +614,86 @@ mod tests {
             assert!(
                 !is_shell_control_token(non_op),
                 "`{non_op}` must not classify as shell control"
+            );
+        }
+    }
+
+    #[test]
+    fn looks_like_shell_expansion_matches_full_dollar_family() {
+        for form in [
+            // Parameter expansion variants.
+            "$X",
+            "${X}",
+            "${X:-default}",
+            "${X:=default}",
+            "${X:?msg}",
+            "${X:+alt}",
+            "${X#prefix}",
+            "${X##prefix}",
+            "${X%suffix}",
+            "${X%%suffix}",
+            "${X/foo/bar}",
+            "${X//foo/bar}",
+            "${X^^}",
+            "${X,,}",
+            "${#X}",
+            "${!X}",
+            "${X[@]}",
+            "${X[0]}",
+            // Special vars.
+            "$@",
+            "$*",
+            "$#",
+            "$?",
+            "$$",
+            "$!",
+            "$_",
+            "$0",
+            "$9",
+            "${10}",
+            // Command substitution.
+            "$(cmd)",
+            "$(cmd --flag)",
+            // Arithmetic expansion.
+            "$((1+1))",
+            "$((CORES*2))",
+            // Quoted forms with embedded expansion.
+            "\"${X}\"",
+            "\"$X\"",
+            "\"prefix-${X}\"",
+        ] {
+            assert!(
+                looks_like_shell_expansion(form),
+                "expected `{form}` to be detected as shell expansion"
+            );
+        }
+    }
+
+    #[test]
+    fn looks_like_shell_expansion_matches_backtick_substitution() {
+        assert!(looks_like_shell_expansion("`cmd`"));
+        assert!(looks_like_shell_expansion("`cmd --flag`"));
+        assert!(looks_like_shell_expansion("prefix-`cmd`-suffix"));
+    }
+
+    #[test]
+    fn looks_like_shell_expansion_rejects_plain_values_and_flags() {
+        for plain in [
+            "--filter",
+            "--concurrency=4",
+            "web",
+            "4",
+            "@scope/*",
+            "./packages/web",
+            ">",
+            "2>&1",
+            "&>",
+            "{a,b,c}",
+            "~/cache",
+        ] {
+            assert!(
+                !looks_like_shell_expansion(plain),
+                "`{plain}` must not classify as shell expansion"
             );
         }
     }
@@ -518,5 +744,72 @@ mod tests {
         assert!(!looks_like_redirect("'<pkg>'"));
         // Bare `&` is a metachar handled separately, not a redirect.
         assert!(!looks_like_redirect("&"));
+    }
+
+    #[test]
+    fn is_self_passthrough_accepts_double_dash_with_forwarded_flag() {
+        // POSIX `--` end-of-options separator: turbo forwards everything
+        // after `--` to the underlying task.
+        assert!(is_self_passthrough("build", "turbo run build -- --watch"));
+        assert!(is_self_passthrough(
+            "test",
+            "turbo run test --filter web -- --reporter=verbose"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_accepts_double_dash_with_multiple_positionals() {
+        // Multi-positional forwarding via `--` was the concrete bug:
+        // pre-fix, `arg2` rejected as a bare positional because `--`
+        // had been treated as a value-expecting flag.
+        assert!(is_self_passthrough("build", "turbo run build -- arg1 arg2"));
+        assert!(is_self_passthrough(
+            "build",
+            "turbo run build -- arg1 arg2 arg3 arg4"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_accepts_double_dash_with_no_following_args() {
+        assert!(is_self_passthrough("build", "turbo run build --"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_shell_chain_after_double_dash() {
+        // Shell metacharacters after `--` still mean the script does
+        // real work; the separator is not a free pass.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build -- --watch && echo done"
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build -- arg1 ; cleanup"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_redirect_after_double_dash() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build -- > build.log"
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build -- --watch 2>&1"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_expansion_after_double_dash() {
+        assert!(!is_self_passthrough("build", "turbo run build -- $TARGET"));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build -- --filter ${SCOPE}"
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build -- $(date +%s)"
+        ));
     }
 }

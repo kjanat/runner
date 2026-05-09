@@ -14,6 +14,7 @@ r           = "run"
 rbin-run    = ["bin-run", "--release"]
 rbin-runner = ["bin-runner", "--release"]
 rr          = ["run", "--release"]
+runner      = ["run", "--bin", "runner"]
 t           = ["test", "--all-features", "--all-targets"]
 
 # [target.<triple>]
