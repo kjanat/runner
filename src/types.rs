@@ -61,6 +61,14 @@ pub(crate) struct Task {
     /// When this task is an alias, the name of the target recipe it
     /// resolves to (e.g. `alias b := build` → `Some("build")`).
     pub alias_of: Option<String>,
+    /// `true` when this task's command body is a thin passthrough to
+    /// the Turborepo CLI for a same-named target (e.g. a `package.json`
+    /// script `"build": "turbo run build"`). Set during detection by
+    /// inspecting the actual script body, not inferred from name
+    /// collisions, so real scripts like `"build": "vite build"` are
+    /// never flagged. Used by completion to avoid emitting a redundant
+    /// `package.json:build` candidate alongside `turbo.json:build`.
+    pub passthrough_to_turbo: bool,
 }
 
 /// Identifies the config file a [`Task`] was extracted from.

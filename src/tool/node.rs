@@ -58,8 +58,10 @@ fn detect_pm(package_json: Option<PackageJson>) -> Option<PackageManager> {
     }
 }
 
-/// Parse the supported package manifest and return all script names.
-pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<String>> {
+/// Parse the supported package manifest and return each script as a
+/// `(name, command)` pair. The command body is needed downstream to
+/// classify passthrough wrappers (e.g. `"build": "turbo run build"`).
+pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
     let Some((path, content)) = read_manifest(dir)? else {
         return Ok(vec![]);
     };
@@ -69,11 +71,11 @@ pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<String>> {
 
     Ok(package_json
         .scripts
-        .map_or_else(Vec::new, |scripts| scripts.into_keys().collect()))
+        .map_or_else(Vec::new, |scripts| scripts.into_iter().collect()))
 }
 
 /// Parse scripts from the nearest supported package manifest while walking upward.
-pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
     let Some((path, content)) = read_manifest_upwards(dir)? else {
         return Ok(vec![]);
     };
@@ -83,7 +85,7 @@ pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<String>>
 
     Ok(package_json
         .scripts
-        .map_or_else(Vec::new, |scripts| scripts.into_keys().collect()))
+        .map_or_else(Vec::new, |scripts| scripts.into_iter().collect()))
 }
 
 #[derive(Deserialize)]
@@ -154,8 +156,11 @@ fn parse_package_yaml(content: &str) -> Option<PackageJson> {
         .map(|table| {
             table
                 .iter()
-                .filter_map(|(name, _)| name.as_str().map(ToOwned::to_owned))
-                .map(|name| (name, String::new()))
+                .filter_map(|(name, body)| {
+                    let name = name.as_str()?.to_owned();
+                    let body = body.as_str().unwrap_or_default().to_owned();
+                    Some((name, body))
+                })
                 .collect::<HashMap<_, _>>()
         })
         .filter(|table| !table.is_empty());
@@ -217,7 +222,13 @@ mod tests {
             extract_scripts(dir.path()).expect("scripts should parse from package.json5");
         scripts.sort_unstable();
 
-        assert_eq!(scripts, ["build", "test"]);
+        assert_eq!(
+            scripts,
+            [
+                ("build".to_owned(), "vite build".to_owned()),
+                ("test".to_owned(), "vitest".to_owned()),
+            ]
+        );
     }
 
     #[test]
@@ -257,7 +268,13 @@ mod tests {
             extract_scripts(dir.path()).expect("scripts should parse from package.yaml");
         scripts.sort_unstable();
 
-        assert_eq!(scripts, ["build", "test"]);
+        assert_eq!(
+            scripts,
+            [
+                ("build".to_owned(), "vite build".to_owned()),
+                ("test".to_owned(), "vitest".to_owned()),
+            ]
+        );
     }
 
     #[test]
@@ -273,7 +290,13 @@ mod tests {
             extract_scripts(dir.path()).expect("scripts should parse from inline YAML map");
         scripts.sort_unstable();
 
-        assert_eq!(scripts, ["build", "test"]);
+        assert_eq!(
+            scripts,
+            [
+                ("build".to_owned(), "vite build".to_owned()),
+                ("test".to_owned(), "vitest".to_owned()),
+            ]
+        );
     }
 
     #[test]
@@ -315,6 +338,6 @@ mod tests {
 
         let tasks = extract_scripts_upwards(&nested).expect("nearest scripts should parse");
 
-        assert_eq!(tasks, ["member"]);
+        assert_eq!(tasks, [("member".to_owned(), "1".to_owned())]);
     }
 }

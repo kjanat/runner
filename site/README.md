@@ -1,6 +1,6 @@
 # site
 
-Source for [runner.kjanat.com](https://runner.kjanat.com/).
+Source for [runner.kjanat.dev](https://runner.kjanat.dev/).
 
 Static site bundled with Bun (`build.ts`) and deployed to a Cloudflare
 Worker (`name = "runner"` in `wrangler.jsonc`) via the Static Assets
@@ -22,8 +22,9 @@ source of truth for metadata. Other scripts live in
 `tail`).
 
 First deploy creates the `runner` Worker and provisions the
-custom-domain route `runner.kjanat.com` (Cloudflare auto-issues the
-TLS cert; DNS is managed in the same zone).
+custom-domain route `runner.kjanat.dev` (Cloudflare auto-issues the
+TLS cert; DNS is managed in the same zone). The `.com` route remains
+active as a secondary alias.
 
 ## Layout
 

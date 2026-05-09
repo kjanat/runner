@@ -1,10 +1,11 @@
 # runner-run
 
-Universal project task runner. Auto-detects the toolchain
-(npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer) and
-provides a unified CLI for installing dependencies, listing tasks, and
-running them. Works in monorepos (turbo, nx, pnpm/npm/yarn workspaces,
-Cargo workspaces).
+Universal project task runner.\
+
+Auto-detects the toolchain (npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer)
+and provides a unified CLI for installing dependencies, listing tasks, and running
+them.\
+Works in monorepos (turbo, nx, pnpm/npm/yarn workspaces, Cargo workspaces).
 
 ## Install
 

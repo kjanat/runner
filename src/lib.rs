@@ -645,6 +645,7 @@ mod tests {
                     source: TaskSource::PackageJson,
                     description: None,
                     alias_of: None,
+                    passthrough_to_turbo: false,
                 })
                 .collect(),
             node_version: None,

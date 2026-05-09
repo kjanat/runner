@@ -1,12 +1,12 @@
 # runner
 
-[![npm version](https://img.shields.io/npm/v/runner-run?label=npm&color=cb3837)](https://www.npmjs.com/package/runner-run)
-[![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)](https://github.com/kjanat/runner/blob/master/LICENSE)
+[![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
+[![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)][LICENSE]
 
 Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
-- Site: **<https://runner.kjanat.com/>** — landing page; source in [`site/`](./site/)
-- npm: **[`runner-run`](https://www.npmjs.com/package/runner-run)** — `npm install -g runner-run`
+- Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
+- npm: **[`runner-run`](https://npm.im/runner-run)** — `npm install -g runner-run`
 
 ## Features
 
@@ -86,7 +86,7 @@ From source via Cargo:
 cargo install --path .
 
 # Or from git
-cargo install --git=https://github.com/kjanat/runner/ runner
+cargo install --git=https://github.com/kjanat/runner/ runner-run
 ```
 
 Or use the convenience installer script (latest or pinned version):
@@ -143,6 +143,7 @@ runner completions fish > ~/.config/fish/completions/runner.fish
 
 [MIT][LICENSE] © 2026 Kaj Kowalski
 
+[npm]: https://npm.im/runner-run
 [LICENSE]: https://github.com/kjanat/runner/blob/master/LICENSE
 
 <!-- markdownlint-disable-file MD033 -->

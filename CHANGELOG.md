@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Move the landing-page primary domain from `runner.kjanat.com` to
+  `runner.kjanat.dev` across the root README, site docs, site package
+  metadata, and the page canonical URL so published links and metadata
+  point at the new host.
+- Add `runner.kjanat.dev` as a Cloudflare custom-domain route while
+  keeping the existing `.com` route active during the transition.
+- Reflow the npm facade README intro for cleaner package-page rendering.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
@@ -145,6 +155,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scrapped earlier and the residue would have failed
   `optionalDependencies` validation if the platform was ever
   re-expected.
+- Tab completion for turborepo monorepos no longer triple-emits
+  the same task. A `package.json` script is classified as a turbo
+  passthrough at detection time when its command body literally
+  invokes `turbo run <name>` (or the shorthand `turbo <name>`) for
+  a same-named target, optionally followed by flag tokens
+  (`--filter web`, `--concurrency=4`) or — after a bare `--`
+  end-of-options separator (POSIX/getopt convention) — args
+  forwarded to the underlying task; the full bash control set
+  (`&&`, `||`, `;`, `;;`, `;&`, `;;&`, `|`, `|&`, `&`, `!`, `{`,
+  `}`, `(`, `)`), fd-style redirects (bare `>`/`<`/`>>`/`<<<`,
+  combined-fd `&>`/`>&`, fd-prefixed `2>`, composite `2>&1`,
+  `2>/dev/null`, `&>file.log`), shell expansion (parameter
+  `$X`/`${X}`/`${X:-def}`/`${X//a/b}`, special vars `$@`/`$*`/
+  `$#`/`$?`, command substitution `$(cmd)` and backtick
+  `` `cmd` ``, arithmetic `$((expr))`, double-quoted forms with
+  embedded expansion `"${X}"`) — including those positioned after
+  a value-expecting flag or after `--` — and extra positional
+  targets all reject the match so scripts that do real work
+  beyond dispatching to turbo stay visible. Only thin passthroughs
+  are dropped from completion when a same-named `turbo.json` task
+  also exists. Real scripts like `"build": "vite build"` keep
+  their qualified form even when they happen to share a name with
+  a turbo task. `runner list` still surfaces both sources for
+  transparency, `runner build` already dispatched through turbo
+  per `source_priority`, and a third source (e.g. Makefile) keeps
+  its qualified form alongside `turbo.json:build` for
+  disambiguation.
 
 ## [0.6.0] - 2026-05-05
 
@@ -457,7 +494,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/kjanat/runner/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/kjanat/runner/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kjanat/runner/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/kjanat/runner/compare/v0.4.0...v0.4.1
