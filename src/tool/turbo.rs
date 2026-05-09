@@ -62,16 +62,30 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 ///
 /// The tail after the target name must consist solely of flag tokens
 /// (`-x`, `--long`, `--key=value`) or values immediately following a
-/// non-`=` flag. Any other positional, shell metacharacter (`&&`, `||`,
-/// `;`, `|`, `&`), or redirect (`>`, `>>`, `<`, …) rejects the match —
-/// those tokens mean the script does more than just dispatch to turbo,
-/// so swallowing it from completion would hide real behavior.
+/// non-`=` flag. Any of these reject the match — they mean the script
+/// does more than just dispatch to turbo:
+/// - shell control operators: `&&`, `||`, `;`, `;;`, `;&`, `;;&`,
+///   `|`, `|&`, `&`, `!`, `{`, `}`, `(`, `)`
+/// - redirect operators: bare `>`/`<`/`>>`/`<<`/`<<<`, combined-fd
+///   `&>`/`&>>`/`>&`, fd-prefixed `2>`, `1>`, composite `2>&1`,
+///   `1>&2`, `2>/dev/null`, `&>file.log`
+/// - any other bare positional that isn't consuming a flag's value
 ///
 /// This is purely a textual heuristic on the script body. Indirect
 /// invocations (`npx turbo run build`, `pnpm exec turbo run build`) are
 /// intentionally not matched: a wrapper that goes through a package-manager
 /// shim is a step removed from the canonical Turborepo pattern, and matching
 /// it would risk false positives for unrelated `npx`/`pnpm exec` scripts.
+///
+/// Known limitations (deferred — rare in turbo dispatch scripts and
+/// stricter detection would over-reject legitimate patterns):
+/// - shell substitution (`$(...)`, backticks) following a flag is
+///   silently accepted as a flag value;
+/// - unquoted globs (`*`, `?`) following a flag are accepted because
+///   `*` is legitimate in turbo filters like `@scope/*`;
+/// - quoted multi-word arguments (`--filter "my app"`) are split
+///   incorrectly by `split_whitespace` and reject via the positional
+///   rule — false negative, safe direction (script stays visible).
 pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
     let mut tokens = command.split_whitespace();
     if tokens.next() != Some("turbo") {
@@ -93,11 +107,19 @@ pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
     }
 
     // Tail must be flags-only (with optional space-separated values).
-    // Any bare positional or shell metachar means the script is doing
-    // extra work and is not a thin passthrough.
+    // Any bare positional, shell metachar, or redirect operator means
+    // the script is doing extra work and is not a thin passthrough.
+    //
+    // Order matters: redirect detection runs BEFORE flag-value
+    // consumption so that fd-style redirects like `2>&1` after a
+    // value-expecting flag are rejected, not silently swallowed as
+    // the flag's value.
     let mut expects_flag_value = false;
     for token in tokens {
-        if matches!(token, "&&" | "||" | ";" | "|" | "&") {
+        if is_shell_control_token(token) {
+            return false;
+        }
+        if looks_like_redirect(token) {
             return false;
         }
         if token.starts_with('-') {
@@ -111,6 +133,36 @@ pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
         return false;
     }
     true
+}
+
+/// Detects standalone bash control operators that introduce extra
+/// behavior beyond a thin turbo dispatch:
+/// - list operators (`&&`, `||`)
+/// - command separators (`;`, `;;`, `;&`, `;;&`)
+/// - pipes (`|`, `|&`)
+/// - background (`&`)
+/// - pipeline negation (`!`)
+/// - group/subshell delimiters (`{`, `}`, `(`, `)`)
+fn is_shell_control_token(token: &str) -> bool {
+    matches!(
+        token,
+        "&&" | "||" | ";" | ";;" | ";&" | ";;&" | "|" | "|&" | "&" | "!" | "{" | "}" | "(" | ")"
+    )
+}
+
+/// Detects bash redirect operators in any of these forms:
+/// - bare: `>`, `>>`, `<`, `<<`, `<<<`
+/// - combined-fd: `&>`, `&>>`, `>&`
+/// - fd-prefixed: `2>`, `1>`, `3<`, …
+/// - composite: `2>&1`, `1>&2`, `2>/dev/null`, `&>file.log`, `>file`
+///
+/// The strategy: strip optional leading file-descriptor digits, then
+/// optional leading `&` (for combined-fd forms), then check whether
+/// what remains starts with `>` or `<`.
+fn looks_like_redirect(token: &str) -> bool {
+    let rest = token.trim_start_matches(|c: char| c.is_ascii_digit());
+    let rest = rest.strip_prefix('&').unwrap_or(rest);
+    rest.starts_with('>') || rest.starts_with('<')
 }
 
 #[cfg(test)]
@@ -282,5 +334,189 @@ mod tests {
     fn is_self_passthrough_accepts_trailing_bool_flag() {
         // `--no-cache` takes no value; end-of-tokens exits the loop cleanly.
         assert!(is_self_passthrough("build", "turbo run build --no-cache"));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_stderr_to_stdout_after_flag() {
+        // The bug CodeRabbit-reviewer #2 caught: `2>&1` was consumed as
+        // `--no-cache`'s value. The redirect-detection pass now rejects.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache 2>&1"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_stdout_to_stderr_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache 1>&2"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_dev_null_redirect_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache 2>/dev/null"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_combined_fd_redirect_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache &>output.log"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_append_redirect_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache >>build.log"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_dup_fd_redirect_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache >&2"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_pipe_with_stderr_after_flag() {
+        // `|&` (bash 4+ pipe both stdout and stderr) was previously
+        // consumed as `--no-cache`'s value — now caught by the
+        // expanded shell-control-token list.
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache |& tee log"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_case_terminator_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache ;;"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_case_fallthrough_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache ;&"
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache ;;&"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_negation_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache !"
+        ));
+    }
+
+    #[test]
+    fn is_self_passthrough_rejects_group_delimiters_after_flag() {
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache {"
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache }"
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache ("
+        ));
+        assert!(!is_self_passthrough(
+            "build",
+            "turbo run build --no-cache )"
+        ));
+    }
+
+    use super::{is_shell_control_token, looks_like_redirect};
+
+    #[test]
+    fn is_shell_control_token_matches_full_bash_set() {
+        for op in [
+            "&&", "||", ";", ";;", ";&", ";;&", "|", "|&", "&", "!", "{", "}", "(", ")",
+        ] {
+            assert!(
+                is_shell_control_token(op),
+                "expected `{op}` to be classified as shell control"
+            );
+        }
+    }
+
+    #[test]
+    fn is_shell_control_token_rejects_flags_values_and_redirects() {
+        // Anything that isn't an exact-match control op must not classify.
+        for non_op in [
+            "--filter", "web", "4", "@scope/*", "$(date)", ">", "2>&1", "&>",
+        ] {
+            assert!(
+                !is_shell_control_token(non_op),
+                "`{non_op}` must not classify as shell control"
+            );
+        }
+    }
+
+    #[test]
+    fn looks_like_redirect_matches_bare_operators() {
+        assert!(looks_like_redirect(">"));
+        assert!(looks_like_redirect(">>"));
+        assert!(looks_like_redirect("<"));
+        assert!(looks_like_redirect("<<"));
+        assert!(looks_like_redirect("<<<"));
+    }
+
+    #[test]
+    fn looks_like_redirect_matches_combined_fd_forms() {
+        assert!(looks_like_redirect("&>"));
+        assert!(looks_like_redirect("&>>"));
+        assert!(looks_like_redirect(">&"));
+    }
+
+    #[test]
+    fn looks_like_redirect_matches_fd_prefixed_forms() {
+        assert!(looks_like_redirect("2>"));
+        assert!(looks_like_redirect("1>"));
+        assert!(looks_like_redirect("3<"));
+    }
+
+    #[test]
+    fn looks_like_redirect_matches_composite_forms() {
+        assert!(looks_like_redirect("2>&1"));
+        assert!(looks_like_redirect("1>&2"));
+        assert!(looks_like_redirect("2>/dev/null"));
+        assert!(looks_like_redirect("&>file.log"));
+        assert!(looks_like_redirect(">file"));
+        assert!(looks_like_redirect(">>append"));
+    }
+
+    #[test]
+    fn looks_like_redirect_rejects_flags_and_values() {
+        // Flags and ordinary values must not be misclassified as redirects.
+        assert!(!looks_like_redirect("--filter"));
+        assert!(!looks_like_redirect("--concurrency=4"));
+        assert!(!looks_like_redirect("web"));
+        assert!(!looks_like_redirect("4"));
+        assert!(!looks_like_redirect("@scope/*"));
+        assert!(!looks_like_redirect("$(date)"));
+        // Quoted patterns: leading quote/letter, no `>` or `<` after fd-strip.
+        assert!(!looks_like_redirect("'<pkg>'"));
+        // Bare `&` is a metachar handled separately, not a redirect.
+        assert!(!looks_like_redirect("&"));
     }
 }
