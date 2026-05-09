@@ -160,13 +160,10 @@ fn merge_alias_tables(paths: &[PathBuf]) -> anyhow::Result<HashMap<String, Vec<S
             read_alias_table(path).with_context(|| format!("reading {}", path.display()))?;
         for (name, value) in aliases {
             let Some(tokens) = tokenize(&value) else {
-                if !is_empty_alias(&value) {
-                    eprintln!(
-                        "warning: cargo alias `{name}` in {} is unparseable; skipping",
-                        path.display()
-                    );
-                }
-                continue;
+                anyhow::bail!(
+                    "cargo alias `{name}` in {} is unparseable or empty",
+                    path.display()
+                );
             };
             merged.insert(name, tokens);
         }
@@ -210,15 +207,6 @@ fn tokenize(value: &AliasValue) -> Option<Vec<String>> {
             let split = shlex::split(raw)?;
             (!split.is_empty()).then_some(split)
         }
-    }
-}
-
-/// True when the alias value is the empty form (cargo would also reject).
-/// Used to silence the unparseable-alias warning for the trivial case.
-fn is_empty_alias(value: &AliasValue) -> bool {
-    match value {
-        AliasValue::Arr(tokens) => tokens.is_empty(),
-        AliasValue::Str(raw) => raw.trim().is_empty(),
     }
 }
 
