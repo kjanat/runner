@@ -45,9 +45,11 @@ pub(crate) struct ExtractedAlias {
 }
 
 impl ExtractedAlias {
-    /// Render the expansion as a space-separated string for descriptions.
+    /// Render the expansion as a shell-quoted string for descriptions, so
+    /// whitespace-bearing tokens round-trip with `tokenize`.
     pub(crate) fn display_command(&self) -> String {
-        self.expansion.join(" ")
+        shlex::try_join(self.expansion.iter().map(String::as_str))
+            .unwrap_or_else(|_| self.expansion.join(" "))
     }
 }
 
@@ -158,6 +160,12 @@ fn merge_alias_tables(paths: &[PathBuf]) -> anyhow::Result<HashMap<String, Vec<S
             read_alias_table(path).with_context(|| format!("reading {}", path.display()))?;
         for (name, value) in aliases {
             let Some(tokens) = tokenize(&value) else {
+                if !is_empty_alias(&value) {
+                    eprintln!(
+                        "warning: cargo alias `{name}` in {} is unparseable; skipping",
+                        path.display()
+                    );
+                }
                 continue;
             };
             merged.insert(name, tokens);
@@ -202,6 +210,15 @@ fn tokenize(value: &AliasValue) -> Option<Vec<String>> {
             let split = shlex::split(raw)?;
             (!split.is_empty()).then_some(split)
         }
+    }
+}
+
+/// True when the alias value is the empty form (cargo would also reject).
+/// Used to silence the unparseable-alias warning for the trivial case.
+fn is_empty_alias(value: &AliasValue) -> bool {
+    match value {
+        AliasValue::Arr(tokens) => tokens.is_empty(),
+        AliasValue::Str(raw) => raw.trim().is_empty(),
     }
 }
 
@@ -411,5 +428,17 @@ mod tests {
         };
 
         assert_eq!(alias.display_command(), "clippy --all-targets -D warnings");
+    }
+
+    #[test]
+    fn display_command_round_trips_whitespace_tokens() {
+        let alias = ExtractedAlias {
+            name: "x".into(),
+            expansion: vec!["run".into(), "--".into(), "a b".into()],
+        };
+
+        let rendered = alias.display_command();
+        let reparsed = tokenize(&AliasValue::Str(rendered.clone())).unwrap();
+        assert_eq!(reparsed, alias.expansion, "rendered: {rendered}");
     }
 }

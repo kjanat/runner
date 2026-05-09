@@ -3,8 +3,9 @@ set unstable
 
 cargo-version := `cargo read-manifest | jq -r .version`
 triple := `rustc --print host-tuple`
-npm-pkg-name := `cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "runner").metadata.npm.name'`
-npm-pkg-scope := `cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "runner").metadata.npm.subpkgscope'`
+default-member := `cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]'`
+npm-pkg-name := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.name'`
+npm-pkg-scope := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.subpkgscope'`
 build-pkgscript := "npm" / "scripts" / "build-packages.ts"
 downloads-dir := "npm" / "downloads"
 
@@ -45,6 +46,10 @@ test-release version=cargo-version host-triple=triple:
     #!/usr/bin/env bash
     set -euo pipefail
     pkg="$(jq -r --arg t '{{ host-triple }}' '.targets[] | select(.rust == $t) | .pkg' npm/targets.json)"
+    if [[ -z "${pkg}" ]]; then
+        echo "✗ no npm package mapped for host triple: {{ host-triple }}" >&2
+        exit 1
+    fi
     echo "→ host: {{ host-triple }} (${pkg})"
 
     cargo bbr

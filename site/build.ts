@@ -28,9 +28,9 @@ const tokens: Record<string, string> = {
 
 const analyticsSnippet = `
 	<!-- Cloudflare Web Analytics -->
-	<script defer src=\"https://static.cloudflareinsights.com/beacon.min.js\" data-cf-beacon='{\"token\": \"${
+	<script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "${
 	env["CF_BEACON_TOKEN"] || CF_BEACON_TOKEN
-}\"}'></script>
+}"}'></script>
 	<!-- End Cloudflare Web Analytics -->
 `;
 
@@ -104,9 +104,10 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 		if (name) emptyChunks.add(name);
 	}
 	await Promise.all([...emptyJsOutputs].map((out) => rm(out.path, { force: true })));
+	const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const emptyScript = emptyChunks.size
 		? new RegExp(
-			`<script[^>]+src="\\.?/?(?:${[...emptyChunks].join("|")})"[^>]*></script>`,
+			`<script[^>]+src="\\.?/?(?:${[...emptyChunks].map(escapeRe).join("|")})"[^>]*></script>`,
 			"g",
 		)
 		: null;

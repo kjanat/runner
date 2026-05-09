@@ -47,7 +47,7 @@ env:
   RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
   EVENT_NAME: ${{ github.event_name }}
   INPUT_DIST_TAG: ${{ inputs.dist-tag }}
-  INPUT_DRY_RUN: ${{ fromJSON(inputs.dry-run) }}
+  INPUT_DRY_RUN: ${{ inputs.dry-run || false }}
 
 jobs:
   publish:

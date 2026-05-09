@@ -18,6 +18,6 @@ MANIFEST="${SCRIPT_DIR}/../Cargo.toml"
 }
 
 exec env CARGO_TERM_QUIET=true \
-	cargo run --release \
+	cargo run --release --locked \
 	--manifest-path="${MANIFEST}" \
 	-- "$@"
