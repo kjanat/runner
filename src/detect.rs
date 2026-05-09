@@ -238,9 +238,8 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
             .iter()
             .any(|pm| pm.is_node() || *pm == PackageManager::Deno)
     {
-        push_named_tasks(
+        push_package_json_tasks(
             ctx,
-            TaskSource::PackageJson,
             if ctx.package_managers.contains(&PackageManager::Deno) {
                 tool::node::extract_scripts_upwards(dir)
             } else {
@@ -248,11 +247,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
             },
         );
     } else if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_named_tasks(
-            ctx,
-            TaskSource::PackageJson,
-            tool::node::extract_scripts_upwards(dir),
-        );
+        push_package_json_tasks(ctx, tool::node::extract_scripts_upwards(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Turbo) {
         push_named_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
@@ -290,6 +285,7 @@ fn push_cargo_aliases(
                     source: TaskSource::CargoAliases,
                     description,
                     alias_of: None,
+                    passthrough_to_turbo: false,
                 });
             }
         }
@@ -327,11 +323,42 @@ fn push_described_tasks(
                     source,
                     description,
                     alias_of: None,
+                    passthrough_to_turbo: false,
                 });
             }
         }
         Err(err) => ctx.warnings.push(DetectionWarning {
             source: source.label(),
+            detail: format!("failed to read tasks: {err:#}"),
+        }),
+    }
+}
+
+/// Append `package.json` scripts, classifying each entry as a turbo
+/// passthrough wrapper iff its command body literally invokes turbo
+/// against a same-named target. Detection is purely textual — the
+/// surrounding project state is not consulted, so a real script like
+/// `"build": "vite build"` is never flagged regardless of what other
+/// sources exist.
+fn push_package_json_tasks(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<(String, String)>>,
+) {
+    match result {
+        Ok(entries) => {
+            for (name, command) in entries {
+                let passthrough_to_turbo = tool::turbo::is_self_passthrough(&name, &command);
+                ctx.tasks.push(Task {
+                    name,
+                    source: TaskSource::PackageJson,
+                    description: None,
+                    alias_of: None,
+                    passthrough_to_turbo,
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning {
+            source: TaskSource::PackageJson.label(),
             detail: format!("failed to read tasks: {err:#}"),
         }),
     }
@@ -354,6 +381,7 @@ fn push_just_tasks(
                     source: TaskSource::Justfile,
                     description,
                     alias_of,
+                    passthrough_to_turbo: false,
                 });
             }
         }

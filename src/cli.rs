@@ -42,17 +42,56 @@ fn resolve_completion_dir(cwd: &Path, env_dir: Option<&std::ffi::OsStr>) -> Path
 /// When a task name appears in more than one source, both the bare name *and*
 /// a `source:name` qualified form are emitted for each occurrence, enabling
 /// disambiguation via tab-completion.
+///
+/// Exception: a `package.json` script whose body is a literal turbo
+/// passthrough wrapper (`"build": "turbo run build"`, the canonical
+/// Turborepo pattern) is dropped from completion candidates *iff* a
+/// same-named `turbo.json` task also exists. The passthrough flag is set
+/// during detection by inspecting the actual script body
+/// ([`crate::tool::turbo::is_self_passthrough`]), so a real script like
+/// `"build": "vite build"` keeps its qualified form even when a
+/// `turbo.json` `build` task is present. `runner list` still surfaces both
+/// sources for transparency, and `runner build` already dispatches through
+/// turbo per the source-priority order in `cmd::run::source_priority`.
 fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate> {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
-    let mut counts: HashMap<&str, usize> = HashMap::new();
+    use crate::types::TaskSource;
+
+    let mut sources_for_name: HashMap<&str, HashSet<TaskSource>> = HashMap::new();
     for task in tasks {
-        *counts.entry(&task.name).or_default() += 1;
+        sources_for_name
+            .entry(&task.name)
+            .or_default()
+            .insert(task.source);
+    }
+
+    // A `package.json` script is only swallowed when it (a) declared itself a
+    // turbo passthrough at detection time *and* (b) the project actually has a
+    // same-named `turbo.json` task to absorb it. Without (b), suppressing
+    // would leave the user with no completion for the script at all.
+    let is_turbo_passthrough = |task: &crate::types::Task| -> bool {
+        task.passthrough_to_turbo
+            && task.source == TaskSource::PackageJson
+            && sources_for_name
+                .get(task.name.as_str())
+                .is_some_and(|set| set.contains(&TaskSource::TurboJson))
+    };
+
+    let mut effective_count: HashMap<&str, usize> = HashMap::new();
+    for task in tasks {
+        if !is_turbo_passthrough(task) {
+            *effective_count.entry(task.name.as_str()).or_default() += 1;
+        }
     }
 
     let mut candidates = Vec::new();
-    let mut seen_bare = std::collections::HashSet::new();
+    let mut seen_bare = HashSet::new();
     for task in tasks {
+        if is_turbo_passthrough(task) {
+            continue;
+        }
+
         let source_label = task.source.label();
         // Separate tag group keeps aliases under their own zsh section instead
         // of interleaving with real recipes.
@@ -75,7 +114,11 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
                 (help, tag, order)
             },
         );
-        let is_duplicate = counts.get(task.name.as_str()).copied().unwrap_or(0) > 1;
+        let is_duplicate = effective_count
+            .get(task.name.as_str())
+            .copied()
+            .unwrap_or(0)
+            > 1;
 
         // Emit bare candidate only once (first source wins for the bare name)
         if seen_bare.insert(&task.name) {
@@ -109,27 +152,29 @@ mod tests {
     use super::{resolve_completion_dir, task_candidates_from};
     use crate::types::{Task, TaskSource};
 
+    fn task(name: &str, source: TaskSource) -> Task {
+        Task {
+            name: name.into(),
+            source,
+            description: None,
+            alias_of: None,
+            passthrough_to_turbo: false,
+        }
+    }
+
+    fn turbo_passthrough(name: &str) -> Task {
+        Task {
+            passthrough_to_turbo: true,
+            ..task(name, TaskSource::PackageJson)
+        }
+    }
+
     #[test]
     fn qualified_candidates_emitted_for_duplicates() {
         let tasks = vec![
-            Task {
-                name: "test".into(),
-                source: TaskSource::PackageJson,
-                description: None,
-                alias_of: None,
-            },
-            Task {
-                name: "test".into(),
-                source: TaskSource::Makefile,
-                description: None,
-                alias_of: None,
-            },
-            Task {
-                name: "build".into(),
-                source: TaskSource::PackageJson,
-                description: None,
-                alias_of: None,
-            },
+            task("test", TaskSource::PackageJson),
+            task("test", TaskSource::Makefile),
+            task("build", TaskSource::PackageJson),
         ];
         let candidates = task_candidates_from(&tasks);
         let values: Vec<String> = candidates
@@ -149,19 +194,117 @@ mod tests {
     }
 
     #[test]
+    fn package_json_passthrough_to_turbo_collapses_to_bare_name() {
+        let tasks = vec![
+            turbo_passthrough("build"),
+            task("build", TaskSource::TurboJson),
+            task("fmt", TaskSource::PackageJson),
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            values.iter().filter(|v| *v == "build").count(),
+            1,
+            "bare 'build' should appear exactly once"
+        );
+        assert!(
+            !values.contains(&"package.json:build".to_string()),
+            "the package.json passthrough should not surface a qualified form"
+        );
+        assert!(
+            !values.contains(&"turbo.json:build".to_string()),
+            "with the package.json source swallowed, no qualified form is needed"
+        );
+        assert!(values.contains(&"fmt".to_string()));
+    }
+
+    #[test]
+    fn passthrough_swallow_keeps_unrelated_runner_qualified_forms() {
+        let tasks = vec![
+            turbo_passthrough("build"),
+            task("build", TaskSource::Makefile),
+            task("build", TaskSource::TurboJson),
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(values.contains(&"build".to_string()));
+        assert!(
+            !values.contains(&"package.json:build".to_string()),
+            "package.json must remain swallowed even when other runners share the name"
+        );
+        assert!(
+            values.contains(&"Makefile:build".to_string()),
+            "Makefile is a real definition, not a passthrough — keep its qualified form"
+        );
+        assert!(
+            values.contains(&"turbo.json:build".to_string()),
+            "turbo.json must keep a qualified form to disambiguate from Makefile"
+        );
+    }
+
+    #[test]
+    fn real_package_json_script_keeps_qualified_form_alongside_turbo() {
+        // Regression guard: a real `"build": "vite build"` script that
+        // happens to share its name with a `turbo.json` task must NOT be
+        // swallowed — the passthrough flag is set per-script-body during
+        // detection, not inferred from name collisions alone.
+        let tasks = vec![
+            // Same name, but `passthrough_to_turbo: false` because the
+            // command body is `vite build`, not `turbo run build`.
+            task("build", TaskSource::PackageJson),
+            task("build", TaskSource::TurboJson),
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(values.contains(&"build".to_string()));
+        assert!(
+            values.contains(&"package.json:build".to_string()),
+            "a real package.json script must surface its qualified form for disambiguation"
+        );
+        assert!(
+            values.contains(&"turbo.json:build".to_string()),
+            "the turbo.json source must surface its qualified form when a real twin exists"
+        );
+    }
+
+    #[test]
+    fn passthrough_without_turbo_twin_stays_visible() {
+        // Misconfigured project: `"build": "turbo run build"` but no
+        // `turbo.json` to back it. Suppressing here would leave the user
+        // with no completion at all, so the passthrough must remain.
+        let tasks = vec![turbo_passthrough("build")];
+        let candidates = task_candidates_from(&tasks);
+
+        assert!(
+            candidates
+                .iter()
+                .any(|c| c.get_value().to_string_lossy() == "build"),
+            "without a turbo.json twin, the passthrough is the only source — keep it"
+        );
+    }
+
+    #[test]
     fn alias_candidate_uses_arrow_help_and_dedicated_tag() {
         let tasks = vec![
             Task {
-                name: "build".into(),
-                source: TaskSource::Justfile,
                 description: Some("Build the project".into()),
-                alias_of: None,
+                ..task("build", TaskSource::Justfile)
             },
             Task {
-                name: "b".into(),
-                source: TaskSource::Justfile,
-                description: None,
                 alias_of: Some("build".into()),
+                ..task("b", TaskSource::Justfile)
             },
         ];
         let candidates = task_candidates_from(&tasks);
