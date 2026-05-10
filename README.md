@@ -7,6 +7,7 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
 - Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
 - npm: **[`runner-run`](https://npm.im/runner-run)** — `npm install -g runner-run`
+- crates.io: **[`runner-run`](https://crates.io/crates/runner-run)** — `cargo install runner-run`
 
 ## Features
 
@@ -79,14 +80,17 @@ Supports Linux (gnu+musl, x64/arm64/armv7), macOS (x64/arm64), Windows
 (x64/arm64/ia32), and experimental BSD builds (FreeBSD, NetBSD, OpenBSD;
 see `npm/targets.json` for per-target tier).
 
-From source via Cargo:
+From crates.io via Cargo:
 
 ```sh
 # installs both binaries: runner + run
-cargo install --path .
+cargo install runner-run
 
-# Or from git
+# or from git for unreleased commits
 cargo install --git=https://github.com/kjanat/runner/ runner-run
+
+# or from a local checkout
+cargo install --path .
 ```
 
 Or use the convenience installer script (latest or pinned version):
