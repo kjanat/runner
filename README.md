@@ -4,7 +4,8 @@
 [![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
 [![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)][LICENSE]
 
-Universal project task runner. Auto-detects toolchain, provides unified CLI.
+Universal project task runner. Auto-detects toolchain, provides unified CLI.\
+AND tab-completion for all!!!
 
 - Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
 - npm: **[`runner-run`](https://npm.im/runner-run)**
