@@ -24,6 +24,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `bacon test -- --ignored`) so they reach the underlying job intact.
 - Project-local `bacon.toml` defining `lint`, `test-all`, and `bins` jobs
   for the `runner` crate, mirroring the `cargo l` / `cargo t` aliases.
+- `cargo binstall runner-run` support via `[package.metadata.binstall]` in
+  `Cargo.toml`. cargo-binstall now downloads the prebuilt binary from the
+  matching GitHub release asset (`runner-v{version}-{target}.tar.gz`)
+  instead of building from source — same archives
+  `taiki-e/upload-rust-binary-action` uploads from `release.yml`. Both
+  `runner` and `run` install side by side, no toolchain required.
 
 ### Changed
 
