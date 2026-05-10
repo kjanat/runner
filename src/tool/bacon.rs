@@ -47,10 +47,20 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<St
     Ok(tasks)
 }
 
-/// `bacon <job> [args...]`
+/// `bacon <job> [-- args...]`
+///
+/// Bacon's CLI is `bacon [options] [ARGS] [-- ADDITIONAL_JOB_ARGS]`: any
+/// extra args without the `--` separator get parsed as bacon's own options
+/// (or as a project path), so a value like `--ignored` would either be
+/// rejected as an unknown flag or, worse, interpreted as a bacon option. We
+/// always insert `--` when args are present so flags and positionals reach
+/// the underlying job verbatim.
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = Command::new("bacon");
-    c.arg(task).args(args);
+    c.arg(task);
+    if !args.is_empty() {
+        c.arg("--").args(args);
+    }
     c
 }
 
@@ -70,8 +80,27 @@ struct JobConfig {
 mod tests {
     use std::fs;
 
-    use super::{detect, extract_tasks};
+    use super::{detect, extract_tasks, run_cmd};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn run_cmd_omits_separator_when_no_args() {
+        let cmd = run_cmd("check", &[]);
+        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+
+        assert_eq!(argv, ["check"]);
+    }
+
+    #[test]
+    fn run_cmd_inserts_separator_before_forwarded_args() {
+        // Bacon parses anything after the job name as its own options unless
+        // separated by `--`. Without the separator, `--ignored` would error
+        // out as an unknown bacon flag.
+        let cmd = run_cmd("test", &["--ignored".into(), "my_test".into()]);
+        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+
+        assert_eq!(argv, ["test", "--", "--ignored", "my_test"]);
+    }
 
     #[test]
     fn detect_finds_bacon_toml() {
