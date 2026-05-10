@@ -57,9 +57,8 @@ sub-package via `require.resolve` at runtime and exec the native binary.
 | NetBSD  | x64 (experimental)                              |
 | OpenBSD | x64 (experimental)                              |
 
-If your platform isn't listed, install from source with
-`cargo install --git=https://github.com/kjanat/runner/ runner` or
-[file an issue](https://github.com/kjanat/runner/issues).
+If your platform isn't listed, install from source with `cargo install runner-run`
+or [file an issue](https://github.com/kjanat/runner/issues).
 
 ### Troubleshooting
 
@@ -73,8 +72,11 @@ Your package manager skipped `optionalDependencies`. Common causes:
 - A stale lockfile committed from a different OS — regenerate it on the
   target OS, or run `npm install --force`
 
-Reinstall without those flags, or use
-`cargo install --git=https://github.com/kjanat/runner/ runner`.
+Reinstall without those flags, or use:
+
+```sh
+cargo install runner-run
+```
 
 ## License
 
