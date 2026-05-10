@@ -1,6 +1,6 @@
 //! Turborepo — monorepo build system.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -28,10 +28,12 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// Parse task names from `turbo.json` / `turbo.jsonc`.
 ///
-/// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Scoped
-/// tasks like `"my-app#build"` are filtered out. JSONC syntax (line
-/// comments, block comments, trailing commas) is accepted under either
-/// filename, matching Turborepo's own parser.
+/// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Workspace-
+/// scoped entries like `"my-app#build"` are filtered out, while Root Task
+/// entries (`"//#lint"`) are surfaced as their bare name (`"lint"`) — both
+/// are invoked the same way as a plain task. JSONC syntax (line comments,
+/// block comments, trailing commas) is accepted under either filename,
+/// matching Turborepo's own parser.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
@@ -50,8 +52,24 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     };
     Ok(tasks
         .into_keys()
-        .filter(|name| !name.contains('#'))
+        .filter_map(classify_task_key)
+        .collect::<HashSet<_>>()
+        .into_iter()
         .collect())
+}
+
+/// Map a raw `tasks`/`pipeline` key to the runnable task name, or drop it.
+///
+/// - `"//#lint"` → `Some("lint")` (Root Task — surface bare name).
+/// - `"web#build"` → `None` (workspace-scoped — invoked as `web#build`,
+///   not as a top-level task).
+/// - `"build"` → `Some("build")` (plain task).
+/// - `"//#"` or `"//#a#b"` → `None` (malformed).
+fn classify_task_key(name: String) -> Option<String> {
+    if let Some(rest) = name.strip_prefix("//#") {
+        return (!rest.is_empty() && !rest.contains('#')).then(|| rest.to_string());
+    }
+    (!name.contains('#')).then_some(name)
 }
 
 /// `turbo run <task> [-- args...]`
@@ -353,6 +371,70 @@ mod tests {
         tasks.sort_unstable();
 
         assert_eq!(tasks, ["build", "test"]);
+    }
+
+    #[test]
+    fn extract_tasks_surfaces_root_tasks_with_bare_name() {
+        let dir = TempDir::new("turbo-root-tasks");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"tasks":{"//#lint":{},"//#format":{"cache":false}}}"#,
+        )
+        .expect("turbo.json should be written");
+
+        let mut tasks = extract_tasks(dir.path()).expect("root tasks should parse");
+        tasks.sort_unstable();
+
+        assert_eq!(tasks, ["format", "lint"]);
+    }
+
+    #[test]
+    fn extract_tasks_mixes_root_plain_and_workspace_scoped_entries() {
+        // The bug-report repro: root tasks must surface, plain tasks pass
+        // through, workspace-scoped (`web#build`) stays filtered.
+        let dir = TempDir::new("turbo-mixed-keys");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"tasks":{"build":{},"//#lint":{},"//#format":{"cache":false},"web#build":{}}}"#,
+        )
+        .expect("turbo.json should be written");
+
+        let mut tasks = extract_tasks(dir.path()).expect("mixed keys should parse");
+        tasks.sort_unstable();
+
+        assert_eq!(tasks, ["build", "format", "lint"]);
+    }
+
+    #[test]
+    fn extract_tasks_drops_malformed_root_task_keys() {
+        // `//#` with no name and `//#a#b` (extra `#`) are not valid root
+        // tasks — drop them rather than surface a confusing entry.
+        let dir = TempDir::new("turbo-malformed-root");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"tasks":{"//#":{},"//#a#b":{},"//#ok":{}}}"#,
+        )
+        .expect("turbo.json should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("malformed root keys should parse");
+
+        assert_eq!(tasks, ["ok"]);
+    }
+
+    #[test]
+    fn extract_tasks_dedupes_root_task_and_plain_task_collision() {
+        // Both `lint` and `//#lint` resolve to the same `turbo run lint`
+        // invocation, so listing both would render a duplicate row.
+        let dir = TempDir::new("turbo-root-collision");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"tasks":{"lint":{},"//#lint":{}}}"#,
+        )
+        .expect("turbo.json should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("colliding keys should parse");
+
+        assert_eq!(tasks, ["lint"]);
     }
 
     #[test]
