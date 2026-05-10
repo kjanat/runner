@@ -57,6 +57,10 @@
 					The npm package is a façade — installs only the <a href="{{repo}}/tree/master/npm">prebuilt binary</a> for your platform via
 					<code>optionalDependencies</code>. No postinstall, no network at install time.
 				</p>
+				<p class="meta">
+					<code>cargo · binstall</code> needs a one-time <code>cargo install cargo-binstall</code> bootstrap. Once it's on PATH, every <code>cargo binstall
+						&lt;crate&gt;</code> after that pulls a prebuilt binary instead of compiling.
+				</p>
 			</section>
 
 			<hr class="rule">
