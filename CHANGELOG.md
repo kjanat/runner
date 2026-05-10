@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.8.0] - 2026-05-10
+
 ### Added
 
 - `bacon.toml` as a `runner` task source. Jobs surface in `runner list` /
@@ -49,6 +57,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `npm/facade/README.md` updates the install fallback instructions to
   `cargo install runner-run` (crates.io) instead of the git-source
   form, matching the 0.7.1 README/landing-page change.
+- `npm/facade/package.json` template no longer carries a `version`
+  field. The build script (`npm/scripts/build-packages.ts`) injects
+  the version from `cargo metadata` at build time and the template
+  value was always overwritten. Single source of truth is now
+  `Cargo.toml`.
 
 ### Fixed
 
@@ -61,12 +74,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `pwsh` surfaces in `runner completions --help` and the rejection error
   alongside `powershell`. The internal mapping has accepted both since
   `shell_from_path` was written; only the user-facing message lagged.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.7.1] - 2026-05-10
 
@@ -729,7 +736,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/kjanat/runner/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/kjanat/runner/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kjanat/runner/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/kjanat/runner/compare/v0.6.0...v0.6.1
