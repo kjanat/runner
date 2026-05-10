@@ -31,35 +31,35 @@ body = """
 {% endfor %}\n
 """
 
-footer = ""
-trim = true
+footer         = ""
+trim           = true
 postprocessors = []
 
 [git]
-conventional_commits = true
-filter_unconventional = true
-split_commits = false
+conventional_commits     = true
+filter_unconventional    = true
+split_commits            = false
 protect_breaking_commits = true
-filter_commits = true
-tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
-topo_order = false
-sort_commits = "newest"
+filter_commits           = true
+tag_pattern              = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+topo_order               = false
+sort_commits             = "newest"
 
 commit_parsers = [
-  { message = "^feat",                          group = "Added" },
-  { message = "^add",                           group = "Added" },
-  { message = "^change",                        group = "Changed" },
-  { message = "^refactor",                      group = "Changed" },
-  { message = "^perf",                          group = "Changed" },
-  { message = "^style",                         group = "Changed" },
-  { message = "^deprecate",                     group = "Deprecated" },
-  { message = "^remove",                        group = "Removed" },
-  { message = "^fix",                           group = "Fixed" },
-  { message = "^bug",                           group = "Fixed" },
-  { message = "^security",                      group = "Security" },
-  { message = "^deps",                          group = "Changed" },
-  { message = "^build",                         group = "Changed" },
-  { message = "^revert",                        group = "Changed" },
-  { message = "^(chore|ci|docs|test)",          skip  = true    },
-  { body    = ".*security",                     group = "Security" },
+  { message = "^feat", group = "Added" },
+  { message = "^add", group = "Added" },
+  { message = "^change", group = "Changed" },
+  { message = "^refactor", group = "Changed" },
+  { message = "^perf", group = "Changed" },
+  { message = "^style", group = "Changed" },
+  { message = "^deprecate", group = "Deprecated" },
+  { message = "^remove", group = "Removed" },
+  { message = "^fix", group = "Fixed" },
+  { message = "^bug", group = "Fixed" },
+  { message = "^security", group = "Security" },
+  { message = "^deps", group = "Changed" },
+  { message = "^build", group = "Changed" },
+  { message = "^revert", group = "Changed" },
+  { message = "^(chore|ci|docs|test)", skip = true },
+  { body = ".*security", group = "Security" },
 ]

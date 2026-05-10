@@ -227,7 +227,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - uses: extractions/setup-just@v3
       - uses: actions/download-artifact@v6
@@ -312,7 +312,7 @@ jobs:
     steps:
       - uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - uses: actions/download-artifact@v6
         with:
@@ -360,7 +360,7 @@ jobs:
 
       - if: matrix.path == 'npm'
         uses: actions/setup-node@v6
-        with: { node-version: "22" }
+        with: { node-version: "24" }
       - name: verify via npm
         if: matrix.path == 'npm'
         run: |
