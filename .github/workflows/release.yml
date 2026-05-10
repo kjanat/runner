@@ -1,14 +1,18 @@
 # Multi-registry OIDC release pipeline.
 #
 # Mode selection (decided per run by the `plan` job):
-#   - push tag + vars.MANUAL unset   -> mode=auto       (build + publish in one run)
-#   - push tag + vars.MANUAL set     -> mode=draft-only (build, draft a release, stop)
+#   - push tag + vars.MANUAL unset    -> mode=auto         (build + publish in one run)
+#   - push tag + vars.MANUAL set      -> mode=draft-only   (build, draft a release, stop)
 #   - on: release: types: [published] -> mode=publish-only (skip build, fetch artifacts
 #                                        from the original tag-push run, push to registries)
-#   - workflow_dispatch              -> mode=auto       (or dry_run=true skips publish)
+#   - workflow_dispatch               -> mode=auto         (or dry_run=true skips publish)
 #
 # Filename `release.yml` is part of every trusted-publisher OIDC subject claim
 # (crates.io + npm + PyPI) — DO NOT RENAME without updating all three registries.
+#
+# Heavy logic (release creation, run-id resolution, matrix derivation, version
+# verification, summary) lives in `actions/github-script@v9` blocks. Bash inside
+# composite actions lives in their `pack.sh` scripts.
 
 name: release
 on:
@@ -39,7 +43,8 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # plan: decide mode, derive version, emit matrix.
+  # plan: mode + version (inline bash), matrix derivation + version-verify
+  # (github-script).
   # ---------------------------------------------------------------------------
   plan:
     runs-on: ubuntu-latest
@@ -61,6 +66,7 @@ jobs:
           persist-credentials: false
 
       - id: mode
+        shell: bash
         env:
           GH_VAR_MANUAL: ${{ vars.MANUAL }}
           EVENT_NAME: ${{ github.event_name }}
@@ -77,58 +83,55 @@ jobs:
                                 if [[ -n "${GH_VAR_MANUAL}" ]]; then MODE=draft-only; else MODE=auto; fi ;;
             *) echo "::error::unsupported event ${EVENT_NAME}"; exit 1 ;;
           esac
-          DRY="${INPUT_DRY_RUN:-false}"
-          VERSION="${TAG#v}"
-          echo "mode=${MODE}"       >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}"         >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "dry-run=${DRY}"     >> "$GITHUB_OUTPUT"
           {
-            echo "## Run plan"
-            echo "- mode: \`${MODE}\`"
-            echo "- tag: \`${TAG}\`"
-            echo "- dry-run: \`${DRY}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Verify versions agree with tag
-        if: steps.mode.outputs.mode != 'publish-only'
-        env:
-          VERSION: ${{ steps.mode.outputs.version }}
-        run: |
-          set -euo pipefail
-          cargo_v=$(awk -F\" '/^version *= *"/ { print $2; exit }' Cargo.toml)
-          py_v=$(awk -F\" '/^version *= *"/ { print $2; exit }' pyproject.toml)
-          npm_v=$(jq -r .version npm/facade/package.json)
-          fail=0
-          for n in cargo_v py_v npm_v; do
-            v="${!n}"
-            if [[ "${v}" != "${VERSION}" ]]; then
-              echo "::error::${n}=${v} does not match tag version ${VERSION}"
-              fail=1
-            fi
-          done
-          [[ "${fail}" -eq 0 ]]
+            echo "mode=${MODE}"
+            echo "tag=${TAG}"
+            echo "version=${TAG#v}"
+            echo "dry-run=${INPUT_DRY_RUN:-false}"
+          } >> "$GITHUB_OUTPUT"
 
       - id: matrix
-        run: |
-          set -euo pipefail
-          SCOPE=$(jq -r '.scope'  npm/targets.json)
-          FACADE=$(jq -r '.facade' npm/targets.json)
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const t = require('./npm/targets.json');
+            const isBSD = x => x.os.includes('freebsd') || x.os.includes('netbsd');
+            core.setOutput('scope',              t.scope);
+            core.setOutput('facade-name',        t.facade);
+            core.setOutput('matrix',             JSON.stringify(t.targets));
+            core.setOutput('matrix-wheel',       JSON.stringify(t.targets.filter(x => !isBSD(x))));
+            core.setOutput('matrix-npm-publish', JSON.stringify(t.targets.filter(x => x.tier <= 2).map(x => x.pkg)));
 
-          # Build matrix: every target (tier-3 is best-effort, see continue-on-error in build job).
-          MATRIX=$(jq -c '.targets' npm/targets.json)
-          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+            await core.summary
+              .addHeading(`Release plan — ${process.env.PLAN_TAG} (${process.env.PLAN_MODE})`)
+              .addRaw(`\n- dry-run: \`${process.env.PLAN_DRY}\`\n- targets (all tiers): ${t.targets.length}\n`)
+              .write();
+        env:
+          PLAN_TAG: ${{ steps.mode.outputs.tag }}
+          PLAN_MODE: ${{ steps.mode.outputs.mode }}
+          PLAN_DRY: ${{ steps.mode.outputs.dry-run }}
 
-          # Wheel matrix: PyPI doesn't accept BSD wheels — strip freebsd/netbsd.
-          MATRIX_WHEEL=$(jq -c '[.targets[] | select(.os | index("freebsd") | not) | select(.os | index("netbsd") | not)]' npm/targets.json)
-          echo "matrix-wheel=${MATRIX_WHEEL}" >> "$GITHUB_OUTPUT"
-
-          # npm publish matrix: tier-1/tier-2 only (skip experimental tier-3).
-          MATRIX_NPM=$(jq -c '[.targets[] | select(.tier <= 2) | .pkg]' npm/targets.json)
-          echo "matrix-npm-publish=${MATRIX_NPM}" >> "$GITHUB_OUTPUT"
-
-          echo "scope=${SCOPE}"          >> "$GITHUB_OUTPUT"
-          echo "facade-name=${FACADE}"   >> "$GITHUB_OUTPUT"
+      - id: verify-versions
+        if: steps.mode.outputs.mode != 'publish-only'
+        uses: actions/github-script@v9
+        env:
+          TAG_VERSION: ${{ steps.mode.outputs.version }}
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = process.env.TAG_VERSION;
+            const tomlVersion = (file) =>
+              (fs.readFileSync(file, 'utf8').match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+            const found = {
+              'Cargo.toml':              tomlVersion('Cargo.toml'),
+              'pyproject.toml':          tomlVersion('pyproject.toml'),
+              'npm/facade/package.json': JSON.parse(fs.readFileSync('npm/facade/package.json', 'utf8')).version,
+            };
+            const errs = Object.entries(found)
+              .filter(([_, v]) => v !== tag)
+              .map(([f, v]) => `${f}: ${v ?? '<missing>'} != tag ${tag}`);
+            if (errs.length) core.setFailed(`Version drift:\n  ${errs.join('\n  ')}`);
+            else core.info(`All three files agree at version ${tag}`);
 
   # ---------------------------------------------------------------------------
   # build-binaries: matrix over targets.json. Skipped on publish-only mode.
@@ -239,17 +242,17 @@ jobs:
             "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
           }
 
-      - name: Compute manylinux input
-        id: mlx
-        shell: bash
+      - id: mlx
+        uses: actions/github-script@v9
         env:
           TRIPLE: ${{ matrix.target.rust }}
-        run: |
-          case "${TRIPLE}" in
-            *-musl)      echo "mlx=musllinux_1_2" ;;
-            *-linux-*)   echo "mlx=2_28"          ;;
-            *)           echo "mlx=auto"          ;;
-          esac >> "$GITHUB_OUTPUT"
+        with:
+          script: |
+            const t = process.env.TRIPLE;
+            const mlx = t.endsWith('-musl') ? 'musllinux_1_2'
+                      : t.includes('-linux-') ? '2_28'
+                      : 'auto';
+            core.setOutput('mlx', mlx);
 
       - name: Build wheel
         uses: ./.github/actions/pack-wheel
@@ -298,6 +301,7 @@ jobs:
           args: --out dist/sdist
 
       - name: Build crates.io .crate
+        shell: bash
         run: |
           mkdir -p dist/crate
           cargo package --locked
@@ -345,15 +349,13 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Pack facade
-        id: facade
+      - id: facade
         uses: ./.github/actions/pack-npm-facade
         with:
           version: ${{ needs.plan.outputs.version }}
           out-dir: ${{ github.workspace }}/dist/npm-facade
 
-      - name: Attest facade tarball
-        uses: actions/attest-build-provenance@v3
+      - uses: actions/attest-build-provenance@v3
         with:
           subject-path: ${{ steps.facade.outputs.tarball }}
 
@@ -372,31 +374,26 @@ jobs:
     if: always() && needs.plan.outputs.mode != 'publish-only'
     runs-on: ubuntu-latest
     steps:
-      - name: Assert build success
+      - uses: actions/github-script@v9
         env:
           BIN: ${{ needs.build-binaries.result }}
           WHEELS: ${{ needs.build-wheels.result }}
           SDIST: ${{ needs.build-sdist-and-crate.result }}
           FACADE: ${{ needs.build-npm-facade.result }}
-        run: |
-          set -euo pipefail
-          # build-binaries / build-wheels are matrix jobs: result == "success"
-          # iff every non-`continue-on-error` cell succeeded. Tier-3 cells flip
-          # to continue-on-error in their own job spec, so they don't affect this.
-          fail=0
-          for kv in BIN=${BIN} WHEELS=${WHEELS} SDIST=${SDIST} FACADE=${FACADE}; do
-            name="${kv%%=*}"; status="${kv##*=}"
-            if [[ "${status}" != "success" ]]; then
-              echo "::error::${name} job result: ${status}"
-              fail=1
-            fi
-          done
-          [[ "${fail}" -eq 0 ]]
+        with:
+          script: |
+            const results = {
+              'build-binaries':       process.env.BIN,
+              'build-wheels':         process.env.WHEELS,
+              'build-sdist-and-crate': process.env.SDIST,
+              'build-npm-facade':     process.env.FACADE,
+            };
+            const failed = Object.entries(results).filter(([_, r]) => r !== 'success');
+            if (failed.length) core.setFailed(failed.map(([n, r]) => `${n}: ${r}`).join('\n'));
 
   # ---------------------------------------------------------------------------
-  # draft-or-publish-release: create the GitHub Release with all archives.
-  # In auto mode the release is published; in draft-only mode it's kept as
-  # draft (the human reviews, then clicks Publish to fire the second pass).
+  # release-assets: collect all uploaded artifacts, aggregate SHA256SUMS,
+  # create or update the GH Release (draft in draft-only mode), upload assets.
   # ---------------------------------------------------------------------------
   release-assets:
     needs: [plan, required-builds-passed]
@@ -416,47 +413,88 @@ jobs:
         with:
           path: dist
 
-      - name: Stage user-facing assets
-        run: |
-          set -euo pipefail
-          mkdir -p upload
-          # Binary archives + their sha256 sidecars
-          find dist -type f \( -name '*.tar.gz' -o -name '*.zip' \) -path '*/bin-*/*' -exec cp {} upload/ \;
-          find dist -type f -name '*.sha256' -path '*/bin-*/*' -exec cp {} upload/ \;
-          # Wheels + sdist + crate
-          find dist -type f -name '*.whl'   -exec cp {} upload/ \;
-          find dist -type f -name '*.tar.gz' -path '*/sdist/*' -exec cp {} upload/ \;
-          find dist -type f -name '*.crate' -exec cp {} upload/ \;
-          # Aggregate SHA256SUMS for the binaries
-          (cd upload && cat *.sha256 2>/dev/null | sort -k2 > SHA256SUMS) || true
-
-      - name: Create or update release
+      - uses: actions/github-script@v9
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.plan.outputs.tag }}
           MODE: ${{ needs.plan.outputs.mode }}
           DRY: ${{ needs.plan.outputs.dry-run }}
-        run: |
-          set -euo pipefail
-          if [[ "${DRY}" == "true" ]]; then
-            echo "Dry run — skipping release creation"
-            exit 0
-          fi
-          draft_flag=""
-          [[ "${MODE}" == "draft-only" ]] && draft_flag="--draft"
-          if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" upload/* --clobber
-          else
-            gh release create "${TAG}" \
-              ${draft_flag} \
-              --title "${TAG}" \
-              --generate-notes \
-              upload/*
-          fi
-          {
-            echo "### Release \`${TAG}\` (${MODE})"
-            ls -la upload | sed 's/^/    /'
-          } >> "$GITHUB_STEP_SUMMARY"
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag  = process.env.TAG;
+            const mode = process.env.MODE;
+            const dry  = process.env.DRY === 'true';
+
+            if (dry) { core.notice('Dry run — skipping release creation'); return; }
+
+            // Gather user-facing assets from `dist/`.
+            const patterns = [
+              'dist/bin-*/*.tar.gz',
+              'dist/bin-*/*.sha256',
+              'dist/wheels-*/*.whl',
+              'dist/sdist/*.tar.gz',
+              'dist/crate/*.crate',
+            ].join('\n');
+            const globber = await glob.create(patterns);
+            const files = await globber.glob();
+            if (!files.length) { core.setFailed('No assets to upload'); return; }
+
+            // Aggregate SHA256SUMS for the binary archives.
+            const sumLines = files
+              .filter(f => f.endsWith('.sha256'))
+              .map(f => fs.readFileSync(f, 'utf8').trim())
+              .sort();
+            const sumPath = path.join(process.cwd(), 'SHA256SUMS');
+            fs.writeFileSync(sumPath, sumLines.join('\n') + '\n');
+            files.push(sumPath);
+
+            // Get-or-create release.
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag,
+              })).data;
+              core.info(`Found existing release ${tag} (id=${release.id}, draft=${release.draft})`);
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              release = (await github.rest.repos.createRelease({
+                ...context.repo,
+                tag_name: tag,
+                name: tag,
+                draft: mode === 'draft-only',
+                generate_release_notes: true,
+              })).data;
+              core.info(`Created ${release.draft ? 'draft' : 'published'} release ${tag}`);
+            }
+
+            // Upload (clobber: delete existing same-named asset first).
+            const existing = new Map(release.assets.map(a => [a.name, a.id]));
+            const summaryRows = [
+              [{data: 'Asset', header: true}, {data: 'Size', header: true}, {data: 'Status', header: true}],
+            ];
+            for (const file of files) {
+              const name = path.basename(file);
+              const data = fs.readFileSync(file);
+              if (existing.has(name)) {
+                await github.rest.repos.deleteReleaseAsset({
+                  ...context.repo, asset_id: existing.get(name),
+                });
+              }
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo,
+                release_id: release.id,
+                name,
+                data,
+              });
+              summaryRows.push([name, `${(data.length / 1024).toFixed(1)} KB`, existing.has(name) ? 'replaced' : 'uploaded']);
+              core.info(`Uploaded ${name} (${data.length} bytes)`);
+            }
+
+            await core.summary
+              .addHeading(`Release ${tag} (${release.draft ? 'draft' : 'published'})`)
+              .addTable(summaryRows)
+              .write();
 
   # ---------------------------------------------------------------------------
   # resolve-publish-run: on `release.published`, find the run-id of the build
@@ -472,20 +510,24 @@ jobs:
       run-id: ${{ steps.find.outputs.run-id }}
     steps:
       - id: find
+        uses: actions/github-script@v9
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.plan.outputs.tag }}
-        run: |
-          set -euo pipefail
-          RUN=$(gh run list --workflow=release.yml --event=push --status=success \
-                  --branch="${TAG}" --limit 1 \
-                  --json databaseId --jq '.[0].databaseId // empty')
-          if [[ -z "${RUN}" ]]; then
-            echo "::error::no successful build run for tag ${TAG}"; exit 1
-          fi
-          echo "run-id=${RUN}" >> "$GITHUB_OUTPUT"
-          echo "Found build run #${RUN}"
+        with:
+          script: |
+            const tag = process.env.TAG;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: 'release.yml',
+              event: 'push',
+              status: 'success',
+              branch: tag,
+              per_page: 5,
+            });
+            const run = data.workflow_runs[0];
+            if (!run) { core.setFailed(`No successful build run for tag ${tag}`); return; }
+            core.info(`Found build run #${run.id} (${run.html_url})`);
+            core.setOutput('run-id', run.id);
 
   # ---------------------------------------------------------------------------
   # publish-crates: OIDC trusted publishing via rust-lang/crates-io-auth-action.
@@ -497,7 +539,7 @@ jobs:
       needs.plan.outputs.dry-run != 'true' &&
       (
         (needs.plan.outputs.mode == 'auto'         && needs.required-builds-passed.result == 'success') ||
-        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result == 'success')
+        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result   == 'success')
       )
     runs-on: ubuntu-latest
     environment:
@@ -520,6 +562,7 @@ jobs:
         id: auth
 
       - name: cargo publish (idempotent, retried)
+        shell: bash
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
           VERSION: ${{ needs.plan.outputs.version }}
@@ -546,7 +589,7 @@ jobs:
       needs.plan.outputs.dry-run != 'true' &&
       (
         (needs.plan.outputs.mode == 'auto'         && needs.required-builds-passed.result == 'success') ||
-        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result == 'success')
+        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result   == 'success')
       )
     runs-on: ubuntu-latest
     environment:
@@ -607,7 +650,7 @@ jobs:
       needs.plan.outputs.dry-run != 'true' &&
       (
         (needs.plan.outputs.mode == 'auto'         && needs.required-builds-passed.result == 'success') ||
-        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result == 'success')
+        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result   == 'success')
       )
     runs-on: ubuntu-latest
     environment:
@@ -643,9 +686,11 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Upgrade npm to >= 11.5.1 (OIDC requirement)
+        shell: bash
         run: npm install -g npm@latest
 
       - name: Publish (idempotent, retried)
+        shell: bash
         env:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
@@ -698,9 +743,11 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      - run: npm install -g npm@latest
+      - shell: bash
+        run: npm install -g npm@latest
 
       - name: Publish facade (idempotent)
+        shell: bash
         env:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
@@ -725,14 +772,24 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: |
-          {
-            echo "## Publish summary — \`${{ needs.plan.outputs.tag }}\` (${{ needs.plan.outputs.mode }})"
-            echo
-            echo "| Registry | Result |"
-            echo "|----------|--------|"
-            echo "| crates.io        | ${{ needs.publish-crates.result }} |"
-            echo "| PyPI             | ${{ needs.publish-pypi.result }} |"
-            echo "| npm (platforms)  | ${{ needs.publish-npm-platforms.result }} |"
-            echo "| npm (facade)     | ${{ needs.publish-npm-facade.result }} |"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/github-script@v9
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          R_CRATES: ${{ needs.publish-crates.result }}
+          R_PYPI:   ${{ needs.publish-pypi.result }}
+          R_NPM_P:  ${{ needs.publish-npm-platforms.result }}
+          R_NPM_F:  ${{ needs.publish-npm-facade.result }}
+        with:
+          script: |
+            const e = process.env;
+            await core.summary
+              .addHeading(`Publish summary — ${e.TAG} (${e.MODE})`)
+              .addTable([
+                [{data: 'Registry', header: true}, {data: 'Result', header: true}],
+                ['crates.io',       e.R_CRATES || 'n/a'],
+                ['PyPI',            e.R_PYPI   || 'n/a'],
+                ['npm (platforms)', e.R_NPM_P  || 'n/a'],
+                ['npm (facade)',    e.R_NPM_F  || 'n/a'],
+              ])
+              .write();

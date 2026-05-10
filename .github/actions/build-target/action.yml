@@ -1,9 +1,8 @@
 name: build-target
 description: >-
   Build the runner+run binaries for a single target triple, package them into a
-  flat tar.gz/zip archive matching the existing binstall layout, and compute a
-  SHA256 sidecar. Handles cargo, cross, cargo-build-std, and cargo-cross-toolchain
-  build kinds, plus the rustup bootstrap that windows-11-arm still needs.
+  flat tar.gz matching the existing binstall layout, and compute a SHA256
+  sidecar. action.yml is wiring only — pack logic lives in pack.sh.
 
 inputs:
   triple:
@@ -22,7 +21,7 @@ inputs:
 
 outputs:
   archive:
-    description: Path to the produced .tar.gz/.zip
+    description: Path to the produced .tar.gz
     value: ${{ steps.pack.outputs.archive }}
   sha256:
     description: Path to the SHA256 sidecar
@@ -77,48 +76,11 @@ runs:
           -Z build-std=std,panic_abort \
           --target "${{ inputs.triple }}" --bins
 
-    - name: Package archive (flat layout, SHA256 sidecar)
+    - name: Pack archive
       id: pack
       shell: bash
       env:
         TRIPLE: ${{ inputs.triple }}
         VERSION: ${{ inputs.version }}
         BINARIES: ${{ inputs.binaries }}
-      run: |
-        set -euo pipefail
-        ARCHIVE_NAME="runner-v${VERSION}-${TRIPLE}"
-        OUT_DIR="${GITHUB_WORKSPACE}/dist/bin-${TRIPLE}"
-        STAGE="$(mktemp -d)"
-        mkdir -p "${OUT_DIR}"
-
-        # Flat layout: runner, run, README.md, LICENSE at archive root.
-        # Matches the binstall pkg-fmt = "tgz" + bin-dir = "{bin}{binary-ext}"
-        # contract in Cargo.toml.
-        for bin in ${BINARIES}; do
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            cp "target/${TRIPLE}/release/${bin}.exe" "${STAGE}/"
-          else
-            cp "target/${TRIPLE}/release/${bin}" "${STAGE}/"
-          fi
-        done
-        cp README.md LICENSE "${STAGE}/"
-
-        if [[ "${RUNNER_OS}" == "Windows" ]]; then
-          ARCHIVE="${ARCHIVE_NAME}.zip"
-          (cd "${STAGE}" && 7z a -tzip "${OUT_DIR}/${ARCHIVE}" .)
-        else
-          ARCHIVE="${ARCHIVE_NAME}.tar.gz"
-          tar -C "${STAGE}" -czf "${OUT_DIR}/${ARCHIVE}" .
-        fi
-
-        cd "${OUT_DIR}"
-        if [[ "${RUNNER_OS}" == "Windows" ]]; then
-          HASH=$(pwsh -NoProfile -Command "(Get-FileHash -Algorithm SHA256 '${ARCHIVE}').Hash.ToLower()")
-          printf '%s  %s\n' "${HASH}" "${ARCHIVE}" > "${ARCHIVE}.sha256"
-        else
-          shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
-        fi
-
-        echo "archive=${OUT_DIR}/${ARCHIVE}"            >> "$GITHUB_OUTPUT"
-        echo "sha256=${OUT_DIR}/${ARCHIVE}.sha256"      >> "$GITHUB_OUTPUT"
-        echo "bin-dir=${STAGE}"                         >> "$GITHUB_OUTPUT"
+      run: bash "$GITHUB_ACTION_PATH/pack.sh"
