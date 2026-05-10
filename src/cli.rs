@@ -417,8 +417,9 @@ pub(crate) enum Command {
 
     /// Generate shell completions
     Completions {
-        /// Target shell (defaults to $SHELL)
-        #[arg(value_parser = clap::value_parser!(Shell))]
+        /// Target shell — bare name (`zsh`) or full path (`/usr/bin/zsh`).
+        /// Defaults to `$SHELL`.
+        #[arg(value_parser = crate::cmd::parse_shell_arg)]
         shell: Option<Shell>,
 
         /// Write the completion script to <PATH> instead of stdout. Any

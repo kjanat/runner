@@ -126,6 +126,20 @@ fn shell_from_path(path: &Path) -> Option<Shell> {
     }
 }
 
+/// Parse the explicit `<shell>` arg, accepting either a bare name (`zsh`)
+/// or a full path (`/usr/bin/zsh`) so `runner completions $SHELL` works
+/// the same as bare `runner completions`.
+///
+/// Wired up as the `value_parser` for the arg in [`crate::cli`] in place
+/// of clap's stock `ValueEnum` parser, which only accepts the bare names.
+pub(crate) fn parse_shell_arg(raw: &str) -> Result<Shell, String> {
+    shell_from_path(Path::new(raw)).ok_or_else(|| {
+        format!(
+            "unsupported shell: {raw:?} (accepted: bash, zsh, fish, elvish, pwsh|powershell — bare name or full path)"
+        )
+    })
+}
+
 const fn env_shell_name(shell: Shell) -> &'static str {
     match shell {
         Shell::Elvish => "elvish",
@@ -143,8 +157,45 @@ mod tests {
 
     use clap_complete::aot::Shell;
 
-    use super::{completions, run_binary_filename, shell_from_path};
+    use super::{completions, parse_shell_arg, run_binary_filename, shell_from_path};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn parse_shell_arg_accepts_bare_name() {
+        assert_eq!(parse_shell_arg("zsh").unwrap(), Shell::Zsh);
+    }
+
+    #[test]
+    fn parse_shell_arg_accepts_absolute_path() {
+        // Regression guard: `runner completions $SHELL` (which expands to
+        // a full path) must succeed — the stock clap `ValueEnum` parser
+        // rejected anything but the bare name, so this is the whole reason
+        // the custom parser exists.
+        assert_eq!(parse_shell_arg("/usr/bin/zsh").unwrap(), Shell::Zsh);
+    }
+
+    #[test]
+    fn parse_shell_arg_treats_pwsh_and_powershell_identically() {
+        assert_eq!(parse_shell_arg("pwsh").unwrap(), Shell::PowerShell);
+        assert_eq!(parse_shell_arg("powershell").unwrap(), Shell::PowerShell);
+        assert_eq!(
+            parse_shell_arg("/usr/local/bin/pwsh").unwrap(),
+            Shell::PowerShell
+        );
+    }
+
+    #[test]
+    fn parse_shell_arg_error_lists_accepted_forms() {
+        let err = parse_shell_arg("ksh").expect_err("ksh should be rejected");
+        // Surface every accepted shell — including the `pwsh|powershell`
+        // pair — so users hit by the rejection see the full menu.
+        for needle in ["bash", "zsh", "fish", "elvish", "pwsh", "powershell"] {
+            assert!(
+                err.contains(needle),
+                "error message should mention {needle:?}; got: {err}"
+            );
+        }
+    }
 
     #[test]
     fn completions_writes_to_file_when_output_provided() {
