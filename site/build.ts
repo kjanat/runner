@@ -22,6 +22,7 @@ const tokens: Record<string, string> = {
 	license: pkg.license,
 	description: pkg.description,
 	npmName: pkg.metadata.npm.name,
+	cratesName: pkg.name,
 	authorName: author.name,
 	authorEmail: author.email,
 };

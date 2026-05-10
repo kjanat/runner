@@ -43,6 +43,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   crates.io) as the primary cargo install command, with the git and
   local-checkout forms remaining as fallbacks for unreleased commits
   and development work.
+- README adds a crates.io shields badge alongside the existing npm
+  one; the landing page footer adds crates.io and npm registry links
+  next to the source and changelog references.
 
 ## [0.7.0] - 2026-05-10
 

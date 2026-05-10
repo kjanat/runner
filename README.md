@@ -1,13 +1,23 @@
 # runner
 
+[![Crates.io](https://img.shields.io/crates/v/runner-run?logo=rust&labelColor=B7410E&color=black)][crates]
 [![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
 [![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)][LICENSE]
 
 Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
 - Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
-- npm: **[`runner-run`](https://npm.im/runner-run)** — `npm install -g runner-run`
-- crates.io: **[`runner-run`](https://crates.io/crates/runner-run)** — `cargo install runner-run`
+- npm: **[`runner-run`](https://npm.im/runner-run)**
+
+  ```sh
+  npm install -g runner-run
+  ```
+
+- crates.io: **[`runner-run`](https://crates.io/crates/runner-run)**
+
+  ```sh
+  cargo install runner-run
+  ```
 
 ## Features
 
@@ -148,6 +158,7 @@ runner completions fish > ~/.config/fish/completions/runner.fish
 [MIT][LICENSE] © 2026 Kaj Kowalski
 
 [npm]: https://npm.im/runner-run
+[crates]: https://crates.io/crates/runner-run
 [LICENSE]: https://github.com/kjanat/runner/blob/master/LICENSE
 
 <!-- markdownlint-disable-file MD033 -->
