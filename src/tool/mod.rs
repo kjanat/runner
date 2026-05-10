@@ -12,6 +12,8 @@
 //!
 //! Not every module exposes every function; only what the tool supports.
 
+/// bacon — Rust background checker (`bacon.toml`).
+pub(crate) mod bacon;
 /// Bun JavaScript runtime and package manager.
 pub(crate) mod bun;
 /// Bundler, the Ruby dependency manager (`Gemfile`).

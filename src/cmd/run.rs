@@ -131,6 +131,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Justfile => tool::just::find_file(root),
         TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
+        TaskSource::BaconToml => tool::files::find_first(root, tool::bacon::FILENAMES),
     }
     .and_then(|path| path.parent().map(Path::to_path_buf))
 }
@@ -247,6 +248,7 @@ fn build_run_command(
         TaskSource::Taskfile => tool::go_task::run_cmd(task, args),
         TaskSource::DenoJson => tool::deno::run_cmd(task, args),
         TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(task, args),
+        TaskSource::BaconToml => tool::bacon::run_cmd(task, args),
     })
 }
 
@@ -306,6 +308,13 @@ mod tests {
         let (source, name) = parse_qualified_task("deno.jsonc:test");
         assert_eq!(source, Some(TaskSource::DenoJson));
         assert_eq!(name, "test");
+    }
+
+    #[test]
+    fn parse_qualified_task_accepts_bacon_toml_qualifier() {
+        let (source, name) = parse_qualified_task("bacon.toml:check");
+        assert_eq!(source, Some(TaskSource::BaconToml));
+        assert_eq!(name, "check");
     }
 
     #[test]

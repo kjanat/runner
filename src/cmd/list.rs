@@ -43,6 +43,7 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
         TaskSource::Taskfile,
         TaskSource::DenoJson,
         TaskSource::CargoAliases,
+        TaskSource::BaconToml,
     ];
     for source in sources {
         let (recipes, aliases): (Vec<_>, Vec<_>) = ctx
@@ -159,6 +160,9 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
         }
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
+        TaskSource::BaconToml => {
+            tool::files::find_first(root, tool::bacon::FILENAMES).filter(|path| path.is_file())
+        }
     }?;
 
     Some(path.canonicalize().unwrap_or(path))
