@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
-## [0.7.1]
+## [0.7.1] - 2026-05-10
 
 ### Fixed
 
