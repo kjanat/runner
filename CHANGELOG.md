@@ -7,23 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Move the landing-page primary domain from `runner.kjanat.com` to
-  `runner.kjanat.dev` across the root README, site docs, site package
-  metadata, and the page canonical URL so published links and metadata
-  point at the new host.
-- Add `runner.kjanat.dev` as a Cloudflare custom-domain route while
-  keeping the existing `.com` route active during the transition.
-- Reflow the npm facade README intro for cleaner package-page rendering.
-
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
-## [0.7.0]
+## [0.7.0] - 2026-05-10
 
 ### Added
 
@@ -123,6 +113,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Drop the unused `NODE_AUTH_TOKEN` env from the npm publish step;
   auth flows through the OIDC token via `id-token: write` and
   `npm publish --provenance`, not a long-lived `NPM_TOKEN`.
+- Move the landing-page primary domain from `runner.kjanat.com` to
+  `runner.kjanat.dev` across the root README, site docs, site package
+  metadata, and the page canonical URL so published links and metadata
+  point at the new host.
+- Add `runner.kjanat.dev` as a Cloudflare custom-domain route while
+  keeping the existing `.com` route active during the transition.
+- Reflow the npm facade README intro for cleaner package-page rendering.
+- Set `Cargo.toml` `[package].homepage` and `npm/facade/package.json`
+  `homepage` to `https://runner.kjanat.dev` (was the GitHub README
+  URL), so the published crate and npm package surface the landing
+  page on registry pages.
 
 ### Fixed
 
