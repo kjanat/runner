@@ -15,7 +15,7 @@ mod list;
 mod run;
 
 pub(crate) use clean::clean;
-pub(crate) use completions::completions;
+pub(crate) use completions::{completions, parse_shell_arg};
 pub(crate) use info::info;
 pub(crate) use install::install;
 pub(crate) use list::list;
