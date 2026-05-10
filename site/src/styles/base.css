@@ -47,6 +47,12 @@ body {
 	color: var(--ink);
 	background: var(--bg);
 }
+code {
+	padding: 0.05em 0.35em;
+	color: var(--ink);
+	background: color-mix(in srgb, var(--ink) 7%, transparent);
+	border-radius: var(--radius-sm);
+}
 ::selection {
 	color: var(--bg);
 	background: var(--ink);
