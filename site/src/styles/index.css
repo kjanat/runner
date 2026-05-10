@@ -105,6 +105,14 @@ hr.rule {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
+.copy .cmd-split {
+	display: flex;
+}
+.copy .cmd-split .cmd-shrink {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+}
 .copy .cmd::before {
 	content: "$ ";
 	opacity: 0.5;
@@ -298,6 +306,9 @@ footer {
 		font-size: 0.85rem;
 		overflow-wrap: anywhere;
 		white-space: normal;
+	}
+	.copy .cmd-split {
+		display: block;
 	}
 	.copy .label {
 		white-space: normal;
