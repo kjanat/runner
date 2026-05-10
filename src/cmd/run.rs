@@ -295,6 +295,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_qualified_task_accepts_turbo_jsonc_qualifier() {
+        let (source, name) = parse_qualified_task("turbo.jsonc:build");
+        assert_eq!(source, Some(TaskSource::TurboJson));
+        assert_eq!(name, "build");
+    }
+
+    #[test]
+    fn parse_qualified_task_accepts_deno_jsonc_qualifier() {
+        let (source, name) = parse_qualified_task("deno.jsonc:test");
+        assert_eq!(source, Some(TaskSource::DenoJson));
+        assert_eq!(name, "test");
+    }
+
+    #[test]
     fn bun_test_fallback_enabled_when_no_test_script() {
         let ctx = context(vec![PackageManager::Bun], vec![]);
 

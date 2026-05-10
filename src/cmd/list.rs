@@ -228,6 +228,17 @@ mod tests {
     }
 
     #[test]
+    fn source_path_finds_turbo_jsonc_variant() {
+        let dir = TempDir::new("list-source-path-turbo-jsonc");
+        fs::write(dir.path().join("turbo.jsonc"), "{}").expect("turbo.jsonc should be written");
+
+        let path = source_path(TaskSource::TurboJson, dir.path())
+            .expect("turbo task source path should be resolved");
+
+        assert!(path.ends_with("turbo.jsonc"));
+    }
+
+    #[test]
     fn source_path_supports_taskfile_dist_variants() {
         let dir = TempDir::new("list-taskfile-dist");
         fs::write(
