@@ -11,11 +11,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- `bacon.toml` as a `runner` task source. `[jobs.<name>]` tables surface
-  in `runner list` / `runner info`, dispatch via `runner run <job>` /
-  `run <job>`, and resolve under the `bacon.toml:<job>` qualified syntax.
-  Bacon is detected as a task runner alongside just / make / go-task.
-  Jobs whose names start with `_` are treated as private and hidden.
+- `bacon.toml` as a `runner` task source. Jobs surface in `runner list` /
+  `runner info`, dispatch via `runner run <job>` / `run <job>`, and resolve
+  under the `bacon.toml:<job>` qualified syntax. Bacon is detected as a
+  task runner alongside just / make / go-task. Jobs whose names start with
+  `_` are treated as private and hidden. When the `bacon` CLI is on
+  `PATH`, extraction shells out to `bacon --list-jobs` so bacon's built-in
+  jobs (`check`, `clippy`, `test`, …) merge into the listing alongside
+  whatever `bacon.toml` declares — same view bacon itself presents. Falls
+  back to TOML parsing when bacon isn't installed. Job arguments forward
+  through bacon's `--` separator (`runner run test -- --ignored` →
+  `bacon test -- --ignored`) so they reach the underlying job intact.
+- Project-local `bacon.toml` defining `lint`, `test-all`, and `bins` jobs
+  for the `runner` crate, mirroring the `cargo l` / `cargo t` aliases.
 
 ### Changed
 
