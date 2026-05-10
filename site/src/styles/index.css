@@ -100,8 +100,9 @@ hr.rule {
 }
 .copy .cmd {
 	display: block;
-	overflow-x: auto;
+	overflow: hidden;
 	font-size: 0.95rem;
+	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 .copy .cmd::before {
