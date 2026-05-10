@@ -44,6 +44,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `cargo install runner-run` (crates.io) instead of the git-source
   form, matching the 0.7.1 README/landing-page change.
 
+### Fixed
+
+- `runner completions $SHELL` no longer fails when `$SHELL` expands to a
+  full path (e.g. `/usr/bin/zsh`). The explicit `<shell>` arg now accepts
+  either a bare name (`zsh`) or a full path, mirroring the bare-arg
+  fallback that already file-stems `$SHELL`. Previously the stock clap
+  `ValueEnum` parser rejected anything but the bare names, making the
+  explicit and implicit paths inconsistent.
+- `pwsh` surfaces in `runner completions --help` and the rejection error
+  alongside `powershell`. The internal mapping has accepted both since
+  `shell_from_path` was written; only the user-facing message lagged.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
