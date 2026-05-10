@@ -1,0 +1,39 @@
+[workspace]
+# The crate ships as `runner-run` on crates.io; tags use the `v` prefix.
+git_tag_name = "v{{ version }}"
+git_tag_enable = true
+
+# Create the GitHub release as a draft. release.yml attaches binary
+# tarballs + npm provenance, then flips it to published.
+git_release_enable = true
+git_release_draft = true
+git_release_type = "auto"
+git_release_latest = true
+
+# Use conventional commits to drive the version bump.
+semver_check = true
+publish = true                    # cargo publish to crates.io
+publish_allow_dirty = false
+publish_features = []             # publish with default features
+publish_no_verify = false
+publish_timeout = "30m"
+
+# Changelog updates land in the PR.
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+changelog_config = "cliff.toml"
+
+# Release-plz prepends new sections; keep the "[Unreleased]" header +
+# post-release checklist intact.
+changelog_include = []
+release_commits = "^(feat|fix|perf|refactor|deps|build|revert)(\\(.*\\))?(!)?:"
+
+# PR settings
+pr_branch_prefix = "release-plz/"
+pr_draft = false
+pr_labels = ["release"]
+pr_name = "release: prepare v{{ version }}"
+
+[[package]]
+name = "runner-run"
+changelog_path = "CHANGELOG.md"

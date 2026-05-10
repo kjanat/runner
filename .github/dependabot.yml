@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["deps", "ci"]
+
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 10
+    groups:
+      cargo-minor:
+        update-types: ["minor", "patch"]
+    labels: ["deps", "rust"]
+
+  - package-ecosystem: npm
+    directory: "/npm/facade"
+    schedule: { interval: weekly }
+    labels: ["deps", "npm"]

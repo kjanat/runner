@@ -1,0 +1,120 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      - uses: dprint/check@v2.3
+      - uses: taiki-e/install-action@v2
+        with: { tool: tombi-cli }
+      - run: tombi format --check
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.95" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.os }}
+      - run: cargo test --all-features --no-fail-fast
+
+  docs:
+    name: rustdoc
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.95" }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+
+  package-dry-run:
+    name: npm packaging dry-run
+    runs-on: ubuntu-latest
+    needs: [fmt, lint]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.95" }
+      - uses: actions/setup-node@v6
+        with: { node-version: "22" }
+      - uses: extractions/setup-just@v3
+      - uses: Swatinem/rust-cache@v2
+      - name: Build host binaries
+        run: cargo build --release --features run
+      - name: Stage tarball for host triple
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cargo read-manifest | jq -r .version)
+          triple=$(rustc --print host-tuple)
+          mkdir -p npm/downloads
+          tar -C target/release -czf "npm/downloads/runner-v${version}-${triple}.tar.gz" runner run
+      - name: Build npm packages (host only, skip missing)
+        run: just build-packages "" true
+
+  install-sh:
+    name: install.sh shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: shellcheck install.sh
+
+  ci-pass:
+    name: ci pass
+    if: always()
+    needs: [fmt, lint, test, docs, package-dry-run, install-sh]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check matrix results
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi

@@ -1,0 +1,65 @@
+# git-cliff config used by release-plz to render Keep-a-Changelog
+# sections. Mirrors the existing CHANGELOG.md style (Added/Changed/
+# Fixed/Removed/Security buckets, ISO date, version compare links).
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog], and this project adheres to [Semantic Versioning].
+
+[Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
+[Semantic Versioning]: https://semver.org/spec/v2.0.0.html
+"""
+
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+
+{% for commit in commits %}\
+- {{ commit.message | upper_first | trim }}\
+{% if commit.breaking %} **(breaking)**{% endif %}\
+{% if commit.id %} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/kjanat/runner/commit/{{ commit.id }})){% endif %}
+{% endfor %}\
+{% endfor %}\n
+"""
+
+footer = ""
+trim = true
+postprocessors = []
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+split_commits = false
+protect_breaking_commits = true
+filter_commits = true
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+topo_order = false
+sort_commits = "newest"
+
+commit_parsers = [
+  { message = "^feat",                          group = "Added" },
+  { message = "^add",                           group = "Added" },
+  { message = "^change",                        group = "Changed" },
+  { message = "^refactor",                      group = "Changed" },
+  { message = "^perf",                          group = "Changed" },
+  { message = "^style",                         group = "Changed" },
+  { message = "^deprecate",                     group = "Deprecated" },
+  { message = "^remove",                        group = "Removed" },
+  { message = "^fix",                           group = "Fixed" },
+  { message = "^bug",                           group = "Fixed" },
+  { message = "^security",                      group = "Security" },
+  { message = "^deps",                          group = "Changed" },
+  { message = "^build",                         group = "Changed" },
+  { message = "^revert",                        group = "Changed" },
+  { message = "^(chore|ci|docs|test)",          skip  = true    },
+  { body    = ".*security",                     group = "Security" },
+]
