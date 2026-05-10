@@ -235,3 +235,20 @@ jobs:
           path: npm/dist/
           retention-days: 14
           if-no-files-found: error
+
+  # Flip the draft release that create-release produced to published once
+  # binaries and the npm-dist artifact are in place. This event drives the
+  # downstream npm-release.yml workflow. Idempotent — `gh release edit
+  # --draft=false` on an already-published release is a no-op.
+  publish-release:
+    name: publish github release
+    needs: [build-npm-dist]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false

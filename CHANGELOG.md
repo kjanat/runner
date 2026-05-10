@@ -9,6 +9,25 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Changed
+
+- Release pipeline reordered. `crates-release` now triggers on `push:
+  tags: ['v*']` instead of `release: published`, so `cargo publish`
+  fires in parallel with binary builds and no longer waits on the npm
+  publish chain to complete first. `release.yml` gains a final
+  `publish-release` job that flips the draft GitHub release to
+  published once binaries and the `npm-dist` artifact land — this is
+  now the natural pivot of the release lifecycle and drives
+  `npm-release.yml` via `release: published`. `npm-release.yml`
+  drops its `workflow_run` trigger (and the draft-flip side job that
+  was hidden in it), resolving the build run-id for cross-workflow
+  artifact download via `gh run list` instead. Net effect: tag push
+  alone ships crates.io immediately, and the GH release auto-publishes
+  once binaries are ready — no more manual draft-flipping.
+- `npm/facade/README.md` updates the install fallback instructions to
+  `cargo install runner-run` (crates.io) instead of the git-source
+  form, matching the 0.7.1 README/landing-page change.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

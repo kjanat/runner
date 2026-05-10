@@ -1,14 +1,11 @@
 name: npm-release
 run-name: >-
-  ${{ format('npm publish {0}', case(
-        contains(github.event_name, 'workflow_run'), github.event.workflow_run.head_branch,
-      	inputs.tag)) }}
+  ${{ format('npm publish {0}',
+       case(github.event_name == 'release', github.event.release.tag_name,
+            inputs.tag)) }}
 
 on:
   release: { types: [published] }
-  # todo: explore
-  # https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#using-data-from-the-triggering-workflow
-  workflow_run: { workflows: [release], types: [completed], branches: [v*] }
   workflow_dispatch:
     inputs:
       tag:
@@ -40,8 +37,9 @@ permissions:
 env:
   NODE_VERSION: latest
   REGISTRY: https://registry.npmjs.org/
-  RELEASE_TAG: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.tag, github.event.workflow_run.head_branch) }}
-  RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
+  # RELEASE_TAG comes from trusted trigger metadata only — never from
+  # anything build-time scripts could influence.
+  RELEASE_TAG: ${{ case(github.event_name == 'release', github.event.release.tag_name, inputs.tag) }}
   EVENT_NAME: ${{ github.event_name }}
   INPUT_DIST_TAG: ${{ inputs.dist-tag }}
   INPUT_DRY_RUN: ${{ inputs.dry-run || false }}
@@ -50,11 +48,11 @@ jobs:
   publish:
     name: publish to npm
     runs-on: ubuntu-latest
-    # Only run after a successful tag-triggered release.yml, or on manual dispatch.
+    # Triggered by release:published (real flow) or workflow_dispatch (manual
+    # republish). Reject anything else — no workflow_run, no schedule.
     if: >-
-      contains(github.event_name, 'workflow_dispatch') ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       startsWith(github.event.workflow_run.head_branch, 'v'))
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v'))
     permissions:
       contents: read
       id-token: write # for npm provenance
@@ -62,19 +60,6 @@ jobs:
     environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
     outputs:
       dry-run: ${{ steps.derive.outputs.dry-run }}
-    # env:
-    # RELEASE_TAG comes from trusted trigger metadata only — never from
-    # anything build-time scripts could influence.
-    #   RELEASE_TAG: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.tag, github.event.workflow_run.head_branch) }}
-    #   RUN_ID: ${{ case(contains(github.event_name, 'workflow_dispatch'), inputs.run-id, github.event.workflow_run.id) }}
-    #   EVENT_NAME: ${{ github.event_name }}
-    #   INPUT_DIST_TAG: ${{ inputs.dist-tag || '' }}
-    #   INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
-    # ---
-    # Hardcoded registry — every npm view/publish call passes this
-    # explicitly via --registry so any per-package config that slipped
-    # past the rejection checks couldn't redirect the publish.
-    #   REGISTRY: https://registry.npmjs.org/
     steps:
       # Sparse-checkout from the DEFAULT BRANCH gets us the trusted publish
       # scripts only. No tag-supplied code on disk → no untrusted code
@@ -93,15 +78,50 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: ${{ env.REGISTRY }}
 
-      # Cross-workflow artifact download: the npm-dist was built by the
-      # release.yml run identified by RUN_ID (in tag-push context, where
-      # cache scope is the tag — not the default branch).
+      # Cross-workflow artifact download: npm-dist lives in the release.yml
+      # run that built this tag. For workflow_dispatch the user supplies the
+      # run-id explicitly. For release:published we look it up by querying
+      # the most recent successful release.yml run for this tag — release.yml
+      # only marks success after publish-release flips draft→published, so
+      # by the time release:published fires the run is already success.
+      - name: resolve build run-id
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RUN_ID: ${{ inputs.run-id }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            run_id="${INPUT_RUN_ID}"
+          else
+            run_id=$(gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow=release.yml \
+              --branch="${RELEASE_TAG}" \
+              --status=success \
+              --limit=1 \
+              --json databaseId \
+              --jq '.[0].databaseId')
+          fi
+          if [[ -z "${run_id}" || "${run_id}" == "null" ]]; then
+            echo "error: no run-id resolvable for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          # Numeric guard — refuses anything that could inject extra GITHUB_OUTPUT
+          # lines (newlines, '=', etc.). gh API returns a bare integer; a
+          # workflow_dispatch input from a trusted dispatcher should match too.
+          if ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+            echo "error: run-id '${run_id}' is not a positive integer" >&2
+            exit 1
+          fi
+          echo "run-id=${run_id}" >> "${GITHUB_OUTPUT}"
+
       - name: download npm-dist artifact
         uses: actions/download-artifact@v8
         with:
           name: npm-dist
           path: npm/dist/
-          run-id: ${{ env.RUN_ID }}
+          run-id: ${{ steps.resolve.outputs.run-id }}
           github-token: ${{ github.token }}
 
       - name: derive dist-tag and dry-run
@@ -114,21 +134,3 @@ jobs:
           DIST_TAG: ${{ steps.derive.outputs.dist-tag }}
           DRY_RUN: ${{ steps.derive.outputs.dry-run }}
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/npm.sh"
-
-  # Flip the draft GitHub release that release.yml created (taiki-e
-  # action defaults `draft: true`) to published once npm publish has
-  # actually shipped. Idempotent — `gh release edit --draft=false` on an
-  # already-published release is a no-op, so the `release.published`
-  # trigger path stays safe.
-  publish-release:
-    name: publish github release
-    needs: publish
-    if: needs.publish.outputs.dry-run != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: flip draft to published
-        run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false

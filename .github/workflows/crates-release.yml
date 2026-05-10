@@ -1,12 +1,13 @@
 name: crates-release
 run-name: >-
-  ${{ github.event_name == 'release'
-      && format('crates publish {0}', github.event.release.tag_name)
-      || format('crates publish {0}', inputs.tag) }}
+  ${{ format('crates publish {0}',
+       case(github.event_name == 'workflow_dispatch', inputs.tag,
+            github.ref_name)) }}
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - v*
   workflow_dispatch:
     inputs:
       tag:
@@ -37,9 +38,8 @@ jobs:
       url: https://crates.io/crates/runner-run
     env:
       RELEASE_TAG: >-
-        ${{ github.event_name == 'workflow_dispatch'
-            && inputs.tag
-            || github.event.release.tag_name }}
+        ${{ case(github.event_name == 'workflow_dispatch', inputs.tag,
+             github.ref_name) }}
       INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
     steps:
       - uses: actions/checkout@v6
