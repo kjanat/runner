@@ -1,41 +1,50 @@
 //! Turborepo — monorepo build system.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::Context as _;
 use serde::Deserialize;
 
+use crate::tool::files;
+
 /// Directories produced by Turborepo.
 pub(crate) const CLEAN_DIRS: &[&str] = &[".turbo"];
 
-/// Main Turborepo config filename.
-pub(crate) const FILENAME: &str = "turbo.json";
+/// Supported Turborepo config filenames (priority order). Turborepo v2
+/// accepts both `turbo.json` and `turbo.jsonc` natively.
+pub(crate) const FILENAMES: &[&str] = &["turbo.json", "turbo.jsonc"];
 
-/// Detected via `turbo.json`.
-pub(crate) fn detect(dir: &Path) -> bool {
-    dir.join(FILENAME).exists()
+/// Resolve the active Turborepo config in `dir`, if any.
+pub(crate) fn find_config(dir: &Path) -> Option<PathBuf> {
+    files::find_first(dir, FILENAMES).filter(|path| path.is_file())
 }
 
-/// Parse task names from `turbo.json`.
+/// Detected via `turbo.json` or `turbo.jsonc`.
+pub(crate) fn detect(dir: &Path) -> bool {
+    find_config(dir).is_some()
+}
+
+/// Parse task names from `turbo.json` / `turbo.jsonc`.
 ///
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Scoped
-/// tasks like `"my-app#build"` are filtered out.
+/// tasks like `"my-app#build"` are filtered out. JSONC syntax (line
+/// comments, block comments, trailing commas) is accepted under either
+/// filename, matching Turborepo's own parser.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
         pipeline: Option<HashMap<String, serde_json::Value>>,
     }
-    let path = dir.join(FILENAME);
-    if !path.exists() {
+    let Some(path) = find_config(dir) else {
         return Ok(vec![]);
-    }
+    };
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let p = serde_json::from_str::<Partial>(&content)
-        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    let p = json5::from_str::<Partial>(&content)
+        .with_context(|| format!("{} is not valid JSON/JSONC", path.display()))?;
     let Some(tasks) = p.tasks.or(p.pipeline) else {
         return Ok(vec![]);
     };
@@ -224,7 +233,7 @@ fn looks_like_shell_expansion(token: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use super::extract_tasks;
+    use super::{detect, extract_tasks};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -286,6 +295,83 @@ mod tests {
         tasks.sort_unstable();
 
         assert_eq!(tasks, ["test", "typecheck"]);
+    }
+
+    #[test]
+    fn detect_finds_turbo_jsonc_filename() {
+        let dir = TempDir::new("turbo-detect-jsonc");
+        fs::write(dir.path().join("turbo.jsonc"), r#"{"tasks":{"build":{}}}"#)
+            .expect("turbo.jsonc should be written");
+
+        assert!(detect(dir.path()));
+    }
+
+    #[test]
+    fn extract_tasks_reads_turbo_jsonc_filename() {
+        let dir = TempDir::new("turbo-jsonc-filename");
+        fs::write(
+            dir.path().join("turbo.jsonc"),
+            r#"{"tasks":{"build":{},"lint":{}}}"#,
+        )
+        .expect("turbo.jsonc should be written");
+
+        let mut tasks = extract_tasks(dir.path()).expect("turbo.jsonc should parse");
+        tasks.sort_unstable();
+
+        assert_eq!(tasks, ["build", "lint"]);
+    }
+
+    #[test]
+    fn extract_tasks_accepts_trailing_commas_in_turbo_json() {
+        let dir = TempDir::new("turbo-trailing-comma");
+        fs::write(dir.path().join("turbo.json"), r#"{"tasks":{"build":{},}}"#)
+            .expect("turbo.json should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("trailing comma should parse");
+
+        assert_eq!(tasks, ["build"]);
+    }
+
+    #[test]
+    fn extract_tasks_accepts_jsonc_comments_under_either_filename() {
+        let dir = TempDir::new("turbo-jsonc-comments");
+        fs::write(
+            dir.path().join("turbo.jsonc"),
+            r#"{
+  // line comment
+  "tasks": {
+    /* block comment */
+    "build": {},
+    "test": {},
+  },
+}
+"#,
+        )
+        .expect("turbo.jsonc should be written");
+
+        let mut tasks = extract_tasks(dir.path()).expect("jsonc should parse");
+        tasks.sort_unstable();
+
+        assert_eq!(tasks, ["build", "test"]);
+    }
+
+    #[test]
+    fn extract_tasks_prefers_turbo_json_when_both_filenames_exist() {
+        let dir = TempDir::new("turbo-priority");
+        fs::write(
+            dir.path().join("turbo.json"),
+            r#"{"tasks":{"from-json":{}}}"#,
+        )
+        .expect("turbo.json should be written");
+        fs::write(
+            dir.path().join("turbo.jsonc"),
+            r#"{"tasks":{"from-jsonc":{}}}"#,
+        )
+        .expect("turbo.jsonc should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("turbo.json should parse");
+
+        assert_eq!(tasks, ["from-json"]);
     }
 
     use super::is_self_passthrough;
