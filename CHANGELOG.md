@@ -726,4 +726,4 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0
 
 <!--markdownlint-disable-file no-duplicate-heading-->
-<!-- rumdl-disable-file MD013 -->
+<!-- rumdl-disable-file MD013 MD024 -->
