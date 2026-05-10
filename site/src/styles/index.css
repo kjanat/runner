@@ -108,13 +108,16 @@ hr.rule {
 .copy .cmd-split {
 	display: flex;
 }
+.copy .cmd-split::before {
+	content: "$\00a0";
+}
 .copy .cmd-split .cmd-shrink {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	min-width: 0;
 }
 .copy .cmd::before {
-	content: "$ ";
+	content: "$\00a0";
 	opacity: 0.5;
 }
 .copy .toast {
