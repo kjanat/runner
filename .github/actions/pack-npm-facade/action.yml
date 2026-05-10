@@ -1,0 +1,75 @@
+name: pack-npm-facade
+description: >-
+  Stamp the facade package (reusing the in-repo npm/facade/ scaffolding and its
+  bin/lib JS shims), inject optionalDependencies from npm/targets.json, and
+  run `npm pack`. The resulting .tgz is what `npm install -g runner-run`
+  resolves to; npm then pulls exactly one matching @scope/<pkg> based on the
+  user's platform.
+
+inputs:
+  facade-dir:
+    description: 'Path to npm/facade/ (template).'
+    required: false
+    default: npm/facade
+  targets-json:
+    description: 'Path to npm/targets.json.'
+    required: false
+    default: npm/targets.json
+  version:
+    description: 'Version without leading v.'
+    required: true
+  out-dir:
+    description: 'Where to write the resulting .tgz.'
+    required: true
+
+outputs:
+  tarball:
+    description: 'Path to the produced .tgz'
+    value: ${{ steps.pack.outputs.tarball }}
+  name:
+    description: 'Facade package name'
+    value: ${{ steps.pack.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Stage and pack facade
+      id: pack
+      shell: bash
+      env:
+        FACADE_DIR: ${{ inputs.facade-dir }}
+        TARGETS_JSON: ${{ inputs.targets-json }}
+        VERSION: ${{ inputs.version }}
+        OUT_DIR: ${{ inputs.out-dir }}
+      run: |
+        set -euo pipefail
+        mkdir -p "${OUT_DIR}"
+        STAGE="$(mktemp -d)"
+        cp -R "${FACADE_DIR}/." "${STAGE}/"
+
+        # Copy top-level README + LICENSE so the published facade carries them.
+        cp README.md LICENSE "${STAGE}/" 2>/dev/null || true
+
+        SCOPE=$(jq -r '.scope' "${TARGETS_JSON}")
+        FACADE_NAME=$(jq -r '.facade' "${TARGETS_JSON}")
+
+        # optionalDependencies map: { "<scope>/<pkg>": "<version>" } for every
+        # tier-1 + tier-2 target. Tier-3 (experimental) targets are excluded —
+        # they may not have published if their build flaked, and we don't want
+        # facade installs to fail looking for them.
+        OPT_DEPS=$(jq --arg s "${SCOPE}" --arg v "${VERSION}" \
+          '[.targets[] | select(.tier <= 2) | { key: ($s + "/" + .pkg), value: $v }] | from_entries' \
+          "${TARGETS_JSON}")
+
+        # Merge into facade package.json: stamp version, replace optionalDependencies.
+        TMP=$(mktemp)
+        jq --arg v "${VERSION}" --argjson od "${OPT_DEPS}" \
+          '.version = $v | .optionalDependencies = $od' \
+          "${STAGE}/package.json" > "${TMP}"
+        mv "${TMP}" "${STAGE}/package.json"
+
+        TGZ_NAME=$(cd "${STAGE}" && npm pack --json --pack-destination "${OUT_DIR}" | jq -r '.[0].filename')
+        TGZ_PATH="${OUT_DIR}/${TGZ_NAME}"
+        echo "tarball=${TGZ_PATH}" >> "$GITHUB_OUTPUT"
+        echo "name=${FACADE_NAME}" >> "$GITHUB_OUTPUT"
+        echo "Packed facade ${FACADE_NAME}@${VERSION} -> ${TGZ_PATH}"

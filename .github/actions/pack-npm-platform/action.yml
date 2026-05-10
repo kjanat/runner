@@ -1,0 +1,122 @@
+name: pack-npm-platform
+description: >-
+  Stamp the per-target npm sub-package (`<scope>/<pkg>`), copy the prebuilt
+  binaries into its `bin/` directory, and run `npm pack` to produce the .tgz
+  artifact. Pure bash + jq — no external Node script.
+
+inputs:
+  pkg:
+    description: 'Short target name (e.g. linux-x64-gnu); becomes the package suffix.'
+    required: true
+  scope:
+    description: 'npm scope (e.g. @runner-run).'
+    required: true
+  facade-name:
+    description: 'Facade package name (e.g. runner-run). Used in description text.'
+    required: true
+  version:
+    description: 'Version without leading v.'
+    required: true
+  os:
+    description: 'JSON array as a compact string, e.g. ["linux"].'
+    required: true
+  cpu:
+    description: 'JSON array as a compact string, e.g. ["x64"].'
+    required: true
+  libc:
+    description: 'JSON array as a compact string. Empty string when not applicable.'
+    required: false
+    default: ''
+  bin-dir:
+    description: 'Directory containing the unpacked binaries to embed.'
+    required: true
+  binaries:
+    description: 'Space-separated [[bin]] names to expose under `bin:` (e.g. "runner run").'
+    required: false
+    default: runner run
+  out-dir:
+    description: 'Where to write the resulting .tgz.'
+    required: true
+
+outputs:
+  tarball:
+    description: 'Path to the produced .tgz'
+    value: ${{ steps.pack.outputs.tarball }}
+  name:
+    description: 'Fully-qualified package name'
+    value: ${{ steps.pack.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Stage and pack
+      id: pack
+      shell: bash
+      env:
+        PKG: ${{ inputs.pkg }}
+        SCOPE: ${{ inputs.scope }}
+        FACADE: ${{ inputs.facade-name }}
+        VERSION: ${{ inputs.version }}
+        OS: ${{ inputs.os }}
+        CPU: ${{ inputs.cpu }}
+        LIBC: ${{ inputs.libc }}
+        BIN_DIR: ${{ inputs.bin-dir }}
+        BINARIES: ${{ inputs.binaries }}
+        OUT_DIR: ${{ inputs.out-dir }}
+      run: |
+        set -euo pipefail
+        FULL_NAME="${SCOPE}/${PKG}"
+        STAGE="$(mktemp -d)"
+        mkdir -p "${STAGE}/bin" "${OUT_DIR}"
+
+        # Copy binaries from the unpacked archive staging dir. Strip .exe on
+        # the package side — `resolve.cjs` re-adds it based on process.platform.
+        for bin in ${BINARIES}; do
+          if [[ -f "${BIN_DIR}/${bin}.exe" ]]; then
+            cp "${BIN_DIR}/${bin}.exe" "${STAGE}/bin/${bin}.exe"
+          elif [[ -f "${BIN_DIR}/${bin}" ]]; then
+            cp "${BIN_DIR}/${bin}" "${STAGE}/bin/${bin}"
+            chmod +x "${STAGE}/bin/${bin}"
+          else
+            echo "::error::missing binary ${bin} in ${BIN_DIR}"
+            exit 1
+          fi
+        done
+
+        # Build package.json. `libc` is omitted entirely when not provided so
+        # npm's selector logic doesn't reject darwin/win32 hosts.
+        cp README.md LICENSE "${STAGE}/" 2>/dev/null || true
+
+        LIBC_FRAG='{}'
+        if [[ -n "${LIBC}" ]]; then
+          LIBC_FRAG="$(jq -n --argjson v "${LIBC}" '{libc: $v}')"
+        fi
+
+        jq -n \
+          --arg   name        "${FULL_NAME}" \
+          --arg   version     "${VERSION}" \
+          --arg   description "Prebuilt ${FACADE} binary for ${PKG}" \
+          --argjson os        "${OS}" \
+          --argjson cpu       "${CPU}" \
+          --argjson libc_obj  "${LIBC_FRAG}" \
+          '{
+            name: $name,
+            version: $version,
+            description: $description,
+            homepage: "https://runner.kjanat.dev",
+            bugs: { url: "https://github.com/kjanat/runner/issues" },
+            repository: { type: "git", url: "git+https://github.com/kjanat/runner.git" },
+            license: "MIT",
+            author: "Kaj Kowalski <info+runner@kajkowalski.nl>",
+            os: $os,
+            cpu: $cpu,
+            files: ["bin/", "README.md", "LICENSE"],
+            preferUnplugged: true
+          } + $libc_obj' > "${STAGE}/package.json"
+
+        # `npm pack` writes <name-sanitized>-<version>.tgz; capture exact path.
+        TGZ_NAME=$(cd "${STAGE}" && npm pack --json --pack-destination "${OUT_DIR}" | jq -r '.[0].filename')
+        TGZ_PATH="${OUT_DIR}/${TGZ_NAME}"
+        echo "tarball=${TGZ_PATH}" >> "$GITHUB_OUTPUT"
+        echo "name=${FULL_NAME}"   >> "$GITHUB_OUTPUT"
+        echo "Packed ${FULL_NAME}@${VERSION} -> ${TGZ_PATH}"
