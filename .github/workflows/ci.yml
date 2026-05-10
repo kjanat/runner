@@ -27,10 +27,14 @@ jobs:
         with:
           toolchain: "1.95"
           components: rustfmt
+      # dprint's exec plugin shells out to these formatters; they must
+      # all be on PATH before dprint/check runs.
+      - uses: extractions/setup-just@v3
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tombi-cli,shfmt
       - run: cargo fmt --all -- --check
       - uses: dprint/check@v2.3
-      - uses: taiki-e/install-action@v2
-        with: { tool: tombi-cli }
       - run: tombi format --check
 
   lint:
