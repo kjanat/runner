@@ -1,0 +1,387 @@
+name: release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build & publish, e.g. v0.8.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ----------------------------------------------------------------------
+  # 1. Resolve tag/version + emit per-target matrix from npm/targets.json.
+  # ----------------------------------------------------------------------
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+      - id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name || inputs.tag }}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "::error::bad tag '$tag'"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        shell: bash
+        env:
+          ALLOW_EXPERIMENTAL: "false"
+        run: |
+          set -euo pipefail
+          # Drop experimental tier-3 targets unless explicitly enabled.
+          if [[ "$ALLOW_EXPERIMENTAL" == "true" ]]; then
+            filter='.targets'
+          else
+            filter='.targets | map(select(.experimental != true))'
+          fi
+          matrix=$(jq -c "{ include: ($filter) }" npm/targets.json)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  # ----------------------------------------------------------------------
+  # 2. Build a release tarball per target. Single matrix, branches on
+  #    `build` strategy (cross | cargo | cargo-build-std | cargo-cross-toolchain).
+  # ----------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.rust }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      ARCHIVE: runner-v${{ needs.plan.outputs.version }}-${{ matrix.rust }}.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          targets: ${{ matrix.rust }}
+          components: ${{ matrix.build == 'cargo-build-std' && 'rust-src' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.rust }}
+
+      - name: Install cross
+        if: matrix.build == 'cross'
+        uses: taiki-e/install-action@v2
+        with: { tool: cross }
+
+      - name: Install NetBSD cross toolchain
+        if: matrix.build == 'cargo-cross-toolchain'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm libc6-dev
+          # Use pre-built netbsd sysroot from the Rust target maintainers.
+          curl -fsSL -o /tmp/netbsd-sysroot.tar.xz \
+            https://github.com/rust-cross/netbsd-cross/releases/latest/download/x86_64-unknown-netbsd.tar.xz
+          sudo mkdir -p /opt/cross
+          sudo tar -C /opt/cross -xJf /tmp/netbsd-sysroot.tar.xz
+          echo "/opt/cross/bin" >> "$GITHUB_PATH"
+
+      - name: cargo build (native)
+        if: matrix.build == 'cargo'
+        shell: bash
+        run: cargo build --release --locked --features run --target ${{ matrix.rust }}
+
+      - name: cross build
+        if: matrix.build == 'cross'
+        shell: bash
+        run: cross build --release --locked --features run --target ${{ matrix.rust }}
+
+      - name: cargo build -Z build-std
+        if: matrix.build == 'cargo-build-std'
+        shell: bash
+        run: |
+          rustup toolchain install nightly --component rust-src --profile minimal
+          cargo +nightly build --release --locked --features run \
+            --target ${{ matrix.rust }} \
+            -Z build-std=std,panic_abort \
+            -Z build-std-features=panic_immediate_abort
+
+      - name: cargo build (custom toolchain)
+        if: matrix.build == 'cargo-cross-toolchain'
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_NETBSD_LINKER: x86_64--netbsd-clang
+          CC_x86_64_unknown_netbsd: x86_64--netbsd-clang
+        run: cargo build --release --locked --features run --target ${{ matrix.rust }}
+
+      - name: Package archive
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d)"
+          ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then ext=".exe"; fi
+          cp "target/${{ matrix.rust }}/release/runner${ext}" "$stage/"
+          cp "target/${{ matrix.rust }}/release/run${ext}"    "$stage/"
+          cp README.md LICENSE "$stage/"
+          tar -C "$stage" -czf "$ARCHIVE" "runner${ext}" "run${ext}" README.md LICENSE
+          # sha256
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$ARCHIVE" > "${ARCHIVE%.tar.gz}.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "${ARCHIVE%.tar.gz}.sha256"
+          fi
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "sha256=${ARCHIVE%.tar.gz}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.pkg.outputs.archive }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: bin-${{ matrix.rust }}
+          path: |
+            ${{ steps.pkg.outputs.archive }}
+            ${{ steps.pkg.outputs.sha256 }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # ----------------------------------------------------------------------
+  # 3. Smoke-test the produced tarball on each native runner OS.
+  # ----------------------------------------------------------------------
+  smoke:
+    name: smoke ${{ matrix.os }}
+    needs: [plan, build]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: bin-${{ matrix.triple }}
+          path: dl
+      - name: Verify checksum + run --version
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dl
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c "runner-v${{ needs.plan.outputs.version }}-${{ matrix.triple }}.sha256"
+          else
+            shasum -a 256 -c "runner-v${{ needs.plan.outputs.version }}-${{ matrix.triple }}.sha256"
+          fi
+          mkdir extracted
+          tar -C extracted -xzf "runner-v${{ needs.plan.outputs.version }}-${{ matrix.triple }}.tar.gz"
+          ext=""
+          [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
+          ./extracted/runner${ext} --version | grep -F "${{ needs.plan.outputs.version }}"
+          ./extracted/run${ext}    --version | grep -F "${{ needs.plan.outputs.version }}"
+
+  # ----------------------------------------------------------------------
+  # 4. Build npm subpackages + facade from the staged tarballs.
+  # ----------------------------------------------------------------------
+  build_npm:
+    name: build npm packages
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: extractions/setup-just@v3
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: bin-*
+          path: npm/downloads
+          merge-multiple: true
+      - name: List staged tarballs
+        run: ls -la npm/downloads
+      - name: Build all npm packages
+        run: just build-packages "" false "${{ needs.plan.outputs.version }}"
+      - name: Pack tarballs (one per subpackage + facade)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p npm/pack
+          for dir in npm/dist/*/; do
+            (cd "$dir" && npm pack --pack-destination "$GITHUB_WORKSPACE/npm/pack")
+          done
+          ls -la npm/pack
+      - name: Attest npm tarballs
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "npm/pack/*.tgz"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: npm-dist
+          path: npm/pack/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  # ----------------------------------------------------------------------
+  # 5. Upload binaries + checksums to the (still draft) GitHub Release,
+  #    then flip it to published. This is the single public-state pivot.
+  # ----------------------------------------------------------------------
+  publish_release:
+    name: publish github release
+    needs: [plan, build, smoke, build_npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: bin-*
+          path: dist
+          merge-multiple: true
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd dist
+          gh release upload "${{ needs.plan.outputs.tag }}" \
+            --clobber --repo "${{ github.repository }}" \
+            runner-v${{ needs.plan.outputs.version }}-*.tar.gz \
+            runner-v${{ needs.plan.outputs.version }}-*.sha256
+      - name: Mark release as published (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ needs.plan.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false --latest
+
+  # ----------------------------------------------------------------------
+  # 6. Publish all npm tarballs (subpackages first, facade last).
+  # ----------------------------------------------------------------------
+  publish_npm:
+    name: publish npm
+    needs: [plan, build_npm, publish_release]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      NPM_CONFIG_PROVENANCE: "true"
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v6
+        with:
+          name: npm-dist
+          path: npm/pack
+      - name: Publish subpackages then facade
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          scoped=( npm/pack/runner-run-*.tgz )    # subpackages: @runner-run/* -> file name 'runner-run-*'
+          facade=( npm/pack/runner-run-${{ needs.plan.outputs.version }}.tgz )
+
+          # Distinguish the facade from subpkg tarballs by exact name match.
+          for t in "${scoped[@]}"; do
+            base=$(basename "$t")
+            if [[ "$base" == "runner-run-${{ needs.plan.outputs.version }}.tgz" ]]; then continue; fi
+            echo "::group::publish $base"
+            npm publish "$t" --access public --provenance
+            echo "::endgroup::"
+          done
+          for t in "${facade[@]}"; do
+            echo "::group::publish $(basename "$t") (facade)"
+            npm publish "$t" --access public --provenance
+            echo "::endgroup::"
+          done
+
+  # ----------------------------------------------------------------------
+  # 7. Out-of-band verification that the published artifacts actually
+  #    install and report the right version on Linux.
+  # ----------------------------------------------------------------------
+  verify_published:
+    name: verify (${{ matrix.path }})
+    needs: [plan, publish_release, publish_npm]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        path: [npm, install-sh, binstall]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - if: matrix.path == 'npm'
+        uses: actions/setup-node@v6
+        with: { node-version: "24" }
+      - name: verify via npm
+        if: matrix.path == 'npm'
+        run: |
+          set -euo pipefail
+          npm install -g "runner-run@${{ needs.plan.outputs.version }}"
+          runner --version | grep -F "${{ needs.plan.outputs.version }}"
+          run --version | grep -F "${{ needs.plan.outputs.version }}"
+      - name: verify via install.sh
+        if: matrix.path == 'install-sh'
+        run: |
+          set -euo pipefail
+          RUNNER_INSTALL_DIR="$HOME/.local/bin" \
+            bash install.sh "v${{ needs.plan.outputs.version }}"
+          "$HOME/.local/bin/runner" --version | grep -F "${{ needs.plan.outputs.version }}"
+          "$HOME/.local/bin/run" --version | grep -F "${{ needs.plan.outputs.version }}"
+      - name: verify via cargo binstall
+        if: matrix.path == 'binstall'
+        uses: cargo-bins/cargo-binstall@main
+      - if: matrix.path == 'binstall'
+        run: |
+          set -euo pipefail
+          cargo binstall --no-confirm --force "runner-run@${{ needs.plan.outputs.version }}"
+          runner --version | grep -F "${{ needs.plan.outputs.version }}"
+          run --version | grep -F "${{ needs.plan.outputs.version }}"

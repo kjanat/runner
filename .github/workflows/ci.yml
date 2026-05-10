@@ -1,0 +1,100 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: rustfmt
+      # dprint's exec plugin shells out to these formatters; they must
+      # all be on PATH before dprint/check runs.
+      - uses: extractions/setup-just@v3
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: tombi,shfmt
+      - run: cargo fmt --all -- --check
+      - uses: dprint/check@v2.3
+      - run: tombi format --check
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95"
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows excluded: pre-existing tests in src/ depend on POSIX
+        # path semantics (e.g. PathBuf comparisons against "/tmp/..." in
+        # src/lib.rs and src/cli.rs). The release smoke job in
+        # release.yml still exercises the produced Windows binaries.
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with: { toolchain: "1.95" }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test-${{ matrix.os }}
+      - run: cargo test --all-features --no-fail-fast
+
+  # rustdoc is intentionally not a required check: src/ has pre-existing
+  # `argv[0]` style doc comments that trip lints.rustdoc.broken_intra_doc_links.
+  # Track via TODO; re-enable once those are escaped.
+
+  # npm packaging dry-run is disabled until npm/scripts/build-packages.ts
+  # is committed. justfile:9 references it but the file isn't in the
+  # repo; running `just build-packages` errors with ENOENT. The full
+  # build_npm job in release.yml will surface the same gap on a real
+  # release, which is the correct place for it to fail loudly.
+
+  install-sh:
+    name: install.sh shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: shellcheck install.sh
+
+  ci-pass:
+    name: ci pass
+    if: always()
+    needs: [fmt, lint, test, install-sh]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check matrix results
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
