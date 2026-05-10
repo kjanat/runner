@@ -17,6 +17,11 @@ AND tab-completion for all!!!
 - crates.io: **[`runner-run`](https://crates.io/crates/runner-run)**
 
   ```sh
+  # fastest — prebuilt binary, no toolchain needed
+  # (requires `cargo install cargo-binstall` once)
+  cargo binstall runner-run
+
+  # or compile from source
   cargo install runner-run
   ```
 
@@ -96,7 +101,11 @@ see `npm/targets.json` for per-target tier).
 From crates.io via Cargo:
 
 ```sh
-# installs both binaries: runner + run
+# fastest: fetches the prebuilt binary from the matching GitHub release
+# (requires `cargo install cargo-binstall` once)
+cargo binstall runner-run
+
+# or compile both binaries (runner + run) from source
 cargo install runner-run
 
 # or from git for unreleased commits

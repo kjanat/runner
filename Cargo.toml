@@ -25,6 +25,19 @@ bugs        = { "url" = "https://github.com/kjanat/runner/issues" }
 repository  = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }
 engines     = { "node" = ">=18" }
 
+# `cargo binstall runner-run` pulls the prebuilt binary from GitHub releases
+# instead of compiling from source. Asset filename pattern is
+# `runner-v{version}-{rust-triple}.tar.gz` — taiki-e/upload-rust-binary-action
+# is invoked with `tar: all, zip: none` so all platforms (Linux/macOS/BSD/
+# Windows) ship as `.tar.gz`. Archive contents are flat at the root
+# (`runner`, `run`, `README.md`, `LICENSE`) — no enclosing directory — so the
+# default `bin-dir` (which expects cargo's `{name}-{version}-{target}/…`
+# layout) has to be overridden.
+[package.metadata.binstall]
+pkg-url = "{repo}/releases/download/v{version}/runner-v{version}-{target}{archive-suffix}"
+pkg-fmt = "tgz"
+bin-dir = "{bin}{binary-ext}"
+
 [lib]
 name = "runner"
 path = "src/lib.rs"

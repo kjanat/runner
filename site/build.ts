@@ -80,7 +80,7 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 
 	const publicPath = env["PUBLIC_PATH"] || githubPagesUrl() || "/";
 
-	console.debug(publicPath);
+	console.debug(`pub → ${publicPath}`);
 
 	const result = await Bun.build({
 		entrypoints: [join(src, "index.html"), join(src, "404.html")],

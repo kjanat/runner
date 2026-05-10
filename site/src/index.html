@@ -37,20 +37,31 @@
 						<span class="cmd">npm install -g {{npmName}}</span>
 						<span class="toast" aria-hidden="true">copied</span>
 					</button>
+					<button class="copy pri" type="button" data-cmd="cargo binstall {{cratesName}}">
+						<span class="label">cargo · binstall · primary</span>
+						<span class="cmd">cargo binstall {{cratesName}}</span>
+						<span class="toast" aria-hidden="true">copied</span>
+					</button>
 					<button class="copy" type="button" data-cmd="cargo install {{cratesName}}">
-						<span class="label">cargo · crates.io</span>
+						<span class="label">cargo · build from source</span>
 						<span class="cmd">cargo install {{cratesName}}</span>
 						<span class="toast" aria-hidden="true">copied</span>
 					</button>
 					<button class="copy" type="button" data-cmd="curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh">
 						<span class="label">linux installer</span>
-						<span class="cmd">curl -fsSL …/install.sh | sh</span>
+						<span class="cmd cmd-split"><span>curl -fsSL&nbsp;</span><span class="cmd-shrink"
+							>https://raw.githubusercontent.com/kjanat/runner/master/install.sh</span><span> | sh</span></span>
 						<span class="toast" aria-hidden="true">copied</span>
 					</button>
 				</div>
 				<p class="meta">
 					The npm package is a façade — installs only the <a href="{{repo}}/tree/master/npm">prebuilt binary</a> for your platform via
 					<code>optionalDependencies</code>. No postinstall, no network at install time.
+				</p>
+				<p class="meta">
+					Using <code>cargo binstall</code>? Run <code>cargo install cargo-binstall</code> once first. After that, every <code>cargo binstall
+						&lt;crate&gt;</code>
+					pulls a prebuilt binary from GitHub releases instead of compiling.
 				</p>
 			</section>
 
