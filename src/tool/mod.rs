@@ -50,7 +50,7 @@ pub(crate) mod pnpm;
 pub(crate) mod poetry;
 /// Shared Python tooling helpers.
 pub(crate) mod python;
-/// Turborepo monorepo build system (`turbo.json`).
+/// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).
 pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).
 pub(crate) mod uv;

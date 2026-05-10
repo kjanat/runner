@@ -1,19 +1,30 @@
 # runner
 
+[![Crates.io](https://img.shields.io/crates/v/runner-run?logo=rust&labelColor=B7410E&color=black)][crates]
 [![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
 [![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)][LICENSE]
 
 Universal project task runner. Auto-detects toolchain, provides unified CLI.
 
 - Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
-- npm: **[`runner-run`](https://npm.im/runner-run)** — `npm install -g runner-run`
+- npm: **[`runner-run`](https://npm.im/runner-run)**
+
+  ```sh
+  npm install -g runner-run
+  ```
+
+- crates.io: **[`runner-run`](https://crates.io/crates/runner-run)**
+
+  ```sh
+  cargo install runner-run
+  ```
 
 ## Features
 
 - **Auto-detection**: Scans for lockfiles/configs and picks the right tool
 - **Unified interface**: Same workflow across npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer
 - **Task aggregation**: Lists tasks from package.json/package.json5/package.yaml,
-  Makefile, justfile, Taskfile, turbo.json, deno.json, deno.jsonc
+  Makefile, justfile, Taskfile, turbo.json(c), deno.json(c)
 - **Deterministic task routing**: Prefers turbo task, then package.json, then
   other matching sources
 - **Monorepo aware**: Detects workspaces (turbo, nx, pnpm, npm/yarn workspaces,
@@ -29,8 +40,8 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 deno, uv, poetry, pipenv, go, bundler, composer
 
 **Task sources (list + run):** package manifests (`package.json`,
-`package.json5`, `package.yaml`) scripts, turbo.json tasks/pipeline, Makefile,
-justfile, Taskfile, deno.json, deno.jsonc
+`package.json5`, `package.yaml`) scripts, `turbo.json` / `turbo.jsonc`
+tasks/pipeline, Makefile, justfile, Taskfile, `deno.json` / `deno.jsonc`
 
 **Task-runner detection signals:** turbo, nx, make, just, go-task, mise
 
@@ -79,14 +90,17 @@ Supports Linux (gnu+musl, x64/arm64/armv7), macOS (x64/arm64), Windows
 (x64/arm64/ia32), and experimental BSD builds (FreeBSD, NetBSD, OpenBSD;
 see `npm/targets.json` for per-target tier).
 
-From source via Cargo:
+From crates.io via Cargo:
 
 ```sh
 # installs both binaries: runner + run
-cargo install --path .
+cargo install runner-run
 
-# Or from git
+# or from git for unreleased commits
 cargo install --git=https://github.com/kjanat/runner/ runner-run
+
+# or from a local checkout
+cargo install --path .
 ```
 
 Or use the convenience installer script (latest or pinned version):
@@ -144,6 +158,7 @@ runner completions fish > ~/.config/fish/completions/runner.fish
 [MIT][LICENSE] © 2026 Kaj Kowalski
 
 [npm]: https://npm.im/runner-run
+[crates]: https://crates.io/crates/runner-run
 [LICENSE]: https://github.com/kjanat/runner/blob/master/LICENSE
 
 <!-- markdownlint-disable-file MD033 -->

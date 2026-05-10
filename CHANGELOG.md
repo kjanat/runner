@@ -2,8 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog], and this project adheres to [Semantic Versioning].
+
+[Keep a Changelog]: https://keepachangelog.com/en/1.1.0/
+[Semantic Versioning]: https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
@@ -12,6 +14,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] Move completed `Unreleased` items into a new version section.
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.7.1] - 2026-05-10
+
+### Fixed
+
+- Turborepo configs resolve under both `turbo.json` and `turbo.jsonc`
+  filenames, and either is parsed as JSONC (line/block comments and
+  trailing commas), matching Turborepo v2's own parser. Detection
+  previously hardcoded `turbo.json` and the parser was strict JSON, so
+  `.jsonc` files were invisible to detection and any JSONC syntax
+  surfaced parse errors. The qualified-task syntax also accepts
+  `turbo.jsonc:task` (and `deno.jsonc:task`, fixed in the same line for
+  parity). Fixes #10.
+- Root Tasks in `turbo.json` — entries written with the `//#name`
+  prefix, invoked via `turbo run name` against the workspace root —
+  now surface in `runner list` under their bare name. Workspace-scoped
+  entries (`pkg#task`) remain filtered, and the result set is
+  deduplicated when both `name` and `//#name` are defined. Fixes #11.
+
+### Changed
+
+- `crates-release` CI workflow uses crates.io trusted publishing via
+  OIDC. Replaces the long-lived `CARGO_REGISTRY_TOKEN` secret with a
+  short-lived token minted per run by `rust-lang/crates-io-auth-action`;
+  the secret-presence preflight is gone.
+- README and the landing page promote `cargo install runner-run` (from
+  crates.io) as the primary cargo install command, with the git and
+  local-checkout forms remaining as fallbacks for unreleased commits
+  and development work.
+- README adds a crates.io shields badge alongside the existing npm
+  one; the landing page footer adds crates.io and npm registry links
+  next to the source and changelog references.
 
 ## [0.7.0] - 2026-05-10
 
@@ -642,7 +676,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/kjanat/runner/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/kjanat/runner/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/kjanat/runner/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/kjanat/runner/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/kjanat/runner/compare/v0.4.1...v0.5.0

@@ -37,9 +37,9 @@
 						<span class="cmd">npm install -g {{npmName}}</span>
 						<span class="toast" aria-hidden="true">copied</span>
 					</button>
-					<button class="copy" type="button" data-cmd="cargo install --git={{repo}}/ runner-run">
-						<span class="label">cargo · from source</span>
-						<span class="cmd">cargo install --git={{repo}}/ runner-run</span>
+					<button class="copy" type="button" data-cmd="cargo install {{cratesName}}">
+						<span class="label">cargo · crates.io</span>
+						<span class="cmd">cargo install {{cratesName}}</span>
 						<span class="toast" aria-hidden="true">copied</span>
 					</button>
 					<button class="copy" type="button" data-cmd="curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh">
@@ -155,11 +155,11 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 						<h3>Task sources · 6</h3>
 						<ul>
 							<li>package.json</li>
-							<li>turbo.json</li>
+							<li>turbo.json(c)</li>
 							<li>Makefile</li>
 							<li>justfile</li>
 							<li>Taskfile</li>
-							<li>deno.json</li>
+							<li>deno.json(c)</li>
 						</ul>
 					</div>
 				</div>
@@ -174,8 +174,8 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 					<li>Auto-detection picks the right tool from your lockfiles. No flags, no config.</li>
 					<li>One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer.</li>
 					<li>
-						Aggregates tasks from package.json, turbo.json, Makefile, justfile, Taskfile, deno.json — qualified syntax (<code>run package.json:test</code>) when
-						names collide.
+						Aggregates tasks from package.json, turbo.json(c), Makefile, justfile, Taskfile, deno.json(c) — qualified syntax (<code>run
+							package.json:test</code>) when names collide.
 					</li>
 					<li>Monorepo-aware: turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces.</li>
 					<li>
@@ -188,7 +188,7 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 			<footer>
 				{{license}} · v{{version}} · by <a href="mailto:{{authorEmail}}">{{authorName}}</a> · <a href="{{repo}}">source</a> · <a
 					href="{{repo}}/blob/master/CHANGELOG.md"
-				>changelog</a>
+				>changelog</a> · <a href="https://crates.io/crates/{{cratesName}}">crates.io</a> · <a href="https://npm.im/{{npmName}}">npm</a>
 			</footer>
 		</main>
 

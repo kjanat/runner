@@ -4,16 +4,6 @@ run-name: >-
       && format('crates publish {0}', github.event.release.tag_name)
       || format('crates publish {0}', inputs.tag) }}
 
-# Publishes the runner-run crate to crates.io when a maintainer publishes
-# a GitHub release (release.yml creates the release as a draft, so this
-# fires only after a human reviews and clicks publish), or on manual
-# dispatch. Avoids `workflow_run` to sidestep the CodeQL "untrusted code
-# in a privileged context" pattern: that trigger runs with secrets while
-# checking out a tag-controlled ref, which would let a malicious build.rs
-# in a tag exfiltrate CARGO_REGISTRY_TOKEN. Here, the human gate on
-# publishing the draft release plus the `crates-io` environment's
-# required reviewers are the trust anchors.
-
 on:
   release:
     types: [published]
@@ -41,29 +31,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
     environment:
       name: crates-io
       url: https://crates.io/crates/runner-run
     env:
-      # RELEASE_TAG comes from trusted trigger metadata only — for `release`
-      # events the tag is set at release-creation time by release.yml, and
-      # for `workflow_dispatch` the maintainer typed it.
       RELEASE_TAG: >-
         ${{ github.event_name == 'workflow_dispatch'
             && inputs.tag
             || github.event.release.tag_name }}
       INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
-      # Boolean-as-string of whether the publish secret is wired up. Computed
-      # at job-level so the step preflight can check it via env without ever
-      # interpolating the secret value into a shell command.
-      HAS_CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
     steps:
-      # Check out the tag the release was cut from so the published artifact
-      # matches the GitHub release exactly. Trust model: a maintainer
-      # explicitly published this release (or dispatched the workflow), so
-      # running build.rs from this ref is intentional. Using the explicit
-      # `refs/tags/` namespace prevents a branch sharing the tag's name
-      # from shadowing the tag during ref resolution.
       - uses: actions/checkout@v6
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
@@ -90,19 +68,13 @@ jobs:
       - name: cargo publish (dry-run verification)
         run: cargo publish --locked --dry-run
 
-      # Fail fast with a clear message if the secret isn't wired up before
-      # `cargo publish` swings at the registry and dies with an opaque auth
-      # error. The secret presence is evaluated at expression time into the
-      # job-level HAS_CARGO_REGISTRY_TOKEN boolean, so the secret value never
-      # lands in env on this step.
-      - name: verify CARGO_REGISTRY_TOKEN is set
-        if: env.INPUT_DRY_RUN != 'true' && env.HAS_CARGO_REGISTRY_TOKEN != 'true'
-        run: |
-          echo "error: CARGO_REGISTRY_TOKEN secret is missing or empty (required for non-dry-run publish)" >&2
-          exit 1
+      - name: mint crates.io token (trusted publishing)
+        if: env.INPUT_DRY_RUN != 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
 
       - name: cargo publish
         if: env.INPUT_DRY_RUN != 'true'
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --locked

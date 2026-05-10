@@ -1,6 +1,6 @@
 # runner-run
 
-Universal project task runner.\
+Universal project task runner.
 
 Auto-detects the toolchain (npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer)
 and provides a unified CLI for installing dependencies, listing tasks, and running
