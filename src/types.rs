@@ -46,6 +46,8 @@ pub(crate) enum TaskRunner {
     GoTask,
     /// mise — detected via `mise.toml` / `.mise.toml`.
     Mise,
+    /// bacon — detected via `bacon.toml`.
+    Bacon,
 }
 
 /// A runnable task extracted from a project config file.
@@ -90,6 +92,8 @@ pub(crate) enum TaskSource {
     /// Cargo `[alias]` table — built-ins plus user aliases merged across the
     /// hierarchical `.cargo/config.toml` chain.
     CargoAliases,
+    /// `bacon.toml` `[jobs.<name>]` tables.
+    BaconToml,
 }
 
 /// Expected Node.js version parsed from a version file.
@@ -180,6 +184,7 @@ impl TaskRunner {
             Self::Just => "just",
             Self::GoTask => "task",
             Self::Mise => "mise",
+            Self::Bacon => "bacon",
         }
     }
 }
@@ -198,6 +203,7 @@ impl TaskSource {
             // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
             // file name represents it.
             Self::CargoAliases => "cargo",
+            Self::BaconToml => "bacon.toml",
         }
     }
 
@@ -211,6 +217,7 @@ impl TaskSource {
             "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
             "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
             "cargo" => Some(Self::CargoAliases),
+            "bacon.toml" => Some(Self::BaconToml),
             _ => None,
         }
     }
@@ -225,6 +232,7 @@ impl TaskSource {
             Self::TurboJson => 4,
             Self::DenoJson => 5,
             Self::CargoAliases => 6,
+            Self::BaconToml => 7,
         }
     }
 }

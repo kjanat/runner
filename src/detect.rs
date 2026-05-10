@@ -117,6 +117,9 @@ fn detect_task_runners(dir: &Path, ctx: &mut ProjectContext) {
     if tool::mise::detect(dir) {
         ctx.task_runners.push(TaskRunner::Mise);
     }
+    if tool::bacon::detect(dir) {
+        ctx.task_runners.push(TaskRunner::Bacon);
+    }
 }
 
 // Node version
@@ -266,6 +269,9 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     }
     if ctx.package_managers.contains(&PackageManager::Cargo) {
         push_cargo_aliases(ctx, tool::cargo_aliases::extract_tasks(dir));
+    }
+    if ctx.task_runners.contains(&TaskRunner::Bacon) {
+        push_described_tasks(ctx, TaskSource::BaconToml, tool::bacon::extract_tasks(dir));
     }
 }
 

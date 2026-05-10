@@ -24,7 +24,7 @@ Universal project task runner. Auto-detects toolchain, provides unified CLI.
 - **Auto-detection**: Scans for lockfiles/configs and picks the right tool
 - **Unified interface**: Same workflow across npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer
 - **Task aggregation**: Lists tasks from package.json/package.json5/package.yaml,
-  Makefile, justfile, Taskfile, turbo.json(c), deno.json(c)
+  Makefile, justfile, Taskfile, turbo.json(c), deno.json(c), bacon.toml
 - **Deterministic task routing**: Prefers turbo task, then package.json, then
   other matching sources
 - **Monorepo aware**: Detects workspaces (turbo, nx, pnpm, npm/yarn workspaces,
@@ -41,9 +41,11 @@ deno, uv, poetry, pipenv, go, bundler, composer
 
 **Task sources (list + run):** package manifests (`package.json`,
 `package.json5`, `package.yaml`) scripts, `turbo.json` / `turbo.jsonc`
-tasks/pipeline, Makefile, justfile, Taskfile, `deno.json` / `deno.jsonc`
+tasks/pipeline, Makefile, justfile, Taskfile, `deno.json` / `deno.jsonc`,
+`bacon.toml`
 
-**Task-runner detection signals:** turbo, nx, make, just, go-task, mise
+**Task-runner detection signals:** turbo, nx, make, just, go-task, mise,
+bacon
 
 > Note: nx and mise are currently detection-only (metadata/monorepo context),
 > not direct task execution backends.

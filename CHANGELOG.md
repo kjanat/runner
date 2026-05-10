@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- `bacon.toml` as a `runner` task source. `[jobs.<name>]` tables surface
+  in `runner list` / `runner info`, dispatch via `runner run <job>` /
+  `run <job>`, and resolve under the `bacon.toml:<job>` qualified syntax.
+  Bacon is detected as a task runner alongside just / make / go-task.
+  Jobs whose names start with `_` are treated as private and hidden.
+
 ### Changed
 
 - Release pipeline reordered. `crates-release` now triggers on `push:
@@ -710,3 +718,4 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0
 
 <!--markdownlint-disable-file no-duplicate-heading-->
+<!-- rumdl-disable-file MD013 -->
