@@ -1,0 +1,32 @@
+name: pack-wheel
+description: >-
+  Thin wrapper around PyO3/maturin-action with `--bindings bin` to ship both
+  Rust binaries (`runner`, `run`) as a single wheel where each is installed as
+  a wheel script (i.e. ends up on PATH after `pip install runner-run`).
+
+inputs:
+  triple:
+    description: Rust target triple
+    required: true
+  manylinux:
+    description: "manylinux/musllinux tag (e.g. 2_28, musllinux_1_2, auto). Ignored on non-Linux."
+    required: false
+    default: auto
+  out-dir:
+    description: Where to drop the resulting .whl
+    required: true
+
+outputs:
+  out-dir:
+    description: "Directory containing the .whl"
+    value: ${{ inputs.out-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build wheel
+      uses: PyO3/maturin-action@v1
+      with:
+        target: ${{ inputs.triple }}
+        manylinux: ${{ inputs.manylinux }}
+        args: --release --locked --bindings bin --out ${{ inputs.out-dir }} --compatibility pypi

@@ -1,0 +1,795 @@
+# Multi-registry OIDC release pipeline.
+#
+# Mode selection (decided per run by the `plan` job):
+#   - push tag + vars.MANUAL unset    -> mode=auto         (build + publish in one run)
+#   - push tag + vars.MANUAL set      -> mode=draft-only   (build, draft a release, stop)
+#   - on: release: types: [published] -> mode=publish-only (skip build, fetch artifacts
+#                                        from the original tag-push run, push to registries)
+#   - workflow_dispatch               -> mode=auto         (or dry_run=true skips publish)
+#
+# Filename `release.yml` is part of every trusted-publisher OIDC subject claim
+# (crates.io + npm + PyPI) — DO NOT RENAME without updating all three registries.
+#
+# Heavy logic (release creation, run-id resolution, matrix derivation, version
+# verification, summary) lives in `actions/github-script@v9` blocks. Bash inside
+# composite actions lives in their `pack.sh` scripts.
+
+name: release
+on:
+  push:
+    tags: ["v*.*.*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build (e.g. v0.8.0)"
+        required: true
+      dry_run:
+        description: "Build everything; skip every registry publish"
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # plan: mode + version (inline bash), matrix derivation + version-verify
+  # (github-script).
+  # ---------------------------------------------------------------------------
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      tag: ${{ steps.mode.outputs.tag }}
+      version: ${{ steps.mode.outputs.version }}
+      dry-run: ${{ steps.mode.outputs.dry-run }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      matrix-wheel: ${{ steps.matrix.outputs.matrix-wheel }}
+      matrix-npm-publish: ${{ steps.matrix.outputs.matrix-npm-publish }}
+      scope: ${{ steps.matrix.outputs.scope }}
+      facade-name: ${{ steps.matrix.outputs.facade-name }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - id: mode
+        shell: bash
+        env:
+          GH_VAR_MANUAL: ${{ vars.MANUAL }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "${EVENT_NAME}" in
+            release)            MODE=publish-only; TAG="${RELEASE_TAG}" ;;
+            workflow_dispatch)  MODE=auto;         TAG="${INPUT_TAG}"   ;;
+            push)               TAG="${REF_NAME}"
+                                if [[ -n "${GH_VAR_MANUAL}" ]]; then MODE=draft-only; else MODE=auto; fi ;;
+            *) echo "::error::unsupported event ${EVENT_NAME}"; exit 1 ;;
+          esac
+          {
+            echo "mode=${MODE}"
+            echo "tag=${TAG}"
+            echo "version=${TAG#v}"
+            echo "dry-run=${INPUT_DRY_RUN:-false}"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: matrix
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const t = require('./npm/targets.json');
+            const isBSD = x => x.os.includes('freebsd') || x.os.includes('netbsd');
+            core.setOutput('scope',              t.scope);
+            core.setOutput('facade-name',        t.facade);
+            core.setOutput('matrix',             JSON.stringify(t.targets));
+            core.setOutput('matrix-wheel',       JSON.stringify(t.targets.filter(x => !isBSD(x))));
+            core.setOutput('matrix-npm-publish', JSON.stringify(t.targets.filter(x => x.tier <= 2).map(x => x.pkg)));
+
+            await core.summary
+              .addHeading(`Release plan — ${process.env.PLAN_TAG} (${process.env.PLAN_MODE})`)
+              .addRaw(`\n- dry-run: \`${process.env.PLAN_DRY}\`\n- targets (all tiers): ${t.targets.length}\n`)
+              .write();
+        env:
+          PLAN_TAG: ${{ steps.mode.outputs.tag }}
+          PLAN_MODE: ${{ steps.mode.outputs.mode }}
+          PLAN_DRY: ${{ steps.mode.outputs.dry-run }}
+
+      - id: verify-versions
+        if: steps.mode.outputs.mode != 'publish-only'
+        uses: actions/github-script@v9
+        env:
+          TAG_VERSION: ${{ steps.mode.outputs.version }}
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = process.env.TAG_VERSION;
+            const tomlVersion = (file) =>
+              (fs.readFileSync(file, 'utf8').match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+            const found = {
+              'Cargo.toml':              tomlVersion('Cargo.toml'),
+              'pyproject.toml':          tomlVersion('pyproject.toml'),
+              'npm/facade/package.json': JSON.parse(fs.readFileSync('npm/facade/package.json', 'utf8')).version,
+            };
+            const errs = Object.entries(found)
+              .filter(([_, v]) => v !== tag)
+              .map(([f, v]) => `${f}: ${v ?? '<missing>'} != tag ${tag}`);
+            if (errs.length) core.setFailed(`Version drift:\n  ${errs.join('\n  ')}`);
+            else core.info(`All three files agree at version ${tag}`);
+
+  # ---------------------------------------------------------------------------
+  # build-binaries: matrix over targets.json. Skipped on publish-only mode.
+  # ---------------------------------------------------------------------------
+  build-binaries:
+    needs: plan
+    if: needs.plan.outputs.mode != 'publish-only'
+    name: build ${{ matrix.target.pkg }}
+    runs-on: ${{ matrix.target.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    continue-on-error: ${{ matrix.target.tier == 3 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - name: Build + archive
+        id: build
+        uses: ./.github/actions/build-target
+        with:
+          triple: ${{ matrix.target.rust }}
+          kind: ${{ matrix.target.build }}
+          version: ${{ needs.plan.outputs.version }}
+
+      - name: Attest binary archive
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.build.outputs.archive }}
+
+      - name: Pack npm sub-package
+        if: matrix.target.tier <= 2
+        id: pack-npm
+        uses: ./.github/actions/pack-npm-platform
+        with:
+          pkg: ${{ matrix.target.pkg }}
+          scope: ${{ needs.plan.outputs.scope }}
+          facade-name: ${{ needs.plan.outputs.facade-name }}
+          version: ${{ needs.plan.outputs.version }}
+          os: ${{ toJSON(matrix.target.os) }}
+          cpu: ${{ toJSON(matrix.target.cpu) }}
+          libc: ${{ matrix.target.libc && toJSON(matrix.target.libc) || '' }}
+          bin-dir: ${{ steps.build.outputs.bin-dir }}
+          out-dir: ${{ github.workspace }}/dist/npm-${{ matrix.target.pkg }}
+
+      - name: Attest npm tarball
+        if: matrix.target.tier <= 2
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.pack-npm.outputs.tarball }}
+
+      - name: Upload binary archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target.pkg }}
+          path: |
+            ${{ steps.build.outputs.archive }}
+            ${{ steps.build.outputs.sha256 }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload npm sub-package
+        if: matrix.target.tier <= 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.target.pkg }}
+          path: ${{ steps.pack-npm.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # build-wheels: per-target wheels. Skipped on publish-only mode and for BSD.
+  # ---------------------------------------------------------------------------
+  build-wheels:
+    needs: plan
+    if: needs.plan.outputs.mode != 'publish-only'
+    name: wheel ${{ matrix.target.pkg }}
+    runs-on: ${{ matrix.target.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    continue-on-error: ${{ matrix.target.tier == 3 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.matrix-wheel) }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - name: Bootstrap rustup on windows-11-arm
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+            Invoke-WebRequest -Uri 'https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe' -OutFile rustup-init.exe
+            .\rustup-init.exe --default-toolchain none -y --profile minimal
+            "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
+          }
+
+      - id: mlx
+        uses: actions/github-script@v9
+        env:
+          TRIPLE: ${{ matrix.target.rust }}
+        with:
+          script: |
+            const t = process.env.TRIPLE;
+            const mlx = t.endsWith('-musl') ? 'musllinux_1_2'
+                      : t.includes('-linux-') ? '2_28'
+                      : 'auto';
+            core.setOutput('mlx', mlx);
+
+      - name: Build wheel
+        uses: ./.github/actions/pack-wheel
+        with:
+          triple: ${{ matrix.target.rust }}
+          manylinux: ${{ steps.mlx.outputs.mlx }}
+          out-dir: ${{ github.workspace }}/dist/wheels-${{ matrix.target.pkg }}
+
+      - name: Attest wheel
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "dist/wheels-${{ matrix.target.pkg }}/*.whl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target.pkg }}
+          path: dist/wheels-${{ matrix.target.pkg }}/*.whl
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # build-sdist-and-crate: one Linux job — Python sdist + .crate package.
+  # ---------------------------------------------------------------------------
+  build-sdist-and-crate:
+    needs: plan
+    if: needs.plan.outputs.mode != 'publish-only'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - name: Build Python sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist/sdist
+
+      - name: Build crates.io .crate
+        shell: bash
+        run: |
+          mkdir -p dist/crate
+          cargo package --locked
+          cp target/package/*.crate dist/crate/
+
+      - name: Attest sdist + crate
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/sdist/*.tar.gz
+            dist/crate/*.crate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/sdist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crate
+          path: dist/crate/*.crate
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # build-npm-facade: stamp facade with current optionalDependencies, npm pack.
+  # ---------------------------------------------------------------------------
+  build-npm-facade:
+    needs: plan
+    if: needs.plan.outputs.mode != 'publish-only'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - id: facade
+        uses: ./.github/actions/pack-npm-facade
+        with:
+          version: ${{ needs.plan.outputs.version }}
+          out-dir: ${{ github.workspace }}/dist/npm-facade
+
+      - uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.facade.outputs.tarball }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-facade
+          path: ${{ steps.facade.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # gate: tier-1 + tier-2 required-build success.
+  # ---------------------------------------------------------------------------
+  required-builds-passed:
+    needs: [plan, build-binaries, build-wheels, build-sdist-and-crate, build-npm-facade]
+    if: always() && needs.plan.outputs.mode != 'publish-only'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          BIN: ${{ needs.build-binaries.result }}
+          WHEELS: ${{ needs.build-wheels.result }}
+          SDIST: ${{ needs.build-sdist-and-crate.result }}
+          FACADE: ${{ needs.build-npm-facade.result }}
+        with:
+          script: |
+            const results = {
+              'build-binaries':       process.env.BIN,
+              'build-wheels':         process.env.WHEELS,
+              'build-sdist-and-crate': process.env.SDIST,
+              'build-npm-facade':     process.env.FACADE,
+            };
+            const failed = Object.entries(results).filter(([_, r]) => r !== 'success');
+            if (failed.length) core.setFailed(failed.map(([n, r]) => `${n}: ${r}`).join('\n'));
+
+  # ---------------------------------------------------------------------------
+  # release-assets: collect all uploaded artifacts, aggregate SHA256SUMS,
+  # create or update the GH Release (draft in draft-only mode), upload assets.
+  # ---------------------------------------------------------------------------
+  release-assets:
+    needs: [plan, required-builds-passed]
+    if: needs.plan.outputs.mode != 'publish-only'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Download every build artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - uses: actions/github-script@v9
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          DRY: ${{ needs.plan.outputs.dry-run }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const tag  = process.env.TAG;
+            const mode = process.env.MODE;
+            const dry  = process.env.DRY === 'true';
+
+            if (dry) { core.notice('Dry run — skipping release creation'); return; }
+
+            // Gather user-facing assets from `dist/`.
+            const patterns = [
+              'dist/bin-*/*.tar.gz',
+              'dist/bin-*/*.sha256',
+              'dist/wheels-*/*.whl',
+              'dist/sdist/*.tar.gz',
+              'dist/crate/*.crate',
+            ].join('\n');
+            const globber = await glob.create(patterns);
+            const files = await globber.glob();
+            if (!files.length) { core.setFailed('No assets to upload'); return; }
+
+            // Aggregate SHA256SUMS for the binary archives.
+            const sumLines = files
+              .filter(f => f.endsWith('.sha256'))
+              .map(f => fs.readFileSync(f, 'utf8').trim())
+              .sort();
+            const sumPath = path.join(process.cwd(), 'SHA256SUMS');
+            fs.writeFileSync(sumPath, sumLines.join('\n') + '\n');
+            files.push(sumPath);
+
+            // Get-or-create release.
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({
+                ...context.repo, tag,
+              })).data;
+              core.info(`Found existing release ${tag} (id=${release.id}, draft=${release.draft})`);
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              release = (await github.rest.repos.createRelease({
+                ...context.repo,
+                tag_name: tag,
+                name: tag,
+                draft: mode === 'draft-only',
+                generate_release_notes: true,
+              })).data;
+              core.info(`Created ${release.draft ? 'draft' : 'published'} release ${tag}`);
+            }
+
+            // Upload (clobber: delete existing same-named asset first).
+            const existing = new Map(release.assets.map(a => [a.name, a.id]));
+            const summaryRows = [
+              [{data: 'Asset', header: true}, {data: 'Size', header: true}, {data: 'Status', header: true}],
+            ];
+            for (const file of files) {
+              const name = path.basename(file);
+              const data = fs.readFileSync(file);
+              if (existing.has(name)) {
+                await github.rest.repos.deleteReleaseAsset({
+                  ...context.repo, asset_id: existing.get(name),
+                });
+              }
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo,
+                release_id: release.id,
+                name,
+                data,
+              });
+              summaryRows.push([name, `${(data.length / 1024).toFixed(1)} KB`, existing.has(name) ? 'replaced' : 'uploaded']);
+              core.info(`Uploaded ${name} (${data.length} bytes)`);
+            }
+
+            await core.summary
+              .addHeading(`Release ${tag} (${release.draft ? 'draft' : 'published'})`)
+              .addTable(summaryRows)
+              .write();
+
+  # ---------------------------------------------------------------------------
+  # resolve-publish-run: on `release.published`, find the run-id of the build
+  # workflow that originally produced artifacts for this tag.
+  # ---------------------------------------------------------------------------
+  resolve-publish-run:
+    needs: plan
+    if: needs.plan.outputs.mode == 'publish-only'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      run-id: ${{ steps.find.outputs.run-id }}
+    steps:
+      - id: find
+        uses: actions/github-script@v9
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        with:
+          script: |
+            const tag = process.env.TAG;
+            const { data } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: 'release.yml',
+              event: 'push',
+              status: 'success',
+              branch: tag,
+              per_page: 5,
+            });
+            const run = data.workflow_runs[0];
+            if (!run) { core.setFailed(`No successful build run for tag ${tag}`); return; }
+            core.info(`Found build run #${run.id} (${run.html_url})`);
+            core.setOutput('run-id', run.id);
+
+  # ---------------------------------------------------------------------------
+  # publish-crates: OIDC trusted publishing via rust-lang/crates-io-auth-action.
+  # ---------------------------------------------------------------------------
+  publish-crates:
+    needs: [plan, resolve-publish-run, required-builds-passed]
+    if: |
+      always() &&
+      needs.plan.outputs.dry-run != 'true' &&
+      (
+        (needs.plan.outputs.mode == 'auto'         && needs.required-builds-passed.result == 'success') ||
+        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result   == 'success')
+      )
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/runner-run
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          ref: ${{ needs.plan.outputs.tag }}
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: cargo publish (idempotent, retried)
+        shell: bash
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if cargo publish --locked; then
+              echo "Published runner-run ${VERSION}"; exit 0
+            fi
+            if cargo search runner-run | grep -qE "^runner-run = \"${VERSION}\""; then
+              echo "runner-run ${VERSION} already on crates.io — treating as success"; exit 0
+            fi
+            sleep $((attempt * 30))
+          done
+          echo "::error::cargo publish failed after 3 attempts"; exit 1
+
+  # ---------------------------------------------------------------------------
+  # publish-pypi: trusted publishing via pypa/gh-action-pypi-publish.
+  # ---------------------------------------------------------------------------
+  publish-pypi:
+    needs: [plan, resolve-publish-run, required-builds-passed]
+    if: |
+      always() &&
+      needs.plan.outputs.dry-run != 'true' &&
+      (
+        (needs.plan.outputs.mode == 'auto'         && needs.required-builds-passed.result == 'success') ||
+        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result   == 'success')
+      )
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/runner-run
+    permissions:
+      id-token: write
+      contents: read
+      attestations: write
+    steps:
+      - name: Download wheels (same run)
+        if: needs.plan.outputs.mode == 'auto'
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Download sdist (same run)
+        if: needs.plan.outputs.mode == 'auto'
+        uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+      - name: Download wheels (cross-run)
+        if: needs.plan.outputs.mode == 'publish-only'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ needs.resolve-publish-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Download sdist (cross-run)
+        if: needs.plan.outputs.mode == 'publish-only'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ needs.resolve-publish-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          name: sdist
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          skip-existing: true
+          print-hash: true
+
+  # ---------------------------------------------------------------------------
+  # publish-npm-platforms: per-target sub-packages, in parallel.
+  # ---------------------------------------------------------------------------
+  publish-npm-platforms:
+    needs: [plan, resolve-publish-run, required-builds-passed]
+    if: |
+      always() &&
+      needs.plan.outputs.dry-run != 'true' &&
+      (
+        (needs.plan.outputs.mode == 'auto'         && needs.required-builds-passed.result == 'success') ||
+        (needs.plan.outputs.mode == 'publish-only' && needs.resolve-publish-run.result   == 'success')
+      )
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        pkg: ${{ fromJSON(needs.plan.outputs.matrix-npm-publish) }}
+    steps:
+      - name: Download sub-package (same run)
+        if: needs.plan.outputs.mode == 'auto'
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-${{ matrix.pkg }}
+          path: pkg
+
+      - name: Download sub-package (cross-run)
+        if: needs.plan.outputs.mode == 'publish-only'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ needs.resolve-publish-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          name: npm-${{ matrix.pkg }}
+          path: pkg
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Upgrade npm to >= 11.5.1 (OIDC requirement)
+        shell: bash
+        run: npm install -g npm@latest
+
+      - name: Publish (idempotent, retried)
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          TGZ=$(ls pkg/*.tgz | head -1)
+          PKG_NAME=$(tar -xzOf "${TGZ}" package/package.json | jq -r .name)
+          if npm view "${PKG_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${VERSION} already published — skipping"; exit 0
+          fi
+          for attempt in 1 2 3; do
+            if npm publish --access public "${TGZ}"; then exit 0; fi
+            sleep $((attempt * 30))
+          done
+          echo "::error::npm publish failed after 3 attempts"; exit 1
+
+  # ---------------------------------------------------------------------------
+  # publish-npm-facade: must publish AFTER every platform sub-package exists.
+  # ---------------------------------------------------------------------------
+  publish-npm-facade:
+    needs: [plan, resolve-publish-run, publish-npm-platforms]
+    if: |
+      always() &&
+      needs.plan.outputs.dry-run != 'true' &&
+      needs.publish-npm-platforms.result == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Download facade (same run)
+        if: needs.plan.outputs.mode == 'auto'
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-facade
+          path: pkg
+
+      - name: Download facade (cross-run)
+        if: needs.plan.outputs.mode == 'publish-only'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ needs.resolve-publish-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          name: npm-facade
+          path: pkg
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - shell: bash
+        run: npm install -g npm@latest
+
+      - name: Publish facade (idempotent)
+        shell: bash
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          TGZ=$(ls pkg/*.tgz | head -1)
+          PKG_NAME=$(tar -xzOf "${TGZ}" package/package.json | jq -r .name)
+          if npm view "${PKG_NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${PKG_NAME}@${VERSION} already published — skipping"; exit 0
+          fi
+          npm publish --access public "${TGZ}"
+
+  # ---------------------------------------------------------------------------
+  # summary: rollup status to the run page.
+  # ---------------------------------------------------------------------------
+  summary:
+    needs:
+      - plan
+      - publish-crates
+      - publish-pypi
+      - publish-npm-platforms
+      - publish-npm-facade
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          R_CRATES: ${{ needs.publish-crates.result }}
+          R_PYPI: ${{ needs.publish-pypi.result }}
+          R_NPM_P: ${{ needs.publish-npm-platforms.result }}
+          R_NPM_F: ${{ needs.publish-npm-facade.result }}
+        with:
+          script: |
+            const e = process.env;
+            await core.summary
+              .addHeading(`Publish summary — ${e.TAG} (${e.MODE})`)
+              .addTable([
+                [{data: 'Registry', header: true}, {data: 'Result', header: true}],
+                ['crates.io',       e.R_CRATES || 'n/a'],
+                ['PyPI',            e.R_PYPI   || 'n/a'],
+                ['npm (platforms)', e.R_NPM_P  || 'n/a'],
+                ['npm (facade)',    e.R_NPM_F  || 'n/a'],
+              ])
+              .write();

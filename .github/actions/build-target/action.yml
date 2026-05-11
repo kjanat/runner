@@ -1,0 +1,86 @@
+name: build-target
+description: >-
+  Build the runner+run binaries for a single target triple, package them into a
+  flat tar.gz matching the existing binstall layout, and compute a SHA256
+  sidecar. action.yml is wiring only — pack logic lives in pack.sh.
+
+inputs:
+  triple:
+    description: Rust target triple (e.g. x86_64-unknown-linux-gnu)
+    required: true
+  kind:
+    description: Build kind — cargo | cross | cargo-build-std | cargo-cross-toolchain
+    required: true
+  version:
+    description: Crate version without leading v (e.g. 0.8.0)
+    required: true
+  binaries:
+    description: Space-separated list of [[bin]] names to ship
+    required: false
+    default: runner run
+
+outputs:
+  archive:
+    description: Path to the produced .tar.gz
+    value: ${{ steps.pack.outputs.archive }}
+  sha256:
+    description: Path to the SHA256 sidecar
+    value: ${{ steps.pack.outputs.sha256 }}
+  bin-dir:
+    description: Directory containing the unpacked binaries (for further packaging)
+    value: ${{ steps.pack.outputs.bin-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Bootstrap rustup on windows-11-arm
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      shell: pwsh
+      run: |
+        if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+          Invoke-WebRequest -Uri 'https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe' -OutFile rustup-init.exe
+          .\rustup-init.exe --default-toolchain none -y --profile minimal
+          "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
+        }
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: ${{ inputs.kind == 'cargo-build-std' && 'nightly' || 'stable' }}
+        target: ${{ inputs.triple }}
+        components: ${{ inputs.kind == 'cargo-build-std' && 'rust-src' || '' }}
+        cache-key: ${{ inputs.triple }}
+        cache-on-failure: "true"
+
+    - name: Install cross
+      if: inputs.kind == 'cross' || inputs.kind == 'cargo-cross-toolchain'
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cross@0.2.5
+
+    - name: cargo build
+      if: inputs.kind == 'cargo'
+      shell: bash
+      run: cargo build --release --locked --target "${{ inputs.triple }}" --bins
+
+    - name: cross build
+      if: inputs.kind == 'cross' || inputs.kind == 'cargo-cross-toolchain'
+      shell: bash
+      run: cross build --release --locked --target "${{ inputs.triple }}" --bins
+
+    - name: cargo +nightly -Z build-std
+      if: inputs.kind == 'cargo-build-std'
+      shell: bash
+      run: |
+        cargo +nightly build --release --locked \
+          -Z build-std=std,panic_abort \
+          --target "${{ inputs.triple }}" --bins
+
+    - name: Pack archive
+      id: pack
+      shell: bash
+      env:
+        TRIPLE: ${{ inputs.triple }}
+        VERSION: ${{ inputs.version }}
+        BINARIES: ${{ inputs.binaries }}
+      run: bash "$GITHUB_ACTION_PATH/pack.sh"

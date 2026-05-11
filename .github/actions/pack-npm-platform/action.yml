@@ -1,0 +1,65 @@
+name: pack-npm-platform
+description: >-
+  Stamp the per-target npm sub-package (`<scope>/<pkg>`), copy the prebuilt
+  binaries into its `bin/` directory, and run `npm pack`. Wiring only — logic
+  in pack.sh.
+
+inputs:
+  pkg:
+    description: "Short target name (e.g. linux-x64-gnu); becomes the package suffix."
+    required: true
+  scope:
+    description: "npm scope (e.g. @runner-run)."
+    required: true
+  facade-name:
+    description: "Facade package name (e.g. runner-run). Used in description text."
+    required: true
+  version:
+    description: "Version without leading v."
+    required: true
+  os:
+    description: 'JSON array as a compact string, e.g. ["linux"].'
+    required: true
+  cpu:
+    description: 'JSON array as a compact string, e.g. ["x64"].'
+    required: true
+  libc:
+    description: "JSON array as a compact string. Empty string when not applicable."
+    required: false
+    default: ""
+  bin-dir:
+    description: "Directory containing the unpacked binaries to embed."
+    required: true
+  binaries:
+    description: 'Space-separated [[bin]] names to include (e.g. "runner run").'
+    required: false
+    default: runner run
+  out-dir:
+    description: "Where to write the resulting .tgz."
+    required: true
+
+outputs:
+  tarball:
+    description: "Path to the produced .tgz"
+    value: ${{ steps.pack.outputs.tarball }}
+  name:
+    description: "Fully-qualified package name"
+    value: ${{ steps.pack.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - id: pack
+      shell: bash
+      env:
+        PKG: ${{ inputs.pkg }}
+        SCOPE: ${{ inputs.scope }}
+        FACADE: ${{ inputs.facade-name }}
+        VERSION: ${{ inputs.version }}
+        OS: ${{ inputs.os }}
+        CPU: ${{ inputs.cpu }}
+        LIBC: ${{ inputs.libc }}
+        BIN_DIR: ${{ inputs.bin-dir }}
+        BINARIES: ${{ inputs.binaries }}
+        OUT_DIR: ${{ inputs.out-dir }}
+      run: bash "$GITHUB_ACTION_PATH/pack.sh"
