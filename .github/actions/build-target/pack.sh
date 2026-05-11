@@ -19,14 +19,14 @@ STAGE="$(mktemp -d)"
 mkdir -p "${OUT_DIR}"
 
 for bin in ${BINARIES}; do
-    if [[ -f "target/${TRIPLE}/release/${bin}.exe" ]]; then
-        cp "target/${TRIPLE}/release/${bin}.exe" "${STAGE}/"
-    elif [[ -f "target/${TRIPLE}/release/${bin}" ]]; then
-        cp "target/${TRIPLE}/release/${bin}" "${STAGE}/"
-    else
-        echo "::error::missing target/${TRIPLE}/release/${bin}[.exe]"
-        exit 1
-    fi
+	if [[ -f "target/${TRIPLE}/release/${bin}.exe" ]]; then
+		cp "target/${TRIPLE}/release/${bin}.exe" "${STAGE}/"
+	elif [[ -f "target/${TRIPLE}/release/${bin}" ]]; then
+		cp "target/${TRIPLE}/release/${bin}" "${STAGE}/"
+	else
+		echo "::error::missing target/${TRIPLE}/release/${bin}[.exe]"
+		exit 1
+	fi
 done
 cp README.md LICENSE "${STAGE}/"
 
@@ -36,13 +36,13 @@ tar -C "${STAGE}" -czf "${OUT_DIR}/${ARCHIVE}" .
 # Portable SHA256: sha256sum on Linux + Git Bash, shasum on macOS.
 cd "${OUT_DIR}"
 if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256"
+	sha256sum "${ARCHIVE}" >"${ARCHIVE}.sha256"
 else
-    shasum -a 256 "${ARCHIVE}" > "${ARCHIVE}.sha256"
+	shasum -a 256 "${ARCHIVE}" >"${ARCHIVE}.sha256"
 fi
 
 {
-    echo "archive=${OUT_DIR}/${ARCHIVE}"
-    echo "sha256=${OUT_DIR}/${ARCHIVE}.sha256"
-    echo "bin-dir=${STAGE}"
-} >> "$GITHUB_OUTPUT"
+	echo "archive=${OUT_DIR}/${ARCHIVE}"
+	echo "sha256=${OUT_DIR}/${ARCHIVE}.sha256"
+	echo "bin-dir=${STAGE}"
+} >>"$GITHUB_OUTPUT"

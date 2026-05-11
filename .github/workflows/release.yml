@@ -17,16 +17,16 @@
 name: release
 on:
   push:
-    tags: ['v*.*.*']
+    tags: ["v*.*.*"]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to (re)build (e.g. v0.8.0)'
+        description: "Existing tag to (re)build (e.g. v0.8.0)"
         required: true
       dry_run:
-        description: 'Build everything; skip every registry publish'
+        description: "Build everything; skip every registry publish"
         type: boolean
         default: false
 
@@ -38,8 +38,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: '0'
-  RUST_BACKTRACE: '1'
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -51,15 +51,15 @@ jobs:
     permissions:
       contents: read
     outputs:
-      mode:                ${{ steps.mode.outputs.mode }}
-      tag:                 ${{ steps.mode.outputs.tag }}
-      version:             ${{ steps.mode.outputs.version }}
-      dry-run:             ${{ steps.mode.outputs.dry-run }}
-      matrix:              ${{ steps.matrix.outputs.matrix }}
-      matrix-wheel:        ${{ steps.matrix.outputs.matrix-wheel }}
-      matrix-npm-publish:  ${{ steps.matrix.outputs.matrix-npm-publish }}
-      scope:               ${{ steps.matrix.outputs.scope }}
-      facade-name:         ${{ steps.matrix.outputs.facade-name }}
+      mode: ${{ steps.mode.outputs.mode }}
+      tag: ${{ steps.mode.outputs.tag }}
+      version: ${{ steps.mode.outputs.version }}
+      dry-run: ${{ steps.mode.outputs.dry-run }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      matrix-wheel: ${{ steps.matrix.outputs.matrix-wheel }}
+      matrix-npm-publish: ${{ steps.matrix.outputs.matrix-npm-publish }}
+      scope: ${{ steps.matrix.outputs.scope }}
+      facade-name: ${{ steps.matrix.outputs.facade-name }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -161,7 +161,7 @@ jobs:
         uses: ./.github/actions/build-target
         with:
           triple: ${{ matrix.target.rust }}
-          kind:   ${{ matrix.target.build }}
+          kind: ${{ matrix.target.build }}
           version: ${{ needs.plan.outputs.version }}
 
       - name: Attest binary archive
@@ -174,15 +174,15 @@ jobs:
         id: pack-npm
         uses: ./.github/actions/pack-npm-platform
         with:
-          pkg:         ${{ matrix.target.pkg }}
-          scope:       ${{ needs.plan.outputs.scope }}
+          pkg: ${{ matrix.target.pkg }}
+          scope: ${{ needs.plan.outputs.scope }}
           facade-name: ${{ needs.plan.outputs.facade-name }}
-          version:     ${{ needs.plan.outputs.version }}
-          os:          ${{ toJSON(matrix.target.os) }}
-          cpu:         ${{ toJSON(matrix.target.cpu) }}
-          libc:        ${{ matrix.target.libc && toJSON(matrix.target.libc) || '' }}
-          bin-dir:     ${{ steps.build.outputs.bin-dir }}
-          out-dir:     ${{ github.workspace }}/dist/npm-${{ matrix.target.pkg }}
+          version: ${{ needs.plan.outputs.version }}
+          os: ${{ toJSON(matrix.target.os) }}
+          cpu: ${{ toJSON(matrix.target.cpu) }}
+          libc: ${{ matrix.target.libc && toJSON(matrix.target.libc) || '' }}
+          bin-dir: ${{ steps.build.outputs.bin-dir }}
+          out-dir: ${{ github.workspace }}/dist/npm-${{ matrix.target.pkg }}
 
       - name: Attest npm tarball
         if: matrix.target.tier <= 2
@@ -257,14 +257,14 @@ jobs:
       - name: Build wheel
         uses: ./.github/actions/pack-wheel
         with:
-          triple:    ${{ matrix.target.rust }}
+          triple: ${{ matrix.target.rust }}
           manylinux: ${{ steps.mlx.outputs.mlx }}
-          out-dir:   ${{ github.workspace }}/dist/wheels-${{ matrix.target.pkg }}
+          out-dir: ${{ github.workspace }}/dist/wheels-${{ matrix.target.pkg }}
 
       - name: Attest wheel
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: 'dist/wheels-${{ matrix.target.pkg }}/*.whl'
+          subject-path: "dist/wheels-${{ matrix.target.pkg }}/*.whl"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -347,7 +347,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: "22"
 
       - id: facade
         uses: ./.github/actions/pack-npm-facade
@@ -682,8 +682,8 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Upgrade npm to >= 11.5.1 (OIDC requirement)
         shell: bash
@@ -740,8 +740,8 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
 
       - shell: bash
         run: npm install -g npm@latest
@@ -777,9 +777,9 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
           MODE: ${{ needs.plan.outputs.mode }}
           R_CRATES: ${{ needs.publish-crates.result }}
-          R_PYPI:   ${{ needs.publish-pypi.result }}
-          R_NPM_P:  ${{ needs.publish-npm-platforms.result }}
-          R_NPM_F:  ${{ needs.publish-npm-facade.result }}
+          R_PYPI: ${{ needs.publish-pypi.result }}
+          R_NPM_P: ${{ needs.publish-npm-platforms.result }}
+          R_NPM_F: ${{ needs.publish-npm-facade.result }}
         with:
           script: |
             const e = process.env;

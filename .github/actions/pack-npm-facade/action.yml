@@ -5,26 +5,26 @@ description: >-
 
 inputs:
   facade-dir:
-    description: 'Path to npm/facade/ (template).'
+    description: "Path to npm/facade/ (template)."
     required: false
     default: npm/facade
   targets-json:
-    description: 'Path to npm/targets.json.'
+    description: "Path to npm/targets.json."
     required: false
     default: npm/targets.json
   version:
-    description: 'Version without leading v.'
+    description: "Version without leading v."
     required: true
   out-dir:
-    description: 'Where to write the resulting .tgz.'
+    description: "Where to write the resulting .tgz."
     required: true
 
 outputs:
   tarball:
-    description: 'Path to the produced .tgz'
+    description: "Path to the produced .tgz"
     value: ${{ steps.pack.outputs.tarball }}
   name:
-    description: 'Facade package name'
+    description: "Facade package name"
     value: ${{ steps.pack.outputs.name }}
 
 runs:

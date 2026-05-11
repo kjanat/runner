@@ -50,7 +50,7 @@ runs:
         target: ${{ inputs.triple }}
         components: ${{ inputs.kind == 'cargo-build-std' && 'rust-src' || '' }}
         cache-key: ${{ inputs.triple }}
-        cache-on-failure: 'true'
+        cache-on-failure: "true"
 
     - name: Install cross
       if: inputs.kind == 'cross' || inputs.kind == 'cargo-cross-toolchain'

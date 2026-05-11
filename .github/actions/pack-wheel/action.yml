@@ -9,7 +9,7 @@ inputs:
     description: Rust target triple
     required: true
   manylinux:
-    description: 'manylinux/musllinux tag (e.g. 2_28, musllinux_1_2, auto). Ignored on non-Linux.'
+    description: "manylinux/musllinux tag (e.g. 2_28, musllinux_1_2, auto). Ignored on non-Linux."
     required: false
     default: auto
   out-dir:
@@ -18,7 +18,7 @@ inputs:
 
 outputs:
   out-dir:
-    description: 'Directory containing the .whl'
+    description: "Directory containing the .whl"
     value: ${{ inputs.out-dir }}
 
 runs:

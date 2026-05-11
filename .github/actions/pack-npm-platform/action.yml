@@ -6,16 +6,16 @@ description: >-
 
 inputs:
   pkg:
-    description: 'Short target name (e.g. linux-x64-gnu); becomes the package suffix.'
+    description: "Short target name (e.g. linux-x64-gnu); becomes the package suffix."
     required: true
   scope:
-    description: 'npm scope (e.g. @runner-run).'
+    description: "npm scope (e.g. @runner-run)."
     required: true
   facade-name:
-    description: 'Facade package name (e.g. runner-run). Used in description text.'
+    description: "Facade package name (e.g. runner-run). Used in description text."
     required: true
   version:
-    description: 'Version without leading v.'
+    description: "Version without leading v."
     required: true
   os:
     description: 'JSON array as a compact string, e.g. ["linux"].'
@@ -24,26 +24,26 @@ inputs:
     description: 'JSON array as a compact string, e.g. ["x64"].'
     required: true
   libc:
-    description: 'JSON array as a compact string. Empty string when not applicable.'
+    description: "JSON array as a compact string. Empty string when not applicable."
     required: false
-    default: ''
+    default: ""
   bin-dir:
-    description: 'Directory containing the unpacked binaries to embed.'
+    description: "Directory containing the unpacked binaries to embed."
     required: true
   binaries:
     description: 'Space-separated [[bin]] names to include (e.g. "runner run").'
     required: false
     default: runner run
   out-dir:
-    description: 'Where to write the resulting .tgz.'
+    description: "Where to write the resulting .tgz."
     required: true
 
 outputs:
   tarball:
-    description: 'Path to the produced .tgz'
+    description: "Path to the produced .tgz"
     value: ${{ steps.pack.outputs.tarball }}
   name:
-    description: 'Fully-qualified package name'
+    description: "Fully-qualified package name"
     value: ${{ steps.pack.outputs.name }}
 
 runs:
