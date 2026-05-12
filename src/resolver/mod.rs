@@ -231,7 +231,12 @@ impl<'ctx> Resolver<'ctx> {
             if let Some(warning) = cross_check_against_lockfile(&decl, self.ctx) {
                 warnings.push(warning);
             }
-            apply_manifest_on_fail(&decl, &mut warnings)?;
+            apply_manifest_on_fail(
+                &decl,
+                &mut warnings,
+                real_binary_check,
+                check_version_constraint,
+            )?;
             let via = match decl.source {
                 ManifestSource::PackageManager => ResolutionStep::ManifestPackageManager,
                 ManifestSource::DevEngines => ResolutionStep::ManifestDevEngines {
@@ -286,26 +291,45 @@ impl<'ctx> Resolver<'ctx> {
 /// `onFail` enforces user intent, but blocking dispatch on an
 /// unverifiable constraint would be worse than continuing — the binary
 /// will surface the real problem at spawn time.
-fn apply_manifest_on_fail(
+///
+/// Binary-presence and version-check side effects are injected so the
+/// `Error` branches stay exercisable in unit tests — `Error + missing`
+/// and `Error + mismatched version` both `bail!`, which is impossible
+/// to cover otherwise without controlling the host `$PATH` and running
+/// `<pm> --version` against a real binary. Production callers wire in
+/// [`real_binary_check`] and [`check_version_constraint`].
+fn apply_manifest_on_fail<P, V>(
     decl: &ManifestPmDecl,
     warnings: &mut Vec<DetectionWarning>,
-) -> Result<()> {
+    is_present: P,
+    check_version: V,
+) -> Result<()>
+where
+    P: FnOnce(PackageManager) -> bool,
+    V: FnOnce(PackageManager, &str) -> VersionCheck,
+{
     if matches!(decl.on_fail, OnFail::Ignore) {
         return Ok(());
     }
 
-    if probe::probe(decl.pm.label()).is_none() {
+    if !is_present(decl.pm) {
         return on_fail_missing_binary(decl, warnings);
     }
 
     if let Some(range) = decl.version.as_deref()
-        && let VersionCheck::Mismatch { declared, actual } =
-            check_version_constraint(decl.pm, range)
+        && let VersionCheck::Mismatch { declared, actual } = check_version(decl.pm, range)
     {
         return on_fail_version_mismatch(decl, &declared, &actual, warnings);
     }
 
     Ok(())
+}
+
+/// Default binary-presence check used by [`Resolver::resolve_node_pm`].
+/// Walks `$PATH` via [`probe::probe`]; injectable in tests so the
+/// `Error` branches of [`apply_manifest_on_fail`] are exercisable.
+fn real_binary_check(pm: PackageManager) -> bool {
+    probe::probe(pm.label()).is_some()
 }
 
 fn on_fail_missing_binary(
@@ -1166,6 +1190,189 @@ mod tests {
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
         assert!(decision.warnings.is_empty());
+    }
+
+    #[test]
+    fn manifest_on_fail_error_bails_when_binary_missing() {
+        use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
+
+        // onFail=Error + the declared PM is missing from PATH should
+        // surface as a fatal error so the user knows their pinned
+        // toolchain expectation can't be met. Tested with injected
+        // checkers since the real PATH is unpredictable in CI.
+        let decl = ManifestPmDecl {
+            pm: PackageManager::Yarn,
+            source: ManifestSource::DevEngines,
+            version: None,
+            on_fail: OnFail::Error,
+        };
+        let mut warnings = Vec::new();
+
+        let err = super::apply_manifest_on_fail(
+            &decl,
+            &mut warnings,
+            |_| false,
+            |_, _| VersionCheck::Unverifiable {
+                reason: String::new(),
+            },
+        )
+        .expect_err("Error + missing should bail");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("yarn"), "error should name the PM: {msg}");
+        assert!(
+            msg.contains("not found on PATH"),
+            "error should explain: {msg}"
+        );
+        assert!(
+            msg.contains("onFail=error"),
+            "error should attribute: {msg}"
+        );
+    }
+
+    #[test]
+    fn manifest_on_fail_error_bails_when_version_mismatched() {
+        use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
+
+        // onFail=Error + version range that doesn't match what's
+        // installed → fatal. Tests the path that requires both PATH
+        // success and a Mismatch result from the version checker.
+        let decl = ManifestPmDecl {
+            pm: PackageManager::Pnpm,
+            source: ManifestSource::DevEngines,
+            version: Some(">=9.0.0".to_string()),
+            on_fail: OnFail::Error,
+        };
+        let mut warnings = Vec::new();
+
+        let err = super::apply_manifest_on_fail(
+            &decl,
+            &mut warnings,
+            |_| true,
+            |_, _| VersionCheck::Mismatch {
+                declared: ">=9.0.0".to_string(),
+                actual: "8.15.0".to_string(),
+            },
+        )
+        .expect_err("Error + version mismatch should bail");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("pnpm"));
+        assert!(msg.contains(">=9.0.0"));
+        assert!(msg.contains("8.15.0"));
+        assert!(msg.contains("onFail=error"));
+    }
+
+    #[test]
+    fn manifest_on_fail_warn_emits_warning_when_binary_missing() {
+        use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
+
+        let decl = ManifestPmDecl {
+            pm: PackageManager::Bun,
+            source: ManifestSource::DevEngines,
+            version: None,
+            on_fail: OnFail::Warn,
+        };
+        let mut warnings = Vec::new();
+
+        super::apply_manifest_on_fail(
+            &decl,
+            &mut warnings,
+            |_| false,
+            |_, _| VersionCheck::Unverifiable {
+                reason: String::new(),
+            },
+        )
+        .expect("Warn should not bail");
+
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].source, "package.json");
+        assert!(warnings[0].detail.contains("bun"));
+    }
+
+    #[test]
+    fn manifest_on_fail_warn_emits_warning_on_version_mismatch() {
+        use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
+
+        let decl = ManifestPmDecl {
+            pm: PackageManager::Yarn,
+            source: ManifestSource::DevEngines,
+            version: Some("^4.0.0".to_string()),
+            on_fail: OnFail::Warn,
+        };
+        let mut warnings = Vec::new();
+
+        super::apply_manifest_on_fail(
+            &decl,
+            &mut warnings,
+            |_| true,
+            |_, _| VersionCheck::Mismatch {
+                declared: "^4.0.0".to_string(),
+                actual: "1.22.22".to_string(),
+            },
+        )
+        .expect("Warn should not bail");
+
+        assert_eq!(warnings.len(), 1);
+        let detail = &warnings[0].detail;
+        assert!(detail.contains("yarn"));
+        assert!(detail.contains("^4.0.0"));
+        assert!(detail.contains("1.22.22"));
+    }
+
+    #[test]
+    fn manifest_on_fail_ignore_skips_all_checks() {
+        use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail};
+
+        // OnFail=Ignore short-circuits before the binary/version checks
+        // even run — they should never be called. Use a panicking
+        // checker to prove the early return holds.
+        let decl = ManifestPmDecl {
+            pm: PackageManager::Npm,
+            source: ManifestSource::DevEngines,
+            version: Some(">=20".to_string()),
+            on_fail: OnFail::Ignore,
+        };
+        let mut warnings = Vec::new();
+
+        super::apply_manifest_on_fail(
+            &decl,
+            &mut warnings,
+            |_| panic!("presence check should not run when onFail=Ignore"),
+            |_, _| panic!("version check should not run when onFail=Ignore"),
+        )
+        .expect("Ignore should always succeed");
+
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn manifest_on_fail_unverifiable_version_continues_without_warning() {
+        use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
+
+        // Version checks that can't run (unparseable range, missing
+        // --version output) collapse to Unverifiable — that path must
+        // continue silently, not warn or bail, otherwise a partially
+        // broken environment blocks dispatch unnecessarily.
+        let decl = ManifestPmDecl {
+            pm: PackageManager::Yarn,
+            source: ManifestSource::DevEngines,
+            version: Some("not-a-valid-range".to_string()),
+            on_fail: OnFail::Error,
+        };
+        let mut warnings = Vec::new();
+
+        super::apply_manifest_on_fail(
+            &decl,
+            &mut warnings,
+            |_| true,
+            |_, _| VersionCheck::Unverifiable {
+                reason: "unparseable range".to_string(),
+            },
+        )
+        .expect("Unverifiable should continue, not bail");
+
+        assert!(warnings.is_empty());
     }
 
     #[test]
