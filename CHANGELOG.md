@@ -9,11 +9,90 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
-### Post-release checklist
+### Added
 
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- Unified package-manager resolution chain. `runner run` now follows a
+  documented 8-step precedence — qualified syntax → `--pm` / `--runner`
+  → `RUNNER_PM` / `RUNNER_RUNNER` → `runner.toml` → `package.json`
+  (`packageManager` then `devEngines.packageManager`) → lockfile →
+  `PATH` probe → terminal error — making toolchain selection
+  predictable across Corepack, antfu/ni, mise, and pnpm v11+
+  conventions. New `src/resolver/` module owns the chain end-to-end.
+- `--pm` / `--runner` global flags with `RUNNER_PM` / `RUNNER_RUNNER`
+  env-var mirrors. Cross-ecosystem overrides like `--pm cargo` against
+  a Node project fall through to detection rather than hijacking
+  dispatch. CLI wins over env; empty env strings are treated as unset.
+- `runner.toml` project config (`[pm]`, `[task_runner]`,
+  `[resolution]`, `[sources.*]`). Per-ecosystem PM overrides apply
+  only when the named PM matches the requested ecosystem;
+  `[resolution].fallback` controls the no-signal behavior.
+- `devEngines.packageManager` parsing from `package.json` (OpenJS
+  proposal, npm 10.9+). Single-object and array forms supported with
+  per-entry `onFail` (ignore/warn/error). `download` collapses to
+  `warn` since runner is not an installer. The legacy `packageManager`
+  field still wins when both are present; manifest declarations win
+  over lockfile signals (Corepack semantics) and emit a `package.json`
+  warning when they disagree.
+- Semver enforcement on `devEngines.version`. When the declared range
+  doesn't match the installed PM's `--version`, `onFail=warn` emits a
+  warning and `onFail=error` bails. Unparseable ranges or missing
+  `--version` output skip the check silently so a partially-broken
+  environment never blocks dispatch.
+- `--fallback` policy (`probe` default | `npm` legacy | `error`) with
+  `RUNNER_FALLBACK` env mirror. The default replaces the silent `npm`
+  fallback with a canonical-order PATH probe (`bun > pnpm > yarn >
+  npm`); when nothing matches, the user sees an actionable error
+  listing every source that was checked.
+- `--explain` flag (`RUNNER_EXPLAIN` env). Emits a one-line trace
+  describing which chain step produced the PM decision: `· runner
+  resolved: pnpm via package.json "packageManager"`.
+- `runner doctor` subcommand. Dumps every signal the resolver
+  considers: detected PMs/runners, override sources in effect (with
+  origin attribution), manifest declarations, lockfile presence,
+  PATH probe results for each Node PM, the final decision, and any
+  warnings. `--json` emits schema-versioned output for jq/scripts/bug
+  reports.
+- `runner why <task>` subcommand. Walks the source-selection chain for
+  a single task: lists every candidate source with its `(priority,
+  depth, display_order, alias)` tuple, names the winner, and renders
+  the PM resolution trace when a `package.json` script is picked.
+  `--json` available.
+- Passthrough-wrapper detection generalized to every supported task
+  runner. A `package.json` script like `"build": "just build"` is now
+  recognized as a thin wrapper around `just` and deduped from
+  completion candidates when the underlying runner exposes a same-
+  named task. Recognized runners: turbo, just, make, task (go-task),
+  nx, bacon, mise.
+- `Ecosystem` enum (`Node`/`Deno`/`Python`/`Rust`/`Go`/`Ruby`/`Php`)
+  formalizing the PM-to-ecosystem mapping used by override scoping.
+
+### Changed
+
+- `Task.passthrough_to_turbo: bool` replaced by `Task.passthrough_to:
+  Option<TaskRunner>` so wrappers around any runner — not just turbo —
+  can be attributed at detection time and used by completion.
+- `cmd::run::run` signature now takes a `&ResolutionOverrides` so the
+  resolver-chosen PM also flows through the no-task fallback paths
+  (`bun test` special case, `npx`-style exec). `--pm npm` against a
+  Bun-detected project now correctly suppresses the bun-test fallback.
+- Task selection unified into a single sort key `(source_priority,
+  source_depth, display_order, alias_last)`. Replaces the Deno-only
+  depth path with a generic tiebreak that applies to every source.
+  Every non-workspace-aware source now walks ancestors upward when
+  computing `source_depth` so the tiebreak actually distinguishes
+  nested Makefile/Justfile/Taskfile/bacon.toml configs from
+  workspace-root ones.
+- `Resolver::resolve_node_pm` returns `Result<ResolvedPm>` so manifest
+  `onFail=error` and `--fallback error` can bubble up structured
+  errors instead of bailing inside the resolver.
+
+### Fixed
+
+- `package.json` `packageManager: "deno@…"` projects no longer require
+  a `deno.json` alongside to be recognized as a Deno project.
+- Stale doc comment on `detect::push_package_json_tasks` updated to
+  reflect that passthrough detection covers every known runner, not
+  just turbo.
 
 ## [0.8.1] - 2026-05-12
 
