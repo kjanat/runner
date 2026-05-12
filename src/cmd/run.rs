@@ -131,18 +131,30 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+/// Locate the directory holding `source`'s config file relative to `root`.
+///
+/// Every source walks upward toward the repo root (stopping at the VCS
+/// boundary via `tool::files::find_first_upwards`) so that
+/// [`source_depth`] gives a meaningful tiebreak in nested monorepos:
+/// a member `Makefile` near cwd outranks the workspace-root `Makefile`,
+/// matching the precedent set by `package.json` and `deno.json`.
+///
+/// `PackageJson`, `DenoJson`, and `CargoAliases` keep their bespoke
+/// walkers because each handles workspace boundaries (member globs in
+/// `pnpm-workspace.yaml`/`deno.json`/`Cargo.toml`) that the plain
+/// upward walk doesn't model.
 fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
-    match source {
+    let path = match source {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::TurboJson => tool::turbo::find_config(root),
-        TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
-        TaskSource::Justfile => tool::just::find_file(root),
-        TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
-        TaskSource::BaconToml => tool::files::find_first(root, tool::bacon::FILENAMES),
-    }
-    .and_then(|path| path.parent().map(Path::to_path_buf))
+        TaskSource::TurboJson => tool::files::find_first_upwards(root, tool::turbo::FILENAMES),
+        TaskSource::Makefile => tool::files::find_first_upwards(root, tool::make::FILENAMES),
+        TaskSource::Justfile => tool::files::find_first_upwards(root, tool::just::FILENAMES),
+        TaskSource::Taskfile => tool::files::find_first_upwards(root, tool::go_task::FILENAMES),
+        TaskSource::BaconToml => tool::files::find_first_upwards(root, tool::bacon::FILENAMES),
+    };
+    path.and_then(|path| path.parent().map(Path::to_path_buf))
 }
 
 /// Execute `target` (plus `args`) as an arbitrary command through the
@@ -485,6 +497,34 @@ mod tests {
         };
 
         assert!(should_use_bun_test_fallback(&ctx, &overrides, "test"));
+    }
+
+    #[test]
+    fn source_depth_walks_upward_for_non_node_sources() {
+        // Generalization landed in the same change: depth-aware tiebreak
+        // used to require a custom upward walker per source. Now every
+        // source consults `tool::files::find_first_upwards`, so a
+        // Makefile two levels up still resolves with a finite depth (and
+        // therefore beats a hypothetical sibling resolved at MAX).
+        let dir = TempDir::new("source-depth-upward");
+        let nested = dir.path().join("apps").join("api");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(dir.path().join("Makefile"), "build:\n\techo build\n")
+            .expect("root Makefile should be written");
+
+        let ctx = ProjectContext {
+            root: nested.clone(),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let depth = super::source_depth(&ctx, TaskSource::Makefile);
+        assert_ne!(depth, usize::MAX, "Makefile two levels up should resolve");
     }
 
     #[test]
