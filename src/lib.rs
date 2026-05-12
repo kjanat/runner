@@ -58,6 +58,7 @@ mod cli;
 mod cmd;
 mod complete;
 mod detect;
+mod resolver;
 mod tool;
 mod types;
 

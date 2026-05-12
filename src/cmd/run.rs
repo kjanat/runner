@@ -9,6 +9,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 use colored::Colorize;
 
+use crate::resolver::Resolver;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskSource};
 
@@ -230,10 +231,7 @@ fn build_run_command(
     Ok(match source {
         TaskSource::TurboJson => tool::turbo::run_cmd(task, args),
         TaskSource::PackageJson => {
-            let pm = ctx
-                .primary_node_pm()
-                .or_else(|| ctx.primary_pm())
-                .unwrap_or(PackageManager::Npm);
+            let pm = Resolver::new(ctx).resolve_node_pm().pm;
             match pm {
                 PackageManager::Npm => tool::npm::run_cmd(task, args),
                 PackageManager::Yarn => tool::yarn::run_cmd(task, args),
