@@ -19,6 +19,11 @@
 
 mod probe;
 
+/// Re-export of the pure-function probe variant for the `doctor`
+/// subcommand. Lets `cmd::doctor` exercise the same PATH walk the
+/// resolver uses without owning the env-reading logic.
+pub(crate) use probe::probe_in as probe_path_for_doctor;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 

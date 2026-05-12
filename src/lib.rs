@@ -513,6 +513,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
+        Some(cli::Command::Doctor { json }) => {
+            cmd::doctor(&ctx, &overrides, json)?;
+            Ok(0)
+        }
+        Some(cli::Command::Why { task, json }) => {
+            cmd::why(&ctx, &overrides, &task, json)?;
+            Ok(0)
+        }
     }
 }
 

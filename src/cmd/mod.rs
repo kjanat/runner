@@ -9,17 +9,21 @@ use crate::types::{DetectionWarning, ProjectContext};
 
 mod clean;
 mod completions;
+mod doctor;
 mod info;
 mod install;
 mod list;
-mod run;
+pub(crate) mod run;
+mod why;
 
 pub(crate) use clean::clean;
 pub(crate) use completions::{completions, parse_shell_arg};
+pub(crate) use doctor::doctor;
 pub(crate) use info::info;
 pub(crate) use install::install;
 pub(crate) use list::list;
 pub(crate) use run::run;
+pub(crate) use why::why;
 
 fn configure_command(command: &mut Command, dir: &Path) {
     command

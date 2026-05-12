@@ -80,7 +80,7 @@ pub(crate) fn run(
     Ok(super::exit_code(cmd.status()?))
 }
 
-fn select_task_entry<'a>(
+pub(crate) fn select_task_entry<'a>(
     ctx: &ProjectContext,
     found: &[&'a crate::types::Task],
 ) -> &'a crate::types::Task {
@@ -102,7 +102,7 @@ fn select_task_entry<'a>(
 
 /// Ranks sources by type before nearest-config tiebreak:
 /// `TurboJson` > `PackageJson` > others. Lower is higher priority.
-const fn source_priority(source: TaskSource) -> u8 {
+pub(crate) const fn source_priority(source: TaskSource) -> u8 {
     match source {
         TaskSource::TurboJson => 0,
         TaskSource::PackageJson => 1,
@@ -121,7 +121,7 @@ const fn source_priority(source: TaskSource) -> u8 {
 /// workspace layouts (member `package.json` near cwd vs root
 /// `deno.json`), and in Cargo + Make/Just/Taskfile setups where the
 /// runner-specific file may live deeper than the workspace root.
-fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
+pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
     source_dir(source, &ctx.root)
         .and_then(|dir| {
             ctx.root

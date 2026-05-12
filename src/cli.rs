@@ -442,6 +442,22 @@ pub(crate) enum Command {
     /// Show detected project info
     Info,
 
+    /// Diagnostic dump: every signal the resolver considers in this dir
+    Doctor {
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Explain how a specific task would dispatch (sources + PM trace)
+    Why {
+        /// Task name to analyze.
+        task: String,
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Generate shell completions
     Completions {
         /// Target shell — bare name (`zsh`) or full path (`/usr/bin/zsh`).
