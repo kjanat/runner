@@ -242,6 +242,14 @@ fn build_run_command(
         TaskSource::PackageJson => {
             let decision = Resolver::new(ctx, overrides.clone()).resolve_node_pm()?;
             super::print_warning_slice(&decision.warnings);
+            if overrides.explain {
+                eprintln!(
+                    "{} {} resolved: {}",
+                    "·".dimmed(),
+                    "runner".dimmed(),
+                    decision.describe(),
+                );
+            }
             let pm = decision.pm;
             match pm {
                 PackageManager::Npm => tool::npm::run_cmd(task, args),

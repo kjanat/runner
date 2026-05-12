@@ -281,6 +281,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         cli.pm_override.as_deref(),
         cli.runner_override.as_deref(),
         cli.fallback.as_deref(),
+        cli.explain,
         loaded_config.as_ref(),
     )?;
     match cli.task {
@@ -458,6 +459,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         cli.pm_override.as_deref(),
         cli.runner_override.as_deref(),
         cli.fallback.as_deref(),
+        cli.explain,
         loaded_config.as_ref(),
     )?;
 

@@ -56,6 +56,9 @@ pub(crate) struct ResolutionOverrides {
     pub runner: Option<RunnerOverride>,
     /// What to do when no signal in steps 2–6 matches.
     pub fallback: FallbackPolicy,
+    /// When `true`, emit a one-line trace describing which chain step
+    /// produced the PM decision. Set via `--explain` / `RUNNER_EXPLAIN`.
+    pub explain: bool,
 }
 
 /// What to do when no signal in steps 2–6 matches.
@@ -301,6 +304,40 @@ fn apply_manifest_on_fail(
     }
 }
 
+impl ResolvedPm {
+    /// Render a one-line description of the chain step that produced this
+    /// decision. Used by `--explain` to attribute the PM choice.
+    pub(crate) fn describe(&self) -> String {
+        match &self.via {
+            ResolutionStep::Override(OverrideOrigin::CliFlag) => {
+                format!("{} via --pm (CLI override)", self.pm.label())
+            }
+            ResolutionStep::Override(OverrideOrigin::EnvVar) => {
+                format!("{} via RUNNER_PM (environment)", self.pm.label())
+            }
+            ResolutionStep::Override(OverrideOrigin::ConfigFile { path }) => {
+                format!("{} via runner.toml at {}", self.pm.label(), path.display())
+            }
+            ResolutionStep::ManifestPackageManager => {
+                format!("{} via package.json \"packageManager\"", self.pm.label())
+            }
+            ResolutionStep::ManifestDevEngines { on_fail } => format!(
+                "{} via package.json \"devEngines.packageManager\" (onFail={on_fail:?})",
+                self.pm.label(),
+            ),
+            ResolutionStep::Lockfile => {
+                format!("{} via detected lockfile", self.pm.label())
+            }
+            ResolutionStep::PathProbe { binary } => {
+                format!("{} via PATH probe at {}", self.pm.label(), binary.display())
+            }
+            ResolutionStep::LegacyNpmFallback => {
+                format!("{} via --fallback=npm (legacy)", self.pm.label())
+            }
+        }
+    }
+}
+
 fn no_pm_found_error() -> anyhow::Error {
     anyhow!(
         "no Node package manager detected. Checked: lockfiles (bun.lock, pnpm-lock.yaml, \
@@ -361,30 +398,36 @@ impl ResolutionOverrides {
         cli_pm: Option<&str>,
         cli_runner: Option<&str>,
         cli_fallback: Option<&str>,
+        cli_explain: bool,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let env_pm = std::env::var("RUNNER_PM").ok();
         let env_runner = std::env::var("RUNNER_RUNNER").ok();
         let env_fallback = std::env::var("RUNNER_FALLBACK").ok();
-        Self::from_values(
+        let env_explain = std::env::var("RUNNER_EXPLAIN").ok();
+        Self::from_values_with_explain(
             cli_pm,
             env_pm.as_deref(),
             cli_runner,
             env_runner.as_deref(),
             cli_fallback,
             env_fallback.as_deref(),
+            cli_explain,
+            env_explain.as_deref(),
             config,
         )
     }
 
-    /// Pure-function variant of [`Self::from_cli_and_env`]. CLI values win
-    /// over env values; empty env strings are treated as unset.
+    /// Pure-function variant of [`Self::from_cli_and_env`] without the
+    /// `--explain` toggle (always disabled). Tests use this directly;
+    /// production code goes through [`Self::from_cli_and_env`].
     ///
     /// # Errors
     ///
     /// Returns an error if any value does not name a known package manager,
     /// task runner, or fallback policy, or if a `runner.toml` field contains
     /// a PM that does not belong to its target ecosystem.
+    #[cfg(test)]
     pub(crate) fn from_values(
         cli_pm: Option<&str>,
         env_pm: Option<&str>,
@@ -392,6 +435,41 @@ impl ResolutionOverrides {
         env_runner: Option<&str>,
         cli_fallback: Option<&str>,
         env_fallback: Option<&str>,
+        config: Option<&LoadedConfig>,
+    ) -> Result<Self> {
+        Self::from_values_with_explain(
+            cli_pm,
+            env_pm,
+            cli_runner,
+            env_runner,
+            cli_fallback,
+            env_fallback,
+            false,
+            None,
+            config,
+        )
+    }
+
+    /// Pure-function variant that also accepts the `--explain` /
+    /// `RUNNER_EXPLAIN` toggle. CLI value (`Some(true)` when the flag is
+    /// passed) wins over env (any non-empty value is truthy).
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::from_values`].
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit source injection for testability across all six override sources"
+    )]
+    pub(crate) fn from_values_with_explain(
+        cli_pm: Option<&str>,
+        env_pm: Option<&str>,
+        cli_runner: Option<&str>,
+        env_runner: Option<&str>,
+        cli_fallback: Option<&str>,
+        env_fallback: Option<&str>,
+        cli_explain: bool,
+        env_explain: Option<&str>,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let pm = parse_override(cli_pm, env_pm, parse_pm_label, |pm, origin| PmOverride {
@@ -406,6 +484,7 @@ impl ResolutionOverrides {
         )?;
 
         let fallback = resolve_fallback_policy(cli_fallback, env_fallback, config)?;
+        let explain = cli_explain || env_explain.is_some_and(is_env_truthy);
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = config {
@@ -440,8 +519,13 @@ impl ResolutionOverrides {
             pm_by_ecosystem,
             runner,
             fallback,
+            explain,
         })
     }
+}
+
+fn is_env_truthy(raw: &str) -> bool {
+    !raw.is_empty() && !matches!(raw, "0" | "false" | "no" | "off")
 }
 
 fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
@@ -1020,6 +1104,38 @@ mod tests {
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
         assert!(decision.warnings.is_empty());
+    }
+
+    #[test]
+    fn describe_renders_human_friendly_step_label() {
+        let cli_decision = super::ResolvedPm {
+            pm: PackageManager::Yarn,
+            via: ResolutionStep::Override(OverrideOrigin::CliFlag),
+            warnings: vec![],
+        };
+        assert!(cli_decision.describe().contains("--pm"));
+        assert!(cli_decision.describe().contains("yarn"));
+
+        let env_decision = super::ResolvedPm {
+            pm: PackageManager::Bun,
+            via: ResolutionStep::Override(OverrideOrigin::EnvVar),
+            warnings: vec![],
+        };
+        assert!(env_decision.describe().contains("RUNNER_PM"));
+
+        let pkg_decision = super::ResolvedPm {
+            pm: PackageManager::Pnpm,
+            via: ResolutionStep::ManifestPackageManager,
+            warnings: vec![],
+        };
+        assert!(pkg_decision.describe().contains("packageManager"));
+
+        let lock_decision = super::ResolvedPm {
+            pm: PackageManager::Npm,
+            via: ResolutionStep::Lockfile,
+            warnings: vec![],
+        };
+        assert!(lock_decision.describe().contains("lockfile"));
     }
 
     #[test]

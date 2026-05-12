@@ -389,6 +389,11 @@ pub(crate) struct Cli {
     #[arg(long = "fallback", global = true, value_name = "POLICY")]
     pub fallback: Option<String>,
 
+    /// Print a one-line trace describing how the package manager was
+    /// resolved. Also enabled by `RUNNER_EXPLAIN=1`.
+    #[arg(long = "explain", global = true)]
+    pub explain: bool,
+
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -501,6 +506,11 @@ pub(crate) struct RunAliasCli {
     /// Falls back to `$RUNNER_FALLBACK` when omitted.
     #[arg(long = "fallback", global = true, value_name = "POLICY")]
     pub fallback: Option<String>,
+
+    /// Print a one-line trace describing how the package manager was
+    /// resolved. Also enabled by `RUNNER_EXPLAIN=1`.
+    #[arg(long = "explain", global = true)]
+    pub explain: bool,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]
