@@ -275,12 +275,16 @@ where
 
 fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
+    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
+        cli.pm_override.as_deref(),
+        cli.runner_override.as_deref(),
+    )?;
     match cli.task {
         None => {
             cmd::info(&ctx);
             Ok(0)
         }
-        Some(task) => cmd::run(&ctx, &task, &cli.args),
+        Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args),
     }
 }
 
@@ -445,24 +449,30 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
+    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
+        cli.pm_override.as_deref(),
+        cli.runner_override.as_deref(),
+    )?;
 
     match cli.command {
-        Some(cli::Command::Info) if has_task(&ctx, "info") => cmd::run(&ctx, "info", &[]),
+        Some(cli::Command::Info) if has_task(&ctx, "info") => {
+            cmd::run(&ctx, &overrides, "info", &[])
+        }
         None | Some(cli::Command::Info) => {
             cmd::info(&ctx);
             Ok(0)
         }
-        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &task, &args),
+        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &overrides, &task, &args),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
                 cmd::info(&ctx);
                 Ok(0)
             } else {
-                cmd::run(&ctx, &args[0], &args[1..])
+                cmd::run(&ctx, &overrides, &args[0], &args[1..])
             }
         }
         Some(cli::Command::Install { frozen: false }) if has_task(&ctx, "install") => {
-            cmd::run(&ctx, "install", &[])
+            cmd::run(&ctx, &overrides, "install", &[])
         }
         Some(cli::Command::Install { frozen }) => {
             cmd::install(&ctx, frozen)?;
@@ -471,7 +481,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Clean {
             yes: false,
             include_framework: false,
-        }) if has_task(&ctx, "clean") => cmd::run(&ctx, "clean", &[]),
+        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[]),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -480,7 +490,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
         Some(cli::Command::List { raw: false }) if has_task(&ctx, "list") => {
-            cmd::run(&ctx, "list", &[])
+            cmd::run(&ctx, &overrides, "list", &[])
         }
         Some(cli::Command::List { raw }) => {
             cmd::list(&ctx, raw);
@@ -489,7 +499,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Completions {
             shell: None,
             output: None,
-        }) if has_task(&ctx, "completions") => cmd::run(&ctx, "completions", &[]),
+        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[]),
         Some(cli::Command::Completions { shell, output }) => {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
@@ -750,6 +760,42 @@ mod tests {
             }
             other => panic!("expected External, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runner_cli_parses_pm_and_runner_overrides_globally() {
+        let cli = parse_cli(["runner", "--pm", "pnpm", "--runner", "just", "run", "build"])
+            .expect("global --pm/--runner should parse on the run subcommand");
+
+        assert_eq!(cli.pm_override.as_deref(), Some("pnpm"));
+        assert_eq!(cli.runner_override.as_deref(), Some("just"));
+        match cli.command {
+            Some(cli::Command::Run { task, args }) => {
+                assert_eq!(task, "build");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_alias_parses_pm_override() {
+        let cli =
+            parse_run_alias_cli(["run", "--pm=bun", "test"]).expect("--pm=bun test should parse");
+
+        assert_eq!(cli.pm_override.as_deref(), Some("bun"));
+        assert_eq!(cli.task.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn invalid_pm_override_value_returns_error() {
+        // Bad PM name should not crash the binary; it should surface as an
+        // error exit code so the user sees the message from `from_cli_and_env`.
+        let dir = TempDir::new("runner-bad-pm");
+        let result = run_in_dir(["runner", "--pm", "zoot", "info"], dir.path());
+
+        let err = result.expect_err("unknown --pm should error");
+        assert!(format!("{err}").contains("unknown package manager"));
     }
 
     #[test]

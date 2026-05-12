@@ -172,6 +172,48 @@ impl PackageManager {
             Self::Composer => "composer",
         }
     }
+
+    /// Parse a user-supplied label (CLI flag value, env var, config field)
+    /// back into a [`PackageManager`].
+    ///
+    /// Accepts the canonical `label()` for each variant and the common
+    /// `bundle` alias for Ruby's Bundler (which spells its binary `bundle`).
+    pub(crate) fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "npm" => Some(Self::Npm),
+            "yarn" => Some(Self::Yarn),
+            "pnpm" => Some(Self::Pnpm),
+            "bun" => Some(Self::Bun),
+            "cargo" => Some(Self::Cargo),
+            "deno" => Some(Self::Deno),
+            "uv" => Some(Self::Uv),
+            "poetry" => Some(Self::Poetry),
+            "pipenv" => Some(Self::Pipenv),
+            "go" => Some(Self::Go),
+            "bundler" | "bundle" => Some(Self::Bundler),
+            "composer" => Some(Self::Composer),
+            _ => None,
+        }
+    }
+
+    /// Every variant of [`PackageManager`] in a fixed order, for help text
+    /// and error messages that need to enumerate the valid values.
+    pub(crate) const fn all() -> &'static [Self] {
+        &[
+            Self::Npm,
+            Self::Yarn,
+            Self::Pnpm,
+            Self::Bun,
+            Self::Cargo,
+            Self::Deno,
+            Self::Uv,
+            Self::Poetry,
+            Self::Pipenv,
+            Self::Go,
+            Self::Bundler,
+            Self::Composer,
+        ]
+    }
 }
 
 impl TaskRunner {
@@ -186,6 +228,38 @@ impl TaskRunner {
             Self::Mise => "mise",
             Self::Bacon => "bacon",
         }
+    }
+
+    /// Parse a user-supplied label (CLI flag value, env var, config field)
+    /// back into a [`TaskRunner`].
+    ///
+    /// Accepts the canonical `label()` plus the alias `go-task` for `task`
+    /// to disambiguate from arbitrary task names.
+    pub(crate) fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "turbo" => Some(Self::Turbo),
+            "nx" => Some(Self::Nx),
+            "make" => Some(Self::Make),
+            "just" => Some(Self::Just),
+            "task" | "go-task" => Some(Self::GoTask),
+            "mise" => Some(Self::Mise),
+            "bacon" => Some(Self::Bacon),
+            _ => None,
+        }
+    }
+
+    /// Every variant of [`TaskRunner`] in a fixed order, for help text and
+    /// error messages that need to enumerate the valid values.
+    pub(crate) const fn all() -> &'static [Self] {
+        &[
+            Self::Turbo,
+            Self::Nx,
+            Self::Make,
+            Self::Just,
+            Self::GoTask,
+            Self::Mise,
+            Self::Bacon,
+        ]
     }
 }
 

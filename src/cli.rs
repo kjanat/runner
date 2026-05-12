@@ -367,6 +367,16 @@ pub(crate) struct Cli {
     )]
     pub project_dir: Option<PathBuf>,
 
+    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
+    /// Falls back to `$RUNNER_PM` when omitted.
+    #[arg(long = "pm", global = true, value_name = "NAME")]
+    pub pm_override: Option<String>,
+
+    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
+    /// Falls back to `$RUNNER_RUNNER` when omitted.
+    #[arg(long = "runner", global = true, value_name = "NAME")]
+    pub runner_override: Option<String>,
+
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -463,6 +473,16 @@ pub(crate) struct RunAliasCli {
         value_parser = clap::value_parser!(PathBuf)
     )]
     pub project_dir: Option<PathBuf>,
+
+    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
+    /// Falls back to `$RUNNER_PM` when omitted.
+    #[arg(long = "pm", global = true, value_name = "NAME")]
+    pub pm_override: Option<String>,
+
+    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
+    /// Falls back to `$RUNNER_RUNNER` when omitted.
+    #[arg(long = "runner", global = true, value_name = "NAME")]
+    pub runner_override: Option<String>,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]

@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 use colored::Colorize;
 
-use crate::resolver::Resolver;
+use crate::resolver::{ResolutionOverrides, Resolver};
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskSource};
 
@@ -33,7 +33,12 @@ fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
 /// script exists, falls back to `bun test`.
 ///
 /// Returns the child process exit code.
-pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i32> {
+pub(crate) fn run(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task: &str,
+    args: &[String],
+) -> Result<i32> {
     super::print_warnings(ctx);
 
     let (qualifier, task_name) = parse_qualified_task(task);
@@ -70,7 +75,7 @@ pub(crate) fn run(ctx: &ProjectContext, task: &str, args: &[String]) -> Result<i
         args.join(" ").dimmed(),
     );
 
-    let mut cmd = build_run_command(ctx, entry.source, task_name, args)?;
+    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args)?;
     super::configure_command(&mut cmd, &ctx.root);
     Ok(super::exit_code(cmd.status()?))
 }
@@ -224,6 +229,7 @@ fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
 /// Build a [`Command`] for the given task source and package manager.
 fn build_run_command(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     source: TaskSource,
     task: &str,
     args: &[String],
@@ -231,7 +237,7 @@ fn build_run_command(
     Ok(match source {
         TaskSource::TurboJson => tool::turbo::run_cmd(task, args),
         TaskSource::PackageJson => {
-            let pm = Resolver::new(ctx).resolve_node_pm().pm;
+            let pm = Resolver::new(ctx, overrides.clone()).resolve_node_pm().pm;
             match pm {
                 PackageManager::Npm => tool::npm::run_cmd(task, args),
                 PackageManager::Yarn => tool::yarn::run_cmd(task, args),
