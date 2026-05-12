@@ -278,14 +278,14 @@ fn should_use_bun_test_fallback(
 /// excluded for the same reason.
 fn exec_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManager> {
     if let Some(o) = overrides.pm.as_ref()
-        && pm_has_exec_primitive(o.pm)
+        && o.pm.has_exec_primitive()
     {
         return Some(o.pm);
     }
     overrides
         .pm_by_ecosystem
         .get(&crate::types::Ecosystem::Node)
-        .filter(|o| pm_has_exec_primitive(o.pm))
+        .filter(|o| o.pm.has_exec_primitive())
         .map(|o| o.pm)
 }
 
@@ -296,7 +296,7 @@ fn exec_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManag
 /// answer "did the user pick Bun for this Node project?"
 fn node_script_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManager> {
     if let Some(o) = overrides.pm.as_ref()
-        && pm_dispatches_node_scripts(o.pm)
+        && o.pm.can_dispatch_node_scripts()
     {
         return Some(o.pm);
     }
@@ -309,25 +309,6 @@ fn node_script_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<Packa
                 .get(&crate::types::Ecosystem::Deno)
         })
         .map(|o| o.pm)
-}
-
-/// PMs that own an `npx`-style exec primitive (`npm exec`, `pnpm exec`,
-/// `yarn …`, `bun x`, `uv run`).
-const fn pm_has_exec_primitive(pm: PackageManager) -> bool {
-    matches!(
-        pm,
-        PackageManager::Npm
-            | PackageManager::Pnpm
-            | PackageManager::Yarn
-            | PackageManager::Bun
-            | PackageManager::Uv
-    )
-}
-
-/// PMs that can dispatch a script declared in `package.json` "scripts"
-/// — Node ecosystem plus Deno.
-const fn pm_dispatches_node_scripts(pm: PackageManager) -> bool {
-    pm.is_node() || matches!(pm, PackageManager::Deno)
 }
 
 fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {

@@ -252,6 +252,33 @@ impl PackageManager {
             Self::Composer => Ecosystem::Php,
         }
     }
+
+    /// Whether this PM can dispatch a script declared in `package.json`
+    /// `"scripts"` — Node ecosystem (`npm`, `yarn`, `pnpm`, `bun`) plus
+    /// Deno (via `deno run <task>`). Used by both the resolver (to
+    /// scope `--pm` overrides for Node-script resolution) and the
+    /// bun-test fallback path (to answer "did the user pick a
+    /// Node-script PM other than Bun?").
+    pub(crate) const fn can_dispatch_node_scripts(self) -> bool {
+        self.is_node() || matches!(self, Self::Deno)
+    }
+
+    /// Whether this PM owns an `npx`-style exec primitive — `npm exec`,
+    /// `pnpm exec`, `yarn …`, `bun x`, `uv run`. Used by the arbitrary-
+    /// command fallback path in `cmd::run` to decide whether to honor a
+    /// `--pm` override or fall through to a direct PATH spawn.
+    ///
+    /// Deno is excluded because `deno run <target>` treats `<target>`
+    /// as a local script path, not a binary in `node_modules`, so
+    /// honoring `--pm deno` here would silently change semantics.
+    /// Cargo, Poetry, Pipenv, Bundler, Composer, and Go also lack an
+    /// exec primitive and are excluded for the same reason.
+    pub(crate) const fn has_exec_primitive(self) -> bool {
+        matches!(
+            self,
+            Self::Npm | Self::Pnpm | Self::Yarn | Self::Bun | Self::Uv
+        )
+    }
 }
 
 impl TaskRunner {

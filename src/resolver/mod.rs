@@ -206,7 +206,7 @@ impl<'ctx> Resolver<'ctx> {
         let mut warnings = Vec::new();
 
         if let Some(o) = self.overrides.pm.as_ref()
-            && pm_can_run_package_json_scripts(o.pm)
+            && o.pm.can_dispatch_node_scripts()
         {
             return Ok(ResolvedPm {
                 pm: o.pm,
@@ -447,10 +447,6 @@ fn cross_check_against_lockfile(
             lockfile_pm.label(),
         ),
     })
-}
-
-const fn pm_can_run_package_json_scripts(pm: PackageManager) -> bool {
-    pm.is_node() || matches!(pm, PackageManager::Deno)
 }
 
 /// Sources contributing to a [`ResolutionOverrides`].
