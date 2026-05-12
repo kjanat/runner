@@ -2,6 +2,30 @@
 
 use std::path::PathBuf;
 
+/// A language/runtime ecosystem that owns one or more package managers.
+///
+/// Used by the resolver to scope overrides — a `[pm].node = "pnpm"` entry
+/// in `runner.toml` applies only when resolving for [`Ecosystem::Node`].
+/// Deno is its own ecosystem even though its package manager can also
+/// dispatch `package.json` scripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Ecosystem {
+    /// Node.js (npm, yarn, pnpm, bun).
+    Node,
+    /// Deno.
+    Deno,
+    /// Python (uv, poetry, pipenv).
+    Python,
+    /// Rust (cargo).
+    Rust,
+    /// Go.
+    Go,
+    /// Ruby (bundler).
+    Ruby,
+    /// PHP (composer).
+    Php,
+}
+
 /// A dependency manager detected via lockfile or config presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PackageManager {
@@ -213,6 +237,19 @@ impl PackageManager {
             Self::Bundler,
             Self::Composer,
         ]
+    }
+
+    /// The ecosystem this package manager belongs to.
+    pub(crate) const fn ecosystem(self) -> Ecosystem {
+        match self {
+            Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => Ecosystem::Node,
+            Self::Deno => Ecosystem::Deno,
+            Self::Cargo => Ecosystem::Rust,
+            Self::Uv | Self::Poetry | Self::Pipenv => Ecosystem::Python,
+            Self::Go => Ecosystem::Go,
+            Self::Bundler => Ecosystem::Ruby,
+            Self::Composer => Ecosystem::Php,
+        }
     }
 }
 

@@ -57,6 +57,7 @@
 mod cli;
 mod cmd;
 mod complete;
+mod config;
 mod detect;
 mod resolver;
 mod tool;
@@ -275,9 +276,11 @@ where
 
 fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
+    let loaded_config = config::load(dir)?;
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.pm_override.as_deref(),
         cli.runner_override.as_deref(),
+        loaded_config.as_ref(),
     )?;
     match cli.task {
         None => {
@@ -449,9 +452,11 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
+    let loaded_config = config::load(dir)?;
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.pm_override.as_deref(),
         cli.runner_override.as_deref(),
+        loaded_config.as_ref(),
     )?;
 
     match cli.command {

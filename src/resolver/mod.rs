@@ -17,9 +17,13 @@
 //! 7. `PATH` probe in canonical order — Phase 5.
 //! 8. Terminal — error with actionable guidance — Phase 5.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
 use anyhow::{Result, anyhow};
 
-use crate::types::{PackageManager, ProjectContext, TaskRunner};
+use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
+use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
 /// Resolves package managers and task sources from a [`ProjectContext`]
 /// plus a bundle of [`ResolutionOverrides`].
@@ -28,19 +32,21 @@ pub(crate) struct Resolver<'ctx> {
     overrides: ResolutionOverrides,
 }
 
-/// User-supplied overrides assembled from CLI flags and environment
-/// variables.
+/// User-supplied overrides assembled from CLI flags, environment variables,
+/// and (Phase 3+) a `runner.toml` file.
 ///
-/// A `runner.toml` source is wired in by Phase 3. Each field carries an
-/// [`OverrideOrigin`] so diagnostic output (Phase 6) can attribute a
-/// decision to the exact source the user set it from.
+/// Each field carries an [`OverrideOrigin`] so diagnostic output (Phase 6)
+/// can attribute a decision to the exact source the user set it from.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ResolutionOverrides {
-    /// Package-manager override that wins regardless of ecosystem.
-    /// Honored by [`Resolver::resolve_node_pm`] only when the chosen PM can
-    /// actually dispatch `package.json` scripts (Node ecosystems and Deno);
-    /// other ecosystems are added as their resolvers come online.
+    /// Cross-ecosystem PM override from CLI/env. `--pm`/`RUNNER_PM` are not
+    /// ecosystem-qualified; the resolver applies this value only when the
+    /// named PM is compatible with the requested ecosystem.
     pub pm: Option<PmOverride>,
+    /// Per-ecosystem PM overrides from `runner.toml`. Consulted after the
+    /// cross-ecosystem CLI/env override falls through (e.g. `--pm cargo`
+    /// against a Node resolution).
+    pub pm_by_ecosystem: HashMap<Ecosystem, PmOverride>,
     /// Task-runner override. Parsed and stored in Phase 2; consumed by the
     /// source-selection chain generalized in Phase 8.
     #[allow(dead_code, reason = "consumed by source selection in Phase 8")]
@@ -48,7 +54,7 @@ pub(crate) struct ResolutionOverrides {
 }
 
 /// A package-manager override plus the source the user set it from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct PmOverride {
     /// The chosen package manager.
     pub pm: PackageManager,
@@ -57,7 +63,7 @@ pub(crate) struct PmOverride {
 }
 
 /// A task-runner override plus the source the user set it from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct RunnerOverride {
     /// The chosen task runner.
     #[allow(dead_code, reason = "consumed by source selection in Phase 8")]
@@ -70,16 +76,22 @@ pub(crate) struct RunnerOverride {
 /// Source the user set an override from.
 ///
 /// Listed in precedence order, highest first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OverrideOrigin {
     /// Set via `--pm` / `--runner` on the command line.
     CliFlag,
     /// Set via `RUNNER_PM` / `RUNNER_RUNNER` in the environment.
     EnvVar,
+    /// Set via a `runner.toml` at the project root.
+    ConfigFile {
+        /// Absolute path the override was loaded from.
+        #[allow(dead_code, reason = "consumed by --explain in Phase 6")]
+        path: PathBuf,
+    },
 }
 
 /// A package-manager decision plus the chain step that produced it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedPm {
     /// The chosen package manager.
     pub pm: PackageManager,
@@ -95,7 +107,7 @@ pub(crate) struct ResolvedPm {
 ///
 /// Listed in precedence order. Downstream `match` sites stay exhaustive so
 /// that adding a step is a compile error to handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolutionStep {
     /// Steps 2–4 — user-supplied override won.
     Override(OverrideOrigin),
@@ -116,21 +128,31 @@ impl<'ctx> Resolver<'ctx> {
 
     /// Resolve the package manager used to dispatch `package.json` scripts.
     ///
-    /// 1. Honor a CLI/env override iff the chosen PM can actually run
-    ///    `package.json` scripts (Node ecosystems plus Deno) — a cross-
-    ///    ecosystem override like `--pm cargo` does not apply here and falls
-    ///    through. Phase 5 surfaces this as a warning.
-    /// 2. Otherwise, mirror the historical decision: prefer a detected
-    ///    Node-ecosystem package manager, fall back to the primary PM of any
-    ///    ecosystem (so a `packageManager: "deno@2"` declaration still
-    ///    wins), and as a final resort default to `npm`.
+    /// 1. Honor a CLI/env PM override (step 2-3) iff the chosen PM can
+    ///    actually run `package.json` scripts (Node ecosystems plus Deno).
+    /// 2. Honor a `runner.toml` `[pm].node` override (step 4).
+    /// 3. Otherwise, prefer a detected Node-ecosystem PM (step 6), fall back
+    ///    to the primary PM of any ecosystem (so a
+    ///    `packageManager: "deno@2"` declaration still wins), and as a
+    ///    final resort default to `npm`.
     pub(crate) fn resolve_node_pm(&self) -> ResolvedPm {
-        if let Some(o) = self.overrides.pm
+        if let Some(o) = self.overrides.pm.as_ref()
             && pm_can_run_package_json_scripts(o.pm)
         {
             return ResolvedPm {
                 pm: o.pm,
-                via: ResolutionStep::Override(o.origin),
+                via: ResolutionStep::Override(o.origin.clone()),
+            };
+        }
+        if let Some(o) = self
+            .overrides
+            .pm_by_ecosystem
+            .get(&Ecosystem::Node)
+            .or_else(|| self.overrides.pm_by_ecosystem.get(&Ecosystem::Deno))
+        {
+            return ResolvedPm {
+                pm: o.pm,
+                via: ResolutionStep::Override(o.origin.clone()),
             };
         }
 
@@ -155,8 +177,9 @@ const fn pm_can_run_package_json_scripts(pm: PackageManager) -> bool {
 }
 
 impl ResolutionOverrides {
-    /// Assemble overrides from CLI flag values (already parsed by clap)
-    /// and the `RUNNER_PM` / `RUNNER_RUNNER` environment variables.
+    /// Assemble overrides from CLI flag values (already parsed by clap),
+    /// the `RUNNER_PM` / `RUNNER_RUNNER` environment variables, and an
+    /// optional `runner.toml` loaded from the project root.
     ///
     /// Reads `std::env` for the env-var sources; pure parsing happens in
     /// [`Self::from_values`].
@@ -164,11 +187,22 @@ impl ResolutionOverrides {
     /// # Errors
     ///
     /// Returns an error if any value does not name a known package manager
-    /// or task runner.
-    pub(crate) fn from_cli_and_env(cli_pm: Option<&str>, cli_runner: Option<&str>) -> Result<Self> {
+    /// or task runner, or if a `runner.toml` field contains a PM that does
+    /// not belong to its target ecosystem.
+    pub(crate) fn from_cli_and_env(
+        cli_pm: Option<&str>,
+        cli_runner: Option<&str>,
+        config: Option<&LoadedConfig>,
+    ) -> Result<Self> {
         let env_pm = std::env::var("RUNNER_PM").ok();
         let env_runner = std::env::var("RUNNER_RUNNER").ok();
-        Self::from_values(cli_pm, env_pm.as_deref(), cli_runner, env_runner.as_deref())
+        Self::from_values(
+            cli_pm,
+            env_pm.as_deref(),
+            cli_runner,
+            env_runner.as_deref(),
+            config,
+        )
     }
 
     /// Pure-function variant of [`Self::from_cli_and_env`]. CLI values win
@@ -177,12 +211,14 @@ impl ResolutionOverrides {
     /// # Errors
     ///
     /// Returns an error if any value does not name a known package manager
-    /// or task runner.
+    /// or task runner, or if a `runner.toml` field contains a PM that does
+    /// not belong to its target ecosystem.
     pub(crate) fn from_values(
         cli_pm: Option<&str>,
         env_pm: Option<&str>,
         cli_runner: Option<&str>,
         env_runner: Option<&str>,
+        config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let pm = parse_override(cli_pm, env_pm, parse_pm_label, |pm, origin| PmOverride {
             pm,
@@ -194,7 +230,40 @@ impl ResolutionOverrides {
             parse_runner_label,
             |runner, origin| RunnerOverride { runner, origin },
         )?;
-        Ok(Self { pm, runner })
+
+        let mut pm_by_ecosystem = HashMap::new();
+        if let Some(loaded) = config {
+            if let Some(raw) = loaded.config.pm.node.as_deref() {
+                let pm_value = parse_node_pm(raw)?;
+                pm_by_ecosystem.insert(
+                    pm_value.ecosystem(),
+                    PmOverride {
+                        pm: pm_value,
+                        origin: OverrideOrigin::ConfigFile {
+                            path: loaded.path.clone(),
+                        },
+                    },
+                );
+            }
+            if let Some(raw) = loaded.config.pm.python.as_deref() {
+                let pm_value = parse_python_pm(raw)?;
+                pm_by_ecosystem.insert(
+                    Ecosystem::Python,
+                    PmOverride {
+                        pm: pm_value,
+                        origin: OverrideOrigin::ConfigFile {
+                            path: loaded.path.clone(),
+                        },
+                    },
+                );
+            }
+        }
+
+        Ok(Self {
+            pm,
+            pm_by_ecosystem,
+            runner,
+        })
     }
 }
 
@@ -253,12 +322,14 @@ fn join_labels<I: Iterator<Item = &'static str>>(labels: I) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use super::{
         OverrideOrigin, PmOverride, ResolutionOverrides, ResolutionStep, Resolver, RunnerOverride,
     };
-    use crate::types::{PackageManager, ProjectContext, TaskRunner};
+    use crate::config::{LoadedConfig, PmSection, RunnerConfig};
+    use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
     fn context(package_managers: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
@@ -280,6 +351,25 @@ mod tests {
     fn with_pm_override(pm: PackageManager, origin: OverrideOrigin) -> ResolutionOverrides {
         ResolutionOverrides {
             pm: Some(PmOverride { pm, origin }),
+            pm_by_ecosystem: HashMap::new(),
+            runner: None,
+        }
+    }
+
+    fn with_config_pm(pm: PackageManager, eco: Ecosystem) -> ResolutionOverrides {
+        let mut map = HashMap::new();
+        map.insert(
+            eco,
+            PmOverride {
+                pm,
+                origin: OverrideOrigin::ConfigFile {
+                    path: PathBuf::from("/test/runner.toml"),
+                },
+            },
+        );
+        ResolutionOverrides {
+            pm: None,
+            pm_by_ecosystem: map,
             runner: None,
         }
     }
@@ -367,7 +457,7 @@ mod tests {
 
     #[test]
     fn cli_pm_value_parses_to_overrides() {
-        let overrides = ResolutionOverrides::from_values(Some("yarn"), None, None, None)
+        let overrides = ResolutionOverrides::from_values(Some("yarn"), None, None, None, None)
             .expect("--pm yarn should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
@@ -378,7 +468,7 @@ mod tests {
 
     #[test]
     fn env_pm_value_parses_when_cli_absent() {
-        let overrides = ResolutionOverrides::from_values(None, Some("bun"), None, None)
+        let overrides = ResolutionOverrides::from_values(None, Some("bun"), None, None, None)
             .expect("RUNNER_PM=bun should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
@@ -388,8 +478,9 @@ mod tests {
 
     #[test]
     fn cli_wins_over_env() {
-        let overrides = ResolutionOverrides::from_values(Some("yarn"), Some("bun"), None, None)
-            .expect("both sources should parse");
+        let overrides =
+            ResolutionOverrides::from_values(Some("yarn"), Some("bun"), None, None, None)
+                .expect("both sources should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
         assert_eq!(pm.pm, PackageManager::Yarn);
@@ -398,7 +489,7 @@ mod tests {
 
     #[test]
     fn empty_env_is_treated_as_unset() {
-        let overrides = ResolutionOverrides::from_values(None, Some(""), None, None)
+        let overrides = ResolutionOverrides::from_values(None, Some(""), None, None, None)
             .expect("empty env should parse as no override");
 
         assert!(overrides.pm.is_none());
@@ -406,7 +497,7 @@ mod tests {
 
     #[test]
     fn cli_runner_value_parses_to_overrides() {
-        let overrides = ResolutionOverrides::from_values(None, None, Some("just"), None)
+        let overrides = ResolutionOverrides::from_values(None, None, Some("just"), None, None)
             .expect("--runner just should parse");
 
         let runner: RunnerOverride = overrides.runner.expect("runner override should be present");
@@ -416,7 +507,7 @@ mod tests {
 
     #[test]
     fn unknown_pm_label_errors_with_valid_value_list() {
-        let err = ResolutionOverrides::from_values(Some("zoot"), None, None, None)
+        let err = ResolutionOverrides::from_values(Some("zoot"), None, None, None, None)
             .expect_err("unknown PM should error");
 
         let msg = format!("{err}");
@@ -427,7 +518,7 @@ mod tests {
 
     #[test]
     fn unknown_runner_label_errors_with_valid_value_list() {
-        let err = ResolutionOverrides::from_values(None, None, Some("zoot"), None)
+        let err = ResolutionOverrides::from_values(None, None, Some("zoot"), None, None)
             .expect_err("unknown runner should error");
 
         let msg = format!("{err}");
@@ -437,7 +528,7 @@ mod tests {
 
     #[test]
     fn bundler_alias_bundle_is_accepted() {
-        let overrides = ResolutionOverrides::from_values(Some("bundle"), None, None, None)
+        let overrides = ResolutionOverrides::from_values(Some("bundle"), None, None, None, None)
             .expect("`bundle` should alias to bundler");
 
         assert_eq!(
@@ -448,12 +539,123 @@ mod tests {
 
     #[test]
     fn go_task_alias_is_accepted() {
-        let overrides = ResolutionOverrides::from_values(None, None, Some("go-task"), None)
+        let overrides = ResolutionOverrides::from_values(None, None, Some("go-task"), None, None)
             .expect("`go-task` should alias to GoTask");
 
         assert_eq!(
             overrides.runner.expect("runner should be present").runner,
             TaskRunner::GoTask,
         );
+    }
+
+    fn loaded_config_with_node(node: &str) -> LoadedConfig {
+        LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            config: RunnerConfig {
+                pm: PmSection {
+                    node: Some(node.to_owned()),
+                    python: None,
+                },
+                ..RunnerConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn config_pm_node_field_overrides_detection() {
+        let ctx = context(vec![PackageManager::Pnpm]);
+        let overrides = with_config_pm(PackageManager::Yarn, Ecosystem::Node);
+
+        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+
+        assert_eq!(decision.pm, PackageManager::Yarn);
+        match decision.via {
+            ResolutionStep::Override(OverrideOrigin::ConfigFile { .. }) => {}
+            other => panic!("expected Override(ConfigFile), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_override_beats_config_override() {
+        let ctx = context(vec![PackageManager::Pnpm]);
+        let mut overrides = with_config_pm(PackageManager::Yarn, Ecosystem::Node);
+        overrides.pm = Some(PmOverride {
+            pm: PackageManager::Bun,
+            origin: OverrideOrigin::CliFlag,
+        });
+
+        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+
+        assert_eq!(decision.pm, PackageManager::Bun);
+        match decision.via {
+            ResolutionStep::Override(OverrideOrigin::CliFlag) => {}
+            other => panic!("expected CliFlag origin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_loaded_value_populates_pm_by_ecosystem() {
+        let loaded = loaded_config_with_node("bun");
+        let overrides = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
+            .expect("config-only overrides should parse");
+
+        assert!(overrides.pm.is_none());
+        let entry = overrides
+            .pm_by_ecosystem
+            .get(&Ecosystem::Node)
+            .expect("Node ecosystem entry should be present");
+        assert_eq!(entry.pm, PackageManager::Bun);
+        match &entry.origin {
+            OverrideOrigin::ConfigFile { path } => {
+                assert!(path.ends_with("runner.toml"));
+            }
+            other => panic!("expected ConfigFile origin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_python_pm_keyed_under_python_ecosystem() {
+        let loaded = LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            config: RunnerConfig {
+                pm: PmSection {
+                    node: None,
+                    python: Some("uv".to_owned()),
+                },
+                ..RunnerConfig::default()
+            },
+        };
+        let overrides = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
+            .expect("python config should parse");
+
+        let entry = overrides
+            .pm_by_ecosystem
+            .get(&Ecosystem::Python)
+            .expect("python ecosystem entry should be present");
+        assert_eq!(entry.pm, PackageManager::Uv);
+    }
+
+    #[test]
+    fn config_cross_ecosystem_node_value_rejected_at_parse_time() {
+        let loaded = loaded_config_with_node("cargo");
+        let err = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
+            .expect_err("cargo is not a node-script PM");
+        assert!(format!("{err}").contains("cannot dispatch package.json scripts"));
+    }
+
+    #[test]
+    fn deno_config_value_lands_under_deno_ecosystem_and_resolves_for_node_scripts() {
+        // The runner.toml field is `[pm].node = "deno"`; the resolver
+        // stores it under Ecosystem::Deno (per PackageManager::ecosystem)
+        // and the Node-script resolver consults both Node and Deno keys.
+        let loaded = loaded_config_with_node("deno");
+        let overrides = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
+            .expect("deno config should parse");
+
+        assert!(overrides.pm_by_ecosystem.contains_key(&Ecosystem::Deno));
+
+        let ctx = context(vec![PackageManager::Pnpm]);
+        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        assert_eq!(decision.pm, PackageManager::Deno);
     }
 }
