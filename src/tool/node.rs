@@ -45,17 +45,163 @@ pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
 }
 
 fn detect_pm(package_json: Option<PackageJson>) -> Option<PackageManager> {
-    match package_json
-        .and_then(|package_json| package_json.package_manager)
-        .as_deref()
-    {
-        Some(s) if s.starts_with("npm") => Some(PackageManager::Npm),
-        Some(s) if s.starts_with("pnpm") => Some(PackageManager::Pnpm),
-        Some(s) if s.starts_with("yarn") => Some(PackageManager::Yarn),
-        Some(s) if s.starts_with("bun") => Some(PackageManager::Bun),
-        Some(s) if s.starts_with("deno") => Some(PackageManager::Deno),
-        _ => None,
+    parse_package_manager_spec(
+        package_json
+            .and_then(|package_json| package_json.package_manager)
+            .as_deref(),
+    )
+    .map(|(pm, _)| pm)
+}
+
+/// Parse a Corepack-style `name@version` spec into a [`PackageManager`] and
+/// optional version string. Returns `None` for unknown names.
+fn parse_package_manager_spec(spec: Option<&str>) -> Option<(PackageManager, Option<String>)> {
+    let raw = spec?.trim();
+    let (name, version) = match raw.split_once('@') {
+        Some((n, v)) => (n, (!v.is_empty()).then(|| v.to_string())),
+        None => (raw, None),
+    };
+    let pm = match name {
+        "npm" => PackageManager::Npm,
+        "pnpm" => PackageManager::Pnpm,
+        "yarn" => PackageManager::Yarn,
+        "bun" => PackageManager::Bun,
+        "deno" => PackageManager::Deno,
+        _ => return None,
+    };
+    Some((pm, version))
+}
+
+/// What the user wants for `onFail` when a `devEngines.packageManager` entry
+/// cannot be satisfied.
+///
+/// Per the `OpenJS` proposal: `ignore | warn | error | download`. `download`
+/// is folded into `Warn` here because runner is not an installer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnFail {
+    /// Silently use the declared PM regardless of presence/version.
+    Ignore,
+    /// Use the declared PM but emit a warning if it doesn't satisfy
+    /// presence/version constraints.
+    Warn,
+    /// Refuse to dispatch if the declared PM is missing or version-bad.
+    Error,
+}
+
+/// Which manifest field provided a [`ManifestPmDecl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManifestSource {
+    /// Legacy `"packageManager"` field (Corepack-compatible spec).
+    PackageManager,
+    /// New `"devEngines": { "packageManager": ... }` field
+    /// (the `OpenJS` proposal, npm 10.9+).
+    DevEngines,
+}
+
+/// Package-manager declaration extracted from `package.json`.
+///
+/// Returned by [`detect_pm_from_manifest`] — combines either the legacy
+/// `packageManager` field or the new `devEngines.packageManager` field
+/// (when the legacy field is absent), tagged with provenance and the
+/// proposal-default `onFail` policy.
+#[derive(Debug, Clone)]
+pub(crate) struct ManifestPmDecl {
+    /// The package manager named in the manifest.
+    pub pm: PackageManager,
+    /// Which manifest field produced this declaration.
+    pub source: ManifestSource,
+    /// Optional semver range carried alongside the declaration. Captured
+    /// for diagnostics in Phase 6; not enforced today.
+    #[allow(
+        dead_code,
+        reason = "consumed by --explain and version checks in Phase 5+"
+    )]
+    pub version: Option<String>,
+    /// Effective `onFail` policy. For `packageManager`, always `Ignore`
+    /// (the legacy field has no failure mode). For `devEngines`, taken
+    /// from the entry, defaulting per the `OpenJS` proposal.
+    #[allow(dead_code, reason = "honored once the PATH probe lands in Phase 5")]
+    pub on_fail: OnFail,
+}
+
+/// Detect a manifest-level PM declaration: legacy `packageManager` first,
+/// falling back to `devEngines.packageManager`. Returns `None` if neither
+/// field is present or parseable.
+pub(crate) fn detect_pm_from_manifest(dir: &Path) -> Option<ManifestPmDecl> {
+    let parsed = parse_package_json(dir)?;
+
+    if let Some((pm, version)) = parse_package_manager_spec(parsed.package_manager.as_deref()) {
+        return Some(ManifestPmDecl {
+            pm,
+            source: ManifestSource::PackageManager,
+            version,
+            on_fail: OnFail::Ignore,
+        });
     }
+
+    let dev_engines = parsed.dev_engines?;
+    let pm_field = dev_engines.package_manager?;
+    let entries: Vec<DevEngineDep> = match pm_field {
+        DevEnginesPmField::One(dep) => vec![dep],
+        DevEnginesPmField::Many(deps) => deps,
+    };
+    if entries.is_empty() {
+        return None;
+    }
+
+    // OpenJS default rules: a single entry defaults to `onFail = error`;
+    // for an array the last entry defaults to `error`, prior entries to
+    // `ignore`. We pick the last resolvable entry — it is the most
+    // recently authored preference and has the strict default.
+    let total = entries.len();
+    let mut last_resolvable: Option<(usize, ManifestPmDecl)> = None;
+    for (idx, entry) in entries.into_iter().enumerate() {
+        let Some(pm) = PackageManager::from_label(&entry.name) else {
+            continue;
+        };
+        let on_fail = entry.on_fail.map_or_else(
+            || default_on_fail_for_array_position(idx, total),
+            OnFail::from_proposal,
+        );
+        last_resolvable = Some((
+            idx,
+            ManifestPmDecl {
+                pm,
+                source: ManifestSource::DevEngines,
+                version: entry.version,
+                on_fail,
+            },
+        ));
+    }
+
+    last_resolvable.map(|(_, decl)| decl)
+}
+
+const fn default_on_fail_for_array_position(idx: usize, total: usize) -> OnFail {
+    if idx + 1 == total {
+        OnFail::Error
+    } else {
+        OnFail::Ignore
+    }
+}
+
+impl OnFail {
+    const fn from_proposal(raw: ProposalOnFail) -> Self {
+        match raw {
+            ProposalOnFail::Ignore => Self::Ignore,
+            ProposalOnFail::Warn | ProposalOnFail::Download => Self::Warn,
+            ProposalOnFail::Error => Self::Error,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum ProposalOnFail {
+    Ignore,
+    Warn,
+    Error,
+    Download,
 }
 
 /// Parse the supported package manifest and return each script as a
@@ -92,7 +238,31 @@ pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String,
 struct PackageJson {
     #[serde(rename = "packageManager")]
     package_manager: Option<String>,
+    #[serde(rename = "devEngines", default)]
+    dev_engines: Option<DevEngines>,
     scripts: Option<HashMap<String, String>>,
+}
+
+#[derive(Deserialize)]
+struct DevEngines {
+    #[serde(rename = "packageManager", default)]
+    package_manager: Option<DevEnginesPmField>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DevEnginesPmField {
+    Many(Vec<DevEngineDep>),
+    One(DevEngineDep),
+}
+
+#[derive(Deserialize)]
+struct DevEngineDep {
+    name: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(rename = "onFail", default)]
+    on_fail: Option<ProposalOnFail>,
 }
 
 fn parse_package_json(dir: &Path) -> Option<PackageJson> {
@@ -167,6 +337,7 @@ fn parse_package_yaml(content: &str) -> Option<PackageJson> {
 
     Some(PackageJson {
         package_manager,
+        dev_engines: None,
         scripts,
     })
 }
@@ -318,6 +489,125 @@ mod tests {
         let path = find_manifest_upwards(&nested).expect("nearest manifest should resolve");
 
         assert!(path.ends_with("apps/site/package.json"));
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_prefers_package_manager_field() {
+        use super::{ManifestSource, OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-package-manager");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "yarn@4.3.0",
+                 "devEngines": { "packageManager": { "name": "pnpm", "version": "9", "onFail": "error" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        assert_eq!(decl.pm, PackageManager::Yarn);
+        assert_eq!(decl.source, ManifestSource::PackageManager);
+        assert_eq!(decl.version.as_deref(), Some("4.3.0"));
+        assert_eq!(decl.on_fail, OnFail::Ignore);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_uses_dev_engines_when_package_manager_absent() {
+        use super::{ManifestSource, OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-dev-engines");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "pnpm", "version": "9.0.0", "onFail": "error" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        assert_eq!(decl.pm, PackageManager::Pnpm);
+        assert_eq!(decl.source, ManifestSource::DevEngines);
+        assert_eq!(decl.version.as_deref(), Some("9.0.0"));
+        assert_eq!(decl.on_fail, OnFail::Error);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_default_on_fail_for_single_object_is_error() {
+        use super::{OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-default-on-fail");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "bun" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        assert_eq!(decl.pm, PackageManager::Bun);
+        // Single-object form defaults to onFail=error per proposal — implemented
+        // here as "last entry of a 1-element array defaults to error".
+        assert_eq!(decl.on_fail, OnFail::Error);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_uses_last_array_entry_with_error_default() {
+        use super::{OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-array");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": [
+                { "name": "yarn", "version": "1" },
+                { "name": "pnpm", "version": "9" }
+            ] } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        assert_eq!(decl.pm, PackageManager::Pnpm);
+        assert_eq!(decl.on_fail, OnFail::Error);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_honors_explicit_on_fail_warn() {
+        use super::{OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-warn");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "yarn", "onFail": "warn" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        assert_eq!(decl.on_fail, OnFail::Warn);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_treats_download_as_warn() {
+        use super::{OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-download");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "yarn", "onFail": "download" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        // runner is not an installer; download collapses to warn.
+        assert_eq!(decl.on_fail, OnFail::Warn);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_returns_none_for_unknown_name() {
+        use super::detect_pm_from_manifest;
+
+        let dir = TempDir::new("node-manifest-decl-unknown");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "zoot" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        assert!(detect_pm_from_manifest(dir.path()).is_none());
     }
 
     #[test]

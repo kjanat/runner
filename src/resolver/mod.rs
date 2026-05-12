@@ -23,7 +23,8 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow};
 
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
-use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
+use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, detect_pm_from_manifest};
+use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
 /// Resolves package managers and task sources from a [`ProjectContext`]
 /// plus a bundle of [`ResolutionOverrides`].
@@ -101,6 +102,9 @@ pub(crate) struct ResolvedPm {
     /// already populate it without churning the public API later.
     #[allow(dead_code, reason = "consumed by --explain in a later phase")]
     pub via: ResolutionStep,
+    /// Non-fatal warnings emitted while resolving — e.g. a manifest
+    /// declaration that disagrees with the detected lockfile.
+    pub warnings: Vec<DetectionWarning>,
 }
 
 /// Which step of the resolution chain produced a decision.
@@ -111,6 +115,14 @@ pub(crate) struct ResolvedPm {
 pub(crate) enum ResolutionStep {
     /// Steps 2–4 — user-supplied override won.
     Override(OverrideOrigin),
+    /// Step 5a — `package.json` legacy `packageManager` field.
+    ManifestPackageManager,
+    /// Step 5b — `package.json` `devEngines.packageManager` field.
+    ManifestDevEngines {
+        /// Effective `onFail` value for the chosen entry.
+        #[allow(dead_code, reason = "consumed by --explain in Phase 6")]
+        on_fail: OnFail,
+    },
     /// Step 6 — package manager inferred from a lockfile (or another
     /// detector recorded in [`ProjectContext::package_managers`]).
     Lockfile,
@@ -128,20 +140,27 @@ impl<'ctx> Resolver<'ctx> {
 
     /// Resolve the package manager used to dispatch `package.json` scripts.
     ///
-    /// 1. Honor a CLI/env PM override (step 2-3) iff the chosen PM can
-    ///    actually run `package.json` scripts (Node ecosystems plus Deno).
-    /// 2. Honor a `runner.toml` `[pm].node` override (step 4).
-    /// 3. Otherwise, prefer a detected Node-ecosystem PM (step 6), fall back
-    ///    to the primary PM of any ecosystem (so a
-    ///    `packageManager: "deno@2"` declaration still wins), and as a
-    ///    final resort default to `npm`.
+    /// Walks the precedence chain in order:
+    /// - Step 2–3 — CLI/env PM override (when compatible with Node scripts).
+    /// - Step 4 — `runner.toml` `[pm].node` override.
+    /// - Step 5a — `package.json` legacy `packageManager` field.
+    /// - Step 5b — `package.json` `devEngines.packageManager` field.
+    /// - Step 6 — lockfile (via [`ProjectContext::primary_node_pm`]).
+    /// - Step 8 — legacy `npm` fallback (replaced by Phase 5's PATH probe).
+    ///
+    /// When a manifest declaration (step 5) disagrees with a detected
+    /// lockfile (step 6), the manifest wins (Corepack semantics) and a
+    /// `package.json` warning is emitted.
     pub(crate) fn resolve_node_pm(&self) -> ResolvedPm {
+        let mut warnings = Vec::new();
+
         if let Some(o) = self.overrides.pm.as_ref()
             && pm_can_run_package_json_scripts(o.pm)
         {
             return ResolvedPm {
                 pm: o.pm,
                 via: ResolutionStep::Override(o.origin.clone()),
+                warnings,
             };
         }
         if let Some(o) = self
@@ -153,23 +172,70 @@ impl<'ctx> Resolver<'ctx> {
             return ResolvedPm {
                 pm: o.pm,
                 via: ResolutionStep::Override(o.origin.clone()),
+                warnings,
             };
         }
 
-        self.ctx
-            .primary_node_pm()
-            .or_else(|| self.ctx.primary_pm())
-            .map_or(
-                ResolvedPm {
-                    pm: PackageManager::Npm,
-                    via: ResolutionStep::LegacyNpmFallback,
+        if let Some(decl) = detect_pm_from_manifest(&self.ctx.root) {
+            if let Some(warning) = cross_check_against_lockfile(&decl, self.ctx) {
+                warnings.push(warning);
+            }
+            let via = match decl.source {
+                ManifestSource::PackageManager => ResolutionStep::ManifestPackageManager,
+                ManifestSource::DevEngines => ResolutionStep::ManifestDevEngines {
+                    on_fail: decl.on_fail,
                 },
-                |pm| ResolvedPm {
-                    pm,
-                    via: ResolutionStep::Lockfile,
-                },
-            )
+            };
+            return ResolvedPm {
+                pm: decl.pm,
+                via,
+                warnings,
+            };
+        }
+
+        match self.ctx.primary_node_pm().or_else(|| self.ctx.primary_pm()) {
+            Some(pm) => ResolvedPm {
+                pm,
+                via: ResolutionStep::Lockfile,
+                warnings,
+            },
+            None => ResolvedPm {
+                pm: PackageManager::Npm,
+                via: ResolutionStep::LegacyNpmFallback,
+                warnings,
+            },
+        }
     }
+}
+
+/// Compare a manifest declaration against the lockfile-signal recorded in
+/// [`ProjectContext`]. Returns a `package.json` warning when the two
+/// disagree; `None` when they match or when no lockfile signal exists.
+///
+/// Manifest declarations frequently come from a project intentionally
+/// switching package managers; the new declaration is authoritative, but
+/// the stale lockfile is worth flagging so the user can regenerate it.
+fn cross_check_against_lockfile(
+    decl: &ManifestPmDecl,
+    ctx: &ProjectContext,
+) -> Option<DetectionWarning> {
+    let lockfile_pm = ctx.primary_node_pm()?;
+    if lockfile_pm == decl.pm {
+        return None;
+    }
+    let field = match decl.source {
+        ManifestSource::PackageManager => "packageManager",
+        ManifestSource::DevEngines => "devEngines.packageManager",
+    };
+    Some(DetectionWarning {
+        source: "package.json",
+        detail: format!(
+            "{field} declares {} but the lockfile reflects {} — declaration wins; regenerate the \
+             lockfile to silence this",
+            decl.pm.label(),
+            lockfile_pm.label(),
+        ),
+    })
 }
 
 const fn pm_can_run_package_json_scripts(pm: PackageManager) -> bool {
@@ -641,6 +707,113 @@ mod tests {
         let err = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
             .expect_err("cargo is not a node-script PM");
         assert!(format!("{err}").contains("cannot dispatch package.json scripts"));
+    }
+
+    #[test]
+    fn manifest_package_manager_field_beats_lockfile_signal() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-manifest-wins");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "yarn@4.3.0" }"#,
+        )
+        .expect("package.json should be written");
+        fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n")
+            .expect("lockfile should be written");
+
+        let ctx = detect(dir.path());
+        // Detection picks the lockfile signal as primary; the resolver
+        // should override that to honor the manifest declaration.
+        assert!(ctx.package_managers.contains(&PackageManager::Pnpm));
+
+        let decision = Resolver::new(&ctx, ResolutionOverrides::default()).resolve_node_pm();
+
+        assert_eq!(decision.pm, PackageManager::Yarn);
+        assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
+        assert_eq!(decision.warnings.len(), 1);
+        assert_eq!(decision.warnings[0].source, "package.json");
+        assert!(
+            decision.warnings[0].detail.contains("declaration wins"),
+            "warning should mention declaration wins: {}",
+            decision.warnings[0].detail,
+        );
+    }
+
+    #[test]
+    fn dev_engines_used_when_package_manager_absent() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-dev-engines-only");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "bun", "onFail": "warn" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path());
+        let decision = Resolver::new(&ctx, ResolutionOverrides::default()).resolve_node_pm();
+
+        assert_eq!(decision.pm, PackageManager::Bun);
+        match decision.via {
+            ResolutionStep::ManifestDevEngines { .. } => {}
+            other => panic!("expected ManifestDevEngines, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_override_still_beats_manifest_declaration() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-cli-beats-manifest");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "yarn@4" }"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path());
+        let overrides = with_pm_override(PackageManager::Bun, OverrideOrigin::CliFlag);
+        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+
+        assert_eq!(decision.pm, PackageManager::Bun);
+        assert_eq!(
+            decision.via,
+            ResolutionStep::Override(OverrideOrigin::CliFlag)
+        );
+    }
+
+    #[test]
+    fn matching_lockfile_and_manifest_produce_no_warning() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-matching-signals");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "pnpm@9" }"#,
+        )
+        .expect("package.json should be written");
+        fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n")
+            .expect("lockfile should be written");
+
+        let ctx = detect(dir.path());
+        let decision = Resolver::new(&ctx, ResolutionOverrides::default()).resolve_node_pm();
+
+        assert_eq!(decision.pm, PackageManager::Pnpm);
+        assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
+        assert!(decision.warnings.is_empty());
     }
 
     #[test]

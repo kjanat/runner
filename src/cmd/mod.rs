@@ -5,7 +5,7 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use colored::Colorize;
 
-use crate::types::ProjectContext;
+use crate::types::{DetectionWarning, ProjectContext};
 
 mod clean;
 mod completions;
@@ -46,7 +46,11 @@ fn exit_code(status: ExitStatus) -> i32 {
 }
 
 fn print_warnings(ctx: &ProjectContext) {
-    for warning in &ctx.warnings {
+    print_warning_slice(&ctx.warnings);
+}
+
+fn print_warning_slice(warnings: &[DetectionWarning]) {
+    for warning in warnings {
         eprintln!(
             "{} {}: {}",
             "warn:".yellow().bold(),

@@ -237,7 +237,9 @@ fn build_run_command(
     Ok(match source {
         TaskSource::TurboJson => tool::turbo::run_cmd(task, args),
         TaskSource::PackageJson => {
-            let pm = Resolver::new(ctx, overrides.clone()).resolve_node_pm().pm;
+            let decision = Resolver::new(ctx, overrides.clone()).resolve_node_pm();
+            super::print_warning_slice(&decision.warnings);
+            let pm = decision.pm;
             match pm {
                 PackageManager::Npm => tool::npm::run_cmd(task, args),
                 PackageManager::Yarn => tool::yarn::run_cmd(task, args),
