@@ -222,6 +222,18 @@ fn run_pm_exec_fallback(
         Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined())),
+        Some(PackageManager::Deno) => {
+            // Resolver picked Deno (via override / manifest /
+            // detection), but `deno run <target>` runs a local script
+            // path — not a binary in node_modules — so honoring it
+            // here would silently change semantics. Fall through to a
+            // direct PATH spawn and surface the fallthrough in the
+            // label so `--explain` / `runner why` aren't misleading
+            // about what actually executed.
+            let mut c = tool::program::command(target);
+            c.args(args);
+            ("exec (deno: no npx primitive)", c)
+        }
         None | Some(_) => {
             let mut c = tool::program::command(target);
             c.args(args);

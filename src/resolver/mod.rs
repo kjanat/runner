@@ -1569,34 +1569,88 @@ mod tests {
 
     #[test]
     fn describe_renders_human_friendly_step_label() {
-        let cli_decision = super::ResolvedPm {
-            pm: PackageManager::Yarn,
-            via: ResolutionStep::Override(OverrideOrigin::CliFlag),
-            warnings: vec![],
-        };
-        assert!(cli_decision.describe().contains("--pm"));
-        assert!(cli_decision.describe().contains("yarn"));
+        use crate::tool::node::OnFail;
 
-        let env_decision = super::ResolvedPm {
-            pm: PackageManager::Bun,
-            via: ResolutionStep::Override(OverrideOrigin::EnvVar),
-            warnings: vec![],
-        };
-        assert!(env_decision.describe().contains("RUNNER_PM"));
+        // Table-driven: each row pairs a decision with the exact string
+        // it must produce. Locks down the provenance wording that
+        // `--explain` and `runner why` surface verbatim — a casual
+        // re-phrase shouldn't slip through silently.
+        let cases: &[(super::ResolvedPm, &str)] = &[
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Yarn,
+                    via: ResolutionStep::Override(OverrideOrigin::CliFlag),
+                    warnings: vec![],
+                },
+                "yarn via --pm (CLI override)",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Bun,
+                    via: ResolutionStep::Override(OverrideOrigin::EnvVar),
+                    warnings: vec![],
+                },
+                "bun via RUNNER_PM (environment)",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Pnpm,
+                    via: ResolutionStep::Override(OverrideOrigin::ConfigFile {
+                        path: PathBuf::from("/proj/runner.toml"),
+                    }),
+                    warnings: vec![],
+                },
+                "pnpm via runner.toml at /proj/runner.toml",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Pnpm,
+                    via: ResolutionStep::ManifestPackageManager,
+                    warnings: vec![],
+                },
+                "pnpm via package.json \"packageManager\"",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Bun,
+                    via: ResolutionStep::ManifestDevEngines {
+                        on_fail: OnFail::Error,
+                    },
+                    warnings: vec![],
+                },
+                "bun via package.json \"devEngines.packageManager\" (onFail=Error)",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Pnpm,
+                    via: ResolutionStep::Lockfile,
+                    warnings: vec![],
+                },
+                "pnpm via detected lockfile",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Npm,
+                    via: ResolutionStep::PathProbe {
+                        binary: PathBuf::from("/usr/bin/npm"),
+                    },
+                    warnings: vec![],
+                },
+                "npm via PATH probe at /usr/bin/npm",
+            ),
+            (
+                super::ResolvedPm {
+                    pm: PackageManager::Npm,
+                    via: ResolutionStep::LegacyNpmFallback,
+                    warnings: vec![],
+                },
+                "npm via --fallback=npm (legacy)",
+            ),
+        ];
 
-        let pkg_decision = super::ResolvedPm {
-            pm: PackageManager::Pnpm,
-            via: ResolutionStep::ManifestPackageManager,
-            warnings: vec![],
-        };
-        assert!(pkg_decision.describe().contains("packageManager"));
-
-        let lock_decision = super::ResolvedPm {
-            pm: PackageManager::Npm,
-            via: ResolutionStep::Lockfile,
-            warnings: vec![],
-        };
-        assert!(lock_decision.describe().contains("lockfile"));
+        for (decision, expected) in cases {
+            assert_eq!(&decision.describe(), expected);
+        }
     }
 
     #[test]
