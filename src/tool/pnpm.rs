@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `pnpm run <task> [-- args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("pnpm");
+    let mut c = super::program::command("pnpm");
     c.arg("run").arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);
@@ -20,7 +20,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 
 /// `pnpm install [--frozen-lockfile]`
 pub(crate) fn install_cmd(frozen: bool) -> Command {
-    let mut c = Command::new("pnpm");
+    let mut c = super::program::command("pnpm");
     c.arg("install");
     if frozen {
         c.arg("--frozen-lockfile");
@@ -30,7 +30,7 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 
 /// `pnpm exec <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("pnpm");
+    let mut c = super::program::command("pnpm");
     c.arg("exec").args(args);
     c
 }

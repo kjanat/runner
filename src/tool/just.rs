@@ -88,7 +88,7 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
         found
     }
 
-    let output = Command::new("just")
+    let output = super::program::command("just")
         .arg("--justfile")
         .arg(path)
         .arg("--dump-format")
@@ -323,7 +323,7 @@ fn is_private_attr(trimmed: &str) -> bool {
 
 /// `just <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("just");
+    let mut c = super::program::command("just");
     c.arg(task).args(args);
     c
 }

@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `pipenv install`
 pub(crate) fn install_cmd() -> Command {
-    let mut c = Command::new("pipenv");
+    let mut c = super::program::command("pipenv");
     c.arg("install");
     c
 }

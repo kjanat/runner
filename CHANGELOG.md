@@ -15,6 +15,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.8.1] - 2026-05-12
+
+### Fixed
+
+- `Error: program not found` on Windows when `runner run <script>` dispatches
+  through npm / yarn / pnpm (issue #20). Bare-name spawns now walk
+  `PATH` × `PATHEXT` so `.cmd` / `.bat` shims (npm.cmd, yarn.cmd, pnpm.cmd)
+  resolve the same way they do under cmd.exe / PowerShell. Same fix covers
+  every other Windows-shimmed tool runner dispatches: turbo, deno, make,
+  task, just, composer, poetry, pipenv, uv, bundle, go, bacon, and the
+  `runner run <bin>` arbitrary-target fallback. Non-Windows targets are
+  unchanged.
+
 ## [0.8.0] - 2026-05-10
 
 ### Added
@@ -736,7 +749,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/kjanat/runner/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kjanat/runner/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/kjanat/runner/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/kjanat/runner/compare/v0.6.1...v0.7.0

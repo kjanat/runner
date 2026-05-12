@@ -174,14 +174,14 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
 
 /// `deno task <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("deno");
+    let mut c = super::program::command("deno");
     c.arg("task").arg(task).args(args);
     c
 }
 
 /// `deno install`
 pub(crate) fn install_cmd() -> Command {
-    let mut c = Command::new("deno");
+    let mut c = super::program::command("deno");
     c.arg("install");
     c
 }

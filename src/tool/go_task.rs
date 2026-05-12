@@ -41,7 +41,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<St
 }
 
 fn extract_tasks_with_task(dir: &Path) -> Option<Vec<(String, Option<String>)>> {
-    let output = Command::new("task")
+    let output = super::program::command("task")
         .arg("--list-all")
         .arg("--json")
         .current_dir(dir)
@@ -161,7 +161,7 @@ fn scan_desc(lines: &[&str], start: usize, task_indent: &str) -> Option<String> 
 
 /// `task <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("task");
+    let mut c = super::program::command("task");
     c.arg(task).args(args);
     c
 }

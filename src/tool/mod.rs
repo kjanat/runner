@@ -50,6 +50,8 @@ pub(crate) mod pipenv;
 pub(crate) mod pnpm;
 /// Poetry, a Python dependency manager (`poetry.lock`, `pyproject.toml`).
 pub(crate) mod poetry;
+/// Spawn helper with Windows-aware PATH/PATHEXT resolution.
+pub(crate) mod program;
 /// Shared Python tooling helpers.
 pub(crate) mod python;
 /// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).

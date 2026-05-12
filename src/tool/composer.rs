@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `composer install`
 pub(crate) fn install_cmd() -> Command {
-    let mut c = Command::new("composer");
+    let mut c = super::program::command("composer");
     c.arg("install");
     c
 }

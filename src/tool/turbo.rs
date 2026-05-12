@@ -74,7 +74,7 @@ fn classify_task_key(name: String) -> Option<String> {
 
 /// `turbo run <task> [-- args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("turbo");
+    let mut c = super::program::command("turbo");
     c.arg("run").arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);

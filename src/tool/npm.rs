@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `npm run <task> [-- args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("npm");
+    let mut c = super::program::command("npm");
     c.arg("run").arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);
@@ -20,7 +20,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 
 /// `npm install` or `npm ci` when `frozen`.
 pub(crate) fn install_cmd(frozen: bool) -> Command {
-    let mut c = Command::new("npm");
+    let mut c = super::program::command("npm");
     c.arg(if frozen { "ci" } else { "install" });
     c
 }
@@ -30,7 +30,7 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 /// Uses the standalone `npx` entrypoint for npm 6 compatibility, where
 /// `npm exec` is unavailable.
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("npx");
+    let mut c = super::program::command("npx");
     c.args(args);
     c
 }

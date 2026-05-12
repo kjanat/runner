@@ -143,7 +143,7 @@ pub(crate) fn find_anchor(root: &Path) -> Option<PathBuf> {
 /// Cargo emits `cargo <name> <user-args...>`; recursion expansion is cargo's
 /// own concern at execution time, so we just shell out to the literal name.
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("cargo");
+    let mut c = super::program::command("cargo");
     c.arg(task).args(args);
     c
 }

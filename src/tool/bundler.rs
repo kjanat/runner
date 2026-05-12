@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `bundle install`
 pub(crate) fn install_cmd() -> Command {
-    let mut c = Command::new("bundle");
+    let mut c = super::program::command("bundle");
     c.arg("install");
     c
 }

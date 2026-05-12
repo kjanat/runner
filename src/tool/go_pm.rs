@@ -13,7 +13,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `go mod download`
 pub(crate) fn install_cmd() -> Command {
-    let mut c = Command::new("go");
+    let mut c = super::program::command("go");
     c.arg("mod").arg("download");
     c
 }
