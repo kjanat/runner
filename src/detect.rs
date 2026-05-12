@@ -291,7 +291,7 @@ fn push_cargo_aliases(
                     source: TaskSource::CargoAliases,
                     description,
                     alias_of: None,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 });
             }
         }
@@ -329,7 +329,7 @@ fn push_described_tasks(
                     source,
                     description,
                     alias_of: None,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 });
             }
         }
@@ -353,13 +353,13 @@ fn push_package_json_tasks(
     match result {
         Ok(entries) => {
             for (name, command) in entries {
-                let passthrough_to_turbo = tool::turbo::is_self_passthrough(&name, &command);
+                let passthrough_to = tool::passthrough::detect_target(&name, &command);
                 ctx.tasks.push(Task {
                     name,
                     source: TaskSource::PackageJson,
                     description: None,
                     alias_of: None,
-                    passthrough_to_turbo,
+                    passthrough_to,
                 });
             }
         }
@@ -387,7 +387,7 @@ fn push_just_tasks(
                     source: TaskSource::Justfile,
                     description,
                     alias_of,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 });
             }
         }

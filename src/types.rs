@@ -87,14 +87,15 @@ pub(crate) struct Task {
     /// When this task is an alias, the name of the target recipe it
     /// resolves to (e.g. `alias b := build` → `Some("build")`).
     pub alias_of: Option<String>,
-    /// `true` when this task's command body is a thin passthrough to
-    /// the Turborepo CLI for a same-named target (e.g. a `package.json`
-    /// script `"build": "turbo run build"`). Set during detection by
-    /// inspecting the actual script body, not inferred from name
-    /// collisions, so real scripts like `"build": "vite build"` are
-    /// never flagged. Used by completion to avoid emitting a redundant
-    /// `package.json:build` candidate alongside `turbo.json:build`.
-    pub passthrough_to_turbo: bool,
+    /// `Some(runner)` when this task's command body is a thin
+    /// passthrough to a task runner for a same-named target — e.g. a
+    /// `package.json` script `"build": "just build"` records
+    /// `Some(TaskRunner::Just)`. Set during detection by inspecting the
+    /// actual script body, not inferred from name collisions, so real
+    /// scripts like `"build": "vite build"` are never flagged. Used by
+    /// completion to avoid emitting a redundant `package.json:build`
+    /// candidate alongside the underlying runner's `build` task.
+    pub passthrough_to: Option<TaskRunner>,
 }
 
 /// Identifies the config file a [`Task`] was extracted from.
@@ -297,6 +298,25 @@ impl TaskRunner {
             Self::Mise,
             Self::Bacon,
         ]
+    }
+
+    /// The [`TaskSource`] that holds this runner's tasks, when extraction
+    /// is implemented for it. Used by completion to dedupe `package.json`
+    /// passthrough wrappers against the underlying runner's task entry.
+    ///
+    /// Returns `None` for runners where task extraction is not yet
+    /// implemented (Nx, Mise); a passthrough wrapper still routes to that
+    /// runner at dispatch time, but completion shows the script as its
+    /// own candidate because there is no peer entry to collapse it into.
+    pub(crate) const fn task_source(self) -> Option<TaskSource> {
+        match self {
+            Self::Turbo => Some(TaskSource::TurboJson),
+            Self::Make => Some(TaskSource::Makefile),
+            Self::Just => Some(TaskSource::Justfile),
+            Self::GoTask => Some(TaskSource::Taskfile),
+            Self::Bacon => Some(TaskSource::BaconToml),
+            Self::Nx | Self::Mise => None,
+        }
     }
 }
 

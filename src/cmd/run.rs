@@ -339,7 +339,7 @@ mod tests {
                 source: TaskSource::PackageJson,
                 description: None,
                 alias_of: None,
-                passthrough_to_turbo: false,
+                passthrough_to: None,
             }],
         );
 
@@ -385,14 +385,14 @@ mod tests {
                     source: TaskSource::DenoJson,
                     description: None,
                     alias_of: None,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 },
                 Task {
                     name: "build".to_string(),
                     source: TaskSource::PackageJson,
                     description: None,
                     alias_of: None,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 },
             ],
             node_version: None,

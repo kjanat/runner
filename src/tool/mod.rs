@@ -44,6 +44,8 @@ pub(crate) mod node;
 pub(crate) mod npm;
 /// Nx monorepo build system (`nx.json`).
 pub(crate) mod nx;
+/// Detect `package.json` scripts that wrap a known task runner.
+pub(crate) mod passthrough;
 /// Pipenv, a Python dependency manager (`Pipfile`).
 pub(crate) mod pipenv;
 /// pnpm, a fast Node.js package manager (`pnpm-lock.yaml`).

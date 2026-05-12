@@ -663,7 +663,7 @@ mod tests {
                     source: TaskSource::PackageJson,
                     description: None,
                     alias_of: None,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 })
                 .collect(),
             node_version: None,

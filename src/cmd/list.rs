@@ -326,14 +326,14 @@ mod tests {
                 source: TaskSource::Justfile,
                 description: None,
                 alias_of: Some("build".into()),
-                passthrough_to_turbo: false,
+                passthrough_to: None,
             },
             Task {
                 name: "br".into(),
                 source: TaskSource::Justfile,
                 description: None,
                 alias_of: Some("build-release".into()),
-                passthrough_to_turbo: false,
+                passthrough_to: None,
             },
         ];
         let refs: Vec<&Task> = aliases.iter().collect();

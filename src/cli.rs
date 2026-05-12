@@ -67,20 +67,26 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     }
 
     // A `package.json` script is only swallowed when it (a) declared itself a
-    // turbo passthrough at detection time *and* (b) the project actually has a
-    // same-named `turbo.json` task to absorb it. Without (b), suppressing
-    // would leave the user with no completion for the script at all.
-    let is_turbo_passthrough = |task: &crate::types::Task| -> bool {
-        task.passthrough_to_turbo
-            && task.source == TaskSource::PackageJson
+    // passthrough wrapper at detection time *and* (b) the project actually
+    // has a same-named task from that runner's source to absorb it. Without
+    // (b), suppressing would leave the user with no completion for the
+    // script at all.
+    let is_self_passthrough = |task: &crate::types::Task| -> bool {
+        let Some(runner) = task.passthrough_to else {
+            return false;
+        };
+        let Some(peer_source) = runner.task_source() else {
+            return false;
+        };
+        task.source == TaskSource::PackageJson
             && sources_for_name
                 .get(task.name.as_str())
-                .is_some_and(|set| set.contains(&TaskSource::TurboJson))
+                .is_some_and(|set| set.contains(&peer_source))
     };
 
     let mut effective_count: HashMap<&str, usize> = HashMap::new();
     for task in tasks {
-        if !is_turbo_passthrough(task) {
+        if !is_self_passthrough(task) {
             *effective_count.entry(task.name.as_str()).or_default() += 1;
         }
     }
@@ -88,7 +94,7 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     let mut candidates = Vec::new();
     let mut seen_bare = HashSet::new();
     for task in tasks {
-        if is_turbo_passthrough(task) {
+        if is_self_passthrough(task) {
             continue;
         }
 
@@ -158,13 +164,13 @@ mod tests {
             source,
             description: None,
             alias_of: None,
-            passthrough_to_turbo: false,
+            passthrough_to: None,
         }
     }
 
     fn turbo_passthrough(name: &str) -> Task {
         Task {
-            passthrough_to_turbo: true,
+            passthrough_to: Some(crate::types::TaskRunner::Turbo),
             ..task(name, TaskSource::PackageJson)
         }
     }
