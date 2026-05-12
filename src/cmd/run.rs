@@ -86,28 +86,22 @@ fn select_task_entry<'a>(
 ) -> &'a crate::types::Task {
     // Aliases rank last within any source tier so `runner <name>` dispatches
     // to the real recipe when a same-named alias exists alongside it.
-    if ctx.package_managers.contains(&PackageManager::Deno) {
-        return found
-            .iter()
-            .min_by_key(|task| {
-                (
-                    deno_task_priority(ctx, task.source),
-                    task.alias_of.is_some(),
-                )
-            })
-            .copied()
-            .expect("task selection should have at least one match");
-    }
-
     found
         .iter()
-        .min_by_key(|task| (source_priority(task.source), task.alias_of.is_some()))
+        .min_by_key(|task| {
+            (
+                source_priority(task.source),
+                source_depth(ctx, task.source),
+                task.source.display_order(),
+                task.alias_of.is_some(),
+            )
+        })
         .copied()
         .expect("task selection should have at least one match")
 }
 
-/// Ranks sources for non-Deno task resolution: `TurboJson` > `PackageJson` >
-/// others. Lower is higher priority.
+/// Ranks sources by type before nearest-config tiebreak:
+/// `TurboJson` > `PackageJson` > others. Lower is higher priority.
 const fn source_priority(source: TaskSource) -> u8 {
     match source {
         TaskSource::TurboJson => 0,
@@ -116,16 +110,25 @@ const fn source_priority(source: TaskSource) -> u8 {
     }
 }
 
-fn deno_task_priority(ctx: &ProjectContext, source: TaskSource) -> (usize, u8) {
-    let depth = source_dir(source, &ctx.root)
+/// Distance from `ctx.root` to the directory holding `source`'s config
+/// file. Smaller values are closer; configs that don't resolve return
+/// [`usize::MAX`] so they lose the tiebreak.
+///
+/// Generalizes the depth-aware selection that previously only fired for
+/// Deno projects so that — for any pair of source candidates tied on
+/// [`source_priority`] — the one whose config sits in the nearest
+/// ancestor of cwd wins. Today this matters most in Deno + Node
+/// workspace layouts (member `package.json` near cwd vs root
+/// `deno.json`), and in Cargo + Make/Just/Taskfile setups where the
+/// runner-specific file may live deeper than the workspace root.
+fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
+    source_dir(source, &ctx.root)
         .and_then(|dir| {
             ctx.root
                 .ancestors()
                 .position(|ancestor| ancestor == dir.as_path())
         })
-        .unwrap_or(usize::MAX);
-
-    (depth, source.display_order())
+        .unwrap_or(usize::MAX)
 }
 
 fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
