@@ -264,7 +264,7 @@ impl PackageManager {
     }
 
     /// Whether this PM owns an `npx`-style exec primitive — `npm exec`,
-    /// `pnpm exec`, `yarn …`, `bun x`, `deno x`, `uv run`. The
+    /// `pnpm exec`, `yarn …`, `bun x`, `deno x`, `uvx`. The
     /// arbitrary-command fallback in `cmd::run::run_pm_exec_fallback`
     /// dispatches through these via per-PM `exec_cmd` builders; other
     /// PMs (Cargo, Poetry, Pipenv, Bundler, Composer, Go) lack a

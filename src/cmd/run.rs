@@ -226,7 +226,7 @@ fn run_pm_exec_fallback(
         Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
-        Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined())),
+        Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
         None | Some(_) => {
             let mut c = tool::program::command(target);
             c.args(args);
