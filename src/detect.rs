@@ -340,10 +340,11 @@ fn push_described_tasks(
     }
 }
 
-/// Append `package.json` scripts, classifying each entry as a turbo
-/// passthrough wrapper iff its command body literally invokes turbo
-/// against a same-named target. Detection is purely textual — the
-/// surrounding project state is not consulted, so a real script like
+/// Append `package.json` scripts, classifying each entry as a
+/// passthrough wrapper iff its command body literally invokes a known
+/// task runner against a same-named target (turbo, just, make, task,
+/// nx, bacon, mise). Detection is purely textual — the surrounding
+/// project state is not consulted, so a real script like
 /// `"build": "vite build"` is never flagged regardless of what other
 /// sources exist.
 fn push_package_json_tasks(

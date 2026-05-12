@@ -30,7 +30,10 @@ use std::path::PathBuf;
 use anyhow::{Result, anyhow, bail};
 
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
-use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, detect_pm_from_manifest};
+use crate::tool::node::{
+    ManifestPmDecl, ManifestSource, OnFail, VersionCheck, check_version_constraint,
+    detect_pm_from_manifest,
+};
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
 /// Resolves package managers and task sources from a [`ProjectContext`]
@@ -270,12 +273,19 @@ impl<'ctx> Resolver<'ctx> {
 }
 
 /// Apply a manifest declaration's `onFail` policy by checking that the
-/// declared PM is actually present on `$PATH`.
+/// declared PM is present on `$PATH` *and*, when a semver range is
+/// declared, that the installed version satisfies it.
 ///
 /// - `Ignore` — no check.
-/// - `Warn` — emit a `package.json` warning if missing; continue with the
-///   declared PM regardless.
-/// - `Error` — bail when missing.
+/// - `Warn` — emit a `package.json` warning when the PM is missing or
+///   the version doesn't match; continue with the declared PM regardless.
+/// - `Error` — bail on a missing PM or a version mismatch.
+///
+/// Version checks that can't run (unparseable range, missing
+/// `--version` output, etc.) are skipped silently: the proposal says
+/// `onFail` enforces user intent, but blocking dispatch on an
+/// unverifiable constraint would be worse than continuing — the binary
+/// will surface the real problem at spawn time.
 fn apply_manifest_on_fail(
     decl: &ManifestPmDecl,
     warnings: &mut Vec<DetectionWarning>,
@@ -284,28 +294,61 @@ fn apply_manifest_on_fail(
         return Ok(());
     }
 
-    if probe::probe(decl.pm.label()).is_some() {
-        return Ok(());
+    if probe::probe(decl.pm.label()).is_none() {
+        return on_fail_missing_binary(decl, warnings);
     }
 
+    if let Some(range) = decl.version.as_deref()
+        && let VersionCheck::Mismatch { declared, actual } =
+            check_version_constraint(decl.pm, range)
+    {
+        return on_fail_version_mismatch(decl, &declared, &actual, warnings);
+    }
+
+    Ok(())
+}
+
+fn on_fail_missing_binary(
+    decl: &ManifestPmDecl,
+    warnings: &mut Vec<DetectionWarning>,
+) -> Result<()> {
+    let detail = format!(
+        "devEngines.packageManager declares {} but it was not found on PATH",
+        decl.pm.label(),
+    );
     match decl.on_fail {
         OnFail::Ignore => Ok(()),
         OnFail::Warn => {
             warnings.push(DetectionWarning {
                 source: "package.json",
-                detail: format!(
-                    "devEngines.packageManager declares {} but it was not found on PATH; \
-                     dispatch will fail at spawn time",
-                    decl.pm.label(),
-                ),
+                detail: format!("{detail}; dispatch will fail at spawn time"),
             });
             Ok(())
         }
-        OnFail::Error => bail!(
-            "devEngines.packageManager declares {} with onFail=error, but it was not found on \
-             PATH",
-            decl.pm.label(),
-        ),
+        OnFail::Error => bail!("{detail} (onFail=error)"),
+    }
+}
+
+fn on_fail_version_mismatch(
+    decl: &ManifestPmDecl,
+    declared: &str,
+    actual: &str,
+    warnings: &mut Vec<DetectionWarning>,
+) -> Result<()> {
+    let detail = format!(
+        "devEngines.packageManager requires {} {declared} but the installed version is {actual}",
+        decl.pm.label(),
+    );
+    match decl.on_fail {
+        OnFail::Ignore => Ok(()),
+        OnFail::Warn => {
+            warnings.push(DetectionWarning {
+                source: "package.json",
+                detail,
+            });
+            Ok(())
+        }
+        OnFail::Error => bail!("{detail} (onFail=error)"),
     }
 }
 

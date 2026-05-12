@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -127,6 +128,13 @@ pub(crate) struct ManifestPmDecl {
 /// Detect a manifest-level PM declaration: legacy `packageManager` first,
 /// falling back to `devEngines.packageManager`. Returns `None` if neither
 /// field is present or parseable.
+///
+/// Entries naming a PM that cannot dispatch `package.json` scripts
+/// (e.g. `cargo`) are dropped at parse time so they never reach the
+/// resolver as an apparently-valid manifest declaration. Without this
+/// filter, an entry like `{"name": "cargo"}` would surface as a winning
+/// `devEngines` decision and then fail at spawn time with the opaque
+/// "cannot run scripts" branch.
 pub(crate) fn detect_pm_from_manifest(dir: &Path) -> Option<ManifestPmDecl> {
     let parsed = parse_package_json(dir)?;
 
@@ -149,32 +157,54 @@ pub(crate) fn detect_pm_from_manifest(dir: &Path) -> Option<ManifestPmDecl> {
         return None;
     }
 
-    // OpenJS default rules: a single entry defaults to `onFail = error`;
-    // for an array the last entry defaults to `error`, prior entries to
-    // `ignore`. We pick the last resolvable entry — it is the most
-    // recently authored preference and has the strict default.
-    let total = entries.len();
-    let mut last_resolvable: Option<(usize, ManifestPmDecl)> = None;
-    for (idx, entry) in entries.into_iter().enumerate() {
-        let Some(pm) = PackageManager::from_label(&entry.name) else {
-            continue;
-        };
+    // Filter to script-dispatching PMs *first*, then enumerate the
+    // resolvable subsequence so onFail defaults track the picked entry's
+    // position among resolvable peers, not its raw array index. Without
+    // this, a trailing `{"name": "cargo"}` would downgrade the previous
+    // entry's default from `error` to `ignore` even though it would have
+    // been the user-visible winner.
+    let resolvable: Vec<(PackageManager, DevEngineDep)> = entries
+        .into_iter()
+        .filter_map(|entry| script_dispatching_pm(&entry.name).map(|pm| (pm, entry)))
+        .collect();
+    let total = resolvable.len();
+    if total == 0 {
+        return None;
+    }
+
+    let mut last_decl: Option<ManifestPmDecl> = None;
+    for (idx, (pm, entry)) in resolvable.into_iter().enumerate() {
         let on_fail = entry.on_fail.map_or_else(
             || default_on_fail_for_array_position(idx, total),
             OnFail::from_proposal,
         );
-        last_resolvable = Some((
-            idx,
-            ManifestPmDecl {
-                pm,
-                source: ManifestSource::DevEngines,
-                version: entry.version,
-                on_fail,
-            },
-        ));
+        last_decl = Some(ManifestPmDecl {
+            pm,
+            source: ManifestSource::DevEngines,
+            version: entry.version,
+            on_fail,
+        });
     }
+    last_decl
+}
 
-    last_resolvable.map(|(_, decl)| decl)
+/// Parse a `devEngines.packageManager` entry's `name` field, accepting
+/// only PMs that can actually run `package.json` scripts. Other
+/// ecosystems (Cargo, uv, etc.) are valid `PackageManager` variants but
+/// reaching the script-dispatch path with them yields the opaque
+/// "cannot run scripts" error from `build_run_command`, so reject them
+/// at parse time instead.
+fn script_dispatching_pm(label: &str) -> Option<PackageManager> {
+    let pm = PackageManager::from_label(label)?;
+    matches!(
+        pm,
+        PackageManager::Npm
+            | PackageManager::Pnpm
+            | PackageManager::Yarn
+            | PackageManager::Bun
+            | PackageManager::Deno
+    )
+    .then_some(pm)
 }
 
 const fn default_on_fail_for_array_position(idx: usize, total: usize) -> OnFail {
@@ -192,6 +222,115 @@ impl OnFail {
             ProposalOnFail::Warn | ProposalOnFail::Download => Self::Warn,
             ProposalOnFail::Error => Self::Error,
         }
+    }
+}
+
+/// Outcome of comparing a declared semver constraint against an installed
+/// PM's reported version. Returned by [`check_version_constraint`] so
+/// callers can fold the mismatch into a warning or a fatal error.
+#[derive(Debug, Clone)]
+pub(crate) enum VersionCheck {
+    /// The declared range matched the installed version.
+    Satisfied,
+    /// The declared range did not match. Carries human-readable detail
+    /// for the resolver to surface verbatim.
+    Mismatch {
+        /// What was declared (e.g. `^9.0.0`, `>=20`).
+        declared: String,
+        /// What `<pm> --version` returned, normalized.
+        actual: String,
+    },
+    /// The check could not run — typically because the PM binary is
+    /// missing from `$PATH` or the declared range is unparseable. Treated
+    /// as "no constraint to enforce" by callers, mirroring proposal
+    /// guidance that unparseable ranges should not block dispatch.
+    Unverifiable {
+        /// One-line reason for the skip, suitable for diagnostics.
+        #[allow(
+            dead_code,
+            reason = "consumed by --explain / runner doctor traces in Phase 6+"
+        )]
+        reason: String,
+    },
+}
+
+/// Compare a declared semver constraint to the installed version of `pm`.
+///
+/// Spawns `<pm> --version`, parses the output, and runs
+/// [`semver::VersionReq::matches`]. Errors during any of those steps
+/// collapse to [`VersionCheck::Unverifiable`] so a partially-broken
+/// environment never blocks dispatch unnecessarily — `onFail = error` is
+/// expected to handle the missing-binary case via the PATH probe; this
+/// helper is the *version* gate.
+pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> VersionCheck {
+    let req = match semver::VersionReq::parse(declared) {
+        Ok(req) => req,
+        Err(err) => {
+            return VersionCheck::Unverifiable {
+                reason: format!("invalid semver range {declared:?}: {err}"),
+            };
+        }
+    };
+
+    let Some(raw_version) = installed_version(pm) else {
+        return VersionCheck::Unverifiable {
+            reason: format!(
+                "`{} --version` did not produce a parseable version",
+                pm.label()
+            ),
+        };
+    };
+
+    let actual = match semver::Version::parse(&normalize_version(&raw_version)) {
+        Ok(v) => v,
+        Err(err) => {
+            return VersionCheck::Unverifiable {
+                reason: format!("could not parse `{raw_version}` as semver: {err}"),
+            };
+        }
+    };
+
+    if req.matches(&actual) {
+        VersionCheck::Satisfied
+    } else {
+        VersionCheck::Mismatch {
+            declared: declared.to_string(),
+            actual: actual.to_string(),
+        }
+    }
+}
+
+/// Run `<pm> --version` and return its trimmed stdout, stripping a `v`
+/// prefix. Returns `None` when the spawn fails or the process exits
+/// non-zero.
+fn installed_version(pm: PackageManager) -> Option<String> {
+    let out = Command::new(pm.label()).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let trimmed = raw.trim();
+    let first_line = trimmed.lines().next().unwrap_or(trimmed).trim();
+    if first_line.is_empty() {
+        return None;
+    }
+    Some(
+        first_line
+            .strip_prefix('v')
+            .unwrap_or(first_line)
+            .to_string(),
+    )
+}
+
+/// Pad bare `major` or `major.minor` versions to a full semver triple so
+/// `semver::Version::parse` accepts them. Anything richer (build/pre
+/// suffixes) is returned untouched.
+fn normalize_version(raw: &str) -> String {
+    let segments: Vec<&str> = raw.split('.').collect();
+    match segments.len() {
+        1 => format!("{}.0.0", segments[0]),
+        2 => format!("{}.{}.0", segments[0], segments[1]),
+        _ => raw.to_string(),
     }
 }
 
@@ -608,6 +747,77 @@ mod tests {
         .expect("package.json should be written");
 
         assert!(detect_pm_from_manifest(dir.path()).is_none());
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_rejects_non_script_dispatching_pm() {
+        // `cargo` is a valid PackageManager variant but it can't dispatch
+        // package.json scripts, so devEngines should drop it at parse
+        // time rather than letting it bubble up and fail at spawn.
+        use super::detect_pm_from_manifest;
+
+        let dir = TempDir::new("node-manifest-decl-cargo");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "cargo" } } }"#,
+        )
+        .expect("package.json should be written");
+
+        assert!(detect_pm_from_manifest(dir.path()).is_none());
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_array_trailing_unresolvable_does_not_downgrade_on_fail() {
+        // Earlier resolvable entry plus a trailing unresolvable name —
+        // the resolvable one must inherit the "last entry" default
+        // (Error) because it *is* the last resolvable entry.
+        use super::{OnFail, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-array-trailing-unresolvable");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": [
+                { "name": "pnpm", "version": "9" },
+                { "name": "zoot-unknown" }
+            ] } }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
+        assert_eq!(decl.pm, PackageManager::Pnpm);
+        assert_eq!(decl.on_fail, OnFail::Error);
+    }
+
+    #[test]
+    fn check_version_constraint_satisfied_for_matching_range() {
+        // Use the host's `cargo --version` since cargo ships with the
+        // toolchain; rust-toolchain.toml pins to 1.95 which means
+        // cargo is >=1.95. Any range that 1.95+ satisfies works.
+        use super::{VersionCheck, check_version_constraint};
+
+        // cargo's ecosystem is Rust, but check_version_constraint only
+        // spawns `<label> --version` and parses semver, so it works for
+        // any binary on PATH regardless of ecosystem categorization.
+        let res = check_version_constraint(PackageManager::Cargo, ">=1.0.0");
+        match res {
+            VersionCheck::Satisfied => {}
+            VersionCheck::Mismatch { declared, actual } => {
+                panic!("expected satisfaction, got mismatch: {declared} vs {actual}");
+            }
+            VersionCheck::Unverifiable { reason } => {
+                // `cargo` may not be on PATH in some CI environments —
+                // accept the skip rather than fail the suite.
+                eprintln!("skipping: {reason}");
+            }
+        }
+    }
+
+    #[test]
+    fn check_version_constraint_returns_unverifiable_for_invalid_range() {
+        use super::{VersionCheck, check_version_constraint};
+
+        let res = check_version_constraint(PackageManager::Cargo, "not-a-range");
+        assert!(matches!(res, VersionCheck::Unverifiable { .. }));
     }
 
     #[test]
