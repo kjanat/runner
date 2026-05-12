@@ -374,23 +374,30 @@ pub(crate) struct Cli {
     pub project_dir: Option<PathBuf>,
 
     /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
-    /// Falls back to `$RUNNER_PM` when omitted.
+    /// The resolver also consults `$RUNNER_PM` independently when this
+    /// flag is omitted (env reads live in `crate::resolver`, not clap).
     #[arg(long = "pm", global = true, value_name = "NAME")]
     pub pm_override: Option<String>,
 
     /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
-    /// Falls back to `$RUNNER_RUNNER` when omitted.
+    /// The resolver also consults `$RUNNER_RUNNER` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(long = "runner", global = true, value_name = "NAME")]
     pub runner_override: Option<String>,
 
     /// What to do when no detection signal matches: `probe` (default,
     /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
-    /// Falls back to `$RUNNER_FALLBACK` when omitted.
+    /// The resolver also consults `$RUNNER_FALLBACK` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(long = "fallback", global = true, value_name = "POLICY")]
     pub fallback: Option<String>,
 
     /// Print a one-line trace describing how the package manager was
-    /// resolved. Also enabled by `RUNNER_EXPLAIN=1`.
+    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
+    /// is set to a truthy value (env reads live in `crate::resolver`,
+    /// not clap).
     #[arg(long = "explain", global = true)]
     pub explain: bool,
 
@@ -508,23 +515,30 @@ pub(crate) struct RunAliasCli {
     pub project_dir: Option<PathBuf>,
 
     /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
-    /// Falls back to `$RUNNER_PM` when omitted.
+    /// The resolver also consults `$RUNNER_PM` independently when this
+    /// flag is omitted (env reads live in `crate::resolver`, not clap).
     #[arg(long = "pm", global = true, value_name = "NAME")]
     pub pm_override: Option<String>,
 
     /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
-    /// Falls back to `$RUNNER_RUNNER` when omitted.
+    /// The resolver also consults `$RUNNER_RUNNER` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(long = "runner", global = true, value_name = "NAME")]
     pub runner_override: Option<String>,
 
     /// What to do when no detection signal matches: `probe` (default,
     /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
-    /// Falls back to `$RUNNER_FALLBACK` when omitted.
+    /// The resolver also consults `$RUNNER_FALLBACK` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(long = "fallback", global = true, value_name = "POLICY")]
     pub fallback: Option<String>,
 
     /// Print a one-line trace describing how the package manager was
-    /// resolved. Also enabled by `RUNNER_EXPLAIN=1`.
+    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
+    /// is set to a truthy value (env reads live in `crate::resolver`,
+    /// not clap).
     #[arg(long = "explain", global = true)]
     pub explain: bool,
 
