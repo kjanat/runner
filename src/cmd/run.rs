@@ -68,11 +68,15 @@ pub(crate) fn run(
                 decision.pm
             });
 
-        if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
-            return Ok(code);
-        }
-
+        // Fallbacks are scoped to unqualified lookups. A qualified
+        // miss like `runner run justfile:test` in a Bun project must
+        // bail on the qualifier rather than silently dispatching
+        // `bun test` — the qualifier is user intent about *where* to
+        // look, not just a hint we can drop.
         if qualifier.is_none() {
+            if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
+                return Ok(code);
+            }
             return run_pm_exec_fallback(ctx, resolved_pm, task_name, args);
         }
 
@@ -221,19 +225,8 @@ fn run_pm_exec_fallback(
         Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined())),
         Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
+        Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined())),
-        Some(PackageManager::Deno) => {
-            // Resolver picked Deno (via override / manifest /
-            // detection), but `deno run <target>` runs a local script
-            // path — not a binary in node_modules — so honoring it
-            // here would silently change semantics. Fall through to a
-            // direct PATH spawn and surface the fallthrough in the
-            // label so `--explain` / `runner why` aren't misleading
-            // about what actually executed.
-            let mut c = tool::program::command(target);
-            c.args(args);
-            ("exec (deno: no npx primitive)", c)
-        }
         None | Some(_) => {
             let mut c = tool::program::command(target);
             c.args(args);

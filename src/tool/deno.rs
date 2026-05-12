@@ -179,6 +179,18 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
+/// `deno x <args...>` — Deno's `npx`-equivalent (Deno 2.x+).
+///
+/// Resolves and runs an `npm:` / `jsr:` package's binary entry point
+/// without installing it permanently. Bare-name targets (no registry
+/// prefix) fail at Deno's side; the runner passes the user's
+/// `--pm deno` intent through verbatim rather than second-guessing.
+pub(crate) fn exec_cmd(args: &[String]) -> Command {
+    let mut c = super::program::command("deno");
+    c.arg("x").args(args);
+    c
+}
+
 /// `deno install`
 pub(crate) fn install_cmd() -> Command {
     let mut c = super::program::command("deno");
@@ -191,8 +203,23 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{detect, extract_tasks, find_config_upwards, workspace_pattern_matches};
+    use super::{detect, exec_cmd, extract_tasks, find_config_upwards, workspace_pattern_matches};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn exec_uses_deno_x_passthrough() {
+        // `runner --pm deno run npm:create-vite my-app` should build
+        // `deno x npm:create-vite my-app` — the `x` subcommand sits
+        // before the target so Deno's `npx`-equivalent picks up the
+        // user's verbatim args.
+        let args = [String::from("npm:create-vite"), String::from("my-app")];
+        let built: Vec<_> = exec_cmd(&args)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(built, ["x", "npm:create-vite", "my-app"]);
+    }
 
     #[test]
     fn extract_tasks_supports_jsonc_comments_and_trailing_commas() {
