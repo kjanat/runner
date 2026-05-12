@@ -620,39 +620,6 @@ impl ResolutionOverrides {
             explain,
         })
     }
-
-    /// Test helper that builds [`OverrideSources`] from positional
-    /// arguments. Used by the existing `#[cfg(test)]` callers in this
-    /// module so the migration to `from_sources` doesn't churn every
-    /// test site. New tests should construct `OverrideSources` directly
-    /// — it's clearer about which source each value flows from.
-    #[cfg(test)]
-    pub(crate) fn from_values(
-        cli_pm: Option<&str>,
-        env_pm: Option<&str>,
-        cli_runner: Option<&str>,
-        env_runner: Option<&str>,
-        cli_fallback: Option<&str>,
-        env_fallback: Option<&str>,
-        config: Option<&LoadedConfig>,
-    ) -> Result<Self> {
-        Self::from_sources(OverrideSources {
-            pm: SourceValue {
-                cli: cli_pm,
-                env: env_pm,
-            },
-            runner: SourceValue {
-                cli: cli_runner,
-                env: env_runner,
-            },
-            fallback: SourceValue {
-                cli: cli_fallback,
-                env: env_fallback,
-            },
-            explain: ExplainSource::default(),
-            config,
-        })
-    }
 }
 
 /// Treat any env-var value as truthy unless it's empty, `"0"`, or a
@@ -762,8 +729,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides, ResolutionStep, Resolver,
-        RunnerOverride,
+        ExplainSource, FallbackPolicy, OverrideOrigin, OverrideSources, PmOverride,
+        ResolutionOverrides, ResolutionStep, Resolver, RunnerOverride, SourceValue,
     };
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
     use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
@@ -928,9 +895,14 @@ mod tests {
 
     #[test]
     fn cli_pm_value_parses_to_overrides() {
-        let overrides =
-            ResolutionOverrides::from_values(Some("yarn"), None, None, None, None, None, None)
-                .expect("--pm yarn should parse");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("yarn"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("--pm yarn should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
         assert_eq!(pm.pm, PackageManager::Yarn);
@@ -940,9 +912,14 @@ mod tests {
 
     #[test]
     fn env_pm_value_parses_when_cli_absent() {
-        let overrides =
-            ResolutionOverrides::from_values(None, Some("bun"), None, None, None, None, None)
-                .expect("RUNNER_PM=bun should parse");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some("bun"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("RUNNER_PM=bun should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
         assert_eq!(pm.pm, PackageManager::Bun);
@@ -951,15 +928,13 @@ mod tests {
 
     #[test]
     fn cli_wins_over_env() {
-        let overrides = ResolutionOverrides::from_values(
-            Some("yarn"),
-            Some("bun"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("yarn"),
+                env: Some("bun"),
+            },
+            ..OverrideSources::default()
+        })
         .expect("both sources should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
@@ -969,18 +944,28 @@ mod tests {
 
     #[test]
     fn empty_env_is_treated_as_unset() {
-        let overrides =
-            ResolutionOverrides::from_values(None, Some(""), None, None, None, None, None)
-                .expect("empty env should parse as no override");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some(""),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("empty env should parse as no override");
 
         assert!(overrides.pm.is_none());
     }
 
     #[test]
     fn cli_runner_value_parses_to_overrides() {
-        let overrides =
-            ResolutionOverrides::from_values(None, None, Some("just"), None, None, None, None)
-                .expect("--runner just should parse");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: Some("just"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("--runner just should parse");
 
         let runner: RunnerOverride = overrides.runner.expect("runner override should be present");
         assert_eq!(runner.runner, TaskRunner::Just);
@@ -989,9 +974,14 @@ mod tests {
 
     #[test]
     fn unknown_pm_label_errors_with_valid_value_list() {
-        let err =
-            ResolutionOverrides::from_values(Some("zoot"), None, None, None, None, None, None)
-                .expect_err("unknown PM should error");
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("zoot"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown PM should error");
 
         let msg = format!("{err}");
         assert!(msg.contains("unknown package manager"));
@@ -1001,9 +991,14 @@ mod tests {
 
     #[test]
     fn unknown_runner_label_errors_with_valid_value_list() {
-        let err =
-            ResolutionOverrides::from_values(None, None, Some("zoot"), None, None, None, None)
-                .expect_err("unknown runner should error");
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: Some("zoot"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown runner should error");
 
         let msg = format!("{err}");
         assert!(msg.contains("unknown task runner"));
@@ -1012,9 +1007,14 @@ mod tests {
 
     #[test]
     fn bundler_alias_bundle_is_accepted() {
-        let overrides =
-            ResolutionOverrides::from_values(Some("bundle"), None, None, None, None, None, None)
-                .expect("`bundle` should alias to bundler");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("bundle"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("`bundle` should alias to bundler");
 
         assert_eq!(
             overrides.pm.expect("pm should be present").pm,
@@ -1024,9 +1024,14 @@ mod tests {
 
     #[test]
     fn go_task_alias_is_accepted() {
-        let overrides =
-            ResolutionOverrides::from_values(None, None, Some("go-task"), None, None, None, None)
-                .expect("`go-task` should alias to GoTask");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: Some("go-task"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("`go-task` should alias to GoTask");
 
         assert_eq!(
             overrides.runner.expect("runner should be present").runner,
@@ -1086,9 +1091,11 @@ mod tests {
     #[test]
     fn config_loaded_value_populates_pm_by_ecosystem() {
         let loaded = loaded_config_with_node("bun");
-        let overrides =
-            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
-                .expect("config-only overrides should parse");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("config-only overrides should parse");
 
         assert!(overrides.pm.is_none());
         let entry = overrides
@@ -1116,9 +1123,11 @@ mod tests {
                 ..RunnerConfig::default()
             },
         };
-        let overrides =
-            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
-                .expect("python config should parse");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("python config should parse");
 
         let entry = overrides
             .pm_by_ecosystem
@@ -1130,9 +1139,11 @@ mod tests {
     #[test]
     fn config_cross_ecosystem_node_value_rejected_at_parse_time() {
         let loaded = loaded_config_with_node("cargo");
-        let err =
-            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
-                .expect_err("cargo is not a node-script PM");
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect_err("cargo is not a node-script PM");
         assert!(format!("{err}").contains("cannot dispatch package.json scripts"));
     }
 
@@ -1436,11 +1447,9 @@ mod tests {
 
     #[test]
     fn from_sources_builder_is_ergonomic_for_partial_overrides() {
-        use super::{ExplainSource, OverrideSources, SourceValue};
-
-        // Demonstrates the migration target: construct only the fields
-        // that matter, default the rest. This is what new tests should
-        // look like as `from_values`'s positional form gets retired.
+        // Demonstrates the canonical idiom: construct only the fields
+        // that matter, default the rest. All sibling tests in this module
+        // use the same shape.
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             pm: SourceValue {
                 cli: Some("yarn"),
@@ -1469,17 +1478,27 @@ mod tests {
         // override parser must tolerate this so `RUNNER_PM=" pnpm "`
         // works the same as `RUNNER_PM=pnpm` instead of erroring on an
         // "unknown package manager" with the padded label.
-        let from_env =
-            ResolutionOverrides::from_values(None, Some(" pnpm "), None, None, None, None, None)
-                .expect("padded env value should parse after trimming");
+        let from_env = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some(" pnpm "),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("padded env value should parse after trimming");
         assert_eq!(
             from_env.pm.expect("pm should be present").pm,
             PackageManager::Pnpm
         );
 
-        let from_cli =
-            ResolutionOverrides::from_values(Some(" yarn\n"), None, None, None, None, None, None)
-                .expect("padded CLI value should parse after trimming");
+        let from_cli = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some(" yarn\n"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("padded CLI value should parse after trimming");
         assert_eq!(
             from_cli.pm.expect("pm should be present").pm,
             PackageManager::Yarn
@@ -1488,9 +1507,14 @@ mod tests {
         // Whitespace-only values are treated as unset (same as empty
         // strings); without this, `RUNNER_PM="   "` would fail with
         // "unknown package manager \"\"" after the trim.
-        let blank =
-            ResolutionOverrides::from_values(None, Some("   "), None, None, None, None, None)
-                .expect("whitespace-only env should parse as no override");
+        let blank = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some("   "),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("whitespace-only env should parse as no override");
         assert!(blank.pm.is_none());
     }
 
@@ -1560,9 +1584,11 @@ mod tests {
         // stores it under Ecosystem::Deno (per PackageManager::ecosystem)
         // and the Node-script resolver consults both Node and Deno keys.
         let loaded = loaded_config_with_node("deno");
-        let overrides =
-            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
-                .expect("deno config should parse");
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("deno config should parse");
 
         assert!(overrides.pm_by_ecosystem.contains_key(&Ecosystem::Deno));
 
