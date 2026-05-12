@@ -453,13 +453,70 @@ const fn pm_can_run_package_json_scripts(pm: PackageManager) -> bool {
     pm.is_node() || matches!(pm, PackageManager::Deno)
 }
 
+/// Sources contributing to a [`ResolutionOverrides`].
+///
+/// Bundles every CLI/env input the resolver consumes so
+/// [`ResolutionOverrides::from_sources`] stays extensible —  adding a
+/// new override (say `--on-mismatch` / `RUNNER_ON_MISMATCH`) is one
+/// field on this struct, not a positional-argument expansion across
+/// every test site.
+///
+/// Tests typically use `Default` + field updates:
+///
+/// ```ignore
+/// OverrideSources {
+///     pm: SourceValue { cli: Some("yarn"), env: None },
+///     ..OverrideSources::default()
+/// }
+/// ```
+///
+/// Production goes through [`ResolutionOverrides::from_cli_and_env`],
+/// which builds this from process state.
+#[derive(Debug, Default)]
+pub(crate) struct OverrideSources<'a> {
+    /// `--pm` flag value plus `RUNNER_PM` env.
+    pub pm: SourceValue<'a>,
+    /// `--runner` flag value plus `RUNNER_RUNNER` env.
+    pub runner: SourceValue<'a>,
+    /// `--fallback` flag value plus `RUNNER_FALLBACK` env.
+    pub fallback: SourceValue<'a>,
+    /// `--explain` flag presence plus `RUNNER_EXPLAIN` env.
+    pub explain: ExplainSource<'a>,
+    /// Loaded `runner.toml` if any.
+    pub config: Option<&'a LoadedConfig>,
+}
+
+/// CLI flag plus env-var value for a string-typed override. The
+/// resolver trims and de-duplicates these per the precedence chain in
+/// [`parse_override`] (CLI wins; whitespace-only values count as unset).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SourceValue<'a> {
+    /// CLI flag value, if the user passed one.
+    pub cli: Option<&'a str>,
+    /// Env-var value, if set.
+    pub env: Option<&'a str>,
+}
+
+/// CLI flag (presence) plus env-var value for a boolean-typed override
+/// like `--explain` / `RUNNER_EXPLAIN`. CLI wins; env is interpreted by
+/// [`is_env_truthy`].
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ExplainSource<'a> {
+    /// `true` when the CLI flag was passed.
+    pub cli: bool,
+    /// Env-var value, if set.
+    pub env: Option<&'a str>,
+}
+
 impl ResolutionOverrides {
     /// Assemble overrides from CLI flag values (already parsed by clap),
     /// the `RUNNER_*` environment variables, and an optional `runner.toml`
     /// loaded from the project root.
     ///
     /// Reads `std::env` for the env-var sources; pure parsing happens in
-    /// [`Self::from_values`].
+    /// [`Self::from_sources`]. Tests should use `from_sources` directly
+    /// with an [`OverrideSources`] builder to inject env values without
+    /// touching the process environment.
     ///
     /// # Errors
     ///
@@ -477,89 +534,62 @@ impl ResolutionOverrides {
         let env_runner = std::env::var("RUNNER_RUNNER").ok();
         let env_fallback = std::env::var("RUNNER_FALLBACK").ok();
         let env_explain = std::env::var("RUNNER_EXPLAIN").ok();
-        Self::from_values_with_explain(
-            cli_pm,
-            env_pm.as_deref(),
-            cli_runner,
-            env_runner.as_deref(),
-            cli_fallback,
-            env_fallback.as_deref(),
-            cli_explain,
-            env_explain.as_deref(),
+        Self::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: cli_pm,
+                env: env_pm.as_deref(),
+            },
+            runner: SourceValue {
+                cli: cli_runner,
+                env: env_runner.as_deref(),
+            },
+            fallback: SourceValue {
+                cli: cli_fallback,
+                env: env_fallback.as_deref(),
+            },
+            explain: ExplainSource {
+                cli: cli_explain,
+                env: env_explain.as_deref(),
+            },
             config,
-        )
+        })
     }
 
-    /// Pure-function variant of [`Self::from_cli_and_env`] without the
-    /// `--explain` toggle (always disabled). Tests use this directly;
-    /// production code goes through [`Self::from_cli_and_env`].
+    /// Pure-function constructor that consumes a fully-populated
+    /// [`OverrideSources`]. Production code uses
+    /// [`Self::from_cli_and_env`], which builds the struct from the
+    /// process environment; tests pass values directly so they don't
+    /// touch global state.
     ///
     /// # Errors
     ///
     /// Returns an error if any value does not name a known package manager,
     /// task runner, or fallback policy, or if a `runner.toml` field contains
     /// a PM that does not belong to its target ecosystem.
-    #[cfg(test)]
-    pub(crate) fn from_values(
-        cli_pm: Option<&str>,
-        env_pm: Option<&str>,
-        cli_runner: Option<&str>,
-        env_runner: Option<&str>,
-        cli_fallback: Option<&str>,
-        env_fallback: Option<&str>,
-        config: Option<&LoadedConfig>,
-    ) -> Result<Self> {
-        Self::from_values_with_explain(
-            cli_pm,
-            env_pm,
-            cli_runner,
-            env_runner,
-            cli_fallback,
-            env_fallback,
-            false,
-            None,
-            config,
-        )
-    }
-
-    /// Pure-function variant that also accepts the `--explain` /
-    /// `RUNNER_EXPLAIN` toggle. CLI value (`Some(true)` when the flag is
-    /// passed) wins over env (any non-empty value is truthy).
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::from_values`].
     #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit source injection for testability across all six override sources"
+        clippy::needless_pass_by_value,
+        reason = "OverrideSources is a single-use builder; taking by value keeps the call sites moveable"
     )]
-    pub(crate) fn from_values_with_explain(
-        cli_pm: Option<&str>,
-        env_pm: Option<&str>,
-        cli_runner: Option<&str>,
-        env_runner: Option<&str>,
-        cli_fallback: Option<&str>,
-        env_fallback: Option<&str>,
-        cli_explain: bool,
-        env_explain: Option<&str>,
-        config: Option<&LoadedConfig>,
-    ) -> Result<Self> {
-        let pm = parse_override(cli_pm, env_pm, parse_pm_label, |pm, origin| PmOverride {
-            pm,
-            origin,
-        })?;
+    pub(crate) fn from_sources(sources: OverrideSources<'_>) -> Result<Self> {
+        let pm = parse_override(
+            sources.pm.cli,
+            sources.pm.env,
+            parse_pm_label,
+            |pm, origin| PmOverride { pm, origin },
+        )?;
         let runner = parse_override(
-            cli_runner,
-            env_runner,
+            sources.runner.cli,
+            sources.runner.env,
             parse_runner_label,
             |runner, origin| RunnerOverride { runner, origin },
         )?;
 
-        let fallback = resolve_fallback_policy(cli_fallback, env_fallback, config)?;
-        let explain = cli_explain || env_explain.is_some_and(is_env_truthy);
+        let fallback =
+            resolve_fallback_policy(sources.fallback.cli, sources.fallback.env, sources.config)?;
+        let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
 
         let mut pm_by_ecosystem = HashMap::new();
-        if let Some(loaded) = config {
+        if let Some(loaded) = sources.config {
             if let Some(raw) = loaded.config.pm.node.as_deref() {
                 let pm_value = parse_node_pm(raw)?;
                 pm_by_ecosystem.insert(
@@ -592,6 +622,39 @@ impl ResolutionOverrides {
             runner,
             fallback,
             explain,
+        })
+    }
+
+    /// Test helper that builds [`OverrideSources`] from positional
+    /// arguments. Used by the existing `#[cfg(test)]` callers in this
+    /// module so the migration to `from_sources` doesn't churn every
+    /// test site. New tests should construct `OverrideSources` directly
+    /// — it's clearer about which source each value flows from.
+    #[cfg(test)]
+    pub(crate) fn from_values(
+        cli_pm: Option<&str>,
+        env_pm: Option<&str>,
+        cli_runner: Option<&str>,
+        env_runner: Option<&str>,
+        cli_fallback: Option<&str>,
+        env_fallback: Option<&str>,
+        config: Option<&LoadedConfig>,
+    ) -> Result<Self> {
+        Self::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: cli_pm,
+                env: env_pm,
+            },
+            runner: SourceValue {
+                cli: cli_runner,
+                env: env_runner,
+            },
+            fallback: SourceValue {
+                cli: cli_fallback,
+                env: env_fallback,
+            },
+            explain: ExplainSource::default(),
+            config,
         })
     }
 }
@@ -1373,6 +1436,34 @@ mod tests {
         .expect("Unverifiable should continue, not bail");
 
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn from_sources_builder_is_ergonomic_for_partial_overrides() {
+        use super::{ExplainSource, OverrideSources, SourceValue};
+
+        // Demonstrates the migration target: construct only the fields
+        // that matter, default the rest. This is what new tests should
+        // look like as `from_values`'s positional form gets retired.
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("yarn"),
+                env: None,
+            },
+            explain: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("structured override should parse");
+
+        assert_eq!(
+            overrides.pm.expect("pm override should be present").pm,
+            PackageManager::Yarn
+        );
+        assert!(overrides.explain);
+        assert!(overrides.runner.is_none());
     }
 
     #[test]
