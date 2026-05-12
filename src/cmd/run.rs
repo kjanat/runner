@@ -260,18 +260,43 @@ fn should_use_bun_test_fallback(
     if task != "test" || has_package_script(ctx, task) {
         return false;
     }
-    let chosen = exec_pm_for_overrides(overrides)
+    let chosen = node_script_pm_for_overrides(overrides)
         .or_else(|| ctx.primary_node_pm().or_else(|| ctx.primary_pm()));
     chosen.is_some_and(|pm| pm == PackageManager::Bun)
 }
 
-/// Extract a script-dispatching PM from the override bundle, in
-/// resolver precedence order (CLI/env first, then per-ecosystem config).
-/// Returns `None` when no override applies — caller falls back to
-/// detected context.
+/// Extract an exec-capable PM from the override bundle for the
+/// arbitrary-command fallback path. Resolver precedence order (CLI/env
+/// first, then per-ecosystem config); `None` when no override applies.
+///
+/// Narrower than [`node_script_pm_for_overrides`] — only PMs with an
+/// `npx`-style `exec` primitive qualify. Deno is intentionally
+/// excluded because `deno run <target>` treats `<target>` as a local
+/// script path, not a binary in `node_modules`, so honoring `--pm deno`
+/// here would silently change semantics. Cargo, Poetry, Pipenv,
+/// Bundler, Composer, and Go also lack an exec primitive and are
+/// excluded for the same reason.
 fn exec_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManager> {
     if let Some(o) = overrides.pm.as_ref()
-        && pm_dispatches_scripts(o.pm)
+        && pm_has_exec_primitive(o.pm)
+    {
+        return Some(o.pm);
+    }
+    overrides
+        .pm_by_ecosystem
+        .get(&crate::types::Ecosystem::Node)
+        .filter(|o| pm_has_exec_primitive(o.pm))
+        .map(|o| o.pm)
+}
+
+/// Extract any node-script-dispatching PM from the override bundle for
+/// the bun-test fallback path. Includes Deno because
+/// `packageManager: "deno@…"` is a valid script dispatcher even though
+/// Deno can't take its place in `npx <bin>` semantics. Used only to
+/// answer "did the user pick Bun for this Node project?"
+fn node_script_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManager> {
+    if let Some(o) = overrides.pm.as_ref()
+        && pm_dispatches_node_scripts(o.pm)
     {
         return Some(o.pm);
     }
@@ -286,16 +311,23 @@ fn exec_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManag
         .map(|o| o.pm)
 }
 
-const fn pm_dispatches_scripts(pm: PackageManager) -> bool {
+/// PMs that own an `npx`-style exec primitive (`npm exec`, `pnpm exec`,
+/// `yarn …`, `bun x`, `uv run`).
+const fn pm_has_exec_primitive(pm: PackageManager) -> bool {
     matches!(
         pm,
         PackageManager::Npm
             | PackageManager::Pnpm
             | PackageManager::Yarn
             | PackageManager::Bun
-            | PackageManager::Deno
             | PackageManager::Uv
     )
+}
+
+/// PMs that can dispatch a script declared in `package.json` "scripts"
+/// — Node ecosystem plus Deno.
+const fn pm_dispatches_node_scripts(pm: PackageManager) -> bool {
+    pm.is_node() || matches!(pm, PackageManager::Deno)
 }
 
 fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
@@ -479,6 +511,48 @@ mod tests {
         // `--pm npm` against a Bun-detected project should not trigger the
         // Bun test fallback; user intent (npm) wins.
         assert!(!should_use_bun_test_fallback(&ctx, &overrides, "test"));
+    }
+
+    #[test]
+    fn exec_pm_for_overrides_excludes_deno() {
+        use crate::resolver::{OverrideOrigin, PmOverride};
+
+        // Deno has no `npx`-style primitive — `deno run <target>` runs a
+        // local script, not a binary in node_modules. The narrower exec
+        // path must drop the override so `run_pm_exec_fallback` falls
+        // through to a direct PATH spawn rather than picking Deno and
+        // then silently mismatching the user's stated intent.
+        let overrides = ResolutionOverrides {
+            pm: Some(PmOverride {
+                pm: PackageManager::Deno,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        assert_eq!(super::exec_pm_for_overrides(&overrides), None);
+    }
+
+    #[test]
+    fn node_script_pm_for_overrides_includes_deno() {
+        use crate::resolver::{OverrideOrigin, PmOverride};
+
+        // The Node-script-dispatcher path *does* include Deno because
+        // `packageManager: "deno@…"` is a valid Node-script dispatcher.
+        // This lets the bun-test fallback correctly answer "did the
+        // user override away from Bun?".
+        let overrides = ResolutionOverrides {
+            pm: Some(PmOverride {
+                pm: PackageManager::Deno,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        assert_eq!(
+            super::node_script_pm_for_overrides(&overrides),
+            Some(PackageManager::Deno)
+        );
     }
 
     #[test]

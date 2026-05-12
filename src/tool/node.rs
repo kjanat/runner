@@ -2,13 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Context as _;
 use serde::Deserialize;
 use yaml_rust2::YamlLoader;
 
 use crate::tool::files;
+use crate::tool::program;
 use crate::types::PackageManager;
 
 /// Node manifest filename.
@@ -303,8 +303,16 @@ pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> Ve
 /// Run `<pm> --version` and return its trimmed stdout, stripping a `v`
 /// prefix. Returns `None` when the spawn fails or the process exits
 /// non-zero.
+///
+/// Spawns via `tool::program::command` so Windows `npm.cmd`/`pnpm.cmd`/
+/// `yarn.cmd` shims resolve through `PATHEXT`. Without this, the bug
+/// fixed for dispatch in 0.8.1 (#21) would silently downgrade
+/// `devEngines.version` enforcement to `Unverifiable` on Windows.
 fn installed_version(pm: PackageManager) -> Option<String> {
-    let out = Command::new(pm.label()).arg("--version").output().ok()?;
+    let out = program::command(pm.label())
+        .arg("--version")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

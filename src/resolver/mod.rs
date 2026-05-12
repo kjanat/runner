@@ -642,9 +642,12 @@ fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
     })
 }
 
-/// Generic CLI-then-env override parser. CLI wins; empty env strings are
-/// treated as unset so a user can clear an inherited variable with
-/// `RUNNER_PM= runner …`.
+/// Generic CLI-then-env override parser. CLI wins; whitespace is
+/// trimmed from both sources before parsing so `RUNNER_PM=" pnpm "`
+/// works the same as `RUNNER_PM=pnpm`. Empty/whitespace-only values
+/// are treated as unset so a user can clear an inherited variable with
+/// `RUNNER_PM= runner …`. Matches the whitespace handling used by
+/// [`is_env_truthy`] for boolean env flags.
 fn parse_override<T, P, V, B>(
     cli: Option<&str>,
     env: Option<&str>,
@@ -655,17 +658,15 @@ where
     V: Fn(&str) -> Result<P>,
     B: Fn(P, OverrideOrigin) -> T,
 {
-    if let Some(raw) = cli {
+    if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
         let parsed = parse(raw)?;
         return Ok(Some(build(parsed, OverrideOrigin::CliFlag)));
     }
-    match env {
-        Some(raw) if !raw.is_empty() => {
-            let parsed = parse(raw)?;
-            Ok(Some(build(parsed, OverrideOrigin::EnvVar)))
-        }
-        _ => Ok(None),
+    if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
+        let parsed = parse(raw)?;
+        return Ok(Some(build(parsed, OverrideOrigin::EnvVar)));
     }
+    Ok(None)
 }
 
 fn join_labels<I: Iterator<Item = &'static str>>(labels: I) -> String {
@@ -1165,6 +1166,38 @@ mod tests {
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
         assert!(decision.warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_override_trims_whitespace_in_env_and_cli() {
+        // Whitespace in env values is common when shell-export patterns
+        // leave trailing newlines or quoted values pad arguments. The
+        // override parser must tolerate this so `RUNNER_PM=" pnpm "`
+        // works the same as `RUNNER_PM=pnpm` instead of erroring on an
+        // "unknown package manager" with the padded label.
+        let from_env =
+            ResolutionOverrides::from_values(None, Some(" pnpm "), None, None, None, None, None)
+                .expect("padded env value should parse after trimming");
+        assert_eq!(
+            from_env.pm.expect("pm should be present").pm,
+            PackageManager::Pnpm
+        );
+
+        let from_cli =
+            ResolutionOverrides::from_values(Some(" yarn\n"), None, None, None, None, None, None)
+                .expect("padded CLI value should parse after trimming");
+        assert_eq!(
+            from_cli.pm.expect("pm should be present").pm,
+            PackageManager::Yarn
+        );
+
+        // Whitespace-only values are treated as unset (same as empty
+        // strings); without this, `RUNNER_PM="   "` would fail with
+        // "unknown package manager \"\"" after the trim.
+        let blank =
+            ResolutionOverrides::from_values(None, Some("   "), None, None, None, None, None)
+                .expect("whitespace-only env should parse as no override");
+        assert!(blank.pm.is_none());
     }
 
     #[test]
