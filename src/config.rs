@@ -101,7 +101,6 @@ pub(crate) struct TaskRunnerSection {
 pub(crate) struct ResolutionSection {
     /// `probe` (default) — PATH probe in canonical order when no signals
     /// match; `npm` — legacy silent fallback; `error` — refuse to proceed.
-    #[allow(dead_code, reason = "consumed by Phase 5 (PATH probe)")]
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore` — how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).

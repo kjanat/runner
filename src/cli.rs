@@ -377,6 +377,12 @@ pub(crate) struct Cli {
     #[arg(long = "runner", global = true, value_name = "NAME")]
     pub runner_override: Option<String>,
 
+    /// What to do when no detection signal matches: `probe` (default,
+    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
+    /// Falls back to `$RUNNER_FALLBACK` when omitted.
+    #[arg(long = "fallback", global = true, value_name = "POLICY")]
+    pub fallback: Option<String>,
+
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -483,6 +489,12 @@ pub(crate) struct RunAliasCli {
     /// Falls back to `$RUNNER_RUNNER` when omitted.
     #[arg(long = "runner", global = true, value_name = "NAME")]
     pub runner_override: Option<String>,
+
+    /// What to do when no detection signal matches: `probe` (default,
+    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
+    /// Falls back to `$RUNNER_FALLBACK` when omitted.
+    #[arg(long = "fallback", global = true, value_name = "POLICY")]
+    pub fallback: Option<String>,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]

@@ -17,10 +17,12 @@
 //! 7. `PATH` probe in canonical order — Phase 5.
 //! 8. Terminal — error with actionable guidance — Phase 5.
 
+mod probe;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
 use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, detect_pm_from_manifest};
@@ -52,6 +54,25 @@ pub(crate) struct ResolutionOverrides {
     /// source-selection chain generalized in Phase 8.
     #[allow(dead_code, reason = "consumed by source selection in Phase 8")]
     pub runner: Option<RunnerOverride>,
+    /// What to do when no signal in steps 2–6 matches.
+    pub fallback: FallbackPolicy,
+}
+
+/// What to do when no signal in steps 2–6 matches.
+///
+/// Set via `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum FallbackPolicy {
+    /// Walk `$PATH` in canonical order and pick the first installed PM.
+    /// Errors if nothing matches.
+    #[default]
+    Probe,
+    /// Legacy: silently default to `npm` so dispatch is attempted even
+    /// when nothing is detected. Useful for backwards compatibility.
+    Npm,
+    /// Refuse to proceed when no signal matches; error out with a list of
+    /// sources that were checked.
+    Error,
 }
 
 /// A package-manager override plus the source the user set it from.
@@ -126,9 +147,16 @@ pub(crate) enum ResolutionStep {
     /// Step 6 — package manager inferred from a lockfile (or another
     /// detector recorded in [`ProjectContext::package_managers`]).
     Lockfile,
+    /// Step 7 — discovered via `$PATH` probe in canonical order.
+    PathProbe {
+        /// Absolute path of the executable found on PATH.
+        #[allow(dead_code, reason = "consumed by --explain in Phase 6")]
+        binary: PathBuf,
+    },
     /// Step 8 (legacy) — no signals matched, default to `npm` so that
-    /// `runner run <script>` still has a chance to dispatch. Phase 5 replaces
-    /// this with a `PATH` probe and an error when nothing is available.
+    /// `runner run <script>` still has a chance to dispatch. The Phase 5
+    /// default replaces this with a [`Self::PathProbe`]; this variant only
+    /// fires with `--fallback npm`.
     LegacyNpmFallback,
 }
 
@@ -144,24 +172,36 @@ impl<'ctx> Resolver<'ctx> {
     /// - Step 2–3 — CLI/env PM override (when compatible with Node scripts).
     /// - Step 4 — `runner.toml` `[pm].node` override.
     /// - Step 5a — `package.json` legacy `packageManager` field.
-    /// - Step 5b — `package.json` `devEngines.packageManager` field.
+    /// - Step 5b — `package.json` `devEngines.packageManager` field
+    ///   (honoring `onFail` when the declared PM is missing from PATH).
     /// - Step 6 — lockfile (via [`ProjectContext::primary_node_pm`]).
-    /// - Step 8 — legacy `npm` fallback (replaced by Phase 5's PATH probe).
+    /// - Step 7 — `$PATH` probe in canonical Node order
+    ///   (`bun > pnpm > yarn > npm`). Active by default; replaced by
+    ///   step 8 when `--fallback npm` is set.
+    /// - Step 8 — error or legacy `npm` (depending on
+    ///   [`FallbackPolicy`]).
     ///
     /// When a manifest declaration (step 5) disagrees with a detected
     /// lockfile (step 6), the manifest wins (Corepack semantics) and a
     /// `package.json` warning is emitted.
-    pub(crate) fn resolve_node_pm(&self) -> ResolvedPm {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no signal matches and
+    /// `FallbackPolicy::Error` or `FallbackPolicy::Probe` is in effect
+    /// with nothing on `$PATH`, or when a manifest `onFail = Error`
+    /// declaration cannot be satisfied.
+    pub(crate) fn resolve_node_pm(&self) -> Result<ResolvedPm> {
         let mut warnings = Vec::new();
 
         if let Some(o) = self.overrides.pm.as_ref()
             && pm_can_run_package_json_scripts(o.pm)
         {
-            return ResolvedPm {
+            return Ok(ResolvedPm {
                 pm: o.pm,
                 via: ResolutionStep::Override(o.origin.clone()),
                 warnings,
-            };
+            });
         }
         if let Some(o) = self
             .overrides
@@ -169,43 +209,105 @@ impl<'ctx> Resolver<'ctx> {
             .get(&Ecosystem::Node)
             .or_else(|| self.overrides.pm_by_ecosystem.get(&Ecosystem::Deno))
         {
-            return ResolvedPm {
+            return Ok(ResolvedPm {
                 pm: o.pm,
                 via: ResolutionStep::Override(o.origin.clone()),
                 warnings,
-            };
+            });
         }
 
         if let Some(decl) = detect_pm_from_manifest(&self.ctx.root) {
             if let Some(warning) = cross_check_against_lockfile(&decl, self.ctx) {
                 warnings.push(warning);
             }
+            apply_manifest_on_fail(&decl, &mut warnings)?;
             let via = match decl.source {
                 ManifestSource::PackageManager => ResolutionStep::ManifestPackageManager,
                 ManifestSource::DevEngines => ResolutionStep::ManifestDevEngines {
                     on_fail: decl.on_fail,
                 },
             };
-            return ResolvedPm {
+            return Ok(ResolvedPm {
                 pm: decl.pm,
                 via,
                 warnings,
-            };
+            });
         }
 
-        match self.ctx.primary_node_pm().or_else(|| self.ctx.primary_pm()) {
-            Some(pm) => ResolvedPm {
+        if let Some(pm) = self.ctx.primary_node_pm().or_else(|| self.ctx.primary_pm()) {
+            return Ok(ResolvedPm {
                 pm,
                 via: ResolutionStep::Lockfile,
                 warnings,
+            });
+        }
+
+        match self.overrides.fallback {
+            FallbackPolicy::Probe => match probe::probe_first(probe::NODE_PROBE_ORDER) {
+                Some((pm, binary)) => Ok(ResolvedPm {
+                    pm,
+                    via: ResolutionStep::PathProbe { binary },
+                    warnings,
+                }),
+                None => Err(no_pm_found_error()),
             },
-            None => ResolvedPm {
+            FallbackPolicy::Npm => Ok(ResolvedPm {
                 pm: PackageManager::Npm,
                 via: ResolutionStep::LegacyNpmFallback,
                 warnings,
-            },
+            }),
+            FallbackPolicy::Error => Err(no_pm_found_error()),
         }
     }
+}
+
+/// Apply a manifest declaration's `onFail` policy by checking that the
+/// declared PM is actually present on `$PATH`.
+///
+/// - `Ignore` — no check.
+/// - `Warn` — emit a `package.json` warning if missing; continue with the
+///   declared PM regardless.
+/// - `Error` — bail when missing.
+fn apply_manifest_on_fail(
+    decl: &ManifestPmDecl,
+    warnings: &mut Vec<DetectionWarning>,
+) -> Result<()> {
+    if matches!(decl.on_fail, OnFail::Ignore) {
+        return Ok(());
+    }
+
+    if probe::probe(decl.pm.label()).is_some() {
+        return Ok(());
+    }
+
+    match decl.on_fail {
+        OnFail::Ignore => Ok(()),
+        OnFail::Warn => {
+            warnings.push(DetectionWarning {
+                source: "package.json",
+                detail: format!(
+                    "devEngines.packageManager declares {} but it was not found on PATH; \
+                     dispatch will fail at spawn time",
+                    decl.pm.label(),
+                ),
+            });
+            Ok(())
+        }
+        OnFail::Error => bail!(
+            "devEngines.packageManager declares {} with onFail=error, but it was not found on \
+             PATH",
+            decl.pm.label(),
+        ),
+    }
+}
+
+fn no_pm_found_error() -> anyhow::Error {
+    anyhow!(
+        "no Node package manager detected. Checked: lockfiles (bun.lock, pnpm-lock.yaml, \
+         yarn.lock, package-lock.json), package.json (packageManager + devEngines), PATH for \
+         bun/pnpm/yarn/npm. Pin one with `--pm <name>`, set `RUNNER_PM=<name>`, add it to \
+         runner.toml under `[pm].node`, or install one of {{bun, pnpm, yarn, npm}}.",
+    )
 }
 
 /// Compare a manifest declaration against the lockfile-signal recorded in
@@ -244,29 +346,33 @@ const fn pm_can_run_package_json_scripts(pm: PackageManager) -> bool {
 
 impl ResolutionOverrides {
     /// Assemble overrides from CLI flag values (already parsed by clap),
-    /// the `RUNNER_PM` / `RUNNER_RUNNER` environment variables, and an
-    /// optional `runner.toml` loaded from the project root.
+    /// the `RUNNER_*` environment variables, and an optional `runner.toml`
+    /// loaded from the project root.
     ///
     /// Reads `std::env` for the env-var sources; pure parsing happens in
     /// [`Self::from_values`].
     ///
     /// # Errors
     ///
-    /// Returns an error if any value does not name a known package manager
-    /// or task runner, or if a `runner.toml` field contains a PM that does
-    /// not belong to its target ecosystem.
+    /// Returns an error if any value does not name a known package manager,
+    /// task runner, or fallback policy, or if a `runner.toml` field contains
+    /// a PM that does not belong to its target ecosystem.
     pub(crate) fn from_cli_and_env(
         cli_pm: Option<&str>,
         cli_runner: Option<&str>,
+        cli_fallback: Option<&str>,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let env_pm = std::env::var("RUNNER_PM").ok();
         let env_runner = std::env::var("RUNNER_RUNNER").ok();
+        let env_fallback = std::env::var("RUNNER_FALLBACK").ok();
         Self::from_values(
             cli_pm,
             env_pm.as_deref(),
             cli_runner,
             env_runner.as_deref(),
+            cli_fallback,
+            env_fallback.as_deref(),
             config,
         )
     }
@@ -276,14 +382,16 @@ impl ResolutionOverrides {
     ///
     /// # Errors
     ///
-    /// Returns an error if any value does not name a known package manager
-    /// or task runner, or if a `runner.toml` field contains a PM that does
-    /// not belong to its target ecosystem.
+    /// Returns an error if any value does not name a known package manager,
+    /// task runner, or fallback policy, or if a `runner.toml` field contains
+    /// a PM that does not belong to its target ecosystem.
     pub(crate) fn from_values(
         cli_pm: Option<&str>,
         env_pm: Option<&str>,
         cli_runner: Option<&str>,
         env_runner: Option<&str>,
+        cli_fallback: Option<&str>,
+        env_fallback: Option<&str>,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let pm = parse_override(cli_pm, env_pm, parse_pm_label, |pm, origin| PmOverride {
@@ -296,6 +404,8 @@ impl ResolutionOverrides {
             parse_runner_label,
             |runner, origin| RunnerOverride { runner, origin },
         )?;
+
+        let fallback = resolve_fallback_policy(cli_fallback, env_fallback, config)?;
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = config {
@@ -329,8 +439,39 @@ impl ResolutionOverrides {
             pm,
             pm_by_ecosystem,
             runner,
+            fallback,
         })
     }
+}
+
+fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
+    match raw {
+        "probe" => Ok(FallbackPolicy::Probe),
+        "npm" => Ok(FallbackPolicy::Npm),
+        "error" => Ok(FallbackPolicy::Error),
+        other => Err(anyhow!(
+            "unknown fallback policy {other:?}; expected one of probe, npm, error",
+        )),
+    }
+}
+
+fn resolve_fallback_policy(
+    cli: Option<&str>,
+    env: Option<&str>,
+    config: Option<&LoadedConfig>,
+) -> Result<FallbackPolicy> {
+    if let Some(raw) = cli {
+        return parse_fallback_label(raw);
+    }
+    if let Some(raw) = env.filter(|s| !s.is_empty()) {
+        return parse_fallback_label(raw);
+    }
+    if let Some(loaded) = config
+        && let Some(raw) = loaded.config.resolution.fallback.as_deref()
+    {
+        return parse_fallback_label(raw);
+    }
+    Ok(FallbackPolicy::default())
 }
 
 fn parse_pm_label(raw: &str) -> Result<PackageManager> {
@@ -392,7 +533,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        OverrideOrigin, PmOverride, ResolutionOverrides, ResolutionStep, Resolver, RunnerOverride,
+        FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides, ResolutionStep, Resolver,
+        RunnerOverride,
     };
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
     use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
@@ -417,8 +559,7 @@ mod tests {
     fn with_pm_override(pm: PackageManager, origin: OverrideOrigin) -> ResolutionOverrides {
         ResolutionOverrides {
             pm: Some(PmOverride { pm, origin }),
-            pm_by_ecosystem: HashMap::new(),
-            runner: None,
+            ..ResolutionOverrides::default()
         }
     }
 
@@ -434,34 +575,59 @@ mod tests {
             },
         );
         ResolutionOverrides {
-            pm: None,
             pm_by_ecosystem: map,
-            runner: None,
+            ..ResolutionOverrides::default()
         }
     }
 
     #[test]
     fn resolves_detected_node_pm_via_lockfile() {
         let ctx = context(vec![PackageManager::Pnpm]);
-        let decision = resolver(&ctx).resolve_node_pm();
+        let decision = resolver(&ctx)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::Lockfile);
     }
 
     #[test]
-    fn falls_back_to_legacy_npm_when_no_pm_detected() {
+    fn falls_back_to_legacy_npm_when_fallback_policy_is_npm() {
         let ctx = context(vec![]);
-        let decision = resolver(&ctx).resolve_node_pm();
+        let overrides = ResolutionOverrides {
+            fallback: FallbackPolicy::Npm,
+            ..ResolutionOverrides::default()
+        };
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("legacy npm fallback should succeed");
 
         assert_eq!(decision.pm, PackageManager::Npm);
         assert_eq!(decision.via, ResolutionStep::LegacyNpmFallback);
     }
 
     #[test]
+    fn fallback_error_policy_returns_helpful_error_when_no_signal() {
+        let ctx = context(vec![]);
+        let overrides = ResolutionOverrides {
+            fallback: FallbackPolicy::Error,
+            ..ResolutionOverrides::default()
+        };
+        let err = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect_err("error policy should bail when nothing matches");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("no Node package manager detected"));
+        assert!(msg.contains("--pm"));
+    }
+
+    #[test]
     fn prefers_node_pm_over_non_node_primary() {
         let ctx = context(vec![PackageManager::Cargo, PackageManager::Bun]);
-        let decision = resolver(&ctx).resolve_node_pm();
+        let decision = resolver(&ctx)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Bun);
         assert_eq!(decision.via, ResolutionStep::Lockfile);
@@ -470,7 +636,9 @@ mod tests {
     #[test]
     fn falls_back_to_primary_pm_when_no_node_pm_detected() {
         let ctx = context(vec![PackageManager::Deno]);
-        let decision = resolver(&ctx).resolve_node_pm();
+        let decision = resolver(&ctx)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Deno);
         assert_eq!(decision.via, ResolutionStep::Lockfile);
@@ -480,7 +648,9 @@ mod tests {
     fn cli_override_beats_detected_pm() {
         let ctx = context(vec![PackageManager::Pnpm]);
         let overrides = with_pm_override(PackageManager::Yarn, OverrideOrigin::CliFlag);
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Yarn);
         assert_eq!(
@@ -493,7 +663,9 @@ mod tests {
     fn env_override_beats_detected_pm() {
         let ctx = context(vec![PackageManager::Pnpm]);
         let overrides = with_pm_override(PackageManager::Bun, OverrideOrigin::EnvVar);
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Bun);
         assert_eq!(
@@ -506,7 +678,9 @@ mod tests {
     fn pm_override_for_deno_is_honored_by_node_resolver() {
         let ctx = context(vec![PackageManager::Pnpm]);
         let overrides = with_pm_override(PackageManager::Deno, OverrideOrigin::CliFlag);
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Deno);
     }
@@ -515,7 +689,9 @@ mod tests {
     fn cross_ecosystem_pm_override_is_ignored_for_node_scripts() {
         let ctx = context(vec![PackageManager::Pnpm]);
         let overrides = with_pm_override(PackageManager::Cargo, OverrideOrigin::CliFlag);
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::Lockfile);
@@ -523,8 +699,9 @@ mod tests {
 
     #[test]
     fn cli_pm_value_parses_to_overrides() {
-        let overrides = ResolutionOverrides::from_values(Some("yarn"), None, None, None, None)
-            .expect("--pm yarn should parse");
+        let overrides =
+            ResolutionOverrides::from_values(Some("yarn"), None, None, None, None, None, None)
+                .expect("--pm yarn should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
         assert_eq!(pm.pm, PackageManager::Yarn);
@@ -534,8 +711,9 @@ mod tests {
 
     #[test]
     fn env_pm_value_parses_when_cli_absent() {
-        let overrides = ResolutionOverrides::from_values(None, Some("bun"), None, None, None)
-            .expect("RUNNER_PM=bun should parse");
+        let overrides =
+            ResolutionOverrides::from_values(None, Some("bun"), None, None, None, None, None)
+                .expect("RUNNER_PM=bun should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
         assert_eq!(pm.pm, PackageManager::Bun);
@@ -544,9 +722,16 @@ mod tests {
 
     #[test]
     fn cli_wins_over_env() {
-        let overrides =
-            ResolutionOverrides::from_values(Some("yarn"), Some("bun"), None, None, None)
-                .expect("both sources should parse");
+        let overrides = ResolutionOverrides::from_values(
+            Some("yarn"),
+            Some("bun"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("both sources should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
         assert_eq!(pm.pm, PackageManager::Yarn);
@@ -555,16 +740,18 @@ mod tests {
 
     #[test]
     fn empty_env_is_treated_as_unset() {
-        let overrides = ResolutionOverrides::from_values(None, Some(""), None, None, None)
-            .expect("empty env should parse as no override");
+        let overrides =
+            ResolutionOverrides::from_values(None, Some(""), None, None, None, None, None)
+                .expect("empty env should parse as no override");
 
         assert!(overrides.pm.is_none());
     }
 
     #[test]
     fn cli_runner_value_parses_to_overrides() {
-        let overrides = ResolutionOverrides::from_values(None, None, Some("just"), None, None)
-            .expect("--runner just should parse");
+        let overrides =
+            ResolutionOverrides::from_values(None, None, Some("just"), None, None, None, None)
+                .expect("--runner just should parse");
 
         let runner: RunnerOverride = overrides.runner.expect("runner override should be present");
         assert_eq!(runner.runner, TaskRunner::Just);
@@ -573,8 +760,9 @@ mod tests {
 
     #[test]
     fn unknown_pm_label_errors_with_valid_value_list() {
-        let err = ResolutionOverrides::from_values(Some("zoot"), None, None, None, None)
-            .expect_err("unknown PM should error");
+        let err =
+            ResolutionOverrides::from_values(Some("zoot"), None, None, None, None, None, None)
+                .expect_err("unknown PM should error");
 
         let msg = format!("{err}");
         assert!(msg.contains("unknown package manager"));
@@ -584,8 +772,9 @@ mod tests {
 
     #[test]
     fn unknown_runner_label_errors_with_valid_value_list() {
-        let err = ResolutionOverrides::from_values(None, None, Some("zoot"), None, None)
-            .expect_err("unknown runner should error");
+        let err =
+            ResolutionOverrides::from_values(None, None, Some("zoot"), None, None, None, None)
+                .expect_err("unknown runner should error");
 
         let msg = format!("{err}");
         assert!(msg.contains("unknown task runner"));
@@ -594,8 +783,9 @@ mod tests {
 
     #[test]
     fn bundler_alias_bundle_is_accepted() {
-        let overrides = ResolutionOverrides::from_values(Some("bundle"), None, None, None, None)
-            .expect("`bundle` should alias to bundler");
+        let overrides =
+            ResolutionOverrides::from_values(Some("bundle"), None, None, None, None, None, None)
+                .expect("`bundle` should alias to bundler");
 
         assert_eq!(
             overrides.pm.expect("pm should be present").pm,
@@ -605,8 +795,9 @@ mod tests {
 
     #[test]
     fn go_task_alias_is_accepted() {
-        let overrides = ResolutionOverrides::from_values(None, None, Some("go-task"), None, None)
-            .expect("`go-task` should alias to GoTask");
+        let overrides =
+            ResolutionOverrides::from_values(None, None, Some("go-task"), None, None, None, None)
+                .expect("`go-task` should alias to GoTask");
 
         assert_eq!(
             overrides.runner.expect("runner should be present").runner,
@@ -632,7 +823,9 @@ mod tests {
         let ctx = context(vec![PackageManager::Pnpm]);
         let overrides = with_config_pm(PackageManager::Yarn, Ecosystem::Node);
 
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Yarn);
         match decision.via {
@@ -650,7 +843,9 @@ mod tests {
             origin: OverrideOrigin::CliFlag,
         });
 
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Bun);
         match decision.via {
@@ -662,8 +857,9 @@ mod tests {
     #[test]
     fn config_loaded_value_populates_pm_by_ecosystem() {
         let loaded = loaded_config_with_node("bun");
-        let overrides = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
-            .expect("config-only overrides should parse");
+        let overrides =
+            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
+                .expect("config-only overrides should parse");
 
         assert!(overrides.pm.is_none());
         let entry = overrides
@@ -691,8 +887,9 @@ mod tests {
                 ..RunnerConfig::default()
             },
         };
-        let overrides = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
-            .expect("python config should parse");
+        let overrides =
+            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
+                .expect("python config should parse");
 
         let entry = overrides
             .pm_by_ecosystem
@@ -704,8 +901,9 @@ mod tests {
     #[test]
     fn config_cross_ecosystem_node_value_rejected_at_parse_time() {
         let loaded = loaded_config_with_node("cargo");
-        let err = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
-            .expect_err("cargo is not a node-script PM");
+        let err =
+            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
+                .expect_err("cargo is not a node-script PM");
         assert!(format!("{err}").contains("cannot dispatch package.json scripts"));
     }
 
@@ -730,7 +928,9 @@ mod tests {
         // should override that to honor the manifest declaration.
         assert!(ctx.package_managers.contains(&PackageManager::Pnpm));
 
-        let decision = Resolver::new(&ctx, ResolutionOverrides::default()).resolve_node_pm();
+        let decision = Resolver::new(&ctx, ResolutionOverrides::default())
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Yarn);
         assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
@@ -758,7 +958,9 @@ mod tests {
         .expect("package.json should be written");
 
         let ctx = detect(dir.path());
-        let decision = Resolver::new(&ctx, ResolutionOverrides::default()).resolve_node_pm();
+        let decision = Resolver::new(&ctx, ResolutionOverrides::default())
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Bun);
         match decision.via {
@@ -783,7 +985,9 @@ mod tests {
 
         let ctx = detect(dir.path());
         let overrides = with_pm_override(PackageManager::Bun, OverrideOrigin::CliFlag);
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Bun);
         assert_eq!(
@@ -809,7 +1013,9 @@ mod tests {
             .expect("lockfile should be written");
 
         let ctx = detect(dir.path());
-        let decision = Resolver::new(&ctx, ResolutionOverrides::default()).resolve_node_pm();
+        let decision = Resolver::new(&ctx, ResolutionOverrides::default())
+            .resolve_node_pm()
+            .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
@@ -822,13 +1028,16 @@ mod tests {
         // stores it under Ecosystem::Deno (per PackageManager::ecosystem)
         // and the Node-script resolver consults both Node and Deno keys.
         let loaded = loaded_config_with_node("deno");
-        let overrides = ResolutionOverrides::from_values(None, None, None, None, Some(&loaded))
-            .expect("deno config should parse");
+        let overrides =
+            ResolutionOverrides::from_values(None, None, None, None, None, None, Some(&loaded))
+                .expect("deno config should parse");
 
         assert!(overrides.pm_by_ecosystem.contains_key(&Ecosystem::Deno));
 
         let ctx = context(vec![PackageManager::Pnpm]);
-        let decision = Resolver::new(&ctx, overrides).resolve_node_pm();
+        let decision = Resolver::new(&ctx, overrides)
+            .resolve_node_pm()
+            .expect("resolution should succeed");
         assert_eq!(decision.pm, PackageManager::Deno);
     }
 }

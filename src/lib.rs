@@ -280,6 +280,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.pm_override.as_deref(),
         cli.runner_override.as_deref(),
+        cli.fallback.as_deref(),
         loaded_config.as_ref(),
     )?;
     match cli.task {
@@ -456,6 +457,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.pm_override.as_deref(),
         cli.runner_override.as_deref(),
+        cli.fallback.as_deref(),
         loaded_config.as_ref(),
     )?;
 
