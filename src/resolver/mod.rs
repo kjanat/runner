@@ -572,8 +572,21 @@ impl ResolutionOverrides {
     }
 }
 
+/// Treat any env-var value as truthy unless it's empty, `"0"`, or a
+/// case-insensitive variant of `false` / `no` / `off`.
+///
+/// Surrounding whitespace is stripped first so a trailing newline (the
+/// shell-export pattern `RUNNER_EXPLAIN=$VAR \n …`) doesn't accidentally
+/// flip an explicit "off" into truthy. Without the case-insensitive
+/// compare, `RUNNER_EXPLAIN=FALSE` would silently enable the trace —
+/// the opposite of what the user clearly meant.
 fn is_env_truthy(raw: &str) -> bool {
-    !raw.is_empty() && !matches!(raw, "0" | "false" | "no" | "off")
+    let v = raw.trim();
+    !v.is_empty()
+        && v != "0"
+        && !v.eq_ignore_ascii_case("false")
+        && !v.eq_ignore_ascii_case("no")
+        && !v.eq_ignore_ascii_case("off")
 }
 
 fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
@@ -1152,6 +1165,34 @@ mod tests {
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert_eq!(decision.via, ResolutionStep::ManifestPackageManager);
         assert!(decision.warnings.is_empty());
+    }
+
+    #[test]
+    fn is_env_truthy_is_case_insensitive_for_falsy_values() {
+        use super::is_env_truthy;
+
+        // Falsy values in any case should be falsy.
+        assert!(!is_env_truthy("false"));
+        assert!(!is_env_truthy("FALSE"));
+        assert!(!is_env_truthy("False"));
+        assert!(!is_env_truthy("no"));
+        assert!(!is_env_truthy("NO"));
+        assert!(!is_env_truthy("off"));
+        assert!(!is_env_truthy("OFF"));
+        assert!(!is_env_truthy("Off"));
+        assert!(!is_env_truthy("0"));
+        assert!(!is_env_truthy(""));
+
+        // Surrounding whitespace shouldn't flip a falsy value.
+        assert!(!is_env_truthy("  false  "));
+        assert!(!is_env_truthy("\nfalse\n"));
+
+        // Anything else is truthy.
+        assert!(is_env_truthy("1"));
+        assert!(is_env_truthy("true"));
+        assert!(is_env_truthy("yes"));
+        assert!(is_env_truthy("on"));
+        assert!(is_env_truthy("anything"));
     }
 
     #[test]

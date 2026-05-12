@@ -513,7 +513,7 @@ mod tests {
             .expect("root Makefile should be written");
 
         let ctx = ProjectContext {
-            root: nested.clone(),
+            root: nested,
             package_managers: Vec::new(),
             task_runners: Vec::new(),
             tasks: Vec::new(),

@@ -68,17 +68,34 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
     let mut signals = Map::new();
     signals.insert("node".to_string(), node_signals);
 
-    let decisions = match Resolver::new(ctx, overrides.clone()).resolve_node_pm() {
-        Ok(decision) => json!({
-            "node_pm": {
-                "pm": decision.pm.label(),
-                "via": decision.describe(),
+    // Capture resolver-side warnings alongside the decision so they
+    // surface in `doctor` output — CodeRabbit flagged that dropping
+    // them hides actionable diagnostics. Manifest/lockfile-mismatch
+    // and devEngines onFail=warn paths both produce these, and they're
+    // exactly the signals a user runs `doctor` for.
+    let (decisions, resolver_warnings) =
+        match Resolver::new(ctx, overrides.clone()).resolve_node_pm() {
+            Ok(decision) => {
+                let warnings = decision.warnings.clone();
+                (
+                    json!({
+                        "node_pm": {
+                            "pm": decision.pm.label(),
+                            "via": decision.describe(),
+                        }
+                    }),
+                    warnings,
+                )
             }
-        }),
-        Err(err) => json!({
-            "node_pm_error": format!("{err}"),
-        }),
-    };
+            Err(err) => (json!({ "node_pm_error": format!("{err}") }), Vec::new()),
+        };
+
+    let warnings_json: Vec<Value> = ctx
+        .warnings
+        .iter()
+        .chain(resolver_warnings.iter())
+        .map(|w| json!({ "source": w.source, "detail": w.detail }))
+        .collect();
 
     json!({
         "schema_version": 1,
@@ -97,10 +114,7 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
         "overrides": overrides_json(overrides),
         "signals": signals,
         "decisions": decisions,
-        "warnings": ctx.warnings.iter().map(|w| json!({
-            "source": w.source,
-            "detail": w.detail,
-        })).collect::<Vec<_>>(),
+        "warnings": warnings_json,
     })
 }
 
@@ -422,5 +436,36 @@ mod tests {
         // which is fine in tests (captured by `cargo test`).
         doctor(&ctx, &ResolutionOverrides::default(), true).expect("json render should succeed");
         doctor(&ctx, &ResolutionOverrides::default(), false).expect("human render should succeed");
+    }
+
+    #[test]
+    fn build_report_merges_resolver_warnings_with_ctx_warnings() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        // Manifest declaration disagrees with the detected lockfile —
+        // the resolver emits a `package.json` warning. Doctor should
+        // surface it alongside whatever ctx.warnings already carries.
+        let dir = TempDir::new("doctor-merges-warnings");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "yarn@4.3.0" }"#,
+        )
+        .expect("package.json should be written");
+        fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n")
+            .expect("pnpm-lock.yaml should be written");
+
+        let ctx = detect(dir.path());
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        let warnings = report["warnings"].as_array().expect("warnings array");
+        assert!(
+            warnings.iter().any(|w| w["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("declaration wins"))),
+            "expected resolver-produced PM mismatch warning to surface in doctor output, got: {warnings:?}",
+        );
     }
 }

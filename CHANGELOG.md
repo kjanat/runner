@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.9.0] - 2026-05-12
+
 ### Added
 
 - Unified package-manager resolution chain. `runner run` now follows a
