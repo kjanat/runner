@@ -264,15 +264,17 @@ impl PackageManager {
     }
 
     /// Whether this PM owns an `npx`-style exec primitive — `npm exec`,
-    /// `pnpm exec`, `yarn …`, `bun x`, `uv run`. Used by the arbitrary-
-    /// command fallback path in `cmd::run` to decide whether to honor a
-    /// `--pm` override or fall through to a direct PATH spawn.
-    ///
-    /// Deno is excluded because `deno run <target>` treats `<target>`
-    /// as a local script path, not a binary in `node_modules`, so
-    /// honoring `--pm deno` here would silently change semantics.
-    /// Cargo, Poetry, Pipenv, Bundler, Composer, and Go also lack an
-    /// exec primitive and are excluded for the same reason.
+    /// `pnpm exec`, `yarn …`, `bun x`, `uv run`. The
+    /// arbitrary-command fallback in `cmd::run::run_pm_exec_fallback`
+    /// dispatches through these via per-PM `exec_cmd` builders; other
+    /// PMs (Deno, Cargo, Poetry, Pipenv, Bundler, Composer, Go) fall
+    /// through to a direct PATH spawn there. Kept as an inherent
+    /// method so the property is documented at the type level even
+    /// though the dispatch match enumerates variants explicitly.
+    #[allow(
+        dead_code,
+        reason = "documents the exec-primitive set; consumed by doctor/why surface in future enhancements"
+    )]
     pub(crate) const fn has_exec_primitive(self) -> bool {
         matches!(
             self,

@@ -849,10 +849,23 @@ mod tests {
     fn parse_version_token_finds_version_in_deno_verbose_output() {
         use super::parse_version_token;
 
-        // Deno's `--version` first line: `deno 2.7.12 (stable, release, x86_64-…)`
+        // Deno's `--version` first line on a stable release:
+        //   `deno 2.7.12 (stable, release, x86_64-unknown-linux-gnu)`
         // The token-scan should skip "deno" and pick up "2.7.12".
         let line = "deno 2.7.12 (stable, release, x86_64-unknown-linux-gnu)";
         assert_eq!(parse_version_token(line), Some("2.7.12".to_string()));
+    }
+
+    #[test]
+    fn parse_version_token_handles_deno_short_flag_output() {
+        use super::parse_version_token;
+
+        // `deno -v` skips the trailing parens but still has the "deno"
+        // prefix token: `deno 2.7.12`. Same parse, no special-casing.
+        assert_eq!(
+            parse_version_token("deno 2.7.12"),
+            Some("2.7.12".to_string())
+        );
     }
 
     #[test]

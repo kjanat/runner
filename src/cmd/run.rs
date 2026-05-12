@@ -46,12 +46,34 @@ pub(crate) fn run(
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
     if found.is_empty() {
-        if let Some(code) = run_bun_test_fallback(ctx, overrides, task_name, args)? {
+        // Run the full resolver chain once and reuse the verdict across
+        // both fallback paths. This is what closes the
+        // override → config → manifest → lockfile → PATH gap that the
+        // earlier no-task fallbacks had: previously, a manifest-pinned
+        // pnpm/bun project with no lockfile would skip the bun-test
+        // fallback (because `ctx.primary_node_pm()` was empty) and
+        // direct-spawn arbitrary commands through PATH instead of
+        // going through the declared PM's exec primitive.
+        //
+        // Resolver errors (e.g. `--fallback=error` with no signal)
+        // collapse to `None` here so the fallbacks still try a direct
+        // PATH spawn as the absolute last resort — propagating the
+        // strict error would surprise users running `runner run somebin`
+        // who only wanted a quick exec.
+        let resolved_pm = Resolver::new(ctx, overrides.clone())
+            .resolve_node_pm()
+            .ok()
+            .map(|decision| {
+                super::print_warning_slice(&decision.warnings);
+                decision.pm
+            });
+
+        if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
             return Ok(code);
         }
 
         if qualifier.is_none() {
-            return run_pm_exec_fallback(ctx, overrides, task_name, args);
+            return run_pm_exec_fallback(ctx, resolved_pm, task_name, args);
         }
 
         bail!("task {task:?} not found. Run `runner list` to see available tasks.");
@@ -158,15 +180,18 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
 }
 
 /// Execute `target` (plus `args`) as an arbitrary command through the
-/// active package manager — the resolver's choice (CLI/env/config
-/// override or manifest declaration) wins over detected context.
+/// resolved package manager. `resolved_pm` carries the verdict from
+/// the full resolver chain (override → manifest → lockfile → PATH
+/// probe), so manifest-pinned and PATH-detected PMs participate here
+/// the same way they do for `package.json` script dispatch.
 ///
-/// Falls back to running the command directly when no PM is selected or
-/// when the selected PM has no `exec`-like primitive (Deno, Cargo,
-/// Poetry, Pipenv, Bundler, Composer, Go).
+/// Falls back to running the command directly when `resolved_pm` is
+/// `None` (resolver errored under `--fallback=error`) or when the
+/// selected PM has no `exec`-like primitive (Deno, Cargo, Poetry,
+/// Pipenv, Bundler, Composer, Go).
 fn run_pm_exec_fallback(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
+    resolved_pm: Option<PackageManager>,
     target: &str,
     args: &[String],
 ) -> Result<i32> {
@@ -180,12 +205,6 @@ fn run_pm_exec_fallback(
         v
     };
 
-    // Resolver-first: honor `--pm`/`RUNNER_PM`/`runner.toml` before
-    // falling back to the detected context. If none of the resolver
-    // signals select a script-dispatching PM, `ctx.primary_pm()`
-    // surfaces whatever lockfile-tier signal exists.
-    let selected_pm = exec_pm_for_overrides(overrides).or_else(|| ctx.primary_pm());
-
     // Only dispatch through a PM when its exec primitive actually runs
     // arbitrary package binaries like `npx` does. For npm/yarn/pnpm/bun/uv
     // this is the whole point of `exec`. Deno, Cargo, and the Python/Ruby/
@@ -197,7 +216,7 @@ fn run_pm_exec_fallback(
     //   * Poetry/Pipenv/Bundler/Composer/Go have nothing equivalent.
     // For those we fall through to spawning `target` directly so PATH is
     // authoritative rather than silently doing the wrong thing.
-    let (label, mut cmd) = match selected_pm {
+    let (label, mut cmd) = match resolved_pm {
         Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
         Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined())),
         Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
@@ -224,11 +243,11 @@ fn run_pm_exec_fallback(
 
 fn run_bun_test_fallback(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
+    resolved_pm: Option<PackageManager>,
     task: &str,
     args: &[String],
 ) -> Result<Option<i32>> {
-    if !should_use_bun_test_fallback(ctx, overrides, task) {
+    if !should_use_bun_test_fallback(ctx, resolved_pm, task) {
         return Ok(None);
     }
 
@@ -248,67 +267,19 @@ fn run_bun_test_fallback(
 /// Bun special-case for `runner test` when the project has no
 /// `package.json` `test` script: forward to `bun test`.
 ///
-/// Honors overrides — `--pm npm` (or any non-Bun PM choice) suppresses
-/// the Bun fallback so the user's explicit intent wins. The resolver
-/// override path is what callers want anyway; the detected context is
-/// only consulted when no override applies.
+/// `resolved_pm` is the verdict from the full resolver chain, so all
+/// signals — `--pm`, `RUNNER_PM`, `runner.toml`, `packageManager`,
+/// `devEngines.packageManager`, lockfile, PATH probe — get a vote.
+/// Fires only when the resolver landed on Bun.
 fn should_use_bun_test_fallback(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
+    resolved_pm: Option<PackageManager>,
     task: &str,
 ) -> bool {
     if task != "test" || has_package_script(ctx, task) {
         return false;
     }
-    let chosen = node_script_pm_for_overrides(overrides)
-        .or_else(|| ctx.primary_node_pm().or_else(|| ctx.primary_pm()));
-    chosen.is_some_and(|pm| pm == PackageManager::Bun)
-}
-
-/// Extract an exec-capable PM from the override bundle for the
-/// arbitrary-command fallback path. Resolver precedence order (CLI/env
-/// first, then per-ecosystem config); `None` when no override applies.
-///
-/// Narrower than [`node_script_pm_for_overrides`] — only PMs with an
-/// `npx`-style `exec` primitive qualify. Deno is intentionally
-/// excluded because `deno run <target>` treats `<target>` as a local
-/// script path, not a binary in `node_modules`, so honoring `--pm deno`
-/// here would silently change semantics. Cargo, Poetry, Pipenv,
-/// Bundler, Composer, and Go also lack an exec primitive and are
-/// excluded for the same reason.
-fn exec_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManager> {
-    if let Some(o) = overrides.pm.as_ref()
-        && o.pm.has_exec_primitive()
-    {
-        return Some(o.pm);
-    }
-    overrides
-        .pm_by_ecosystem
-        .get(&crate::types::Ecosystem::Node)
-        .filter(|o| o.pm.has_exec_primitive())
-        .map(|o| o.pm)
-}
-
-/// Extract any node-script-dispatching PM from the override bundle for
-/// the bun-test fallback path. Includes Deno because
-/// `packageManager: "deno@…"` is a valid script dispatcher even though
-/// Deno can't take its place in `npx <bin>` semantics. Used only to
-/// answer "did the user pick Bun for this Node project?"
-fn node_script_pm_for_overrides(overrides: &ResolutionOverrides) -> Option<PackageManager> {
-    if let Some(o) = overrides.pm.as_ref()
-        && o.pm.can_dispatch_node_scripts()
-    {
-        return Some(o.pm);
-    }
-    overrides
-        .pm_by_ecosystem
-        .get(&crate::types::Ecosystem::Node)
-        .or_else(|| {
-            overrides
-                .pm_by_ecosystem
-                .get(&crate::types::Ecosystem::Deno)
-        })
-        .map(|o| o.pm)
+    resolved_pm.is_some_and(|pm| pm == PackageManager::Bun)
 }
 
 fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
@@ -363,7 +334,6 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{parse_qualified_task, select_task_entry, should_use_bun_test_fallback};
-    use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
@@ -424,12 +394,13 @@ mod tests {
     }
 
     #[test]
-    fn bun_test_fallback_enabled_when_no_test_script() {
+    fn bun_test_fallback_enabled_when_resolved_to_bun() {
         let ctx = context(vec![PackageManager::Bun], vec![]);
 
+        // The resolver would return Bun via Lockfile for ctx=[Bun].
         assert!(should_use_bun_test_fallback(
             &ctx,
-            &ResolutionOverrides::default(),
+            Some(PackageManager::Bun),
             "test"
         ));
     }
@@ -449,7 +420,7 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
-            &ResolutionOverrides::default(),
+            Some(PackageManager::Bun),
             "test"
         ));
     }
@@ -460,7 +431,7 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
-            &ResolutionOverrides::default(),
+            Some(PackageManager::Npm),
             "test"
         ));
     }
@@ -471,87 +442,47 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
-            &ResolutionOverrides::default(),
+            Some(PackageManager::Bun),
             "build"
         ));
     }
 
     #[test]
-    fn bun_test_fallback_suppressed_by_npm_pm_override() {
-        use crate::resolver::{OverrideOrigin, PmOverride};
-
+    fn bun_test_fallback_suppressed_when_resolver_returns_non_bun() {
+        // Models `--pm npm` against a Bun-detected project: the
+        // resolver returns Npm (override wins), so the fallback must
+        // not fire. The previous-shape "user intent wins" test now
+        // collapses to a simpler assertion about the resolved verdict.
         let ctx = context(vec![PackageManager::Bun], vec![]);
-        let overrides = ResolutionOverrides {
-            pm: Some(PmOverride {
-                pm: PackageManager::Npm,
-                origin: OverrideOrigin::CliFlag,
-            }),
-            ..ResolutionOverrides::default()
-        };
 
-        // `--pm npm` against a Bun-detected project should not trigger the
-        // Bun test fallback; user intent (npm) wins.
-        assert!(!should_use_bun_test_fallback(&ctx, &overrides, "test"));
+        assert!(!should_use_bun_test_fallback(
+            &ctx,
+            Some(PackageManager::Npm),
+            "test"
+        ));
     }
 
     #[test]
-    fn exec_pm_for_overrides_excludes_deno() {
-        use crate::resolver::{OverrideOrigin, PmOverride};
+    fn bun_test_fallback_disabled_when_resolver_returns_none() {
+        // Resolver errored (--fallback=error with no signal) → no
+        // fallback. Even though ctx says Bun, the caller already
+        // collapsed the error to None.
+        let ctx = context(vec![PackageManager::Bun], vec![]);
 
-        // Deno has no `npx`-style primitive — `deno run <target>` runs a
-        // local script, not a binary in node_modules. The narrower exec
-        // path must drop the override so `run_pm_exec_fallback` falls
-        // through to a direct PATH spawn rather than picking Deno and
-        // then silently mismatching the user's stated intent.
-        let overrides = ResolutionOverrides {
-            pm: Some(PmOverride {
-                pm: PackageManager::Deno,
-                origin: OverrideOrigin::CliFlag,
-            }),
-            ..ResolutionOverrides::default()
-        };
-
-        assert_eq!(super::exec_pm_for_overrides(&overrides), None);
+        assert!(!should_use_bun_test_fallback(&ctx, None, "test"));
     }
 
     #[test]
-    fn node_script_pm_for_overrides_includes_deno() {
-        use crate::resolver::{OverrideOrigin, PmOverride};
-
-        // The Node-script-dispatcher path *does* include Deno because
-        // `packageManager: "deno@…"` is a valid Node-script dispatcher.
-        // This lets the bun-test fallback correctly answer "did the
-        // user override away from Bun?".
-        let overrides = ResolutionOverrides {
-            pm: Some(PmOverride {
-                pm: PackageManager::Deno,
-                origin: OverrideOrigin::CliFlag,
-            }),
-            ..ResolutionOverrides::default()
-        };
-
-        assert_eq!(
-            super::node_script_pm_for_overrides(&overrides),
-            Some(PackageManager::Deno)
-        );
-    }
-
-    #[test]
-    fn bun_test_fallback_enabled_by_bun_pm_override_without_lockfile() {
-        use crate::resolver::{OverrideOrigin, PmOverride};
-
-        // No detected PM — but the user said `--pm bun`, so the bun test
-        // fallback should kick in.
+    fn bun_test_fallback_enabled_when_resolver_picks_bun_with_no_lockfile() {
+        // Models `--pm bun` against an empty ctx — resolver returns
+        // Bun even though ctx has no detected PM. Fallback fires.
         let ctx = context(vec![], vec![]);
-        let overrides = ResolutionOverrides {
-            pm: Some(PmOverride {
-                pm: PackageManager::Bun,
-                origin: OverrideOrigin::CliFlag,
-            }),
-            ..ResolutionOverrides::default()
-        };
 
-        assert!(should_use_bun_test_fallback(&ctx, &overrides, "test"));
+        assert!(should_use_bun_test_fallback(
+            &ctx,
+            Some(PackageManager::Bun),
+            "test"
+        ));
     }
 
     #[test]
