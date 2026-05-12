@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `uv sync [--frozen]`
 pub(crate) fn install_cmd(frozen: bool) -> Command {
-    let mut c = Command::new("uv");
+    let mut c = super::program::command("uv");
     c.arg("sync");
     if frozen {
         c.arg("--frozen");
@@ -20,7 +20,7 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 
 /// `uv run <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("uv");
+    let mut c = super::program::command("uv");
     c.arg("run").args(args);
     c
 }

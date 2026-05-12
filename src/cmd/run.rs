@@ -142,8 +142,8 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
 /// detected.
 fn run_pm_exec_fallback(ctx: &ProjectContext, target: &str, args: &[String]) -> Result<i32> {
     // `tool::<pm>::exec_cmd` takes a flat `&[String]` — [target, ...args].
-    // Build it lazily so the direct `Command::new(target)` fallback doesn't
-    // pay for an allocation it never uses.
+    // Build it lazily so the direct `tool::program::command(target)` fallback
+    // doesn't pay for an allocation it never uses.
     let combined = || {
         let mut v = Vec::with_capacity(args.len() + 1);
         v.push(target.to_string());
@@ -169,7 +169,7 @@ fn run_pm_exec_fallback(ctx: &ProjectContext, target: &str, args: &[String]) -> 
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uv", tool::uv::exec_cmd(&combined())),
         None | Some(_) => {
-            let mut c = Command::new(target);
+            let mut c = tool::program::command(target);
             c.args(args);
             ("exec", c)
         }

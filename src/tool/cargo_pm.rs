@@ -27,7 +27,7 @@ pub(crate) fn detect_workspace(dir: &Path) -> bool {
 
 /// `cargo fetch [--locked]`.
 pub(crate) fn install_cmd(frozen: bool) -> Command {
-    let mut c = Command::new("cargo");
+    let mut c = super::program::command("cargo");
     c.arg("fetch");
     if frozen {
         c.arg("--locked");

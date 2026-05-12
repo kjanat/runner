@@ -10,7 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `yarn <task> [args...]` (yarn infers `run`).
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("yarn");
+    let mut c = super::program::command("yarn");
     c.arg(task).args(args);
     c
 }
@@ -29,7 +29,7 @@ pub(crate) fn install_cmd(dir: &Path, frozen: bool) -> Command {
 }
 
 fn install_cmd_with_major(frozen: bool, yarn_major: Option<u32>) -> Command {
-    let mut c = Command::new("yarn");
+    let mut c = super::program::command("yarn");
     c.arg("install");
     if frozen {
         let frozen_flag = match yarn_major {
@@ -42,7 +42,7 @@ fn install_cmd_with_major(frozen: bool, yarn_major: Option<u32>) -> Command {
 }
 
 fn detect_major_version(dir: &Path) -> Option<u32> {
-    let output = Command::new("yarn")
+    let output = super::program::command("yarn")
         .arg("--version")
         .current_dir(dir)
         .output()
@@ -59,7 +59,7 @@ fn parse_major_version(version: &str) -> Option<u32> {
 
 /// `yarn exec <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("yarn");
+    let mut c = super::program::command("yarn");
     c.arg("exec").args(args);
     c
 }

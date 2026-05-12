@@ -88,7 +88,7 @@ fn is_suffix_rule(target: &str) -> bool {
 
 /// `make <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("make");
+    let mut c = super::program::command("make");
     c.arg(task).args(args);
     c
 }

@@ -48,7 +48,7 @@ fn extract_tasks_with_bacon(dir: &Path) -> Option<Vec<(String, Option<String>)>>
     // `…--all-features -- -D` on an 80-col terminal). Override `COLUMNS`
     // to a value comfortably wider than any realistic command so the
     // description column reaches us intact; bacon honours the env var.
-    let output = Command::new("bacon")
+    let output = super::program::command("bacon")
         .arg("--list-jobs")
         .current_dir(dir)
         .env("COLUMNS", "10000")
@@ -178,7 +178,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 /// always insert `--` when args are present so flags and positionals reach
 /// the underlying job verbatim.
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("bacon");
+    let mut c = super::program::command("bacon");
     c.arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);

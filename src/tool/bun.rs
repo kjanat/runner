@@ -10,21 +10,21 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `bun run <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
-    let mut c = Command::new("bun");
+    let mut c = super::program::command("bun");
     c.arg("run").arg(task).args(args);
     c
 }
 
 /// `bun test [args...]`
 pub(crate) fn test_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("bun");
+    let mut c = super::program::command("bun");
     c.arg("test").args(args);
     c
 }
 
 /// `bun install [--frozen-lockfile]`
 pub(crate) fn install_cmd(frozen: bool) -> Command {
-    let mut c = Command::new("bun");
+    let mut c = super::program::command("bun");
     c.arg("install");
     if frozen {
         c.arg("--frozen-lockfile");
@@ -34,7 +34,7 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 
 /// `bunx <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = Command::new("bunx");
+    let mut c = super::program::command("bunx");
     c.args(args);
     c
 }

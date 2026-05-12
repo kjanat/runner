@@ -9,6 +9,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Fixed
+
+- `Error: program not found` on Windows when `runner run <script>` dispatches
+  through npm / yarn / pnpm (issue #20). Bare-name spawns now walk
+  `PATH` × `PATHEXT` so `.cmd` / `.bat` shims (npm.cmd, yarn.cmd, pnpm.cmd)
+  resolve the same way they do under cmd.exe / PowerShell. Same fix covers
+  every other Windows-shimmed tool runner dispatches: turbo, deno, make,
+  task, just, composer, poetry, pipenv, uv, bundle, go, bacon, and the
+  `runner run <bin>` arbitrary-target fallback. Non-Windows targets are
+  unchanged.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
