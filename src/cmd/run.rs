@@ -46,34 +46,41 @@ pub(crate) fn run(
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
     if found.is_empty() {
-        // Run the full resolver chain once and reuse the verdict across
-        // both fallback paths. This is what closes the
-        // override → config → manifest → lockfile → PATH gap that the
-        // earlier no-task fallbacks had: previously, a manifest-pinned
-        // pnpm/bun project with no lockfile would skip the bun-test
-        // fallback (because `ctx.primary_node_pm()` was empty) and
-        // direct-spawn arbitrary commands through PATH instead of
-        // going through the declared PM's exec primitive.
-        //
-        // Resolver errors (e.g. `--fallback=error` with no signal)
-        // collapse to `None` here so the fallbacks still try a direct
-        // PATH spawn as the absolute last resort — propagating the
-        // strict error would surprise users running `runner run somebin`
-        // who only wanted a quick exec.
-        let resolved_pm = Resolver::new(ctx, overrides.clone())
-            .resolve_node_pm()
-            .ok()
-            .map(|decision| {
-                super::print_warning_slice(&decision.warnings);
-                decision.pm
-            });
-
         // Fallbacks are scoped to unqualified lookups. A qualified
         // miss like `runner run justfile:test` in a Bun project must
         // bail on the qualifier rather than silently dispatching
         // `bun test` — the qualifier is user intent about *where* to
         // look, not just a hint we can drop.
+        //
+        // The resolver call lives inside this branch so qualified
+        // misses don't pay for PM resolution (warning emission,
+        // potential `<pm> --version` spawn for devEngines.version
+        // checks) on an error path they can't reach.
         if qualifier.is_none() {
+            // Run the full resolver chain once and reuse the verdict
+            // across both fallback paths. This is what closes the
+            // override → config → manifest → lockfile → PATH gap that
+            // the earlier no-task fallbacks had: previously, a
+            // manifest-pinned pnpm/bun project with no lockfile would
+            // skip the bun-test fallback (because
+            // `ctx.primary_node_pm()` was empty) and direct-spawn
+            // arbitrary commands through PATH instead of going
+            // through the declared PM's exec primitive.
+            //
+            // Resolver errors (e.g. `--fallback=error` with no
+            // signal) collapse to `None` here so the fallbacks still
+            // try a direct PATH spawn as the absolute last resort —
+            // propagating the strict error would surprise users
+            // running `runner run somebin` who only wanted a quick
+            // exec.
+            let resolved_pm = Resolver::new(ctx, overrides.clone())
+                .resolve_node_pm()
+                .ok()
+                .map(|decision| {
+                    super::print_warning_slice(&decision.warnings);
+                    decision.pm
+                });
+
             if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
                 return Ok(code);
             }
