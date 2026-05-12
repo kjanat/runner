@@ -250,7 +250,18 @@ impl<'ctx> Resolver<'ctx> {
             });
         }
 
-        if let Some(pm) = self.ctx.primary_node_pm().or_else(|| self.ctx.primary_pm()) {
+        // Filter `primary_pm` through `can_dispatch_node_scripts` so a
+        // non-script PM (Cargo/Poetry/Bundler/…) doesn't satisfy the
+        // Node lockfile step. Without the filter, a mixed-language repo
+        // with `package.json` scripts but only `Cargo.lock` as the
+        // top-priority signal would return Cargo here and later bail
+        // with the opaque "cargo cannot run scripts" branch instead of
+        // continuing to the PATH probe / fallback.
+        if let Some(pm) = self.ctx.primary_node_pm().or_else(|| {
+            self.ctx
+                .primary_pm()
+                .filter(|pm| pm.can_dispatch_node_scripts())
+        }) {
             return Ok(ResolvedPm {
                 pm,
                 via: ResolutionStep::Lockfile,
@@ -655,14 +666,24 @@ fn resolve_fallback_policy(
     env: Option<&str>,
     config: Option<&LoadedConfig>,
 ) -> Result<FallbackPolicy> {
-    if let Some(raw) = cli {
+    // Mirror `parse_override`'s whitespace handling so
+    // `RUNNER_FALLBACK=" probe "` and `[resolution].fallback = " npm "`
+    // work the same as their stripped forms. Empty/whitespace-only
+    // values count as unset and fall through to the next source.
+    if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
         return parse_fallback_label(raw);
     }
-    if let Some(raw) = env.filter(|s| !s.is_empty()) {
+    if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
         return parse_fallback_label(raw);
     }
     if let Some(loaded) = config
-        && let Some(raw) = loaded.config.resolution.fallback.as_deref()
+        && let Some(raw) = loaded
+            .config
+            .resolution
+            .fallback
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
     {
         return parse_fallback_label(raw);
     }

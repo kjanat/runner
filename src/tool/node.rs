@@ -319,15 +319,24 @@ fn installed_version(pm: PackageManager) -> Option<String> {
     let raw = String::from_utf8_lossy(&out.stdout);
     let trimmed = raw.trim();
     let first_line = trimmed.lines().next().unwrap_or(trimmed).trim();
-    if first_line.is_empty() {
-        return None;
-    }
-    Some(
-        first_line
-            .strip_prefix('v')
-            .unwrap_or(first_line)
-            .to_string(),
-    )
+    parse_version_token(first_line)
+}
+
+/// Pull the first valid semver token out of a `<pm> --version` first
+/// line. Tolerates Deno's verbose output
+/// (`deno 2.7.12 (stable, release, x86_64-unknown-linux-gnu)`) as well
+/// as the bare-version forms emitted by npm/pnpm/yarn/bun. A leading
+/// `v` prefix is stripped per Corepack's display convention.
+///
+/// Extracted from [`installed_version`] so the parsing logic stays
+/// testable without spawning a subprocess.
+fn parse_version_token(line: &str) -> Option<String> {
+    line.split_whitespace().find_map(|token| {
+        let cleaned = token.strip_prefix('v').unwrap_or(token);
+        semver::Version::parse(&normalize_version(cleaned))
+            .ok()
+            .map(|_| cleaned.to_string())
+    })
 }
 
 /// Pad bare `major` or `major.minor` versions to a full semver triple so
@@ -818,6 +827,52 @@ mod tests {
                 eprintln!("skipping: {reason}");
             }
         }
+    }
+
+    #[test]
+    fn parse_version_token_handles_bare_semver() {
+        use super::parse_version_token;
+
+        assert_eq!(parse_version_token("10.9.2"), Some("10.9.2".to_string()));
+        assert_eq!(parse_version_token("9.0.0"), Some("9.0.0".to_string()));
+        assert_eq!(parse_version_token("1.22.22"), Some("1.22.22".to_string()));
+    }
+
+    #[test]
+    fn parse_version_token_strips_v_prefix() {
+        use super::parse_version_token;
+
+        assert_eq!(parse_version_token("v20.11.0"), Some("20.11.0".to_string()));
+    }
+
+    #[test]
+    fn parse_version_token_finds_version_in_deno_verbose_output() {
+        use super::parse_version_token;
+
+        // Deno's `--version` first line: `deno 2.7.12 (stable, release, x86_64-…)`
+        // The token-scan should skip "deno" and pick up "2.7.12".
+        let line = "deno 2.7.12 (stable, release, x86_64-unknown-linux-gnu)";
+        assert_eq!(parse_version_token(line), Some("2.7.12".to_string()));
+    }
+
+    #[test]
+    fn parse_version_token_handles_bare_major_minor() {
+        use super::parse_version_token;
+
+        // normalize_version pads bare `9` / `9.5` to a parseable triple
+        // so the token-scan accepts them. Common in CI logs where the
+        // PM's --version surface might collapse to a short string.
+        assert_eq!(parse_version_token("9"), Some("9".to_string()));
+        assert_eq!(parse_version_token("9.5"), Some("9.5".to_string()));
+    }
+
+    #[test]
+    fn parse_version_token_returns_none_for_garbage() {
+        use super::parse_version_token;
+
+        assert_eq!(parse_version_token(""), None);
+        assert_eq!(parse_version_token("not a version"), None);
+        assert_eq!(parse_version_token("---"), None);
     }
 
     #[test]
