@@ -47,17 +47,18 @@ fn resolve_windows(
     let pathext = pathext.to_string_lossy();
     let exts: Vec<&str> = pathext.split(';').filter(|ext| !ext.is_empty()).collect();
 
-    let lower = name.to_ascii_lowercase();
-    let has_known_ext = exts
-        .iter()
-        .any(|ext| lower.ends_with(&ext.to_ascii_lowercase()));
+    // Matches cmd.exe: when `name` carries any extension, the exact spelling is
+    // used and PATHEXT is not consulted. Only fall back to PATHEXT for bare
+    // names with no extension at all.
+    let has_explicit_extension = Path::new(name).extension().is_some();
 
     for dir in std::env::split_paths(path) {
-        if has_known_ext {
+        if has_explicit_extension {
             let candidate = dir.join(name);
             if candidate.is_file() {
                 return Some(candidate);
             }
+            continue;
         }
         for ext in &exts {
             let candidate = dir.join(format!("{name}{ext}"));
@@ -159,6 +160,28 @@ mod tests {
         let resolved = resolve_windows("foo.cmd", &path, &pathext);
 
         assert_eq!(resolved, Some(shim));
+    }
+
+    // An explicit extension must short-circuit PATHEXT — a later directory
+    // holding the exact name wins over an earlier `<name><ext>` candidate. This
+    // is the cmd.exe behaviour and avoids resolving `foo.cmd.exe` for `foo.cmd`.
+    #[test]
+    fn resolve_explicit_extension_skips_pathext() {
+        let first = TempDir::new("program-explicit-first");
+        let second = TempDir::new("program-explicit-second");
+        let decoy = first.path().join("foo.cmd.exe");
+        let exact = second.path().join("foo.cmd");
+        fs::write(&decoy, "@echo off\n").expect("decoy should be written");
+        fs::write(&exact, "@echo off\n").expect("exact match should be written");
+
+        let mut joined = OsString::from(first.path());
+        joined.push(if cfg!(windows) { ";" } else { ":" });
+        joined.push(second.path());
+        let pathext = OsString::from(".exe;.cmd");
+
+        let resolved = resolve_windows("foo.cmd", &joined, &pathext);
+
+        assert_eq!(resolved, Some(exact));
     }
 
     #[test]
