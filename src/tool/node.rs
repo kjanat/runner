@@ -85,11 +85,18 @@ fn detect_pm(package_json: Option<PackageJson>) -> Option<PackageManager> {
 }
 
 /// Parse a Corepack-style `name@version` spec into a [`PackageManager`] and
-/// optional version string. Returns `None` for unknown names.
+/// optional version string. Returns `None` for unknown names or for a
+/// trailing-`@` typo (`"pnpm@"`) — the `@` separator with an empty RHS
+/// is an explicit "version intended but missing" signal, distinct from
+/// a bare `"pnpm"` (no `@` at all). Bare names are still accepted with
+/// `None` version; only the malformed `name@` form is rejected so the
+/// surrounding [`UnparseablePackageManager`] warning surfaces the typo
+/// instead of silently dropping the version constraint.
 fn parse_package_manager_spec(spec: Option<&str>) -> Option<(PackageManager, Option<String>)> {
     let raw = spec?.trim();
     let (name, version) = match raw.split_once('@') {
-        Some((n, v)) => (n, (!v.is_empty()).then(|| v.to_string())),
+        Some((_, "")) => return None,
+        Some((n, v)) => (n, Some(v.to_string())),
         None => (raw, None),
     };
     let pm = match name {
@@ -783,6 +790,55 @@ mod tests {
         let decl = detect_pm_from_manifest(dir.path()).expect("devEngines should still resolve");
         assert_eq!(decl.pm, PackageManager::Yarn);
         assert_eq!(decl.source, ManifestSource::DevEngines);
+    }
+
+    #[test]
+    fn parse_package_manager_spec_rejects_trailing_at_sign() {
+        // `"pnpm@"` is a typo (`pnpm@9` minus the version) — treating
+        // it as "pnpm without a version constraint" silently hides
+        // user intent. The parser must reject so the detection-layer
+        // warning surfaces the verbatim value.
+        use super::parse_package_manager_spec;
+
+        assert!(parse_package_manager_spec(Some("pnpm@")).is_none());
+        assert!(parse_package_manager_spec(Some("npm@")).is_none());
+        // Whitespace inside the version still counts as empty after trim
+        // — split_once('@') doesn't trim, but the leading raw is trimmed
+        // before splitting, so `"  pnpm@  "` becomes `"pnpm@"` then
+        // splits to ("pnpm", " ") — non-empty whitespace remains as the
+        // version literal, intentionally NOT a typo signal.
+        assert!(parse_package_manager_spec(Some(" pnpm@ ".trim())).is_none());
+    }
+
+    #[test]
+    fn parse_package_manager_spec_accepts_bare_name() {
+        // Bare `"pnpm"` (no `@` at all) is distinct from `"pnpm@"`:
+        // the former is an explicit "any version", the latter is a
+        // truncated `name@version` spec. Keep the former working.
+        use super::parse_package_manager_spec;
+
+        let (pm, version) =
+            parse_package_manager_spec(Some("pnpm")).expect("bare name still parses");
+        assert_eq!(pm, PackageManager::Pnpm);
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_surfaces_trailing_at_as_unparseable() {
+        // End-to-end: `"packageManager": "pnpm@"` reaches the resolver
+        // as a None decl, dropping to lockfile/probe (and the
+        // detection layer fires `UnparseablePackageManager` so the
+        // user sees the typo).
+        use super::detect_pm_from_manifest;
+
+        let dir = TempDir::new("node-manifest-decl-trailing-at");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "pnpm@" }"#,
+        )
+        .expect("package.json should be written");
+
+        assert!(detect_pm_from_manifest(dir.path()).is_none());
     }
 
     #[test]
