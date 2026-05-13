@@ -3,10 +3,10 @@
 //! `runner install <tasks>`. v2 (out of scope here) will populate
 //! `ChainItem.args` from a quoted-bundle parser.
 
+pub(crate) mod parse;
 // Submodules ship in follow-up tasks:
 //   pub(crate) mod exec;
 //   pub(crate) mod mux;
-//   pub(crate) mod parse;
 
 /// A user-requested chain of tasks plus the policy that governs how
 /// the chain reacts to per-task failures.
