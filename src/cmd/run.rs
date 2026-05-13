@@ -101,6 +101,14 @@ pub(crate) fn run(
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
                     super::print_warning_slice(&decision.warnings, overrides);
+                    if overrides.explain {
+                        eprintln!(
+                            "{} {} resolved: {}",
+                            "·".dimmed(),
+                            "runner".dimmed(),
+                            decision.describe(),
+                        );
+                    }
                     Some(decision.pm)
                 }
                 Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
