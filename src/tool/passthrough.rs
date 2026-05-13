@@ -88,21 +88,36 @@ fn simple_passthrough(
 /// Reject any token that introduces extra behavior beyond a thin
 /// dispatch: shell control operators, redirects, parameter/command/
 /// arithmetic expansion, backtick substitution.
+///
+/// Meta-characters are detected anywhere in the token (not just at the
+/// start) so glued forms like `--watch&&echo` and `arg>out` are caught —
+/// the shell tokenises those exactly as `--watch && echo` and
+/// `arg > out` respectively, so a passthrough wrapper that contains
+/// them is not actually a thin dispatch.
 fn is_shell_active(token: &str) -> bool {
+    // Expansion / substitution — `$VAR`, `$(cmd)`, `$((expr))`, `` `cmd` ``.
     if token.contains('$') || token.contains('`') {
         return true;
     }
-    if matches!(
-        token,
-        "&&" | "||" | ";" | ";;" | ";&" | ";;&" | "|" | "|&" | "&" | "!" | "{" | "}" | "(" | ")"
-    ) {
+    // Redirects (`>`, `<`, `>>`, `<<`, `>&`, `&>`, `1>foo`, `2>&1`, …)
+    // and control operators (`&&`, `||`, `|`, `|&`, `;`, `;;`, `;&`,
+    // backgrounding `cmd&`). Substring-matching `&` subsumes `&&`,
+    // `>&`, `|&`, and trailing background; `|` subsumes `||` and
+    // `|&`; `;` subsumes the compound forms. Any one of these in any
+    // position means the shell will do real work, so we bail.
+    if token
+        .chars()
+        .any(|c| matches!(c, '>' | '<' | '&' | '|' | ';'))
+    {
         return true;
     }
-    if token.starts_with('>') || token.starts_with('<') {
-        return true;
-    }
-    // fd-prefixed redirects like `2>`, `1>`, `2>&1`, `&>`, `&>>`.
-    token.starts_with("2>") || token.starts_with("1>") || token.starts_with("&>")
+    // Block / subshell delimiters are only meta when they appear as
+    // standalone tokens — `{ a; b; }` requires whitespace separation
+    // around `{` and `}`, and `( subshell )` likewise. Treating them
+    // as substrings would over-reject benign args like
+    // `--filter=name(v1)` that the shell would pass through verbatim,
+    // so keep the exact-match check here.
+    matches!(token, "!" | "{" | "}" | "(" | ")")
 }
 
 #[cfg(test)]
@@ -182,6 +197,53 @@ mod tests {
     #[test]
     fn rejects_when_tail_contains_command_substitution() {
         assert!(detect_target("test", "just test $(echo)").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_logical_and() {
+        // No whitespace around `&&` — the shell still parses this as
+        // `--watch && echo malicious`, so the wrapper isn't actually a
+        // thin dispatch.
+        assert!(detect_target("test", "just test --watch&&echo done").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_logical_or() {
+        assert!(detect_target("test", "just test --watch||fallback").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_pipe() {
+        assert!(detect_target("test", "just test --report|tee").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_semicolon() {
+        assert!(detect_target("test", "just test foo;echo done").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_redirect() {
+        // Arg ending in `>file` is a redirect, not an argument value.
+        assert!(detect_target("test", "just test arg>out.log").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_input_redirect() {
+        assert!(detect_target("test", "just test arg<input.txt").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_fd_redirect() {
+        // `2>&1` and `2>file` glued onto an arg.
+        assert!(detect_target("test", "just test arg2>&1").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_background() {
+        // Trailing `&` makes the command run in the background — not
+        // a passthrough.
+        assert!(detect_target("test", "just test arg&").is_none());
     }
 
     #[test]
