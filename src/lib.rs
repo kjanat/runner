@@ -319,10 +319,29 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         cli.global.on_mismatch.as_deref(),
         cli.global.no_warnings,
         cli.global.explain,
-        false,
-        false,
+        cli.keep_going,
+        cli.kill_on_fail,
         loaded_config.as_ref(),
     )?;
+    if cli.sequential || cli.parallel {
+        let mode = if cli.parallel {
+            chain::ChainMode::Parallel
+        } else {
+            chain::ChainMode::Sequential
+        };
+        let mut positionals: Vec<String> = Vec::new();
+        if let Some(t) = cli.task {
+            positionals.push(t);
+        }
+        positionals.extend(cli.args);
+        let items = chain::parse::parse_task_list(&positionals)?;
+        let c = chain::Chain {
+            mode,
+            items,
+            failure: overrides.failure_policy,
+        };
+        return chain::exec::run_chain(&ctx, &overrides, &c);
+    }
     match cli.task {
         None => {
             cmd::info(&ctx, &overrides, false)?;
@@ -494,6 +513,19 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
     let loaded_config = config::load(dir)?;
+    let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
+        Some(cli::Command::Run {
+            keep_going,
+            kill_on_fail,
+            ..
+        }) => (*keep_going, *kill_on_fail),
+        Some(cli::Command::Install {
+            keep_going,
+            kill_on_fail,
+            ..
+        }) => (*keep_going, *kill_on_fail),
+        _ => (false, false),
+    };
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.global.pm_override.as_deref(),
         cli.global.runner_override.as_deref(),
@@ -501,8 +533,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         cli.global.on_mismatch.as_deref(),
         cli.global.no_warnings,
         cli.global.explain,
-        false,
-        false,
+        cli_keep_going,
+        cli_kill_on_fail,
         loaded_config.as_ref(),
     )?;
 
@@ -518,7 +550,32 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::info(&ctx, &overrides, json)?;
             Ok(0)
         }
-        Some(cli::Command::Run { task, args, .. }) => {
+        Some(cli::Command::Run {
+            task,
+            args,
+            sequential,
+            parallel,
+            ..
+        }) => {
+            if sequential || parallel {
+                let mode = if parallel {
+                    chain::ChainMode::Parallel
+                } else {
+                    chain::ChainMode::Sequential
+                };
+                let mut positionals: Vec<String> = Vec::new();
+                if let Some(t) = task {
+                    positionals.push(t);
+                }
+                positionals.extend(args);
+                let items = chain::parse::parse_task_list(&positionals)?;
+                let c = chain::Chain {
+                    mode,
+                    items,
+                    failure: overrides.failure_policy,
+                };
+                return chain::exec::run_chain(&ctx, &overrides, &c);
+            }
             let task = task.as_deref().unwrap_or_else(|| {
                 eprintln!("error: task name required");
                 std::process::exit(2);
