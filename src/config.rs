@@ -60,6 +60,33 @@ pub(crate) struct RunnerConfig {
     /// `[resolution]` — resolver-policy knobs.
     #[serde(default)]
     pub resolution: ResolutionSection,
+    /// `[chain]` — failure policy for multi-task chains.
+    #[serde(default)]
+    pub chain: ChainSection,
+}
+
+/// `[chain]` section — failure policy for `run -s/-p` chains and
+/// `runner install <tasks>`.
+///
+/// `Option<bool>` rather than `bool` so the resolver can distinguish
+/// "user explicitly set false" from "user didn't say": env-overrides-
+/// config layering means `[chain].keep_going = false` plus
+/// `RUNNER_KEEP_GOING=1` resolves to `true`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChainSection {
+    /// Run every task in the chain to completion regardless of failures.
+    /// Mutually exclusive with `kill_on_fail`. Equivalent to `-k` /
+    /// `RUNNER_KEEP_GOING`.
+    #[serde(default)]
+    pub keep_going: Option<bool>,
+
+    /// Parallel only: SIGTERM sibling tasks on first failure. Mutually
+    /// exclusive with `keep_going`. Equivalent to `--kill-on-fail` /
+    /// `RUNNER_KILL_ON_FAIL`. Ignored in sequential contexts.
+    #[serde(default)]
+    pub kill_on_fail: Option<bool>,
 }
 
 /// `[pm]` section — per-ecosystem package manager overrides.
@@ -265,5 +292,33 @@ mod tests {
     fn parse_python_pm_rejects_node_pm() {
         let err = parse_python_pm("pnpm").expect_err("pnpm should not be Python");
         assert!(format!("{err}").contains("not a Python package manager"));
+    }
+
+    #[test]
+    fn load_parses_chain_section() {
+        let dir = TempDir::new("config-chain");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[chain]\nkeep_going = true\nkill_on_fail = false\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert_eq!(loaded.config.chain.keep_going, Some(true));
+        assert_eq!(loaded.config.chain.kill_on_fail, Some(false));
+    }
+
+    #[test]
+    fn load_rejects_unknown_chain_key() {
+        let dir = TempDir::new("config-unknown-chain-key");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[chain]\nfast = true\n")
+            .expect("config should be written");
+
+        let err = load(dir.path()).expect_err("unknown [chain] key should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse"));
     }
 }
