@@ -2,9 +2,48 @@
 
 use std::path::{Path, PathBuf};
 
+use clap::builder::styling::{AnsiColor, Color, Style, Styles};
 use clap::{Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
+
+/// Color palette for help output. clap auto-disables when stdout isn't a
+/// TTY or `NO_COLOR` is set, so the same constant works for piped output
+/// and color-averse users without extra plumbing.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+            .bold()
+            .underline(),
+    )
+    .usage(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+            .bold()
+            .underline(),
+    )
+    .literal(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Cyan)))
+            .bold(),
+    )
+    .placeholder(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan))))
+    .valid(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Green)))
+            .bold(),
+    )
+    .invalid(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+            .bold(),
+    )
+    .error(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+            .bold(),
+    );
 
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
@@ -358,9 +397,14 @@ mod tests {
     about = clap::crate_description!(),
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     version,
+    styles = HELP_STYLES,
     arg_required_else_help = false,
     add = SubcommandCandidates::new(task_candidates)
 )]
+// Doc strings on these fields double as clap's user-facing help text;
+// clap doesn't render markdown, so `RUNNER_PM`-in-backticks would print
+// literal backticks. We trade rustdoc nicety for legible --help output.
+#[allow(clippy::doc_markdown)]
 pub(crate) struct Cli {
     /// Use this directory instead of the current one.
     #[arg(
@@ -373,31 +417,25 @@ pub(crate) struct Cli {
     )]
     pub project_dir: Option<PathBuf>,
 
-    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
-    /// The resolver also consults `$RUNNER_PM` independently when this
-    /// flag is omitted (env reads live in `crate::resolver`, not clap).
+    /// Override the detected package manager (e.g. pnpm, bun, yarn).
+    /// Also reads RUNNER_PM when this flag is omitted.
     #[arg(long = "pm", global = true, value_name = "NAME")]
     pub pm_override: Option<String>,
 
-    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
-    /// The resolver also consults `$RUNNER_RUNNER` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
+    /// Override the detected task runner (e.g. just, turbo, make).
+    /// Also reads RUNNER_RUNNER when this flag is omitted.
     #[arg(long = "runner", global = true, value_name = "NAME")]
     pub runner_override: Option<String>,
 
-    /// What to do when no detection signal matches: `probe` (default,
-    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
-    /// The resolver also consults `$RUNNER_FALLBACK` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
+    /// What to do when no detection signal matches: probe (default,
+    /// PATH probe), npm (legacy silent fallback), error (refuse).
+    /// Also reads RUNNER_FALLBACK when this flag is omitted.
     #[arg(long = "fallback", global = true, value_name = "POLICY")]
     pub fallback: Option<String>,
 
     /// Print a one-line trace describing how the package manager was
-    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
-    /// is set to a truthy value (env reads live in `crate::resolver`,
-    /// not clap).
+    /// resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy
+    /// value.
     #[arg(long = "explain", global = true)]
     pub explain: bool,
 
@@ -433,7 +471,7 @@ pub(crate) enum Command {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
-        /// Include framework-specific Node build dirs like `.next`
+        /// Include framework-specific Node build dirs like .next
         #[arg(long)]
         include_framework: bool,
     },
@@ -467,8 +505,8 @@ pub(crate) enum Command {
 
     /// Generate shell completions
     Completions {
-        /// Target shell — bare name (`zsh`) or full path (`/usr/bin/zsh`).
-        /// Defaults to `$SHELL`.
+        /// Target shell — bare name (zsh) or full path (/usr/bin/zsh).
+        /// Defaults to $SHELL.
         #[arg(value_parser = crate::cmd::parse_shell_arg)]
         shell: Option<Shell>,
 
@@ -500,8 +538,10 @@ pub(crate) enum Command {
     about = "Run a project task or exec a command through the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     version,
+    styles = HELP_STYLES,
     arg_required_else_help = false
 )]
+#[allow(clippy::doc_markdown)]
 pub(crate) struct RunAliasCli {
     /// Use this directory instead of the current one.
     #[arg(
@@ -514,31 +554,25 @@ pub(crate) struct RunAliasCli {
     )]
     pub project_dir: Option<PathBuf>,
 
-    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
-    /// The resolver also consults `$RUNNER_PM` independently when this
-    /// flag is omitted (env reads live in `crate::resolver`, not clap).
+    /// Override the detected package manager (e.g. pnpm, bun, yarn).
+    /// Also reads RUNNER_PM when this flag is omitted.
     #[arg(long = "pm", global = true, value_name = "NAME")]
     pub pm_override: Option<String>,
 
-    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
-    /// The resolver also consults `$RUNNER_RUNNER` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
+    /// Override the detected task runner (e.g. just, turbo, make).
+    /// Also reads RUNNER_RUNNER when this flag is omitted.
     #[arg(long = "runner", global = true, value_name = "NAME")]
     pub runner_override: Option<String>,
 
-    /// What to do when no detection signal matches: `probe` (default,
-    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
-    /// The resolver also consults `$RUNNER_FALLBACK` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
+    /// What to do when no detection signal matches: probe (default,
+    /// PATH probe), npm (legacy silent fallback), error (refuse).
+    /// Also reads RUNNER_FALLBACK when this flag is omitted.
     #[arg(long = "fallback", global = true, value_name = "POLICY")]
     pub fallback: Option<String>,
 
     /// Print a one-line trace describing how the package manager was
-    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
-    /// is set to a truthy value (env reads live in `crate::resolver`,
-    /// not clap).
+    /// resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy
+    /// value.
     #[arg(long = "explain", global = true)]
     pub explain: bool,
 
