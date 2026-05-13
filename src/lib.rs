@@ -54,6 +54,7 @@
 //!
 //! Generate docs with `cargo doc --document-private-items --open`.
 
+pub(crate) mod chain;
 mod cli;
 mod cmd;
 mod complete;
