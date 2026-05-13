@@ -518,7 +518,13 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::info(&ctx, &overrides, json)?;
             Ok(0)
         }
-        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &overrides, &task, &args),
+        Some(cli::Command::Run { task, args, .. }) => {
+            let task = task.as_deref().unwrap_or_else(|| {
+                eprintln!("error: task name required");
+                std::process::exit(2);
+            });
+            cmd::run(&ctx, &overrides, task, &args)
+        }
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
                 cmd::info(&ctx, &overrides, false)?;
@@ -855,8 +861,8 @@ mod tests {
         assert_eq!(cli.global.pm_override.as_deref(), Some("pnpm"));
         assert_eq!(cli.global.runner_override.as_deref(), Some("just"));
         match cli.command {
-            Some(cli::Command::Run { task, args }) => {
-                assert_eq!(task, "build");
+            Some(cli::Command::Run { task, args, .. }) => {
+                assert_eq!(task.as_deref(), Some("build"));
                 assert!(args.is_empty());
             }
             other => panic!("expected Run, got {other:?}"),

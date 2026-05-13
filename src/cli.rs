@@ -267,7 +267,11 @@ mod tests {
 
     use std::ffi::OsString;
 
-    use super::{cli_dir_from_argv, resolve_completion_dir, task_candidates_from};
+    use clap::Parser;
+
+    use super::{
+        Cli, Command, RunAliasCli, cli_dir_from_argv, resolve_completion_dir, task_candidates_from,
+    };
     use crate::types::{Task, TaskSource};
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -552,10 +556,62 @@ mod tests {
 
         assert_eq!(cli_dir_from_argv(&argv), None);
     }
+
+    #[test]
+    fn run_accepts_sequential_chain_flag() {
+        let cli = Cli::try_parse_from(["runner", "run", "-s", "build", "test"]).expect("parses");
+        let Some(Command::Run {
+            task,
+            args,
+            sequential,
+            parallel,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Run subcommand");
+        };
+        assert!(sequential, "-s should set sequential");
+        assert!(!parallel, "-p should not be set");
+        assert_eq!(task.as_deref(), Some("build"));
+        assert_eq!(args, vec!["test".to_string()]);
+    }
+
+    #[test]
+    fn run_rejects_sequential_and_parallel_together() {
+        let err =
+            Cli::try_parse_from(["runner", "run", "-s", "-p", "build"]).expect_err("conflict");
+        let msg = format!("{err}");
+        assert!(msg.contains("--parallel") || msg.contains("--sequential"));
+    }
+
+    #[test]
+    fn run_rejects_keep_going_and_kill_on_fail_together() {
+        let err = Cli::try_parse_from([
+            "runner",
+            "run",
+            "-s",
+            "-k",
+            "--kill-on-fail",
+            "build",
+            "test",
+        ])
+        .expect_err("conflict");
+        let msg = format!("{err}");
+        assert!(msg.contains("--keep-going") || msg.contains("--kill-on-fail"));
+    }
+
+    #[test]
+    fn run_alias_parses_chain_flags_too() {
+        let cli = RunAliasCli::try_parse_from(["run", "-p", "lint", "test"]).expect("parses");
+        assert!(cli.parallel);
+        assert!(!cli.sequential);
+        assert_eq!(cli.task.as_deref(), Some("lint"));
+        assert_eq!(cli.args, vec!["test".to_string()]);
+    }
 }
 
 /// Universal project task runner.
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(
     name = "runner",
     about = clap::crate_description!(),
@@ -691,15 +747,30 @@ pub(crate) struct GlobalOpts {
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Run a task, or exec a command through the detected package manager
+    /// Run a task, or exec a command through the detected package manager.
+    /// With `-s` or `-p`, runs multiple tasks as a chain.
     #[command(alias = "r")]
     Run {
-        /// Task name or command to execute
+        /// Task name or command to execute. In chain mode, the first task in the chain.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
-        task: String,
-        /// Arguments forwarded to the task/command
+        task: Option<String>,
+        /// Arguments forwarded to the task, OR additional task names in chain mode.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+        /// Run the given tasks sequentially. Conflicts with `--parallel`.
+        #[arg(short = 's', long, conflicts_with = "parallel")]
+        sequential: bool,
+        /// Run the given tasks in parallel. Conflicts with `--sequential`.
+        #[arg(short = 'p', long)]
+        parallel: bool,
+        /// Run every task in the chain regardless of failures. Conflicts
+        /// with `--kill-on-fail`.
+        #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
+        keep_going: bool,
+        /// Parallel only: SIGTERM siblings on first failure. Accepted but
+        /// unused in sequential mode.
+        #[arg(long)]
+        kill_on_fail: bool,
     },
 
     /// Install project dependencies
@@ -808,4 +879,20 @@ pub(crate) struct RunAliasCli {
     /// Arguments forwarded to the task/command.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
+
+    /// Run the given tasks sequentially. Conflicts with `--parallel`.
+    #[arg(short = 's', long, conflicts_with = "parallel")]
+    pub sequential: bool,
+
+    /// Run the given tasks in parallel. Conflicts with `--sequential`.
+    #[arg(short = 'p', long)]
+    pub parallel: bool,
+
+    /// Run every task in the chain regardless of failures.
+    #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
+    pub keep_going: bool,
+
+    /// Parallel only: SIGTERM siblings on first failure.
+    #[arg(long)]
+    pub kill_on_fail: bool,
 }
