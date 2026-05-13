@@ -51,7 +51,7 @@ fn run_parallel(
 
     use crate::chain::mux::{PrefixedLine, prefix_width, render_prefix, spawn_readers};
 
-    let names: Vec<&str> = chain.items.iter().map(|i| i.display_name()).collect();
+    let names: Vec<&str> = chain.items.iter().map(ChainItem::display_name).collect();
     let width = prefix_width(&names);
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
 
@@ -83,7 +83,7 @@ fn run_parallel(
                 (prefix.clone(), false, stdout),
                 (prefix.clone(), true, stderr),
             ],
-            tx.clone(),
+            &tx,
         ));
         children.push((item.display_name().to_string(), child));
     }
@@ -115,7 +115,7 @@ fn run_parallel(
     while !remaining.is_empty() {
         let mut next: Vec<(String, Child)> = Vec::with_capacity(remaining.len());
         let mut killed_this_pass = false;
-        for (name, mut child) in remaining.drain(..) {
+        for (name, mut child) in std::mem::take(&mut remaining) {
             match child.try_wait()? {
                 Some(status) => {
                     let code = status.code().unwrap_or(1);

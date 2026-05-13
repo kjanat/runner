@@ -4,6 +4,10 @@
   "description": "Top-level schema for `runner.toml`.",
   "type": "object",
   "properties": {
+    "chain": {
+      "description": "`[chain]` — failure policy for multi-task chains.",
+      "$ref": "#/$defs/ChainSection"
+    },
     "pm": {
       "description": "`[pm]` — per-ecosystem package-manager overrides.",
       "$ref": "#/$defs/PmSection"
@@ -19,6 +23,29 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "ChainSection": {
+      "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.\n\n`Option<bool>` rather than `bool` so the resolver can distinguish\n\"user explicitly set false\" from \"user didn't say\": env-overrides-\nconfig layering means `[chain].keep_going = false` plus\n`RUNNER_KEEP_GOING=1` resolves to `true`.",
+      "type": "object",
+      "properties": {
+        "keep_going": {
+          "description": "Run every task in the chain to completion regardless of failures.\nMutually exclusive with `kill_on_fail`. Equivalent to `-k` /\n`RUNNER_KEEP_GOING`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "kill_on_fail": {
+          "description": "Parallel only: SIGTERM sibling tasks on first failure. Mutually\nexclusive with `keep_going`. Equivalent to `--kill-on-fail` /\n`RUNNER_KILL_ON_FAIL`. Ignored in sequential contexts.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
     "PmSection": {
       "description": "`[pm]` section — per-ecosystem package manager overrides.",
       "type": "object",

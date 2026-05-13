@@ -41,7 +41,7 @@ impl ChainItem {
     }
 
     /// Construct the synthetic install-head used by `runner install <tasks>`.
-    pub(crate) fn install() -> Self {
+    pub(crate) const fn install() -> Self {
         Self {
             kind: ChainItemKind::Install,
             args: Vec::new(),
@@ -49,7 +49,7 @@ impl ChainItem {
     }
 
     /// Human-readable label for prefix-muxer output and error messages.
-    pub(crate) fn display_name(&self) -> &str {
+    pub(crate) const fn display_name(&self) -> &str {
         match &self.kind {
             ChainItemKind::Task(name) => name.as_str(),
             ChainItemKind::Install => "install",

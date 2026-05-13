@@ -45,7 +45,7 @@ pub(crate) fn color_for(name: &str) -> Color {
 }
 
 /// Render a prefix bracket for `name` padded to `width` characters.
-/// Skips color when `colorize == false` (NO_COLOR or non-TTY).
+/// Skips color when `colorize == false` (`NO_COLOR` or non-TTY).
 pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String {
     let padded = format!("{name:<width$}");
     let bracketed = format!("[{padded}]");
@@ -63,7 +63,7 @@ pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String 
 /// `streams` is a slice of `(prefix, is_stderr, reader)` tuples.
 pub(crate) fn spawn_readers<R>(
     streams: Vec<(String, bool, R)>,
-    sender: Sender<PrefixedLine>,
+    sender: &Sender<PrefixedLine>,
 ) -> Vec<JoinHandle<()>>
 where
     R: Read + Send + 'static,
@@ -129,7 +129,8 @@ mod tests {
     fn spawn_readers_streams_lines_through_channel() {
         let (tx, rx) = channel();
         let stream = std::io::Cursor::new(b"hello\nworld\n".to_vec());
-        let handles = spawn_readers(vec![("[t]".into(), false, stream)], tx);
+        let handles = spawn_readers(vec![("[t]".into(), false, stream)], &tx);
+        drop(tx);
         for h in handles {
             h.join().unwrap();
         }

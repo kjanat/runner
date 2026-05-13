@@ -514,16 +514,18 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
     let loaded_config = config::load(dir)?;
     let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
-        Some(cli::Command::Run {
-            keep_going,
-            kill_on_fail,
-            ..
-        }) => (*keep_going, *kill_on_fail),
-        Some(cli::Command::Install {
-            keep_going,
-            kill_on_fail,
-            ..
-        }) => (*keep_going, *kill_on_fail),
+        Some(
+            cli::Command::Run {
+                keep_going,
+                kill_on_fail,
+                ..
+            }
+            | cli::Command::Install {
+                keep_going,
+                kill_on_fail,
+                ..
+            },
+        ) => (*keep_going, *kill_on_fail),
         _ => (false, false),
     };
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
