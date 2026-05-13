@@ -7,7 +7,13 @@
 		"associations": ["!**/*.svg"],
 		"ignoreCommentDirective": "dprint-ignore",
 		"ignoreFileCommentDirective": "dprint-ignore-file",
-		"printWidth": 160
+		"printWidth": 160,
+	},
+	"shfmt": {
+		"associations": ["**/bin/{install-branch,run,runner}", "**/*.sh", "**/*.bash"],
+		"useTabs": true,
+		"binaryNextLine": true,
+		"switchCaseIndent": true,
 	},
 	"yaml": { "printWidth": 160 },
 	"exec": {
@@ -15,12 +21,7 @@
 			{ "command": "tombi format - --stdin-filename {{file_path}}", "exts": ["toml"] },
 			{ "command": "rustfmt --edition 2024", "exts": ["rs"] },
 			{ "command": "just --dump --justfile {{file_path}}", "fileNames": ["justfile"] },
-			{
-				"command": "shfmt -i 0 -ln bash -bn -ci -filename {{file_path}}",
-				"exts": ["sh", "bash"],
-				"fileNames": ["install-branch", "run", "runner"]
-			}
-		]
+		],
 	},
 	"excludes": [
 		"**/*.lock",
@@ -29,7 +30,7 @@
 		"**/target",
 		"**/dist",
 		"**/downloads",
-		"**/schemas/*.json"
+		"**/schemas/*.json",
 	],
 	"plugins": [
 		"https://plugins.dprint.dev/typescript-0.96.0.wasm",
@@ -40,6 +41,7 @@
 		"https://plugins.dprint.dev/g-plane/pretty_yaml-v0.6.0.wasm",
 		"https://plugins.dprint.dev/exec-0.6.2.json@df98f54ffd3092b8a841aedd6d098a2651f16d0a796a40535774f1a8b4b9d463",
 		"https://plugins.dprint.dev/kjanat/sortpackagejson-0.2.1.wasm",
-		"https://plugins.dprint.dev/kjanat/svg-v0.4.0.wasm"
-	]
+		"https://plugins.dprint.dev/kjanat/svg-v0.4.0.wasm",
+		"https://plugins.dprint.dev/kjanat/shfmt-0.0.5.wasm",
+	],
 }
