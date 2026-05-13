@@ -608,6 +608,36 @@ mod tests {
         assert_eq!(cli.task.as_deref(), Some("lint"));
         assert_eq!(cli.args, vec!["test".to_string()]);
     }
+
+    #[test]
+    fn install_accepts_task_list() {
+        let cli = Cli::try_parse_from(["runner", "install", "build", "test"]).expect("parses");
+        let Some(Command::Install {
+            tasks,
+            frozen,
+            keep_going,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Install subcommand");
+        };
+        assert!(!frozen);
+        assert!(!keep_going);
+        assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
+    }
+
+    #[test]
+    fn install_accepts_keep_going_flag() {
+        let cli = Cli::try_parse_from(["runner", "install", "-k", "build"]).expect("parses");
+        let Some(Command::Install {
+            tasks, keep_going, ..
+        }) = cli.command
+        else {
+            panic!("expected Install subcommand");
+        };
+        assert!(keep_going);
+        assert_eq!(tasks, vec!["build".to_string()]);
+    }
 }
 
 /// Universal project task runner.
@@ -773,12 +803,24 @@ pub(crate) enum Command {
         kill_on_fail: bool,
     },
 
-    /// Install project dependencies
+    /// Install project dependencies, then optionally chain tasks
+    /// (`runner install build test` → install → build → test, sequential).
     #[command(alias = "i")]
     Install {
         /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
         #[arg(long)]
         frozen: bool,
+        /// Optional task names to run after install completes. Chain is
+        /// always sequential; `-p` is not accepted here.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        tasks: Vec<String>,
+        /// Run every chained task regardless of failures. Equivalent to
+        /// `-k` on `run -s`.
+        #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
+        keep_going: bool,
+        /// Accepted but unused (install chain is always sequential).
+        #[arg(long, hide = true)]
+        kill_on_fail: bool,
     },
 
     /// Remove caches and build artifacts

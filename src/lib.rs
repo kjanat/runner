@@ -533,10 +533,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 cmd::run(&ctx, &overrides, &args[0], &args[1..])
             }
         }
-        Some(cli::Command::Install { frozen: false }) if has_task(&ctx, "install") => {
+        Some(cli::Command::Install {
+            frozen: false,
+            tasks,
+            ..
+        }) if tasks.is_empty() && has_task(&ctx, "install") => {
             cmd::run(&ctx, &overrides, "install", &[])
         }
-        Some(cli::Command::Install { frozen }) => {
+        Some(cli::Command::Install { frozen, .. }) => {
             cmd::install(&ctx, frozen)?;
             Ok(0)
         }
@@ -826,7 +830,7 @@ mod tests {
         let cli = parse_cli(["runner", "install", "--frozen"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Install { frozen: true }) => {}
+            Some(cli::Command::Install { frozen: true, .. }) => {}
             other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
         }
     }
