@@ -145,8 +145,25 @@ pub(crate) struct ManifestPmDecl {
 pub(crate) fn detect_pm_from_manifest(dir: &Path) -> Option<ManifestPmDecl> {
     let parsed = parse_package_json(dir)?;
 
-    if let Some((pm, version)) = parse_package_manager_spec(parsed.package_manager.as_deref()) {
-        return Some(ManifestPmDecl {
+    // `packageManager` is authoritative when present — that's the
+    // Corepack contract this field carries. Trim and treat
+    // whitespace-only as "not set" (round-trips trailing-newline
+    // editor mishaps). When the trimmed value is non-empty, the
+    // legacy field is the user's explicit intent and must short-circuit
+    // here: a present-but-unparseable spec (typo like `"pnpmm@9"`,
+    // non-script PM like `"cargo@1"`, malformed `"@9"`) MUST NOT let
+    // `devEngines` win silently — that would substitute a different PM
+    // than what the user wrote. Returning `None` here drops the
+    // resolver to step 6 (lockfile) / step 7 (PATH probe), which is
+    // closer to Corepack's semantics than synthesising a `devEngines`
+    // decision the user never declared.
+    let pm_spec = parsed
+        .package_manager
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(spec) = pm_spec {
+        return parse_package_manager_spec(Some(spec)).map(|(pm, version)| ManifestPmDecl {
             pm,
             source: ManifestSource::PackageManager,
             version,
@@ -689,6 +706,53 @@ mod tests {
         assert_eq!(decl.source, ManifestSource::DevEngines);
         assert_eq!(decl.version.as_deref(), Some("9.0.0"));
         assert_eq!(decl.on_fail, OnFail::Error);
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_blocks_dev_engines_when_package_manager_unparseable() {
+        // Regression: a present-but-unparseable `packageManager` value
+        // (e.g. the user typo'd `pnpm`) used to silently fall through
+        // to `devEngines`, substituting a PM the user never declared.
+        // Per Corepack semantics the legacy field is authoritative; if
+        // it can't parse we return `None` so the resolver drops to the
+        // lockfile/PATH-probe path instead.
+        use super::detect_pm_from_manifest;
+
+        let dir = TempDir::new("node-manifest-decl-unparseable-pm-field");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{
+              "packageManager": "pnpmm@9",
+              "devEngines": { "packageManager": { "name": "yarn" } }
+            }"#,
+        )
+        .expect("package.json should be written");
+
+        assert!(
+            detect_pm_from_manifest(dir.path()).is_none(),
+            "unparseable packageManager must NOT silently elevate devEngines",
+        );
+    }
+
+    #[test]
+    fn detect_pm_from_manifest_treats_empty_package_manager_as_unset() {
+        // Whitespace-only / empty packageManager is the JSON equivalent
+        // of "not set"; devEngines should still win in that case.
+        use super::{ManifestSource, detect_pm_from_manifest};
+
+        let dir = TempDir::new("node-manifest-decl-empty-pm-field");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{
+              "packageManager": "   ",
+              "devEngines": { "packageManager": { "name": "yarn" } }
+            }"#,
+        )
+        .expect("package.json should be written");
+
+        let decl = detect_pm_from_manifest(dir.path()).expect("devEngines should still resolve");
+        assert_eq!(decl.pm, PackageManager::Yarn);
+        assert_eq!(decl.source, ManifestSource::DevEngines);
     }
 
     #[test]
