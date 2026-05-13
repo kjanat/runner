@@ -529,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn select_task_entry_prefers_nearest_deno_source() {
+    fn select_task_entry_prefers_package_json_over_deno_json() {
         let dir = TempDir::new("run-deno-nearest");
         let nested = dir.path().join("apps").join("site").join("src");
         fs::create_dir_all(&nested).expect("nested dir should be created");
