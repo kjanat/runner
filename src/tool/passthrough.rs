@@ -70,6 +70,22 @@ fn simple_passthrough(
     binary: &str,
     run_subcommand: Option<&str>,
 ) -> bool {
+    // Reject anything that spans multiple shell lines. `split_whitespace`
+    // treats `\n` and `\r` as ordinary separators, so a script like
+    // `"just build\necho owned"` would otherwise tokenise to
+    // `["just", "build", "echo", "owned"]` and look like a thin
+    // passthrough — the trailing `echo` is a separate command, not an
+    // argument forwarded to `just`. Bash also accepts `\r\n` on Windows
+    // editors so both characters get the early bail.
+    //
+    // Other control operators (`;`, `&&`, `||`, `|`) don't need an
+    // early check: spaced forms surface as tokens that `is_shell_active`
+    // rejects (substring `;`/`&`/`|`), and glued forms get rejected at
+    // the binary/name token comparison or by the same any-position
+    // substring scan in `is_shell_active`.
+    if command.contains('\n') || command.contains('\r') {
+        return false;
+    }
     let mut tokens = command.split_whitespace();
     if tokens.next() != Some(binary) {
         return false;
@@ -244,6 +260,32 @@ mod tests {
         // Trailing `&` makes the command run in the background — not
         // a passthrough.
         assert!(detect_target("test", "just test arg&").is_none());
+    }
+
+    #[test]
+    fn rejects_when_body_contains_newline() {
+        // Multi-line scripts are NOT thin passthroughs even if the
+        // first line happens to look like one — the second line is a
+        // separate command. `split_whitespace` would otherwise
+        // flatten the newline and let the trailing `echo owned`
+        // masquerade as forwarded args.
+        assert!(detect_target("build", "just build\necho owned").is_none());
+    }
+
+    #[test]
+    fn rejects_when_body_contains_carriage_return() {
+        // `\r\n` line endings (Windows editors) get the same
+        // treatment as `\n` — bash treats `\r` as a token separator
+        // that can hide multi-line content.
+        assert!(detect_target("build", "just build\r\necho owned").is_none());
+    }
+
+    #[test]
+    fn rejects_when_body_is_multiline_block() {
+        // The whole tail could be a heredoc-style block. Reject on the
+        // first newline regardless of what follows.
+        let body = "just build\nif [ $? -ne 0 ]; then\n  exit 1\nfi";
+        assert!(detect_target("build", body).is_none());
     }
 
     #[test]
