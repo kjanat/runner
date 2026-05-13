@@ -198,8 +198,8 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
 ///
 /// Falls back to running the command directly when `resolved_pm` is
 /// `None` (resolver errored under `--fallback=error`) or when the
-/// selected PM has no `exec`-like primitive (Deno, Cargo, Poetry,
-/// Pipenv, Bundler, Composer, Go).
+/// selected PM has no `exec`-like primitive (Cargo, Poetry, Pipenv,
+/// Bundler, Composer).
 fn run_pm_exec_fallback(
     ctx: &ProjectContext,
     resolved_pm: Option<PackageManager>,
@@ -216,17 +216,19 @@ fn run_pm_exec_fallback(
         v
     };
 
-    // Only dispatch through a PM when its exec primitive actually runs
-    // arbitrary package binaries like `npx` does. For npm/yarn/pnpm/bun/uv
-    // this is the whole point of `exec`. Deno, Cargo, and the Python/Ruby/
-    // Go/PHP PMs have no such primitive:
-    //   * Deno's `deno run <target>` treats `target` as a local script.
-    //   * Cargo's `cargo <target>` dispatches to a cargo subcommand/plugin,
-    //     not a binary on PATH (so `runner run eslint` in a Rust repo
-    //     would try to invoke `cargo-eslint`).
-    //   * Poetry/Pipenv/Bundler/Composer/Go have nothing equivalent.
-    // For those we fall through to spawning `target` directly so PATH is
-    // authoritative rather than silently doing the wrong thing.
+    // Dispatch through a PM only when it owns an exec primitive that
+    // can run an arbitrary target like `npx` does. Three flavors qualify:
+    //   * local + registry fetch — `npx` / `npm exec`, `bun x` / `bunx`
+    //   * local-only — `pnpm exec`, `yarn run` (v1) / `yarn exec` (v2+)
+    //   * registry-only — `deno x` (npm:/jsr:), `uvx` (PyPI ephemeral),
+    //     `go run <module>@<version>` (Go module path)
+    // Cargo, Poetry, Pipenv, Bundler, and Composer have no comparable
+    // primitive: `cargo <target>` would dispatch to a `cargo-<target>`
+    // subcommand on PATH (so `runner run eslint` in a Rust repo would
+    // look for `cargo-eslint`), and the rest are venv/Gemfile-scoped
+    // launchers, not package fetchers. For those we fall through to
+    // spawning `target` directly so PATH is authoritative rather than
+    // silently doing the wrong thing.
     let (label, mut cmd) = match resolved_pm {
         Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
         Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined())),

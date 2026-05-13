@@ -203,8 +203,12 @@ impl PackageManager {
     ///
     /// Accepts the canonical `label()` for each variant and the common
     /// `bundle` alias for Ruby's Bundler (which spells its binary `bundle`).
+    /// Surrounding whitespace is trimmed so `" pnpm "` from a padded env
+    /// var or TOML value still parses; resolver-side parsing also trims
+    /// before this is reached but config-loader call sites pass raw
+    /// strings.
     pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label {
+        match label.trim() {
             "npm" => Some(Self::Npm),
             "yarn" => Some(Self::Yarn),
             "pnpm" => Some(Self::Pnpm),
@@ -307,9 +311,10 @@ impl TaskRunner {
     /// back into a [`TaskRunner`].
     ///
     /// Accepts the canonical `label()` plus the alias `go-task` for `task`
-    /// to disambiguate from arbitrary task names.
+    /// to disambiguate from arbitrary task names. Surrounding whitespace is
+    /// trimmed to match [`PackageManager::from_label`].
     pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label {
+        match label.trim() {
             "turbo" => Some(Self::Turbo),
             "nx" => Some(Self::Nx),
             "make" => Some(Self::Make),
