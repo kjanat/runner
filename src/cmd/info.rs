@@ -77,7 +77,8 @@ pub(crate) fn info(
 
     if !ctx.tasks.is_empty() {
         println!();
-        print_tasks_grouped(ctx);
+        let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
+        print_tasks_grouped(&refs, &ctx.root);
     }
     Ok(())
 }

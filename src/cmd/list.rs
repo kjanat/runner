@@ -10,7 +10,7 @@ use colored::Colorize;
 use crate::report::Project;
 use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{ProjectContext, TaskSource};
+use crate::types::{ProjectContext, Task, TaskSource};
 
 /// Print tasks to stdout.
 ///
@@ -48,7 +48,7 @@ pub(crate) fn list(
 
     super::print_warnings(ctx, overrides);
 
-    let filtered: Vec<&crate::types::Task> = ctx
+    let filtered: Vec<&Task> = ctx
         .tasks
         .iter()
         .filter(|t| parsed_source.is_none_or(|s| t.source == s))
@@ -64,40 +64,18 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        print_tasks_grouped_filtered(ctx, parsed_source);
+        print_tasks_grouped(&filtered, &ctx.root);
     }
     Ok(())
 }
 
-fn print_tasks_grouped_filtered(ctx: &ProjectContext, only: Option<TaskSource>) {
-    // Reuse the existing grouped renderer when no filter is set;
-    // otherwise short-circuit through a filtered context view to keep
-    // formatting identical between the filtered and unfiltered paths.
-    if only.is_none() {
-        print_tasks_grouped(ctx);
-        return;
-    }
-    let filtered_tasks: Vec<_> = ctx
-        .tasks
-        .iter()
-        .filter(|t| only == Some(t.source))
-        .cloned()
-        .collect();
-    let view = ProjectContext {
-        root: ctx.root.clone(),
-        package_managers: ctx.package_managers.clone(),
-        task_runners: ctx.task_runners.clone(),
-        tasks: filtered_tasks,
-        node_version: ctx.node_version.clone(),
-        current_node: ctx.current_node.clone(),
-        is_monorepo: ctx.is_monorepo,
-        warnings: Vec::new(),
-    };
-    print_tasks_grouped(&view);
-}
-
 /// Print tasks grouped by [`TaskSource`], one line per source.
-pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
+///
+/// Operates over a borrowed task slice + the project root — the renderer
+/// never reads other [`ProjectContext`] fields, so callers that already
+/// have a filtered task list pass the slice directly instead of forging
+/// a synthetic context.
+pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
     let stdout_is_terminal = std::io::stdout().is_terminal();
 
     let sources = [
@@ -111,16 +89,16 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
         TaskSource::BaconToml,
     ];
     for source in sources {
-        let (recipes, aliases): (Vec<_>, Vec<_>) = ctx
-            .tasks
+        let (recipes, aliases): (Vec<&Task>, Vec<&Task>) = tasks
             .iter()
+            .copied()
             .filter(|t| t.source == source)
             .partition(|t| t.alias_of.is_none());
         if recipes.is_empty() && aliases.is_empty() {
             continue;
         }
 
-        let label = source_label(source, &ctx.root, stdout_is_terminal);
+        let label = source_label(source, root, stdout_is_terminal);
         if !recipes.is_empty() {
             let has_any_desc = recipes.iter().any(|t| t.description.is_some());
             if has_any_desc {
@@ -145,11 +123,7 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
     }
 }
 
-fn format_aliases_line(
-    source: TaskSource,
-    aliases: &[&crate::types::Task],
-    stdout_is_terminal: bool,
-) -> String {
+fn format_aliases_line(source: TaskSource, aliases: &[&Task], stdout_is_terminal: bool) -> String {
     let aliases_label = alias_label(source, stdout_is_terminal);
     let parts: Vec<String> = aliases
         .iter()
