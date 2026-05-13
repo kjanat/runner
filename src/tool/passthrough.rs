@@ -98,7 +98,23 @@ fn simple_passthrough(
     if tokens.next() != Some(name) {
         return false;
     }
-    tokens.all(|token| !is_shell_active(token))
+    // After binary + (optional run subcommand) + name, only *flags* may
+    // remain — anything positional changes behavior the wrapper would
+    // otherwise lose at dispatch time. Examples that previously slipped
+    // through and got silently dropped:
+    //
+    // * `make build clean` — two make targets, the wrapper would run
+    //   only `build` if dispatched as a thin passthrough.
+    // * `just build release` — recipe parameter for `just`, lost on
+    //   dispatch.
+    // * `nx run build extra` — extra positional that nx would forward.
+    //
+    // Flags (tokens that start with `-`: `-x`, `--flag`, `--flag=val`,
+    // the literal `--` separator) are the only safe tail tokens; their
+    // presence doesn't change which target/recipe `just`/`make`/etc.
+    // ends up running, they just configure how. `is_shell_active` still
+    // applies to catch glued shell meta-chars even inside flags.
+    tokens.all(|token| token.starts_with('-') && !is_shell_active(token))
 }
 
 /// Reject any token that introduces extra behavior beyond a thin
@@ -346,6 +362,52 @@ mod tests {
         // which expands `%VAR%` syntax. Treat it the same as bash's
         // `$VAR`.
         assert!(detect_target("build", "just build %EXTRA_ARGS%").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_extra_make_target() {
+        // `make build clean` runs two targets. Classifying as a thin
+        // passthrough to `make build` would silently drop `clean` at
+        // dispatch time.
+        assert!(detect_target("build", "make build clean").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_extra_just_positional() {
+        // `just` recipes can take parameters: `just build release`
+        // passes `release` to the recipe. Treating it as a thin
+        // passthrough would lose the parameter.
+        assert!(detect_target("build", "just build release").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_extra_nx_positional() {
+        // Extra positional after `nx run <task>` is an argument nx
+        // would forward; dispatching through the runner's `build` task
+        // would drop it.
+        assert!(detect_target("build", "nx run build extra").is_none());
+    }
+
+    #[test]
+    fn accepts_when_tail_is_flag_with_equals_value() {
+        // `--flag=value` is a single token starting with `-`; it
+        // configures the run without changing which target runs, so
+        // it's still a thin passthrough.
+        assert_eq!(
+            detect_target("test", "just test --reporter=verbose"),
+            Some(TaskRunner::Just),
+        );
+    }
+
+    #[test]
+    fn accepts_when_tail_contains_dash_dash_separator() {
+        // `--` introduces forwarded args (`just test -- --flag-for-target`).
+        // The literal `--` starts with `-` and is shell-inert, so the
+        // wrapper remains thin.
+        assert_eq!(
+            detect_target("test", "just test -- --watch"),
+            Some(TaskRunner::Just),
+        );
     }
 
     #[test]
