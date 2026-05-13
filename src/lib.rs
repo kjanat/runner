@@ -319,6 +319,8 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         cli.global.on_mismatch.as_deref(),
         cli.global.no_warnings,
         cli.global.explain,
+        false,
+        false,
         loaded_config.as_ref(),
     )?;
     match cli.task {
@@ -499,6 +501,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         cli.global.on_mismatch.as_deref(),
         cli.global.no_warnings,
         cli.global.explain,
+        false,
+        false,
         loaded_config.as_ref(),
     )?;
 

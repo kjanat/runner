@@ -31,6 +31,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 
+use crate::chain::FailurePolicy;
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
 use crate::tool::node::{
     ManifestPmDecl, ManifestSource, OnFail, VersionCheck, check_version_constraint,
@@ -82,6 +83,10 @@ pub(crate) struct ResolutionOverrides {
     /// When `true`, emit a one-line trace describing which chain step
     /// produced the PM decision. Set via `--explain` / `RUNNER_EXPLAIN`.
     pub explain: bool,
+    /// Failure policy for `run -s/-p` chains and `runner install <tasks>`.
+    /// Resolved from `-k`/`--kill-on-fail` (CLI) → `RUNNER_KEEP_GOING`/
+    /// `RUNNER_KILL_ON_FAIL` (env) → `[chain]` (config) → `FailFast`.
+    pub failure_policy: FailurePolicy,
 }
 
 /// What to do when no signal in steps 2–6 matches.
@@ -590,6 +595,10 @@ pub(crate) struct OverrideSources<'a> {
     pub no_warnings: ExplainSource<'a>,
     /// `--explain` flag presence plus `RUNNER_EXPLAIN` env.
     pub explain: ExplainSource<'a>,
+    /// `-k`/`--keep-going` flag presence plus `RUNNER_KEEP_GOING` env.
+    pub keep_going: ExplainSource<'a>,
+    /// `--kill-on-fail` flag presence plus `RUNNER_KILL_ON_FAIL` env.
+    pub kill_on_fail: ExplainSource<'a>,
     /// Loaded `runner.toml` if any.
     pub config: Option<&'a LoadedConfig>,
 }
@@ -638,6 +647,8 @@ impl ResolutionOverrides {
         cli_on_mismatch: Option<&str>,
         cli_no_warnings: bool,
         cli_explain: bool,
+        cli_keep_going: bool,
+        cli_kill_on_fail: bool,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let env_pm = std::env::var("RUNNER_PM").ok();
@@ -646,6 +657,8 @@ impl ResolutionOverrides {
         let env_on_mismatch = std::env::var("RUNNER_ON_MISMATCH").ok();
         let env_no_warnings = std::env::var("RUNNER_NO_WARNINGS").ok();
         let env_explain = std::env::var("RUNNER_EXPLAIN").ok();
+        let env_keep_going = std::env::var("RUNNER_KEEP_GOING").ok();
+        let env_kill_on_fail = std::env::var("RUNNER_KILL_ON_FAIL").ok();
         Self::from_sources(OverrideSources {
             pm: SourceValue {
                 cli: cli_pm,
@@ -670,6 +683,14 @@ impl ResolutionOverrides {
             explain: ExplainSource {
                 cli: cli_explain,
                 env: env_explain.as_deref(),
+            },
+            keep_going: ExplainSource {
+                cli: cli_keep_going,
+                env: env_keep_going.as_deref(),
+            },
+            kill_on_fail: ExplainSource {
+                cli: cli_kill_on_fail,
+                env: env_kill_on_fail.as_deref(),
             },
             config,
         })
@@ -715,6 +736,8 @@ impl ResolutionOverrides {
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
+        let failure_policy =
+            resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -753,6 +776,7 @@ impl ResolutionOverrides {
             on_mismatch,
             no_warnings,
             explain,
+            failure_policy,
         })
     }
 }
@@ -880,6 +904,92 @@ fn resolve_mismatch_policy(
         return parse_mismatch_label(raw);
     }
     Ok(MismatchPolicy::default())
+}
+
+/// Resolve a chain failure policy from CLI/env/config sources.
+///
+/// `keep_going` and `kill_on_fail` are independent bool layers — CLI flag
+/// presence beats env truthy beats `[chain]` config beats `false`. The
+/// two layers are combined into a `FailurePolicy` and validated for
+/// mutual exclusion: both true at any source or after layering returns
+/// `ResolveError::ConflictingFailurePolicy`.
+fn resolve_failure_policy(
+    keep_going: ExplainSource<'_>,
+    kill_on_fail: ExplainSource<'_>,
+    config: Option<&LoadedConfig>,
+) -> Result<FailurePolicy> {
+    // Per-source conflict detection: report the source where both went
+    // true so the user can pin the offending knob quickly.
+    if let Some(source) = single_source_conflict(&keep_going, &kill_on_fail, config) {
+        return Err(ResolveError::ConflictingFailurePolicy { source }.into());
+    }
+
+    let keep = resolve_chain_bool(
+        keep_going.cli,
+        keep_going.env,
+        config.and_then(|c| c.config.chain.keep_going),
+    );
+    let kill = resolve_chain_bool(
+        kill_on_fail.cli,
+        kill_on_fail.env,
+        config.and_then(|c| c.config.chain.kill_on_fail),
+    );
+
+    match (keep, kill) {
+        (false, false) => Ok(FailurePolicy::FailFast),
+        (true, false) => Ok(FailurePolicy::KeepGoing),
+        (false, true) => Ok(FailurePolicy::KillOnFail),
+        (true, true) => Err(ResolveError::ConflictingFailurePolicy {
+            source: "cross-source",
+        }
+        .into()),
+    }
+}
+
+/// Layered bool resolution: CLI flag > env truthy > config explicit > false.
+fn resolve_chain_bool(cli: bool, env: Option<&str>, config: Option<bool>) -> bool {
+    if cli {
+        return true;
+    }
+    if let Some(raw) = env
+        && is_env_truthy(raw)
+    {
+        return true;
+    }
+    config.unwrap_or(false)
+}
+
+/// If `keep_going` and `kill_on_fail` are both set true *within the same
+/// source layer*, return that layer's label. None if no single-layer
+/// conflict (cross-source conflicts are caught after layering).
+fn single_source_conflict(
+    keep: &ExplainSource<'_>,
+    kill: &ExplainSource<'_>,
+    config: Option<&LoadedConfig>,
+) -> Option<&'static str> {
+    if keep.cli && kill.cli {
+        return Some("CLI flags");
+    }
+    let keep_env_truthy = keep
+        .env
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some_and(is_env_truthy);
+    let kill_env_truthy = kill
+        .env
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some_and(is_env_truthy);
+    if keep_env_truthy && kill_env_truthy {
+        return Some("env vars");
+    }
+    if let Some(loaded) = config
+        && loaded.config.chain.keep_going == Some(true)
+        && loaded.config.chain.kill_on_fail == Some(true)
+    {
+        return Some("[chain] config");
+    }
+    None
 }
 
 fn parse_pm_label(raw: &str) -> Result<PackageManager> {
@@ -2065,5 +2175,76 @@ mod tests {
             .resolve_node_pm()
             .expect("resolution should succeed");
         assert_eq!(decision.pm, PackageManager::Deno);
+    }
+
+    fn test_loaded_config_with_chain(
+        keep_going: Option<bool>,
+        kill_on_fail: Option<bool>,
+    ) -> LoadedConfig {
+        use crate::config::ChainSection;
+        LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            config: RunnerConfig {
+                chain: ChainSection {
+                    keep_going,
+                    kill_on_fail,
+                },
+                ..RunnerConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn from_sources_resolves_cli_keep_going() {
+        use crate::chain::FailurePolicy;
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_env_overrides_config_for_failure_policy() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(false), None);
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_rejects_both_keep_going_and_kill_on_fail() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            kill_on_fail: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("conflict must error");
+        let downcast = err.downcast_ref::<ResolveError>();
+        assert!(
+            matches!(
+                downcast,
+                Some(ResolveError::ConflictingFailurePolicy { .. })
+            ),
+            "expected ConflictingFailurePolicy, got: {err:#}",
+        );
     }
 }
