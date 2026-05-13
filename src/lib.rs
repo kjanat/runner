@@ -73,6 +73,18 @@ use clap::{CommandFactory, FromArgMatches};
 
 use resolver::ResolveError;
 
+/// Generate the JSON Schema for `runner.toml`.
+///
+/// Only exposed when the `schema-gen` feature is on; the `gen-schema`
+/// example calls this to keep `RunnerConfig` and its inner section
+/// structs `pub(crate)` permanently — no permanent public-API
+/// expansion just to derive a schema once.
+#[cfg(feature = "schema-gen")]
+#[must_use]
+pub fn config_schema() -> schemars::Schema {
+    schemars::schema_for!(config::RunnerConfig)
+}
+
 /// Exit code semantics:
 /// - `0` — success
 /// - `1` — generic failure (I/O, detection, child-process non-zero)

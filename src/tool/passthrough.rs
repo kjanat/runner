@@ -111,8 +111,11 @@ fn simple_passthrough(
 /// `arg > out` respectively, so a passthrough wrapper that contains
 /// them is not actually a thin dispatch.
 fn is_shell_active(token: &str) -> bool {
-    // Expansion / substitution — `$VAR`, `$(cmd)`, `$((expr))`, `` `cmd` ``.
-    if token.contains('$') || token.contains('`') {
+    // Expansion / substitution — `$VAR`, `$(cmd)`, `$((expr))`,
+    // `` `cmd` ``, and Windows `cmd.exe` `%VAR%` expansion (`package.json`
+    // scripts spawn through the user's shell, which on Windows is
+    // typically `cmd.exe`).
+    if token.contains('$') || token.contains('`') || token.contains('%') {
         return true;
     }
     // Redirects (`>`, `<`, `>>`, `<<`, `>&`, `&>`, `1>foo`, `2>&1`, …)
@@ -127,13 +130,29 @@ fn is_shell_active(token: &str) -> bool {
     {
         return true;
     }
-    // Block / subshell delimiters are only meta when they appear as
-    // standalone tokens — `{ a; b; }` requires whitespace separation
-    // around `{` and `}`, and `( subshell )` likewise. Treating them
-    // as substrings would over-reject benign args like
-    // `--filter=name(v1)` that the shell would pass through verbatim,
-    // so keep the exact-match check here.
-    matches!(token, "!" | "{" | "}" | "(" | ")")
+    // Pathname / brace expansion — bash expands these *before* exec, so
+    // a script body like `just build src/*.js` is no longer a thin
+    // dispatch: the shell expands the glob into a file list and
+    // forwards that to `just`. Reject substring-anywhere so glued
+    // forms like `--filter=name{a,b}` (which expands to two args
+    // `--filter=namea --filter=nameb`) also get caught.
+    //
+    // `{` / `}` join this set because the only realistic non-expansion
+    // use of curly braces inside a single shell token is `${VAR}`,
+    // which is already caught by the `$` check above; bare `{a,b}`
+    // syntax means brace expansion.
+    if token
+        .chars()
+        .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
+    {
+        return true;
+    }
+    // `(`, `)`, `!` stay exact-match — they're only shell-active as
+    // standalone tokens (`(subshell)` requires whitespace, `! cmd`
+    // requires leading `!`). Substring-matching would over-reject
+    // benign arg literals like `--filter=name(v1)`, `arg!`, or
+    // a `package.json` script that quotes a path with parens.
+    matches!(token, "!" | "(" | ")")
 }
 
 #[cfg(test)]
@@ -286,6 +305,47 @@ mod tests {
         // first newline regardless of what follows.
         let body = "just build\nif [ $? -ne 0 ]; then\n  exit 1\nfi";
         assert!(detect_target("build", body).is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glob_star() {
+        // `src/*.js` is a pathname glob — bash expands it into the
+        // matching file list before invoking `just`, so the wrapper
+        // is doing real shell work.
+        assert!(detect_target("build", "just build src/*.js").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glob_question_mark() {
+        assert!(detect_target("build", "just build file?.txt").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_character_class_glob() {
+        // `file[12].txt` matches `file1.txt` or `file2.txt`.
+        assert!(detect_target("build", "just build file[12].txt").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_brace_expansion() {
+        // `foo{1,2}` expands to `foo1 foo2` — extra args appear that
+        // the user didn't literally write.
+        assert!(detect_target("build", "just build foo{1,2}").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_glued_brace_expansion() {
+        // CR-flagged case: glued `--filter=name{a,b}` still triggers
+        // brace expansion via bash's tokenisation rules.
+        assert!(detect_target("build", "just build --filter=name{a,b}").is_none());
+    }
+
+    #[test]
+    fn rejects_when_tail_contains_windows_env_var() {
+        // `package.json` scripts on Windows spawn through `cmd.exe`,
+        // which expands `%VAR%` syntax. Treat it the same as bash's
+        // `$VAR`.
+        assert!(detect_target("build", "just build %EXTRA_ARGS%").is_none());
     }
 
     #[test]

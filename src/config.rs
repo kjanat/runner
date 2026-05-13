@@ -48,6 +48,7 @@ pub(crate) struct LoadedConfig {
 
 /// Top-level schema for `runner.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RunnerConfig {
     /// `[pm]` — per-ecosystem package-manager overrides.
@@ -63,37 +64,61 @@ pub(crate) struct RunnerConfig {
 
 /// `[pm]` section — per-ecosystem package manager overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PmSection {
     /// Package manager used to dispatch Node `package.json` scripts.
     /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
+    #[cfg_attr(
+        feature = "schema-gen",
+        schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))
+    )]
     pub node: Option<String>,
     /// Package manager used for Python ecosystems.
     /// Valid values: `uv`, `poetry`, `pipenv`.
+    #[cfg_attr(
+        feature = "schema-gen",
+        schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))
+    )]
     pub python: Option<String>,
 }
 
 /// `[task_runner]` section — preferred ordering for ambiguous tasks.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TaskRunnerSection {
     /// Ranked preference list. Restricts candidates to runners in the
     /// list (in listed order); a same-named task under a runner not in
     /// the list is hard-rejected. Parsed into [`crate::types::TaskRunner`]
     /// at resolver-init time so unknown labels fail fast.
+    ///
+    /// Valid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,
+    /// `bacon`. (Not constrained in the JSON Schema — the runtime
+    /// parser emits a more helpful error than a schema-validation
+    /// failure would.)
     #[serde(default)]
     pub prefer: Vec<String>,
 }
 
 /// `[resolution]` section — resolver policy knobs.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default) — PATH probe in canonical order when no signals
     /// match; `npm` — legacy silent fallback; `error` — refuse to proceed.
+    #[cfg_attr(
+        feature = "schema-gen",
+        schemars(extend("enum" = ["probe", "npm", "error", null]))
+    )]
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore` — how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
+    #[cfg_attr(
+        feature = "schema-gen",
+        schemars(extend("enum" = ["warn", "error", "ignore", null]))
+    )]
     pub on_mismatch: Option<String>,
 }
 

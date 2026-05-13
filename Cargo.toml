@@ -51,6 +51,10 @@ name              = "run"
 path              = "src/bin/run.rs"
 required-features = ["run"]
 
+[[example]]
+name              = "gen-schema"
+required-features = ["schema-gen"]
+
 [dependencies]
 anyhow     = "1"
 colored    = "3"
@@ -67,6 +71,13 @@ features = ["cargo", "derive", "env", "string", "wrap_help"]
 [dependencies.clap_complete]
 version  = "4"
 features = ["unstable-dynamic"]
+
+# Optional: only pulled in for `cargo run --example gen-schema --features
+# schema-gen`. Kept out of the release build so the binary doesn't carry
+# the JSON Schema generator at runtime.
+[dependencies.schemars]
+version  = "1.2"
+optional = true
 
 [dependencies.serde]
 version  = "1"
@@ -87,8 +98,12 @@ default-features = false
 features         = ["parse", "serde"]
 
 [features]
-default = ["run"]
-run     = []
+default    = ["run"]
+run        = []
+# Enables the `gen-schema` example + the `pub use` of `RunnerConfig`
+# needed for `schemars::schema_for!` to reach it from outside the crate.
+# Off by default so production builds don't pull in `schemars`.
+schema-gen = ["dep:schemars"]
 
 [lints.clippy]
 cargo_common_metadata   = "allow"
