@@ -555,10 +555,11 @@ fn dispatch_run(
         };
         return chain::exec::run_chain(ctx, overrides, &c);
     }
-    let task = task.as_deref().unwrap_or_else(|| {
-        eprintln!("error: task name required");
-        std::process::exit(2);
-    });
+    let Some(task) = task.as_deref() else {
+        bail!(
+            "task name required (drop -s/-p for single-task mode or supply at least one task name)"
+        );
+    };
     cmd::run(ctx, overrides, task, &args, None)
 }
 

@@ -127,16 +127,12 @@ fn run_parallel(
 
     while !remaining.is_empty() {
         let mut next: Vec<(String, Child)> = Vec::with_capacity(remaining.len());
-        let mut killed_this_pass = false;
         for (name, mut child) in std::mem::take(&mut remaining) {
             match child.try_wait()? {
                 Some(status) => {
                     let code = status.code().unwrap_or(1);
                     if code != 0 {
                         first_failure.get_or_insert(code);
-                        if kill_on_fail && !killed_this_pass {
-                            killed_this_pass = true;
-                        }
                     }
                 }
                 None => {

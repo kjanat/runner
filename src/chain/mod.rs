@@ -78,8 +78,9 @@ pub(crate) enum FailurePolicy {
     /// Run every task to completion regardless of failures. Final exit
     /// code reflects the first failure.
     KeepGoing,
-    /// Parallel only: SIGTERM siblings on first failure. Sequential
-    /// callers accept this silently (no-op).
+    /// Parallel only: SIGKILL siblings on first failure (`std::process::Child::kill`).
+    /// Sequential callers accept this silently (no-op). Catch-able SIGTERM
+    /// semantics would need a libc/nix dep — deferred to a follow-up.
     KillOnFail,
 }
 

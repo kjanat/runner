@@ -935,8 +935,8 @@ pub(crate) struct ChainFailureFlags {
     /// with `--kill-on-fail`.
     #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
     pub keep_going: bool,
-    /// Parallel only: SIGTERM siblings on first failure. Accepted but
+    /// Parallel only: SIGKILL siblings on first failure. Accepted but
     /// unused in sequential mode.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "keep_going")]
     pub kill_on_fail: bool,
 }

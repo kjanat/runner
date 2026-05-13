@@ -34,7 +34,7 @@ bundles.
 -s, --sequential        chain mode: run tasks in order, stop on first failure
 -p, --parallel          chain mode: run tasks concurrently
 -k, --keep-going        run all tasks to completion regardless of failures
-    --kill-on-fail      parallel only: SIGTERM running siblings on first failure
+    --kill-on-fail      parallel only: SIGKILL running siblings on first failure
 ```
 
 `-s` and `-p` are mutually exclusive (clap `conflicts_with`). When either is
@@ -168,13 +168,13 @@ Failure handling:
   siblings finish. Final chain exit = first failing task's exit code.
 - `KeepGoing`: ignore per-task failures during execution. Final chain exit
   = first failing task's exit code (chosen over max for diagnostic clarity).
-- `KillOnFail`: on first non-zero exit, send SIGTERM to all sibling child
+- `KillOnFail`: on first non-zero exit, SIGKILL all sibling child
   processes. Reap them, collect exit codes. Final chain exit = first
   failing task's exit code.
 
-SIGTERM-then-wait pattern (no SIGKILL escalation in v1; tasks should
-respond to SIGTERM. If they don't, user can re-invoke without
-`--kill-on-fail`).
+SIGKILL via `std::process::Child::kill` (no SIGTERM in v1 — that would require a libc/nix dep; deferred). If a task needs a graceful-shutdown path,
+the user should
+`--kill-on-fail` and rely on the parent process group instead.
 
 ### 4.3 Resolver warning dedup
 
@@ -333,7 +333,7 @@ Parsing: reuse existing `is_env_truthy` helper from `src/resolver/mod.rs`.
 ```toml
 [chain]
 keep_going   = false  # default false; true = run all tasks regardless of failures
-kill_on_fail = false  # default false; true = SIGTERM siblings on first failure (parallel only)
+kill_on_fail = false  # default false; true = SIGKILL siblings on first failure (parallel only)
 ```
 
 ### 8.2 Rust type
@@ -497,7 +497,7 @@ ships as a parser change with zero downstream churn:
 - `chain::exec` parallel:
   - all-pass → exit 0
   - one failure with `FailFast` → other tasks finish, exit = failing task's code
-  - one failure with `KillOnFail` → SIGTERM sent to siblings, exit = failing task's code
+  - one failure with `KillOnFail` → SIGKILL sent to siblings, exit = failing task's code
   - one failure with `KeepGoing` → all complete, exit = first failure's code
 - `chain::mux`:
   - lines from concurrent tasks get correct prefix
@@ -518,7 +518,7 @@ ships as a parser change with zero downstream churn:
 - `tests/fixtures/chain-parallel-failfast/`: 3 tasks, middle one fails with
   exit 7, run `-p`, assert sibling completion + exit 7.
 - `tests/fixtures/chain-parallel-killonfail/`: spawn long-runners + fast
-  failer, run `-p --kill-on-fail`, assert siblings receive SIGTERM.
+  failer, run `-p --kill-on-fail`, assert siblings receive SIGKILL.
 - `tests/fixtures/install-then-tasks/`: `runner install foo bar` in a fresh
   workspace; assert install ran and tasks dispatched.
 - `tests/fixtures/install-fail-tasks-skipped/`: install fails (bogus
@@ -566,6 +566,6 @@ ships as a parser change with zero downstream churn:
 - **Color palette size 8 vs 16.** 8 is enough for typical 3–5 task chains;
   16 supports larger but adds dim variants. **Decision: 8 for v1**, expand
   if users actually chain large counts.
-- **SIGKILL escalation** if a child ignores SIGTERM with `--kill-on-fail`.
-  v1 sends SIGTERM and waits indefinitely; if a task hangs, user must
+- **SIGTERM-with-grace-period semantics** if users need graceful shutdown.
+  v1 sends SIGKILL (immediate); if users need a SIGTERM-then-grace pattern they
   Ctrl-C. Follow-up if it becomes a pain point.
