@@ -229,11 +229,12 @@ fn run_pm_exec_fallback(
     // authoritative rather than silently doing the wrong thing.
     let (label, mut cmd) = match resolved_pm {
         Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
-        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&combined())),
+        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined())),
         Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
+        Some(PackageManager::Go) => ("go run", tool::go_pm::exec_cmd(&combined())),
         None | Some(_) => {
             let mut c = tool::program::command(target);
             c.args(args);

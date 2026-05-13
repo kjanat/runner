@@ -263,14 +263,19 @@ impl PackageManager {
         self.is_node() || matches!(self, Self::Deno)
     }
 
-    /// Whether this PM owns an `npx`-style exec primitive — `npm exec`,
-    /// `pnpm exec`, `yarn …`, `bun x`, `deno x`, `uvx`. The
-    /// arbitrary-command fallback in `cmd::run::run_pm_exec_fallback`
-    /// dispatches through these via per-PM `exec_cmd` builders; other
-    /// PMs (Cargo, Poetry, Pipenv, Bundler, Composer, Go) lack a
-    /// comparable primitive and fall through to a direct PATH spawn
-    /// there. Kept as an inherent method so the property is
-    /// documented at the type level even though the dispatch match
+    /// Whether this PM owns an exec primitive that resolves a target
+    /// to runnable code: `npm exec` / `npx` (local + registry fetch),
+    /// `pnpm exec` (local only), `yarn exec` / `yarn run` (local
+    /// only, version-aware shape), `bun x` / `bunx` (local + registry
+    /// fetch), `deno x` (`npm:` / `jsr:` registry fetch), `uvx` (`PyPI`
+    /// ephemeral), `go run <path>@version` (module-path registry
+    /// fetch). The arbitrary-command fallback in
+    /// `cmd::run::run_pm_exec_fallback` dispatches through these via
+    /// per-PM `exec_cmd` builders; the remaining PMs
+    /// (Cargo, Poetry, Pipenv, Bundler, Composer) lack a comparable
+    /// primitive in this implementation and fall through to a direct
+    /// PATH spawn there. Kept as an inherent method so the property
+    /// is documented at the type level even though the dispatch match
     /// enumerates variants explicitly.
     #[allow(
         dead_code,
@@ -279,7 +284,7 @@ impl PackageManager {
     pub(crate) const fn has_exec_primitive(self) -> bool {
         matches!(
             self,
-            Self::Npm | Self::Pnpm | Self::Yarn | Self::Bun | Self::Deno | Self::Uv
+            Self::Npm | Self::Pnpm | Self::Yarn | Self::Bun | Self::Deno | Self::Uv | Self::Go
         )
     }
 }
