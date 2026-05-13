@@ -63,7 +63,16 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     } else if tool::npm::detect(dir) {
         Some(PackageManager::Npm)
     } else if tool::node::has_package_json(dir) {
-        tool::node::detect_pm_from_field(dir).filter(|pm| pm.is_node())
+        // Read the field with diagnostics so a present-but-unparseable
+        // value (typo, unsupported PM) doesn't disappear silently —
+        // emit a `DetectionWarning::UnparseablePackageManager` so the
+        // user sees the raw value they wrote and can fix it.
+        let (pm, unparseable) = tool::node::detect_pm_field_with_diagnostics(dir);
+        if let Some(raw) = unparseable {
+            ctx.warnings
+                .push(DetectionWarning::UnparseablePackageManager { raw });
+        }
+        pm.filter(|pm| pm.is_node())
     } else {
         None
     };
@@ -434,6 +443,43 @@ mod tests {
 
         assert_eq!(ctx.warnings.len(), 1);
         assert_eq!(ctx.warnings[0].source(), "turbo.json");
+    }
+
+    #[test]
+    fn detect_records_warning_for_unparseable_package_manager_field() {
+        // The user typo'd `pnpm` → `pnpmm`. The resolver can't dispatch
+        // through `pnpmm@9`, so the manifest declaration is ignored —
+        // but the detection layer surfaces the raw value verbatim so
+        // the user sees their typo instead of staring at a doctor
+        // report that just shows `manifest_pm: null`.
+        let dir = TempDir::new("detect-unparseable-pm-field");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "pnpmm@9.0.0" }"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path());
+
+        let detail = ctx
+            .warnings
+            .iter()
+            .find_map(|w| {
+                matches!(
+                    w,
+                    crate::types::DetectionWarning::UnparseablePackageManager { .. }
+                )
+                .then(|| w.detail())
+            })
+            .expect("unparseable-packageManager warning should be emitted");
+        assert!(
+            detail.contains("pnpmm@9.0.0"),
+            "warning should echo the raw value verbatim: {detail}",
+        );
+        assert!(
+            detail.contains("npm|pnpm|yarn|bun|deno"),
+            "warning should list the accepted values: {detail}",
+        );
     }
 
     #[test]

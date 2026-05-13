@@ -45,6 +45,36 @@ pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
     detect_pm(parse_package_json(dir))
 }
 
+/// Detect the `packageManager` field AND surface a diagnostic when the
+/// field is present but unparseable (typo, unsupported PM, malformed
+/// spec). The returned `raw` value is the verbatim string the user
+/// wrote in `package.json`, suitable for echoing back in the warning.
+///
+/// Returns:
+/// - `(Some(pm), None)` — field present and parses to a script-dispatching PM.
+/// - `(None, Some(raw))` — field present but unparseable; caller emits a
+///   `DetectionWarning::UnparseablePackageManager { raw }`.
+/// - `(None, None)` — field absent / empty / whitespace.
+pub(crate) fn detect_pm_field_with_diagnostics(
+    dir: &Path,
+) -> (Option<PackageManager>, Option<String>) {
+    let Some(parsed) = parse_package_json(dir) else {
+        return (None, None);
+    };
+    let Some(raw) = parsed
+        .package_manager
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return (None, None);
+    };
+    match parse_package_manager_spec(Some(raw)) {
+        Some((pm, _)) => (Some(pm), None),
+        None => (None, Some(raw.to_string())),
+    }
+}
+
 fn detect_pm(package_json: Option<PackageJson>) -> Option<PackageManager> {
     parse_package_manager_spec(
         package_json

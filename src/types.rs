@@ -214,6 +214,16 @@ pub(crate) enum DetectionWarning {
         /// Formatted error chain from the failing reader.
         error: String,
     },
+    /// `package.json` declared a `packageManager` value that doesn't
+    /// name a script-dispatching PM (typo, unsupported ecosystem,
+    /// empty version after `@`, etc.). Surfaced so the user sees what
+    /// the resolver couldn't honour instead of getting a silent
+    /// fall-through to lockfile/PATH probe.
+    UnparseablePackageManager {
+        /// The raw value as written in `package.json`, verbatim, so
+        /// the user can spot their typo without re-reading the file.
+        raw: String,
+    },
 }
 
 impl DetectionWarning {
@@ -226,7 +236,8 @@ impl DetectionWarning {
         match self {
             Self::PmMismatch { .. }
             | Self::DevEnginesBinaryMissing { .. }
-            | Self::DevEnginesVersionMismatch { .. } => "package.json",
+            | Self::DevEnginesVersionMismatch { .. }
+            | Self::UnparseablePackageManager { .. } => "package.json",
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
         }
@@ -289,6 +300,11 @@ impl DetectionWarning {
                 ecosystem.label(),
             ),
             Self::TaskListUnreadable { error, .. } => format!("failed to read tasks: {error}"),
+            Self::UnparseablePackageManager { raw } => format!(
+                "packageManager value {raw:?} doesn't name a script-dispatching package manager \
+                 (expected one of npm|pnpm|yarn|bun|deno, optionally followed by @<version>); \
+                 declaration ignored, falling back to lockfile / PATH probe",
+            ),
         }
     }
 }
