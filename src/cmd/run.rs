@@ -100,28 +100,7 @@ pub(crate) fn dispatch_task_piped(
             }
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.
-            let combined = || {
-                let mut v = Vec::with_capacity(args.len() + 1);
-                v.push(task_name.to_string());
-                v.extend(args.iter().cloned());
-                v
-            };
-            let (label, mut cmd) = match resolved_pm {
-                Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
-                Some(PackageManager::Yarn) => {
-                    ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined()))
-                }
-                Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
-                Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
-                Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
-                Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
-                Some(PackageManager::Go) => ("go run", tool::go_pm::exec_cmd(&combined())),
-                None | Some(_) => {
-                    let mut c = tool::program::command(task_name);
-                    c.args(args);
-                    ("exec", c)
-                }
-            };
+            let (label, mut cmd) = build_pm_exec_command(ctx, resolved_pm, task_name, args);
             eprintln!(
                 "{} {} {} {}",
                 "→".dimmed(),
@@ -159,6 +138,36 @@ pub(crate) fn dispatch_task_piped(
     super::configure_command(&mut cmd, &ctx.root);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     Ok(cmd.spawn()?)
+}
+
+/// Build the command for the PM-exec fallback path. Used by both
+/// `cmd::run::run` (inherit stdio) and `dispatch_task_piped` (piped stdio).
+fn build_pm_exec_command(
+    ctx: &ProjectContext,
+    resolved_pm: Option<PackageManager>,
+    task_name: &str,
+    args: &[String],
+) -> (&'static str, Command) {
+    let combined = || {
+        let mut v = Vec::with_capacity(args.len() + 1);
+        v.push(task_name.to_string());
+        v.extend(args.iter().cloned());
+        v
+    };
+    match resolved_pm {
+        Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
+        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined())),
+        Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
+        Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
+        Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
+        Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
+        Some(PackageManager::Go) => ("go run", tool::go_pm::exec_cmd(&combined())),
+        None | Some(_) => {
+            let mut c = tool::program::command(task_name);
+            c.args(args);
+            ("exec", c)
+        }
+    }
 }
 
 /// Look up `task` across all detected sources, pick the highest-priority

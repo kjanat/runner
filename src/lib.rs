@@ -317,14 +317,18 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
         cli.global.on_mismatch.as_deref(),
-        cli.global.no_warnings,
-        cli.global.explain,
-        cli.keep_going,
-        cli.kill_on_fail,
+        resolver::DiagnosticFlags {
+            no_warnings: cli.global.no_warnings,
+            explain: cli.global.explain,
+        },
+        cli::ChainFailureFlags {
+            keep_going: cli.failure.keep_going,
+            kill_on_fail: cli.failure.kill_on_fail,
+        },
         loaded_config.as_ref(),
     )?;
-    if cli.sequential || cli.parallel {
-        let mode = if cli.parallel {
+    if cli.mode.sequential || cli.mode.parallel {
+        let mode = if cli.mode.parallel {
             chain::ChainMode::Parallel
         } else {
             chain::ChainMode::Sequential
@@ -510,22 +514,61 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
     Ok(exit_code)
 }
 
+fn dispatch_install_chain(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    tasks: &[String],
+) -> Result<i32> {
+    let mut items = vec![chain::ChainItem::install()];
+    items.extend(chain::parse::parse_task_list(tasks)?);
+    let c = chain::Chain {
+        mode: chain::ChainMode::Sequential,
+        items,
+        failure: overrides.failure_policy,
+    };
+    chain::exec::run_chain(ctx, overrides, &c)
+}
+
+fn dispatch_run(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    task: Option<String>,
+    args: Vec<String>,
+    mode: cli::ChainModeFlags,
+) -> Result<i32> {
+    if mode.sequential || mode.parallel {
+        let chain_mode = if mode.parallel {
+            chain::ChainMode::Parallel
+        } else {
+            chain::ChainMode::Sequential
+        };
+        let mut positionals: Vec<String> = Vec::new();
+        if let Some(t) = task {
+            positionals.push(t);
+        }
+        positionals.extend(args);
+        let items = chain::parse::parse_task_list(&positionals)?;
+        let c = chain::Chain {
+            mode: chain_mode,
+            items,
+            failure: overrides.failure_policy,
+        };
+        return chain::exec::run_chain(ctx, overrides, &c);
+    }
+    let task = task.as_deref().unwrap_or_else(|| {
+        eprintln!("error: task name required");
+        std::process::exit(2);
+    });
+    cmd::run(ctx, overrides, task, &args)
+}
+
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
     let loaded_config = config::load(dir)?;
     let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
-        Some(
-            cli::Command::Run {
-                keep_going,
-                kill_on_fail,
-                ..
-            }
-            | cli::Command::Install {
-                keep_going,
-                kill_on_fail,
-                ..
-            },
-        ) => (*keep_going, *kill_on_fail),
+        Some(cli::Command::Run { failure, .. } | cli::Command::Install { failure, .. }) => {
+            (failure.keep_going, failure.kill_on_fail)
+        }
         _ => (false, false),
     };
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
@@ -533,10 +576,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
         cli.global.on_mismatch.as_deref(),
-        cli.global.no_warnings,
-        cli.global.explain,
-        cli_keep_going,
-        cli_kill_on_fail,
+        resolver::DiagnosticFlags {
+            no_warnings: cli.global.no_warnings,
+            explain: cli.global.explain,
+        },
+        cli::ChainFailureFlags {
+            keep_going: cli_keep_going,
+            kill_on_fail: cli_kill_on_fail,
+        },
         loaded_config.as_ref(),
     )?;
 
@@ -553,37 +600,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
         Some(cli::Command::Run {
-            task,
-            args,
-            sequential,
-            parallel,
-            ..
-        }) => {
-            if sequential || parallel {
-                let mode = if parallel {
-                    chain::ChainMode::Parallel
-                } else {
-                    chain::ChainMode::Sequential
-                };
-                let mut positionals: Vec<String> = Vec::new();
-                if let Some(t) = task {
-                    positionals.push(t);
-                }
-                positionals.extend(args);
-                let items = chain::parse::parse_task_list(&positionals)?;
-                let c = chain::Chain {
-                    mode,
-                    items,
-                    failure: overrides.failure_policy,
-                };
-                return chain::exec::run_chain(&ctx, &overrides, &c);
-            }
-            let task = task.as_deref().unwrap_or_else(|| {
-                eprintln!("error: task name required");
-                std::process::exit(2);
-            });
-            cmd::run(&ctx, &overrides, task, &args)
-        }
+            task, args, mode, ..
+        }) => dispatch_run(&ctx, &overrides, task, args, mode),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
                 cmd::info(&ctx, &overrides, false)?;
@@ -599,16 +617,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) if tasks.is_empty() && has_task(&ctx, "install") => {
             cmd::run(&ctx, &overrides, "install", &[])
         }
-        Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
-            let _ = frozen; // install_pms in chain context always non-frozen
-            let mut items = vec![chain::ChainItem::install()];
-            items.extend(chain::parse::parse_task_list(&tasks)?);
-            let c = chain::Chain {
-                mode: chain::ChainMode::Sequential,
-                items,
-                failure: overrides.failure_policy,
-            };
-            chain::exec::run_chain(&ctx, &overrides, &c)
+        Some(cli::Command::Install { tasks, .. }) if !tasks.is_empty() => {
+            dispatch_install_chain(&ctx, &overrides, &tasks)
         }
         Some(cli::Command::Install { frozen, .. }) => {
             cmd::install(&ctx, frozen)?;

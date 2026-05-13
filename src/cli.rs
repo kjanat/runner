@@ -561,17 +561,13 @@ mod tests {
     fn run_accepts_sequential_chain_flag() {
         let cli = Cli::try_parse_from(["runner", "run", "-s", "build", "test"]).expect("parses");
         let Some(Command::Run {
-            task,
-            args,
-            sequential,
-            parallel,
-            ..
+            task, args, mode, ..
         }) = cli.command
         else {
             panic!("expected Run subcommand");
         };
-        assert!(sequential, "-s should set sequential");
-        assert!(!parallel, "-p should not be set");
+        assert!(mode.sequential, "-s should set sequential");
+        assert!(!mode.parallel, "-p should not be set");
         assert_eq!(task.as_deref(), Some("build"));
         assert_eq!(args, vec!["test".to_string()]);
     }
@@ -603,8 +599,8 @@ mod tests {
     #[test]
     fn run_alias_parses_chain_flags_too() {
         let cli = RunAliasCli::try_parse_from(["run", "-p", "lint", "test"]).expect("parses");
-        assert!(cli.parallel);
-        assert!(!cli.sequential);
+        assert!(cli.mode.parallel);
+        assert!(!cli.mode.sequential);
         assert_eq!(cli.task.as_deref(), Some("lint"));
         assert_eq!(cli.args, vec!["test".to_string()]);
     }
@@ -615,27 +611,24 @@ mod tests {
         let Some(Command::Install {
             tasks,
             frozen,
-            keep_going,
+            failure,
             ..
         }) = cli.command
         else {
             panic!("expected Install subcommand");
         };
         assert!(!frozen);
-        assert!(!keep_going);
+        assert!(!failure.keep_going);
         assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
     }
 
     #[test]
     fn install_accepts_keep_going_flag() {
         let cli = Cli::try_parse_from(["runner", "install", "-k", "build"]).expect("parses");
-        let Some(Command::Install {
-            tasks, keep_going, ..
-        }) = cli.command
-        else {
+        let Some(Command::Install { tasks, failure, .. }) = cli.command else {
             panic!("expected Install subcommand");
         };
-        assert!(keep_going);
+        assert!(failure.keep_going);
         assert_eq!(tasks, vec!["build".to_string()]);
     }
 }
@@ -787,20 +780,12 @@ pub(crate) enum Command {
         /// Arguments forwarded to the task, OR additional task names in chain mode.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
-        /// Run the given tasks sequentially. Conflicts with `--parallel`.
-        #[arg(short = 's', long, conflicts_with = "parallel")]
-        sequential: bool,
-        /// Run the given tasks in parallel. Conflicts with `--sequential`.
-        #[arg(short = 'p', long)]
-        parallel: bool,
-        /// Run every task in the chain regardless of failures. Conflicts
-        /// with `--kill-on-fail`.
-        #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
-        keep_going: bool,
-        /// Parallel only: SIGTERM siblings on first failure. Accepted but
-        /// unused in sequential mode.
-        #[arg(long)]
-        kill_on_fail: bool,
+        /// Chain mode flags: `-s` / `-p`.
+        #[command(flatten)]
+        mode: ChainModeFlags,
+        /// Chain failure-policy flags: `-k` / `--kill-on-fail`.
+        #[command(flatten)]
+        failure: ChainFailureFlags,
     },
 
     /// Install project dependencies, then optionally chain tasks
@@ -814,13 +799,10 @@ pub(crate) enum Command {
         /// always sequential; `-p` is not accepted here.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         tasks: Vec<String>,
-        /// Run every chained task regardless of failures. Equivalent to
-        /// `-k` on `run -s`.
-        #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
-        keep_going: bool,
-        /// Accepted but unused (install chain is always sequential).
-        #[arg(long, hide = true)]
-        kill_on_fail: bool,
+        /// Chain failure-policy flags. `--kill-on-fail` is accepted but
+        /// unused (install is always sequential).
+        #[command(flatten)]
+        failure: ChainFailureFlags,
     },
 
     /// Remove caches and build artifacts
@@ -922,19 +904,39 @@ pub(crate) struct RunAliasCli {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 
+    /// Chain mode flags: `-s` / `-p`.
+    #[command(flatten)]
+    pub mode: ChainModeFlags,
+
+    /// Chain failure-policy flags: `-k` / `--kill-on-fail`.
+    #[command(flatten)]
+    pub failure: ChainFailureFlags,
+}
+
+/// Chain-mode flags shared across `Cli::Run` and `RunAliasCli`. Grouped
+/// so neither subcommand exceeds clippy's `struct_excessive_bools` cap
+/// of three.
+#[derive(Debug, Args, Default, Clone, Copy)]
+pub(crate) struct ChainModeFlags {
     /// Run the given tasks sequentially. Conflicts with `--parallel`.
     #[arg(short = 's', long, conflicts_with = "parallel")]
     pub sequential: bool,
-
     /// Run the given tasks in parallel. Conflicts with `--sequential`.
     #[arg(short = 'p', long)]
     pub parallel: bool,
+}
 
-    /// Run every task in the chain regardless of failures.
+/// Chain failure-policy flags shared across `Cli::Run`, `Cli::Install`,
+/// and `RunAliasCli`. Mutually exclusive (`-k` vs `--kill-on-fail`)
+/// enforced at the clap layer.
+#[derive(Debug, Args, Default, Clone, Copy)]
+pub(crate) struct ChainFailureFlags {
+    /// Run every task in the chain regardless of failures. Conflicts
+    /// with `--kill-on-fail`.
     #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
     pub keep_going: bool,
-
-    /// Parallel only: SIGTERM siblings on first failure.
+    /// Parallel only: SIGTERM siblings on first failure. Accepted but
+    /// unused in sequential mode.
     #[arg(long)]
     pub kill_on_fail: bool,
 }

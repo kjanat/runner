@@ -614,6 +614,19 @@ pub(crate) struct SourceValue<'a> {
     pub env: Option<&'a str>,
 }
 
+/// CLI-side diagnostic flags (`--no-warnings`, `--explain`) bundled into
+/// a single struct so [`ResolutionOverrides::from_cli_and_env`] stays
+/// under clippy's argument/bool thresholds.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct DiagnosticFlags {
+    /// `--no-warnings` flag presence (CLI side only — env handled inside
+    /// `from_cli_and_env`).
+    pub no_warnings: bool,
+    /// `--explain` flag presence (CLI side only — env handled inside
+    /// `from_cli_and_env`).
+    pub explain: bool,
+}
+
 /// CLI flag (presence) plus env-var value for a boolean-typed override
 /// like `--explain` / `RUNNER_EXPLAIN`. CLI wins; env is interpreted by
 /// [`is_env_truthy`].
@@ -645,10 +658,8 @@ impl ResolutionOverrides {
         cli_runner: Option<&str>,
         cli_fallback: Option<&str>,
         cli_on_mismatch: Option<&str>,
-        cli_no_warnings: bool,
-        cli_explain: bool,
-        cli_keep_going: bool,
-        cli_kill_on_fail: bool,
+        diagnostics: DiagnosticFlags,
+        failure: crate::cli::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let env_pm = std::env::var("RUNNER_PM").ok();
@@ -677,19 +688,19 @@ impl ResolutionOverrides {
                 env: env_on_mismatch.as_deref(),
             },
             no_warnings: ExplainSource {
-                cli: cli_no_warnings,
+                cli: diagnostics.no_warnings,
                 env: env_no_warnings.as_deref(),
             },
             explain: ExplainSource {
-                cli: cli_explain,
+                cli: diagnostics.explain,
                 env: env_explain.as_deref(),
             },
             keep_going: ExplainSource {
-                cli: cli_keep_going,
+                cli: failure.keep_going,
                 env: env_keep_going.as_deref(),
             },
             kill_on_fail: ExplainSource {
-                cli: cli_kill_on_fail,
+                cli: failure.kill_on_fail,
                 env: env_kill_on_fail.as_deref(),
             },
             config,
