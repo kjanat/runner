@@ -1,0 +1,8 @@
+build:
+    @echo "build-ran"
+
+test:
+    @echo "test-ran"
+
+lint:
+    @echo "lint-ran"

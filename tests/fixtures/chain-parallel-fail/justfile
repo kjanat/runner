@@ -1,0 +1,9 @@
+ok-one:
+    @echo "ok-one-ran"
+
+fail-mid:
+    @echo "fail-mid-ran"
+    @exit 7
+
+ok-two:
+    @echo "ok-two-ran"
