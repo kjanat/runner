@@ -2,35 +2,43 @@
 //! mode pipes per-task stdio through the prefix multiplexer in
 //! `chain::mux` (Task 11).
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 
 use crate::chain::{Chain, ChainItem, ChainItemKind, ChainMode, FailurePolicy};
 use crate::resolver::ResolutionOverrides;
-use crate::types::ProjectContext;
+use crate::types::{DetectionWarning, ProjectContext};
 
 /// Dispatch a chain. Returns the first failing task's exit code, or 0
-/// if every task succeeded.
+/// if every task succeeded. Per-task resolver warnings are collected
+/// into a shared `HashSet` so the user sees each unique warning once,
+/// not N times.
 pub(crate) fn run_chain(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     chain: &Chain,
 ) -> Result<i32> {
-    match chain.mode {
-        ChainMode::Sequential => run_sequential(ctx, overrides, chain),
-        ChainMode::Parallel => run_parallel(ctx, overrides, chain),
-    }
+    let mut warnings: HashSet<DetectionWarning> = HashSet::new();
+    let code = match chain.mode {
+        ChainMode::Sequential => run_sequential(ctx, overrides, chain, &mut warnings)?,
+        ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings)?,
+    };
+    crate::cmd::emit_collected_warnings(&warnings, overrides);
+    Ok(code)
 }
 
 fn run_sequential(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     chain: &Chain,
+    warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
     let keep_going = matches!(chain.failure, FailurePolicy::KeepGoing);
     let mut first_failure: Option<i32> = None;
 
     for item in &chain.items {
-        let code = dispatch_item(ctx, overrides, item)?;
+        let code = dispatch_item(ctx, overrides, item, warnings)?;
         if code != 0 {
             first_failure.get_or_insert(code);
             if !keep_going {
@@ -45,6 +53,7 @@ fn run_parallel(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     chain: &Chain,
+    warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
     use std::process::Child;
     use std::sync::mpsc::channel;
@@ -64,9 +73,13 @@ fn run_parallel(
     for item in &chain.items {
         let prefix = render_prefix(item.display_name(), width, colorize);
         let mut child = match &item.kind {
-            ChainItemKind::Task(name) => {
-                crate::cmd::run::dispatch_task_piped(ctx, overrides, name, &item.args)?
-            }
+            ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
+                ctx,
+                overrides,
+                name,
+                &item.args,
+                Some(warnings),
+            )?,
             ChainItemKind::Install => {
                 // Install is always Sequential in v1 (CLI rejects `-p` on
                 // `runner install`); reaching here would mean a synthetic
@@ -156,17 +169,18 @@ fn dispatch_item(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     item: &ChainItem,
+    warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
     match &item.kind {
         ChainItemKind::Task(name) => {
             // v1 ChainItem.args is always empty; v2 will populate it.
-            crate::cmd::run::run(ctx, overrides, name, &item.args)
+            crate::cmd::run::run(ctx, overrides, name, &item.args, Some(warnings))
         }
         ChainItemKind::Install => {
             // `runner install --frozen <tasks>` doesn't propagate `--frozen`
             // into chain context; the frozen flag belongs to the top-level
             // subcommand. Default to non-frozen for chain dispatch.
-            crate::cmd::install::install_pms(ctx, false)
+            crate::cmd::install::install_pms(ctx, false, Some(warnings))
         }
     }
 }

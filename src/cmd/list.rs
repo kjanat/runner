@@ -46,7 +46,7 @@ pub(crate) fn list(
         return Ok(());
     }
 
-    super::print_warnings(ctx, overrides);
+    super::print_warnings(ctx, overrides, None);
 
     let filtered: Vec<&Task> = ctx
         .tasks

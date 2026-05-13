@@ -15,7 +15,7 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 /// that bails on first non-zero exit so existing single-install callers
 /// keep their `Result<()>` shape.
 pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
-    let code = install_pms(ctx, frozen)?;
+    let code = install_pms(ctx, frozen, None)?;
     if code != 0 {
         bail!("install failed (exit {code})");
     }
@@ -25,9 +25,19 @@ pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
 /// Chain-aware install entry. Runs install across every detected PM and
 /// returns the first failing PM's exit code, or 0 if all succeed.
 ///
+/// `_sink` is accepted for chain-mode parity with `cmd::run::run`; today
+/// install dispatch doesn't emit detection warnings of its own (those
+/// flow through the resolver path), so the sink is unused. Kept on the
+/// signature so future warning-emitting install paths slot in without a
+/// breaking change.
+///
 /// Used by `chain::exec` when `ChainItemKind::Install` appears as a
 /// chain item (i.e. `runner install <tasks>`).
-pub(crate) fn install_pms(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
+pub(crate) fn install_pms(
+    ctx: &ProjectContext,
+    frozen: bool,
+    _sink: super::WarningSink<'_>,
+) -> Result<i32> {
     if ctx.package_managers.is_empty() {
         bail!("No package manager detected.");
     }

@@ -351,7 +351,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
             cmd::info(&ctx, &overrides, false)?;
             Ok(0)
         }
-        Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args),
+        Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args, None),
     }
 }
 
@@ -559,7 +559,7 @@ fn dispatch_run(
         eprintln!("error: task name required");
         std::process::exit(2);
     });
-    cmd::run(ctx, overrides, task, &args)
+    cmd::run(ctx, overrides, task, &args, None)
 }
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
@@ -589,7 +589,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
 
     match cli.command {
         Some(cli::Command::Info { json: false }) if has_task(&ctx, "info") => {
-            cmd::run(&ctx, &overrides, "info", &[])
+            cmd::run(&ctx, &overrides, "info", &[], None)
         }
         None => {
             cmd::info(&ctx, &overrides, false)?;
@@ -607,7 +607,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 cmd::info(&ctx, &overrides, false)?;
                 Ok(0)
             } else {
-                cmd::run(&ctx, &overrides, &args[0], &args[1..])
+                cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
             }
         }
         Some(cli::Command::Install {
@@ -615,7 +615,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             tasks,
             ..
         }) if tasks.is_empty() && has_task(&ctx, "install") => {
-            cmd::run(&ctx, &overrides, "install", &[])
+            cmd::run(&ctx, &overrides, "install", &[], None)
         }
         Some(cli::Command::Install { tasks, .. }) if !tasks.is_empty() => {
             dispatch_install_chain(&ctx, &overrides, &tasks)
@@ -627,7 +627,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Clean {
             yes: false,
             include_framework: false,
-        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[]),
+        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[], None),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -639,7 +639,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             raw: false,
             json: false,
             source: None,
-        }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[]),
+        }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[], None),
         Some(cli::Command::List { raw, json, source }) => {
             cmd::list(&ctx, &overrides, raw, json, source.as_deref())?;
             Ok(0)
@@ -647,7 +647,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Completions {
             shell: None,
             output: None,
-        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[]),
+        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[], None),
         Some(cli::Command::Completions { shell, output }) => {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)

@@ -40,10 +40,11 @@ pub(crate) fn dispatch_task_piped(
     overrides: &ResolutionOverrides,
     task: &str,
     args: &[String],
+    mut sink: super::WarningSink<'_>,
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
-    super::print_warnings(ctx, overrides);
+    super::print_warnings(ctx, overrides, sink.as_deref_mut());
 
     let (qualifier, task_name) = parse_qualified_task(task);
 
@@ -69,7 +70,7 @@ pub(crate) fn dispatch_task_piped(
         if qualifier.is_none() {
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
-                    super::print_warning_slice(&decision.warnings, overrides);
+                    super::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
                     if overrides.explain {
                         eprintln!(
                             "{} {} resolved: {}",
@@ -134,7 +135,7 @@ pub(crate) fn dispatch_task_piped(
         args.join(" ").dimmed(),
     );
 
-    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args)?;
+    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args, sink)?;
     super::configure_command(&mut cmd, &ctx.root);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     Ok(cmd.spawn()?)
@@ -182,8 +183,9 @@ pub(crate) fn run(
     overrides: &ResolutionOverrides,
     task: &str,
     args: &[String],
+    mut sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    super::print_warnings(ctx, overrides);
+    super::print_warnings(ctx, overrides, sink.as_deref_mut());
 
     let (qualifier, task_name) = parse_qualified_task(task);
 
@@ -244,7 +246,7 @@ pub(crate) fn run(
             // the real diagnostic instead of a silent degrade.
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
-                    super::print_warning_slice(&decision.warnings, overrides);
+                    super::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
                     if overrides.explain {
                         eprintln!(
                             "{} {} resolved: {}",
@@ -286,7 +288,7 @@ pub(crate) fn run(
         args.join(" ").dimmed(),
     );
 
-    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args)?;
+    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args, sink)?;
     super::configure_command(&mut cmd, &ctx.root);
     Ok(super::exit_code(cmd.status()?))
 }
@@ -598,12 +600,13 @@ fn build_run_command(
     source: TaskSource,
     task: &str,
     args: &[String],
+    sink: super::WarningSink<'_>,
 ) -> Result<Command> {
     Ok(match source {
         TaskSource::TurboJson => tool::turbo::run_cmd(task, args),
         TaskSource::PackageJson => {
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
-            super::print_warning_slice(&decision.warnings, overrides);
+            super::print_warning_slice(&decision.warnings, overrides, sink);
             if overrides.explain {
                 eprintln!(
                     "{} {} resolved: {}",
