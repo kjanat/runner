@@ -47,37 +47,6 @@ function Get-RequiredCommand {
 	return $commands[0].Source
 }
 
-function Get-CurrentOs {
-	try {
-		if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-			return "Windows"
-		}
-		if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
-			return "macOS"
-		}
-		if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)) {
-			return "Linux"
-		}
-	} catch {
-		# Fall back below for older Windows PowerShell runtimes.
-	}
-
-	if ($env:OS -eq "Windows_NT") {
-		return "Windows"
-	}
-
-	$uname = @(Get-Command -Name uname -CommandType Application -ErrorAction SilentlyContinue)
-	if ($uname.Count -gt 0) {
-		$name = (& $uname[0].Source -s).Trim()
-		switch ($name) {
-			"Darwin" { return "macOS" }
-			"Linux" { return "Linux" }
-		}
-	}
-
-	throw "unsupported operating system"
-}
-
 function Get-CurrentArch {
 	try {
 		return [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
@@ -98,47 +67,38 @@ function Get-CurrentArch {
 }
 
 function Resolve-Target {
-	param(
-		[string] $Os,
-		[string] $Arch
-	)
+	param([string] $Arch)
 
-	$normalizedArch = $Arch.ToLowerInvariant()
+	$arch = $Arch.ToLowerInvariant()
 
-	switch ($Os) {
-		"Windows" {
-			switch ($normalizedArch) {
-				{ $_ -in @("x64", "amd64", "x86_64") } { return "x86_64-pc-windows-msvc" }
-				{ $_ -in @("arm64", "aarch64") } { return "aarch64-pc-windows-msvc" }
-				{ $_ -in @("x86", "i386", "i686") } { return "i686-pc-windows-msvc" }
-			}
+	if ($IsWindows) {
+		switch ($arch) {
+			{ $_ -in @("x64", "amd64", "x86_64") } { return "x86_64-pc-windows-msvc" }
+			{ $_ -in @("arm64", "aarch64") } { return "aarch64-pc-windows-msvc" }
+			{ $_ -in @("x86", "i386", "i686") } { return "i686-pc-windows-msvc" }
 		}
-		"macOS" {
-			switch ($normalizedArch) {
-				{ $_ -in @("x64", "amd64", "x86_64") } { return "x86_64-apple-darwin" }
-				{ $_ -in @("arm64", "aarch64") } { return "aarch64-apple-darwin" }
-			}
+	} elseif ($IsMacOS) {
+		switch ($arch) {
+			{ $_ -in @("x64", "amd64", "x86_64") } { return "x86_64-apple-darwin" }
+			{ $_ -in @("arm64", "aarch64") } { return "aarch64-apple-darwin" }
 		}
-		"Linux" {
-			switch ($normalizedArch) {
-				{ $_ -in @("x64", "amd64", "x86_64") } { return "x86_64-unknown-linux-musl" }
-				{ $_ -in @("arm64", "aarch64") } { return "aarch64-unknown-linux-musl" }
-				{ $_ -in @("arm", "armv7l") } { return "armv7-unknown-linux-gnueabihf" }
-			}
+	} elseif ($IsLinux) {
+		switch ($arch) {
+			{ $_ -in @("x64", "amd64", "x86_64") } { return "x86_64-unknown-linux-musl" }
+			{ $_ -in @("arm64", "aarch64") } { return "aarch64-unknown-linux-musl" }
+			{ $_ -in @("arm", "armv7l") } { return "armv7-unknown-linux-gnueabihf" }
 		}
 	}
 
-	throw "unsupported platform: $Os-$Arch"
+	throw "unsupported platform or architecture: $Arch"
 }
 
 function Resolve-InstallDir {
-	param([string] $Os)
-
 	if ($env:RUNNER_INSTALL_DIR) {
 		return $env:RUNNER_INSTALL_DIR
 	}
 
-	if ($Os -eq "Windows") {
+	if ($IsWindows) {
 		if ($env:LOCALAPPDATA) {
 			return (Join-Path $env:LOCALAPPDATA "Programs\runner\bin")
 		}
@@ -224,14 +184,11 @@ function Get-PathWithoutTrailingSeparator {
 }
 
 function Test-PathEntry {
-	param(
-		[string] $Directory,
-		[string] $Os
-	)
+	param([string] $Directory)
 
 	$pathValue = [string] $env:PATH
 	$comparison = [System.StringComparison]::Ordinal
-	if ($Os -eq "Windows") {
+	if ($IsWindows) {
 		$comparison = [System.StringComparison]::OrdinalIgnoreCase
 	}
 
@@ -263,10 +220,13 @@ function Install-Runner {
 		# Older/non-Windows runtimes may not expose ServicePointManager.
 	}
 
-	$os = Get-CurrentOs
+	if (-not ($IsWindows -or $IsLinux -or $IsMacOS)) {
+		throw "unsupported operating system"
+	}
+
 	$arch = Get-CurrentArch
-	$target = Resolve-Target -Os $os -Arch $arch
-	$installDir = Resolve-InstallDir -Os $os
+	$target = Resolve-Target -Arch $arch
+	$installDir = Resolve-InstallDir
 	$tar = Get-RequiredCommand -Name "tar"
 
 	$version = $env:RUNNER_VERSION
@@ -304,7 +264,7 @@ function Install-Runner {
 		}
 
 		$extension = ""
-		if ($os -eq "Windows") {
+		if ($IsWindows) {
 			$extension = ".exe"
 		}
 
@@ -321,7 +281,7 @@ function Install-Runner {
 			Copy-Item -LiteralPath (Join-Path $tmpDir $binary) -Destination (Join-Path $installDir $binary) -Force
 		}
 
-		if ($os -ne "Windows") {
+		if (-not $IsWindows) {
 			$chmod = Get-RequiredCommand -Name "chmod"
 			& $chmod 755 (Join-Path $installDir "runner") (Join-Path $installDir "run")
 			if ($LASTEXITCODE -ne 0) {
@@ -341,14 +301,14 @@ function Install-Runner {
 		}
 
 		$resolvedInstallDir = (Resolve-Path -LiteralPath $installDir).ProviderPath
-		if (-not (Test-PathEntry -Directory $resolvedInstallDir -Os $os)) {
+		if (-not (Test-PathEntry -Directory $resolvedInstallDir)) {
 			Write-Item "PATH: add $resolvedInstallDir to your PATH"
 		}
 
 		$resolvedRunner = @(Get-Command -Name "runner" -CommandType Application -ErrorAction SilentlyContinue)
 		if ($resolvedRunner.Count -gt 0) {
 			$comparison = [System.StringComparison]::Ordinal
-			if ($os -eq "Windows") {
+			if ($IsWindows) {
 				$comparison = [System.StringComparison]::OrdinalIgnoreCase
 			}
 			if (-not [string]::Equals($resolvedRunner[0].Source, $expectedRunner, $comparison)) {
