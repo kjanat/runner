@@ -75,18 +75,76 @@ fn task_candidates() -> Vec<CompletionCandidate> {
 
 fn completion_dir() -> std::io::Result<PathBuf> {
     let cwd = std::env::current_dir()?;
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     Ok(resolve_completion_dir(
         &cwd,
+        cli_dir_from_argv(&argv).as_deref(),
         std::env::var_os("RUNNER_DIR").as_deref(),
     ))
 }
 
-fn resolve_completion_dir(cwd: &Path, env_dir: Option<&std::ffi::OsStr>) -> PathBuf {
-    match env_dir.map(PathBuf::from) {
+/// Mirror clap's `--dir` precedence at completion time.
+///
+/// Precedence (highest first) — same as the resolver at runtime so
+/// the completion list matches the directory the user is about to
+/// dispatch against:
+/// 1. `--dir` parsed from the in-flight argv (the user is typing
+///    `runner --dir /other/repo <TAB>`).
+/// 2. `RUNNER_DIR` env var.
+/// 3. The shell's working directory.
+fn resolve_completion_dir(
+    cwd: &Path,
+    cli_dir: Option<&std::ffi::OsStr>,
+    env_dir: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    let raw = cli_dir.or(env_dir);
+    match raw.map(PathBuf::from) {
         Some(path) if path.is_absolute() => path,
         Some(path) => cwd.join(path),
         None => cwd.to_path_buf(),
     }
+}
+
+/// Scan the argv (as the shell passed it to the binary during
+/// completion) for `--dir <value>` / `--dir=<value>`. Returns the last
+/// occurrence so repeated flags behave the same way clap does at parse
+/// time.
+///
+/// `clap_complete`'s bash registration invokes the binary as
+/// `completer -- "${words[@]}"`, so the user-typed words live *after*
+/// the first `--` separator. We seek past that separator first, then
+/// scan; if no separator exists (binary invoked directly without
+/// `clap_complete`'s harness, e.g. in tests), the entire tail is
+/// scanned.
+fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    // Find the `--` separator clap_complete inserts between the
+    // completer path and the user's word list. Skip past it; otherwise
+    // start at index 1 (after argv[0]).
+    let start = argv.iter().position(|a| a == "--").map_or(1, |idx| idx + 1);
+    if start >= argv.len() {
+        return None;
+    }
+
+    let mut found: Option<OsString> = None;
+    let mut iter = argv[start..].iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--dir" {
+            if let Some(next) = iter.next() {
+                found = Some(next.clone());
+            }
+            continue;
+        }
+        if let Some(rest) = arg
+            .to_str()
+            .and_then(|s| s.strip_prefix("--dir="))
+            .map(OsString::from)
+        {
+            found = Some(rest);
+        }
+    }
+    found
 }
 
 /// Build [`CompletionCandidate`]s from a task list.
@@ -207,7 +265,9 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
-    use super::{resolve_completion_dir, task_candidates_from};
+    use std::ffi::OsString;
+
+    use super::{cli_dir_from_argv, resolve_completion_dir, task_candidates_from};
     use crate::types::{Task, TaskSource};
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -396,10 +456,101 @@ mod tests {
     fn resolve_completion_dir_uses_absolute_runner_dir_env() {
         let dir = resolve_completion_dir(
             Path::new("/tmp/workspace"),
+            None,
             Some(OsStr::new("/tmp/runner-target")),
         );
 
         assert_eq!(dir, PathBuf::from("/tmp/runner-target"));
+    }
+
+    #[test]
+    fn resolve_completion_dir_prefers_cli_over_env() {
+        // `runner --dir /cli-target <TAB>` with `RUNNER_DIR=/env-target`
+        // set in the environment — completion should reflect the CLI
+        // flag, matching clap's runtime precedence.
+        let dir = resolve_completion_dir(
+            Path::new("/tmp/workspace"),
+            Some(OsStr::new("/cli-target")),
+            Some(OsStr::new("/env-target")),
+        );
+
+        assert_eq!(dir, PathBuf::from("/cli-target"));
+    }
+
+    #[test]
+    fn cli_dir_from_argv_parses_space_separated_form_with_clap_complete_harness() {
+        // Bash completion invokes the binary as
+        // `completer -- "${words[@]}"`, so the user-typed words live
+        // *after* the first `--`. The helper has to seek past it and
+        // then scan for `--dir`.
+        let argv = vec![
+            OsString::from("/path/to/runner"),
+            OsString::from("--"),
+            OsString::from("runner"),
+            OsString::from("--dir"),
+            OsString::from("/repo"),
+            OsString::from("build"),
+            OsString::from(""),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/repo"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_parses_space_separated_form_without_separator() {
+        // Direct invocation (no clap_complete harness, e.g. tests):
+        // scan the full tail starting at argv[1].
+        let argv = vec![
+            OsString::from("runner"),
+            OsString::from("--dir"),
+            OsString::from("/repo"),
+            OsString::from("build"),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/repo"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_parses_equals_form() {
+        let argv = vec![
+            OsString::from("runner"),
+            OsString::from("--dir=/repo"),
+            OsString::from("build"),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/repo"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_last_occurrence_wins() {
+        // Match clap's behavior for repeated flags: last value wins.
+        let argv = vec![
+            OsString::from("runner"),
+            OsString::from("--dir"),
+            OsString::from("/first"),
+            OsString::from("--dir=/second"),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/second"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_returns_none_without_flag() {
+        let argv = vec![OsString::from("runner"), OsString::from("build")];
+
+        assert_eq!(cli_dir_from_argv(&argv), None);
     }
 }
 
