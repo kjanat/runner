@@ -13,5 +13,6 @@
 			"settings": { "json": { "schemas": [{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" }] } }
 		}
 	},
-	"file_types": { "SVG": ["*.ico"] }
+	"file_types": { "SVG": ["*.ico"] },
+	"languages": { "TOML": { "language_servers": ["tombi"] } }
 }
