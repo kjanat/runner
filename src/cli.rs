@@ -414,10 +414,6 @@ mod tests {
     arg_required_else_help = false,
     add = SubcommandCandidates::new(task_candidates)
 )]
-// Doc strings on these fields double as clap's user-facing help text;
-// clap doesn't render markdown, so `RUNNER_PM`-in-backticks would print
-// literal backticks. We trade rustdoc nicety for legible --help output.
-#[allow(clippy::doc_markdown)]
 pub(crate) struct Cli {
     /// Use this directory instead of the current one.
     #[arg(
@@ -430,6 +426,9 @@ pub(crate) struct Cli {
     )]
     pub project_dir: Option<PathBuf>,
 
+    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
+    /// The resolver also consults `$RUNNER_PM` independently when this
+    /// flag is omitted (env reads live in `crate::resolver`, not clap).
     #[arg(
         long = "pm",
         global = true,
@@ -442,6 +441,10 @@ pub(crate) struct Cli {
     )]
     pub pm_override: Option<String>,
 
+    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
+    /// The resolver also consults `$RUNNER_RUNNER` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(
         long = "runner",
         global = true,
@@ -454,6 +457,11 @@ pub(crate) struct Cli {
     )]
     pub runner_override: Option<String>,
 
+    /// What to do when no detection signal matches: `probe` (default,
+    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
+    /// The resolver also consults `$RUNNER_FALLBACK` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(
         long = "fallback",
         global = true,
@@ -468,6 +476,10 @@ pub(crate) struct Cli {
     )]
     pub fallback: Option<String>,
 
+    /// Print a one-line trace describing how the package manager was
+    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
+    /// is set to a truthy value (env reads live in `crate::resolver`,
+    /// not clap).
     #[arg(
         long = "explain",
         global = true,
@@ -510,7 +522,7 @@ pub(crate) enum Command {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
-        /// Include framework-specific Node build dirs like .next
+        /// Include framework-specific Node build dirs like `.next`
         #[arg(long)]
         include_framework: bool,
     },
@@ -544,8 +556,8 @@ pub(crate) enum Command {
 
     /// Generate shell completions
     Completions {
-        /// Target shell — bare name (zsh) or full path (/usr/bin/zsh).
-        /// Defaults to $SHELL.
+        /// Target shell — bare name (`zsh`) or full path (`/usr/bin/zsh`).
+        /// Defaults to `$SHELL`.
         #[arg(value_parser = crate::cmd::parse_shell_arg)]
         shell: Option<Shell>,
 
@@ -580,7 +592,6 @@ pub(crate) enum Command {
     styles = HELP_STYLES,
     arg_required_else_help = false
 )]
-#[allow(clippy::doc_markdown)]
 pub(crate) struct RunAliasCli {
     /// Use this directory instead of the current one.
     #[arg(
@@ -593,6 +604,9 @@ pub(crate) struct RunAliasCli {
     )]
     pub project_dir: Option<PathBuf>,
 
+    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
+    /// The resolver also consults `$RUNNER_PM` independently when this
+    /// flag is omitted (env reads live in `crate::resolver`, not clap).
     #[arg(
         long = "pm",
         global = true,
@@ -605,6 +619,10 @@ pub(crate) struct RunAliasCli {
     )]
     pub pm_override: Option<String>,
 
+    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
+    /// The resolver also consults `$RUNNER_RUNNER` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(
         long = "runner",
         global = true,
@@ -617,6 +635,11 @@ pub(crate) struct RunAliasCli {
     )]
     pub runner_override: Option<String>,
 
+    /// What to do when no detection signal matches: `probe` (default,
+    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
+    /// The resolver also consults `$RUNNER_FALLBACK` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
     #[arg(
         long = "fallback",
         global = true,
@@ -631,6 +654,10 @@ pub(crate) struct RunAliasCli {
     )]
     pub fallback: Option<String>,
 
+    /// Print a one-line trace describing how the package manager was
+    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
+    /// is set to a truthy value (env reads live in `crate::resolver`,
+    /// not clap).
     #[arg(
         long = "explain",
         global = true,
