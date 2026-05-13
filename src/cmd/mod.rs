@@ -12,7 +12,7 @@ mod clean;
 mod completions;
 mod doctor;
 mod info;
-mod install;
+pub(crate) mod install;
 mod list;
 pub(crate) mod run;
 mod why;

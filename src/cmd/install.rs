@@ -11,8 +11,23 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 /// Install dependencies for each detected package manager.
 ///
 /// Warns when the current Node.js version doesn't match the project's
-/// expected version before proceeding.
+/// expected version before proceeding. Thin wrapper over [`install_pms`]
+/// that bails on first non-zero exit so existing single-install callers
+/// keep their `Result<()>` shape.
 pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
+    let code = install_pms(ctx, frozen)?;
+    if code != 0 {
+        bail!("install failed (exit {code})");
+    }
+    Ok(())
+}
+
+/// Chain-aware install entry. Runs install across every detected PM and
+/// returns the first failing PM's exit code, or 0 if all succeed.
+///
+/// Used by `chain::exec` when `ChainItemKind::Install` appears as a
+/// chain item (i.e. `runner install <tasks>`).
+pub(crate) fn install_pms(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
     if ctx.package_managers.is_empty() {
         bail!("No package manager detected.");
     }
@@ -36,14 +51,10 @@ pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
         super::configure_command(&mut cmd, &ctx.root);
         let status = cmd.status()?;
         if !status.success() {
-            bail!(
-                "{} install failed (exit {})",
-                pm.label(),
-                status.code().unwrap_or(1)
-            );
+            return Ok(status.code().unwrap_or(1));
         }
     }
-    Ok(())
+    Ok(0)
 }
 
 /// Map a [`PackageManager`] to its install [`Command`].

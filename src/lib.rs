@@ -597,6 +597,17 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) if tasks.is_empty() && has_task(&ctx, "install") => {
             cmd::run(&ctx, &overrides, "install", &[])
         }
+        Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
+            let _ = frozen; // install_pms in chain context always non-frozen
+            let mut items = vec![chain::ChainItem::install()];
+            items.extend(chain::parse::parse_task_list(&tasks)?);
+            let c = chain::Chain {
+                mode: chain::ChainMode::Sequential,
+                items,
+                failure: overrides.failure_policy,
+            };
+            chain::exec::run_chain(&ctx, &overrides, &c)
+        }
         Some(cli::Command::Install { frozen, .. }) => {
             cmd::install(&ctx, frozen)?;
             Ok(0)

@@ -68,7 +68,10 @@ fn run_parallel(
                 crate::cmd::run::dispatch_task_piped(ctx, overrides, name, &item.args)?
             }
             ChainItemKind::Install => {
-                anyhow::bail!("install dispatch not yet wired into parallel executor (Task 13)")
+                // Install is always Sequential in v1 (CLI rejects `-p` on
+                // `runner install`); reaching here would mean a synthetic
+                // Parallel chain was constructed elsewhere — bail loudly.
+                anyhow::bail!("install items cannot run in parallel chains")
             }
         };
         let stdout: Box<dyn std::io::Read + Send> =
@@ -160,8 +163,10 @@ fn dispatch_item(
             crate::cmd::run::run(ctx, overrides, name, &item.args)
         }
         ChainItemKind::Install => {
-            // Wired in Task 13 once `install_pms` is extracted.
-            anyhow::bail!("install dispatch not yet wired into chain executor")
+            // `runner install --frozen <tasks>` doesn't propagate `--frozen`
+            // into chain context; the frozen flag belongs to the top-level
+            // subcommand. Default to non-frozen for chain dispatch.
+            crate::cmd::install::install_pms(ctx, false)
         }
     }
 }
