@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 use colored::Colorize;
 
-use crate::resolver::{ResolutionOverrides, Resolver};
+use crate::resolver::{NoNodePmDetected, ResolutionOverrides, Resolver};
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskSource};
 
@@ -67,19 +67,21 @@ pub(crate) fn run(
             // arbitrary commands through PATH instead of going
             // through the declared PM's exec primitive.
             //
-            // Resolver errors (e.g. `--fallback=error` with no
-            // signal) collapse to `None` here so the fallbacks still
-            // try a direct PATH spawn as the absolute last resort —
-            // propagating the strict error would surprise users
-            // running `runner run somebin` who only wanted a quick
-            // exec.
-            let resolved_pm = Resolver::new(ctx, overrides.clone())
-                .resolve_node_pm()
-                .ok()
-                .map(|decision| {
+            // Only the soft `NoNodePmDetected` outcome (the `Probe`
+            // fallback with nothing on `$PATH`) collapses to `None`
+            // so the direct PATH spawn at the bottom can still fire
+            // for `runner run somebin`. Hard errors —
+            // `--fallback=error`, manifest `onFail = Error`, and any
+            // other resolver failure — propagate so the user sees
+            // the real diagnostic instead of a silent degrade.
+            let resolved_pm = match Resolver::new(ctx, overrides.clone()).resolve_node_pm() {
+                Ok(decision) => {
                     super::print_warning_slice(&decision.warnings);
-                    decision.pm
-                });
+                    Some(decision.pm)
+                }
+                Err(e) if e.downcast_ref::<NoNodePmDetected>().is_some() => None,
+                Err(e) => return Err(e),
+            };
 
             if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
                 return Ok(code);
