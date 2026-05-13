@@ -156,7 +156,7 @@ pub(crate) struct NodeVersion {
 /// trivial. The [`Display`] impl renders the same `"<source>: <detail>"`
 /// shape every printer expects, so introducing a new variant doesn't
 /// churn output sites.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum DetectionWarning {
     /// Manifest declaration (`packageManager` / `devEngines.packageManager`)
     /// disagrees with the detected lockfile. Declaration wins; the lockfile
@@ -624,10 +624,33 @@ pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::version_matches;
+    use super::{DetectionWarning, PackageManager};
 
     #[test]
     fn dotted_versions_match_segment_boundaries_only() {
         assert!(version_matches("20.11", "20.11.0"));
         assert!(!version_matches("20.11", "20.110.0"));
+    }
+
+    #[test]
+    fn detection_warning_can_be_hashed() {
+        use std::collections::HashSet;
+
+        let a = DetectionWarning::DevEnginesBinaryMissing {
+            pm: PackageManager::Pnpm,
+        };
+        let b = DetectionWarning::DevEnginesBinaryMissing {
+            pm: PackageManager::Pnpm,
+        };
+        let c = DetectionWarning::DevEnginesBinaryMissing {
+            pm: PackageManager::Yarn,
+        };
+
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        set.insert(c);
+
+        assert_eq!(set.len(), 2, "equal variants should dedup");
     }
 }
