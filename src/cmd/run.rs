@@ -26,6 +26,141 @@ fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
     (None, input)
 }
 
+/// Look up `task` across all detected sources, resolve to a [`Command`],
+/// and spawn it with piped stdout and stderr. Returns the spawned
+/// [`std::process::Child`] so the caller can multiplex output.
+///
+/// Mirrors the resolution logic of [`run`] exactly — same qualifier
+/// handling, same fallback cascade — but calls `.spawn()` instead of
+/// `.status()` and sets `Stdio::piped()` on both output streams.
+///
+/// Used by the parallel chain executor (`chain::exec::run_parallel`).
+pub(crate) fn dispatch_task_piped(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task: &str,
+    args: &[String],
+) -> Result<std::process::Child> {
+    use std::process::Stdio;
+
+    super::print_warnings(ctx, overrides);
+
+    let (qualifier, task_name) = parse_qualified_task(task);
+
+    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
+
+    let restricted: Vec<_> = if qualifier.is_some() {
+        found.clone()
+    } else if let Some(allowed) = allowed_runner_sources(overrides) {
+        found
+            .iter()
+            .copied()
+            .filter(|t| allowed.contains(&t.source))
+            .collect()
+    } else {
+        found.clone()
+    };
+
+    if restricted.is_empty() {
+        if let Some(reason) = runner_constraint_error(overrides, &found) {
+            return Err(reason.into());
+        }
+
+        if qualifier.is_none() {
+            let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
+                Ok(decision) => {
+                    super::print_warning_slice(&decision.warnings, overrides);
+                    if overrides.explain {
+                        eprintln!(
+                            "{} {} resolved: {}",
+                            "·".dimmed(),
+                            "runner".dimmed(),
+                            decision.describe(),
+                        );
+                    }
+                    Some(decision.pm)
+                }
+                Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
+                Err(e) => return Err(e.into()),
+            };
+
+            // Bun-test special case: `bun test` built-in.
+            if should_use_bun_test_fallback(ctx, resolved_pm, task_name) {
+                eprintln!(
+                    "{} {} {} {}",
+                    "→".dimmed(),
+                    "bun".dimmed(),
+                    "test".bold(),
+                    args.join(" ").dimmed(),
+                );
+                let mut cmd = tool::bun::test_cmd(args);
+                super::configure_command(&mut cmd, &ctx.root);
+                cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+                return Ok(cmd.spawn()?);
+            }
+
+            // PM-exec fallback: dispatch through detected PM's exec primitive.
+            let combined = || {
+                let mut v = Vec::with_capacity(args.len() + 1);
+                v.push(task_name.to_string());
+                v.extend(args.iter().cloned());
+                v
+            };
+            let (label, mut cmd) = match resolved_pm {
+                Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
+                Some(PackageManager::Yarn) => {
+                    ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined()))
+                }
+                Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
+                Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
+                Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
+                Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
+                Some(PackageManager::Go) => ("go run", tool::go_pm::exec_cmd(&combined())),
+                None | Some(_) => {
+                    let mut c = tool::program::command(task_name);
+                    c.args(args);
+                    ("exec", c)
+                }
+            };
+            eprintln!(
+                "{} {} {} {}",
+                "→".dimmed(),
+                label.dimmed(),
+                task_name.bold(),
+                args.join(" ").dimmed(),
+            );
+            super::configure_command(&mut cmd, &ctx.root);
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            return Ok(cmd.spawn()?);
+        }
+
+        bail!("task {task:?} not found. Run `runner list` to see available tasks.");
+    }
+
+    let entry = if let Some(source) = qualifier {
+        restricted
+            .iter()
+            .find(|t| t.source == source)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("task {task_name:?} not found in {}", source.label()))?
+    } else {
+        select_task_entry(ctx, overrides, &restricted)
+    };
+
+    eprintln!(
+        "{} {} {} {}",
+        "→".dimmed(),
+        entry.source.label().dimmed(),
+        task_name.bold(),
+        args.join(" ").dimmed(),
+    );
+
+    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args)?;
+    super::configure_command(&mut cmd, &ctx.root);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    Ok(cmd.spawn()?)
+}
+
 /// Look up `task` across all detected sources, pick the highest-priority
 /// match, build the appropriate command, and execute it.
 ///
