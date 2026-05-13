@@ -404,6 +404,31 @@ impl PackageManager {
         ]
     }
 
+    /// Total number of [`PackageManager`] variants. Used as the array
+    /// length for static lookup tables keyed on the discriminant.
+    pub(crate) const COUNT: usize = 12;
+
+    /// Stable `0..COUNT` index used by static arrays keyed on the
+    /// discriminant. Hand-rolled (not `self as usize`) so reordering the
+    /// `enum` definition is a compile error rather than silent corruption
+    /// of any table indexed by this method.
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Npm => 0,
+            Self::Yarn => 1,
+            Self::Pnpm => 2,
+            Self::Bun => 3,
+            Self::Cargo => 4,
+            Self::Deno => 5,
+            Self::Uv => 6,
+            Self::Poetry => 7,
+            Self::Pipenv => 8,
+            Self::Go => 9,
+            Self::Bundler => 10,
+            Self::Composer => 11,
+        }
+    }
+
     /// The ecosystem this package manager belongs to.
     pub(crate) const fn ecosystem(self) -> Ecosystem {
         match self {

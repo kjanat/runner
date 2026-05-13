@@ -10,72 +10,47 @@
 //!
 //! ## Caching
 //!
-//! [`probe`] memoizes results in a process-wide `LazyLock<Mutex<HashMap>>`
-//! keyed by the binary name. Each resolver invocation hits PATH at most
-//! once per unique name; subsequent lookups return the cached
-//! `Option<PathBuf>`. This is the "one-shot per session" cache called
-//! out in the plan — `probe_all(NODE_PROBE_ORDER)` ends up walking PATH
-//! four times in the worst case, all of which are then memoized for
-//! later `apply_manifest_on_fail` / `--explain` calls.
+//! [`probe`] memoizes results in a static `[OnceLock<Option<PathBuf>>;
+//! PackageManager::COUNT]` array indexed by [`PackageManager::index`].
+//! Per-name `OnceLock::get_or_init` gives exactly-once probing — even
+//! across concurrent callers — without ever holding a lock during the
+//! PATH walk: `OnceLock` synchronises on the slot itself, so racing
+//! callers all return the same value computed by the first one to
+//! win the init race. No `Mutex` held across syscalls; the universe
+//! of probed names is closed at compile time, so an array beats a
+//! `HashMap` on lookup cost and avoids any allocation after start-up.
 //!
 //! The pure-function variant [`probe_in`] stays cache-free so tests
 //! exercise the search logic against a controlled directory without
 //! racing or polluting the shared cache.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{LazyLock, Mutex};
+use std::sync::OnceLock;
 
 use crate::types::PackageManager;
 
-/// Process-wide memoization of [`probe`] lookups.
-///
-/// Bounded by the set of unique binary names the resolver ever probes —
-/// at most a few dozen — so leaking nothing on shutdown is fine.
-/// `Mutex` over `RwLock` here because writes happen on first probe of
-/// every distinct name (lots of cold inserts) while reads are cheap and
-/// short; the wait under contention is bounded by a single hash lookup.
-static CACHE: LazyLock<Mutex<HashMap<String, Option<PathBuf>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Process-wide cache of [`probe`] lookups, one slot per
+/// [`PackageManager`] variant. `OnceLock` initialises lazily and
+/// guarantees the initialiser runs at most once even when called
+/// concurrently — exactly the semantics we want here.
+static CACHE: [OnceLock<Option<PathBuf>>; PackageManager::COUNT] =
+    [const { OnceLock::new() }; PackageManager::COUNT];
 
-/// Probe `$PATH` for `name`. Returns the absolute path of the first
+/// Probe `$PATH` for `pm`. Returns the absolute path of the first
 /// matching executable, or `None` if nothing is found.
 ///
 /// On Windows, also walks `PATHEXT` so that `cmd`/`bat` shims are found —
 /// the same approach used by [`crate::tool::program::command`].
 ///
-/// Result is memoized in [`CACHE`] for the lifetime of the process; the
-/// pure-function variant [`probe_in`] is exempt for testability.
-pub(crate) fn probe(name: &str) -> Option<PathBuf> {
-    {
-        let cache = CACHE.lock().expect("probe cache poisoned");
-        if let Some(cached) = cache.get(name) {
-            return cached.clone();
-        }
-    }
-    let result = std::env::var_os("PATH")
-        .and_then(|path| probe_in(name, &path, std::env::var_os("PATHEXT").as_deref()));
-    CACHE
-        .lock()
-        .expect("probe cache poisoned")
-        .insert(name.to_string(), result.clone());
-    result
-}
-
-/// Clear the [`probe`] cache. Test-only — production code relies on the
-/// cache living for the full process lifetime so the resolver never
-/// pays for repeat PATH walks.
-#[cfg(test)]
-pub(crate) fn clear_cache_for_testing() {
-    CACHE.lock().expect("probe cache poisoned").clear();
-}
-
-/// Inspect the [`probe`] cache size. Test-only — used to verify that
-/// repeat lookups of the same name hit the cache instead of re-walking
-/// PATH.
-#[cfg(test)]
-pub(crate) fn cache_len_for_testing() -> usize {
-    CACHE.lock().expect("probe cache poisoned").len()
+/// Result is memoized in [`CACHE`] for the lifetime of the process.
+pub(crate) fn probe(pm: PackageManager) -> Option<PathBuf> {
+    CACHE[pm.index()]
+        .get_or_init(|| {
+            std::env::var_os("PATH").and_then(|path| {
+                probe_in(pm.label(), &path, std::env::var_os("PATHEXT").as_deref())
+            })
+        })
+        .clone()
 }
 
 /// Pure-function variant for tests. Takes `path` and (optionally)
@@ -145,7 +120,7 @@ pub(crate) const NODE_PROBE_ORDER: &[PackageManager] = &[
 pub(crate) fn probe_all(order: &[PackageManager]) -> Vec<(PackageManager, PathBuf)> {
     order
         .iter()
-        .filter_map(|&pm| probe(pm.label()).map(|path| (pm, path)))
+        .filter_map(|&pm| probe(pm).map(|path| (pm, path)))
         .collect()
 }
 
@@ -210,37 +185,21 @@ mod tests {
     }
 
     #[test]
-    fn probe_memoizes_lookups_per_name() {
-        use super::{cache_len_for_testing, clear_cache_for_testing, probe};
+    fn probe_returns_consistent_value_across_calls() {
+        // `OnceLock` guarantees the initialiser runs at most once,
+        // so subsequent calls to `probe(pm)` return clones of the
+        // same cached `Option<PathBuf>`. The slot is process-wide
+        // and never cleared (that's the point — no Mutex held across
+        // PATH walks); the test asserts the caller-visible property
+        // (idempotence) rather than poking at the cache internals,
+        // which would tie this test to other tests that may have
+        // already populated the same slot in this process.
+        use super::probe;
+        use crate::types::PackageManager;
 
-        // SAFETY: the test mutates the shared cache and shouldn't race
-        // with other tests touching the same names. We pick a
-        // deliberately unlikely binary name so a real install can't
-        // shadow the lookup, and snapshot the cache state around our
-        // calls.
-        clear_cache_for_testing();
-        let starting_len = cache_len_for_testing();
-
-        let unlikely = "runner-cache-test-bin-zzzqqqq";
-        let first = probe(unlikely);
-        let after_first = cache_len_for_testing();
-        let second = probe(unlikely);
-        let after_second = cache_len_for_testing();
-
-        assert_eq!(first, second, "cached lookup should match first call");
-        assert_eq!(
-            after_first,
-            starting_len + 1,
-            "first probe should insert one cache entry"
-        );
-        assert_eq!(
-            after_second, after_first,
-            "second probe must hit the cache, not re-walk PATH",
-        );
-
-        // Don't leave the test entry hanging around for other tests
-        // that snapshot cache len.
-        clear_cache_for_testing();
+        let first = probe(PackageManager::Composer);
+        let second = probe(PackageManager::Composer);
+        assert_eq!(first, second, "repeat probes must observe same value");
     }
 
     #[test]

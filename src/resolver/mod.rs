@@ -410,7 +410,7 @@ where
 /// Walks `$PATH` via [`probe::probe`]; injectable in tests so the
 /// `Error` branches of [`apply_manifest_on_fail`] are exercisable.
 fn real_binary_check(pm: PackageManager) -> bool {
-    probe::probe(pm.label()).is_some()
+    probe::probe(pm).is_some()
 }
 
 fn on_fail_missing_binary(
