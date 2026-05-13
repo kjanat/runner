@@ -28,7 +28,8 @@
 		"**/samples",
 		"**/target",
 		"**/dist",
-		"**/downloads"
+		"**/downloads",
+		"**/schemas/*.json"
 	],
 	"plugins": [
 		"https://plugins.dprint.dev/typescript-0.95.15.wasm",

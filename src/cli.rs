@@ -2,9 +2,61 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::builder::styling::{AnsiColor, Color, Style, Styles};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
+
+/// Color palette for help output. clap auto-disables when stdout isn't a
+/// TTY or `NO_COLOR` is set, so the same constant works for piped output
+/// and color-averse users without extra plumbing.
+const HELP_STYLES: Styles = Styles::styled()
+    .header(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+            .bold()
+            .underline(),
+    )
+    .usage(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Yellow)))
+            .bold()
+            .underline(),
+    )
+    .literal(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Cyan)))
+            .bold(),
+    )
+    .placeholder(Style::new().fg_color(Some(Color::Ansi(AnsiColor::Cyan))))
+    .valid(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Green)))
+            .bold(),
+    )
+    .invalid(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+            .bold(),
+    )
+    .error(
+        Style::new()
+            .fg_color(Some(Color::Ansi(AnsiColor::Red)))
+            .bold(),
+    );
+
+/// ANSI cyan wrapper used for inline literals embedded in flag-help prose
+/// (PM names, env-var names, etc.). The `HELP_STYLES` `Styles::literal` /
+/// `Styles::placeholder` slots only style structural pieces (flag names,
+/// value placeholders); for tokens inside the description body we emit
+/// ANSI directly. clap routes its output through `anstream`, which strips
+/// ANSI when stdout isn't a TTY or `NO_COLOR` is set, so these inline
+/// escapes are dropped automatically for piped output.
+macro_rules! cyan {
+    ($s:literal) => {
+        concat!("\x1b[36m", $s, "\x1b[0m")
+    };
+}
 
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
@@ -23,18 +75,76 @@ fn task_candidates() -> Vec<CompletionCandidate> {
 
 fn completion_dir() -> std::io::Result<PathBuf> {
     let cwd = std::env::current_dir()?;
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     Ok(resolve_completion_dir(
         &cwd,
+        cli_dir_from_argv(&argv).as_deref(),
         std::env::var_os("RUNNER_DIR").as_deref(),
     ))
 }
 
-fn resolve_completion_dir(cwd: &Path, env_dir: Option<&std::ffi::OsStr>) -> PathBuf {
-    match env_dir.map(PathBuf::from) {
+/// Mirror clap's `--dir` precedence at completion time.
+///
+/// Precedence (highest first) — same as the resolver at runtime so
+/// the completion list matches the directory the user is about to
+/// dispatch against:
+/// 1. `--dir` parsed from the in-flight argv (the user is typing
+///    `runner --dir /other/repo <TAB>`).
+/// 2. `RUNNER_DIR` env var.
+/// 3. The shell's working directory.
+fn resolve_completion_dir(
+    cwd: &Path,
+    cli_dir: Option<&std::ffi::OsStr>,
+    env_dir: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    let raw = cli_dir.or(env_dir);
+    match raw.map(PathBuf::from) {
         Some(path) if path.is_absolute() => path,
         Some(path) => cwd.join(path),
         None => cwd.to_path_buf(),
     }
+}
+
+/// Scan the argv (as the shell passed it to the binary during
+/// completion) for `--dir <value>` / `--dir=<value>`. Returns the last
+/// occurrence so repeated flags behave the same way clap does at parse
+/// time.
+///
+/// `clap_complete`'s bash registration invokes the binary as
+/// `completer -- "${words[@]}"`, so the user-typed words live *after*
+/// the first `--` separator. We seek past that separator first, then
+/// scan; if no separator exists (binary invoked directly without
+/// `clap_complete`'s harness, e.g. in tests), the entire tail is
+/// scanned.
+fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    // Find the `--` separator clap_complete inserts between the
+    // completer path and the user's word list. Skip past it; otherwise
+    // start at index 1 (after argv[0]).
+    let start = argv.iter().position(|a| a == "--").map_or(1, |idx| idx + 1);
+    if start >= argv.len() {
+        return None;
+    }
+
+    let mut found: Option<OsString> = None;
+    let mut iter = argv[start..].iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--dir" {
+            if let Some(next) = iter.next() {
+                found = Some(next.clone());
+            }
+            continue;
+        }
+        if let Some(rest) = arg
+            .to_str()
+            .and_then(|s| s.strip_prefix("--dir="))
+            .map(OsString::from)
+        {
+            found = Some(rest);
+        }
+    }
+    found
 }
 
 /// Build [`CompletionCandidate`]s from a task list.
@@ -67,20 +177,26 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     }
 
     // A `package.json` script is only swallowed when it (a) declared itself a
-    // turbo passthrough at detection time *and* (b) the project actually has a
-    // same-named `turbo.json` task to absorb it. Without (b), suppressing
-    // would leave the user with no completion for the script at all.
-    let is_turbo_passthrough = |task: &crate::types::Task| -> bool {
-        task.passthrough_to_turbo
-            && task.source == TaskSource::PackageJson
+    // passthrough wrapper at detection time *and* (b) the project actually
+    // has a same-named task from that runner's source to absorb it. Without
+    // (b), suppressing would leave the user with no completion for the
+    // script at all.
+    let is_self_passthrough = |task: &crate::types::Task| -> bool {
+        let Some(runner) = task.passthrough_to else {
+            return false;
+        };
+        let Some(peer_source) = runner.task_source() else {
+            return false;
+        };
+        task.source == TaskSource::PackageJson
             && sources_for_name
                 .get(task.name.as_str())
-                .is_some_and(|set| set.contains(&TaskSource::TurboJson))
+                .is_some_and(|set| set.contains(&peer_source))
     };
 
     let mut effective_count: HashMap<&str, usize> = HashMap::new();
     for task in tasks {
-        if !is_turbo_passthrough(task) {
+        if !is_self_passthrough(task) {
             *effective_count.entry(task.name.as_str()).or_default() += 1;
         }
     }
@@ -88,7 +204,7 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     let mut candidates = Vec::new();
     let mut seen_bare = HashSet::new();
     for task in tasks {
-        if is_turbo_passthrough(task) {
+        if is_self_passthrough(task) {
             continue;
         }
 
@@ -149,7 +265,9 @@ mod tests {
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
 
-    use super::{resolve_completion_dir, task_candidates_from};
+    use std::ffi::OsString;
+
+    use super::{cli_dir_from_argv, resolve_completion_dir, task_candidates_from};
     use crate::types::{Task, TaskSource};
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -158,13 +276,13 @@ mod tests {
             source,
             description: None,
             alias_of: None,
-            passthrough_to_turbo: false,
+            passthrough_to: None,
         }
     }
 
     fn turbo_passthrough(name: &str) -> Task {
         Task {
-            passthrough_to_turbo: true,
+            passthrough_to: Some(crate::types::TaskRunner::Turbo),
             ..task(name, TaskSource::PackageJson)
         }
     }
@@ -338,10 +456,101 @@ mod tests {
     fn resolve_completion_dir_uses_absolute_runner_dir_env() {
         let dir = resolve_completion_dir(
             Path::new("/tmp/workspace"),
+            None,
             Some(OsStr::new("/tmp/runner-target")),
         );
 
         assert_eq!(dir, PathBuf::from("/tmp/runner-target"));
+    }
+
+    #[test]
+    fn resolve_completion_dir_prefers_cli_over_env() {
+        // `runner --dir /cli-target <TAB>` with `RUNNER_DIR=/env-target`
+        // set in the environment — completion should reflect the CLI
+        // flag, matching clap's runtime precedence.
+        let dir = resolve_completion_dir(
+            Path::new("/tmp/workspace"),
+            Some(OsStr::new("/cli-target")),
+            Some(OsStr::new("/env-target")),
+        );
+
+        assert_eq!(dir, PathBuf::from("/cli-target"));
+    }
+
+    #[test]
+    fn cli_dir_from_argv_parses_space_separated_form_with_clap_complete_harness() {
+        // Bash completion invokes the binary as
+        // `completer -- "${words[@]}"`, so the user-typed words live
+        // *after* the first `--`. The helper has to seek past it and
+        // then scan for `--dir`.
+        let argv = vec![
+            OsString::from("/path/to/runner"),
+            OsString::from("--"),
+            OsString::from("runner"),
+            OsString::from("--dir"),
+            OsString::from("/repo"),
+            OsString::from("build"),
+            OsString::from(""),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/repo"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_parses_space_separated_form_without_separator() {
+        // Direct invocation (no clap_complete harness, e.g. tests):
+        // scan the full tail starting at argv[1].
+        let argv = vec![
+            OsString::from("runner"),
+            OsString::from("--dir"),
+            OsString::from("/repo"),
+            OsString::from("build"),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/repo"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_parses_equals_form() {
+        let argv = vec![
+            OsString::from("runner"),
+            OsString::from("--dir=/repo"),
+            OsString::from("build"),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/repo"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_last_occurrence_wins() {
+        // Match clap's behavior for repeated flags: last value wins.
+        let argv = vec![
+            OsString::from("runner"),
+            OsString::from("--dir"),
+            OsString::from("/first"),
+            OsString::from("--dir=/second"),
+        ];
+
+        assert_eq!(
+            cli_dir_from_argv(&argv).as_deref(),
+            Some(OsStr::new("/second"))
+        );
+    }
+
+    #[test]
+    fn cli_dir_from_argv_returns_none_without_flag() {
+        let argv = vec![OsString::from("runner"), OsString::from("build")];
+
+        assert_eq!(cli_dir_from_argv(&argv), None);
     }
 }
 
@@ -352,10 +561,26 @@ mod tests {
     about = clap::crate_description!(),
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     version,
+    styles = HELP_STYLES,
     arg_required_else_help = false,
     add = SubcommandCandidates::new(task_candidates)
 )]
 pub(crate) struct Cli {
+    /// Global options shared with [`RunAliasCli`].
+    #[command(flatten)]
+    pub global: GlobalOpts,
+
+    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Flags shared by both `runner` and `run`. Carried inline via
+/// `#[command(flatten)]` so each binary's `--help` lists them at the
+/// same level as subcommand-specific arguments — clap unrolls them as
+/// if they were defined on the parent struct.
+#[derive(Debug, Args)]
+pub(crate) struct GlobalOpts {
     /// Use this directory instead of the current one.
     #[arg(
         long = "dir",
@@ -367,9 +592,100 @@ pub(crate) struct Cli {
     )]
     pub project_dir: Option<PathBuf>,
 
-    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
-    #[command(subcommand)]
-    pub command: Option<Command>,
+    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
+    /// The resolver also consults `$RUNNER_PM` independently when this
+    /// flag is omitted (env reads live in `crate::resolver`, not clap).
+    #[arg(
+        long = "pm",
+        global = true,
+        value_name = "NAME",
+        help = concat!(
+            "Override the detected package manager (e.g. ",
+            cyan!("pnpm"), ", ", cyan!("bun"), ", ", cyan!("yarn"),
+            "). Also reads ", cyan!("RUNNER_PM"), " when omitted."
+        ),
+    )]
+    pub pm_override: Option<String>,
+
+    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
+    /// The resolver also consults `$RUNNER_RUNNER` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
+    #[arg(
+        long = "runner",
+        global = true,
+        value_name = "NAME",
+        help = concat!(
+            "Override the detected task runner (e.g. ",
+            cyan!("just"), ", ", cyan!("turbo"), ", ", cyan!("make"),
+            "). Also reads ", cyan!("RUNNER_RUNNER"), " when omitted."
+        ),
+    )]
+    pub runner_override: Option<String>,
+
+    /// What to do when no detection signal matches: `probe` (default,
+    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
+    /// The resolver also consults `$RUNNER_FALLBACK` independently when
+    /// this flag is omitted (env reads live in `crate::resolver`, not
+    /// clap).
+    #[arg(
+        long = "fallback",
+        global = true,
+        value_name = "POLICY",
+        help = concat!(
+            "What to do when no detection signal matches: ",
+            cyan!("probe"), " (default, PATH probe), ",
+            cyan!("npm"), " (legacy silent fallback), ",
+            cyan!("error"), " (refuse). Also reads ",
+            cyan!("RUNNER_FALLBACK"), " when omitted."
+        ),
+    )]
+    pub fallback: Option<String>,
+
+    /// What to do when the manifest declaration (packageManager / devEngines)
+    /// disagrees with the detected lockfile: `warn` (default), `error`
+    /// (refuse, exit 2), `ignore` (silent). The resolver also consults
+    /// `$RUNNER_ON_MISMATCH` independently when this flag is omitted.
+    #[arg(
+        long = "on-mismatch",
+        global = true,
+        value_name = "POLICY",
+        help = concat!(
+            "What to do when the manifest declaration disagrees with the lockfile: ",
+            cyan!("warn"), " (default), ",
+            cyan!("error"), " (exit 2), ",
+            cyan!("ignore"), " (silent). Also reads ",
+            cyan!("RUNNER_ON_MISMATCH"), " when omitted."
+        ),
+    )]
+    pub on_mismatch: Option<String>,
+
+    /// Print a one-line trace describing how the package manager was
+    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
+    /// is set to a truthy value (env reads live in `crate::resolver`,
+    /// not clap).
+    #[arg(
+        long = "explain",
+        global = true,
+        help = concat!(
+            "Print a one-line trace describing how the package manager was resolved. \
+             Also enabled when ", cyan!("RUNNER_EXPLAIN"), " is set to a truthy value."
+        ),
+    )]
+    pub explain: bool,
+
+    /// Suppress all non-fatal warnings on stderr. Errors still surface;
+    /// only `DetectionWarning` output is silenced. Also enabled when
+    /// `$RUNNER_NO_WARNINGS` is set to a truthy value.
+    #[arg(
+        long = "no-warnings",
+        global = true,
+        help = concat!(
+            "Suppress all non-fatal warnings on stderr. Also enabled when ",
+            cyan!("RUNNER_NO_WARNINGS"), " is set to a truthy value."
+        ),
+    )]
+    pub no_warnings: bool,
 }
 
 /// Available subcommands.
@@ -410,10 +726,37 @@ pub(crate) enum Command {
         /// Print bare task names, one per line (for scripting / completions)
         #[arg(long)]
         raw: bool,
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+        /// Restrict output to a single source (e.g. `package.json`,
+        /// `Makefile`, `justfile`).
+        #[arg(long, value_name = "SOURCE")]
+        source: Option<String>,
     },
 
     /// Show detected project info
-    Info,
+    Info {
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Diagnostic dump: every signal the resolver considers in this dir
+    Doctor {
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Explain how a specific task would dispatch (sources + PM trace)
+    Why {
+        /// Task name to analyze.
+        task: String,
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Generate shell completions
     Completions {
@@ -450,19 +793,13 @@ pub(crate) enum Command {
     about = "Run a project task or exec a command through the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     version,
+    styles = HELP_STYLES,
     arg_required_else_help = false
 )]
 pub(crate) struct RunAliasCli {
-    /// Use this directory instead of the current one.
-    #[arg(
-        long = "dir",
-        global = true,
-        env = "RUNNER_DIR",
-        value_name = "PATH",
-        value_hint = clap::ValueHint::DirPath,
-        value_parser = clap::value_parser!(PathBuf)
-    )]
-    pub project_dir: Option<PathBuf>,
+    /// Global options shared with [`Cli`].
+    #[command(flatten)]
+    pub global: GlobalOpts,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]

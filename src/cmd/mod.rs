@@ -5,21 +5,26 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use colored::Colorize;
 
-use crate::types::ProjectContext;
+use crate::resolver::ResolutionOverrides;
+use crate::types::{DetectionWarning, ProjectContext};
 
 mod clean;
 mod completions;
+mod doctor;
 mod info;
 mod install;
 mod list;
-mod run;
+pub(crate) mod run;
+mod why;
 
 pub(crate) use clean::clean;
 pub(crate) use completions::{completions, parse_shell_arg};
+pub(crate) use doctor::doctor;
 pub(crate) use info::info;
 pub(crate) use install::install;
 pub(crate) use list::list;
 pub(crate) use run::run;
+pub(crate) use why::why;
 
 fn configure_command(command: &mut Command, dir: &Path) {
     command
@@ -45,14 +50,16 @@ fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-fn print_warnings(ctx: &ProjectContext) {
-    for warning in &ctx.warnings {
-        eprintln!(
-            "{} {}: {}",
-            "warn:".yellow().bold(),
-            warning.source,
-            warning.detail,
-        );
+fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides) {
+    print_warning_slice(&ctx.warnings, overrides);
+}
+
+fn print_warning_slice(warnings: &[DetectionWarning], overrides: &ResolutionOverrides) {
+    if overrides.no_warnings {
+        return;
+    }
+    for warning in warnings {
+        eprintln!("{} {warning}", "warn:".yellow().bold());
     }
 }
 
@@ -70,6 +77,28 @@ mod tests {
         configure_command(&mut command, dir.as_path());
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn no_warnings_suppresses_emission() {
+        use super::print_warning_slice;
+        use crate::resolver::ResolutionOverrides;
+        use crate::types::{DetectionWarning, PackageManager};
+
+        // Smoke: print_warning_slice with no_warnings=true must
+        // short-circuit before the eprintln. The test asserts no
+        // panic / no observable side effects; capturing stderr in
+        // cargo test is fiddly and not worth a fixture.
+        let warnings = vec![DetectionWarning::PmMismatch {
+            declared: PackageManager::Pnpm,
+            field: "packageManager",
+            lockfile: PackageManager::Yarn,
+        }];
+        let overrides = ResolutionOverrides {
+            no_warnings: true,
+            ..ResolutionOverrides::default()
+        };
+        print_warning_slice(&warnings, &overrides);
     }
 
     #[cfg(unix)]

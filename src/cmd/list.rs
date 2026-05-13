@@ -4,35 +4,78 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Result, anyhow};
 use colored::Colorize;
 
+use crate::report::Project;
+use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{ProjectContext, TaskSource};
+use crate::types::{ProjectContext, Task, TaskSource};
 
 /// Print tasks to stdout.
 ///
 /// In `raw` mode, prints deduplicated task names one per line (for piping
 /// into scripts or shell completions). Otherwise prints a human-readable
 /// table grouped by source file.
-pub(crate) fn list(ctx: &ProjectContext, raw: bool) {
-    super::print_warnings(ctx);
+///
+/// # Errors
+///
+/// Returns an error when `source` doesn't name a known [`TaskSource`],
+/// or when `--json` serialization fails. The human-output path never
+/// errors.
+pub(crate) fn list(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    raw: bool,
+    json: bool,
+    source: Option<&str>,
+) -> Result<()> {
+    let parsed_source = match source {
+        None => None,
+        Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
+            anyhow!(
+                "--source {label:?}: unknown source label (expected one of: package.json, \
+                 Makefile, justfile, Taskfile, turbo.json, deno.json, cargo, bacon.toml)",
+            )
+        })?),
+    };
+
+    if json {
+        let view = Project::build(ctx, overrides).into_list_view(parsed_source);
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+
+    super::print_warnings(ctx, overrides);
+
+    let filtered: Vec<&Task> = ctx
+        .tasks
+        .iter()
+        .filter(|t| parsed_source.is_none_or(|s| t.source == s))
+        .collect();
 
     if raw {
         let mut seen = HashSet::new();
-        for task in &ctx.tasks {
-            if seen.insert(&task.name) {
+        for task in &filtered {
+            if seen.insert(task.name.as_str()) {
                 println!("{}", task.name);
             }
         }
-    } else if ctx.tasks.is_empty() {
+    } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        print_tasks_grouped(ctx);
+        print_tasks_grouped(&filtered, &ctx.root);
     }
+    Ok(())
 }
 
 /// Print tasks grouped by [`TaskSource`], one line per source.
-pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
+///
+/// Operates over a borrowed task slice + the project root — the renderer
+/// never reads other [`ProjectContext`] fields, so callers that already
+/// have a filtered task list pass the slice directly instead of forging
+/// a synthetic context.
+pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
     let stdout_is_terminal = std::io::stdout().is_terminal();
 
     let sources = [
@@ -46,16 +89,16 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
         TaskSource::BaconToml,
     ];
     for source in sources {
-        let (recipes, aliases): (Vec<_>, Vec<_>) = ctx
-            .tasks
+        let (recipes, aliases): (Vec<&Task>, Vec<&Task>) = tasks
             .iter()
+            .copied()
             .filter(|t| t.source == source)
             .partition(|t| t.alias_of.is_none());
         if recipes.is_empty() && aliases.is_empty() {
             continue;
         }
 
-        let label = source_label(source, &ctx.root, stdout_is_terminal);
+        let label = source_label(source, root, stdout_is_terminal);
         if !recipes.is_empty() {
             let has_any_desc = recipes.iter().any(|t| t.description.is_some());
             if has_any_desc {
@@ -80,11 +123,7 @@ pub(super) fn print_tasks_grouped(ctx: &ProjectContext) {
     }
 }
 
-fn format_aliases_line(
-    source: TaskSource,
-    aliases: &[&crate::types::Task],
-    stdout_is_terminal: bool,
-) -> String {
+fn format_aliases_line(source: TaskSource, aliases: &[&Task], stdout_is_terminal: bool) -> String {
     let aliases_label = alias_label(source, stdout_is_terminal);
     let parts: Vec<String> = aliases
         .iter()
@@ -326,14 +365,14 @@ mod tests {
                 source: TaskSource::Justfile,
                 description: None,
                 alias_of: Some("build".into()),
-                passthrough_to_turbo: false,
+                passthrough_to: None,
             },
             Task {
                 name: "br".into(),
                 source: TaskSource::Justfile,
                 description: None,
                 alias_of: Some("build-release".into()),
-                passthrough_to_turbo: false,
+                passthrough_to: None,
             },
         ];
         let refs: Vec<&Task> = aliases.iter().collect();

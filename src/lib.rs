@@ -57,7 +57,10 @@
 mod cli;
 mod cmd;
 mod complete;
+mod config;
 mod detect;
+mod report;
+mod resolver;
 mod tool;
 mod types;
 
@@ -67,6 +70,39 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, FromArgMatches};
+
+use resolver::ResolveError;
+
+/// Generate the JSON Schema for `runner.toml`.
+///
+/// Only exposed when the `schema-gen` feature is on; the `gen-schema`
+/// example calls this to keep `RunnerConfig` and its inner section
+/// structs `pub(crate)` permanently — no permanent public-API
+/// expansion just to derive a schema once.
+#[cfg(feature = "schema-gen")]
+#[must_use]
+pub fn config_schema() -> schemars::Schema {
+    schemars::schema_for!(config::RunnerConfig)
+}
+
+/// Exit code semantics:
+/// - `0` — success
+/// - `1` — generic failure (I/O, detection, child-process non-zero)
+/// - `2` — resolver could not satisfy intent (typed resolver error)
+///
+/// `main` and `bin/run.rs` use this to map an [`anyhow::Error`] to the
+/// right code: anything that downcasts to the internal resolver-error
+/// type is 2, everything else is 1. The resolver-error type itself is
+/// crate-private; only the exit-code projection is part of the
+/// library's public surface.
+#[must_use]
+pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    if err.downcast_ref::<ResolveError>().is_some() {
+        2
+    } else {
+        1
+    }
+}
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = clap::crate_version!();
@@ -146,7 +182,7 @@ where
     };
     let project_dir = resolve_project_dir(
         configured_project_dir(
-            cli.project_dir.as_deref(),
+            cli.global.project_dir.as_deref(),
             std::env::var_os("RUNNER_DIR").as_deref(),
         )
         .as_deref(),
@@ -246,7 +282,7 @@ where
     };
     let project_dir = resolve_project_dir(
         configured_project_dir(
-            cli.project_dir.as_deref(),
+            cli.global.project_dir.as_deref(),
             std::env::var_os("RUNNER_DIR").as_deref(),
         )
         .as_deref(),
@@ -274,12 +310,22 @@ where
 
 fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
+    let loaded_config = config::load(dir)?;
+    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
+        cli.global.pm_override.as_deref(),
+        cli.global.runner_override.as_deref(),
+        cli.global.fallback.as_deref(),
+        cli.global.on_mismatch.as_deref(),
+        cli.global.no_warnings,
+        cli.global.explain,
+        loaded_config.as_ref(),
+    )?;
     match cli.task {
         None => {
-            cmd::info(&ctx);
+            cmd::info(&ctx, &overrides, false)?;
             Ok(0)
         }
-        Some(task) => cmd::run(&ctx, &task, &cli.args),
+        Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args),
     }
 }
 
@@ -444,24 +490,40 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
+    let loaded_config = config::load(dir)?;
+    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
+        cli.global.pm_override.as_deref(),
+        cli.global.runner_override.as_deref(),
+        cli.global.fallback.as_deref(),
+        cli.global.on_mismatch.as_deref(),
+        cli.global.no_warnings,
+        cli.global.explain,
+        loaded_config.as_ref(),
+    )?;
 
     match cli.command {
-        Some(cli::Command::Info) if has_task(&ctx, "info") => cmd::run(&ctx, "info", &[]),
-        None | Some(cli::Command::Info) => {
-            cmd::info(&ctx);
+        Some(cli::Command::Info { json: false }) if has_task(&ctx, "info") => {
+            cmd::run(&ctx, &overrides, "info", &[])
+        }
+        None => {
+            cmd::info(&ctx, &overrides, false)?;
             Ok(0)
         }
-        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &task, &args),
+        Some(cli::Command::Info { json }) => {
+            cmd::info(&ctx, &overrides, json)?;
+            Ok(0)
+        }
+        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &overrides, &task, &args),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
-                cmd::info(&ctx);
+                cmd::info(&ctx, &overrides, false)?;
                 Ok(0)
             } else {
-                cmd::run(&ctx, &args[0], &args[1..])
+                cmd::run(&ctx, &overrides, &args[0], &args[1..])
             }
         }
         Some(cli::Command::Install { frozen: false }) if has_task(&ctx, "install") => {
-            cmd::run(&ctx, "install", &[])
+            cmd::run(&ctx, &overrides, "install", &[])
         }
         Some(cli::Command::Install { frozen }) => {
             cmd::install(&ctx, frozen)?;
@@ -470,7 +532,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Clean {
             yes: false,
             include_framework: false,
-        }) if has_task(&ctx, "clean") => cmd::run(&ctx, "clean", &[]),
+        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[]),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -478,19 +540,29 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::clean(&ctx, yes, include_framework)?;
             Ok(0)
         }
-        Some(cli::Command::List { raw: false }) if has_task(&ctx, "list") => {
-            cmd::run(&ctx, "list", &[])
-        }
-        Some(cli::Command::List { raw }) => {
-            cmd::list(&ctx, raw);
+        Some(cli::Command::List {
+            raw: false,
+            json: false,
+            source: None,
+        }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[]),
+        Some(cli::Command::List { raw, json, source }) => {
+            cmd::list(&ctx, &overrides, raw, json, source.as_deref())?;
             Ok(0)
         }
         Some(cli::Command::Completions {
             shell: None,
             output: None,
-        }) if has_task(&ctx, "completions") => cmd::run(&ctx, "completions", &[]),
+        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[]),
         Some(cli::Command::Completions { shell, output }) => {
             cmd::completions(shell, output.as_deref())?;
+            Ok(0)
+        }
+        Some(cli::Command::Doctor { json }) => {
+            cmd::doctor(&ctx, &overrides, json)?;
+            Ok(0)
+        }
+        Some(cli::Command::Why { task, json }) => {
+            cmd::why(&ctx, &overrides, &task, json)?;
             Ok(0)
         }
     }
@@ -508,13 +580,32 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        VERSION, bin_name_from_arg0, configured_project_dir, has_task, parse_cli,
-        parse_run_alias_cli, release_url, requests_version, resolve_project_dir, run_alias_in_dir,
-        run_in_dir, version_line,
+        VERSION, bin_name_from_arg0, configured_project_dir, exit_code_for_error, has_task,
+        parse_cli, parse_run_alias_cli, release_url, requests_version, resolve_project_dir,
+        run_alias_in_dir, run_in_dir, version_line,
     };
     use crate::cli;
+    use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
-    use crate::types::{ProjectContext, Task, TaskSource};
+    use crate::types::{Ecosystem, ProjectContext, Task, TaskSource};
+
+    #[test]
+    fn exit_code_for_resolve_error_is_two() {
+        let err: anyhow::Error = ResolveError::NoSignalsFound {
+            ecosystem: Ecosystem::Node,
+            soft: false,
+        }
+        .into();
+
+        assert_eq!(exit_code_for_error(&err), 2);
+    }
+
+    #[test]
+    fn exit_code_for_generic_error_is_one() {
+        let err = anyhow::anyhow!("generic boom");
+
+        assert_eq!(exit_code_for_error(&err), 1);
+    }
 
     #[test]
     fn help_returns_zero_instead_of_exiting() {
@@ -645,7 +736,7 @@ mod tests {
                     source: TaskSource::PackageJson,
                     description: None,
                     alias_of: None,
-                    passthrough_to_turbo: false,
+                    passthrough_to: None,
                 })
                 .collect(),
             node_version: None,
@@ -705,7 +796,7 @@ mod tests {
         let cli = parse_run_alias_cli(["run", "--dir=other", "build"])
             .expect("run --dir=other build should parse");
 
-        assert_eq!(cli.project_dir, Some(PathBuf::from("other")));
+        assert_eq!(cli.global.project_dir, Some(PathBuf::from("other")));
         assert_eq!(cli.task.as_deref(), Some("build"));
     }
 
@@ -749,6 +840,42 @@ mod tests {
             }
             other => panic!("expected External, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runner_cli_parses_pm_and_runner_overrides_globally() {
+        let cli = parse_cli(["runner", "--pm", "pnpm", "--runner", "just", "run", "build"])
+            .expect("global --pm/--runner should parse on the run subcommand");
+
+        assert_eq!(cli.global.pm_override.as_deref(), Some("pnpm"));
+        assert_eq!(cli.global.runner_override.as_deref(), Some("just"));
+        match cli.command {
+            Some(cli::Command::Run { task, args }) => {
+                assert_eq!(task, "build");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Run, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_alias_parses_pm_override() {
+        let cli =
+            parse_run_alias_cli(["run", "--pm=bun", "test"]).expect("--pm=bun test should parse");
+
+        assert_eq!(cli.global.pm_override.as_deref(), Some("bun"));
+        assert_eq!(cli.task.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn invalid_pm_override_value_returns_error() {
+        // Bad PM name should not crash the binary; it should surface as an
+        // error exit code so the user sees the message from `from_cli_and_env`.
+        let dir = TempDir::new("runner-bad-pm");
+        let result = run_in_dir(["runner", "--pm", "zoot", "info"], dir.path());
+
+        let err = result.expect_err("unknown --pm should error");
+        assert!(format!("{err}").contains("unknown package manager"));
     }
 
     #[test]

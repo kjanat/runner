@@ -29,6 +29,21 @@ runner *args:
 ls:
     @just --list
 
+# Regenerate the committed JSON Schema for `runner.toml`.
+#
+# Runs the `gen-schema` example under the `schema-gen` feature, which
+# derives a draft-2020-12 schema from `RunnerConfig` + its section
+# structs via `schemars`. The example writes the result to
+# `schemas/runner.toml.schema.json`; commit the diff if anything
+# moved.
+#
+# CI drift guard:
+# just gen-schema && git diff --exit-code schemas/
+[group('schema')]
+gen-schema:
+    @echo "→ regenerating {{ BLUE }}schemas/runner.toml.schema.json{{ NORMAL }}"
+    @cargo run --quiet --example gen-schema --features schema-gen
+
 [group('npm')]
 build-packages only="" skip="false" version=cargo-version:
     #!/usr/bin/env bash

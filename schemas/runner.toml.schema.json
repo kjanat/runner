@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RunnerConfig",
+  "description": "Top-level schema for `runner.toml`.",
+  "type": "object",
+  "properties": {
+    "pm": {
+      "description": "`[pm]` — per-ecosystem package-manager overrides.",
+      "$ref": "#/$defs/PmSection"
+    },
+    "resolution": {
+      "description": "`[resolution]` — resolver-policy knobs.",
+      "$ref": "#/$defs/ResolutionSection"
+    },
+    "task_runner": {
+      "description": "`[task_runner]` — task-runner preferences.",
+      "$ref": "#/$defs/TaskRunnerSection"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "PmSection": {
+      "description": "`[pm]` section — per-ecosystem package manager overrides.",
+      "type": "object",
+      "properties": {
+        "node": {
+          "description": "Package manager used to dispatch Node `package.json` scripts.\nValid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "npm",
+            "pnpm",
+            "yarn",
+            "bun",
+            "deno",
+            null
+          ]
+        },
+        "python": {
+          "description": "Package manager used for Python ecosystems.\nValid values: `uv`, `poetry`, `pipenv`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "uv",
+            "poetry",
+            "pipenv",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResolutionSection": {
+      "description": "`[resolution]` section — resolver policy knobs.",
+      "type": "object",
+      "properties": {
+        "fallback": {
+          "description": "`probe` (default) — PATH probe in canonical order when no signals\nmatch; `npm` — legacy silent fallback; `error` — refuse to proceed.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "probe",
+            "npm",
+            "error",
+            null
+          ]
+        },
+        "on_mismatch": {
+          "description": "`warn` (default), `error`, `ignore` — how to react when declaration\n(manifest field) disagrees with detection (lockfile).",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "warn",
+            "error",
+            "ignore",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskRunnerSection": {
+      "description": "`[task_runner]` section — preferred ordering for ambiguous tasks.",
+      "type": "object",
+      "properties": {
+        "prefer": {
+          "description": "Ranked preference list. Restricts candidates to runners in the\nlist (in listed order); a same-named task under a runner not in\nthe list is hard-rejected. Parsed into [`crate::types::TaskRunner`]\nat resolver-init time so unknown labels fail fast.\n\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,\n`bacon`. (Not constrained in the JSON Schema — the runtime\nparser emits a more helpful error than a schema-validation\nfailure would.)",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

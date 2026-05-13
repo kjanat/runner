@@ -57,7 +57,7 @@ fn build_install_command(ctx: &ProjectContext, pm: PackageManager, frozen: bool)
         PackageManager::Deno => tool::deno::install_cmd(),
         PackageManager::Uv => tool::uv::install_cmd(frozen),
         PackageManager::Poetry => tool::poetry::install_cmd(),
-        PackageManager::Pipenv => tool::pipenv::install_cmd(),
+        PackageManager::Pipenv => tool::pipenv::install_cmd(frozen),
         PackageManager::Go => tool::go_pm::install_cmd(),
         PackageManager::Bundler => tool::bundler::install_cmd(),
         PackageManager::Composer => tool::composer::install_cmd(),

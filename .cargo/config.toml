@@ -9,12 +9,14 @@ cl          = ["clippy", "--all-targets", "--all-features"]
 comp        = ["bin-runner", "--", "completions"]
 i           = ["install", "--path", "."]
 l           = ["cl", "--", "-D", "warnings", "-D", "clippy::all"]
+lint        = "l"
 meta        = ["metadata", "--format-version", "1"]
 r           = "run"
 rbin-run    = ["bin-run", "--release"]
 rbin-runner = ["bin-runner", "--release"]
-rr          = ["run", "--release"]
-runner      = ["run", "--bin", "runner"]
+rr          = ["r", "--release"]
+runner      = ["r", "--bin", "runner"]
+schema      = ["r", "--quiet", "--example", "gen-schema", "--features", "schema-gen"]
 t           = ["test", "--all-features", "--all-targets"]
 
 # [target.<triple>]
