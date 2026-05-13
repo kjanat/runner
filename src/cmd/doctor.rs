@@ -11,17 +11,15 @@
 //! - `--json`: machine-readable schema-versioned JSON for piping into
 //!   `jq`, scripts, or bug-report templates.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::Path;
 
 use anyhow::Result;
 use colored::Colorize;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
-use crate::resolver::{FallbackPolicy, OverrideOrigin, ResolutionOverrides, Resolver};
-use crate::tool::node::{ManifestSource, detect_pm_from_manifest};
-use crate::types::{Ecosystem, PackageManager, ProjectContext};
+use crate::report::Project;
+use crate::resolver::ResolutionOverrides;
+use crate::types::ProjectContext;
 
 /// Print a full diagnostic dump of the resolver's view of `ctx`.
 ///
@@ -35,167 +33,30 @@ pub(crate) fn doctor(
     overrides: &ResolutionOverrides,
     json: bool,
 ) -> Result<()> {
-    let report = build_report(ctx, overrides);
+    let project = Project::build(ctx, overrides);
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", serde_json::to_string_pretty(&project)?);
     } else {
+        // The human renderer was written against a `serde_json::Value`
+        // so it can address fields by name without a forest of
+        // `match`es. Serializing the typed report once and traversing
+        // the resulting `Value` keeps that ergonomics while the JSON
+        // contract itself stays typed via `Project`.
+        let report = serde_json::to_value(&project)?;
         print_human(&report, overrides);
     }
 
     Ok(())
 }
 
-/// Build the structured report (`serde_json::Value` so the same data can
-/// drive both renderers without round-trips through typed schema structs).
+/// Legacy stub retained for the existing tests that exercise
+/// `build_report` directly. Pure passthrough to `Project::build` +
+/// `serde_json::to_value` — same contract, same shape.
+#[cfg(test)]
 fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value {
-    let manifest_decl = detect_pm_from_manifest(&ctx.root);
-
-    let node_signals = json!({
-        "lockfile_pm": ctx.primary_node_pm().map(PackageManager::label),
-        "manifest_pm": manifest_decl.as_ref().map(|d| json!({
-            "pm": d.pm.label(),
-            "source": match d.source {
-                ManifestSource::PackageManager => "packageManager",
-                ManifestSource::DevEngines => "devEngines.packageManager",
-            },
-            "version": d.version,
-            "on_fail": format!("{:?}", d.on_fail).to_lowercase(),
-        })),
-        "path_probe": path_probe_map(),
-    });
-
-    let mut signals = Map::new();
-    signals.insert("node".to_string(), node_signals);
-
-    // Capture resolver-side warnings alongside the decision so they
-    // surface in `doctor` output — CodeRabbit flagged that dropping
-    // them hides actionable diagnostics. Manifest/lockfile-mismatch
-    // and devEngines onFail=warn paths both produce these, and they're
-    // exactly the signals a user runs `doctor` for.
-    let (decisions, resolver_warnings) =
-        match Resolver::new(ctx, overrides.clone()).resolve_node_pm() {
-            Ok(decision) => {
-                let warnings = decision.warnings.clone();
-                (
-                    json!({
-                        "node_pm": {
-                            "pm": decision.pm.label(),
-                            "via": decision.describe(),
-                        }
-                    }),
-                    warnings,
-                )
-            }
-            Err(err) => (json!({ "node_pm_error": format!("{err}") }), Vec::new()),
-        };
-
-    let warnings_json: Vec<Value> = ctx
-        .warnings
-        .iter()
-        .chain(resolver_warnings.iter())
-        .map(|w| json!({ "source": w.source, "detail": w.detail }))
-        .collect();
-
-    json!({
-        "schema_version": 1,
-        "root": ctx.root.display().to_string(),
-        "ecosystems": ctx.package_managers.iter().map(|pm| ecosystem_label(pm.ecosystem())).collect::<Vec<_>>(),
-        "detected": {
-            "package_managers": ctx.package_managers.iter().map(|pm| pm.label()).collect::<Vec<_>>(),
-            "task_runners": ctx.task_runners.iter().map(|tr| tr.label()).collect::<Vec<_>>(),
-            "node_version": ctx.node_version.as_ref().map(|nv| json!({
-                "expected": nv.expected,
-                "source": nv.source,
-            })),
-            "current_node": ctx.current_node,
-            "monorepo": ctx.is_monorepo,
-        },
-        "overrides": overrides_json(overrides),
-        "signals": signals,
-        "decisions": decisions,
-        "warnings": warnings_json,
-    })
-}
-
-fn overrides_json(overrides: &ResolutionOverrides) -> Value {
-    let mut pm_by_eco = Map::new();
-    for (eco, pm_override) in &overrides.pm_by_ecosystem {
-        pm_by_eco.insert(
-            ecosystem_label(*eco).to_string(),
-            json!({
-                "pm": pm_override.pm.label(),
-                "origin": origin_label(&pm_override.origin),
-            }),
-        );
-    }
-
-    json!({
-        "pm": overrides.pm.as_ref().map(|o| json!({
-            "pm": o.pm.label(),
-            "origin": origin_label(&o.origin),
-        })),
-        "pm_by_ecosystem": pm_by_eco,
-        "runner": overrides.runner.as_ref().map(|o| json!({
-            "runner": o.runner.label(),
-            "origin": origin_label(&o.origin),
-        })),
-        "fallback": fallback_label(overrides.fallback),
-        "explain": overrides.explain,
-    })
-}
-
-fn origin_label(origin: &OverrideOrigin) -> String {
-    match origin {
-        OverrideOrigin::CliFlag => "cli".to_string(),
-        OverrideOrigin::EnvVar => "env".to_string(),
-        OverrideOrigin::ConfigFile { path } => format!("config:{}", path.display()),
-    }
-}
-
-const fn fallback_label(policy: FallbackPolicy) -> &'static str {
-    match policy {
-        FallbackPolicy::Probe => "probe",
-        FallbackPolicy::Npm => "npm",
-        FallbackPolicy::Error => "error",
-    }
-}
-
-const fn ecosystem_label(eco: Ecosystem) -> &'static str {
-    match eco {
-        Ecosystem::Node => "node",
-        Ecosystem::Deno => "deno",
-        Ecosystem::Python => "python",
-        Ecosystem::Rust => "rust",
-        Ecosystem::Go => "go",
-        Ecosystem::Ruby => "ruby",
-        Ecosystem::Php => "php",
-    }
-}
-
-/// Probe each Node PM in canonical order and report (binary, path) pairs.
-/// Used for the doctor signals section; intentionally calls the real probe
-/// so output reflects what the resolver would see.
-fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
-    use std::env;
-
-    let path = env::var_os("PATH").unwrap_or_default();
-    let pathext = env::var_os("PATHEXT");
-    let probe = |name: &str| {
-        crate::resolver::probe_path_for_doctor(name, &path, pathext.as_deref())
-            .map(|p| p.display().to_string())
-    };
-
-    let mut map = BTreeMap::new();
-    for pm in [
-        PackageManager::Bun,
-        PackageManager::Pnpm,
-        PackageManager::Yarn,
-        PackageManager::Npm,
-    ] {
-        map.insert(pm.label(), probe(pm.label()));
-    }
-    map
+    serde_json::to_value(Project::build(ctx, overrides))
+        .expect("Project must serialize for build_report")
 }
 
 #[allow(
@@ -367,13 +228,6 @@ where
 
 fn writeln_field(out: &mut String, label: &str, value: &str) {
     let _ = writeln!(out, "  {:<20}{}", label.dimmed(), value);
-}
-
-/// Stable Path that doctor uses to attribute "this is the project root".
-/// Exposed for `--json` consumers that want to canonicalize the result.
-#[allow(dead_code, reason = "kept as a thin abstraction layer for stability")]
-pub(crate) fn root_path(ctx: &ProjectContext) -> &Path {
-    &ctx.root
 }
 
 #[cfg(test)]

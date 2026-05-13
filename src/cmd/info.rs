@@ -5,9 +5,12 @@ use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::path::Path;
 
+use anyhow::Result;
 use colored::Colorize;
 
 use super::list::print_tasks_grouped;
+use crate::report::Project;
+use crate::resolver::ResolutionOverrides;
 use crate::types::{ProjectContext, version_matches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
@@ -15,8 +18,23 @@ const VERSION: &str = clap::crate_version!();
 
 /// Display detected package managers, task runners, Node version, monorepo
 /// status, and available tasks.
-pub(crate) fn info(ctx: &ProjectContext) {
-    super::print_warnings(ctx);
+///
+/// # Errors
+///
+/// Returns an error when `--json` is set and `Project` fails to
+/// serialize. The human renderer never errors.
+pub(crate) fn info(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    json: bool,
+) -> Result<()> {
+    if json {
+        let view = Project::build(ctx, overrides).into_info_view();
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+
+    super::print_warnings(ctx, overrides);
 
     println!(
         "{}",
@@ -26,7 +44,7 @@ pub(crate) fn info(ctx: &ProjectContext) {
 
     if ctx.package_managers.is_empty() && ctx.task_runners.is_empty() && ctx.tasks.is_empty() {
         println!("  {}", "No project detected in current directory.".dimmed());
-        return;
+        return Ok(());
     }
 
     if !ctx.package_managers.is_empty() {
@@ -61,6 +79,7 @@ pub(crate) fn info(ctx: &ProjectContext) {
         println!();
         print_tasks_grouped(ctx);
     }
+    Ok(())
 }
 
 fn title_line(arg0: Option<OsString>, stdout_is_terminal: bool) -> String {

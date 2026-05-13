@@ -26,6 +26,23 @@ pub(crate) enum Ecosystem {
     Php,
 }
 
+impl Ecosystem {
+    /// Lower-case label used in human messages, JSON output, and
+    /// override origins. Single source of truth so `doctor --json` and
+    /// resolver warnings agree on the spelling.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Deno => "deno",
+            Self::Python => "python",
+            Self::Rust => "rust",
+            Self::Go => "go",
+            Self::Ruby => "ruby",
+            Self::Php => "php",
+        }
+    }
+}
+
 /// A dependency manager detected via lockfile or config presence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PackageManager {
@@ -130,13 +147,156 @@ pub(crate) struct NodeVersion {
     pub source: &'static str,
 }
 
-/// Non-fatal issue found while detecting project metadata.
+/// Non-fatal issue found while detecting project metadata or resolving a
+/// package manager.
+///
+/// Carried as a typed variant so the diagnostic surface (`doctor --json`,
+/// `--explain`) can attribute each warning to a chain step or detector,
+/// and so future filtering (e.g. suppress just `PathProbeFallback`) is
+/// trivial. The [`Display`] impl renders the same `"<source>: <detail>"`
+/// shape every printer expects, so introducing a new variant doesn't
+/// churn output sites.
 #[derive(Debug, Clone)]
-pub(crate) struct DetectionWarning {
-    /// Which config or subsystem produced the warning.
-    pub source: &'static str,
-    /// Human-readable detail for the user.
-    pub detail: String,
+pub(crate) enum DetectionWarning {
+    /// Manifest declaration (`packageManager` / `devEngines.packageManager`)
+    /// disagrees with the detected lockfile. Declaration wins; the lockfile
+    /// is likely stale.
+    PmMismatch {
+        /// The PM the manifest declared.
+        declared: PackageManager,
+        /// Which manifest field carried the declaration — `"packageManager"`
+        /// or `"devEngines.packageManager"`. `&'static str` so it round-trips
+        /// through `Display` and JSON unchanged.
+        field: &'static str,
+        /// The PM the lockfile points to.
+        lockfile: PackageManager,
+    },
+    /// `devEngines.packageManager` declares a binary that isn't on `PATH`.
+    /// `onFail=warn` — dispatch proceeds and will fail at spawn time.
+    DevEnginesBinaryMissing {
+        /// The declared package manager.
+        pm: PackageManager,
+    },
+    /// `devEngines.packageManager` version range isn't satisfied by the
+    /// installed binary. `onFail=warn` — declaration wins.
+    DevEnginesVersionMismatch {
+        /// The declared package manager.
+        pm: PackageManager,
+        /// Declared version constraint (as written, e.g. `"^9.0.0"`).
+        declared: String,
+        /// Actual `--version` output of the installed binary.
+        actual: String,
+    },
+    /// Resolver fell through to `PATH` probe because no declarations or
+    /// lockfiles matched. Reports the picked binary plus any others that
+    /// were also installed, so the user can spot drift between intent
+    /// and environment.
+    PathProbeFallback {
+        /// Which PM the resolver picked.
+        picked: PackageManager,
+        /// Ecosystem the probe ran for (Node, Python, …).
+        ecosystem: Ecosystem,
+        /// Other PMs found on `PATH` that the resolver did not pick.
+        others_available: Vec<PackageManager>,
+    },
+    /// `--fallback npm` (or `RUNNER_FALLBACK=npm`) triggered the legacy
+    /// silent default. Surfaces so users aren't surprised by an `npm`
+    /// dispatch in a project that has no `npm` signals.
+    LegacyNpmFallbackUsed {
+        /// Ecosystem the fallback applied to.
+        ecosystem: Ecosystem,
+    },
+    /// Task extraction failed for a source (parse error, IO error).
+    /// Detection-side warning; not tied to a resolver chain step.
+    TaskListUnreadable {
+        /// Source label (`"package.json"`, `"justfile"`, etc.).
+        source: &'static str,
+        /// Formatted error chain from the failing reader.
+        error: String,
+    },
+}
+
+impl DetectionWarning {
+    /// Subsystem the warning came from, used as the prefix in both the
+    /// human renderer (`warn: <source>: <detail>`) and the JSON shape
+    /// (`{ "source": "...", "detail": "..." }`). Kept as `&'static str`
+    /// so the JSON contract emitted by `doctor --json` stays byte-stable
+    /// across the flat-struct → enum refactor.
+    pub(crate) const fn source(&self) -> &'static str {
+        match self {
+            Self::PmMismatch { .. }
+            | Self::DevEnginesBinaryMissing { .. }
+            | Self::DevEnginesVersionMismatch { .. } => "package.json",
+            Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
+            Self::TaskListUnreadable { source, .. } => source,
+        }
+    }
+
+    /// Human-readable detail line. Renders the variant-specific message
+    /// without the `<source>:` prefix; pair with [`Self::source`] (or
+    /// [`Display`]) to produce the full warning line.
+    pub(crate) fn detail(&self) -> String {
+        match self {
+            Self::PmMismatch {
+                declared,
+                field,
+                lockfile,
+            } => format!(
+                "{field} declares {} but the lockfile reflects {} — declaration wins; regenerate \
+                 the lockfile to silence this",
+                declared.label(),
+                lockfile.label(),
+            ),
+            Self::DevEnginesBinaryMissing { pm } => format!(
+                "devEngines.packageManager declares {} but it was not found on PATH; dispatch \
+                 will fail at spawn time",
+                pm.label(),
+            ),
+            Self::DevEnginesVersionMismatch {
+                pm,
+                declared,
+                actual,
+            } => format!(
+                "devEngines.packageManager requires {} {declared} but the installed version is \
+                 {actual}",
+                pm.label(),
+            ),
+            Self::PathProbeFallback {
+                picked,
+                ecosystem,
+                others_available,
+            } => {
+                let eco = ecosystem.label();
+                if others_available.is_empty() {
+                    format!(
+                        "no {eco} signals matched — using {} from PATH",
+                        picked.label(),
+                    )
+                } else {
+                    let others = others_available
+                        .iter()
+                        .map(|pm| pm.label())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "no {eco} signals matched — using {} from PATH (also available: {others})",
+                        picked.label(),
+                    )
+                }
+            }
+            Self::LegacyNpmFallbackUsed { ecosystem } => format!(
+                "no {} signals matched; using npm via --fallback=npm",
+                ecosystem.label(),
+            ),
+            Self::TaskListUnreadable { error, .. } => format!("failed to read tasks: {error}"),
+        }
+    }
+}
+
+impl std::fmt::Display for DetectionWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.source(), self.detail())
+    }
 }
 
 /// Everything detected about the current project directory.
@@ -265,31 +425,6 @@ impl PackageManager {
     /// Node-script PM other than Bun?").
     pub(crate) const fn can_dispatch_node_scripts(self) -> bool {
         self.is_node() || matches!(self, Self::Deno)
-    }
-
-    /// Whether this PM owns an exec primitive that resolves a target
-    /// to runnable code: `npm exec` / `npx` (local + registry fetch),
-    /// `pnpm exec` (local only), `yarn exec` / `yarn run` (local
-    /// only, version-aware shape), `bun x` / `bunx` (local + registry
-    /// fetch), `deno x` (`npm:` / `jsr:` registry fetch), `uvx` (`PyPI`
-    /// ephemeral), `go run <path>@version` (module-path registry
-    /// fetch). The arbitrary-command fallback in
-    /// `cmd::run::run_pm_exec_fallback` dispatches through these via
-    /// per-PM `exec_cmd` builders; the remaining PMs
-    /// (Cargo, Poetry, Pipenv, Bundler, Composer) lack a comparable
-    /// primitive in this implementation and fall through to a direct
-    /// PATH spawn there. Kept as an inherent method so the property
-    /// is documented at the type level even though the dispatch match
-    /// enumerates variants explicitly.
-    #[allow(
-        dead_code,
-        reason = "documents the exec-primitive set; consumed by doctor/why surface in future enhancements"
-    )]
-    pub(crate) const fn has_exec_primitive(self) -> bool {
-        matches!(
-            self,
-            Self::Npm | Self::Pnpm | Self::Yarn | Self::Bun | Self::Deno | Self::Uv | Self::Go
-        )
     }
 }
 

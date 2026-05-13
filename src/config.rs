@@ -17,18 +17,13 @@
 //! [resolution]
 //! fallback     = "probe"   # probe|npm|error
 //! on_mismatch  = "warn"    # warn|error|ignore
-//! walk_upwards = true
-//!
-//! [sources.package_json]
-//! prefer_task_runner_passthrough = true
 //! ```
 //!
-//! Only `[pm]` is consumed today. Other sections are parsed and stored for
-//! later phases; `#[serde(deny_unknown_fields)]` on the root surfaces typos
-//! immediately so users see them at parse time rather than as silent
-//! no-ops.
+//! `#[serde(deny_unknown_fields)]` on every section surfaces typos at
+//! parse time rather than as silent no-ops. Adding a new knob is two
+//! changes: a field on the matching section plus a consumer in
+//! `crate::resolver`.
 
-use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -58,18 +53,12 @@ pub(crate) struct RunnerConfig {
     /// `[pm]` — per-ecosystem package-manager overrides.
     #[serde(default)]
     pub pm: PmSection,
-    /// `[task_runner]` — task-runner preferences (consumed in Phase 8).
+    /// `[task_runner]` — task-runner preferences.
     #[serde(default, rename = "task_runner")]
-    #[allow(dead_code, reason = "consumed by source selection in Phase 8")]
     pub task_runner: TaskRunnerSection,
-    /// `[resolution]` — resolver-policy knobs (consumed in Phase 5+).
+    /// `[resolution]` — resolver-policy knobs.
     #[serde(default)]
-    #[allow(dead_code, reason = "consumed by Phase 5 (probe) / Phase 4 (mismatch)")]
     pub resolution: ResolutionSection,
-    /// `[sources.*]` — per-source tuning (consumed in Phase 7).
-    #[serde(default)]
-    #[allow(dead_code, reason = "consumed by Phase 7 (passthrough generalization)")]
-    pub sources: HashMap<String, SourceSection>,
 }
 
 /// `[pm]` section — per-ecosystem package manager overrides.
@@ -88,10 +77,11 @@ pub(crate) struct PmSection {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TaskRunnerSection {
-    /// Ranked preference list. The first detected runner wins when a task
-    /// exists under multiple sources. Consumed in Phase 8.
+    /// Ranked preference list. Restricts candidates to runners in the
+    /// list (in listed order); a same-named task under a runner not in
+    /// the list is hard-rejected. Parsed into [`crate::types::TaskRunner`]
+    /// at resolver-init time so unknown labels fail fast.
     #[serde(default)]
-    #[allow(dead_code, reason = "consumed by source selection in Phase 8")]
     pub prefer: Vec<String>,
 }
 
@@ -104,21 +94,7 @@ pub(crate) struct ResolutionSection {
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore` — how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
-    #[allow(dead_code, reason = "consumed by Phase 4 (devEngines + mismatch)")]
     pub on_mismatch: Option<String>,
-    /// Whether to walk parent directories looking for additional manifests.
-    #[allow(dead_code, reason = "consumed by Phase 8")]
-    pub walk_upwards: Option<bool>,
-}
-
-/// `[sources.*]` per-source tuning. Schema intentionally open-ended.
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SourceSection {
-    /// Follow passthrough wrappers like `"build": "just build"` straight to
-    /// the underlying task runner. Consumed in Phase 7.
-    #[allow(dead_code, reason = "consumed by Phase 7 (passthrough generalization)")]
-    pub prefer_task_runner_passthrough: Option<bool>,
 }
 
 /// Load `dir/runner.toml` if it exists.

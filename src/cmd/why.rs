@@ -31,23 +31,37 @@ pub(crate) fn why(
 ) -> Result<()> {
     let candidates: Vec<&Task> = ctx.tasks.iter().filter(|t| t.name == task).collect();
 
-    let selected = (!candidates.is_empty()).then(|| select_task_entry(ctx, &candidates));
+    let selected = (!candidates.is_empty()).then(|| select_task_entry(ctx, overrides, &candidates));
 
     let pm_decision = if selected
         .as_ref()
         .is_some_and(|t| t.source == TaskSource::PackageJson)
     {
-        Some(Resolver::new(ctx, overrides.clone()).resolve_node_pm())
+        Some(Resolver::new(ctx, overrides).resolve_node_pm())
     } else {
         None
     };
 
-    let report = build_report(task, &candidates, selected, pm_decision.as_ref(), ctx);
+    let report = build_report(
+        task,
+        &candidates,
+        selected,
+        pm_decision.as_ref(),
+        overrides,
+        ctx,
+    );
 
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print_human(task, &candidates, selected, pm_decision.as_ref(), ctx);
+        print_human(
+            task,
+            &candidates,
+            selected,
+            pm_decision.as_ref(),
+            overrides,
+            ctx,
+        );
     }
 
     Ok(())
@@ -57,21 +71,22 @@ fn build_report(
     task: &str,
     candidates: &[&Task],
     selected: Option<&Task>,
-    pm_decision: Option<&Result<crate::resolver::ResolvedPm>>,
+    pm_decision: Option<&Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>>,
+    overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
 ) -> Value {
     json!({
         "schema_version": 1,
         "task": task,
-        "candidates": candidates.iter().map(|c| candidate_json(c, ctx)).collect::<Vec<_>>(),
-        "selected": selected.map(|s| candidate_json(s, ctx)),
+        "candidates": candidates.iter().map(|c| candidate_json(c, overrides, ctx)).collect::<Vec<_>>(),
+        "selected": selected.map(|s| candidate_json(s, overrides, ctx)),
         "pm_resolution": pm_decision.map(|res| match res {
             Ok(decision) => json!({
                 "pm": decision.pm.label(),
                 "via": decision.describe(),
                 "warnings": decision.warnings.iter().map(|w| json!({
-                    "source": w.source,
-                    "detail": w.detail,
+                    "source": w.source(),
+                    "detail": w.detail(),
                 })).collect::<Vec<_>>(),
             }),
             Err(err) => json!({ "error": format!("{err}") }),
@@ -79,7 +94,7 @@ fn build_report(
     })
 }
 
-fn candidate_json(task: &Task, ctx: &ProjectContext) -> Value {
+fn candidate_json(task: &Task, overrides: &ResolutionOverrides, ctx: &ProjectContext) -> Value {
     let depth = source_depth(ctx, task.source);
     let depth_value = if depth == usize::MAX {
         Value::Null
@@ -88,7 +103,7 @@ fn candidate_json(task: &Task, ctx: &ProjectContext) -> Value {
     };
     json!({
         "source": task.source.label(),
-        "source_priority": source_priority(task.source),
+        "source_priority": source_priority(overrides, task.source),
         "depth": depth_value,
         "display_order": task.source.display_order(),
         "is_alias": task.alias_of.is_some(),
@@ -118,7 +133,8 @@ fn print_human(
     task: &str,
     candidates: &[&Task],
     selected: Option<&Task>,
-    pm_decision: Option<&Result<crate::resolver::ResolvedPm>>,
+    pm_decision: Option<&Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>>,
+    overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
 ) {
     println!("{} {}", "runner why".bold(), task.bold());
@@ -157,7 +173,7 @@ fn print_human(
             "  {} {} [priority={}, depth={}, order={}]{}{}",
             "·".dimmed(),
             c.source.label().bold(),
-            source_priority(c.source),
+            source_priority(overrides, c.source),
             depth_label,
             c.source.display_order(),
             alias_tag,
@@ -186,7 +202,7 @@ fn print_human(
             Ok(decision) => {
                 println!("  {}", decision.describe());
                 for w in &decision.warnings {
-                    println!("  {} {}: {}", "warn:".yellow().bold(), w.source, w.detail);
+                    println!("  {} {w}", "warn:".yellow().bold());
                 }
             }
             Err(err) => {

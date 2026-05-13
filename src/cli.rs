@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::builder::styling::{AnsiColor, Color, Style, Styles};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
 
@@ -415,6 +415,21 @@ mod tests {
     add = SubcommandCandidates::new(task_candidates)
 )]
 pub(crate) struct Cli {
+    /// Global options shared with [`RunAliasCli`].
+    #[command(flatten)]
+    pub global: GlobalOpts,
+
+    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Flags shared by both `runner` and `run`. Carried inline via
+/// `#[command(flatten)]` so each binary's `--help` lists them at the
+/// same level as subcommand-specific arguments — clap unrolls them as
+/// if they were defined on the parent struct.
+#[derive(Debug, Args)]
+pub(crate) struct GlobalOpts {
     /// Use this directory instead of the current one.
     #[arg(
         long = "dir",
@@ -476,6 +491,24 @@ pub(crate) struct Cli {
     )]
     pub fallback: Option<String>,
 
+    /// What to do when the manifest declaration (packageManager / devEngines)
+    /// disagrees with the detected lockfile: `warn` (default), `error`
+    /// (refuse, exit 2), `ignore` (silent). The resolver also consults
+    /// `$RUNNER_ON_MISMATCH` independently when this flag is omitted.
+    #[arg(
+        long = "on-mismatch",
+        global = true,
+        value_name = "POLICY",
+        help = concat!(
+            "What to do when the manifest declaration disagrees with the lockfile: ",
+            cyan!("warn"), " (default), ",
+            cyan!("error"), " (exit 2), ",
+            cyan!("ignore"), " (silent). Also reads ",
+            cyan!("RUNNER_ON_MISMATCH"), " when omitted."
+        ),
+    )]
+    pub on_mismatch: Option<String>,
+
     /// Print a one-line trace describing how the package manager was
     /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
     /// is set to a truthy value (env reads live in `crate::resolver`,
@@ -490,9 +523,18 @@ pub(crate) struct Cli {
     )]
     pub explain: bool,
 
-    /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
-    #[command(subcommand)]
-    pub command: Option<Command>,
+    /// Suppress all non-fatal warnings on stderr. Errors still surface;
+    /// only `DetectionWarning` output is silenced. Also enabled when
+    /// `$RUNNER_NO_WARNINGS` is set to a truthy value.
+    #[arg(
+        long = "no-warnings",
+        global = true,
+        help = concat!(
+            "Suppress all non-fatal warnings on stderr. Also enabled when ",
+            cyan!("RUNNER_NO_WARNINGS"), " is set to a truthy value."
+        ),
+    )]
+    pub no_warnings: bool,
 }
 
 /// Available subcommands.
@@ -533,10 +575,21 @@ pub(crate) enum Command {
         /// Print bare task names, one per line (for scripting / completions)
         #[arg(long)]
         raw: bool,
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+        /// Restrict output to a single source (e.g. `package.json`,
+        /// `Makefile`, `justfile`).
+        #[arg(long, value_name = "SOURCE")]
+        source: Option<String>,
     },
 
     /// Show detected project info
-    Info,
+    Info {
+        /// Emit JSON instead of human-readable output.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Diagnostic dump: every signal the resolver considers in this dir
     Doctor {
@@ -593,80 +646,9 @@ pub(crate) enum Command {
     arg_required_else_help = false
 )]
 pub(crate) struct RunAliasCli {
-    /// Use this directory instead of the current one.
-    #[arg(
-        long = "dir",
-        global = true,
-        env = "RUNNER_DIR",
-        value_name = "PATH",
-        value_hint = clap::ValueHint::DirPath,
-        value_parser = clap::value_parser!(PathBuf)
-    )]
-    pub project_dir: Option<PathBuf>,
-
-    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
-    /// The resolver also consults `$RUNNER_PM` independently when this
-    /// flag is omitted (env reads live in `crate::resolver`, not clap).
-    #[arg(
-        long = "pm",
-        global = true,
-        value_name = "NAME",
-        help = concat!(
-            "Override the detected package manager (e.g. ",
-            cyan!("pnpm"), ", ", cyan!("bun"), ", ", cyan!("yarn"),
-            "). Also reads ", cyan!("RUNNER_PM"), " when omitted."
-        ),
-    )]
-    pub pm_override: Option<String>,
-
-    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
-    /// The resolver also consults `$RUNNER_RUNNER` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
-    #[arg(
-        long = "runner",
-        global = true,
-        value_name = "NAME",
-        help = concat!(
-            "Override the detected task runner (e.g. ",
-            cyan!("just"), ", ", cyan!("turbo"), ", ", cyan!("make"),
-            "). Also reads ", cyan!("RUNNER_RUNNER"), " when omitted."
-        ),
-    )]
-    pub runner_override: Option<String>,
-
-    /// What to do when no detection signal matches: `probe` (default,
-    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
-    /// The resolver also consults `$RUNNER_FALLBACK` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
-    #[arg(
-        long = "fallback",
-        global = true,
-        value_name = "POLICY",
-        help = concat!(
-            "What to do when no detection signal matches: ",
-            cyan!("probe"), " (default, PATH probe), ",
-            cyan!("npm"), " (legacy silent fallback), ",
-            cyan!("error"), " (refuse). Also reads ",
-            cyan!("RUNNER_FALLBACK"), " when omitted."
-        ),
-    )]
-    pub fallback: Option<String>,
-
-    /// Print a one-line trace describing how the package manager was
-    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
-    /// is set to a truthy value (env reads live in `crate::resolver`,
-    /// not clap).
-    #[arg(
-        long = "explain",
-        global = true,
-        help = concat!(
-            "Print a one-line trace describing how the package manager was resolved. \
-             Also enabled when ", cyan!("RUNNER_EXPLAIN"), " is set to a truthy value."
-        ),
-    )]
-    pub explain: bool,
+    /// Global options shared with [`Cli`].
+    #[command(flatten)]
+    pub global: GlobalOpts,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]

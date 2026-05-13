@@ -4,8 +4,11 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
+use anyhow::{Result, anyhow};
 use colored::Colorize;
 
+use crate::report::Project;
+use crate::resolver::ResolutionOverrides;
 use crate::tool;
 use crate::types::{ProjectContext, TaskSource};
 
@@ -14,21 +17,83 @@ use crate::types::{ProjectContext, TaskSource};
 /// In `raw` mode, prints deduplicated task names one per line (for piping
 /// into scripts or shell completions). Otherwise prints a human-readable
 /// table grouped by source file.
-pub(crate) fn list(ctx: &ProjectContext, raw: bool) {
-    super::print_warnings(ctx);
+///
+/// # Errors
+///
+/// Returns an error when `source` doesn't name a known [`TaskSource`],
+/// or when `--json` serialization fails. The human-output path never
+/// errors.
+pub(crate) fn list(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    raw: bool,
+    json: bool,
+    source: Option<&str>,
+) -> Result<()> {
+    let parsed_source = match source {
+        None => None,
+        Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
+            anyhow!(
+                "--source {label:?}: unknown source label (expected one of: package.json, \
+                 Makefile, justfile, Taskfile, turbo.json, deno.json, cargo, bacon.toml)",
+            )
+        })?),
+    };
+
+    if json {
+        let view = Project::build(ctx, overrides).into_list_view(parsed_source);
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+
+    super::print_warnings(ctx, overrides);
+
+    let filtered: Vec<&crate::types::Task> = ctx
+        .tasks
+        .iter()
+        .filter(|t| parsed_source.is_none_or(|s| t.source == s))
+        .collect();
 
     if raw {
         let mut seen = HashSet::new();
-        for task in &ctx.tasks {
-            if seen.insert(&task.name) {
+        for task in &filtered {
+            if seen.insert(task.name.as_str()) {
                 println!("{}", task.name);
             }
         }
-    } else if ctx.tasks.is_empty() {
+    } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        print_tasks_grouped(ctx);
+        print_tasks_grouped_filtered(ctx, parsed_source);
     }
+    Ok(())
+}
+
+fn print_tasks_grouped_filtered(ctx: &ProjectContext, only: Option<TaskSource>) {
+    // Reuse the existing grouped renderer when no filter is set;
+    // otherwise short-circuit through a filtered context view to keep
+    // formatting identical between the filtered and unfiltered paths.
+    if only.is_none() {
+        print_tasks_grouped(ctx);
+        return;
+    }
+    let filtered_tasks: Vec<_> = ctx
+        .tasks
+        .iter()
+        .filter(|t| only == Some(t.source))
+        .cloned()
+        .collect();
+    let view = ProjectContext {
+        root: ctx.root.clone(),
+        package_managers: ctx.package_managers.clone(),
+        task_runners: ctx.task_runners.clone(),
+        tasks: filtered_tasks,
+        node_version: ctx.node_version.clone(),
+        current_node: ctx.current_node.clone(),
+        is_monorepo: ctx.is_monorepo,
+        warnings: Vec::new(),
+    };
+    print_tasks_grouped(&view);
 }
 
 /// Print tasks grouped by [`TaskSource`], one line per source.

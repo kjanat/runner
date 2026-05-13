@@ -295,9 +295,9 @@ fn push_cargo_aliases(
                 });
             }
         }
-        Err(err) => ctx.warnings.push(DetectionWarning {
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
             source: TaskSource::CargoAliases.label(),
-            detail: format!("failed to read aliases: {err:#}"),
+            error: format!("{err:#}"),
         }),
     }
 }
@@ -333,9 +333,9 @@ fn push_described_tasks(
                 });
             }
         }
-        Err(err) => ctx.warnings.push(DetectionWarning {
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
             source: source.label(),
-            detail: format!("failed to read tasks: {err:#}"),
+            error: format!("{err:#}"),
         }),
     }
 }
@@ -364,9 +364,9 @@ fn push_package_json_tasks(
                 });
             }
         }
-        Err(err) => ctx.warnings.push(DetectionWarning {
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
             source: TaskSource::PackageJson.label(),
-            detail: format!("failed to read tasks: {err:#}"),
+            error: format!("{err:#}"),
         }),
     }
 }
@@ -392,9 +392,9 @@ fn push_just_tasks(
                 });
             }
         }
-        Err(err) => ctx.warnings.push(DetectionWarning {
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
             source: TaskSource::Justfile.label(),
-            detail: format!("failed to read tasks: {err:#}"),
+            error: format!("{err:#}"),
         }),
     }
 }
@@ -433,7 +433,7 @@ mod tests {
         let ctx = detect(dir.path());
 
         assert_eq!(ctx.warnings.len(), 1);
-        assert_eq!(ctx.warnings[0].source, "turbo.json");
+        assert_eq!(ctx.warnings[0].source(), "turbo.json");
     }
 
     #[test]

@@ -3,10 +3,15 @@
 //! path, so built-in subcommand names (`clean`, `install`, …) don't shadow
 //! same-named tasks.
 
-use anyhow::Result;
-
-/// Entry point.
-fn main() -> Result<()> {
-    let code = runner::run_alias_from_env()?;
+/// Entry point. See [`crate::main`] in `runner` for the matching
+/// exit-code mapping rationale.
+fn main() {
+    let code = match runner::run_alias_from_env() {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("Error: {err:#}");
+            runner::exit_code_for_error(&err)
+        }
+    };
     std::process::exit(code);
 }

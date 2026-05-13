@@ -89,6 +89,18 @@ pub(crate) enum OnFail {
     Error,
 }
 
+impl OnFail {
+    /// Canonical lowercase label used in `--json` output. Stable across
+    /// `Debug` changes — consumers can branch on the exact string.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Ignore => "ignore",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
+}
+
 /// Which manifest field provided a [`ManifestPmDecl`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManifestSource {
@@ -113,15 +125,10 @@ pub(crate) struct ManifestPmDecl {
     pub source: ManifestSource,
     /// Optional semver range carried alongside the declaration. Captured
     /// for diagnostics in Phase 6; not enforced today.
-    #[allow(
-        dead_code,
-        reason = "consumed by --explain and version checks in Phase 5+"
-    )]
     pub version: Option<String>,
     /// Effective `onFail` policy. For `packageManager`, always `Ignore`
     /// (the legacy field has no failure mode). For `devEngines`, taken
     /// from the entry, defaulting per the `OpenJS` proposal.
-    #[allow(dead_code, reason = "honored once the PATH probe lands in Phase 5")]
     pub on_fail: OnFail,
 }
 

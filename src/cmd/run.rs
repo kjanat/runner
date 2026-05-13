@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{Result, bail};
 use colored::Colorize;
 
-use crate::resolver::{NoNodePmDetected, ResolutionOverrides, Resolver};
+use crate::resolver::{ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskSource};
 
@@ -39,13 +39,37 @@ pub(crate) fn run(
     task: &str,
     args: &[String],
 ) -> Result<i32> {
-    super::print_warnings(ctx);
+    super::print_warnings(ctx, overrides);
 
     let (qualifier, task_name) = parse_qualified_task(task);
 
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
-    if found.is_empty() {
+    // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
+    // candidate that isn't under one of the allowed sources is treated
+    // as non-existent. A qualifier (`runner.json:task`) is the user
+    // narrowing *to* a source explicitly and outranks the runner
+    // constraint — the qualified branch below applies its own match.
+    let restricted: Vec<_> = if qualifier.is_some() {
+        found.clone()
+    } else if let Some(allowed) = allowed_runner_sources(overrides) {
+        found
+            .iter()
+            .copied()
+            .filter(|t| allowed.contains(&t.source))
+            .collect()
+    } else {
+        found.clone()
+    };
+
+    if restricted.is_empty() {
+        // Restrictive override active but no candidate matched: hard
+        // error per the resolved design decision (explicit intent
+        // never silently downgrades).
+        if let Some(reason) = runner_constraint_error(overrides, &found) {
+            return Err(reason.into());
+        }
+
         // Fallbacks are scoped to unqualified lookups. A qualified
         // miss like `runner run justfile:test` in a Bun project must
         // bail on the qualifier rather than silently dispatching
@@ -67,20 +91,20 @@ pub(crate) fn run(
             // arbitrary commands through PATH instead of going
             // through the declared PM's exec primitive.
             //
-            // Only the soft `NoNodePmDetected` outcome (the `Probe`
-            // fallback with nothing on `$PATH`) collapses to `None`
-            // so the direct PATH spawn at the bottom can still fire
+            // Only the soft `NoSignalsFound { soft: true, .. }` outcome
+            // (the `Probe` fallback with nothing on `$PATH`) collapses to
+            // `None` so the direct PATH spawn at the bottom can still fire
             // for `runner run somebin`. Hard errors —
             // `--fallback=error`, manifest `onFail = Error`, and any
             // other resolver failure — propagate so the user sees
             // the real diagnostic instead of a silent degrade.
-            let resolved_pm = match Resolver::new(ctx, overrides.clone()).resolve_node_pm() {
+            let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
-                    super::print_warning_slice(&decision.warnings);
+                    super::print_warning_slice(&decision.warnings, overrides);
                     Some(decision.pm)
                 }
-                Err(e) if e.downcast_ref::<NoNodePmDetected>().is_some() => None,
-                Err(e) => return Err(e),
+                Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
+                Err(e) => return Err(e.into()),
             };
 
             if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
@@ -93,13 +117,13 @@ pub(crate) fn run(
     }
 
     let entry = if let Some(source) = qualifier {
-        found
+        restricted
             .iter()
             .find(|t| t.source == source)
             .copied()
             .ok_or_else(|| anyhow::anyhow!("task {task_name:?} not found in {}", source.label()))?
     } else {
-        select_task_entry(ctx, &found)
+        select_task_entry(ctx, overrides, &restricted)
     };
 
     eprintln!(
@@ -115,8 +139,93 @@ pub(crate) fn run(
     Ok(super::exit_code(cmd.status()?))
 }
 
+/// Compute the set of [`TaskSource`]s the user's runner constraint
+/// permits, or `None` when no constraint is active.
+///
+/// `--runner` / `RUNNER_RUNNER` is the strongest signal — only that
+/// runner's source is allowed. `[task_runner].prefer` is the next:
+/// every runner in the list is allowed, in listed order. Runners that
+/// don't map to a [`TaskSource`] (`nx`, `mise`) are dropped from the
+/// permission set; if that leaves the set empty under an active
+/// override, [`runner_constraint_error`] surfaces the misconfiguration
+/// to the user instead of silently dispatching through the default
+/// priority.
+fn allowed_runner_sources(
+    overrides: &ResolutionOverrides,
+) -> Option<std::collections::HashSet<TaskSource>> {
+    use std::collections::HashSet;
+
+    if let Some(ovr) = overrides.runner.as_ref() {
+        return Some(ovr.runner.task_source().into_iter().collect());
+    }
+    if !overrides.prefer_runners.is_empty() {
+        let set: HashSet<_> = overrides
+            .prefer_runners
+            .iter()
+            .filter_map(|r| r.task_source())
+            .collect();
+        return Some(set);
+    }
+    None
+}
+
+/// Convert a "no candidate satisfied the runner constraint" outcome
+/// into the right [`ResolveError`] for the user.
+///
+/// Distinguishes three failure shapes the user benefits from seeing
+/// separately:
+/// - `--runner nx` (a runner with no task-extraction support today) →
+///   the override is unsatisfiable in principle, not just here.
+/// - `--runner just` but no Justfile in this project → override is
+///   set, candidates exist for the task elsewhere, but none under
+///   `Justfile`.
+/// - `[task_runner].prefer = [...]` with a task only under sources
+///   absent from the list → analogous shape for the prefer-list.
+fn runner_constraint_error(
+    overrides: &ResolutionOverrides,
+    found: &[&crate::types::Task],
+) -> Option<ResolveError> {
+    if let Some(ovr) = overrides.runner.as_ref() {
+        let label = ovr.runner.label();
+        if ovr.runner.task_source().is_none() {
+            return Some(ResolveError::InvalidOverride {
+                value: label.to_string(),
+                reason: "no task source is registered for this runner; cannot restrict candidates",
+            });
+        }
+        let reason = if found.is_empty() {
+            "no task with that name exists in the project"
+        } else {
+            "no candidate task is registered under this runner's source"
+        };
+        return Some(ResolveError::InvalidOverride {
+            value: label.to_string(),
+            reason,
+        });
+    }
+    if !overrides.prefer_runners.is_empty() {
+        // Stringify the list once for the user; the static `reason`
+        // string can't carry the list, so the dynamic value field
+        // does double duty as both the offending input and the
+        // detail. Surfaced verbatim by the `Display` impl as
+        // `invalid override value "[just, turbo]": ...`.
+        let names = overrides
+            .prefer_runners
+            .iter()
+            .map(|r| r.label())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(ResolveError::InvalidOverride {
+            value: format!("[{names}]"),
+            reason: "[task_runner].prefer matched no candidate task source",
+        });
+    }
+    None
+}
+
 pub(crate) fn select_task_entry<'a>(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     found: &[&'a crate::types::Task],
 ) -> &'a crate::types::Task {
     // Aliases rank last within any source tier so `runner <name>` dispatches
@@ -125,7 +234,7 @@ pub(crate) fn select_task_entry<'a>(
         .iter()
         .min_by_key(|task| {
             (
-                source_priority(task.source),
+                source_priority(overrides, task.source),
                 source_depth(ctx, task.source),
                 task.source.display_order(),
                 task.alias_of.is_some(),
@@ -135,14 +244,39 @@ pub(crate) fn select_task_entry<'a>(
         .expect("task selection should have at least one match")
 }
 
-/// Ranks sources by type before nearest-config tiebreak:
-/// `TurboJson` > `PackageJson` > others. Lower is higher priority.
-pub(crate) const fn source_priority(source: TaskSource) -> u8 {
-    match source {
+/// Ranks sources for the source selector's primary key.
+///
+/// Layered:
+/// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in
+///   the list win in listed order (`r1 = 0`, `r2 = 1`, ...). Sources
+///   for unlisted runners fall back to the default tier offset by
+///   `prefer.len()` so they always lose to listed entries.
+/// - Otherwise: `TurboJson > PackageJson > others`. This is the
+///   pre-existing default and matches the priority used by `runner
+///   list` for display grouping.
+///
+/// Lower is higher priority. Returns `u16` (rather than `u8`) to leave
+/// headroom for the offset arithmetic when prefer-lists grow large
+/// without overflow on the default tier.
+pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> u16 {
+    let default_tier: u16 = match source {
         TaskSource::TurboJson => 0,
         TaskSource::PackageJson => 1,
         _ => 2,
+    };
+    if overrides.prefer_runners.is_empty() {
+        return default_tier;
     }
+    if let Some(idx) = overrides
+        .prefer_runners
+        .iter()
+        .position(|r| r.task_source() == Some(source))
+    {
+        // Listed runners always beat unlisted ones — the offset
+        // guarantees `default_tier + prefer.len()` never collides.
+        return u16::try_from(idx).unwrap_or(u16::MAX);
+    }
+    u16::try_from(overrides.prefer_runners.len()).unwrap_or(u16::MAX) + default_tier
 }
 
 /// Distance from `ctx.root` to the directory holding `source`'s config
@@ -316,8 +450,8 @@ fn build_run_command(
     Ok(match source {
         TaskSource::TurboJson => tool::turbo::run_cmd(task, args),
         TaskSource::PackageJson => {
-            let decision = Resolver::new(ctx, overrides.clone()).resolve_node_pm()?;
-            super::print_warning_slice(&decision.warnings);
+            let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
+            super::print_warning_slice(&decision.warnings, overrides);
             if overrides.explain {
                 eprintln!(
                     "{} {} resolved: {}",
@@ -351,6 +485,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{parse_qualified_task, select_task_entry, should_use_bun_test_fallback};
+    use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
@@ -572,7 +707,8 @@ mod tests {
         };
 
         let found: Vec<_> = ctx.tasks.iter().collect();
-        let entry = select_task_entry(&ctx, &found);
+        let overrides = ResolutionOverrides::default();
+        let entry = select_task_entry(&ctx, &overrides, &found);
 
         assert_eq!(entry.source, TaskSource::PackageJson);
     }
@@ -588,5 +724,60 @@ mod tests {
             is_monorepo: false,
             warnings: Vec::new(),
         }
+    }
+
+    fn task(name: &str, source: TaskSource) -> Task {
+        Task {
+            name: name.to_string(),
+            source,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+        }
+    }
+
+    #[test]
+    fn prefer_runners_reorders_default_tier() {
+        // Default priority would pick TurboJson first; `prefer = [just]`
+        // promotes the Justfile candidate above it.
+        let ctx = context(
+            vec![],
+            vec![
+                task("build", TaskSource::TurboJson),
+                task("build", TaskSource::Justfile),
+            ],
+        );
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = ResolutionOverrides {
+            prefer_runners: vec![crate::types::TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::Justfile);
+    }
+
+    #[test]
+    fn runner_override_promotes_just_over_turbo() {
+        // `--runner just` restricts candidates; `select_task_entry` is
+        // called after `run()` filters by the constraint, but with no
+        // constraint helper here we exercise the priority directly.
+        let ctx = context(
+            vec![],
+            vec![
+                task("build", TaskSource::TurboJson),
+                task("build", TaskSource::Justfile),
+            ],
+        );
+        // Only the Justfile candidate survives the constraint.
+        let found: Vec<&Task> = ctx
+            .tasks
+            .iter()
+            .filter(|t| t.source == TaskSource::Justfile)
+            .collect();
+        let overrides = ResolutionOverrides::default();
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::Justfile);
     }
 }

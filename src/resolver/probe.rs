@@ -7,19 +7,75 @@
 //! the priority used elsewhere in detection. Phase 8 (this same step) is
 //! what replaces the silent `npm` fallback baked into the resolver since
 //! day one.
+//!
+//! ## Caching
+//!
+//! [`probe`] memoizes results in a process-wide `LazyLock<Mutex<HashMap>>`
+//! keyed by the binary name. Each resolver invocation hits PATH at most
+//! once per unique name; subsequent lookups return the cached
+//! `Option<PathBuf>`. This is the "one-shot per session" cache called
+//! out in the plan — `probe_all(NODE_PROBE_ORDER)` ends up walking PATH
+//! four times in the worst case, all of which are then memoized for
+//! later `apply_manifest_on_fail` / `--explain` calls.
+//!
+//! The pure-function variant [`probe_in`] stays cache-free so tests
+//! exercise the search logic against a controlled directory without
+//! racing or polluting the shared cache.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 
 use crate::types::PackageManager;
+
+/// Process-wide memoization of [`probe`] lookups.
+///
+/// Bounded by the set of unique binary names the resolver ever probes —
+/// at most a few dozen — so leaking nothing on shutdown is fine.
+/// `Mutex` over `RwLock` here because writes happen on first probe of
+/// every distinct name (lots of cold inserts) while reads are cheap and
+/// short; the wait under contention is bounded by a single hash lookup.
+static CACHE: LazyLock<Mutex<HashMap<String, Option<PathBuf>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Probe `$PATH` for `name`. Returns the absolute path of the first
 /// matching executable, or `None` if nothing is found.
 ///
 /// On Windows, also walks `PATHEXT` so that `cmd`/`bat` shims are found —
 /// the same approach used by [`crate::tool::program::command`].
+///
+/// Result is memoized in [`CACHE`] for the lifetime of the process; the
+/// pure-function variant [`probe_in`] is exempt for testability.
 pub(crate) fn probe(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    probe_in(name, &path, std::env::var_os("PATHEXT").as_deref())
+    {
+        let cache = CACHE.lock().expect("probe cache poisoned");
+        if let Some(cached) = cache.get(name) {
+            return cached.clone();
+        }
+    }
+    let result = std::env::var_os("PATH")
+        .and_then(|path| probe_in(name, &path, std::env::var_os("PATHEXT").as_deref()));
+    CACHE
+        .lock()
+        .expect("probe cache poisoned")
+        .insert(name.to_string(), result.clone());
+    result
+}
+
+/// Clear the [`probe`] cache. Test-only — production code relies on the
+/// cache living for the full process lifetime so the resolver never
+/// pays for repeat PATH walks.
+#[cfg(test)]
+pub(crate) fn clear_cache_for_testing() {
+    CACHE.lock().expect("probe cache poisoned").clear();
+}
+
+/// Inspect the [`probe`] cache size. Test-only — used to verify that
+/// repeat lookups of the same name hit the cache instead of re-walking
+/// PATH.
+#[cfg(test)]
+pub(crate) fn cache_len_for_testing() -> usize {
+    CACHE.lock().expect("probe cache poisoned").len()
 }
 
 /// Pure-function variant for tests. Takes `path` and (optionally)
@@ -80,11 +136,17 @@ pub(crate) const NODE_PROBE_ORDER: &[PackageManager] = &[
     PackageManager::Npm,
 ];
 
-/// Probe the canonical PM list and return the first installed match.
-pub(crate) fn probe_first(order: &[PackageManager]) -> Option<(PackageManager, PathBuf)> {
+/// Probe every entry of `order` and return all installed matches in order.
+///
+/// The first element is the resolver's pick under [`FallbackPolicy::Probe`];
+/// the remainder populates `DetectionWarning::PathProbeFallback`'s
+/// `others_available` so users can see what else was installed when the
+/// resolver picked the first PM by precedence.
+pub(crate) fn probe_all(order: &[PackageManager]) -> Vec<(PackageManager, PathBuf)> {
     order
         .iter()
-        .find_map(|&pm| probe(pm.label()).map(|path| (pm, path)))
+        .filter_map(|&pm| probe(pm.label()).map(|path| (pm, path)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -145,6 +207,40 @@ mod tests {
         // `nested/pnpm` is not a bare name; CreateProcess / execve handle
         // those directly, so the probe declines.
         assert!(probe_in("nested/pnpm", &OsString::from(dir.path()), None).is_none());
+    }
+
+    #[test]
+    fn probe_memoizes_lookups_per_name() {
+        use super::{cache_len_for_testing, clear_cache_for_testing, probe};
+
+        // SAFETY: the test mutates the shared cache and shouldn't race
+        // with other tests touching the same names. We pick a
+        // deliberately unlikely binary name so a real install can't
+        // shadow the lookup, and snapshot the cache state around our
+        // calls.
+        clear_cache_for_testing();
+        let starting_len = cache_len_for_testing();
+
+        let unlikely = "runner-cache-test-bin-zzzqqqq";
+        let first = probe(unlikely);
+        let after_first = cache_len_for_testing();
+        let second = probe(unlikely);
+        let after_second = cache_len_for_testing();
+
+        assert_eq!(first, second, "cached lookup should match first call");
+        assert_eq!(
+            after_first,
+            starting_len + 1,
+            "first probe should insert one cache entry"
+        );
+        assert_eq!(
+            after_second, after_first,
+            "second probe must hit the cache, not re-walk PATH",
+        );
+
+        // Don't leave the test entry hanging around for other tests
+        // that snapshot cache len.
+        clear_cache_for_testing();
     }
 
     #[test]
