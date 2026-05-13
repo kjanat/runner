@@ -45,6 +45,19 @@ const HELP_STYLES: Styles = Styles::styled()
             .bold(),
     );
 
+/// ANSI cyan wrapper used for inline literals embedded in flag-help prose
+/// (PM names, env-var names, etc.). The `HELP_STYLES` `Styles::literal` /
+/// `Styles::placeholder` slots only style structural pieces (flag names,
+/// value placeholders); for tokens inside the description body we emit
+/// ANSI directly. clap routes its output through `anstream`, which strips
+/// ANSI when stdout isn't a TTY or `NO_COLOR` is set, so these inline
+/// escapes are dropped automatically for piped output.
+macro_rules! cyan {
+    ($s:literal) => {
+        concat!("\x1b[36m", $s, "\x1b[0m")
+    };
+}
+
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
 const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
@@ -417,26 +430,52 @@ pub(crate) struct Cli {
     )]
     pub project_dir: Option<PathBuf>,
 
-    /// Override the detected package manager (e.g. pnpm, bun, yarn).
-    /// Also reads RUNNER_PM when this flag is omitted.
-    #[arg(long = "pm", global = true, value_name = "NAME")]
+    #[arg(
+        long = "pm",
+        global = true,
+        value_name = "NAME",
+        help = concat!(
+            "Override the detected package manager (e.g. ",
+            cyan!("pnpm"), ", ", cyan!("bun"), ", ", cyan!("yarn"),
+            "). Also reads ", cyan!("RUNNER_PM"), " when omitted."
+        ),
+    )]
     pub pm_override: Option<String>,
 
-    /// Override the detected task runner (e.g. just, turbo, make).
-    /// Also reads RUNNER_RUNNER when this flag is omitted.
-    #[arg(long = "runner", global = true, value_name = "NAME")]
+    #[arg(
+        long = "runner",
+        global = true,
+        value_name = "NAME",
+        help = concat!(
+            "Override the detected task runner (e.g. ",
+            cyan!("just"), ", ", cyan!("turbo"), ", ", cyan!("make"),
+            "). Also reads ", cyan!("RUNNER_RUNNER"), " when omitted."
+        ),
+    )]
     pub runner_override: Option<String>,
 
-    /// What to do when no detection signal matches: probe (default,
-    /// PATH probe), npm (legacy silent fallback), error (refuse).
-    /// Also reads RUNNER_FALLBACK when this flag is omitted.
-    #[arg(long = "fallback", global = true, value_name = "POLICY")]
+    #[arg(
+        long = "fallback",
+        global = true,
+        value_name = "POLICY",
+        help = concat!(
+            "What to do when no detection signal matches: ",
+            cyan!("probe"), " (default, PATH probe), ",
+            cyan!("npm"), " (legacy silent fallback), ",
+            cyan!("error"), " (refuse). Also reads ",
+            cyan!("RUNNER_FALLBACK"), " when omitted."
+        ),
+    )]
     pub fallback: Option<String>,
 
-    /// Print a one-line trace describing how the package manager was
-    /// resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy
-    /// value.
-    #[arg(long = "explain", global = true)]
+    #[arg(
+        long = "explain",
+        global = true,
+        help = concat!(
+            "Print a one-line trace describing how the package manager was resolved. \
+             Also enabled when ", cyan!("RUNNER_EXPLAIN"), " is set to a truthy value."
+        ),
+    )]
     pub explain: bool,
 
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
@@ -554,26 +593,52 @@ pub(crate) struct RunAliasCli {
     )]
     pub project_dir: Option<PathBuf>,
 
-    /// Override the detected package manager (e.g. pnpm, bun, yarn).
-    /// Also reads RUNNER_PM when this flag is omitted.
-    #[arg(long = "pm", global = true, value_name = "NAME")]
+    #[arg(
+        long = "pm",
+        global = true,
+        value_name = "NAME",
+        help = concat!(
+            "Override the detected package manager (e.g. ",
+            cyan!("pnpm"), ", ", cyan!("bun"), ", ", cyan!("yarn"),
+            "). Also reads ", cyan!("RUNNER_PM"), " when omitted."
+        ),
+    )]
     pub pm_override: Option<String>,
 
-    /// Override the detected task runner (e.g. just, turbo, make).
-    /// Also reads RUNNER_RUNNER when this flag is omitted.
-    #[arg(long = "runner", global = true, value_name = "NAME")]
+    #[arg(
+        long = "runner",
+        global = true,
+        value_name = "NAME",
+        help = concat!(
+            "Override the detected task runner (e.g. ",
+            cyan!("just"), ", ", cyan!("turbo"), ", ", cyan!("make"),
+            "). Also reads ", cyan!("RUNNER_RUNNER"), " when omitted."
+        ),
+    )]
     pub runner_override: Option<String>,
 
-    /// What to do when no detection signal matches: probe (default,
-    /// PATH probe), npm (legacy silent fallback), error (refuse).
-    /// Also reads RUNNER_FALLBACK when this flag is omitted.
-    #[arg(long = "fallback", global = true, value_name = "POLICY")]
+    #[arg(
+        long = "fallback",
+        global = true,
+        value_name = "POLICY",
+        help = concat!(
+            "What to do when no detection signal matches: ",
+            cyan!("probe"), " (default, PATH probe), ",
+            cyan!("npm"), " (legacy silent fallback), ",
+            cyan!("error"), " (refuse). Also reads ",
+            cyan!("RUNNER_FALLBACK"), " when omitted."
+        ),
+    )]
     pub fallback: Option<String>,
 
-    /// Print a one-line trace describing how the package manager was
-    /// resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy
-    /// value.
-    #[arg(long = "explain", global = true)]
+    #[arg(
+        long = "explain",
+        global = true,
+        help = concat!(
+            "Print a one-line trace describing how the package manager was resolved. \
+             Also enabled when ", cyan!("RUNNER_EXPLAIN"), " is set to a truthy value."
+        ),
+    )]
     pub explain: bool,
 
     /// Task name or command. When omitted, prints project info.
