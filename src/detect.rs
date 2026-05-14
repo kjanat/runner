@@ -282,6 +282,28 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     if ctx.task_runners.contains(&TaskRunner::Bacon) {
         push_described_tasks(ctx, TaskSource::BaconToml, tool::bacon::extract_tasks(dir));
     }
+    if ctx.task_runners.contains(&TaskRunner::Mise) {
+        push_mise_tasks(ctx, tool::mise::extract_tasks(dir));
+    }
+}
+
+/// Append tasks from the mise source, preserving alias→target metadata.
+fn push_mise_tasks(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,
+) {
+    push_recipe_alias_tasks(
+        ctx,
+        TaskSource::MiseToml,
+        result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
+    );
+}
+
+fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {
+    match entry {
+        tool::mise::ExtractedTask::Recipe { name, description } => (name, description, None),
+        tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+    }
 }
 
 /// Append cargo aliases as tasks. Each alias's fully recursion-expanded
@@ -385,16 +407,40 @@ fn push_just_tasks(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::just::ExtractedTask>>,
 ) {
+    push_recipe_alias_tasks(
+        ctx,
+        TaskSource::Justfile,
+        result.map(|entries| entries.into_iter().map(just_entry_triple).collect()),
+    );
+}
+
+fn just_entry_triple(entry: tool::just::ExtractedTask) -> RecipeOrAlias {
+    match entry {
+        tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
+        tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+    }
+}
+
+/// Flattened `(name, description, alias_of)` shape both
+/// `tool::mise::ExtractedTask` and `tool::just::ExtractedTask` collapse
+/// to before they hit [`push_recipe_alias_tasks`].
+type RecipeOrAlias = (String, Option<String>, Option<String>);
+
+/// Push `(name, description, alias_of)` triples into `ctx.tasks` under
+/// `source`, or record a `TaskListUnreadable` warning on error. Shared
+/// by [`push_mise_tasks`] and [`push_just_tasks`] — both runners emit
+/// recipe-or-alias variants that flatten to the same triple shape.
+fn push_recipe_alias_tasks(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<RecipeOrAlias>>,
+) {
     match result {
         Ok(entries) => {
-            for entry in entries {
-                let (name, description, alias_of) = match entry {
-                    tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
-                    tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
-                };
+            for (name, description, alias_of) in entries {
                 ctx.tasks.push(Task {
                     name,
-                    source: TaskSource::Justfile,
+                    source,
                     description,
                     alias_of,
                     passthrough_to: None,
@@ -402,7 +448,7 @@ fn push_just_tasks(
             }
         }
         Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::Justfile.label(),
+            source: source.label(),
             error: format!("{err:#}"),
         }),
     }

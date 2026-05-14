@@ -87,6 +87,7 @@ pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
         TaskSource::DenoJson,
         TaskSource::CargoAliases,
         TaskSource::BaconToml,
+        TaskSource::MiseToml,
     ];
     for source in sources {
         let (recipes, aliases): (Vec<&Task>, Vec<&Task>) = tasks
@@ -202,6 +203,7 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::BaconToml => {
             tool::files::find_first(root, tool::bacon::FILENAMES).filter(|path| path.is_file())
         }
+        TaskSource::MiseToml => tool::mise::find_file(root),
     }?;
 
     Some(path.canonicalize().unwrap_or(path))

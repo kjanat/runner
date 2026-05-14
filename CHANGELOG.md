@@ -15,6 +15,48 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.10.0] - 2026-05-14
+
+### Added
+
+- mise task extraction and dispatch. `mise` was previously
+  detection-only — `runner` listed it under "Task Runners" but its
+  tasks were invisible to `runner list` and `runner run <task>`.
+  New `TaskSource::MiseToml` makes mise a first-class source: tasks
+  declared in `mise.toml` / `.mise.toml` (and the `*.local.toml`,
+  `mise/config.toml`, `.config/mise.toml` companions in mise's
+  documented precedence) appear in listings, participate in the
+  selection priority, and dispatch via `mise run <task>`.
+- Bacon-style two-tier extraction for mise. Primary path shells
+  out to `mise tasks --json` — authoritative across mise's config
+  layering and file-based tasks (`mise-tasks/*`); fallback parses
+  the first project-local config when `mise` isn't on `$PATH`.
+  Both paths exclude hidden tasks (`hide = true`),
+  underscore-prefixed names, and tasks whose `source` lives
+  outside the project root (so global / `~/.config/mise/*` tasks
+  don't pollute the project's task list). Empty or
+  whitespace-only `description = ""` values are treated as
+  missing so the renderer falls through to the `run` body or
+  `file` reference instead of showing a blank column. Aliases
+  come through as separate entries pointing at their target,
+  mirroring the justfile shape.
+
+### Fixed
+
+- Resolver no longer dispatches through a Node package manager in
+  projects with no Node-ecosystem evidence ([#23]). `runner run
+  <unknown-task>` in a Go-only repo with `bun` installed used to
+  warn "no node signals matched" and then run `bun <task>` anyway;
+  the `FallbackPolicy::Probe` PATH probe now requires a
+  `package.json` (or equivalent manifest) somewhere upward of
+  `ctx.root` before it considers the canonical Node order.
+  Without that evidence the resolver returns the existing soft
+  `NoSignalsFound` sentinel and `cmd::run::run_pm_exec_fallback`
+  spawns the target directly on `$PATH` — no more wrong-ecosystem
+  dispatch.
+
+[#23]: https://github.com/kjanat/runner/issues/23
+
 ## [0.9.0] - 2026-05-13
 
 ### Added
@@ -836,7 +878,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/kjanat/runner/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kjanat/runner/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/kjanat/runner/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kjanat/runner/compare/v0.7.1...v0.8.0
