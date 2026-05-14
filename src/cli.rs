@@ -631,6 +631,22 @@ mod tests {
         assert!(failure.keep_going);
         assert_eq!(tasks, vec!["build".to_string()]);
     }
+
+    #[test]
+    fn install_accepts_sequential_flag_as_redundant() {
+        // `-s` on `runner install` is accepted but redundant — install chains
+        // are always sequential. The flag must not fail with "unknown option".
+        let cli =
+            Cli::try_parse_from(["runner", "install", "-s", "build", "test"]).expect("parses");
+        let Some(Command::Install {
+            tasks, sequential, ..
+        }) = cli.command
+        else {
+            panic!("expected Install subcommand");
+        };
+        assert!(sequential, "-s should set the sequential field");
+        assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
+    }
 }
 
 /// Universal project task runner.
@@ -807,6 +823,12 @@ pub(crate) enum Command {
         /// (no `trailing_var_arg`) so chain-failure flags placed after
         /// the task list still parse as flags, not task names.
         tasks: Vec<String>,
+        /// Accepted but redundant: install chains are always sequential.
+        /// Hidden from `--help` to avoid confusion; present so that
+        /// `runner install -s build test` (matching `run -s` muscle memory)
+        /// doesn't fail with an "unknown flag" error.
+        #[arg(short = 's', long, hide = true)]
+        sequential: bool,
         /// Chain failure-policy flags. `--kill-on-fail` is accepted but
         /// unused (install is always sequential).
         #[command(flatten)]

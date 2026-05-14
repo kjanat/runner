@@ -156,3 +156,38 @@ fn chain_rejects_whitespace_positional_in_v1() {
         "expected v1 rejection diagnostic. stderr: {stderr}",
     );
 }
+
+#[test]
+fn install_sequential_flag_accepted_without_error() {
+    // `runner install -s <tasks>` must be accepted by the CLI (the flag is
+    // redundant but valid per spec — install is always sequential).
+    // We run against an empty temp dir so no PM is detected and install
+    // exits early with a "No package manager" error; the key assertion is
+    // that the flag itself doesn't cause a clap "unknown option" failure.
+    let dir = tempdir_for_test("install-s-flag");
+    let output = Command::new(runner_binary())
+        .args(["--dir", dir.to_str().unwrap(), "install", "-s", "build"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Must not be a clap "unknown option" / "unexpected argument" error.
+    assert!(
+        !stderr.contains("unexpected argument") && !stderr.contains("unrecognized"),
+        "-s should be accepted on `runner install`, got stderr: {stderr}",
+    );
+    // The binary may succeed or fail (no PM detected → "No package manager"),
+    // but the error must not mention the flag itself as an unrecognized token.
+    assert!(
+        !stderr.contains("'-s'"),
+        "error should not name the -s flag as unrecognized. stderr: {stderr}",
+    );
+}
+
+/// Create a temporary directory that lives long enough for the test.
+/// Uses `std::env::temp_dir()` so it's always writable and auto-cleaned.
+fn tempdir_for_test(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("runner-test-{name}"));
+    std::fs::create_dir_all(&dir).expect("temp dir should be created");
+    dir
+}
