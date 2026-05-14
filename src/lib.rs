@@ -360,12 +360,20 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
 ///
 /// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
 ///
+/// Strips a trailing `.exe` suffix (case-insensitive) so Windows builds present the
+/// same `runner` / `run` identifier in `--version`, `--help`, and the `Usage:` line
+/// as Unix builds. Without this, clap's bin-name plumbing surfaces the raw
+/// `runner.exe` from `argv[0]`, leaking the platform-specific extension into UX.
+///
 /// # Examples
 ///
 /// ```rust
 /// use std::ffi::OsString;
 /// let name = runner::bin_name_from_arg0(&OsString::from("/usr/bin/runner"));
 /// assert_eq!(name.as_deref(), Some("runner"));
+///
+/// let win = runner::bin_name_from_arg0(&OsString::from("runner.exe"));
+/// assert_eq!(win.as_deref(), Some("runner"));
 /// ```
 #[must_use]
 pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
@@ -373,7 +381,26 @@ pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
         .file_name()
         .map(|segment| segment.to_string_lossy().into_owned())?;
 
-    (!name.is_empty()).then_some(name)
+    let trimmed = strip_exe_suffix(&name);
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Strip a trailing `.exe` extension (ASCII case-insensitive) from a file name.
+///
+/// Returns the input unchanged if no such suffix is present. The match is
+/// ASCII-only because Windows treats `.EXE`, `.Exe`, `.exe` etc. as the same
+/// extension, and that case-fold is bounded to ASCII regardless of the active
+/// code page.
+fn strip_exe_suffix(name: &str) -> &str {
+    const SUFFIX: &str = ".exe";
+    if name.len() > SUFFIX.len()
+        && name.is_char_boundary(name.len() - SUFFIX.len())
+        && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX)
+    {
+        &name[..name.len() - SUFFIX.len()]
+    } else {
+        name
+    }
 }
 
 /// Attaches the generated help byline to a clap command.
@@ -820,6 +847,48 @@ mod tests {
         let name = bin_name_from_arg0(&OsString::from("/tmp/run"));
 
         assert_eq!(name.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_windows_exe_suffix() {
+        // Windows builds inherit `runner.exe` / `run.exe` from argv[0]; clap
+        // pipes that straight into `--version` / `--help` / Usage unless we
+        // normalize it here. We feed bare file names rather than full Windows
+        // paths because `Path::file_name` is host-OS-aware and won't split on
+        // `\` when the tests run on Unix.
+        let runner = bin_name_from_arg0(&OsString::from("runner.exe"));
+        assert_eq!(runner.as_deref(), Some("runner"));
+
+        let run = bin_name_from_arg0(&OsString::from("run.exe"));
+        assert_eq!(run.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_exe_case_insensitive() {
+        let upper = bin_name_from_arg0(&OsString::from("RUNNER.EXE"));
+        assert_eq!(upper.as_deref(), Some("RUNNER"));
+
+        let mixed = bin_name_from_arg0(&OsString::from("Run.Exe"));
+        assert_eq!(mixed.as_deref(), Some("Run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_preserves_unrelated_extensions() {
+        // `.exe` only — names that happen to embed those characters in other
+        // positions, or carry different extensions, pass through unchanged.
+        let dotted = bin_name_from_arg0(&OsString::from("/tmp/runner.exe.bak"));
+        assert_eq!(dotted.as_deref(), Some("runner.exe.bak"));
+
+        let other = bin_name_from_arg0(&OsString::from("/tmp/runner.sh"));
+        assert_eq!(other.as_deref(), Some("runner.sh"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_handles_bare_dot_exe() {
+        // `.exe` alone shouldn't strip to an empty name; the suffix length
+        // guard keeps the input intact.
+        let bare = bin_name_from_arg0(&OsString::from(".exe"));
+        assert_eq!(bare.as_deref(), Some(".exe"));
     }
 
     fn stub_context(tasks: &[&str]) -> ProjectContext {
