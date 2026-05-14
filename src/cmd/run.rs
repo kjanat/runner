@@ -308,18 +308,31 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Locate the directory holding `source`'s config file relative to `root`.
+/// Locate the directory containing the configuration/anchor file for a `TaskSource`,
+/// searching upward from `root`.
 ///
-/// Every source walks upward toward the repo root (stopping at the VCS
-/// boundary via `tool::files::find_first_upwards`) so that
-/// [`source_depth`] gives a meaningful tiebreak in nested monorepos:
-/// a member `Makefile` near cwd outranks the workspace-root `Makefile`,
-/// matching the precedent set by `package.json` and `deno.json`.
+/// The search walks toward the repository boundary so that `source_depth` can break
+/// ties by proximity (a config nearer `root` wins). Some sources use bespoke
+/// locate logic that understands workspace/member boundaries (`PackageJson`,
+/// `DenoJson`, `CargoAliases`); other sources are found by scanning upward for
+/// known filenames.
 ///
-/// `PackageJson`, `DenoJson`, and `CargoAliases` keep their bespoke
-/// walkers because each handles workspace boundaries (member globs in
-/// `pnpm-workspace.yaml`/`deno.json`/`Cargo.toml`) that the plain
-/// upward walk doesn't model.
+/// # Examples
+///
+/// ```
+/// use std::fs::File;
+/// use std::path::Path;
+/// // create a temporary dir under the system temp directory and place a Makefile in it
+/// let tmp = std::env::temp_dir().join("run_source_dir_example");
+/// let _ = std::fs::create_dir_all(&tmp);
+/// let _ = File::create(tmp.join("Makefile"));
+/// // call the function starting at the same directory; it should find the Makefile parent
+/// let dir = source_dir(TaskSource::Makefile, &tmp);
+/// assert_eq!(dir.as_deref(), Some(tmp.as_path()));
+/// // cleanup (best-effort)
+/// let _ = std::fs::remove_file(tmp.join("Makefile"));
+/// let _ = std::fs::remove_dir(tmp);
+/// ```
 fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
     let path = match source {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
@@ -448,7 +461,21 @@ fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
         .any(|entry| entry.source == TaskSource::PackageJson && entry.name == task)
 }
 
-/// Build a [`Command`] for the given task source and package manager.
+/// Constructs the `Command` that will execute the named task for the given `TaskSource`.
+///
+/// For `PackageJson` tasks this resolves the project's node package manager first, prints any resolver
+/// warnings, and selects the appropriate PM-specific runner. Returns an error if resolver fails or if
+/// the resolved package manager cannot run scripts (e.g., when it does not support script execution).
+///
+/// # Examples
+///
+/// ```ignore
+/// // Resolve and build a command for a package.json script:
+/// let cmd = build_run_command(&ctx, &overrides, TaskSource::PackageJson, "build", &[])?;
+/// // Configure and run:
+/// super::configure_command(&mut cmd, &ctx.root);
+/// let status = cmd.status()?;
+/// ```
 fn build_run_command(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,

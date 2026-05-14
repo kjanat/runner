@@ -221,31 +221,29 @@ impl<'ctx> Resolver<'ctx> {
         Self { ctx, overrides }
     }
 
-    /// Resolve the package manager used to dispatch `package.json` scripts.
+    /// Resolve which Node-compatible package manager should be used to dispatch `package.json` scripts.
     ///
-    /// Walks the precedence chain in order:
-    /// - Step 2–3 — CLI/env PM override (when compatible with Node scripts).
-    /// - Step 4 — `runner.toml` `[pm].node` override.
-    /// - Step 5a — `package.json` legacy `packageManager` field.
-    /// - Step 5b — `package.json` `devEngines.packageManager` field
-    ///   (honoring `onFail` when the declared PM is missing from PATH).
-    /// - Step 6 — lockfile (via [`ProjectContext::primary_node_pm`]).
-    /// - Step 7 — `$PATH` probe in canonical Node order
-    ///   (`bun > pnpm > yarn > npm`). Active by default; replaced by
-    ///   step 8 when `--fallback npm` is set.
-    /// - Step 8 — error or legacy `npm` (depending on
-    ///   [`FallbackPolicy`]).
-    ///
-    /// When a manifest declaration (step 5) disagrees with a detected
-    /// lockfile (step 6), the manifest wins (Corepack semantics) and a
-    /// `package.json` warning is emitted.
+    /// Walks the resolution precedence (CLI/env cross-ecosystem override, per-ecosystem config override,
+    /// manifest `packageManager` / `devEngines.packageManager` with `onFail` handling, lockfile, `$PATH` probe,
+    /// then configured fallback behavior). Emits non-fatal `DetectionWarning`s for recoverable mismatches and
+    /// returns a `ResolveError` when resolution is impossible under the active `FallbackPolicy` or when a
+    /// manifest `onFail = Error` constraint is violated.
     ///
     /// # Errors
     ///
-    /// Returns an error when no signal matches and
-    /// `FallbackPolicy::Error` or `FallbackPolicy::Probe` is in effect
-    /// with nothing on `$PATH`, or when a manifest `onFail = Error`
-    /// declaration cannot be satisfied.
+    /// Returns a `ResolveError` when no matching signal is found and the active fallback policy requires a hard
+    /// failure (or when a manifest `onFail = Error` condition occurs). When `FallbackPolicy::Probe` is active
+    /// but nothing is found on `$PATH`, a soft no-signal error is returned so callers may fall back to direct
+    /// execution strategies.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // Build a `Resolver` appropriately for your test or environment, then:
+    /// // let resolver = /* construct Resolver */ ;
+    /// // let decision = resolver.resolve_node_pm().expect("failed to resolve Node PM");
+    /// // assert!(decision.pm.can_dispatch_node_scripts());
+    /// ```
     pub(crate) fn resolve_node_pm(&self) -> Result<ResolvedPm, ResolveError> {
         let mut warnings = Vec::new();
 

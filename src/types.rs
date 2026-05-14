@@ -519,14 +519,18 @@ impl TaskRunner {
         ]
     }
 
-    /// The [`TaskSource`] that holds this runner's tasks, when extraction
-    /// is implemented for it. Used by completion to dedupe `package.json`
-    /// passthrough wrappers against the underlying runner's task entry.
+    /// Identify which `TaskSource` contains tasks for this `TaskRunner`, when extraction is implemented.
     ///
-    /// Returns `None` for runners where task extraction is not yet
-    /// implemented (Nx); a passthrough wrapper still routes to that
-    /// runner at dispatch time, but completion shows the script as its
-    /// own candidate because there is no peer entry to collapse it into.
+    /// Some runners have an associated task source used to dedupe completion candidates; runners without implemented extraction return `None` (for example, `Nx`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::types::{TaskRunner, TaskSource};
+    ///
+    /// assert_eq!(TaskRunner::Mise.task_source(), Some(TaskSource::MiseToml));
+    /// assert_eq!(TaskRunner::Nx.task_source(), None);
+    /// ```
     pub(crate) const fn task_source(self) -> Option<TaskSource> {
         match self {
             Self::Turbo => Some(TaskSource::TurboJson),
@@ -541,7 +545,21 @@ impl TaskRunner {
 }
 
 impl TaskSource {
-    /// Config filename shown to the user (e.g. `"package.json"`, `"Makefile"`).
+    /// User-facing filename or label for a task source.
+    ///
+    /// This returns the filename or short label that should be shown to users for the
+    /// given `TaskSource` (for example, `"package.json"` or `"Makefile"`). The
+    /// synthetic `CargoAliases` source uses the label `"cargo"`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::types::TaskSource;
+    ///
+    /// assert_eq!(TaskSource::PackageJson.label(), "package.json");
+    /// assert_eq!(TaskSource::Makefile.label(), "Makefile");
+    /// assert_eq!(TaskSource::CargoAliases.label(), "cargo");
+    /// ```
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::PackageJson => "package.json",
@@ -559,7 +577,21 @@ impl TaskSource {
         }
     }
 
-    /// Parse a source label back to a [`TaskSource`].
+    /// Parse a user-facing source label into a `TaskSource` variant.
+    ///
+    /// Accepts the canonical labels and known aliases (for example `"turbo.jsonc"`,
+    /// `"deno.jsonc"`, and `".mise.toml"`). Returns `None` for unrecognized labels.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use crate::types::TaskSource;
+    ///
+    /// assert_eq!(TaskSource::from_label("turbo.json"), Some(TaskSource::TurboJson));
+    /// assert_eq!(TaskSource::from_label("turbo.jsonc"), Some(TaskSource::TurboJson));
+    /// assert_eq!(TaskSource::from_label(".mise.toml"), Some(TaskSource::MiseToml));
+    /// assert_eq!(TaskSource::from_label("unknown"), None);
+    /// ```
     pub(crate) fn from_label(label: &str) -> Option<Self> {
         match label {
             "package.json" => Some(Self::PackageJson),
@@ -575,7 +607,16 @@ impl TaskSource {
         }
     }
 
-    /// Display order for grouped task listings.
+    /// Returns a numeric grouping order used to sort task sources in listings.
+    ///
+    /// The value is a stable, small integer where lower numbers appear earlier in user-facing lists.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// assert_eq!(TaskSource::PackageJson.display_order(), 0);
+    /// assert_eq!(TaskSource::MiseToml.display_order(), 8);
+    /// ```
     pub(crate) const fn display_order(self) -> u8 {
         match self {
             Self::PackageJson => 0,

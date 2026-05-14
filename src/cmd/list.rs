@@ -69,12 +69,18 @@ pub(crate) fn list(
     Ok(())
 }
 
-/// Print tasks grouped by [`TaskSource`], one line per source.
+/// Print tasks grouped by their source, rendering one line per source.
 ///
-/// Operates over a borrowed task slice + the project root — the renderer
-/// never reads other [`ProjectContext`] fields, so callers that already
-/// have a filtered task list pass the slice directly instead of forging
-/// a synthetic context.
+/// Operates on a borrowed slice of tasks and the project root; the function writes a
+/// grouped, human-readable list to stdout and does not access other `ProjectContext` fields.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::path::Path;
+/// # // Construct `tasks: Vec<&Task>` and `root: &Path` appropriately.
+/// print_tasks_grouped(&tasks, root);
+/// ```
 pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
     let stdout_is_terminal = std::io::stdout().is_terminal();
 
@@ -187,6 +193,31 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
     )
 }
 
+/// Resolves a representative filesystem path for a given task source relative to `root`.
+///
+/// The function looks up the most appropriate manifest/config file or anchor for `source`
+/// (for example, a package.json, Makefile, or Taskfile) and returns its canonicalized
+/// `PathBuf` when possible. If no candidate path is found, returns `None`.
+///
+/// # Parameters
+///
+/// - `source`: the task source to locate (e.g., package.json, turbo.json, Makefile).
+/// - `root`: the directory from which to begin the lookup.
+///
+/// # Returns
+///
+/// `Some(PathBuf)` containing the canonicalized path to the discovered source file, or
+/// `None` if no matching file or anchor could be found.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// // May return `None` if no manifest for the given source is present under `.`
+—
+/// let result = source_path(TaskSource::PackageJson, Path::new("."));
+/// assert!(result.is_none() || result.unwrap().is_absolute());
+/// ```
 fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
     let path = match source {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),

@@ -114,6 +114,19 @@ fn candidate_json(task: &Task, overrides: &ResolutionOverrides, ctx: &ProjectCon
     })
 }
 
+/// Locate the filesystem path that anchors a task's source by searching from the project root.
+///
+/// Returns the file or directory path associated with `task.source`, or `None` if no anchor
+/// (manifest/config file or other source-specific file) is found.
+///
+/// # Examples
+///
+/// ```no_run
+/// let ctx = ProjectContext { root: std::path::PathBuf::from("/path/to/project"), ..Default::default() };
+/// let task = Task { source: TaskSource::PackageJson, ..Default::default() };
+/// let anchor = source_dir_for_task(&task, &ctx);
+/// assert!(anchor.is_none() || anchor.unwrap().is_absolute());
+/// ```
 fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
     use crate::tool;
 

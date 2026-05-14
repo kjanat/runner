@@ -287,7 +287,36 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
-/// Append tasks from the mise source, preserving alias→target metadata.
+/// Appends tasks extracted from a mise configuration into the project context.
+///
+/// Recipes become tasks with their description preserved; aliases become tasks where `alias_of`
+/// is set to the alias target. If extraction fails, records a `DetectionWarning::TaskListUnreadable`
+/// with `TaskSource::MiseToml` as the source and the formatted error text.
+///
+/// # Examples
+///
+/// ```
+/// use crate::{push_mise_tasks, ProjectContext, TaskSource, DetectionWarning, Task};
+/// use crate::tool::mise::ExtractedTask;
+///
+/// let mut ctx = ProjectContext::default();
+///
+/// // Successful extraction: one recipe and one alias
+/// let ok_result = Ok(vec![
+///     ExtractedTask::Recipe { name: "build".into(), description: Some("Build project".into()) },
+///     ExtractedTask::Alias { name: "b".into(), target: "build".into() },
+/// ]);
+///
+/// push_mise_tasks(&mut ctx, ok_result);
+///
+/// assert!(ctx.tasks.iter().any(|t| t.name == "build" && t.description.as_deref() == Some("Build project")));
+/// assert!(ctx.tasks.iter().any(|t| t.name == "b" && t.alias_of.as_deref() == Some("build")));
+///
+/// // Failure records a warning
+/// let err_result: anyhow::Result<Vec<ExtractedTask>> = Err(anyhow::anyhow!("parse error"));
+/// push_mise_tasks(&mut ctx, err_result);
+/// assert!(ctx.warnings.iter().any(|w| matches!(w, DetectionWarning::TaskListUnreadable { source, .. } if source == TaskSource::MiseToml.label())));
+/// ```
 fn push_mise_tasks(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,

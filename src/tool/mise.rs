@@ -43,25 +43,62 @@ pub(crate) const FILENAMES: &[&str] = &[
     ".config/mise/config.toml",
 ];
 
-/// Detected when any [`FILENAMES`] entry resolves to a file under `dir`.
+/// Checks whether a supported mise config file exists in the given directory.
+///
+/// The function searches for any filename listed in `FILENAMES` under `dir` and
+/// returns whether the first match is a file.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let exists = crate::tool::mise::detect(Path::new("."));
+/// // `exists` is `true` when any supported mise config (e.g., `mise.toml`) is present.
+/// assert!(matches!(exists, true | false));
+/// ```
+///
+/// Returns `true` if any supported mise config file exists under `dir`, `false` otherwise.
 pub(crate) fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
 
-/// Locate the first existing mise config file under `dir`, in precedence
-/// order. Returned as an absolute path when the input is absolute.
+/// Finds the first project-local mise configuration file under `dir` using the
+/// precedence order defined in `FILENAMES`.
+///
+/// The returned `PathBuf` is the first matching entry that exists and is a file.
+/// When the underlying search yields absolute paths (for example when `dir` is
+/// absolute), the returned path will be absolute.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// // Returns `Some(path)` when a supported mise config is present in `dir`.
+/// let _ = crate::tool::mise::find_file(Path::new("."));
+/// ```
 pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, FILENAMES).filter(|path| path.is_file())
 }
 
-/// Surface mise tasks defined in this project. Prefers `mise tasks
-/// --json` (authoritative across all config layers + file-based tasks),
-/// falls back to parsing the first project-local config when mise
-/// isn't on `$PATH`.
+/// Surface mise tasks defined in this project.
 ///
-/// Hidden tasks (`hide = true`) and underscore-prefixed names are
-/// excluded. Aliases come through as separate `Alias` entries pointing
-/// at their target so [`crate::cmd::list`] can group them.
+/// Prefers the `mise tasks --json` output when the `mise` binary is available in `PATH`
+/// and falls back to parsing the first project-local mise config file when the CLI is
+/// not usable. Hidden tasks (`hide = true`) and task names beginning with `_` are
+/// excluded. Aliases are returned as separate `Alias` entries pointing to their target
+/// recipe name.
+///
+/// # Returns
+///
+/// `Vec<ExtractedTask>` containing discovered `Recipe` and `Alias` entries, sorted by task name.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let tasks = crate::tool::mise::extract_tasks(Path::new(".")).unwrap();
+/// // `tasks` is a Vec<ExtractedTask> (may be empty if no project-local tasks exist)
+/// ```
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     if let Some(tasks) = extract_tasks_with_cli(dir) {
         return Ok(tasks);
@@ -69,9 +106,18 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     extract_tasks_from_source(dir)
 }
 
-/// Run `mise tasks --json` in `dir` and parse the result. Returns `None`
-/// when mise is missing, the invocation fails, or the output doesn't
-/// parse — caller falls back to direct TOML reads.
+/// Attempts to run `mise tasks --json` in `dir` and parse the resulting tasks.
+///
+/// If the `mise` executable is unavailable, the invocation fails, the process exits non‑successfully,
+/// or the JSON output cannot be parsed, this returns `None` so the caller can fall back to parsing
+/// project-local TOML files.
+///
+/// # Examples
+///
+/// ```
+/// let tasks = extract_tasks_with_cli(std::path::Path::new("."));
+/// // `tasks` is `Some(...)` when `mise` is available and emits valid JSON; otherwise `None`.
+/// ```
 fn extract_tasks_with_cli(dir: &Path) -> Option<Vec<ExtractedTask>> {
     let output = super::program::command("mise")
         .arg("tasks")
@@ -86,10 +132,37 @@ fn extract_tasks_with_cli(dir: &Path) -> Option<Vec<ExtractedTask>> {
     parse_cli_output(&output.stdout, &project_root)
 }
 
-/// Parse a `mise tasks --json` payload, filtering to tasks whose
-/// `source` lives under `project_root`. Mise's JSON view includes
-/// global config and `~/.config/mise/*` tasks; surfacing those in
-/// `runner list` would lie about what the project owns.
+/// Parse the JSON output produced by `mise tasks --json` and convert it into
+/// a sorted list of project-local `ExtractedTask` entries.
+///
+/// This filters out hidden tasks, global tasks, task names starting with `_`,
+/// and any task whose `source` path is not under `project_root`. Aliases are
+/// emitted as separate `ExtractedTask::Alias` entries (excluding aliases that
+/// start with `_` or equal the recipe name). The resulting tasks are sorted by
+/// name.
+///
+/// # Returns
+///
+/// `Some(Vec<ExtractedTask>)` containing the sorted tasks when the JSON payload
+/// parses successfully, `None` if the payload cannot be parsed.
+///
+/// # Examples
+///
+/// ```
+/// let json = r#"[{
+///   "name": "build",
+///   "aliases": ["b"],
+///   "description": "compile project",
+///   "source": ".",
+///   "hide": false,
+///   "global": false,
+///   "run": [],
+///   "file": null
+/// }]"#;
+/// let tasks = parse_cli_output(json.as_bytes(), std::path::Path::new(".")).unwrap();
+/// let names: Vec<&str> = tasks.iter().map(|t| t.name()).collect();
+/// assert_eq!(names, vec!["b", "build"]);
+/// ```
 fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedTask>> {
     let entries: Vec<MiseJsonTask> = serde_json::from_slice(stdout).ok()?;
     let mut tasks: Vec<ExtractedTask> = Vec::new();
@@ -119,19 +192,53 @@ fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedT
     Some(tasks)
 }
 
-/// `true` when `source` (mise's `source` path for a task) lives inside
-/// `project_root`. Canonicalizes both sides so symlinked checkouts
-/// (`/home/x/projects/...` ↔ `/Users/x/projects/...` on macOS) match.
+/// Check whether a task's `source` path is located under the given `project_root`.
+///
+/// Both `source` and `project_root` are canonicalized when possible so equivalent
+/// paths produced by symlinks or platform differences compare correctly; if
+/// canonicalization fails for `source`, the original `source` path is used for
+/// the containment check.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+///
+/// // canonicalization may fail in doctests; fallback uses the original paths.
+/// let source = Path::new("project/sub/task.toml");
+/// let project_root = Path::new("project");
+/// assert!(crate::tool::mise::task_belongs_to(source, project_root));
+/// ```
+///
+/// # Returns
+///
+/// `true` if the canonicalized `source` path starts with `project_root`, `false` otherwise.
 fn task_belongs_to(source: &Path, project_root: &Path) -> bool {
     let canonical = source.canonicalize();
     let candidate = canonical.as_deref().unwrap_or(source);
     candidate.starts_with(project_root)
 }
 
-/// Direct-parse fallback for hosts without the `mise` binary. Reads the
-/// first existing project-local config (precedence per [`FILENAMES`])
-/// and produces the same shape as the CLI path. Only sees one file —
-/// mise's cross-file merge isn't replicated.
+/// Extracts mise tasks by parsing the first project-local config file found under `dir`.
+///
+/// This reads the first file selected by `FILENAMES`, parses it as mise TOML, and produces
+/// a list of `ExtractedTask` entries equivalent in shape to the CLI-derived tasks. Only the
+/// single file is considered (mise's cross-file merging behavior is not replicated).
+///
+/// Tasks whose name starts with `_` or that are marked hidden are omitted. Table-form aliases
+/// are expanded into `ExtractedTask::Alias` entries, excluding aliases that start with `_` or
+/// that duplicate the recipe name. The resulting list is sorted by task name.
+///
+/// # Errors
+///
+/// Returns an error with context if the selected config file cannot be read or if TOML parsing fails.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// let _ = extract_tasks_from_source(Path::new("."));
+/// ```
 fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let Some(path) = find_file(dir) else {
         return Ok(vec![]);
@@ -195,6 +302,54 @@ struct MiseJsonTask {
 }
 
 impl MiseJsonTask {
+    /// Selects the most appropriate human-readable description for a JSON-derived task.
+    ///
+    /// Preference order:
+    /// 1. the `description` field when non-empty,
+    /// 2. the `run` commands joined with `" && "` when `run` is non-empty,
+    /// 3. the `file` field (may be `None`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    ///
+    /// let t1 = MiseJsonTask {
+    ///     name: "build".into(),
+    ///     aliases: vec![],
+    ///     description: "Compile the project".into(),
+    ///     source: PathBuf::from("."),
+    ///     hide: false,
+    ///     global: false,
+    ///     run: vec!["cargo build".into()],
+    ///     file: Some("Makefile".into()),
+    /// };
+    /// assert_eq!(t1.description_or_fallback(), Some("Compile the project".to_string()));
+    ///
+    /// let t2 = MiseJsonTask {
+    ///     name: "test".into(),
+    ///     aliases: vec![],
+    ///     description: "".into(),
+    ///     source: PathBuf::from("."),
+    ///     hide: false,
+    ///     global: false,
+    ///     run: vec!["cargo test".into(), "cargo fmt -- --check".into()],
+    ///     file: Some("tasks.toml".into()),
+    /// };
+    /// assert_eq!(t2.description_or_fallback(), Some("cargo test && cargo fmt -- --check".to_string()));
+    ///
+    /// let t3 = MiseJsonTask {
+    ///     name: "docref".into(),
+    ///     aliases: vec![],
+    ///     description: "".into(),
+    ///     source: PathBuf::from("."),
+    ///     hide: false,
+    ///     global: false,
+    ///     run: vec![],
+    ///     file: Some("docs/task.md".into()),
+    /// };
+    /// assert_eq!(t3.description_or_fallback(), Some("docs/task.md".to_string()));
+    /// ```
     fn description_or_fallback(&self) -> Option<String> {
         if !self.description.is_empty() {
             return Some(self.description.clone());
@@ -206,14 +361,26 @@ impl MiseJsonTask {
     }
 }
 
-/// `mise run <task> [-- args...]`
+/// Constructs a `mise run <task>` command for the given task, forwarding any provided arguments.
 ///
-/// Mise parses everything after the task name as either positional args
-/// for the task's `usage` spec or as additional task names (space-
-/// separated) when no `--` is present. Inserting `--` for any caller-
-/// supplied args keeps forwarded flags (`--watch`, `--release`) out of
-/// mise's own argument parser. Empty arg lists drop the separator so the
-/// rendered command line stays clean.
+/// If `args` is non-empty, a `--` separator is inserted before the forwarded arguments so they
+/// are passed to the task and not interpreted by `mise`. When `args` is empty no separator is
+/// added.
+///
+/// # Parameters
+///
+/// - `task`: the name of the task to run.
+/// - `args`: arguments to forward to the task; each element is appended after `--` when present.
+///
+/// # Examples
+///
+/// ```
+/// use std::process::Command;
+/// let cmd: Command = crate::tool::mise::run_cmd("build", &vec!["--release".to_string()]);
+/// let args: Vec<_> = cmd.get_args().map(|s| s.to_string_lossy().into_owned()).collect();
+/// assert!(args.contains(&"--".to_string()));
+/// assert!(args.contains(&"--release".to_string()));
+/// ```
 pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     let mut c = super::program::command("mise");
     c.arg("run").arg(task);
@@ -239,6 +406,20 @@ pub(crate) enum ExtractedTask {
 }
 
 impl ExtractedTask {
+    /// Access the task's name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let r = ExtractedTask::Recipe { name: "build".into(), description: None };
+    /// let a = ExtractedTask::Alias { name: "b".into(), target: "build".into() };
+    /// assert_eq!(r.name(), "build");
+    /// assert_eq!(a.name(), "b");
+    /// ```
+    ///
+    /// # Returns
+    ///
+    /// `&str` with the task's name.
     fn name(&self) -> &str {
         match self {
             Self::Recipe { name, .. } | Self::Alias { name, .. } => name,
@@ -317,13 +498,48 @@ enum StringOrList {
 }
 
 impl TaskEntry {
+    /// Indicates whether this task entry is explicitly marked hidden.
+    ///
+    /// Returns `true` when the entry is a table-form task with `hide = true`, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // inline-form tasks are never hidden
+    /// let inline = TaskEntry { kind: TaskEntryKind::InlineRun(InlineRun::Single("echo hi".into())) };
+    /// assert!(!inline.is_hidden());
+    ///
+    /// // table-form task with hide = true is hidden
+    /// let table = TaskEntry {
+    ///     kind: TaskEntryKind::Table(TaskTable {
+    ///         description: None,
+    ///         run: None,
+    ///         file: None,
+    ///         alias: None,
+    ///         hide: true,
+    ///     }),
+    /// };
+    /// assert!(table.is_hidden());
+    /// ```
     fn is_hidden(&self) -> bool {
         matches!(&self.kind, TaskEntryKind::Table(t) if t.hide)
     }
 
-    /// Best-effort description: explicit `description` first, then the
-    /// command body (joined for multi-step `run` arrays), then the
-    /// external `file` reference.
+    /// Determines a task's human-readable description using available fields.
+    ///
+    /// Preference order:
+    /// 1. the explicit `description` (if present),
+    /// 2. the joined `run` commands (multiple commands joined with `" && "`),
+    /// 3. the external `file` reference.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let entry = TaskEntry {
+    ///     kind: TaskEntryKind::InlineRun(InlineRun::Single("echo hi".into())),
+    /// };
+    /// assert_eq!(entry.description(), Some("echo hi".into()));
+    /// ```
     fn description(&self) -> Option<String> {
         match &self.kind {
             TaskEntryKind::InlineRun(InlineRun::Single(s)) => Some(s.clone()),
@@ -342,6 +558,25 @@ impl TaskEntry {
         }
     }
 
+    /// List aliases declared for this task.
+    ///
+    /// Returns a vector of alias names when the task is a table-form entry that defines an
+    /// `alias` (single or multiple). Returns an empty vector for inline-run entries or when no
+    /// aliases are defined.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// // inline-form task has no aliases
+    /// let inline = TaskEntry { kind: TaskEntryKind::InlineRun(InlineRun::Single("echo hi".into())) };
+    /// assert!(inline.aliases().is_empty());
+    ///
+    /// // table-form task with a single alias
+    /// let table = TaskEntry {
+    ///     kind: TaskEntryKind::Table(TaskTable { alias: Some(StringOrList::One("build".into())), ..Default::default() })
+    /// };
+    /// assert_eq!(table.aliases(), vec!["build".to_string()]);
+    /// ```
     fn aliases(&self) -> Vec<String> {
         match &self.kind {
             TaskEntryKind::Table(t) => match &t.alias {
@@ -355,6 +590,41 @@ impl TaskEntry {
 }
 
 impl<'de> Deserialize<'de> for TaskEntry {
+    /// Deserialize a `TaskEntry` from TOML allowing three runtime shapes: a string, an array of strings, or a table.
+    ///
+    /// - A TOML string produces `TaskEntryKind::InlineRun(InlineRun::Single(...))`.
+    /// - A TOML string array produces `TaskEntryKind::InlineRun(InlineRun::Multiple(...))`; every element must be a string or deserialization fails with a custom error.
+    /// - A TOML table is deserialized into a `TaskTable` and wrapped as `TaskEntryKind::Table(...)`.
+    ///
+    /// If the value is neither a string, an array of strings, nor a table, deserialization fails with a custom `serde::de::Error` describing the unexpected TOML type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toml;
+    /// use crate::tool::mise::{TaskEntry, TaskEntryKind, InlineRun, TaskTable};
+    ///
+    /// // Inline string
+    /// let s: TaskEntry = toml::from_str(r#""echo hello""#).unwrap();
+    /// match s.kind {
+    ///     TaskEntryKind::InlineRun(InlineRun::Single(ref cmd)) => assert_eq!(cmd, "echo hello"),
+    ///     _ => panic!("expected single inline run"),
+    /// }
+    ///
+    /// // Inline array
+    /// let a: TaskEntry = toml::from_str(r#"[ "a", "b" ]"#).unwrap();
+    /// match a.kind {
+    ///     TaskEntryKind::InlineRun(InlineRun::Multiple(ref cmds)) => assert_eq!(cmds, &vec!["a".to_string(), "b".to_string()]),
+    ///     _ => panic!("expected multiple inline run"),
+    /// }
+    ///
+    /// // Table form
+    /// let t: TaskEntry = toml::from_str(r#"{ description = "desc", run = "x" }"#).unwrap();
+    /// match t.kind {
+    ///     TaskEntryKind::Table(TaskTable { description: Some(ref d), .. }) => assert_eq!(d, "desc"),
+    ///     _ => panic!("expected table task"),
+    /// }
+    /// ```
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
