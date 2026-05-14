@@ -292,29 +292,21 @@ fn push_mise_tasks(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,
 ) {
-    match result {
-        Ok(entries) => {
-            for entry in entries {
-                let (name, description, alias_of) = match entry {
+    push_recipe_alias_tasks(
+        ctx,
+        TaskSource::MiseToml,
+        result.map(|entries| {
+            entries
+                .into_iter()
+                .map(|e| match e {
                     tool::mise::ExtractedTask::Recipe { name, description } => {
                         (name, description, None)
                     }
                     tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
-                };
-                ctx.tasks.push(Task {
-                    name,
-                    source: TaskSource::MiseToml,
-                    description,
-                    alias_of,
-                    passthrough_to: None,
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::MiseToml.label(),
-            error: format!("{err:#}"),
+                })
+                .collect()
         }),
-    }
+    );
 }
 
 /// Append cargo aliases as tasks. Each alias's fully recursion-expanded
@@ -418,16 +410,35 @@ fn push_just_tasks(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::just::ExtractedTask>>,
 ) {
-    match result {
-        Ok(entries) => {
-            for entry in entries {
-                let (name, description, alias_of) = match entry {
+    push_recipe_alias_tasks(
+        ctx,
+        TaskSource::Justfile,
+        result.map(|entries| {
+            entries
+                .into_iter()
+                .map(|e| match e {
                     tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
                     tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
-                };
+                })
+                .collect()
+        }),
+    );
+}
+
+/// Push recipe/alias task tuples `(name, description, alias_of)` into
+/// `ctx.tasks`, or record a warning on error. Shared by `push_just_tasks`
+/// and `push_mise_tasks` which produce the same intermediate shape.
+fn push_recipe_alias_tasks(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<(String, Option<String>, Option<String>)>>,
+) {
+    match result {
+        Ok(entries) => {
+            for (name, description, alias_of) in entries {
                 ctx.tasks.push(Task {
                     name,
-                    source: TaskSource::Justfile,
+                    source,
                     description,
                     alias_of,
                     passthrough_to: None,
@@ -435,7 +446,7 @@ fn push_just_tasks(
             }
         }
         Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::Justfile.label(),
+            source: source.label(),
             error: format!("{err:#}"),
         }),
     }

@@ -105,18 +105,25 @@ fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedT
             name: entry.name.clone(),
             description,
         });
-        for alias in entry.aliases {
-            if alias.starts_with('_') || alias == entry.name {
-                continue;
-            }
-            tasks.push(ExtractedTask::Alias {
-                name: alias,
-                target: entry.name.clone(),
-            });
-        }
+        push_aliases(&mut tasks, &entry.name, entry.aliases);
     }
     tasks.sort_by(|a, b| a.name().cmp(b.name()));
     Some(tasks)
+}
+
+/// Append aliases for `target` to `tasks`, skipping underscore-prefixed
+/// names and self-aliases. Called by both extraction paths so the
+/// filtering logic stays in one place.
+fn push_aliases(tasks: &mut Vec<ExtractedTask>, target: &str, aliases: impl IntoIterator<Item = String>) {
+    for alias in aliases {
+        if alias.starts_with('_') || alias == target {
+            continue;
+        }
+        tasks.push(ExtractedTask::Alias {
+            name: alias,
+            target: target.to_owned(),
+        });
+    }
 }
 
 /// `true` when `source` (mise's `source` path for a task) lives inside
@@ -152,15 +159,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
             name: name.clone(),
             description,
         });
-        for alias in aliases {
-            if alias.starts_with('_') || alias == name {
-                continue;
-            }
-            entries.push(ExtractedTask::Alias {
-                name: alias,
-                target: name.clone(),
-            });
-        }
+        push_aliases(&mut entries, &name, aliases);
     }
     entries.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(entries)
@@ -199,11 +198,15 @@ impl MiseJsonTask {
         if !self.description.is_empty() {
             return Some(self.description.clone());
         }
-        if !self.run.is_empty() {
-            return Some(self.run.join(" && "));
-        }
-        self.file.clone()
+        join_commands(&self.run).or_else(|| self.file.clone())
     }
+}
+
+/// Join a list of command strings with ` && `, returning `None` for
+/// empty lists. Centralises the repeated `(!v.is_empty()).then(|| …)`
+/// pattern used by both extraction paths.
+fn join_commands(cmds: &[String]) -> Option<String> {
+    (!cmds.is_empty()).then(|| cmds.join(" && "))
 }
 
 /// `mise run <task> [-- args...]`
@@ -265,18 +268,9 @@ struct TaskEntry {
 #[derive(Debug)]
 enum TaskEntryKind {
     /// `name = "cargo build"` or `name = ["echo a", "echo b"]`.
-    InlineRun(InlineRun),
+    InlineRun(RunField),
     /// `[tasks.name]` table.
     Table(TaskTable),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum InlineRun {
-    /// Single-command shorthand.
-    Single(String),
-    /// Series-of-commands shorthand.
-    Multiple(Vec<String>),
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -326,16 +320,14 @@ impl TaskEntry {
     /// external `file` reference.
     fn description(&self) -> Option<String> {
         match &self.kind {
-            TaskEntryKind::InlineRun(InlineRun::Single(s)) => Some(s.clone()),
-            TaskEntryKind::InlineRun(InlineRun::Multiple(v)) => {
-                (!v.is_empty()).then(|| v.join(" && "))
-            }
+            TaskEntryKind::InlineRun(RunField::Single(s)) => Some(s.clone()),
+            TaskEntryKind::InlineRun(RunField::Multiple(v)) => join_commands(v),
             TaskEntryKind::Table(t) => t
                 .description
                 .clone()
                 .or_else(|| match &t.run {
                     Some(RunField::Single(s)) => Some(s.clone()),
-                    Some(RunField::Multiple(v)) => (!v.is_empty()).then(|| v.join(" && ")),
+                    Some(RunField::Multiple(v)) => join_commands(v),
                     None => None,
                 })
                 .or_else(|| t.file.clone()),
@@ -364,7 +356,7 @@ impl<'de> Deserialize<'de> for TaskEntry {
         // array of strings, or full table.
         let value = toml::Value::deserialize(deserializer)?;
         let kind = match value {
-            toml::Value::String(s) => TaskEntryKind::InlineRun(InlineRun::Single(s)),
+            toml::Value::String(s) => TaskEntryKind::InlineRun(RunField::Single(s)),
             toml::Value::Array(arr) => {
                 let mut strings = Vec::with_capacity(arr.len());
                 for v in arr {
@@ -378,11 +370,11 @@ impl<'de> Deserialize<'de> for TaskEntry {
                         }
                     }
                 }
-                TaskEntryKind::InlineRun(InlineRun::Multiple(strings))
+                TaskEntryKind::InlineRun(RunField::Multiple(strings))
             }
             toml::Value::Table(_) => {
                 let table: TaskTable = value.try_into().map_err(serde::de::Error::custom)?;
-                TaskEntryKind::Table(table)
+
             }
             other => {
                 return Err(serde::de::Error::custom(format!(
