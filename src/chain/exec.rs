@@ -86,19 +86,25 @@ fn run_parallel(
     // first reader pushes a line. Otherwise lines would queue in the
     // unbounded mpsc until the spawn loop finished, defeating the
     // "see progress immediately" point of parallel chains.
+    //
+    // Locks are acquired *per write* rather than once for the writer's
+    // lifetime. Holding stdout/stderr locks across the entire mpsc
+    // drain deadlocks against the spawn loop, which calls `eprintln!`
+    // (the `→ <source> <task>` arrow inside `dispatch_task_piped`) for
+    // each item: the writer parks on `rx`, the main thread parks on
+    // `stderr`, and only the first arrow ever surfaces — whichever
+    // thread won the startup race for the lock. Re-locking per line
+    // costs nothing measurable next to the syscall it gates.
     let writer = std::thread::spawn(move || {
         use std::io::Write;
-        let stdout = std::io::stdout();
-        let stderr = std::io::stderr();
-        let mut stdout = stdout.lock();
-        let mut stderr = stderr.lock();
         for msg in rx {
-            let target: &mut dyn Write = if msg.is_stderr {
-                &mut stderr
+            if msg.is_stderr {
+                let mut stderr = std::io::stderr().lock();
+                let _ = writeln!(stderr, "{} {}", msg.prefix, msg.line);
             } else {
-                &mut stdout
-            };
-            let _ = writeln!(target, "{} {}", msg.prefix, msg.line);
+                let mut stdout = std::io::stdout().lock();
+                let _ = writeln!(stdout, "{} {}", msg.prefix, msg.line);
+            }
         }
     });
 
