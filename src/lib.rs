@@ -356,9 +356,11 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     }
 }
 
-/// Extracts the filename portion from an argv[0]-style `OsString`, returning it when non-empty.
+/// Extracts the binary name from an argv[0]-style `OsString`, stripping any
+/// platform-specific executable extension (e.g. `.exe` on Windows).
 ///
-/// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
+/// Returns `Some(String)` with the stem of the file name if `arg0` has a
+/// non-empty file-name segment, `None` otherwise.
 ///
 /// # Examples
 ///
@@ -370,7 +372,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
 #[must_use]
 pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
     let name = Path::new(arg0)
-        .file_name()
+        .file_stem()
         .map(|segment| segment.to_string_lossy().into_owned())?;
 
     (!name.is_empty()).then_some(name)
@@ -816,16 +818,23 @@ mod tests {
     }
 
     #[test]
-    fn bin_name_from_arg0_uses_path_file_name() {
+    fn bin_name_from_arg0_uses_path_file_stem() {
         let name = bin_name_from_arg0(&OsString::from("/tmp/run"));
 
         assert_eq!(name.as_deref(), Some("run"));
     }
 
+    #[test]
+    fn bin_name_from_arg0_strips_exe_extension() {
+        let name = bin_name_from_arg0(&OsString::from("runner.exe"));
+
+        assert_eq!(name.as_deref(), Some("runner"));
+    }
+
     fn stub_context(tasks: &[&str]) -> ProjectContext {
         ProjectContext {
             root: PathBuf::from("."),
-            package_managers: Vec::new(),
+
             task_runners: Vec::new(),
             tasks: tasks
                 .iter()

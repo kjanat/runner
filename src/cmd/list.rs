@@ -64,7 +64,7 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        print_tasks_grouped(&filtered, &ctx.root);
+        print_tasks_grouped(&filtered, &ctx.root, true);
     }
     Ok(())
 }
@@ -75,7 +75,12 @@ pub(crate) fn list(
 /// never reads other [`ProjectContext`] fields, so callers that already
 /// have a filtered task list pass the slice directly instead of forging
 /// a synthetic context.
-pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
+///
+/// When `show_descriptions` is `false` all tasks are printed compactly as
+/// comma-separated names per source line, regardless of whether they carry
+/// descriptions. Use `true` for `runner list` (full detail) and `false` for
+/// `runner info` (compact overview).
+pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path, show_descriptions: bool) {
     let stdout_is_terminal = std::io::stdout().is_terminal();
 
     let sources = [
@@ -101,7 +106,7 @@ pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
 
         let label = source_label(source, root, stdout_is_terminal);
         if !recipes.is_empty() {
-            let has_any_desc = recipes.iter().any(|t| t.description.is_some());
+            let has_any_desc = show_descriptions && recipes.iter().any(|t| t.description.is_some());
             if has_any_desc {
                 for task in &recipes {
                     if let Some(desc) = task.description.as_deref() {

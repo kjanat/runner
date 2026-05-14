@@ -93,6 +93,22 @@ fn resolve_dispatch(
         }
 
         if qualifier.is_none() {
+            // Detect an inverted qualifier like "lint:cargo" where the
+            // user put the source label on the *right* side of the colon.
+            // Give an actionable suggestion instead of falling through to
+            // PM-exec and producing a confusing "No such file or directory".
+            if let Some(colon) = task_name.find(':') {
+                let suffix = &task_name[colon + 1..];
+                if TaskSource::from_label(suffix).is_some() {
+                    let prefix = &task_name[..colon];
+                    bail!(
+                        "source qualifier must come first: try \"{suffix}:{prefix}\" \
+                         instead of \"{task_name}\". \
+                         Run `runner list` to see available tasks.",
+                    );
+                }
+            }
+
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
                     super::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
@@ -375,6 +391,16 @@ pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSourc
 /// file. Smaller values are closer; configs that don't resolve return
 /// [`usize::MAX`] so they lose the tiebreak.
 ///
+/// Three tiers:
+/// - **In-project**: the config directory is an ancestor of `ctx.root`
+///   → returns the ancestor distance (0 = same dir, 1 = parent, …).
+/// - **External / global**: the config exists but is *not* an ancestor
+///   (e.g. `~/.cargo/config.toml`) → returns
+///   [`EXTERNAL_SOURCE_DEPTH`]. This is large enough to lose to any
+///   in-project config but finite so that `display_order` can still
+///   break ties between two external sources.
+/// - **Not found**: `source_dir` returns `None` → returns `usize::MAX`.
+///
 /// Generalizes the depth-aware selection that previously only fired for
 /// Deno projects so that — for any pair of source candidates tied on
 /// [`source_priority`] — the one whose config sits in the nearest
@@ -383,14 +409,21 @@ pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSourc
 /// `deno.json`), and in Cargo + Make/Just/Taskfile setups where the
 /// runner-specific file may live deeper than the workspace root.
 pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
-    source_dir(source, &ctx.root)
-        .and_then(|dir| {
-            ctx.root
-                .ancestors()
-                .position(|ancestor| ancestor == dir.as_path())
-        })
-        .unwrap_or(usize::MAX)
+    let Some(dir) = source_dir(source, &ctx.root) else {
+        return usize::MAX;
+    };
+    ctx.root
+        .ancestors()
+        .position(|ancestor| ancestor == dir.as_path())
+        .unwrap_or(EXTERNAL_SOURCE_DEPTH)
 }
+
+/// Sentinel depth for source configs that exist but live outside the
+/// project's ancestor chain (e.g. `~/.cargo/config.toml`). Must be
+/// larger than any realistic in-project path depth yet small enough
+/// that `display_order` can still distinguish between two external
+/// sources.
+const EXTERNAL_SOURCE_DEPTH: usize = 1_000_000;
 
 /// Locate the directory holding `source`'s config file relative to `root`.
 ///
@@ -404,11 +437,29 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
 /// walkers because each handles workspace boundaries (member globs in
 /// `pnpm-workspace.yaml`/`deno.json`/`Cargo.toml`) that the plain
 /// upward walk doesn't model.
+///
+/// For `CargoAliases`, the anchor may be a `.cargo/config{,.toml}` file
+/// whose *parent* is a `.cargo/` **sub**directory — not an ancestor of
+/// `root`. We resolve one level higher (the directory that *contains*
+/// `.cargo/`) so the depth comparison works correctly against other
+/// sources that sit in the same project directory.
 fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
     let path = match source {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
+        TaskSource::CargoAliases => {
+            let anchor = tool::cargo_aliases::find_anchor(root)?;
+            // `.cargo/config.toml` lives in a hidden sub-directory. Step up
+            // past it so we compare depths at the project-directory level,
+            // not the `.cargo/` level (which is never in `root.ancestors()`).
+            let parent = anchor.parent()?;
+            let dir = if parent.file_name().is_some_and(|n| n == ".cargo") {
+                parent.parent()?.to_path_buf()
+            } else {
+                parent.to_path_buf()
+            };
+            return Some(dir);
+        }
         TaskSource::TurboJson => tool::files::find_first_upwards(root, tool::turbo::FILENAMES),
         TaskSource::Makefile => tool::files::find_first_upwards(root, tool::make::FILENAMES),
         TaskSource::Justfile => tool::files::find_first_upwards(root, tool::just::FILENAMES),
@@ -669,6 +720,101 @@ mod tests {
 
         let depth = super::source_depth(&ctx, TaskSource::Makefile);
         assert_ne!(depth, usize::MAX, "Makefile two levels up should resolve");
+    }
+
+    #[test]
+    fn source_depth_returns_external_sentinel_for_global_config() {
+        // A source whose anchor is outside the project tree (e.g.
+        // ~/.cargo/config.toml for a project with no local .cargo/) should
+        // return EXTERNAL_SOURCE_DEPTH, not usize::MAX. This ensures that
+        // global cargo aliases still lose to in-project sources by depth
+        // while still beating each other via display_order, rather than
+        // appearing identical to "source not found at all".
+        let dir = TempDir::new("source-depth-external");
+        let project = dir.path().join("my-project");
+        fs::create_dir_all(&project).expect("project dir should be created");
+        // Write a Makefile in the project root so the project has a source.
+        fs::write(project.join("Makefile"), "build:\n\techo build\n")
+            .expect("Makefile should be written");
+
+        // Use a context rooted in a sibling directory — the Makefile is not
+        // an ancestor of this root, simulating an external anchor.
+        let sibling = dir.path().join("other-project");
+        fs::create_dir_all(&sibling).expect("sibling dir should be created");
+
+        let ctx = ProjectContext {
+            root: sibling,
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        // No Makefile in `sibling` or any ancestor → source not found → MAX.
+        let not_found_depth = super::source_depth(&ctx, TaskSource::Makefile);
+        assert_eq!(
+            not_found_depth,
+            usize::MAX,
+            "source truly not found should return MAX"
+        );
+
+        // Verify EXTERNAL_SOURCE_DEPTH is < MAX so display_order still tiebreaks.
+        assert!(
+            super::EXTERNAL_SOURCE_DEPTH < usize::MAX,
+            "external sentinel must be less than MAX"
+        );
+    }
+
+    #[test]
+    fn source_depth_for_cargo_aliases_traverses_dot_cargo_subdirectory() {
+        // `.cargo/config.toml` lives in a hidden sub-directory of the project
+        // root, not directly in the project root. `source_dir` must step up
+        // past the `.cargo/` level so that `source_depth` returns a finite
+        // depth equal to that of other sources in the same project directory
+        // (e.g. `bacon.toml`).
+        let dir = TempDir::new("source-depth-cargo-aliases");
+        let dot_cargo = dir.path().join(".cargo");
+        fs::create_dir_all(&dot_cargo).expect(".cargo dir should be created");
+        fs::write(
+            dot_cargo.join("config.toml"),
+            "[alias]\nbuild = \"build --release\"\n",
+        )
+        .expect(".cargo/config.toml should be written");
+
+        // Also write bacon.toml in the same root.
+        fs::write(
+            dir.path().join("bacon.toml"),
+            "[jobs.build]\ncommand = [\"cargo\", \"build\"]\n",
+        )
+        .expect("bacon.toml should be written");
+
+        let ctx = ProjectContext {
+            root: dir.path().to_path_buf(),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let cargo_depth = super::source_depth(&ctx, TaskSource::CargoAliases);
+        let bacon_depth = super::source_depth(&ctx, TaskSource::BaconToml);
+
+        assert_ne!(
+            cargo_depth,
+            usize::MAX,
+            "local .cargo/config.toml should yield finite depth"
+        );
+        assert_eq!(
+            cargo_depth, bacon_depth,
+            "cargo aliases and bacon.toml in the same project dir should have equal depth, \
+             so display_order tiebreaks correctly (cargo=6 < bacon=7)"
+        );
     }
 
     #[test]

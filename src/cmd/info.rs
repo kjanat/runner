@@ -78,7 +78,7 @@ pub(crate) fn info(
     if !ctx.tasks.is_empty() {
         println!();
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
-        print_tasks_grouped(&refs, &ctx.root);
+        print_tasks_grouped(&refs, &ctx.root, false);
     }
     Ok(())
 }
@@ -105,7 +105,7 @@ fn release_url() -> String {
 fn bin_name_from_arg0(arg0: Option<OsString>) -> String {
     arg0.and_then(|raw| {
         Path::new(&raw)
-            .file_name()
+            .file_stem()
             .map(|name| name.to_string_lossy().into_owned())
     })
     .filter(|name| !name.is_empty())
@@ -123,8 +123,20 @@ mod tests {
     use super::{VERSION, bin_name_from_arg0, release_url, title_line};
 
     #[test]
-    fn bin_name_from_arg0_uses_path_file_name() {
+    fn bin_name_from_arg0_uses_path_file_stem() {
         assert_eq!(bin_name_from_arg0(Some(OsString::from("/tmp/run"))), "run");
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_exe_extension() {
+        assert_eq!(
+            bin_name_from_arg0(Some(OsString::from("runner.exe"))),
+            "runner"
+        );
+        assert_eq!(
+            bin_name_from_arg0(Some(OsString::from(r"C:\tools\run.exe"))),
+            "run"
+        );
     }
 
     #[test]
