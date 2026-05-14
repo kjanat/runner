@@ -243,48 +243,111 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 
 /// Extract tasks only from tools that were actually detected, avoiding
 /// unnecessary filesystem reads.
+///
+/// Each enabled extractor runs in its own scoped thread. The slow path
+/// is always a subprocess wait — `just --summary --justfile <path>`,
+/// `mise tasks ls`, `task --list`, `cargo metadata`, `turbo run` schema
+/// reads, etc. — and those waits dominate cold-run wall-clock for any
+/// project that detects more than two task sources. Serial extraction
+/// costs O(N) subprocesses worth of latency; scoped parallelism brings
+/// it down to ~max(extractor_latency) plus thread-spawn overhead.
+///
+/// Pushes are applied in the original declaration order so the task
+/// list keeps the source ordering the resolver and snapshot tests
+/// rely on. `JoinHandle::join` panics propagate the same way a panic
+/// in the previous serial code would have, which is the right
+/// behavior; silently swallowing a poisoned extractor would mask a
+/// real bug.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    if tool::node::has_package_json(dir)
+    use std::thread;
+
+    let with_deno = ctx.package_managers.contains(&PackageManager::Deno);
+    let want_pkg_json_node = tool::node::has_package_json(dir)
         && ctx
             .package_managers
             .iter()
-            .any(|pm| pm.is_node() || *pm == PackageManager::Deno)
-    {
-        push_package_json_tasks(
-            ctx,
-            if ctx.package_managers.contains(&PackageManager::Deno) {
-                tool::node::extract_scripts_upwards(dir)
-            } else {
-                tool::node::extract_scripts(dir)
-            },
-        );
-    } else if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_package_json_tasks(ctx, tool::node::extract_scripts_upwards(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Turbo) {
-        push_named_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Make) {
-        push_described_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Just) {
-        push_just_tasks(ctx, tool::just::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::GoTask) {
-        push_described_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
-    }
-    if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_named_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
-    }
-    if ctx.package_managers.contains(&PackageManager::Cargo) {
-        push_cargo_aliases(ctx, tool::cargo_aliases::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Bacon) {
-        push_described_tasks(ctx, TaskSource::BaconToml, tool::bacon::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Mise) {
-        push_mise_tasks(ctx, tool::mise::extract_tasks(dir));
-    }
+            .any(|pm| pm.is_node() || *pm == PackageManager::Deno);
+    let want_pkg_json_deno = !want_pkg_json_node && with_deno;
+    let want_turbo = ctx.task_runners.contains(&TaskRunner::Turbo);
+    let want_make = ctx.task_runners.contains(&TaskRunner::Make);
+    let want_just = ctx.task_runners.contains(&TaskRunner::Just);
+    let want_go_task = ctx.task_runners.contains(&TaskRunner::GoTask);
+    let want_deno_tasks = with_deno;
+    let want_cargo = ctx.package_managers.contains(&PackageManager::Cargo);
+    let want_bacon = ctx.task_runners.contains(&TaskRunner::Bacon);
+    let want_mise = ctx.task_runners.contains(&TaskRunner::Mise);
+
+    thread::scope(|s| {
+        let pkg_json_h = if want_pkg_json_node {
+            Some(s.spawn(move || {
+                if with_deno {
+                    tool::node::extract_scripts_upwards(dir)
+                } else {
+                    tool::node::extract_scripts(dir)
+                }
+            }))
+        } else if want_pkg_json_deno {
+            Some(s.spawn(move || tool::node::extract_scripts_upwards(dir)))
+        } else {
+            None
+        };
+        let turbo_h = want_turbo.then(|| s.spawn(move || tool::turbo::extract_tasks(dir)));
+        let make_h = want_make.then(|| s.spawn(move || tool::make::extract_tasks(dir)));
+        let just_h = want_just.then(|| s.spawn(move || tool::just::extract_tasks(dir)));
+        let go_task_h = want_go_task.then(|| s.spawn(move || tool::go_task::extract_tasks(dir)));
+        let deno_h = want_deno_tasks.then(|| s.spawn(move || tool::deno::extract_tasks(dir)));
+        let cargo_h = want_cargo.then(|| s.spawn(move || tool::cargo_aliases::extract_tasks(dir)));
+        let bacon_h = want_bacon.then(|| s.spawn(move || tool::bacon::extract_tasks(dir)));
+        let mise_h = want_mise.then(|| s.spawn(move || tool::mise::extract_tasks(dir)));
+
+        if let Some(h) = pkg_json_h {
+            push_package_json_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = turbo_h {
+            push_named_tasks(
+                ctx,
+                TaskSource::TurboJson,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = make_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::Makefile,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = just_h {
+            push_just_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = go_task_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::Taskfile,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = deno_h {
+            push_named_tasks(
+                ctx,
+                TaskSource::DenoJson,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = cargo_h {
+            push_cargo_aliases(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = bacon_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::BaconToml,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = mise_h {
+            push_mise_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+    });
 }
 
 /// Append tasks from the mise source, preserving alias→target metadata.

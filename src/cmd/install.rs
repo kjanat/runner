@@ -1,10 +1,12 @@
 //! `runner install` — install dependencies via every detected package manager.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
 
+use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 
