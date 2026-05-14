@@ -157,8 +157,10 @@ fn resolve_dispatch(
     Ok(cmd)
 }
 
-/// Resolve `task` and spawn it with piped stdout/stderr so the caller
-/// can multiplex output. Used by the parallel chain executor
+/// Resolve `task` and spawn it with piped stdout/stderr (so the caller
+/// can multiplex output) and `Stdio::null()` stdin (so parallel
+/// siblings don't compete for the parent TTY or interfere with each
+/// other's terminal modes). Used by the parallel chain executor
 /// (`chain::exec::run_parallel`).
 pub(crate) fn dispatch_task_piped(
     ctx: &ProjectContext,
@@ -170,7 +172,9 @@ pub(crate) fn dispatch_task_piped(
     use std::process::Stdio;
 
     let mut cmd = resolve_dispatch(ctx, overrides, task, args, sink)?;
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     Ok(cmd.spawn()?)
 }
 
