@@ -4,20 +4,38 @@
 //! from the set of task names supplied up front.
 
 use std::io::{BufRead, BufReader, Read};
-use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use colored::{Color, Colorize};
 
-/// One captured line from a task's piped stdio.
-#[derive(Debug)]
-pub(crate) struct PrefixedLine {
-    /// Padded prefix bracket, e.g. `[build ]` — color may be embedded.
-    pub prefix: String,
-    /// The line content (no trailing `\n`).
-    pub line: String,
-    /// Whether this line came from the task's stderr.
-    pub is_stderr: bool,
+/// Synchronous, thread-safe destination for prefixed chain output. Each
+/// `emit` call writes a single line and releases the underlying lock
+/// before returning, so `eprintln!` / `println!` from the main thread
+/// can interleave with reader threads without the deadlock the old
+/// mpsc-plus-dedicated-writer design suffered.
+pub(crate) trait LineSink: Send + Sync {
+    /// Write `line` to the appropriate stream, prefixed with `prefix`.
+    /// Implementations must acquire whatever lock guards the underlying
+    /// stream *per call* and release it before returning.
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str);
+}
+
+/// Production sink — locks `std::io::stdout` / `std::io::stderr` per
+/// line. Zero-sized; share via `Arc::new(StdioSink)`.
+pub(crate) struct StdioSink;
+
+impl LineSink for StdioSink {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
+        use std::io::Write;
+        if is_stderr {
+            let mut h = std::io::stderr().lock();
+            let _ = writeln!(h, "{prefix} {line}");
+        } else {
+            let mut h = std::io::stdout().lock();
+            let _ = writeln!(h, "{prefix} {line}");
+        }
+    }
 }
 
 /// Compute the right-padded width for prefix labels in the chain.
@@ -57,14 +75,14 @@ pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String 
 }
 
 /// Spawn one reader thread per `(prefix, is_stderr, reader)` entry in
-/// `streams`. Each thread reads its `Read` line-by-line and pushes
-/// [`PrefixedLine`] values into the supplied `sender`. Returns the
-/// `Vec<JoinHandle<()>>` for the spawned threads — the caller owns the
-/// receiver, keeps the handles alive until the channel closes, and joins
-/// each handle once all senders have been dropped.
+/// `streams`. Each thread reads its `Read` line-by-line and pushes the
+/// result through `sink`. Returns the `Vec<JoinHandle<()>>` for the
+/// spawned threads — the caller joins each handle once the underlying
+/// pipes close (which happens naturally when each child process exits
+/// and the OS tears its stdio fds down).
 pub(crate) fn spawn_readers<R>(
     streams: Vec<(String, bool, R)>,
-    sender: &Sender<PrefixedLine>,
+    sink: Arc<dyn LineSink>,
 ) -> Vec<JoinHandle<()>>
 where
     R: Read + Send + 'static,
@@ -72,21 +90,12 @@ where
     streams
         .into_iter()
         .map(|(prefix, is_stderr, reader)| {
-            let tx = sender.clone();
+            let sink = Arc::clone(&sink);
             std::thread::spawn(move || {
                 let buf = BufReader::new(reader);
                 for line in buf.lines() {
                     let Ok(line) = line else { return };
-                    if tx
-                        .send(PrefixedLine {
-                            prefix: prefix.clone(),
-                            line,
-                            is_stderr,
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
+                    sink.emit(&prefix, is_stderr, &line);
                 }
             })
         })
@@ -96,7 +105,35 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::channel;
+    use std::sync::Mutex;
+
+    /// Test sink that records every emit into a shared `Vec`. Lets the
+    /// reader tests assert order-insensitively without standing up the
+    /// production stdio locking path.
+    struct VecSink {
+        lines: Mutex<Vec<(String, bool, String)>>,
+    }
+
+    impl VecSink {
+        fn new() -> Self {
+            Self {
+                lines: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn take(&self) -> Vec<(String, bool, String)> {
+            std::mem::take(&mut *self.lines.lock().unwrap())
+        }
+    }
+
+    impl LineSink for VecSink {
+        fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
+            self.lines
+                .lock()
+                .unwrap()
+                .push((prefix.to_string(), is_stderr, line.to_string()));
+        }
+    }
 
     #[test]
     fn prefix_width_picks_longest() {
@@ -127,16 +164,38 @@ mod tests {
     }
 
     #[test]
-    fn spawn_readers_streams_lines_through_channel() {
-        let (tx, rx) = channel();
+    fn spawn_readers_streams_lines_through_sink() {
+        let sink = Arc::new(VecSink::new());
         let stream = std::io::Cursor::new(b"hello\nworld\n".to_vec());
-        let handles = spawn_readers(vec![("[t]".into(), false, stream)], &tx);
-        drop(tx);
+        let handles = spawn_readers(
+            vec![("[t]".into(), false, stream)],
+            Arc::clone(&sink) as Arc<dyn LineSink>,
+        );
         for h in handles {
             h.join().unwrap();
         }
-        let mut got: Vec<String> = rx.iter().map(|p| p.line).collect();
+        let mut got: Vec<String> = sink.take().into_iter().map(|(_, _, line)| line).collect();
         got.sort();
         assert_eq!(got, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn spawn_readers_routes_stderr_flag_through_sink() {
+        let sink = Arc::new(VecSink::new());
+        let out = std::io::Cursor::new(b"o\n".to_vec());
+        let err = std::io::Cursor::new(b"e\n".to_vec());
+        let handles = spawn_readers(
+            vec![("[t]".into(), false, out), ("[t]".into(), true, err)],
+            Arc::clone(&sink) as Arc<dyn LineSink>,
+        );
+        for h in handles {
+            h.join().unwrap();
+        }
+        let mut got = sink.take();
+        got.sort_by_key(|(_, is_err, _)| *is_err);
+        assert_eq!(got[0].2, "o");
+        assert!(!got[0].1);
+        assert_eq!(got[1].2, "e");
+        assert!(got[1].1);
     }
 }

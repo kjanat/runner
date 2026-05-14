@@ -71,42 +71,22 @@ fn run_parallel(
     warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
     use std::process::Child;
-    use std::sync::mpsc::channel;
+    use std::sync::Arc;
 
-    use crate::chain::mux::{PrefixedLine, prefix_width, render_prefix, spawn_readers};
+    use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
 
     let names: Vec<&str> = chain.items.iter().map(ChainItem::display_name).collect();
     let width = prefix_width(&names);
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
 
-    let (tx, rx) = channel::<PrefixedLine>();
-
-    // Writer thread: drain channel, write prefixed lines to parent stdio.
-    // Spawned *before* the spawn loop so output flows the moment the
-    // first reader pushes a line. Otherwise lines would queue in the
-    // unbounded mpsc until the spawn loop finished, defeating the
-    // "see progress immediately" point of parallel chains.
-    //
-    // Locks are acquired *per write* rather than once for the writer's
-    // lifetime. Holding stdout/stderr locks across the entire mpsc
-    // drain deadlocks against the spawn loop, which calls `eprintln!`
-    // (the `→ <source> <task>` arrow inside `dispatch_task_piped`) for
-    // each item: the writer parks on `rx`, the main thread parks on
-    // `stderr`, and only the first arrow ever surfaces — whichever
-    // thread won the startup race for the lock. Re-locking per line
-    // costs nothing measurable next to the syscall it gates.
-    let writer = std::thread::spawn(move || {
-        use std::io::Write;
-        for msg in rx {
-            if msg.is_stderr {
-                let mut stderr = std::io::stderr().lock();
-                let _ = writeln!(stderr, "{} {}", msg.prefix, msg.line);
-            } else {
-                let mut stdout = std::io::stdout().lock();
-                let _ = writeln!(stdout, "{} {}", msg.prefix, msg.line);
-            }
-        }
-    });
+    // Synchronous sink: each reader thread writes lines directly to
+    // stdout/stderr, acquiring the underlying lock per line. The old
+    // design ran a dedicated writer thread that held the stdio locks
+    // across an mpsc drain, which deadlocked against `eprintln!` calls
+    // on the main thread (the `→ <source> <task>` arrow inside
+    // `dispatch_task_piped`). A sink keeps every emit point on the
+    // caller's thread and bounds lock duration to one `writeln!`.
+    let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
 
     // Spawn each task with piped stdio and start reader threads.
     let mut children: Vec<(String, Child)> = Vec::with_capacity(chain.items.len());
@@ -116,9 +96,8 @@ fn run_parallel(
     // bail-out below), already-spawned children would otherwise outlive
     // this function — `std::process::Child::drop` does NOT kill the
     // process. Cleanup explicitly: kill + reap accumulated children,
-    // drop the producer end of the channel so reader threads observe
-    // EOF, and join the reader handles + writer before propagating
-    // the error.
+    // then join readers (their pipes close once the children are
+    // reaped, so the threads exit on their own).
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
             let prefix = render_prefix(item.display_name(), width, colorize);
@@ -146,14 +125,13 @@ fn run_parallel(
                     (prefix.clone(), false, stdout),
                     (prefix.clone(), true, stderr),
                 ],
-                &tx,
+                Arc::clone(&sink),
             ));
             children.push((item.display_name().to_string(), child));
         }
         Ok(())
     })();
     if let Err(e) = spawn_outcome {
-        drop(tx);
         for (_, mut c) in children {
             let _ = c.kill();
             let _ = c.wait();
@@ -161,10 +139,8 @@ fn run_parallel(
         for h in reader_handles {
             let _ = h.join();
         }
-        let _ = writer.join();
         return Err(e);
     }
-    drop(tx); // close producer side so channel closes when all readers finish
 
     // Poll children. On first failure with KillOnFail, kill remaining
     // siblings; otherwise let them finish naturally.
@@ -199,11 +175,11 @@ fn run_parallel(
         }
     }
 
-    // Join readers + writer. Readers exit when child stdio closes.
+    // Readers exit when child stdio closes; join so any in-flight
+    // `sink.emit` finishes before we return.
     for h in reader_handles {
         let _ = h.join();
     }
-    let _ = writer.join();
 
     Ok(first_failure.unwrap_or(0))
 }
