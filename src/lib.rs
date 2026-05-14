@@ -13,7 +13,7 @@
 //! **Package managers/ecosystems:** [npm], [yarn], [pnpm], [bun], [cargo],
 //! [deno], [uv], [poetry], [pipenv], [go], [bundler], [composer]
 //!
-//! **Task runners:** [turbo], [nx], [make], [just], [go-task], [mise]
+//! **Task runners:** [turbo], [nx], [make], [just], [go-task], [mise], [bacon]
 //!
 //! [npm]: https://www.npmjs.com/
 //! [yarn]: https://yarnpkg.com/
@@ -33,6 +33,7 @@
 //! [just]: https://just.systems/
 //! [go-task]: https://taskfile.dev/
 //! [mise]: https://mise.jdx.dev/
+//! [bacon]: https://dystroy.org/bacon/
 //!
 //! ## Library API
 //!

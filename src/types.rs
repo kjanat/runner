@@ -136,6 +136,9 @@ pub(crate) enum TaskSource {
     CargoAliases,
     /// `bacon.toml` `[jobs.<name>]` tables.
     BaconToml,
+    /// `mise.toml` / `.mise.toml` `[tasks.<name>]` tables (and the
+    /// inline `[tasks]` flat form).
+    MiseToml,
 }
 
 /// Expected Node.js version parsed from a version file.
@@ -521,7 +524,7 @@ impl TaskRunner {
     /// passthrough wrappers against the underlying runner's task entry.
     ///
     /// Returns `None` for runners where task extraction is not yet
-    /// implemented (Nx, Mise); a passthrough wrapper still routes to that
+    /// implemented (Nx); a passthrough wrapper still routes to that
     /// runner at dispatch time, but completion shows the script as its
     /// own candidate because there is no peer entry to collapse it into.
     pub(crate) const fn task_source(self) -> Option<TaskSource> {
@@ -531,7 +534,8 @@ impl TaskRunner {
             Self::Just => Some(TaskSource::Justfile),
             Self::GoTask => Some(TaskSource::Taskfile),
             Self::Bacon => Some(TaskSource::BaconToml),
-            Self::Nx | Self::Mise => None,
+            Self::Mise => Some(TaskSource::MiseToml),
+            Self::Nx => None,
         }
     }
 }
@@ -551,6 +555,7 @@ impl TaskSource {
             // file name represents it.
             Self::CargoAliases => "cargo",
             Self::BaconToml => "bacon.toml",
+            Self::MiseToml => "mise.toml",
         }
     }
 
@@ -565,6 +570,7 @@ impl TaskSource {
             "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
             "cargo" => Some(Self::CargoAliases),
             "bacon.toml" => Some(Self::BaconToml),
+            "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
             _ => None,
         }
     }
@@ -580,6 +586,7 @@ impl TaskSource {
             Self::DenoJson => 5,
             Self::CargoAliases => 6,
             Self::BaconToml => 7,
+            Self::MiseToml => 8,
         }
     }
 }

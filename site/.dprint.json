@@ -1,4 +1,4 @@
 {
 	"$schema": "https://dprint.dev/schemas/v0.json",
-	"extends": "../.dprint.json"
+	"extends": "../.dprint.jsonc"
 }

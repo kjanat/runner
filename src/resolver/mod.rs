@@ -35,7 +35,7 @@ use crate::chain::FailurePolicy;
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
 use crate::tool::node::{
     ManifestPmDecl, ManifestSource, OnFail, VersionCheck, check_version_constraint,
-    detect_pm_from_manifest,
+    detect_pm_from_manifest, find_manifest_upwards,
 };
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
@@ -332,6 +332,16 @@ impl<'ctx> Resolver<'ctx> {
 
         match self.overrides.fallback {
             FallbackPolicy::Probe => {
+                // Don't probe Node PMs in projects with no Node-ecosystem
+                // evidence. Earlier steps already covered overrides,
+                // manifest declarations, and lockfiles; the absence of a
+                // `package.json` anywhere upward means this isn't a Node
+                // project, and picking up `bun`/`pnpm`/`yarn`/`npm` from
+                // `$PATH` would dispatch through the wrong ecosystem
+                // (see issue #23: `runner run list` in a Go repo).
+                if find_manifest_upwards(&self.ctx.root).is_none() {
+                    return Err(no_pm_found_soft());
+                }
                 let mut found = probe::probe_all(probe::NODE_PROBE_ORDER);
                 if found.is_empty() {
                     return Err(no_pm_found_soft());
@@ -1200,23 +1210,84 @@ mod tests {
         // arbitrary-command fallback in `cmd::run::run` legitimately
         // wants to drop this and try a direct PATH spawn, so the error
         // carries `soft: true`.
-        let ctx = context(vec![]);
+        //
+        // A TempDir with no `package.json` short-circuits the probe
+        // entirely (issue #23 guard), making the assertion
+        // deterministic regardless of what's on the host `$PATH`.
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-soft-no-signals");
+        let mut ctx = context(vec![]);
+        ctx.root = dir.path().to_path_buf();
+
         let overrides = ResolutionOverrides::default();
-        // The probe call is a real `which`-style lookup; if a bun/pnpm
-        // binary happens to be installed on the test host the test
-        // becomes a no-op rather than a false failure.
-        let result = Resolver::new(&ctx, &overrides).resolve_node_pm();
-        match result {
-            Ok(_) => {
-                // PATH probe found a real PM on the host. Test
-                // becomes a non-assertion; the soft-sentinel branch
-                // is exercised by other resolver tests that mock
-                // the probe directly.
-            }
-            Err(e) => assert!(
-                matches!(e, ResolveError::NoSignalsFound { soft: true, .. }),
-                "probe-policy miss must be the soft variant, got: {e:?}"
+        let err = Resolver::new(&ctx, &overrides)
+            .resolve_node_pm()
+            .expect_err("probe with no Node evidence must error");
+
+        assert!(
+            matches!(err, ResolveError::NoSignalsFound { soft: true, .. }),
+            "probe-policy miss must be the soft variant, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_probe_skipped_when_no_package_json_present() {
+        // Issue #23: in a non-Node project (e.g., a Go repo with
+        // `go.mod` and `.mise.toml`), the resolver must not fall
+        // through to a Node PM via PATH. The soft `NoSignalsFound`
+        // lets `cmd::run` direct-spawn the target instead of
+        // routing through `bun`/`pnpm`/`yarn`/`npm`.
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-no-pkgjson");
+        // Detected ecosystem signals are non-Node — mirrors what
+        // `detect` would produce for a Go project.
+        let mut ctx = context(vec![PackageManager::Go]);
+        ctx.root = dir.path().to_path_buf();
+
+        let overrides = ResolutionOverrides::default();
+        let err = Resolver::new(&ctx, &overrides)
+            .resolve_node_pm()
+            .expect_err("non-Node project must not yield a Node PM from PATH");
+
+        assert!(
+            matches!(err, ResolveError::NoSignalsFound { soft: true, .. }),
+            "expected soft NoSignalsFound, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_probe_fires_when_package_json_exists() {
+        // Pins the legitimate PATH-probe path: a greenfield Node
+        // project with `package.json` and no lockfile must still
+        // get a Node PM picked from PATH (Bun-test fallback in
+        // `cmd::run` depends on this resolving to `Bun`). When no
+        // Node PM is on the host PATH we accept the soft error;
+        // what we're guarding against is the issue-#23 early
+        // return firing despite Node evidence.
+        use std::fs;
+
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("resolver-greenfield-node");
+        fs::write(dir.path().join("package.json"), "{}").expect("package.json should be written");
+
+        let mut ctx = context(vec![]);
+        ctx.root = dir.path().to_path_buf();
+
+        let overrides = ResolutionOverrides::default();
+        match Resolver::new(&ctx, &overrides).resolve_node_pm() {
+            Ok(decision) => assert!(
+                matches!(decision.via, ResolutionStep::PathProbe { .. }),
+                "expected PathProbe step, got {:?}",
+                decision.via,
             ),
+            Err(ResolveError::NoSignalsFound { soft: true, .. }) => {
+                // Host has no Node PM on PATH; probe ran but
+                // returned nothing. The guard didn't trip early.
+            }
+            Err(e) => panic!("unexpected resolver error: {e:?}"),
         }
     }
 

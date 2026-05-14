@@ -404,6 +404,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Justfile => tool::files::find_first_upwards(root, tool::just::FILENAMES),
         TaskSource::Taskfile => tool::files::find_first_upwards(root, tool::go_task::FILENAMES),
         TaskSource::BaconToml => tool::files::find_first_upwards(root, tool::bacon::FILENAMES),
+        TaskSource::MiseToml => tool::files::find_first_upwards(root, tool::mise::FILENAMES),
     };
     path.and_then(|path| path.parent().map(Path::to_path_buf))
 }
@@ -470,6 +471,7 @@ fn build_run_command(
         TaskSource::DenoJson => tool::deno::run_cmd(task, args),
         TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(task, args),
         TaskSource::BaconToml => tool::bacon::run_cmd(task, args),
+        TaskSource::MiseToml => tool::mise::run_cmd(task, args),
     })
 }
 
