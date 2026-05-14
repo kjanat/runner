@@ -60,8 +60,8 @@ mod cmd;
 mod complete;
 mod config;
 mod detect;
-mod report;
 mod resolver;
+mod schema;
 mod tool;
 mod types;
 
@@ -598,7 +598,7 @@ fn dispatch_run(
 /// the same on `doctor` (json) and `info` (human) — version negotiation
 /// is uniform across the four JSON surfaces and their human siblings.
 fn resolve_schema_version(requested: Option<u32>) -> Result<u32> {
-    report::validate_schema_version(requested.unwrap_or(report::Project::SCHEMA_VERSION))
+    schema::validate_schema_version(requested.unwrap_or(schema::CURRENT_VERSION))
 }
 
 /// Build [`resolver::ResolutionOverrides`] from a parsed CLI + loaded config.

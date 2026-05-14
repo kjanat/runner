@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use colored::Colorize;
 
-use crate::report::Project;
 use crate::resolver::ResolutionOverrides;
+use crate::schema::Project;
 use crate::tool;
 use crate::types::{ProjectContext, Task, TaskSource};
 

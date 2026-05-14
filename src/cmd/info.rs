@@ -9,8 +9,8 @@ use anyhow::Result;
 use colored::Colorize;
 
 use super::list::print_tasks_grouped;
-use crate::report::Project;
 use crate::resolver::ResolutionOverrides;
+use crate::schema::Project;
 use crate::types::{ProjectContext, version_matches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");

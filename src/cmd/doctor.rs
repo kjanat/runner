@@ -17,8 +17,8 @@ use anyhow::Result;
 use colored::Colorize;
 use serde_json::{Map, Value};
 
-use crate::report::Project;
 use crate::resolver::ResolutionOverrides;
+use crate::schema::Project;
 use crate::types::ProjectContext;
 
 /// Print a full diagnostic dump of the resolver's view of `ctx`.
@@ -298,14 +298,14 @@ mod tests {
             &ctx,
             &ResolutionOverrides::default(),
             true,
-            crate::report::Project::SCHEMA_VERSION,
+            crate::schema::CURRENT_VERSION,
         )
         .expect("json render should succeed");
         doctor(
             &ctx,
             &ResolutionOverrides::default(),
             false,
-            crate::report::Project::SCHEMA_VERSION,
+            crate::schema::CURRENT_VERSION,
         )
         .expect("human render should succeed");
     }

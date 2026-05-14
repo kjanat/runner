@@ -112,7 +112,7 @@ fn candidate_json(
         json!(depth)
     };
     json!({
-        "source": crate::report::source_label_for(task.source, schema_version),
+        "source": crate::schema::labels::source_label_for(task.source, schema_version),
         "source_priority": source_priority(overrides, task.source),
         "depth": depth_value,
         "display_order": task.source.display_order(),
@@ -262,7 +262,7 @@ mod tests {
             &ResolutionOverrides::default(),
             "build",
             true,
-            crate::report::Project::SCHEMA_VERSION,
+            crate::schema::CURRENT_VERSION,
         )
         .expect("why should succeed even when task is missing");
     }
@@ -273,7 +273,7 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
-        let version = crate::report::Project::SCHEMA_VERSION;
+        let version = crate::schema::CURRENT_VERSION;
         why(
             &ctx,
             &ResolutionOverrides::default(),

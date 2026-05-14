@@ -1,20 +1,22 @@
-//! Typed schema for `--json` output across `doctor`, `info`, `list`,
-//! and `why`.
+//! Typed JSON shapes for `--json` output across `doctor`, `info`, `list`, and `why`.
 //!
-//! Per the resolved design decision in
-//! `plans/eager-squishing-peacock.md` (A4), every subcommand projects
-//! from a single source-of-truth [`Project`] struct so the JSON
-//! contract is defined in one place. Doctor emits the full struct;
-//! info/list emit projections (currently the full shape with empty
-//! task tables collapsed away by `#[serde(skip_serializing_if)]`).
+//! Every subcommand projects from the single source-of-truth [`Project`]
+//! struct so the contract is defined in one place. Doctor emits the full
+//! struct; info/list emit projections (currently the full shape with
+//! empty task tables collapsed away by `#[serde(skip_serializing_if)]`).
 //!
-//! The schema is versioned via [`Project::SCHEMA_VERSION`]; bumping it
-//! is a breaking change to the public JSON contract.
+//! Version negotiation: [`Project::build_with_schema`] takes the requested
+//! schema version and routes per-field label resolution through
+//! [`super::labels::source_label_for`]. Today the *shape* of `Project`
+//! is identical across v1 and v2 — only label *values* differ. If a
+//! future version diverges in shape, split this struct per-version and
+//! keep the builder switch in here.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use super::labels::source_label_for;
 use crate::resolver::{
     FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides, Resolver,
 };
@@ -54,36 +56,22 @@ pub(crate) struct Project<'a> {
 }
 
 impl<'a> Project<'a> {
-    /// Schema version for the JSON contract. Bump on any breaking change.
-    ///
-    /// v2: source labels standardized to tool names — `"just"` instead
-    /// of `"justfile"`, `"bacon"` instead of `"bacon.toml"`, `"make"`
-    /// instead of `"Makefile"`, `"turbo"` instead of `"turbo.json"`,
-    /// `"deno"` instead of `"deno.json"`, `"task"` instead of
-    /// `"Taskfile"`, `"mise"` instead of `"mise.toml"`. `"package.json"`
-    /// and `"cargo"` unchanged. Consumers reading `decisions.*.source`
-    /// or `tasks[].source` need to update their string comparisons.
-    pub(crate) const SCHEMA_VERSION: u32 = 2;
-
-    /// Build the full report at the latest [`SCHEMA_VERSION`]. Test-only
-    /// convenience wrapper around [`build_with_schema`] — production
-    /// callers go through the dispatcher which validates `--schema-version`
-    /// before calling, so they always pass the version explicitly.
-    ///
-    /// [`SCHEMA_VERSION`]: Self::SCHEMA_VERSION
-    /// [`build_with_schema`]: Self::build_with_schema
+    /// Build the full report at the latest [`super::CURRENT_VERSION`].
+    /// Test-only convenience — production callers go through the
+    /// dispatcher, which validates `--schema-version` and always
+    /// passes a concrete version to [`Self::build_with_schema`].
     #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
-        Self::build_with_schema(ctx, overrides, Self::SCHEMA_VERSION)
+        Self::build_with_schema(ctx, overrides, super::CURRENT_VERSION)
     }
 
     /// Build the report against a specific schema version. `schema_version`
-    /// must satisfy `1 <= v <= SCHEMA_VERSION`; callers should validate
-    /// before calling so the CLI surfaces a useful error.
+    /// must be a value [`super::validate_schema_version`] would accept;
+    /// callers validate before calling so the CLI surfaces a useful error.
     ///
-    /// Source labels switch between v1 (filename-style: `"justfile"`,
-    /// `"bacon.toml"`, …) and v2 (tool names: `"just"`, `"bacon"`, …).
-    /// PM and `TaskRunner` labels are unchanged across versions.
+    /// Per-field versioning: source labels route through
+    /// [`super::labels::source_label_for`]. PM and `TaskRunner` labels
+    /// are unchanged across versions.
     pub(crate) fn build_with_schema(
         ctx: &'a ProjectContext,
         overrides: &ResolutionOverrides,
@@ -367,7 +355,8 @@ pub(crate) enum NodePmDecision {
 pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
-    /// Source label (e.g. `"package.json"`, `"justfile"`).
+    /// Source label — version-resolved at build time via
+    /// [`super::labels::source_label_for`].
     pub source: &'static str,
     /// Human-readable description, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -435,34 +424,6 @@ fn origin_label(origin: &OverrideOrigin) -> String {
         OverrideOrigin::EnvVar => "env".to_string(),
         OverrideOrigin::ConfigFile { path } => format!("config:{}", path.display()),
     }
-}
-
-/// Return the label string for `source` under the given JSON schema version.
-/// v1 → legacy filename-style (`"justfile"`, `"bacon.toml"`, …);
-/// any newer version → canonical tool-name [`TaskSource::label`].
-pub(crate) const fn source_label_for(source: TaskSource, schema_version: u32) -> &'static str {
-    match schema_version {
-        1 => source.label_v1(),
-        _ => source.label(),
-    }
-}
-
-/// Validate that `requested` is a schema version this binary can produce.
-/// Currently 1 and 2 are both supported; older binaries will error on
-/// values outside that range so client scripts get a clear "I asked for
-/// schema X, server only speaks 1..=N" diagnostic.
-///
-/// # Errors
-///
-/// Returns `Err` when `requested == 0` or `requested > Project::SCHEMA_VERSION`.
-pub(crate) fn validate_schema_version(requested: u32) -> anyhow::Result<u32> {
-    if requested == 0 || requested > Project::SCHEMA_VERSION {
-        anyhow::bail!(
-            "unsupported --schema-version {requested}; this binary speaks 1..={max}",
-            max = Project::SCHEMA_VERSION,
-        );
-    }
-    Ok(requested)
 }
 
 const fn fallback_label(policy: FallbackPolicy) -> &'static str {
@@ -535,7 +496,7 @@ fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Project, source_label_for, validate_schema_version};
+    use super::Project;
     use crate::resolver::ResolutionOverrides;
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
@@ -607,56 +568,6 @@ mod tests {
 
         assert_eq!(view.tasks.len(), 1);
         assert_eq!(view.tasks[0].name, "fmt");
-    }
-
-    #[test]
-    fn source_label_for_returns_legacy_strings_under_v1() {
-        // v1 contract: filename-style labels. Consumers reading the
-        // JSON `source` field with `--schema-version=1` get the same
-        // strings they had before the v2 rename.
-        assert_eq!(source_label_for(TaskSource::Justfile, 1), "justfile");
-        assert_eq!(source_label_for(TaskSource::BaconToml, 1), "bacon.toml");
-        assert_eq!(source_label_for(TaskSource::MiseToml, 1), "mise.toml");
-        assert_eq!(source_label_for(TaskSource::Makefile, 1), "Makefile");
-        assert_eq!(source_label_for(TaskSource::TurboJson, 1), "turbo.json");
-        assert_eq!(source_label_for(TaskSource::DenoJson, 1), "deno.json");
-        assert_eq!(source_label_for(TaskSource::Taskfile, 1), "Taskfile");
-        // Unchanged across versions:
-        assert_eq!(source_label_for(TaskSource::CargoAliases, 1), "cargo");
-        assert_eq!(source_label_for(TaskSource::PackageJson, 1), "package.json");
-    }
-
-    #[test]
-    fn source_label_for_returns_tool_names_under_v2() {
-        assert_eq!(source_label_for(TaskSource::Justfile, 2), "just");
-        assert_eq!(source_label_for(TaskSource::BaconToml, 2), "bacon");
-        assert_eq!(source_label_for(TaskSource::MiseToml, 2), "mise");
-        assert_eq!(source_label_for(TaskSource::Makefile, 2), "make");
-        assert_eq!(source_label_for(TaskSource::TurboJson, 2), "turbo");
-        assert_eq!(source_label_for(TaskSource::DenoJson, 2), "deno");
-        assert_eq!(source_label_for(TaskSource::Taskfile, 2), "task");
-        assert_eq!(source_label_for(TaskSource::CargoAliases, 2), "cargo");
-        assert_eq!(source_label_for(TaskSource::PackageJson, 2), "package.json");
-    }
-
-    #[test]
-    fn validate_schema_version_accepts_supported_range() {
-        assert_eq!(validate_schema_version(1).unwrap(), 1);
-        assert_eq!(validate_schema_version(2).unwrap(), 2);
-    }
-
-    #[test]
-    fn validate_schema_version_rejects_zero_and_future_versions() {
-        let err = validate_schema_version(0).expect_err("v0 must error");
-        assert!(format!("{err}").contains("unsupported"));
-
-        let err = validate_schema_version(99).expect_err("future versions must error");
-        let msg = format!("{err}");
-        assert!(msg.contains("unsupported"));
-        assert!(
-            msg.contains("1..=2"),
-            "error should advertise the supported range: {msg}",
-        );
     }
 
     #[test]
