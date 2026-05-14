@@ -292,28 +292,17 @@ fn push_mise_tasks(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,
 ) {
-    match result {
-        Ok(entries) => {
-            for entry in entries {
-                let (name, description, alias_of) = match entry {
-                    tool::mise::ExtractedTask::Recipe { name, description } => {
-                        (name, description, None)
-                    }
-                    tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
-                };
-                ctx.tasks.push(Task {
-                    name,
-                    source: TaskSource::MiseToml,
-                    description,
-                    alias_of,
-                    passthrough_to: None,
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::MiseToml.label(),
-            error: format!("{err:#}"),
-        }),
+    push_recipe_alias_tasks(
+        ctx,
+        TaskSource::MiseToml,
+        result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
+    );
+}
+
+fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> (String, Option<String>, Option<String>) {
+    match entry {
+        tool::mise::ExtractedTask::Recipe { name, description } => (name, description, None),
+        tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
     }
 }
 
@@ -418,16 +407,35 @@ fn push_just_tasks(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::just::ExtractedTask>>,
 ) {
+    push_recipe_alias_tasks(
+        ctx,
+        TaskSource::Justfile,
+        result.map(|entries| entries.into_iter().map(just_entry_triple).collect()),
+    );
+}
+
+fn just_entry_triple(entry: tool::just::ExtractedTask) -> (String, Option<String>, Option<String>) {
+    match entry {
+        tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
+        tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+    }
+}
+
+/// Push `(name, description, alias_of)` triples into `ctx.tasks` under
+/// `source`, or record a `TaskListUnreadable` warning on error. Shared
+/// by [`push_mise_tasks`] and [`push_just_tasks`] — both runners emit
+/// recipe-or-alias variants that flatten to the same triple shape.
+fn push_recipe_alias_tasks(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<(String, Option<String>, Option<String>)>>,
+) {
     match result {
         Ok(entries) => {
-            for entry in entries {
-                let (name, description, alias_of) = match entry {
-                    tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
-                    tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
-                };
+            for (name, description, alias_of) in entries {
                 ctx.tasks.push(Task {
                     name,
-                    source: TaskSource::Justfile,
+                    source,
                     description,
                     alias_of,
                     passthrough_to: None,
@@ -435,7 +443,7 @@ fn push_just_tasks(
             }
         }
         Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::Justfile.label(),
+            source: source.label(),
             error: format!("{err:#}"),
         }),
     }

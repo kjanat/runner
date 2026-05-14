@@ -105,18 +105,30 @@ fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedT
             name: entry.name.clone(),
             description,
         });
-        for alias in entry.aliases {
-            if alias.starts_with('_') || alias == entry.name {
-                continue;
-            }
-            tasks.push(ExtractedTask::Alias {
-                name: alias,
-                target: entry.name.clone(),
-            });
-        }
+        push_aliases(&mut tasks, &entry.name, entry.aliases);
     }
     tasks.sort_by(|a, b| a.name().cmp(b.name()));
     Some(tasks)
+}
+
+/// Append `Alias` entries for `target` to `tasks`, skipping
+/// underscore-prefixed names (mise's own private-task convention) and
+/// self-aliases. Shared by [`parse_cli_output`] and
+/// [`extract_tasks_from_source`] so the filter rules stay in one place.
+fn push_aliases(
+    tasks: &mut Vec<ExtractedTask>,
+    target: &str,
+    aliases: impl IntoIterator<Item = String>,
+) {
+    for alias in aliases {
+        if alias.starts_with('_') || alias == target {
+            continue;
+        }
+        tasks.push(ExtractedTask::Alias {
+            name: alias,
+            target: target.to_owned(),
+        });
+    }
 }
 
 /// `true` when `source` (mise's `source` path for a task) lives inside
@@ -152,15 +164,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
             name: name.clone(),
             description,
         });
-        for alias in aliases {
-            if alias.starts_with('_') || alias == name {
-                continue;
-            }
-            entries.push(ExtractedTask::Alias {
-                name: alias,
-                target: name.clone(),
-            });
-        }
+        push_aliases(&mut entries, &name, aliases);
     }
     entries.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(entries)
@@ -265,18 +269,9 @@ struct TaskEntry {
 #[derive(Debug)]
 enum TaskEntryKind {
     /// `name = "cargo build"` or `name = ["echo a", "echo b"]`.
-    InlineRun(InlineRun),
+    InlineRun(RunField),
     /// `[tasks.name]` table.
     Table(TaskTable),
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum InlineRun {
-    /// Single-command shorthand.
-    Single(String),
-    /// Series-of-commands shorthand.
-    Multiple(Vec<String>),
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -302,11 +297,27 @@ struct TaskTable {
     hide: bool,
 }
 
+/// Shared shape for both inline (`name = "…"` / `name = ["…", "…"]`) and
+/// table-form (`[tasks.name] run = …`) task bodies. Mise accepts a bare
+/// string or a string array in either position.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RunField {
     Single(String),
     Multiple(Vec<String>),
+}
+
+impl RunField {
+    /// Join `Multiple` commands with ` && ` for the description column;
+    /// return the single command verbatim. Empty arrays collapse to
+    /// `None` so the caller can fall through to other description
+    /// sources.
+    fn as_description(&self) -> Option<String> {
+        match self {
+            Self::Single(s) => Some(s.clone()),
+            Self::Multiple(v) => (!v.is_empty()).then(|| v.join(" && ")),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -326,19 +337,12 @@ impl TaskEntry {
     /// external `file` reference.
     fn description(&self) -> Option<String> {
         match &self.kind {
-            TaskEntryKind::InlineRun(InlineRun::Single(s)) => Some(s.clone()),
-            TaskEntryKind::InlineRun(InlineRun::Multiple(v)) => {
-                (!v.is_empty()).then(|| v.join(" && "))
-            }
+            TaskEntryKind::InlineRun(run) => run.as_description(),
             TaskEntryKind::Table(t) => t
                 .description
                 .clone()
                 .filter(|s| !s.trim().is_empty())
-                .or_else(|| match &t.run {
-                    Some(RunField::Single(s)) => Some(s.clone()),
-                    Some(RunField::Multiple(v)) => (!v.is_empty()).then(|| v.join(" && ")),
-                    None => None,
-                })
+                .or_else(|| t.run.as_ref().and_then(RunField::as_description))
                 .or_else(|| t.file.clone()),
         }
     }
@@ -365,7 +369,7 @@ impl<'de> Deserialize<'de> for TaskEntry {
         // array of strings, or full table.
         let value = toml::Value::deserialize(deserializer)?;
         let kind = match value {
-            toml::Value::String(s) => TaskEntryKind::InlineRun(InlineRun::Single(s)),
+            toml::Value::String(s) => TaskEntryKind::InlineRun(RunField::Single(s)),
             toml::Value::Array(arr) => {
                 let mut strings = Vec::with_capacity(arr.len());
                 for v in arr {
@@ -379,7 +383,7 @@ impl<'de> Deserialize<'de> for TaskEntry {
                         }
                     }
                 }
-                TaskEntryKind::InlineRun(InlineRun::Multiple(strings))
+                TaskEntryKind::InlineRun(RunField::Multiple(strings))
             }
             toml::Value::Table(_) => {
                 let table: TaskTable = value.try_into().map_err(serde::de::Error::custom)?;
