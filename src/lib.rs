@@ -1,4 +1,4 @@
-//! # Runner
+//! # Runner (`runner-run` crate)
 //!
 //! ## Overview
 //!
