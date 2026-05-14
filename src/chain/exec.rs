@@ -10,10 +10,22 @@ use crate::chain::{Chain, ChainItem, ChainItemKind, ChainMode, FailurePolicy};
 use crate::resolver::ResolutionOverrides;
 use crate::types::{DetectionWarning, ProjectContext};
 
-/// Dispatch a chain. Returns the first failing task's exit code, or 0
-/// if every task succeeded. Per-task resolver warnings are collected
-/// into a shared `HashSet` so the user sees each unique warning once,
-/// not N times.
+/// Dispatch a chain. Returns the first-observed failing task's exit
+/// code, or 0 if every task succeeded.
+///
+/// "First-observed" means first in *detection* order, not necessarily
+/// first by wall-clock completion: sequential mode short-circuits on
+/// the first non-zero exit (so detection order == completion order);
+/// parallel mode polls children every 50ms and records the first
+/// non-zero code seen during a poll window. When multiple parallel
+/// siblings finish inside the same 50ms window, the recorded code
+/// follows `remaining` iteration (i.e. spawn) order. True
+/// completion-time ordering would need an OS-level termination
+/// timestamp (waitpid + rusage on Linux) which the std crate doesn't
+/// surface — out of scope for v1.
+///
+/// Per-task resolver warnings are collected into a shared `HashSet`
+/// so the user sees each unique warning once, not N times.
 pub(crate) fn run_chain(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
