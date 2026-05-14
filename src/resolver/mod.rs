@@ -1031,26 +1031,42 @@ fn single_source_conflict(
 }
 
 fn parse_pm_label(raw: &str) -> Result<PackageManager> {
-    PackageManager::from_label(raw).ok_or_else(|| {
-        anyhow!(
-            "unknown package manager {raw:?}; expected one of {}",
-            join_labels(
-                PackageManager::all()
-                    .iter()
-                    .copied()
-                    .map(PackageManager::label)
-            ),
-        )
-    })
+    if let Some(pm) = PackageManager::from_label(raw) {
+        return Ok(pm);
+    }
+    if let Some(runner) = TaskRunner::from_label(raw) {
+        return Err(anyhow!(
+            "{:?} is a task runner, not a package manager; use `--runner {}` instead",
+            raw,
+            runner.label(),
+        ));
+    }
+    Err(anyhow!(
+        "unknown package manager {raw:?}; expected one of {}",
+        join_labels(
+            PackageManager::all()
+                .iter()
+                .copied()
+                .map(PackageManager::label)
+        ),
+    ))
 }
 
 fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
-    TaskRunner::from_label(raw).ok_or_else(|| {
-        anyhow!(
-            "unknown task runner {raw:?}; expected one of {}",
-            join_labels(TaskRunner::all().iter().copied().map(TaskRunner::label)),
-        )
-    })
+    if let Some(runner) = TaskRunner::from_label(raw) {
+        return Ok(runner);
+    }
+    if let Some(pm) = PackageManager::from_label(raw) {
+        return Err(anyhow!(
+            "{:?} is a package manager, not a task runner; use `--pm {}` instead",
+            raw,
+            pm.label(),
+        ));
+    }
+    Err(anyhow!(
+        "unknown task runner {raw:?}; expected one of {}",
+        join_labels(TaskRunner::all().iter().copied().map(TaskRunner::label)),
+    ))
 }
 
 /// Generic CLI-then-env override parser. CLI wins; whitespace is
@@ -1486,6 +1502,50 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("unknown task runner"));
         assert!(msg.contains("turbo"));
+    }
+
+    #[test]
+    fn pm_label_that_names_a_runner_suggests_runner_flag() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("mise"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("`--pm mise` should error; mise is a task runner");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("task runner"),
+            "error should call out the category mismatch: {msg}"
+        );
+        assert!(
+            msg.contains("--runner mise"),
+            "error should suggest the correct flag: {msg}"
+        );
+    }
+
+    #[test]
+    fn runner_label_that_names_a_pm_suggests_pm_flag() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: Some("pnpm"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("`--runner pnpm` should error; pnpm is a package manager");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("package manager"),
+            "error should call out the category mismatch: {msg}"
+        );
+        assert!(
+            msg.contains("--pm pnpm"),
+            "error should suggest the correct flag: {msg}"
+        );
     }
 
     #[test]

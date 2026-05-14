@@ -1,11 +1,14 @@
 //! Command-line interface definition via [`clap`].
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use clap::builder::styling::{AnsiColor, Color, Style, Styles};
 use clap::{Args, Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
+
+use crate::types::{PackageManager, TaskRunner};
 
 /// Color palette for help output. clap auto-disables when stdout isn't a
 /// TTY or `NO_COLOR` is set, so the same constant works for piped output
@@ -57,6 +60,57 @@ macro_rules! cyan {
         concat!("\x1b[36m", $s, "\x1b[0m")
     };
 }
+
+/// Wrap a runtime string in the same cyan ANSI escape pair the [`cyan!`] macro
+/// emits for compile-time literals. clap routes help through `anstream`, which
+/// strips ANSI on non-TTY / `NO_COLOR` output.
+fn cyan_str(s: &str) -> String {
+    format!("\x1b[36m{s}\x1b[0m")
+}
+
+/// Comma-joined, cyan-styled list of every [`PackageManager`] label, with the
+/// `bundle` alias for `bundler` called out so users discover both spellings.
+/// Built once at first help-text access via [`LazyLock`]; rebuilding the
+/// list on every `--help` invocation would waste work for a value that is
+/// fully determined by the [`PackageManager::all`] enumeration.
+static PM_HELP: LazyLock<String> = LazyLock::new(|| {
+    let joined = PackageManager::all()
+        .iter()
+        .map(|pm| {
+            if matches!(pm, PackageManager::Bundler) {
+                format!("{} (alias: bundle)", pm.label())
+            } else {
+                pm.label().to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Override the detected package manager (also reads {} when omitted). Valid: {joined}",
+        cyan_str("RUNNER_PM"),
+    )
+});
+
+/// Comma-joined, cyan-styled list of every [`TaskRunner`] label, with the
+/// `go-task` alias for `task` called out. Lazy-built for the same reason as
+/// [`PM_HELP`].
+static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
+    let joined = TaskRunner::all()
+        .iter()
+        .map(|r| {
+            if matches!(r, TaskRunner::GoTask) {
+                format!("{} (alias: go-task)", r.label())
+            } else {
+                r.label().to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Override the detected task runner (also reads {} when omitted). Valid: {joined}",
+        cyan_str("RUNNER_RUNNER"),
+    )
+});
 
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
@@ -678,11 +732,7 @@ pub(crate) struct GlobalOpts {
         long = "pm",
         global = true,
         value_name = "NAME",
-        help = concat!(
-            "Override the detected package manager (e.g. ",
-            cyan!("pnpm"), ", ", cyan!("bun"), ", ", cyan!("yarn"),
-            "). Also reads ", cyan!("RUNNER_PM"), " when omitted."
-        ),
+        help = PM_HELP.as_str(),
     )]
     pub pm_override: Option<String>,
 
@@ -694,11 +744,7 @@ pub(crate) struct GlobalOpts {
         long = "runner",
         global = true,
         value_name = "NAME",
-        help = concat!(
-            "Override the detected task runner (e.g. ",
-            cyan!("just"), ", ", cyan!("turbo"), ", ", cyan!("make"),
-            "). Also reads ", cyan!("RUNNER_RUNNER"), " when omitted."
-        ),
+        help = RUNNER_HELP.as_str(),
     )]
     pub runner_override: Option<String>,
 
