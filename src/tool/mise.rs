@@ -381,8 +381,7 @@ impl<'de> Deserialize<'de> for TaskEntry {
                 TaskEntryKind::InlineRun(InlineRun::Multiple(strings))
             }
             toml::Value::Table(_) => {
-                let table: TaskTable =
-                    value.try_into().map_err(serde::de::Error::custom)?;
+                let table: TaskTable = value.try_into().map_err(serde::de::Error::custom)?;
                 TaskEntryKind::Table(table)
             }
             other => {
@@ -657,7 +656,10 @@ mod tests {
         // Captured shape from `mise tasks --json` against the
         // dprint-plugin-shfmt repo (see issue #23 follow-up).
         let dir = TempDir::new("mise-cli-payload");
-        let project = dir.path().canonicalize().expect("temp dir should canonicalize");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
         let source_path = project.join(".config/mise.toml");
         let payload = serde_json::json!([
             {
@@ -712,7 +714,10 @@ mod tests {
         // `mise tasks --json` too — they must not pollute the
         // project's task list.
         let dir = TempDir::new("mise-cli-global-filter");
-        let project = dir.path().canonicalize().expect("temp dir should canonicalize");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
         let payload = serde_json::json!([
             {
                 "name": "project-task",
@@ -753,7 +758,10 @@ mod tests {
     #[test]
     fn cli_output_falls_back_to_run_when_description_missing() {
         let dir = TempDir::new("mise-cli-desc-fallback");
-        let project = dir.path().canonicalize().expect("temp dir should canonicalize");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
         let payload = serde_json::json!([
             {
                 "name": "ci",
@@ -780,7 +788,10 @@ mod tests {
     #[test]
     fn cli_output_falls_back_to_file_when_run_and_description_missing() {
         let dir = TempDir::new("mise-cli-file-fallback");
-        let project = dir.path().canonicalize().expect("temp dir should canonicalize");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
         let payload = serde_json::json!([
             {
                 "name": "lint",
@@ -807,7 +818,10 @@ mod tests {
     #[test]
     fn cli_output_skips_hidden_and_underscore_prefixed() {
         let dir = TempDir::new("mise-cli-hidden");
-        let project = dir.path().canonicalize().expect("temp dir should canonicalize");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
         let src = project.join("mise.toml").to_string_lossy().to_string();
         let payload = serde_json::json!([
             { "name": "build", "aliases": [], "description": "", "source": src, "hide": false, "global": false, "run": ["echo build"], "file": null },
@@ -857,8 +871,10 @@ mod tests {
         .expect(".mise.toml should be written");
 
         let tasks = extract_tasks(dir.path()).expect("mise CLI should succeed");
-        let has_build = tasks.iter().any(|t| matches!(t,
-            ExtractedTask::Recipe { name, .. } if name == "build"));
+        let has_build = tasks.iter().any(|t| {
+            matches!(t,
+            ExtractedTask::Recipe { name, .. } if name == "build")
+        });
         assert!(has_build, "fast path should surface `build`; got {tasks:?}");
     }
 
