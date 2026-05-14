@@ -920,8 +920,10 @@ fn resolve_mismatch_policy(
 /// Resolve a chain failure policy from CLI/env/config sources.
 ///
 /// `keep_going` and `kill_on_fail` are independent bool layers — CLI flag
-/// presence beats env truthy beats `[chain]` config beats `false`. The
-/// two layers are combined into a `FailurePolicy` and validated for
+/// presence beats env (explicit either polarity) beats `[chain]` config
+/// beats `false`. The env layer is presence-authoritative: an explicit
+/// `RUNNER_KEEP_GOING=0` overrides `[chain].keep_going = true` in config.
+/// The two layers are combined into a `FailurePolicy` and validated for
 /// mutual exclusion: both true at any source or after layering returns
 /// `ResolveError::ConflictingFailurePolicy`.
 fn resolve_failure_policy(
@@ -929,20 +931,25 @@ fn resolve_failure_policy(
     kill_on_fail: ExplainSource<'_>,
     config: Option<&LoadedConfig>,
 ) -> Result<FailurePolicy> {
+    let keep_env = parse_env_bool(keep_going.env);
+    let kill_env = parse_env_bool(kill_on_fail.env);
+
     // Per-source conflict detection: report the source where both went
     // true so the user can pin the offending knob quickly.
-    if let Some(source) = single_source_conflict(&keep_going, &kill_on_fail, config) {
+    if let Some(source) =
+        single_source_conflict(&keep_going, &kill_on_fail, keep_env, kill_env, config)
+    {
         return Err(ResolveError::ConflictingFailurePolicy { source }.into());
     }
 
     let keep = resolve_chain_bool(
         keep_going.cli,
-        keep_going.env,
+        keep_env,
         config.and_then(|c| c.config.chain.keep_going),
     );
     let kill = resolve_chain_bool(
         kill_on_fail.cli,
-        kill_on_fail.env,
+        kill_env,
         config.and_then(|c| c.config.chain.kill_on_fail),
     );
 
@@ -957,15 +964,26 @@ fn resolve_failure_policy(
     }
 }
 
-/// Layered bool resolution: CLI flag > env truthy > config explicit > false.
-fn resolve_chain_bool(cli: bool, env: Option<&str>, config: Option<bool>) -> bool {
+/// Parse a chain-bool env var into a tri-state. `None` means the var is
+/// unset (or whitespace-only / empty, matching the rest of the resolver's
+/// "treat blank env as unset" convention); `Some(true)` for truthy
+/// values, `Some(false)` for explicit falsy values (`0`, `false`, `no`,
+/// `off`, case-insensitive). This is what lets `RUNNER_KEEP_GOING=0`
+/// override a `[chain].keep_going = true` in config.
+fn parse_env_bool(env: Option<&str>) -> Option<bool> {
+    let raw = env.map(str::trim).filter(|s| !s.is_empty())?;
+    Some(is_env_truthy(raw))
+}
+
+/// Layered bool resolution: CLI flag > env (explicit either polarity) >
+/// config explicit > false. Env's authority is by *presence*, not just
+/// truthiness — `Some(false)` from env overrides config.
+fn resolve_chain_bool(cli: bool, env: Option<bool>, config: Option<bool>) -> bool {
     if cli {
         return true;
     }
-    if let Some(raw) = env
-        && is_env_truthy(raw)
-    {
-        return true;
+    if let Some(value) = env {
+        return value;
     }
     config.unwrap_or(false)
 }
@@ -973,30 +991,29 @@ fn resolve_chain_bool(cli: bool, env: Option<&str>, config: Option<bool>) -> boo
 /// If `keep_going` and `kill_on_fail` are both set true *within the same
 /// source layer*, return that layer's label. None if no single-layer
 /// conflict (cross-source conflicts are caught after layering).
+///
+/// The env-layer check uses the parsed `Option<bool>` so an explicit
+/// `RUNNER_*=0` neutralises that side: a config-level "[chain] config"
+/// conflict only fires when neither env var explicitly disabled its
+/// side.
 fn single_source_conflict(
     keep: &ExplainSource<'_>,
     kill: &ExplainSource<'_>,
+    keep_env: Option<bool>,
+    kill_env: Option<bool>,
     config: Option<&LoadedConfig>,
 ) -> Option<&'static str> {
     if keep.cli && kill.cli {
         return Some("CLI flags");
     }
-    let keep_env_truthy = keep
-        .env
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some_and(is_env_truthy);
-    let kill_env_truthy = kill
-        .env
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .is_some_and(is_env_truthy);
-    if keep_env_truthy && kill_env_truthy {
+    if keep_env == Some(true) && kill_env == Some(true) {
         return Some("env vars");
     }
     if let Some(loaded) = config
         && loaded.config.chain.keep_going == Some(true)
         && loaded.config.chain.kill_on_fail == Some(true)
+        && keep_env != Some(false)
+        && kill_env != Some(false)
     {
         return Some("[chain] config");
     }
@@ -2256,6 +2273,62 @@ mod tests {
                 Some(ResolveError::ConflictingFailurePolicy { .. })
             ),
             "expected ConflictingFailurePolicy, got: {err:#}",
+        );
+    }
+
+    #[test]
+    fn from_sources_env_false_overrides_config_true_for_failure_policy() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(true), None);
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("0"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+        assert_eq!(overrides.failure_policy, FailurePolicy::FailFast);
+    }
+
+    #[test]
+    fn from_sources_env_false_neutralises_config_conflict() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(true), Some(true));
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            kill_on_fail: ExplainSource {
+                cli: false,
+                env: Some("false"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("env=false on one side should neutralise the [chain] config conflict");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_rejects_both_env_vars_truthy() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            kill_on_fail: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("env-layer conflict must error");
+        let downcast = err.downcast_ref::<ResolveError>();
+        assert!(
+            matches!(
+                downcast,
+                Some(ResolveError::ConflictingFailurePolicy { source: "env vars" })
+            ),
+            "expected env-layer ConflictingFailurePolicy, got: {err:#}",
         );
     }
 }

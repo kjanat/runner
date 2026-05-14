@@ -796,8 +796,9 @@ pub(crate) enum Command {
         #[arg(long)]
         frozen: bool,
         /// Optional task names to run after install completes. Chain is
-        /// always sequential; `-p` is not accepted here.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// always sequential; `-p` is not accepted here. Plain positional
+        /// (no `trailing_var_arg`) so chain-failure flags placed after
+        /// the task list still parse as flags, not task names.
         tasks: Vec<String>,
         /// Chain failure-policy flags. `--kill-on-fail` is accepted but
         /// unused (install is always sequential).

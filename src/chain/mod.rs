@@ -41,9 +41,11 @@ impl ChainItem {
     }
 
     /// Construct the synthetic install-head used by `runner install <tasks>`.
-    pub(crate) const fn install() -> Self {
+    /// `frozen` mirrors the `--frozen` CLI flag and is propagated to the
+    /// install executor (`npm ci`, `--frozen-lockfile`, etc.).
+    pub(crate) const fn install(frozen: bool) -> Self {
         Self {
-            kind: ChainItemKind::Install,
+            kind: ChainItemKind::Install { frozen },
             args: Vec::new(),
         }
     }
@@ -52,7 +54,7 @@ impl ChainItem {
     pub(crate) const fn display_name(&self) -> &str {
         match &self.kind {
             ChainItemKind::Task(name) => name.as_str(),
-            ChainItemKind::Install => "install",
+            ChainItemKind::Install { .. } => "install",
         }
     }
 }
@@ -61,9 +63,10 @@ impl ChainItem {
 pub(crate) enum ChainItemKind {
     /// User-supplied task name, resolved per-item via the existing 8-step chain.
     Task(String),
-    /// Synthetic head used by `runner install <tasks>`. Dispatches the detected
-    /// PM's install command.
-    Install,
+    /// Synthetic head used by `runner install <tasks>`. Dispatches the
+    /// detected PM's install command; `frozen` selects the lockfile-only
+    /// install variant when true.
+    Install { frozen: bool },
 }
 
 /// Failure policy for a chain. `FailFast` is the default and matches
@@ -97,9 +100,18 @@ mod tests {
 
     #[test]
     fn install_head_has_no_args() {
-        let item = ChainItem::install();
+        let item = ChainItem::install(false);
         assert!(item.args.is_empty());
-        assert!(matches!(item.kind, ChainItemKind::Install));
+        assert!(matches!(
+            item.kind,
+            ChainItemKind::Install { frozen: false }
+        ));
+    }
+
+    #[test]
+    fn install_head_propagates_frozen_flag() {
+        let item = ChainItem::install(true);
+        assert!(matches!(item.kind, ChainItemKind::Install { frozen: true }));
     }
 
     #[test]
@@ -109,6 +121,6 @@ mod tests {
 
     #[test]
     fn display_name_is_install_for_install_head() {
-        assert_eq!(ChainItem::install().display_name(), "install");
+        assert_eq!(ChainItem::install(false).display_name(), "install");
     }
 }

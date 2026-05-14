@@ -517,9 +517,10 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
 fn dispatch_install_chain(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
+    frozen: bool,
     tasks: &[String],
 ) -> Result<i32> {
-    let mut items = vec![chain::ChainItem::install()];
+    let mut items = vec![chain::ChainItem::install(frozen)];
     items.extend(chain::parse::parse_task_list(tasks)?);
     let c = chain::Chain {
         mode: chain::ChainMode::Sequential,
@@ -618,8 +619,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) if tasks.is_empty() && has_task(&ctx, "install") => {
             cmd::run(&ctx, &overrides, "install", &[], None)
         }
-        Some(cli::Command::Install { tasks, .. }) if !tasks.is_empty() => {
-            dispatch_install_chain(&ctx, &overrides, &tasks)
+        Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
+            dispatch_install_chain(&ctx, &overrides, frozen, &tasks)
         }
         Some(cli::Command::Install { frozen, .. }) => {
             cmd::install(&ctx, frozen)?;
@@ -913,6 +914,28 @@ mod tests {
         match cli.command {
             Some(cli::Command::Install { frozen: true, .. }) => {}
             other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_install_chain_flags_after_task_names() {
+        // `runner install build test --kill-on-fail` must parse
+        // `--kill-on-fail` as a chain-failure flag, not as a task name.
+        // Regression for the `trailing_var_arg` consumption bug.
+        let cli =
+            parse_cli(["runner", "install", "build", "test", "--kill-on-fail"]).expect("parses");
+        match cli.command {
+            Some(cli::Command::Install {
+                tasks,
+                failure:
+                    cli::ChainFailureFlags {
+                        kill_on_fail: true, ..
+                    },
+                ..
+            }) => assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]),
+            other => {
+                panic!("expected Install with kill_on_fail=true and clean task list, got {other:?}")
+            }
         }
     }
 

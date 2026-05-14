@@ -70,35 +70,55 @@ fn run_parallel(
     let mut children: Vec<(String, Child)> = Vec::with_capacity(chain.items.len());
     let mut reader_handles = Vec::new();
 
-    for item in &chain.items {
-        let prefix = render_prefix(item.display_name(), width, colorize);
-        let mut child = match &item.kind {
-            ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
-                ctx,
-                overrides,
-                name,
-                &item.args,
-                Some(warnings),
-            )?,
-            ChainItemKind::Install => {
-                // Install is always Sequential in v1 (CLI rejects `-p` on
-                // `runner install`); reaching here would mean a synthetic
-                // Parallel chain was constructed elsewhere — bail loudly.
-                anyhow::bail!("install items cannot run in parallel chains")
-            }
-        };
-        let stdout: Box<dyn std::io::Read + Send> =
-            Box::new(child.stdout.take().expect("stdout piped"));
-        let stderr: Box<dyn std::io::Read + Send> =
-            Box::new(child.stderr.take().expect("stderr piped"));
-        reader_handles.extend(spawn_readers(
-            vec![
-                (prefix.clone(), false, stdout),
-                (prefix.clone(), true, stderr),
-            ],
-            &tx,
-        ));
-        children.push((item.display_name().to_string(), child));
+    // Spawn loop. On any per-item failure (resolver error or the Install
+    // bail-out below), already-spawned children would otherwise outlive
+    // this function — `std::process::Child::drop` does NOT kill the
+    // process. Cleanup explicitly: kill + reap accumulated children,
+    // drop the producer end of the channel so reader threads observe
+    // EOF, and join the reader handles before propagating the error.
+    let spawn_outcome: Result<()> = (|| {
+        for item in &chain.items {
+            let prefix = render_prefix(item.display_name(), width, colorize);
+            let mut child = match &item.kind {
+                ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
+                    ctx,
+                    overrides,
+                    name,
+                    &item.args,
+                    Some(warnings),
+                )?,
+                ChainItemKind::Install { .. } => {
+                    // Install is always Sequential in v1 (CLI rejects `-p` on
+                    // `runner install`); reaching here would mean a synthetic
+                    // Parallel chain was constructed elsewhere — bail loudly.
+                    anyhow::bail!("install items cannot run in parallel chains")
+                }
+            };
+            let stdout: Box<dyn std::io::Read + Send> =
+                Box::new(child.stdout.take().expect("stdout piped"));
+            let stderr: Box<dyn std::io::Read + Send> =
+                Box::new(child.stderr.take().expect("stderr piped"));
+            reader_handles.extend(spawn_readers(
+                vec![
+                    (prefix.clone(), false, stdout),
+                    (prefix.clone(), true, stderr),
+                ],
+                &tx,
+            ));
+            children.push((item.display_name().to_string(), child));
+        }
+        Ok(())
+    })();
+    if let Err(e) = spawn_outcome {
+        drop(tx);
+        for (_, mut c) in children {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        for h in reader_handles {
+            let _ = h.join();
+        }
+        return Err(e);
     }
     drop(tx); // close producer side so channel closes when all readers finish
 
@@ -172,11 +192,8 @@ fn dispatch_item(
             // v1 ChainItem.args is always empty; v2 will populate it.
             crate::cmd::run::run(ctx, overrides, name, &item.args, Some(warnings))
         }
-        ChainItemKind::Install => {
-            // `runner install --frozen <tasks>` doesn't propagate `--frozen`
-            // into chain context; the frozen flag belongs to the top-level
-            // subcommand. Default to non-frozen for chain dispatch.
-            crate::cmd::install::install_pms(ctx, false, Some(warnings))
+        ChainItemKind::Install { frozen } => {
+            crate::cmd::install::install_pms(ctx, *frozen, Some(warnings))
         }
     }
 }

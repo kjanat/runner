@@ -74,6 +74,16 @@ pub(crate) struct RunnerConfig {
 /// `RUNNER_KEEP_GOING=1` resolves to `true`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema-gen",
+    schemars(extend("not" = {
+        "required": ["keep_going", "kill_on_fail"],
+        "properties": {
+            "keep_going": { "const": true },
+            "kill_on_fail": { "const": true }
+        }
+    }))
+)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChainSection {
     /// Run every task in the chain to completion regardless of failures.

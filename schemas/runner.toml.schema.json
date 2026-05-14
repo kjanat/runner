@@ -36,7 +36,7 @@
           "default": null
         },
         "kill_on_fail": {
-          "description": "Parallel only: SIGTERM sibling tasks on first failure. Mutually\nexclusive with `keep_going`. Equivalent to `--kill-on-fail` /\n`RUNNER_KILL_ON_FAIL`. Ignored in sequential contexts.",
+          "description": "Parallel only: SIGKILL sibling tasks on first failure. Mutually\nexclusive with `keep_going`. Equivalent to `--kill-on-fail` /\n`RUNNER_KILL_ON_FAIL`. Ignored in sequential contexts.",
           "type": [
             "boolean",
             "null"
@@ -44,7 +44,21 @@
           "default": null
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "not": {
+        "properties": {
+          "keep_going": {
+            "const": true
+          },
+          "kill_on_fail": {
+            "const": true
+          }
+        },
+        "required": [
+          "keep_going",
+          "kill_on_fail"
+        ]
+      }
     },
     "PmSection": {
       "description": "`[pm]` section — per-ecosystem package manager overrides.",
