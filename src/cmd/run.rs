@@ -26,6 +26,24 @@ fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
     (None, input)
 }
 
+/// Catch the inverted qualifier syntax (`task:source` instead of the
+/// supported `source:task`). Returns `Some((source, task_name))` when
+/// the *suffix* after the last `:` names a known source so the caller
+/// can surface an actionable error with a `did you mean?` hint instead
+/// of falling through to the PM-exec fallback and spawning a binary
+/// named after the user's typo.
+///
+/// Matches only on the last colon so a hypothetical task name with
+/// embedded colons (`foo:bar:cargo`) collapses to a single suffix check
+/// — if `cargo` is the suffix, suggest `cargo:foo:bar`; otherwise let
+/// the existing fallback path handle it.
+fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str)> {
+    let colon = input.rfind(':')?;
+    let suffix = &input[colon + 1..];
+    let source = TaskSource::from_label(suffix)?;
+    Some((source, &input[..colon]))
+}
+
 /// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
 /// Walks the same cascade for every caller — warning emission, qualified
@@ -93,6 +111,19 @@ fn resolve_dispatch(
         }
 
         if qualifier.is_none() {
+            // Fast-fail on the reversed qualifier shape (`task:source`).
+            // Without this guard, `lint:cargo` slips through as an
+            // unqualified bare name, hits the PM-exec fallback below,
+            // and surfaces a cryptic `ENOENT` from the OS spawning a
+            // binary literally named `lint:cargo`.
+            if let Some((src, task_part)) = detect_reversed_qualifier(task) {
+                let src_label = src.label();
+                bail!(
+                    "unknown qualifier in {task:?}: source {src_label:?} must come first.\n\
+                     hint: did you mean \"{src_label}:{task_part}\"?",
+                );
+            }
+
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
                     super::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
@@ -343,17 +374,14 @@ pub(crate) fn select_task_entry<'a>(
 /// Ranks sources for the source selector's primary key.
 ///
 /// Layered:
-/// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in
-///   the list win in listed order (`r1 = 0`, `r2 = 1`, ...). Sources
-///   for unlisted runners fall back to the default tier offset by
-///   `prefer.len()` so they always lose to listed entries.
-/// - Otherwise: `TurboJson > PackageJson > others`. This is the
-///   pre-existing default and matches the priority used by `runner
-///   list` for display grouping.
+/// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in the list win in listed order
+///   (`r1 = 0`, `r2 = 1`, ...). Sources for unlisted runners fall back to the default tier offset
+///   by `prefer.len()` so they always lose to listed entries.
+/// - Otherwise: `TurboJson > PackageJson > others`. This is the pre-existing default and matches
+///   the priority used by `runner list` for display grouping.
 ///
-/// Lower is higher priority. Returns `u16` (rather than `u8`) to leave
-/// headroom for the offset arithmetic when prefer-lists grow large
-/// without overflow on the default tier.
+/// Lower is higher priority. Returns `u16` (rather than `u8`) to leave headroom for the offset
+/// arithmetic when prefer-lists grow large without overflow on the default tier.
 pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> u16 {
     let default_tier: u16 = match source {
         TaskSource::TurboJson => 0,
@@ -392,6 +420,20 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
             ctx.root
                 .ancestors()
                 .position(|ancestor| ancestor == dir.as_path())
+                .or_else(|| {
+                    // The config lives in a subdirectory of `ctx.root`
+                    // (e.g. `.cargo/config.toml` whose parent is
+                    // `<root>/.cargo`). `ancestors()` only walks upward,
+                    // so the position lookup never matches and depth
+                    // would otherwise collapse to `usize::MAX` — making
+                    // any root-level source (`bacon.toml`, `Makefile`,
+                    // `justfile`) win every tiebreak by default and
+                    // starving `display_order` of the chance to choose.
+                    // Treat subdirectory configs as depth 0 so the
+                    // tiebreak proceeds to `display_order`, which is
+                    // the source-of-truth for same-tier preference.
+                    dir.starts_with(&ctx.root).then_some(0)
+                })
         })
         .unwrap_or(usize::MAX)
 }
@@ -494,7 +536,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{parse_qualified_task, select_task_entry, should_use_bun_test_fallback};
+    use super::{
+        detect_reversed_qualifier, parse_qualified_task, select_task_entry,
+        should_use_bun_test_fallback,
+    };
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
@@ -553,6 +598,79 @@ mod tests {
         let (source, name) = parse_qualified_task("bacon.toml:check");
         assert_eq!(source, Some(TaskSource::BaconToml));
         assert_eq!(name, "check");
+    }
+
+    #[test]
+    fn detect_reversed_qualifier_catches_task_colon_source() {
+        // `lint:cargo` has the qualifier inverted — caller should bail
+        // with `did you mean "cargo:lint"?` instead of falling through
+        // to PM-exec and spawning a binary named `lint:cargo`.
+        let got = detect_reversed_qualifier("lint:cargo");
+        assert_eq!(got, Some((TaskSource::CargoAliases, "lint")));
+    }
+
+    #[test]
+    fn detect_reversed_qualifier_returns_none_for_correct_syntax() {
+        // Correct ordering — the prefix branch (`parse_qualified_task`)
+        // handles this; the reversed-detector must not fire.
+        assert!(detect_reversed_qualifier("cargo:lint").is_none());
+        // Plain name, no colon.
+        assert!(detect_reversed_qualifier("lint").is_none());
+        // Suffix that is not a known source.
+        assert!(detect_reversed_qualifier("lint:zoot").is_none());
+    }
+
+    #[test]
+    fn detect_reversed_qualifier_matches_last_colon() {
+        // Multi-colon with a recognized suffix still fires: hint the
+        // user toward the canonical ordering. Anything else (suffix not
+        // a source label) returns None and falls through to the
+        // existing PM-exec / not-found path.
+        let got = detect_reversed_qualifier("foo:bar:cargo");
+        assert_eq!(got, Some((TaskSource::CargoAliases, "foo:bar")));
+        assert!(detect_reversed_qualifier("lint:cargo:extra").is_none());
+    }
+
+    #[test]
+    fn reversed_qualifier_fast_fail_does_not_block_real_tasks() {
+        // The fast-fail in `resolve_dispatch` is gated by
+        // `restricted.is_empty()` — a real task whose name happens to
+        // match the `task:source` shape must still dispatch.
+        //
+        // We mirror the dispatch lookup directly: `parse_qualified_task`
+        // returns `(None, original)` for an unknown prefix, then the
+        // filter on `ctx.tasks` runs. If that filter is non-empty,
+        // `resolve_dispatch` skips the empty-branch entirely and
+        // `detect_reversed_qualifier` is never reached.
+        let ctx = ProjectContext {
+            root: PathBuf::from("/tmp/has-quirky-task-name"),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: vec![Task {
+                name: "lint:cargo".to_string(),
+                source: TaskSource::Justfile,
+                description: None,
+                alias_of: None,
+                passthrough_to: None,
+            }],
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let (qualifier, task_name) = parse_qualified_task("lint:cargo");
+        assert_eq!(qualifier, None);
+        assert_eq!(task_name, "lint:cargo");
+
+        let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "real task named `lint:cargo` must be reachable; \
+             fast-fail only fires when the filter is empty",
+        );
+        assert_eq!(found[0].source, TaskSource::Justfile);
     }
 
     #[test]
@@ -673,6 +791,100 @@ mod tests {
 
         let depth = super::source_depth(&ctx, TaskSource::Makefile);
         assert_ne!(depth, usize::MAX, "Makefile two levels up should resolve");
+    }
+
+    #[test]
+    fn source_depth_treats_subdirectory_config_as_depth_zero() {
+        // `.cargo/config.toml` sits *inside* root (parent dir is
+        // `<root>/.cargo`), not as an ancestor. The ancestors() walk
+        // never matches it, so without the subdir-fallback the depth
+        // would collapse to `usize::MAX` and any root-level source
+        // (`bacon.toml`, `Makefile`, …) would win every tiebreak by
+        // default — robbing `display_order` of the tie-break it was
+        // designed to perform.
+        let dir = TempDir::new("source-depth-subdirectory");
+        let cargo_dir = dir.path().join(".cargo");
+        fs::create_dir_all(&cargo_dir).expect(".cargo dir should be created");
+        fs::write(
+            cargo_dir.join("config.toml"),
+            "[alias]\nlint = \"clippy\"\n",
+        )
+        .expect("config.toml should be written");
+
+        let ctx = ProjectContext {
+            root: dir.path().to_path_buf(),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let depth = super::source_depth(&ctx, TaskSource::CargoAliases);
+        assert_eq!(
+            depth, 0,
+            ".cargo/config.toml is a subdir of root → treat as depth 0",
+        );
+    }
+
+    #[test]
+    fn cargo_aliases_beats_bacon_toml_for_same_name_task() {
+        // Once both sources resolve to depth 0 (cargo via the subdir
+        // fallback, bacon via root-level match), the `display_order`
+        // tiebreak should pick cargo (6) over bacon (7). This is what
+        // the user expected when their `.cargo/config.toml` alias for
+        // `lint` was being silently overridden by `bacon.toml`'s
+        // `[jobs.lint]` + `default_job = "lint"`.
+        let dir = TempDir::new("priority-cargo-vs-bacon");
+        let cargo_dir = dir.path().join(".cargo");
+        fs::create_dir_all(&cargo_dir).expect(".cargo dir should be created");
+        fs::write(
+            cargo_dir.join("config.toml"),
+            "[alias]\nlint = \"clippy\"\n",
+        )
+        .expect("config.toml should be written");
+        fs::write(
+            dir.path().join("bacon.toml"),
+            "[jobs.lint]\ncommand = [\"cargo\", \"clippy\"]\n",
+        )
+        .expect("bacon.toml should be written");
+
+        let tasks = vec![
+            Task {
+                name: "lint".to_string(),
+                source: TaskSource::BaconToml,
+                description: None,
+                alias_of: None,
+                passthrough_to: None,
+            },
+            Task {
+                name: "lint".to_string(),
+                source: TaskSource::CargoAliases,
+                description: None,
+                alias_of: None,
+                passthrough_to: None,
+            },
+        ];
+        let ctx = ProjectContext {
+            root: dir.path().to_path_buf(),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks,
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let candidates: Vec<&Task> = ctx.tasks.iter().collect();
+        let entry = select_task_entry(&ctx, &ResolutionOverrides::default(), &candidates);
+        assert_eq!(
+            entry.source,
+            TaskSource::CargoAliases,
+            "display_order should pick CargoAliases over BaconToml once both hit depth 0",
+        );
     }
 
     #[test]

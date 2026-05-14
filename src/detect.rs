@@ -250,7 +250,7 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 /// reads, etc. — and those waits dominate cold-run wall-clock for any
 /// project that detects more than two task sources. Serial extraction
 /// costs O(N) subprocesses worth of latency; scoped parallelism brings
-/// it down to ~max(extractor_latency) plus thread-spawn overhead.
+/// it down to ~`max(extractor_latency)` plus thread-spawn overhead.
 ///
 /// Pushes are applied in the original declaration order so the task
 /// list keeps the source ordering the resolver and snapshot tests

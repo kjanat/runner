@@ -113,7 +113,7 @@ fn run_installs_parallel(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
                     (prefix.clone(), false, stdout),
                     (prefix.clone(), true, stderr),
                 ],
-                Arc::clone(&sink),
+                &sink,
             ));
             children.push((*pm, child));
         }
@@ -134,7 +134,7 @@ fn run_installs_parallel(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
     for (_, mut child) in children {
         let status = child.wait()?;
         if !status.success() {
-            first_failure.get_or_insert(super::exit_code(status));
+            first_failure.get_or_insert_with(|| super::exit_code(status));
         }
     }
     for h in reader_handles {

@@ -125,7 +125,7 @@ fn run_parallel(
                     (prefix.clone(), false, stdout),
                     (prefix.clone(), true, stderr),
                 ],
-                Arc::clone(&sink),
+                &sink,
             ));
             children.push((item.display_name().to_string(), child));
         }

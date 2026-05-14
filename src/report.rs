@@ -428,6 +428,13 @@ const fn mismatch_label(policy: MismatchPolicy) -> &'static str {
 /// entries) of independent `stat` syscalls. Doctor isn't on the hot
 /// path, but four-way fan-out is essentially free and keeps the
 /// rendering snappy on `PATH`s that contain network-mounted directories.
+const PATH_PROBE_PMS: [PackageManager; 4] = [
+    PackageManager::Bun,
+    PackageManager::Pnpm,
+    PackageManager::Yarn,
+    PackageManager::Npm,
+];
+
 fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
     use std::env;
     use std::thread;
@@ -436,31 +443,29 @@ fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
     let pathext = env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
 
-    const PMS: [PackageManager; 4] = [
-        PackageManager::Bun,
-        PackageManager::Pnpm,
-        PackageManager::Yarn,
-        PackageManager::Npm,
-    ];
-
     thread::scope(|s| {
-        let handles: Vec<_> = PMS
-            .iter()
-            .map(|pm| {
-                let path = &path;
-                s.spawn(move || {
-                    let resolved =
-                        crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref)
-                            .map(|p| p.display().to_string());
-                    (pm.label(), resolved)
-                })
-            })
-            .collect();
+        // Spawn all probes first (push, don't lazy-iterate) so they
+        // actually run in parallel; chaining `.map(spawn).map(join)`
+        // without the eager push would serialize — `Iterator::map` is
+        // lazy, so the next `spawn` wouldn't fire until the previous
+        // join returned.
+        let mut handles = Vec::with_capacity(PATH_PROBE_PMS.len());
+        for pm in &PATH_PROBE_PMS {
+            let path = &path;
+            handles.push(s.spawn(move || {
+                let resolved =
+                    crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref)
+                        .map(|p| p.display().to_string());
+                (pm.label(), resolved)
+            }));
+        }
 
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("path probe thread panicked"))
-            .collect()
+        let mut map = BTreeMap::new();
+        for handle in handles {
+            let (label, resolved) = handle.join().expect("path probe thread panicked");
+            map.insert(label, resolved);
+        }
+        map
     })
 }
 

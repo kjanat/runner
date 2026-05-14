@@ -82,7 +82,7 @@ pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String 
 /// and the OS tears its stdio fds down).
 pub(crate) fn spawn_readers<R>(
     streams: Vec<(String, bool, R)>,
-    sink: Arc<dyn LineSink>,
+    sink: &Arc<dyn LineSink>,
 ) -> Vec<JoinHandle<()>>
 where
     R: Read + Send + 'static,
@@ -90,7 +90,7 @@ where
     streams
         .into_iter()
         .map(|(prefix, is_stderr, reader)| {
-            let sink = Arc::clone(&sink);
+            let sink = Arc::clone(sink);
             std::thread::spawn(move || {
                 let buf = BufReader::new(reader);
                 for line in buf.lines() {
@@ -169,7 +169,7 @@ mod tests {
         let stream = std::io::Cursor::new(b"hello\nworld\n".to_vec());
         let handles = spawn_readers(
             vec![("[t]".into(), false, stream)],
-            Arc::clone(&sink) as Arc<dyn LineSink>,
+            &(Arc::clone(&sink) as Arc<dyn LineSink>),
         );
         for h in handles {
             h.join().unwrap();
@@ -186,7 +186,7 @@ mod tests {
         let err = std::io::Cursor::new(b"e\n".to_vec());
         let handles = spawn_readers(
             vec![("[t]".into(), false, out), ("[t]".into(), true, err)],
-            Arc::clone(&sink) as Arc<dyn LineSink>,
+            &(Arc::clone(&sink) as Arc<dyn LineSink>),
         );
         for h in handles {
             h.join().unwrap();
