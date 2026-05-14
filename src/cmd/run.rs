@@ -205,7 +205,11 @@ fn build_pm_exec_command(
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
-        Some(PackageManager::Go) => ("go run", tool::go_pm::exec_cmd(&combined())),
+        // Go intentionally falls through to direct PATH spawn alongside
+        // Cargo/Poetry/Pipenv/Bundler/Composer. `go run <name>` only
+        // works for Go module paths (`example.com/foo@v1`, `./main.go`, `.`),
+        // not arbitrary tools the user wants to exec — so it
+        // isn't a comparable PM-exec primitive like `npx`/`bunx`/`uvx`.
         None | Some(_) => {
             let mut c = tool::program::command(task_name);
             c.args(args);

@@ -32,12 +32,15 @@ pub(crate) fn run_chain(
     chain: &Chain,
 ) -> Result<i32> {
     let mut warnings: HashSet<DetectionWarning> = HashSet::new();
-    let code = match chain.mode {
-        ChainMode::Sequential => run_sequential(ctx, overrides, chain, &mut warnings)?,
-        ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings)?,
+    // Emit warnings on both success and error paths — a chain that
+    // crashes halfway through should still surface the resolver
+    // warnings it accumulated, not swallow them with the error.
+    let result = match chain.mode {
+        ChainMode::Sequential => run_sequential(ctx, overrides, chain, &mut warnings),
+        ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings),
     };
     crate::cmd::emit_collected_warnings(&warnings, overrides);
-    Ok(code)
+    result
 }
 
 fn run_sequential(
@@ -78,6 +81,27 @@ fn run_parallel(
 
     let (tx, rx) = channel::<PrefixedLine>();
 
+    // Writer thread: drain channel, write prefixed lines to parent stdio.
+    // Spawned *before* the spawn loop so output flows the moment the
+    // first reader pushes a line. Otherwise lines would queue in the
+    // unbounded mpsc until the spawn loop finished, defeating the
+    // "see progress immediately" point of parallel chains.
+    let writer = std::thread::spawn(move || {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let stderr = std::io::stderr();
+        let mut stdout = stdout.lock();
+        let mut stderr = stderr.lock();
+        for msg in rx {
+            let target: &mut dyn Write = if msg.is_stderr {
+                &mut stderr
+            } else {
+                &mut stdout
+            };
+            let _ = writeln!(target, "{} {}", msg.prefix, msg.line);
+        }
+    });
+
     // Spawn each task with piped stdio and start reader threads.
     let mut children: Vec<(String, Child)> = Vec::with_capacity(chain.items.len());
     let mut reader_handles = Vec::new();
@@ -87,7 +111,8 @@ fn run_parallel(
     // this function — `std::process::Child::drop` does NOT kill the
     // process. Cleanup explicitly: kill + reap accumulated children,
     // drop the producer end of the channel so reader threads observe
-    // EOF, and join the reader handles before propagating the error.
+    // EOF, and join the reader handles + writer before propagating
+    // the error.
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
             let prefix = render_prefix(item.display_name(), width, colorize);
@@ -130,26 +155,10 @@ fn run_parallel(
         for h in reader_handles {
             let _ = h.join();
         }
+        let _ = writer.join();
         return Err(e);
     }
     drop(tx); // close producer side so channel closes when all readers finish
-
-    // Writer thread: drain channel, write prefixed lines to parent stdio.
-    let writer = std::thread::spawn(move || {
-        use std::io::Write;
-        let stdout = std::io::stdout();
-        let stderr = std::io::stderr();
-        let mut stdout = stdout.lock();
-        let mut stderr = stderr.lock();
-        for msg in rx {
-            let target: &mut dyn Write = if msg.is_stderr {
-                &mut stderr
-            } else {
-                &mut stdout
-            };
-            let _ = writeln!(target, "{} {}", msg.prefix, msg.line);
-        }
-    });
 
     // Poll children. On first failure with KillOnFail, kill remaining
     // siblings; otherwise let them finish naturally.
