@@ -333,6 +333,7 @@ impl TaskEntry {
             TaskEntryKind::Table(t) => t
                 .description
                 .clone()
+                .filter(|s| !s.trim().is_empty())
                 .or_else(|| match &t.run {
                     Some(RunField::Single(s)) => Some(s.clone()),
                     Some(RunField::Multiple(v)) => (!v.is_empty()).then(|| v.join(" && ")),
@@ -515,6 +516,30 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "build".to_string(),
                 description: Some("cargo build && cargo test".to_string()),
+            }],
+        );
+    }
+
+    #[test]
+    fn extract_table_task_treats_blank_description_as_missing() {
+        // Mirrors the CLI path's `description_or_fallback`: an empty or
+        // whitespace-only `description = ""` shouldn't suppress the
+        // run/file fallback. Without the `.filter`, `Some("")` would
+        // short-circuit the chain and the task would render with no
+        // description at all.
+        let dir = TempDir::new("mise-blank-desc");
+        fs::write(
+            dir.path().join(".mise.toml"),
+            "[tasks.build]\ndescription = \"   \"\nrun = \"cargo build\"\n",
+        )
+        .expect(".mise.toml should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        assert_eq!(
+            tasks,
+            [ExtractedTask::Recipe {
+                name: "build".to_string(),
+                description: Some("cargo build".to_string()),
             }],
         );
     }
