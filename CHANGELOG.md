@@ -15,6 +15,49 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.11.0] - 2026-05-14
+
+### Added
+
+- Task chaining for `runner run` and `runner install`. New `-s` /
+  `--sequential` and `-p` / `--parallel` flags turn the trailing
+  positionals into a chain: `runner run -s build test lint` runs
+  the three tasks in order; `runner run -p test:unit test:e2e`
+  fans them out concurrently. `runner install build test` chains
+  install → build → test (install head is always sequential; `-p`
+  is rejected on `install`).
+- Failure policies for chains. Default is fail-fast (sequential
+  stops on first non-zero; parallel lets running siblings finish,
+  doesn't start new ones). `-k` / `--keep-going` runs every task
+  to completion regardless of failures, with the chain's final
+  exit code reflecting the first failure. `--kill-on-fail`
+  (parallel only) terminates siblings immediately when one fails.
+  `-k` and `--kill-on-fail` are mutually exclusive across CLI,
+  env, and config — conflicting layers surface
+  `ResolveError::ConflictingFailurePolicy` with the offending
+  source named.
+- `[chain]` section in `runner.toml` plus `RUNNER_KEEP_GOING` /
+  `RUNNER_KILL_ON_FAIL` env-var mirrors. Same resolver-chain
+  precedence as the rest of the policy knobs: CLI > env > config.
+  Env layer is presence-authoritative — `RUNNER_KEEP_GOING=0`
+  overrides `[chain].keep_going = true` in config, not just the
+  default.
+- Line-prefix multiplexer for parallel chain output. Each task's
+  piped stdout/stderr is captured by a reader thread, prefixed
+  with `[<task-name>]` (right-padded to the longest name, colored
+  from an 8-slot deterministic palette), and forwarded to the
+  parent's stdout/stderr. Honors `NO_COLOR` and non-TTY parents.
+- Resolver-warning deduplication across chain dispatch. Per-task
+  warnings collect into a shared `HashSet`, then emit once at the
+  end sorted by `Display` so output order is stable across runs.
+
+### Changed
+
+- `runner install --frozen <tasks>` now propagates the `--frozen`
+  flag into the synthetic install head of the chain, so the
+  install step runs lockfile-only when the flag is set. Previous
+  behavior silently dropped the flag in chain mode.
+
 ## [0.9.0] - 2026-05-13
 
 ### Added
@@ -836,7 +879,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/kjanat/runner/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/kjanat/runner/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/kjanat/runner/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/kjanat/runner/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/kjanat/runner/compare/v0.7.1...v0.8.0
