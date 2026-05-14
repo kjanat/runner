@@ -777,7 +777,14 @@ pub(crate) enum Command {
         /// Task name or command to execute. In chain mode, the first task in the chain.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: Option<String>,
-        /// Arguments forwarded to the task, OR additional task names in chain mode.
+        /// Arguments forwarded to the task, OR additional task names in
+        /// chain mode. `trailing_var_arg` + `allow_hyphen_values`
+        /// support the documented bare-forward shape
+        /// (`runner run test --watch` → `--watch` reaches the task).
+        /// Trade-off: chain-failure flags (`-k`, `--kill-on-fail`)
+        /// must precede task names in chain mode
+        /// (`runner run -s -k build test`), since anything after the
+        /// first positional is consumed as a forwarded value.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
         /// Chain mode flags: `-s` / `-p`.
@@ -901,7 +908,11 @@ pub(crate) struct RunAliasCli {
     #[arg(add = ArgValueCandidates::new(task_candidates))]
     pub task: Option<String>,
 
-    /// Arguments forwarded to the task/command.
+    /// Arguments forwarded to the task/command, OR additional task
+    /// names in chain mode. Same `trailing_var_arg` trade-off as
+    /// `Cli::Run.args`: bare forwarding supported
+    /// (`run test --watch`); chain-failure flags must precede task
+    /// names in chain mode.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 
