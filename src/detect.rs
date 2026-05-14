@@ -299,7 +299,7 @@ fn push_mise_tasks(
     );
 }
 
-fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> (String, Option<String>, Option<String>) {
+fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {
     match entry {
         tool::mise::ExtractedTask::Recipe { name, description } => (name, description, None),
         tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
@@ -414,12 +414,17 @@ fn push_just_tasks(
     );
 }
 
-fn just_entry_triple(entry: tool::just::ExtractedTask) -> (String, Option<String>, Option<String>) {
+fn just_entry_triple(entry: tool::just::ExtractedTask) -> RecipeOrAlias {
     match entry {
         tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
         tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
     }
 }
+
+/// Flattened `(name, description, alias_of)` shape both
+/// `tool::mise::ExtractedTask` and `tool::just::ExtractedTask` collapse
+/// to before they hit [`push_recipe_alias_tasks`].
+type RecipeOrAlias = (String, Option<String>, Option<String>);
 
 /// Push `(name, description, alias_of)` triples into `ctx.tasks` under
 /// `source`, or record a `TaskListUnreadable` warning on error. Shared
@@ -428,7 +433,7 @@ fn just_entry_triple(entry: tool::just::ExtractedTask) -> (String, Option<String
 fn push_recipe_alias_tasks(
     ctx: &mut ProjectContext,
     source: TaskSource,
-    result: anyhow::Result<Vec<(String, Option<String>, Option<String>)>>,
+    result: anyhow::Result<Vec<RecipeOrAlias>>,
 ) {
     match result {
         Ok(entries) => {

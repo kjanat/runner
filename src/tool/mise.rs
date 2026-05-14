@@ -328,7 +328,7 @@ enum StringOrList {
 }
 
 impl TaskEntry {
-    fn is_hidden(&self) -> bool {
+    const fn is_hidden(&self) -> bool {
         matches!(&self.kind, TaskEntryKind::Table(t) if t.hide)
     }
 
