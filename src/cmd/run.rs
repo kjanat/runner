@@ -26,30 +26,46 @@ fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
     (None, input)
 }
 
-/// Look up `task` across all detected sources, resolve to a [`Command`],
-/// and spawn it with piped stdout and stderr. Returns the spawned
-/// [`std::process::Child`] so the caller can multiplex output.
+/// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
-/// Mirrors the resolution logic of [`run`] exactly — same qualifier
-/// handling, same fallback cascade — but calls `.spawn()` instead of
-/// `.status()` and sets `Stdio::piped()` on both output streams.
+/// Walks the same cascade for every caller — warning emission, qualified
+/// vs unqualified lookup, runner constraint check, resolver chain,
+/// bun-test special case, PM-exec fallback, or a normal task entry —
+/// and returns a [`Command`] whose working directory + env have already
+/// been set via [`super::configure_command`]. Callers attach stdio +
+/// `.status()` / `.spawn()` according to their needs.
 ///
-/// Used by the parallel chain executor (`chain::exec::run_parallel`).
-pub(crate) fn dispatch_task_piped(
+/// Fallbacks (resolver + bun-test + PM-exec) are scoped to unqualified
+/// lookups so a qualified miss like `runner run justfile:test` bails on
+/// the qualifier rather than silently dispatching `bun test`.
+///
+/// The resolver call lives inside the unqualified branch so qualified
+/// misses don't pay for PM resolution (warning emission, potential
+/// `<pm> --version` spawn for devEngines.version checks) on an error
+/// path they can't reach. Only the soft `NoSignalsFound { soft: true,
+/// .. }` outcome collapses to `None` so the direct PATH spawn can still
+/// fire for `runner run somebin`. Hard errors — `--fallback=error`,
+/// manifest `onFail = Error`, and any other resolver failure —
+/// propagate so the user sees the real diagnostic instead of a silent
+/// degrade.
+fn resolve_dispatch(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     task: &str,
     args: &[String],
     mut sink: super::WarningSink<'_>,
-) -> Result<std::process::Child> {
-    use std::process::Stdio;
-
+) -> Result<Command> {
     super::print_warnings(ctx, overrides, sink.as_deref_mut());
 
     let (qualifier, task_name) = parse_qualified_task(task);
 
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
+    // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
+    // candidate that isn't under one of the allowed sources is treated
+    // as non-existent. A qualifier (`runner.json:task`) is the user
+    // narrowing *to* a source explicitly and outranks the runner
+    // constraint — the qualified branch below applies its own match.
     let restricted: Vec<_> = if qualifier.is_some() {
         found.clone()
     } else if let Some(allowed) = allowed_runner_sources(overrides) {
@@ -63,6 +79,9 @@ pub(crate) fn dispatch_task_piped(
     };
 
     if restricted.is_empty() {
+        // Restrictive override active but no candidate matched: hard
+        // error per the resolved design decision (explicit intent
+        // never silently downgrades).
         if let Some(reason) = runner_constraint_error(overrides, &found) {
             return Err(reason.into());
         }
@@ -96,8 +115,7 @@ pub(crate) fn dispatch_task_piped(
                 );
                 let mut cmd = tool::bun::test_cmd(args);
                 super::configure_command(&mut cmd, &ctx.root);
-                cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-                return Ok(cmd.spawn()?);
+                return Ok(cmd);
             }
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.
@@ -110,8 +128,7 @@ pub(crate) fn dispatch_task_piped(
                 args.join(" ").dimmed(),
             );
             super::configure_command(&mut cmd, &ctx.root);
-            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-            return Ok(cmd.spawn()?);
+            return Ok(cmd);
         }
 
         bail!("task {task:?} not found. Run `runner list` to see available tasks.");
@@ -137,6 +154,22 @@ pub(crate) fn dispatch_task_piped(
 
     let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args, sink)?;
     super::configure_command(&mut cmd, &ctx.root);
+    Ok(cmd)
+}
+
+/// Resolve `task` and spawn it with piped stdout/stderr so the caller
+/// can multiplex output. Used by the parallel chain executor
+/// (`chain::exec::run_parallel`).
+pub(crate) fn dispatch_task_piped(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task: &str,
+    args: &[String],
+    sink: super::WarningSink<'_>,
+) -> Result<std::process::Child> {
+    use std::process::Stdio;
+
+    let mut cmd = resolve_dispatch(ctx, overrides, task, args, sink)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     Ok(cmd.spawn()?)
 }
@@ -171,125 +204,20 @@ fn build_pm_exec_command(
     }
 }
 
-/// Look up `task` across all detected sources, pick the highest-priority
-/// match, build the appropriate command, and execute it.
-///
-/// Bun special case: when `task == "test"` and no package-manifest `test`
-/// script exists, falls back to `bun test`.
-///
-/// Returns the child process exit code.
+/// Resolve `task` and run it with inherited stdio, returning the exit
+/// code. Bun special case: when `task == "test"` and no package-manifest
+/// `test` script exists, falls back to `bun test`. PM-exec fallback for
+/// unqualified misses runs the target through `npx`/`bunx`/`pnpm exec`/
+/// `deno x`/`uvx`/`go run` when the resolver lands on a PM with an
+/// exec primitive; otherwise spawns the binary directly from `PATH`.
 pub(crate) fn run(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     task: &str,
     args: &[String],
-    mut sink: super::WarningSink<'_>,
+    sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    super::print_warnings(ctx, overrides, sink.as_deref_mut());
-
-    let (qualifier, task_name) = parse_qualified_task(task);
-
-    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
-
-    // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
-    // candidate that isn't under one of the allowed sources is treated
-    // as non-existent. A qualifier (`runner.json:task`) is the user
-    // narrowing *to* a source explicitly and outranks the runner
-    // constraint — the qualified branch below applies its own match.
-    let restricted: Vec<_> = if qualifier.is_some() {
-        found.clone()
-    } else if let Some(allowed) = allowed_runner_sources(overrides) {
-        found
-            .iter()
-            .copied()
-            .filter(|t| allowed.contains(&t.source))
-            .collect()
-    } else {
-        found.clone()
-    };
-
-    if restricted.is_empty() {
-        // Restrictive override active but no candidate matched: hard
-        // error per the resolved design decision (explicit intent
-        // never silently downgrades).
-        if let Some(reason) = runner_constraint_error(overrides, &found) {
-            return Err(reason.into());
-        }
-
-        // Fallbacks are scoped to unqualified lookups. A qualified
-        // miss like `runner run justfile:test` in a Bun project must
-        // bail on the qualifier rather than silently dispatching
-        // `bun test` — the qualifier is user intent about *where* to
-        // look, not just a hint we can drop.
-        //
-        // The resolver call lives inside this branch so qualified
-        // misses don't pay for PM resolution (warning emission,
-        // potential `<pm> --version` spawn for devEngines.version
-        // checks) on an error path they can't reach.
-        if qualifier.is_none() {
-            // Run the full resolver chain once and reuse the verdict
-            // across both fallback paths. This is what closes the
-            // override → config → manifest → lockfile → PATH gap that
-            // the earlier no-task fallbacks had: previously, a
-            // manifest-pinned pnpm/bun project with no lockfile would
-            // skip the bun-test fallback (because
-            // `ctx.primary_node_pm()` was empty) and direct-spawn
-            // arbitrary commands through PATH instead of going
-            // through the declared PM's exec primitive.
-            //
-            // Only the soft `NoSignalsFound { soft: true, .. }` outcome
-            // (the `Probe` fallback with nothing on `$PATH`) collapses to
-            // `None` so the direct PATH spawn at the bottom can still fire
-            // for `runner run somebin`. Hard errors —
-            // `--fallback=error`, manifest `onFail = Error`, and any
-            // other resolver failure — propagate so the user sees
-            // the real diagnostic instead of a silent degrade.
-            let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
-                Ok(decision) => {
-                    super::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
-                    if overrides.explain {
-                        eprintln!(
-                            "{} {} resolved: {}",
-                            "·".dimmed(),
-                            "runner".dimmed(),
-                            decision.describe(),
-                        );
-                    }
-                    Some(decision.pm)
-                }
-                Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
-                Err(e) => return Err(e.into()),
-            };
-
-            if let Some(code) = run_bun_test_fallback(ctx, resolved_pm, task_name, args)? {
-                return Ok(code);
-            }
-            return run_pm_exec_fallback(ctx, resolved_pm, task_name, args);
-        }
-
-        bail!("task {task:?} not found. Run `runner list` to see available tasks.");
-    }
-
-    let entry = if let Some(source) = qualifier {
-        restricted
-            .iter()
-            .find(|t| t.source == source)
-            .copied()
-            .ok_or_else(|| anyhow::anyhow!("task {task_name:?} not found in {}", source.label()))?
-    } else {
-        select_task_entry(ctx, overrides, &restricted)
-    };
-
-    eprintln!(
-        "{} {} {} {}",
-        "→".dimmed(),
-        entry.source.label().dimmed(),
-        task_name.bold(),
-        args.join(" ").dimmed(),
-    );
-
-    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args, sink)?;
-    super::configure_command(&mut cmd, &ctx.root);
+    let mut cmd = resolve_dispatch(ctx, overrides, task, args, sink)?;
     Ok(super::exit_code(cmd.status()?))
 }
 
@@ -478,95 +406,6 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::BaconToml => tool::files::find_first_upwards(root, tool::bacon::FILENAMES),
     };
     path.and_then(|path| path.parent().map(Path::to_path_buf))
-}
-
-/// Execute `target` (plus `args`) as an arbitrary command through the
-/// resolved package manager. `resolved_pm` carries the verdict from
-/// the full resolver chain (override → manifest → lockfile → PATH
-/// probe), so manifest-pinned and PATH-detected PMs participate here
-/// the same way they do for `package.json` script dispatch.
-///
-/// Falls back to running the command directly when `resolved_pm` is
-/// `None` (resolver errored under `--fallback=error`) or when the
-/// selected PM has no `exec`-like primitive (Cargo, Poetry, Pipenv,
-/// Bundler, Composer).
-fn run_pm_exec_fallback(
-    ctx: &ProjectContext,
-    resolved_pm: Option<PackageManager>,
-    target: &str,
-    args: &[String],
-) -> Result<i32> {
-    // `tool::<pm>::exec_cmd` takes a flat `&[String]` — [target, ...args].
-    // Build it lazily so the direct `tool::program::command(target)` fallback
-    // doesn't pay for an allocation it never uses.
-    let combined = || {
-        let mut v = Vec::with_capacity(args.len() + 1);
-        v.push(target.to_string());
-        v.extend(args.iter().cloned());
-        v
-    };
-
-    // Dispatch through a PM only when it owns an exec primitive that
-    // can run an arbitrary target like `npx` does. Three flavors qualify:
-    //   * local + registry fetch — `npx` / `npm exec`, `bun x` / `bunx`
-    //   * local-only — `pnpm exec`, `yarn run` (v1) / `yarn exec` (v2+)
-    //   * registry-only — `deno x` (npm:/jsr:), `uvx` (PyPI ephemeral),
-    //     `go run <module>@<version>` (Go module path)
-    // Cargo, Poetry, Pipenv, Bundler, and Composer have no comparable
-    // primitive: `cargo <target>` would dispatch to a `cargo-<target>`
-    // subcommand on PATH (so `runner run eslint` in a Rust repo would
-    // look for `cargo-eslint`), and the rest are venv/Gemfile-scoped
-    // launchers, not package fetchers. For those we fall through to
-    // spawning `target` directly so PATH is authoritative rather than
-    // silently doing the wrong thing.
-    let (label, mut cmd) = match resolved_pm {
-        Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
-        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined())),
-        Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
-        Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
-        Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
-        Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
-        Some(PackageManager::Go) => ("go run", tool::go_pm::exec_cmd(&combined())),
-        None | Some(_) => {
-            let mut c = tool::program::command(target);
-            c.args(args);
-            ("exec", c)
-        }
-    };
-
-    eprintln!(
-        "{} {} {} {}",
-        "→".dimmed(),
-        label.dimmed(),
-        target.bold(),
-        args.join(" ").dimmed(),
-    );
-
-    super::configure_command(&mut cmd, &ctx.root);
-    Ok(super::exit_code(cmd.status()?))
-}
-
-fn run_bun_test_fallback(
-    ctx: &ProjectContext,
-    resolved_pm: Option<PackageManager>,
-    task: &str,
-    args: &[String],
-) -> Result<Option<i32>> {
-    if !should_use_bun_test_fallback(ctx, resolved_pm, task) {
-        return Ok(None);
-    }
-
-    eprintln!(
-        "{} {} {} {}",
-        "→".dimmed(),
-        "bun".dimmed(),
-        "test".bold(),
-        args.join(" ").dimmed(),
-    );
-
-    let mut cmd = tool::bun::test_cmd(args);
-    super::configure_command(&mut cmd, &ctx.root);
-    Ok(Some(super::exit_code(cmd.status()?)))
 }
 
 /// Bun special-case for `runner test` when the project has no
