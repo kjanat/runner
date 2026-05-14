@@ -132,10 +132,9 @@ fn chain_rejects_mutually_exclusive_mode_flags() {
 
 #[test]
 fn chain_rejects_whitespace_positional_in_v1() {
-    if !just_available() {
-        eprintln!("skipping: `just` not found on PATH");
-        return;
-    }
+    // No `just_available()` gate — the parser rejects the whitespace
+    // positional before any task is dispatched, so the test runs
+    // regardless of whether `just` is on PATH.
     let output = Command::new(runner_binary())
         .args([
             "--dir",

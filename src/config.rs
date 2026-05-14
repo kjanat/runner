@@ -92,9 +92,11 @@ pub(crate) struct ChainSection {
     #[serde(default)]
     pub keep_going: Option<bool>,
 
-    /// Parallel only: SIGKILL sibling tasks on first failure. Mutually
-    /// exclusive with `keep_going`. Equivalent to `--kill-on-fail` /
-    /// `RUNNER_KILL_ON_FAIL`. Ignored in sequential contexts.
+    /// Parallel only: terminate sibling tasks immediately on first
+    /// failure (forcible kill, not graceful shutdown — uncatchable on
+    /// Unix). Mutually exclusive with `keep_going`. Equivalent to
+    /// `--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential
+    /// contexts.
     #[serde(default)]
     pub kill_on_fail: Option<bool>,
 }

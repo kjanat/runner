@@ -61,7 +61,7 @@ pub(crate) fn install_pms(
         super::configure_command(&mut cmd, &ctx.root);
         let status = cmd.status()?;
         if !status.success() {
-            return Ok(status.code().unwrap_or(1));
+            return Ok(super::exit_code(status));
         }
     }
     Ok(0)

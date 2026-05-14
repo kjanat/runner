@@ -34,7 +34,7 @@ fn configure_command(command: &mut Command, dir: &Path) {
         .stderr(Stdio::inherit());
 }
 
-fn exit_code(status: ExitStatus) -> i32 {
+pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt as _;
@@ -81,6 +81,10 @@ fn print_warning_slice(
 
 /// Emit a previously-collected warning set to stderr. Used by the chain
 /// executor after all per-task resolutions have populated the sink.
+///
+/// Sorted by `Display` form before emission so output is stable across
+/// runs — `HashSet` iteration order is unspecified, which made the
+/// warning block jump around between invocations of the same chain.
 pub(crate) fn emit_collected_warnings(
     warnings: &std::collections::HashSet<DetectionWarning>,
     overrides: &ResolutionOverrides,
@@ -88,7 +92,10 @@ pub(crate) fn emit_collected_warnings(
     if overrides.no_warnings {
         return;
     }
-    for warning in warnings {
+    let mut sorted: Vec<(String, &DetectionWarning)> =
+        warnings.iter().map(|w| (w.to_string(), w)).collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, warning) in sorted {
         eprintln!("{} {warning}", "warn:".yellow().bold());
     }
 }

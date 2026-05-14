@@ -150,7 +150,7 @@ fn run_parallel(
         for (name, mut child) in std::mem::take(&mut remaining) {
             match child.try_wait()? {
                 Some(status) => {
-                    let code = status.code().unwrap_or(1);
+                    let code = crate::cmd::exit_code(status);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }

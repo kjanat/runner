@@ -56,11 +56,12 @@ pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String 
     }
 }
 
-/// Spawn reader threads that read line-by-line from each `Read`, prefix
-/// the lines, and send them through the returned receiver. The caller
-/// must keep the returned join handles alive until the channel closes.
-///
-/// `streams` is a slice of `(prefix, is_stderr, reader)` tuples.
+/// Spawn one reader thread per `(prefix, is_stderr, reader)` entry in
+/// `streams`. Each thread reads its `Read` line-by-line and pushes
+/// [`PrefixedLine`] values into the supplied `sender`. Returns the
+/// `Vec<JoinHandle<()>>` for the spawned threads — the caller owns the
+/// receiver, keeps the handles alive until the channel closes, and joins
+/// each handle once all senders have been dropped.
 pub(crate) fn spawn_readers<R>(
     streams: Vec<(String, bool, R)>,
     sender: &Sender<PrefixedLine>,
