@@ -126,6 +126,7 @@ fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
         TaskSource::Taskfile => tool::files::find_first(&ctx.root, tool::go_task::FILENAMES),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(&ctx.root),
         TaskSource::BaconToml => tool::files::find_first(&ctx.root, tool::bacon::FILENAMES),
+        TaskSource::MiseToml => tool::mise::find_file(&ctx.root),
     }
 }
 

@@ -282,6 +282,39 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     if ctx.task_runners.contains(&TaskRunner::Bacon) {
         push_described_tasks(ctx, TaskSource::BaconToml, tool::bacon::extract_tasks(dir));
     }
+    if ctx.task_runners.contains(&TaskRunner::Mise) {
+        push_mise_tasks(ctx, tool::mise::extract_tasks(dir));
+    }
+}
+
+/// Append tasks from the mise source, preserving alias→target metadata.
+fn push_mise_tasks(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,
+) {
+    match result {
+        Ok(entries) => {
+            for entry in entries {
+                let (name, description, alias_of) = match entry {
+                    tool::mise::ExtractedTask::Recipe { name, description } => {
+                        (name, description, None)
+                    }
+                    tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+                };
+                ctx.tasks.push(Task {
+                    name,
+                    source: TaskSource::MiseToml,
+                    description,
+                    alias_of,
+                    passthrough_to: None,
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::MiseToml.label(),
+            error: format!("{err:#}"),
+        }),
+    }
 }
 
 /// Append cargo aliases as tasks. Each alias's fully recursion-expanded
