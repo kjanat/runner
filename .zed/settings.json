@@ -11,6 +11,13 @@
 	"lsp": {
 		"json-language-server": {
 			"settings": { "json": { "schemas": [{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" }] } }
+		},
+		"rust-analyzer": {
+			"initialization_options": {
+				"diagnostics": { "experimental": { "enable": true } },
+				"check": { "workspace": true, "allTargets": true, "features": "all" },
+				"cargo": { "allTargets": true, "features": ["schema-gen", "run"] }
+			}
 		}
 	},
 	"file_types": { "SVG": ["*.ico"] },
