@@ -32,8 +32,9 @@ pub(crate) fn doctor(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     json: bool,
+    schema_version: u32,
 ) -> Result<()> {
-    let project = Project::build(ctx, overrides);
+    let project = Project::build_with_schema(ctx, overrides, schema_version);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&project)?);
@@ -261,7 +262,7 @@ mod tests {
         let ctx = context();
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
-        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["schema_version"], 2);
     }
 
     #[test]
@@ -293,8 +294,20 @@ mod tests {
         let ctx = context();
         // Ensure both rendering paths are exercised; output goes to stdout
         // which is fine in tests (captured by `cargo test`).
-        doctor(&ctx, &ResolutionOverrides::default(), true).expect("json render should succeed");
-        doctor(&ctx, &ResolutionOverrides::default(), false).expect("human render should succeed");
+        doctor(
+            &ctx,
+            &ResolutionOverrides::default(),
+            true,
+            crate::report::Project::SCHEMA_VERSION,
+        )
+        .expect("json render should succeed");
+        doctor(
+            &ctx,
+            &ResolutionOverrides::default(),
+            false,
+            crate::report::Project::SCHEMA_VERSION,
+        )
+        .expect("human render should succeed");
     }
 
     #[test]

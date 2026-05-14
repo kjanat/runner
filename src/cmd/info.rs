@@ -27,12 +27,17 @@ pub(crate) fn info(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     json: bool,
+    schema_version: u32,
 ) -> Result<()> {
     if json {
-        let view = Project::build(ctx, overrides).into_info_view();
+        let view = Project::build_with_schema(ctx, overrides, schema_version).into_info_view();
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
+    // `schema_version` is accepted (and validated by the caller) even on
+    // the human-output path so an invalid value errors uniformly across
+    // surfaces; the human renderer itself doesn't read it.
+    let _ = schema_version;
 
     super::print_warnings(ctx, overrides, None);
 

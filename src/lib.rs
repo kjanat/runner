@@ -52,8 +52,7 @@
 //! runner clean        # remove caches and build artifacts
 //! runner list         # list available tasks from all sources
 //! ```
-//!
-//! Generate docs with `cargo doc --document-private-items --open`.
+// Generate docs with `cargo doc --document-private-items --open`.
 
 pub(crate) mod chain;
 mod cli;
@@ -328,6 +327,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         },
         loaded_config.as_ref(),
     )?;
+    let schema_version = resolve_schema_version(cli.global.schema_version)?;
     if cli.mode.sequential || cli.mode.parallel {
         let mode = if cli.mode.parallel {
             chain::ChainMode::Parallel
@@ -349,7 +349,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     }
     match cli.task {
         None => {
-            cmd::info(&ctx, &overrides, false)?;
+            cmd::info(&ctx, &overrides, false, schema_version)?;
             Ok(0)
         }
         Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args, None),
@@ -592,16 +592,31 @@ fn dispatch_run(
     cmd::run(ctx, overrides, task, &args, None)
 }
 
-fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
-    let ctx = detect::detect(dir);
-    let loaded_config = config::load(dir)?;
+/// Resolve the effective JSON schema version for this invocation: explicit
+/// `--schema-version=N` wins, otherwise default to the latest version this
+/// binary produces. Validates the range so `--schema-version=99` errors
+/// the same on `doctor` (json) and `info` (human) — version negotiation
+/// is uniform across the four JSON surfaces and their human siblings.
+fn resolve_schema_version(requested: Option<u32>) -> Result<u32> {
+    report::validate_schema_version(requested.unwrap_or(report::Project::SCHEMA_VERSION))
+}
+
+/// Build [`resolver::ResolutionOverrides`] from a parsed CLI + loaded config.
+/// Lifted out of [`dispatch`] so the latter stays under clippy's
+/// `too_many_lines` budget; the chain-failure inputs come from whichever
+/// subcommand carries them (`Run` / `Install`), with `false` defaults for
+/// subcommands that don't.
+fn build_overrides(
+    cli: &cli::Cli,
+    loaded_config: Option<&config::LoadedConfig>,
+) -> Result<resolver::ResolutionOverrides> {
     let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
         Some(cli::Command::Run { failure, .. } | cli::Command::Install { failure, .. }) => {
             (failure.keep_going, failure.kill_on_fail)
         }
         _ => (false, false),
     };
-    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
+    resolver::ResolutionOverrides::from_cli_and_env(
         cli.global.pm_override.as_deref(),
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
@@ -614,19 +629,26 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             keep_going: cli_keep_going,
             kill_on_fail: cli_kill_on_fail,
         },
-        loaded_config.as_ref(),
-    )?;
+        loaded_config,
+    )
+}
+
+fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
+    let ctx = detect::detect(dir);
+    let loaded_config = config::load(dir)?;
+    let overrides = build_overrides(&cli, loaded_config.as_ref())?;
+    let schema_version = resolve_schema_version(cli.global.schema_version)?;
 
     match cli.command {
         Some(cli::Command::Info { json: false }) if has_task(&ctx, "info") => {
             cmd::run(&ctx, &overrides, "info", &[], None)
         }
         None => {
-            cmd::info(&ctx, &overrides, false)?;
+            cmd::info(&ctx, &overrides, false, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Info { json }) => {
-            cmd::info(&ctx, &overrides, json)?;
+            cmd::info(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Run {
@@ -634,7 +656,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) => dispatch_run(&ctx, &overrides, task, args, mode),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
-                cmd::info(&ctx, &overrides, false)?;
+                cmd::info(&ctx, &overrides, false, schema_version)?;
                 Ok(0)
             } else {
                 cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
@@ -671,7 +693,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             source: None,
         }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[], None),
         Some(cli::Command::List { raw, json, source }) => {
-            cmd::list(&ctx, &overrides, raw, json, source.as_deref())?;
+            cmd::list(
+                &ctx,
+                &overrides,
+                raw,
+                json,
+                source.as_deref(),
+                schema_version,
+            )?;
             Ok(0)
         }
         Some(cli::Command::Completions {
@@ -683,11 +712,11 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
         Some(cli::Command::Doctor { json }) => {
-            cmd::doctor(&ctx, &overrides, json)?;
+            cmd::doctor(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Why { task, json }) => {
-            cmd::why(&ctx, &overrides, &task, json)?;
+            cmd::why(&ctx, &overrides, &task, json, schema_version)?;
             Ok(0)
         }
     }

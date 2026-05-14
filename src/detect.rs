@@ -551,7 +551,7 @@ mod tests {
         let ctx = detect(dir.path());
 
         assert_eq!(ctx.warnings.len(), 1);
-        assert_eq!(ctx.warnings[0].source(), "turbo.json");
+        assert_eq!(ctx.warnings[0].source(), "turbo");
     }
 
     #[test]

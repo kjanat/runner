@@ -570,6 +570,27 @@ impl TaskSource {
         }
     }
 
+    /// Legacy filename-style label used by JSON schema **v1**. Held
+    /// alongside the canonical [`label`] so a client requesting
+    /// `--schema-version=1` still sees the strings it was built against
+    /// — `"justfile"`, `"bacon.toml"`, etc. — instead of the v2 tool
+    /// names. Drop when the v1 schema is retired.
+    ///
+    /// [`label`]: TaskSource::label
+    pub(crate) const fn label_v1(self) -> &'static str {
+        match self {
+            Self::PackageJson => "package.json",
+            Self::Makefile => "Makefile",
+            Self::Justfile => "justfile",
+            Self::Taskfile => "Taskfile",
+            Self::TurboJson => "turbo.json",
+            Self::DenoJson => "deno.json",
+            Self::CargoAliases => "cargo",
+            Self::BaconToml => "bacon.toml",
+            Self::MiseToml => "mise.toml",
+        }
+    }
+
     /// Parse a source label back to a [`TaskSource`]. Accepts both the
     /// current canonical [`label`]s and the older filename-style labels
     /// (`"justfile"`, `"bacon.toml"`, `"turbo.json"`, …) so qualified

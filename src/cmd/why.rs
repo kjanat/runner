@@ -28,6 +28,7 @@ pub(crate) fn why(
     overrides: &ResolutionOverrides,
     task: &str,
     json: bool,
+    schema_version: u32,
 ) -> Result<()> {
     let candidates: Vec<&Task> = ctx.tasks.iter().filter(|t| t.name == task).collect();
 
@@ -49,6 +50,7 @@ pub(crate) fn why(
         pm_decision.as_ref(),
         overrides,
         ctx,
+        schema_version,
     );
 
     if json {
@@ -74,12 +76,15 @@ fn build_report(
     pm_decision: Option<&Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
+    schema_version: u32,
 ) -> Value {
     json!({
-        "schema_version": 1,
+        "schema_version": schema_version,
         "task": task,
-        "candidates": candidates.iter().map(|c| candidate_json(c, overrides, ctx)).collect::<Vec<_>>(),
-        "selected": selected.map(|s| candidate_json(s, overrides, ctx)),
+        "candidates": candidates.iter()
+            .map(|c| candidate_json(c, overrides, ctx, schema_version))
+            .collect::<Vec<_>>(),
+        "selected": selected.map(|s| candidate_json(s, overrides, ctx, schema_version)),
         "pm_resolution": pm_decision.map(|res| match res {
             Ok(decision) => json!({
                 "pm": decision.pm.label(),
@@ -94,7 +99,12 @@ fn build_report(
     })
 }
 
-fn candidate_json(task: &Task, overrides: &ResolutionOverrides, ctx: &ProjectContext) -> Value {
+fn candidate_json(
+    task: &Task,
+    overrides: &ResolutionOverrides,
+    ctx: &ProjectContext,
+    schema_version: u32,
+) -> Value {
     let depth = source_depth(ctx, task.source);
     let depth_value = if depth == usize::MAX {
         Value::Null
@@ -102,7 +112,7 @@ fn candidate_json(task: &Task, overrides: &ResolutionOverrides, ctx: &ProjectCon
         json!(depth)
     };
     json!({
-        "source": task.source.label(),
+        "source": crate::report::source_label_for(task.source, schema_version),
         "source_priority": source_priority(overrides, task.source),
         "depth": depth_value,
         "display_order": task.source.display_order(),
@@ -247,8 +257,14 @@ mod tests {
     #[test]
     fn why_handles_missing_task() {
         let ctx = context(vec![]);
-        why(&ctx, &ResolutionOverrides::default(), "build", true)
-            .expect("why should succeed even when task is missing");
+        why(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            true,
+            crate::report::Project::SCHEMA_VERSION,
+        )
+        .expect("why should succeed even when task is missing");
     }
 
     #[test]
@@ -257,7 +273,22 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
-        why(&ctx, &ResolutionOverrides::default(), "build", true).expect("json should succeed");
-        why(&ctx, &ResolutionOverrides::default(), "build", false).expect("human should succeed");
+        let version = crate::report::Project::SCHEMA_VERSION;
+        why(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            true,
+            version,
+        )
+        .expect("json should succeed");
+        why(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            false,
+            version,
+        )
+        .expect("human should succeed");
     }
 }

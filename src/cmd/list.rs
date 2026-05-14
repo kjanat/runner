@@ -29,22 +29,26 @@ pub(crate) fn list(
     raw: bool,
     json: bool,
     source: Option<&str>,
+    schema_version: u32,
 ) -> Result<()> {
     let parsed_source = match source {
         None => None,
         Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
             anyhow!(
                 "--source {label:?}: unknown source label (expected one of: package.json, \
-                 Makefile, justfile, Taskfile, turbo.json, deno.json, cargo, bacon.toml)",
+                 make, just, task, turbo, deno, cargo, bacon, mise — legacy filename \
+                 forms like justfile/bacon.toml/Makefile are also accepted)",
             )
         })?),
     };
 
     if json {
-        let view = Project::build(ctx, overrides).into_list_view(parsed_source);
+        let view = Project::build_with_schema(ctx, overrides, schema_version)
+            .into_list_view(parsed_source);
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
+    let _ = schema_version;
 
     super::print_warnings(ctx, overrides, None);
 

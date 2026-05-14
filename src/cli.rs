@@ -811,6 +811,24 @@ pub(crate) struct GlobalOpts {
         ),
     )]
     pub no_warnings: bool,
+
+    /// Pin the JSON output schema to a specific version. Defaults to the
+    /// latest version this binary produces. The chosen version controls
+    /// the `source` field on tasks/decisions in `doctor`/`list`/`info`/`why`
+    /// JSON output. v1 uses filename-style labels (`"justfile"`, `"bacon.toml"`),
+    /// v2 uses tool names (`"just"`, `"bacon"`). The resolver, human output,
+    /// and qualified-task parsing are unaffected.
+    #[arg(
+        long = "schema-version",
+        global = true,
+        value_name = "N",
+        help = concat!(
+            "Pin JSON output schema version (",
+            cyan!("1"), " or ", cyan!("2"), "). Defaults to latest. Affects ",
+            cyan!("--json"), " output of doctor/list/info/why only."
+        ),
+    )]
+    pub schema_version: Option<u32>,
 }
 
 /// Available subcommands.
