@@ -81,8 +81,14 @@ fn resolve_dispatch(
     if restricted.is_empty() {
         // Restrictive override active but no candidate matched: hard
         // error per the resolved design decision (explicit intent
-        // never silently downgrades).
-        if let Some(reason) = runner_constraint_error(overrides, &found) {
+        // never silently downgrades). Skipped for qualified misses —
+        // the qualifier (`justfile:foo`) is stronger user intent than
+        // `--runner` / `[task_runner].prefer`, so report the qualified
+        // miss directly instead of surfacing a runner-constraint error
+        // the user can't act on.
+        if qualifier.is_none()
+            && let Some(reason) = runner_constraint_error(overrides, &found)
+        {
             return Err(reason.into());
         }
 
