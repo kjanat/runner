@@ -34,9 +34,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   Both paths exclude hidden tasks (`hide = true`),
   underscore-prefixed names, and tasks whose `source` lives
   outside the project root (so global / `~/.config/mise/*` tasks
-  don't pollute the project's task list). Aliases come through as
-  separate entries pointing at their target, mirroring the
-  justfile shape.
+  don't pollute the project's task list). Empty or
+  whitespace-only `description = ""` values are treated as
+  missing so the renderer falls through to the `run` body or
+  `file` reference instead of showing a blank column. Aliases
+  come through as separate entries pointing at their target,
+  mirroring the justfile shape.
 
 ### Fixed
 
