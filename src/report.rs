@@ -422,26 +422,46 @@ const fn mismatch_label(policy: MismatchPolicy) -> &'static str {
 /// Probe each Node PM in canonical order and report (binary, path) pairs.
 /// Used by the doctor signals section; intentionally calls the real probe
 /// so the output reflects what the resolver would see.
+///
+/// Probes run in parallel via [`std::thread::scope`]: each `probe_path_for_doctor`
+/// call walks the entire `PATH` searching for one binary, which is O(N
+/// entries) of independent `stat` syscalls. Doctor isn't on the hot
+/// path, but four-way fan-out is essentially free and keeps the
+/// rendering snappy on `PATH`s that contain network-mounted directories.
 fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
     use std::env;
+    use std::thread;
 
     let path = env::var_os("PATH").unwrap_or_default();
     let pathext = env::var_os("PATHEXT");
-    let probe = |name: &str| {
-        crate::resolver::probe_path_for_doctor(name, &path, pathext.as_deref())
-            .map(|p| p.display().to_string())
-    };
+    let pathext_ref = pathext.as_deref();
 
-    let mut map = BTreeMap::new();
-    for pm in [
+    const PMS: [PackageManager; 4] = [
         PackageManager::Bun,
         PackageManager::Pnpm,
         PackageManager::Yarn,
         PackageManager::Npm,
-    ] {
-        map.insert(pm.label(), probe(pm.label()));
-    }
-    map
+    ];
+
+    thread::scope(|s| {
+        let handles: Vec<_> = PMS
+            .iter()
+            .map(|pm| {
+                let path = &path;
+                s.spawn(move || {
+                    let resolved =
+                        crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref)
+                            .map(|p| p.display().to_string());
+                    (pm.label(), resolved)
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("path probe thread panicked"))
+            .collect()
+    })
 }
 
 #[cfg(test)]

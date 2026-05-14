@@ -57,16 +57,91 @@ pub(crate) fn install_pms(
         suggest_version_switch(ctx);
     }
 
-    for pm in &ctx.package_managers {
+    if ctx.package_managers.len() == 1 {
+        let pm = ctx.package_managers[0];
         eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
-        let mut cmd = build_install_command(ctx, *pm, frozen);
+        let mut cmd = build_install_command(ctx, pm, frozen);
         super::configure_command(&mut cmd, &ctx.root);
         let status = cmd.status()?;
+        return Ok(if status.success() {
+            0
+        } else {
+            super::exit_code(status)
+        });
+    }
+
+    run_installs_parallel(ctx, frozen)
+}
+
+/// Run every detected package manager's install in parallel, multiplexing
+/// stdout/stderr through a [`LineSink`] so each line is prefixed with the
+/// PM that produced it.
+///
+/// Failure policy mirrors chain mode's `FailFast` default: record the
+/// first non-zero exit code, let the remaining installs finish on their
+/// own. Killing siblings on first failure (the `KillOnFail` analogue)
+/// isn't exposed yet — the v1 `runner install` CLI has no flag for it,
+/// and the conservative default for a top-level command is "don't tear
+/// down the user's slow `cargo fetch` because `npm` blew up on a 404."
+fn run_installs_parallel(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
+    use std::process::Child;
+
+    let names: Vec<&str> = ctx.package_managers.iter().map(|pm| pm.label()).collect();
+    let width = prefix_width(&names);
+    let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
+    let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
+
+    let mut children: Vec<(PackageManager, Child)> = Vec::with_capacity(ctx.package_managers.len());
+    let mut reader_handles = Vec::new();
+
+    let spawn_outcome: Result<()> = (|| {
+        for pm in &ctx.package_managers {
+            eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+            let mut cmd = build_install_command(ctx, *pm, frozen);
+            super::configure_command(&mut cmd, &ctx.root);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = cmd.spawn()?;
+            let prefix = render_prefix(pm.label(), width, colorize);
+            let stdout: Box<dyn std::io::Read + Send> =
+                Box::new(child.stdout.take().expect("stdout piped"));
+            let stderr: Box<dyn std::io::Read + Send> =
+                Box::new(child.stderr.take().expect("stderr piped"));
+            reader_handles.extend(spawn_readers(
+                vec![
+                    (prefix.clone(), false, stdout),
+                    (prefix.clone(), true, stderr),
+                ],
+                Arc::clone(&sink),
+            ));
+            children.push((*pm, child));
+        }
+        Ok(())
+    })();
+    if let Err(e) = spawn_outcome {
+        for (_, mut c) in children {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+        for h in reader_handles {
+            let _ = h.join();
+        }
+        return Err(e);
+    }
+
+    let mut first_failure: Option<i32> = None;
+    for (_, mut child) in children {
+        let status = child.wait()?;
         if !status.success() {
-            return Ok(super::exit_code(status));
+            first_failure.get_or_insert(super::exit_code(status));
         }
     }
-    Ok(0)
+    for h in reader_handles {
+        let _ = h.join();
+    }
+
+    Ok(first_failure.unwrap_or(0))
 }
 
 /// Map a [`PackageManager`] to its install [`Command`].

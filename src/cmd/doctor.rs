@@ -189,8 +189,13 @@ fn print_human(report: &Value, overrides: &ResolutionOverrides) {
     });
 
     print_section("Decisions", |out| {
+        // `Map<String, Value>` indexes panic on missing keys (unlike
+        // `Value` indexing, which yields `Null`). Use `.get` so a
+        // `node_pm` decision missing its `via` field renders `?`
+        // instead of crashing the renderer.
         if let Some(pm) = report["decisions"]["node_pm"].as_object() {
-            writeln_field(out, "node scripts", pm["via"].as_str().unwrap_or("?"));
+            let via = pm.get("via").and_then(Value::as_str).unwrap_or("?");
+            writeln_field(out, "node scripts", via);
         }
         if let Some(err) = report["decisions"]["node_pm_error"].as_str() {
             writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
