@@ -32,6 +32,23 @@ pub(crate) fn run_chain(
     chain: &Chain,
 ) -> Result<i32> {
     let mut warnings: HashSet<DetectionWarning> = HashSet::new();
+
+    // Pre-flight every task token before *any* sibling runs. Catches
+    // the common UX trap where `runner run -s bb t lint:cargo` would
+    // run `bb` and `t` to completion before bailing on the obvious
+    // typo at item 3. `precheck_task` is side-effect-free — no
+    // warnings emitted, no arrows printed, no subprocess spawned —
+    // and only fires for errors we can determine purely from
+    // `ctx.tasks` + the override shape. Errors that need the resolver
+    // (PM-exec fallback miss, manifest mismatch) still surface at
+    // dispatch time, which is unavoidable without spawning probes
+    // here.
+    for item in &chain.items {
+        if let ChainItemKind::Task(name) = &item.kind {
+            crate::cmd::run::precheck_task(ctx, overrides, name)?;
+        }
+    }
+
     // Emit warnings on both success and error paths — a chain that
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.

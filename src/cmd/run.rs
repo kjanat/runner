@@ -44,6 +44,79 @@ fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str)> {
     Some((source, &input[..colon]))
 }
 
+/// Side-effect-free pre-flight check for a single task token.
+///
+/// Catches errors the resolver would surface *without* any of the
+/// expensive or stdio-visible work: no warnings emitted, no `→` arrow
+/// printed, no `<pm> --version` probes. Used by chain mode to bail
+/// before running *any* sibling task when a later token is clearly
+/// broken — otherwise a chain like `bb t lint:cargo` runs `bb` and
+/// `t` to completion before surfacing the typo at item 3.
+///
+/// Returns `Ok(())` on:
+/// - matched task (qualified or unqualified),
+/// - unmatched task whose dispatch would fall back to bun-test or
+///   PM-exec — those paths require resolver state we deliberately
+///   skip here; they get their proper error at dispatch time.
+///
+/// Returns `Err` on:
+/// - qualified miss (`justfile:nonexistent`),
+/// - reversed qualifier (`lint:cargo`),
+/// - runner-constraint mismatch (`--runner just` with no justfile task).
+pub(crate) fn precheck_task(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task: &str,
+) -> Result<()> {
+    let (qualifier, task_name) = parse_qualified_task(task);
+    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
+
+    let restricted: Vec<_> = if qualifier.is_some() {
+        found.clone()
+    } else if let Some(allowed) = allowed_runner_sources(overrides) {
+        found
+            .iter()
+            .copied()
+            .filter(|t| allowed.contains(&t.source))
+            .collect()
+    } else {
+        found.clone()
+    };
+
+    if !restricted.is_empty() {
+        // For qualified inputs, also confirm the named source actually
+        // produced a candidate; otherwise mirror `resolve_dispatch`'s
+        // "not found in <source>" diagnostic.
+        if let Some(source) = qualifier
+            && !restricted.iter().any(|t| t.source == source)
+        {
+            bail!("task {task_name:?} not found in {}", source.label());
+        }
+        return Ok(());
+    }
+
+    if let Some(source) = qualifier {
+        bail!("task {task_name:?} not found in {}", source.label());
+    }
+
+    if let Some(reason) = runner_constraint_error(overrides, &found) {
+        return Err(reason.into());
+    }
+
+    if let Some((src, task_part)) = detect_reversed_qualifier(task) {
+        let src_label = src.label();
+        bail!(
+            "unknown qualifier in {task:?}: source {src_label:?} must come first.\n\
+             hint: did you mean \"{src_label}:{task_part}\"?",
+        );
+    }
+
+    // Unqualified miss with no constraint and no reversed shape: dispatch
+    // will try bun-test / PM-exec fallback. Those require resolver state
+    // we intentionally skip here; defer to the dispatch-time path.
+    Ok(())
+}
+
 /// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
 /// Walks the same cascade for every caller — warning emission, qualified
