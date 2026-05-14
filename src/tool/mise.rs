@@ -404,7 +404,9 @@ impl<'de> Deserialize<'de> for TaskEntry {
 mod tests {
     use std::fs;
 
-    use super::{ExtractedTask, detect, extract_tasks, parse_cli_output, run_cmd};
+    use super::{
+        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, parse_cli_output, run_cmd,
+    };
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -912,6 +914,12 @@ mod tests {
         // `mise.toml` outranks `.mise.toml`; the latter should be
         // ignored when both exist. (Mise itself merges, but we only
         // need to surface a representative task list for `runner list`.)
+        //
+        // Exercise the file-precedence path directly: `extract_tasks`
+        // routes through `mise tasks --json` first when the binary is
+        // on `$PATH`, which would return a merged view across both
+        // files and defeat the assertion. The CLI fast path is
+        // covered separately by `extract_uses_mise_cli_when_available`.
         let dir = TempDir::new("mise-precedence");
         fs::write(
             dir.path().join("mise.toml"),
@@ -924,7 +932,7 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks_from_source(dir.path()).expect("parse should succeed");
         let names: Vec<&str> = tasks
             .iter()
             .map(|t| match t {
