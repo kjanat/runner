@@ -158,14 +158,14 @@ fn alias_label(source: TaskSource, stdout_is_terminal: bool) -> String {
 }
 
 fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> String {
-    let path = source_path(source, root);
-    let display = path
-        .as_deref()
-        .and_then(|path| path.file_name())
-        .map_or_else(
-            || source.label().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
+    // Display text is always the canonical `TaskSource::label()` — using
+    // `path.file_name()` instead collapses any source whose backing file
+    // happens to be named `config.toml` (cargo, uv, pip, rust-toolchain,
+    // mise variants, …) into an ambiguous single column. The OSC8 link
+    // target still points at the exact resolved path, so terminal users
+    // click through to the right file even when the displayed label is
+    // the source's canonical name.
+    let display = source.label().to_string();
     let padding = 16usize.saturating_sub(display.chars().count());
     let label = format!("{display:<16}").bold().to_string();
 
@@ -173,7 +173,7 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
         return label;
     }
 
-    let Some(path) = path else {
+    let Some(path) = source_path(source, root) else {
         return label;
     };
     let Some(url) = file_uri(&path) else {
@@ -325,7 +325,14 @@ mod tests {
     }
 
     #[test]
-    fn source_label_uses_resolved_manifest_filename() {
+    fn source_label_uses_canonical_source_label_regardless_of_filename_variant() {
+        // The displayed text is always `TaskSource::label()` — never
+        // the resolved manifest's filename. Mixing in `file_name()`
+        // would collapse the many sources whose config happens to
+        // be named `config.toml` (cargo, uv, pip, mise variants, …)
+        // into an ambiguous shared label, so we keep the canonical
+        // source name on the display side and route the OSC8 link
+        // target at the exact resolved path.
         let dir = TempDir::new("list-source-label-manifest");
         fs::write(
             dir.path().join("package.yaml"),
@@ -335,7 +342,14 @@ mod tests {
 
         let label = source_label(TaskSource::PackageJson, dir.path(), false);
 
-        assert!(label.contains("package.yaml"));
+        assert!(
+            label.contains("package.json"),
+            "label should render the canonical source name, got: {label:?}",
+        );
+        assert!(
+            !label.contains("package.yaml"),
+            "label must not leak the resolved filename variant: {label:?}",
+        );
     }
 
     #[test]
@@ -379,6 +393,6 @@ mod tests {
         ];
         let refs: Vec<&Task> = aliases.iter().collect();
         let line = format_aliases_line(TaskSource::Justfile, &refs, false);
-        assert_eq!(line, "  justfile (aliases) b → build, br → build-release");
+        assert_eq!(line, "  just (aliases)  b → build, br → build-release");
     }
 }

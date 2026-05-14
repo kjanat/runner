@@ -541,36 +541,53 @@ impl TaskRunner {
 }
 
 impl TaskSource {
-    /// Config filename shown to the user (e.g. `"package.json"`, `"Makefile"`).
+    /// Canonical display label shown to the user — the *tool* name where a
+    /// single tool owns the source (`"make"`, `"just"`, `"bacon"`, …), or
+    /// the filename when multiple tools share the source (`"package.json"`
+    /// is read by npm/yarn/pnpm/bun, so there's no single owner to name).
+    ///
+    /// Previously a mix of tool names (`"cargo"`) and filenames
+    /// (`"bacon.toml"`, `"turbo.json"`); the inconsistency made the
+    /// `runner list` column read like a typo. Standardizing on tool
+    /// names also stops cases like `bacon.toml` claiming jobs that
+    /// actually come from `~/.config/bacon/prefs.toml` — the label
+    /// "bacon" is honest about that breadth, the label "bacon.toml"
+    /// isn't.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::PackageJson => "package.json",
-            Self::Makefile => "Makefile",
-            Self::Justfile => "justfile",
-            Self::Taskfile => "Taskfile",
-            Self::TurboJson => "turbo.json",
-            Self::DenoJson => "deno.json",
+            Self::Makefile => "make",
+            Self::Justfile => "just",
+            Self::Taskfile => "task",
+            Self::TurboJson => "turbo",
+            Self::DenoJson => "deno",
             // Synthetic source — aliases merge across the hierarchical
             // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
             // file name represents it.
             Self::CargoAliases => "cargo",
-            Self::BaconToml => "bacon.toml",
-            Self::MiseToml => "mise.toml",
+            Self::BaconToml => "bacon",
+            Self::MiseToml => "mise",
         }
     }
 
-    /// Parse a source label back to a [`TaskSource`].
+    /// Parse a source label back to a [`TaskSource`]. Accepts both the
+    /// current canonical [`label`]s and the older filename-style labels
+    /// (`"justfile"`, `"bacon.toml"`, `"turbo.json"`, …) so qualified
+    /// task syntax (`bacon.toml:check`) that users may have in shell
+    /// history, scripts, or muscle memory keeps working unchanged.
+    ///
+    /// [`label`]: TaskSource::label
     pub(crate) fn from_label(label: &str) -> Option<Self> {
         match label {
             "package.json" => Some(Self::PackageJson),
-            "Makefile" => Some(Self::Makefile),
-            "justfile" => Some(Self::Justfile),
-            "Taskfile" => Some(Self::Taskfile),
-            "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
-            "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
+            "make" | "Makefile" => Some(Self::Makefile),
+            "just" | "justfile" => Some(Self::Justfile),
+            "task" | "Taskfile" | "go-task" => Some(Self::Taskfile),
+            "turbo" | "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
+            "deno" | "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
             "cargo" => Some(Self::CargoAliases),
-            "bacon.toml" => Some(Self::BaconToml),
-            "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
+            "bacon" | "bacon.toml" => Some(Self::BaconToml),
+            "mise" | "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
             _ => None,
         }
     }

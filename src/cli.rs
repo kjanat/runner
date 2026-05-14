@@ -364,7 +364,7 @@ mod tests {
             "bare 'test' should appear exactly once"
         );
         assert!(values.contains(&"package.json:test".to_string()));
-        assert!(values.contains(&"Makefile:test".to_string()));
+        assert!(values.contains(&"make:test".to_string()));
         assert!(values.contains(&"build".to_string()));
         assert!(!values.contains(&"package.json:build".to_string()));
     }
@@ -417,11 +417,11 @@ mod tests {
             "package.json must remain swallowed even when other runners share the name"
         );
         assert!(
-            values.contains(&"Makefile:build".to_string()),
+            values.contains(&"make:build".to_string()),
             "Makefile is a real definition, not a passthrough — keep its qualified form"
         );
         assert!(
-            values.contains(&"turbo.json:build".to_string()),
+            values.contains(&"turbo:build".to_string()),
             "turbo.json must keep a qualified form to disambiguate from Makefile"
         );
     }
@@ -450,7 +450,7 @@ mod tests {
             "a real package.json script must surface its qualified form for disambiguation"
         );
         assert!(
-            values.contains(&"turbo.json:build".to_string()),
+            values.contains(&"turbo:build".to_string()),
             "the turbo.json source must surface its qualified form when a real twin exists"
         );
     }
@@ -497,7 +497,7 @@ mod tests {
             .get_tag()
             .expect("alias candidate should carry a tag")
             .to_string();
-        assert_eq!(tag, "justfile (aliases)");
+        assert_eq!(tag, "just (aliases)");
 
         let recipe = candidates
             .iter()
@@ -507,7 +507,7 @@ mod tests {
             .get_tag()
             .expect("recipe candidate should carry a tag")
             .to_string();
-        assert_eq!(recipe_tag, "justfile");
+        assert_eq!(recipe_tag, "just");
     }
 
     #[test]

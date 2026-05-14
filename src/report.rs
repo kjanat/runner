@@ -55,7 +55,15 @@ pub(crate) struct Project<'a> {
 
 impl<'a> Project<'a> {
     /// Schema version for the JSON contract. Bump on any breaking change.
-    pub(crate) const SCHEMA_VERSION: u32 = 1;
+    ///
+    /// v2: source labels standardized to tool names — `"just"` instead
+    /// of `"justfile"`, `"bacon"` instead of `"bacon.toml"`, `"make"`
+    /// instead of `"Makefile"`, `"turbo"` instead of `"turbo.json"`,
+    /// `"deno"` instead of `"deno.json"`, `"task"` instead of
+    /// `"Taskfile"`, `"mise"` instead of `"mise.toml"`. `"package.json"`
+    /// and `"cargo"` unchanged. Consumers reading `decisions.*.source`
+    /// or `tasks[].source` need to update their string comparisons.
+    pub(crate) const SCHEMA_VERSION: u32 = 2;
 
     /// Build the full report from a project context + resolver overrides.
     /// Runs the resolver chain once so `decisions` reflects the current
