@@ -8,8 +8,8 @@ branding:
 inputs:
   version:
     description: >-
-      Release tag (e.g. `v0.7.1`) or `latest`. Defaults to the action's
-      own ref, so `uses: kjanat/runner@v0.7.1` installs v0.7.1 with
+      Release tag (e.g. `v0.10.0`) or `latest`. Defaults to the action's
+      own ref, so `uses: kjanat/runner@v0.10.0` installs v0.10.0 with
       zero API calls. Use `latest` to resolve newest at runtime.
     required: false
     default: ""
