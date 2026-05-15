@@ -81,8 +81,18 @@ pub(crate) fn info(
 
     if !ctx.tasks.is_empty() {
         println!();
+        // Rows already printed above the task list: title line + the
+        // blank after it, each conditional metadata row, and the blank
+        // separator just below. The renderer reserves this so the list
+        // collapses to compact before the banner pushes it offscreen.
+        let banner_rows = 2 // title + trailing blank
+            + usize::from(!ctx.package_managers.is_empty())
+            + usize::from(!ctx.task_runners.is_empty())
+            + usize::from(ctx.node_version.is_some() || ctx.current_node.is_some())
+            + usize::from(ctx.is_monorepo)
+            + 1; // blank separator before the task list
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
-        print_tasks_grouped(&refs, &ctx.root);
+        print_tasks_grouped(&refs, &ctx.root, banner_rows);
     }
     Ok(())
 }

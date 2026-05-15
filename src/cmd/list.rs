@@ -70,7 +70,8 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        let mode = select_render_mode(&filtered);
+        // `runner list` prints no banner above the task list.
+        let mode = select_render_mode(&filtered, 0);
         print_tasks_grouped_with_mode(&filtered, &ctx.root, mode);
     }
     Ok(())
@@ -82,21 +83,34 @@ enum RenderMode {
     Compact,
 }
 
-fn select_render_mode(tasks: &[&Task]) -> RenderMode {
+fn select_render_mode(tasks: &[&Task], reserved_rows: usize) -> RenderMode {
     let height = terminal_size::terminal_size().map(|(_, Height(rows))| usize::from(rows));
-    select_render_mode_for(tasks, std::io::stdout().is_terminal(), height)
+    select_render_mode_for(
+        tasks,
+        std::io::stdout().is_terminal(),
+        height,
+        reserved_rows,
+    )
 }
 
+/// `reserved_rows` is output the caller has already emitted (or will
+/// emit) above the task list and that therefore eats into the visible
+/// budget — e.g. the `runner` info banner (version line, Package
+/// Managers / Task Runners / Node / Monorepo rows, blank separators).
+/// `runner list` has no banner and passes `0`. The `+ 2` is a fixed
+/// allowance for the shell prompt that reappears after rendering plus a
+/// one-row safety margin.
 const fn select_render_mode_for(
     tasks: &[&Task],
     stdout_is_terminal: bool,
     terminal_height: Option<usize>,
+    reserved_rows: usize,
 ) -> RenderMode {
     if !stdout_is_terminal {
         return RenderMode::Rich;
     }
     match terminal_height {
-        Some(rows) if predicted_rich_rows(tasks) + 2 > rows => RenderMode::Compact,
+        Some(rows) if predicted_rich_rows(tasks) + 2 + reserved_rows > rows => RenderMode::Compact,
         _ => RenderMode::Rich,
     }
 }
@@ -105,14 +119,22 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
     tasks.len()
 }
 
-/// Print tasks grouped by [`TaskSource`] with full per-task detail.
+/// Print tasks grouped by [`TaskSource`], collapsing to compact mode
+/// when the rich form would overflow the terminal.
 ///
 /// Operates over a borrowed task slice + the project root — the renderer
 /// never reads other [`ProjectContext`] fields, so callers that already
 /// have a filtered task list pass the slice directly instead of forging
 /// a synthetic context.
-pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
-    print_tasks_grouped_with_mode(tasks, root, RenderMode::Rich);
+///
+/// Used by both `runner list` and the bare `runner` (info) view, so the
+/// height-adaptive selection must live here, not only in [`list`].
+///
+/// `reserved_rows` is the number of lines the caller has already printed
+/// above the task list (the `runner` info banner). `runner list` passes
+/// `0`.
+pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path, reserved_rows: usize) {
+    print_tasks_grouped_with_mode(tasks, root, select_render_mode(tasks, reserved_rows));
 }
 
 fn print_tasks_grouped_with_mode(tasks: &[&Task], root: &Path, mode: RenderMode) {
@@ -478,9 +500,30 @@ mod tests {
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let mode = select_render_mode_for(&refs, true, Some(10));
+        let mode = select_render_mode_for(&refs, true, Some(10), 0);
 
         assert_eq!(mode, RenderMode::Compact);
+    }
+
+    #[test]
+    fn reserved_rows_push_a_borderline_list_into_compact() {
+        // 20 tasks fits a 24-row terminal in the list path (20 + 2 = 22
+        // ≤ 24 → Rich). The same list under the info view, where a
+        // 5-row banner is reserved, no longer fits (20 + 2 + 5 = 27 >
+        // 24 → Compact).
+        let tasks: Vec<Task> = (0..20)
+            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .collect();
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        assert_eq!(
+            select_render_mode_for(&refs, true, Some(24), 0),
+            RenderMode::Rich,
+        );
+        assert_eq!(
+            select_render_mode_for(&refs, true, Some(24), 5),
+            RenderMode::Compact,
+        );
     }
 
     #[test]
@@ -490,7 +533,7 @@ mod tests {
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let mode = select_render_mode_for(&refs, true, Some(200));
+        let mode = select_render_mode_for(&refs, true, Some(200), 0);
 
         assert_eq!(mode, RenderMode::Rich);
     }
@@ -502,7 +545,7 @@ mod tests {
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let mode = select_render_mode_for(&refs, false, Some(10));
+        let mode = select_render_mode_for(&refs, false, Some(10), 0);
 
         assert_eq!(mode, RenderMode::Rich);
     }
