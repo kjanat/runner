@@ -30,7 +30,6 @@ pub(crate) fn list(
     overrides: &ResolutionOverrides,
     raw: bool,
     json: bool,
-    verbose: bool,
     source: Option<&str>,
     schema_version: u32,
 ) -> Result<()> {
@@ -71,8 +70,7 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        let forced = verbose.then_some(RenderMode::Rich);
-        let mode = select_render_mode(&filtered, forced);
+        let mode = select_render_mode(&filtered);
         print_tasks_grouped_with_mode(&filtered, &ctx.root, mode);
     }
     Ok(())
@@ -84,20 +82,16 @@ enum RenderMode {
     Compact,
 }
 
-fn select_render_mode(tasks: &[&Task], forced: Option<RenderMode>) -> RenderMode {
+fn select_render_mode(tasks: &[&Task]) -> RenderMode {
     let height = terminal_size::terminal_size().map(|(_, Height(rows))| usize::from(rows));
-    select_render_mode_for(tasks, forced, std::io::stdout().is_terminal(), height)
+    select_render_mode_for(tasks, std::io::stdout().is_terminal(), height)
 }
 
 const fn select_render_mode_for(
     tasks: &[&Task],
-    forced: Option<RenderMode>,
     stdout_is_terminal: bool,
     terminal_height: Option<usize>,
 ) -> RenderMode {
-    if let Some(mode) = forced {
-        return mode;
-    }
     if !stdout_is_terminal {
         return RenderMode::Rich;
     }
@@ -484,7 +478,7 @@ mod tests {
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let mode = select_render_mode_for(&refs, None, true, Some(10));
+        let mode = select_render_mode_for(&refs, true, Some(10));
 
         assert_eq!(mode, RenderMode::Compact);
     }
@@ -496,7 +490,7 @@ mod tests {
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let mode = select_render_mode_for(&refs, None, true, Some(200));
+        let mode = select_render_mode_for(&refs, true, Some(200));
 
         assert_eq!(mode, RenderMode::Rich);
     }
@@ -508,7 +502,7 @@ mod tests {
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let mode = select_render_mode_for(&refs, None, false, Some(10));
+        let mode = select_render_mode_for(&refs, false, Some(10));
 
         assert_eq!(mode, RenderMode::Rich);
     }
@@ -528,17 +522,5 @@ mod tests {
 
         assert!(rendered.contains('b'));
         assert!(rendered.contains("build"));
-    }
-
-    #[test]
-    fn verbose_flag_overrides_compact_selection() {
-        let tasks: Vec<Task> = (0..30)
-            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
-            .collect();
-        let refs: Vec<&Task> = tasks.iter().collect();
-
-        let mode = select_render_mode_for(&refs, Some(RenderMode::Rich), true, Some(10));
-
-        assert_eq!(mode, RenderMode::Rich);
     }
 }

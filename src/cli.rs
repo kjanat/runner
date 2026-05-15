@@ -652,14 +652,9 @@ mod tests {
 
     #[test]
     fn list_rejects_conflicting_output_modes() {
-        for args in [
-            ["runner", "list", "--raw", "--json"],
-            ["runner", "list", "--raw", "--verbose"],
-            ["runner", "list", "--json", "--verbose"],
-        ] {
-            let err = Cli::try_parse_from(args).expect_err("list output modes must conflict");
-            assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
-        }
+        let err = Cli::try_parse_from(["runner", "list", "--raw", "--json"])
+            .expect_err("list output modes must conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -903,13 +898,10 @@ pub(crate) enum Command {
     #[command(alias = "ls")]
     List {
         /// Print bare task names, one per line (for scripting / completions)
-        #[arg(long, conflicts_with_all = ["json", "verbose"])]
+        #[arg(long, conflicts_with_all = ["json"])]
         raw: bool,
-        /// Force detailed one-task-per-line output.
-        #[arg(short, long, conflicts_with_all = ["json", "raw"])]
-        verbose: bool,
         /// Emit JSON instead of human-readable output.
-        #[arg(long, conflicts_with_all = ["raw", "verbose"])]
+        #[arg(long, conflicts_with_all = ["raw"])]
         json: bool,
         /// Restrict output to a single source (e.g. `package.json`,
         /// `Makefile`, `justfile`).
