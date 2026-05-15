@@ -887,6 +887,7 @@ pub(crate) enum Command {
         /// always sequential; `-p` is not accepted here. Plain positional
         /// (no `trailing_var_arg`) so chain-failure flags placed after
         /// the task list still parse as flags, not task names.
+        #[arg(add = ArgValueCandidates::new(task_candidates))]
         tasks: Vec<String>,
         /// Chain failure-policy flags. `--kill-on-fail` is accepted but
         /// unused (install is always sequential).

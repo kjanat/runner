@@ -158,6 +158,39 @@ fn chain_rejects_whitespace_positional_in_v1() {
 }
 
 #[test]
+fn install_completion_includes_tasks_and_options() {
+    let output = Command::new(runner_binary())
+        .env("COMPLETE", "zsh")
+        .env("_CLAP_COMPLETE_INDEX", "4")
+        .args([
+            "--",
+            "runner",
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "install",
+            "",
+        ])
+        .output()
+        .expect("runner binary spawns");
+
+    assert!(
+        output.status.success(),
+        "completion should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("just\x1fbuild"),
+        "install completion should include task candidates. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("Options\x1f--frozen"),
+        "install completion should keep option candidates. stdout: {stdout}",
+    );
+}
+
+#[test]
 fn chain_prevalidates_all_tokens_before_running_any_task() {
     // A chain with a clearly-broken third token (`lint:cargo` — the
     // reversed qualifier we error on) must NOT run `build` and `test`

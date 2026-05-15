@@ -10,10 +10,11 @@
 		"printWidth": 160,
 	},
 	"shfmt": {
-		"associations": ["**/bin/{install-branch,run,runner}", "**/*.sh", "**/*.bash"],
+		"associations": ["**/bin/{install-branch,run,runner}", "**/*.{bash,zsh,sh}"],
 		"useTabs": true,
 		"binaryNextLine": true,
 		"switchCaseIndent": true,
+		"experimentalZsh": true,
 	},
 	"yaml": { "printWidth": 160 },
 	"exec": {
