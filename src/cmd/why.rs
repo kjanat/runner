@@ -12,7 +12,10 @@ use anyhow::Result;
 use colored::Colorize;
 use serde_json::{Value, json};
 
-use crate::cmd::run::{select_task_entry, source_depth, source_priority};
+use crate::cmd::run::{
+    allowed_runner_sources, runner_constraint_error, select_task_entry, source_depth,
+    source_priority,
+};
 use crate::resolver::{ResolutionOverrides, Resolver};
 use crate::types::{ProjectContext, Task, TaskSource};
 
@@ -31,8 +34,24 @@ pub(crate) fn why(
     schema_version: u32,
 ) -> Result<()> {
     let candidates: Vec<&Task> = ctx.tasks.iter().filter(|t| t.name == task).collect();
+    let restricted: Vec<&Task> = allowed_runner_sources(overrides).map_or_else(
+        || candidates.clone(),
+        |allowed| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|t| allowed.contains(&t.source))
+                .collect()
+        },
+    );
 
-    let selected = (!candidates.is_empty()).then(|| select_task_entry(ctx, overrides, &candidates));
+    if restricted.is_empty()
+        && let Some(reason) = runner_constraint_error(overrides, &candidates)
+    {
+        return Err(reason.into());
+    }
+
+    let selected = (!restricted.is_empty()).then(|| select_task_entry(ctx, overrides, &restricted));
 
     let pm_decision = if selected
         .as_ref()
@@ -229,7 +248,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::why;
-    use crate::resolver::ResolutionOverrides;
+    use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
     use crate::types::{ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
@@ -291,5 +310,31 @@ mod tests {
             version,
         )
         .expect("human should succeed");
+    }
+
+    #[test]
+    fn why_rejects_runner_constraint_mismatch() {
+        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let overrides = ResolutionOverrides::from_cli_and_env(
+            None,
+            Some("just"),
+            None,
+            None,
+            DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("runner override should parse");
+
+        let err = why(
+            &ctx,
+            &overrides,
+            "build",
+            true,
+            crate::schema::CURRENT_VERSION,
+        )
+        .expect_err("why should mirror run runner constraints");
+
+        assert!(format!("{err}").contains("no candidate task is registered"));
     }
 }

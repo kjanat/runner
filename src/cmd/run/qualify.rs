@@ -128,7 +128,7 @@ pub(crate) fn precheck_task(
 /// override, [`runner_constraint_error`] surfaces the misconfiguration
 /// to the user instead of silently dispatching through the default
 /// priority.
-pub(super) fn allowed_runner_sources(
+pub(crate) fn allowed_runner_sources(
     overrides: &ResolutionOverrides,
 ) -> Option<HashSet<TaskSource>> {
     if let Some(ovr) = overrides.runner.as_ref() {
@@ -157,7 +157,7 @@ pub(super) fn allowed_runner_sources(
 ///   `Justfile`.
 /// - `[task_runner].prefer = [...]` with a task only under sources
 ///   absent from the list → analogous shape for the prefer-list.
-pub(super) fn runner_constraint_error(
+pub(crate) fn runner_constraint_error(
     overrides: &ResolutionOverrides,
     found: &[&crate::types::Task],
 ) -> Option<ResolveError> {

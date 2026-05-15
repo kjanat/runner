@@ -69,13 +69,15 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<St
             last_doc = None;
             continue;
         }
-        if !target.is_empty()
-            && !target.contains(' ')
-            && !target.contains('$')
-            && !target.contains('%')
-        {
+        let names: Vec<&str> = target
+            .split_whitespace()
+            .filter(|name| !name.is_empty() && !name.contains('$') && !name.contains('%'))
+            .collect();
+        if !names.is_empty() {
             let doc = last_doc.take().filter(|d| !d.is_empty());
-            targets.push((target.to_string(), doc));
+            for name in names {
+                targets.push((name.to_string(), doc.clone()));
+            }
         }
         last_doc = None;
     }
@@ -112,6 +114,23 @@ mod tests {
         let tasks = extract_tasks(dir.path()).expect("Makefile targets should parse");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["build"]);
+    }
+
+    #[test]
+    fn extract_tasks_splits_multi_target_rules() {
+        let dir = TempDir::new("make-multi-target");
+        fs::write(
+            dir.path().join("Makefile"),
+            "## shared docs\nbuild test:\n\t@echo ok\n",
+        )
+        .expect("Makefile should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("Makefile targets should parse");
+        let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
+        let docs: Vec<Option<&str>> = tasks.iter().map(|(_, d)| d.as_deref()).collect();
+
+        assert_eq!(names, ["build", "test"]);
+        assert_eq!(docs, [Some("shared docs"), Some("shared docs")]);
     }
 
     #[test]

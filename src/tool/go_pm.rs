@@ -55,14 +55,25 @@ fn contains_main_package(dir: &Path) -> anyhow::Result<bool> {
             continue;
         }
         let content = fs::read_to_string(&path)?;
-        if content
-            .lines()
-            .any(|line| line.trim_start() == "package main")
-        {
+        if content.lines().any(is_main_package_line) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+fn is_main_package_line(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("package") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    let Some(tail) = rest.strip_prefix("main") else {
+        return false;
+    };
+    tail.is_empty()
+        || tail.starts_with(char::is_whitespace)
+        || tail.starts_with("//")
+        || tail.starts_with("/*")
 }
 
 /// `go mod download`
@@ -148,6 +159,24 @@ mod tests {
         let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
 
         assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn extract_tasks_accepts_commented_main_package_clause() {
+        let dir = TempDir::new("go-cmd-main-comment");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::create_dir_all(dir.path().join("cmd").join("serve"))
+            .expect("serve dir should be created");
+        fs::write(
+            dir.path().join("cmd").join("serve").join("main.go"),
+            "package main // command\n\nfunc main() {}\n",
+        )
+        .expect("main should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
+
+        assert_eq!(tasks, ["serve"]);
     }
 
     #[test]
