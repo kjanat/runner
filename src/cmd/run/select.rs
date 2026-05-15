@@ -109,10 +109,10 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
 /// a member `Makefile` near cwd outranks the workspace-root `Makefile`,
 /// matching the precedent set by `package.json` and `deno.json`.
 ///
-/// `PackageJson`, `DenoJson`, and `CargoAliases` keep their bespoke
+/// `PackageJson`, `DenoJson`, `CargoAliases`, and `Justfile` keep bespoke
 /// walkers because each handles workspace boundaries (member globs in
-/// `pnpm-workspace.yaml`/`deno.json`/`Cargo.toml`) that the plain
-/// upward walk doesn't model.
+/// `pnpm-workspace.yaml`/`deno.json`/`Cargo.toml`) or non-standard name
+/// matching that the plain upward walk doesn't model.
 fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
     let path = match source {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
@@ -120,7 +120,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
         TaskSource::TurboJson => tool::files::find_first_upwards(root, tool::turbo::FILENAMES),
         TaskSource::Makefile => tool::files::find_first_upwards(root, tool::make::FILENAMES),
-        TaskSource::Justfile => tool::files::find_first_upwards(root, tool::just::FILENAMES),
+        TaskSource::Justfile => tool::just::find_file(root),
         TaskSource::Taskfile => tool::files::find_first_upwards(root, tool::go_task::FILENAMES),
         TaskSource::BaconToml => tool::files::find_first_upwards(root, tool::bacon::FILENAMES),
         TaskSource::MiseToml => tool::files::find_first_upwards(root, tool::mise::FILENAMES),

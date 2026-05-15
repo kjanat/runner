@@ -81,7 +81,7 @@ pub(crate) enum TaskRunner {
     Nx,
     /// GNU Make — detected via `Makefile` / `GNUmakefile` / `makefile`.
     Make,
-    /// just — detected via `justfile` / `Justfile` / `.justfile`.
+    /// just — detected via case-insensitive `justfile` / `.justfile`.
     Just,
     /// go-task — detected via `Taskfile.yml` and variants.
     GoTask,
