@@ -39,7 +39,7 @@ pub(crate) fn list(
         Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
             anyhow!(
                 "--source {label:?}: unknown source label (expected one of: package.json, \
-                 make, just, task, turbo, deno, cargo, bacon, mise — legacy filename \
+                 make, just, task, turbo, deno, cargo, go, bacon, mise — legacy filename \
                  forms like justfile/bacon.toml/Makefile are also accepted)",
             )
         })?),
@@ -151,6 +151,7 @@ fn render_tasks_grouped_rich(tasks: &[&Task], root: &Path, stdout_is_terminal: b
         TaskSource::Taskfile,
         TaskSource::DenoJson,
         TaskSource::CargoAliases,
+        TaskSource::GoPackage,
         TaskSource::BaconToml,
         TaskSource::MiseToml,
     ];
@@ -183,6 +184,7 @@ fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> St
         TaskSource::Taskfile,
         TaskSource::DenoJson,
         TaskSource::CargoAliases,
+        TaskSource::GoPackage,
         TaskSource::BaconToml,
         TaskSource::MiseToml,
     ];
@@ -268,6 +270,7 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
         }
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
+        TaskSource::GoPackage => tool::go_pm::find_file(root),
         TaskSource::BaconToml => {
             tool::files::find_first(root, tool::bacon::FILENAMES).filter(|path| path.is_file())
         }

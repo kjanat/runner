@@ -134,6 +134,8 @@ pub(crate) enum TaskSource {
     /// Cargo `[alias]` table — built-ins plus user aliases merged across the
     /// hierarchical `.cargo/config.toml` chain.
     CargoAliases,
+    /// Go `cmd/<name>` package containing `package main`.
+    GoPackage,
     /// `bacon.toml` `[jobs.<name>]` tables.
     BaconToml,
     /// `mise.toml` / `.mise.toml` `[tasks.<name>]` tables (and the
@@ -565,6 +567,7 @@ impl TaskSource {
             // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
             // file name represents it.
             Self::CargoAliases => "cargo",
+            Self::GoPackage => "go",
             Self::BaconToml => "bacon",
             Self::MiseToml => "mise",
         }
@@ -586,6 +589,7 @@ impl TaskSource {
             "turbo" | "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
             "deno" | "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
             "cargo" => Some(Self::CargoAliases),
+            "go" | "go.mod" => Some(Self::GoPackage),
             "bacon" | "bacon.toml" => Some(Self::BaconToml),
             "mise" | "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
             _ => None,
@@ -602,8 +606,9 @@ impl TaskSource {
             Self::TurboJson => 4,
             Self::DenoJson => 5,
             Self::CargoAliases => 6,
-            Self::BaconToml => 7,
-            Self::MiseToml => 8,
+            Self::GoPackage => 7,
+            Self::BaconToml => 8,
+            Self::MiseToml => 9,
         }
     }
 }

@@ -1,7 +1,9 @@
 //! `runner install` — install dependencies via every detected package manager.
 
+use std::any::Any;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
@@ -120,7 +122,7 @@ fn run_installs_parallel(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
             let _ = c.wait();
         }
         for h in reader_handles {
-            let _ = h.join();
+            join_reader_thread(h);
         }
         return Err(e);
     }
@@ -133,10 +135,29 @@ fn run_installs_parallel(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
         }
     }
     for h in reader_handles {
-        let _ = h.join();
+        join_reader_thread(h);
     }
 
     Ok(first_failure.unwrap_or(0))
+}
+
+fn join_reader_thread(handle: JoinHandle<()>) {
+    if let Err(payload) = handle.join() {
+        eprintln!(
+            "warn: install output reader thread panicked: {}",
+            panic_payload(&*payload),
+        );
+    }
+}
+
+fn panic_payload(payload: &(dyn Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        return (*message).to_string();
+    }
+    if let Some(message) = payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+    "non-string panic payload".to_string()
 }
 
 /// Map a [`PackageManager`] to its install [`Command`].

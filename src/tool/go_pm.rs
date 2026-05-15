@@ -1,6 +1,7 @@
 //! Go modules — the Go dependency system.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Directories that may be cleaned in a Go project.
@@ -8,7 +9,53 @@ pub(crate) const CLEAN_DIRS: &[&str] = &["vendor"];
 
 /// Detected via `go.mod`.
 pub(crate) fn detect(dir: &Path) -> bool {
-    dir.join("go.mod").exists()
+    find_file(dir).is_some()
+}
+
+pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
+    let path = dir.join("go.mod");
+    path.is_file().then_some(path)
+}
+
+/// Extract local Go commands from `cmd/<name>` packages.
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+    let cmd_dir = dir.join("cmd");
+    if !cmd_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut tasks = Vec::new();
+    for entry in fs::read_dir(cmd_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() || !contains_main_package(&path)? {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        tasks.push(name.to_string());
+    }
+    tasks.sort_unstable();
+    Ok(tasks)
+}
+
+fn contains_main_package(dir: &Path) -> anyhow::Result<bool> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("go") {
+            continue;
+        }
+        let content = fs::read_to_string(&path)?;
+        if content
+            .lines()
+            .any(|line| line.trim_start() == "package main")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `go mod download`
@@ -25,9 +72,19 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
+/// `go run ./cmd/<task> <args...>`
+pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("go");
+    c.arg("run").arg(format!("./cmd/{task}")).args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
-    use super::exec_cmd;
+    use std::fs;
+
+    use super::{exec_cmd, extract_tasks, run_cmd};
+    use crate::tool::test_support::TempDir;
 
     #[test]
     fn exec_uses_go_run_passthrough() {
@@ -41,5 +98,41 @@ mod tests {
             .collect();
 
         assert_eq!(built, ["run", "github.com/foo/tool@latest", "--help"]);
+    }
+
+    #[test]
+    fn extract_tasks_finds_cmd_main_packages() {
+        let dir = TempDir::new("go-cmd-tasks");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::create_dir_all(dir.path().join("cmd").join("serve"))
+            .expect("serve dir should be created");
+        fs::create_dir_all(dir.path().join("cmd").join("internal-lib"))
+            .expect("internal-lib dir should be created");
+        fs::write(
+            dir.path().join("cmd").join("serve").join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("serve main should be written");
+        fs::write(
+            dir.path().join("cmd").join("internal-lib").join("lib.go"),
+            "package lib\n",
+        )
+        .expect("lib source should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
+
+        assert_eq!(tasks, ["serve"]);
+    }
+
+    #[test]
+    fn run_cmd_uses_go_run_cmd_package() {
+        let args = [String::from("--port"), String::from("3000")];
+        let built: Vec<_> = run_cmd("serve", &args)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(built, ["run", "./cmd/serve", "--port", "3000"]);
     }
 }

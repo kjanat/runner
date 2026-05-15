@@ -109,7 +109,7 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
 /// a member `Makefile` near cwd outranks the workspace-root `Makefile`,
 /// matching the precedent set by `package.json` and `deno.json`.
 ///
-/// `PackageJson`, `DenoJson`, `CargoAliases`, and `Justfile` keep bespoke
+/// `PackageJson`, `DenoJson`, `CargoAliases`, `GoPackage`, and `Justfile` keep bespoke
 /// walkers because each handles workspace boundaries (member globs in
 /// `pnpm-workspace.yaml`/`deno.json`/`Cargo.toml`) or non-standard name
 /// matching that the plain upward walk doesn't model.
@@ -118,6 +118,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
         TaskSource::DenoJson => tool::deno::find_config_upwards(root),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
+        TaskSource::GoPackage => tool::go_pm::find_file(root),
         TaskSource::TurboJson => tool::files::find_first_upwards(root, tool::turbo::FILENAMES),
         TaskSource::Makefile => tool::files::find_first_upwards(root, tool::make::FILENAMES),
         TaskSource::Justfile => tool::just::find_file(root),

@@ -25,6 +25,7 @@ pub(crate) const fn source_label(source: TaskSource) -> &'static str {
         TaskSource::TurboJson => "turbo.json",
         TaskSource::DenoJson => "deno.json",
         TaskSource::CargoAliases => "cargo",
+        TaskSource::GoPackage => "go",
         TaskSource::BaconToml => "bacon.toml",
         TaskSource::MiseToml => "mise.toml",
     }

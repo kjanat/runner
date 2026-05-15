@@ -84,6 +84,7 @@ mod tests {
         assert_eq!(source_label_for(TaskSource::Taskfile, 1), "Taskfile");
         // Unchanged across versions:
         assert_eq!(source_label_for(TaskSource::CargoAliases, 1), "cargo");
+        assert_eq!(source_label_for(TaskSource::GoPackage, 1), "go");
         assert_eq!(source_label_for(TaskSource::PackageJson, 1), "package.json");
     }
 
@@ -97,6 +98,7 @@ mod tests {
         assert_eq!(source_label_for(TaskSource::DenoJson, 2), "deno");
         assert_eq!(source_label_for(TaskSource::Taskfile, 2), "task");
         assert_eq!(source_label_for(TaskSource::CargoAliases, 2), "cargo");
+        assert_eq!(source_label_for(TaskSource::GoPackage, 2), "go");
         assert_eq!(source_label_for(TaskSource::PackageJson, 2), "package.json");
     }
 

@@ -274,6 +274,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     let want_go_task = ctx.task_runners.contains(&TaskRunner::GoTask);
     let want_deno_tasks = with_deno;
     let want_cargo = ctx.package_managers.contains(&PackageManager::Cargo);
+    let want_go_packages = ctx.package_managers.contains(&PackageManager::Go);
     let want_bacon = ctx.task_runners.contains(&TaskRunner::Bacon);
     let want_mise = ctx.task_runners.contains(&TaskRunner::Mise);
 
@@ -297,6 +298,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         let go_task_h = want_go_task.then(|| s.spawn(move || tool::go_task::extract_tasks(dir)));
         let deno_h = want_deno_tasks.then(|| s.spawn(move || tool::deno::extract_tasks(dir)));
         let cargo_h = want_cargo.then(|| s.spawn(move || tool::cargo_aliases::extract_tasks(dir)));
+        let go_h = want_go_packages.then(|| s.spawn(move || tool::go_pm::extract_tasks(dir)));
         let bacon_h = want_bacon.then(|| s.spawn(move || tool::bacon::extract_tasks(dir)));
         let mise_h = want_mise.then(|| s.spawn(move || tool::mise::extract_tasks(dir)));
 
@@ -336,6 +338,13 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         }
         if let Some(h) = cargo_h {
             push_cargo_aliases(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = go_h {
+            push_named_tasks(
+                ctx,
+                TaskSource::GoPackage,
+                h.join().expect("extractor thread panicked"),
+            );
         }
         if let Some(h) = bacon_h {
             push_described_tasks(
@@ -615,6 +624,23 @@ mod tests {
 
         assert_eq!(task.description, None);
         assert_eq!(task.alias_of.as_deref(), Some("clippy --all-targets"));
+    }
+
+    #[test]
+    fn detect_models_go_cmd_packages_as_tasks() {
+        let dir = TempDir::new("detect-go-cmd-package");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        let cmd_dir = dir.path().join("cmd").join("serve");
+        fs::create_dir_all(&cmd_dir).expect("cmd package dir should be created");
+        fs::write(cmd_dir.join("main.go"), "package main\n\nfunc main() {}\n")
+            .expect("main.go should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::GoPackage && task.name == "serve"
+        }));
     }
 
     #[test]

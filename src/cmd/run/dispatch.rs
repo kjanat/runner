@@ -22,7 +22,7 @@ use super::qualify::{
 use super::select::select_task_entry;
 use crate::resolver::{ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
-use crate::types::{PackageManager, ProjectContext, TaskSource};
+use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
 /// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
@@ -171,7 +171,7 @@ pub(super) fn resolve_dispatch(
         args.join(" ").dimmed(),
     );
 
-    let mut cmd = build_run_command(ctx, overrides, entry.source, task_name, args, sink)?;
+    let mut cmd = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(&mut cmd, &ctx.root);
     Ok(cmd)
 }
@@ -242,13 +242,12 @@ fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
 fn build_run_command(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-    source: TaskSource,
-    task: &str,
+    entry: &Task,
     args: &[String],
     sink: crate::cmd::WarningSink<'_>,
 ) -> Result<Command> {
-    Ok(match source {
-        TaskSource::TurboJson => tool::turbo::run_cmd(task, args),
+    Ok(match entry.source {
+        TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args),
         TaskSource::PackageJson => {
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
@@ -262,21 +261,22 @@ fn build_run_command(
             }
             let pm = decision.pm;
             match pm {
-                PackageManager::Npm => tool::npm::run_cmd(task, args),
-                PackageManager::Yarn => tool::yarn::run_cmd(task, args),
-                PackageManager::Pnpm => tool::pnpm::run_cmd(task, args),
-                PackageManager::Bun => tool::bun::run_cmd(task, args),
-                PackageManager::Deno => tool::deno::run_cmd(task, args),
+                PackageManager::Npm => tool::npm::run_cmd(&entry.name, args),
+                PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args),
+                PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args),
+                PackageManager::Bun => tool::bun::run_cmd(&entry.name, args),
+                PackageManager::Deno => tool::deno::run_cmd(&entry.name, args),
                 other => bail!("{} cannot run scripts", other.label()),
             }
         }
-        TaskSource::Makefile => tool::make::run_cmd(task, args),
-        TaskSource::Justfile => tool::just::run_cmd(task, args),
-        TaskSource::Taskfile => tool::go_task::run_cmd(task, args),
-        TaskSource::DenoJson => tool::deno::run_cmd(task, args),
-        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(task, args),
-        TaskSource::BaconToml => tool::bacon::run_cmd(task, args),
-        TaskSource::MiseToml => tool::mise::run_cmd(task, args),
+        TaskSource::Makefile => tool::make::run_cmd(&entry.name, args),
+        TaskSource::Justfile => tool::just::run_cmd(&entry.name, args),
+        TaskSource::Taskfile => tool::go_task::run_cmd(&entry.name, args),
+        TaskSource::DenoJson => tool::deno::run_cmd(&entry.name, args),
+        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(&entry.name, args),
+        TaskSource::GoPackage => tool::go_pm::run_cmd(&entry.name, args),
+        TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args),
+        TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args),
     })
 }
 
@@ -286,7 +286,7 @@ mod tests {
 
     use super::{build_pm_exec_command, resolve_dispatch};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{PackageManager, ProjectContext, TaskRunner};
+    use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     fn context() -> ProjectContext {
         ProjectContext {
@@ -319,6 +319,29 @@ mod tests {
             .expect_err("reversed qualifier should fail dispatch");
 
         assert!(format!("{err:#}").contains("cargo:lint"));
+    }
+
+    #[test]
+    fn resolve_dispatch_go_package_uses_recorded_task_source() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Go);
+        ctx.tasks.push(Task {
+            name: "serve".to_string(),
+            source: TaskSource::GoPackage,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+        });
+        let args = [String::from("--port"), String::from("3000")];
+
+        let command = resolve_dispatch(&ctx, &ResolutionOverrides::default(), "serve", &args, None)
+            .expect("go package task should dispatch");
+
+        assert_eq!(command.get_program().to_string_lossy(), "go");
+        assert_eq!(
+            command_args(&command),
+            ["run", "./cmd/serve", "--port", "3000"]
+        );
     }
 
     #[test]
