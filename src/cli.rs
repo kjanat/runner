@@ -321,7 +321,7 @@ mod tests {
 
     use std::ffi::OsString;
 
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use super::{
         Cli, Command, RunAliasCli, cli_dir_from_argv, resolve_completion_dir, task_candidates_from,
@@ -659,6 +659,22 @@ mod tests {
     }
 
     #[test]
+    fn info_subcommand_still_parses_but_is_hidden() {
+        // Deprecated alias — must keep parsing (with and without --json)
+        // so existing `runner info` invocations don't break …
+        Cli::try_parse_from(["runner", "info"]).expect("`runner info` still parses");
+        Cli::try_parse_from(["runner", "info", "--json"])
+            .expect("`runner info --json` still parses");
+
+        // … but it must not advertise itself in help output.
+        let help = Cli::command().render_long_help().to_string();
+        assert!(
+            !help.contains("\n  info"),
+            "hidden `info` subcommand must not appear in --help, got:\n{help}",
+        );
+    }
+
+    #[test]
     fn schema_version_rejects_out_of_range_values() {
         let err = Cli::try_parse_from(["runner", "--schema-version", "99", "info"])
             .expect_err("schema version should be bounded by clap");
@@ -830,7 +846,7 @@ pub(crate) struct GlobalOpts {
 
     /// Pin the JSON output schema to a specific version. Defaults to the
     /// latest version this binary produces. The chosen version controls
-    /// the `source` field on tasks/decisions in `doctor`/`list`/`info`/`why`
+    /// the `source` field on tasks/decisions in `doctor`/`list`/`why`
     /// JSON output. v1 uses filename-style labels (`"justfile"`, `"bacon.toml"`),
     /// v2 uses tool names (`"just"`, `"bacon"`). The resolver, human output,
     /// and qualified-task parsing are unaffected.
@@ -842,7 +858,7 @@ pub(crate) struct GlobalOpts {
         help = concat!(
             "Pin JSON output schema version (",
             cyan!("1"), " or ", cyan!("2"), "). Defaults to latest. Affects ",
-            cyan!("--json"), " output of doctor/list/info/why only."
+            cyan!("--json"), " output of doctor/list/why only."
         ),
     )]
     pub schema_version: Option<u32>,
@@ -920,7 +936,10 @@ pub(crate) enum Command {
         source: Option<String>,
     },
 
-    /// Show detected project info
+    /// Deprecated alias for `list` — hidden, prints a warning, then
+    /// renders the task list. Bare `runner` still shows the project
+    /// dashboard; only the explicit `info` verb is deprecated.
+    #[command(hide = true)]
     Info {
         /// Emit JSON instead of human-readable output.
         #[arg(long)]

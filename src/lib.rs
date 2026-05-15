@@ -71,6 +71,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, FromArgMatches};
+use colored::Colorize;
 
 use resolver::ResolveError;
 
@@ -624,16 +625,25 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let overrides = build_overrides(&cli, loaded_config.as_ref())?;
 
     match cli.command {
-        Some(cli::Command::Info { json: false }) if has_task(&ctx, "info") => {
+        // A project task named `info` always shadows the deprecated
+        // subcommand, regardless of flags.
+        Some(cli::Command::Info { .. }) if has_task(&ctx, "info") => {
             cmd::run(&ctx, &overrides, "info", &[], None)
         }
         None => {
             cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
         }
+        // `info` is a deprecated alias for `list`. Bare `runner` (the
+        // `None` arm above) keeps the dashboard; only the explicit verb
+        // is deprecated.
         Some(cli::Command::Info { json }) => {
+            eprintln!(
+                "{} `runner info` is deprecated; use `runner list`",
+                "warn:".yellow().bold(),
+            );
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::info(&ctx, &overrides, json, schema_version)?;
+            cmd::list(&ctx, &overrides, false, json, None, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Run {
