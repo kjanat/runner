@@ -66,6 +66,65 @@ fn info_warns_and_renders_list_when_not_shadowed() {
 }
 
 #[test]
+fn info_emits_github_actions_annotation_under_ci() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("info-deprecated").to_str().unwrap(),
+            "info",
+        ])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("::warning title=Deprecation::"),
+        "expected a GitHub Actions warning annotation on stderr under CI, got: {stderr}",
+    );
+    // The annotation must not leak into stdout (keeps `--json` pipes
+    // clean).
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("::warning"),
+        "GHA annotation must stay on stderr, not stdout. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn info_omits_github_annotation_outside_ci() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Explicitly clear the var so the test is deterministic even when
+    // the test host itself runs under GitHub Actions.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("info-deprecated").to_str().unwrap(),
+            "info",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("deprecated"),
+        "plain deprecation warning still expected, got: {stderr}",
+    );
+    assert!(
+        !stderr.contains("::warning"),
+        "no GHA annotation outside CI, got: {stderr}",
+    );
+}
+
+#[test]
 fn info_json_maps_to_list_json_with_tasks_array() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");

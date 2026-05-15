@@ -642,6 +642,16 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 "{} `runner info` is deprecated; use `runner list`",
                 "warn:".yellow().bold(),
             );
+            // Under GitHub Actions, also emit a workflow-command
+            // annotation so the deprecation surfaces in the run summary
+            // / inline, not just buried in the step log. Kept on stderr
+            // so `runner info --json` stdout stays a clean pipe; the
+            // runner scans both streams for `::` commands.
+            if std::env::var_os("GITHUB_ACTIONS").as_deref() == Some(std::ffi::OsStr::new("true")) {
+                eprintln!(
+                    "::warning title=Deprecation::`runner info` is deprecated; use `runner list`"
+                );
+            }
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::list(&ctx, &overrides, false, json, None, schema_version)?;
             Ok(0)
