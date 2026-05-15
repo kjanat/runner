@@ -535,6 +535,7 @@ mod tests {
         ctx.tasks.push(Task {
             name: "build".to_string(),
             source: TaskSource::PackageJson,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
@@ -552,6 +553,7 @@ mod tests {
         ctx.tasks.push(Task {
             name: "build".to_string(),
             source: TaskSource::PackageJson,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
@@ -559,6 +561,7 @@ mod tests {
         ctx.tasks.push(Task {
             name: "fmt".to_string(),
             source: TaskSource::Justfile,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
@@ -579,6 +582,7 @@ mod tests {
             tasks: vec![Task {
                 name: "fmt".to_string(),
                 source: TaskSource::Justfile,
+                run_target: None,
                 description: None,
                 alias_of: None,
                 passthrough_to: None,

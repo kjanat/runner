@@ -268,6 +268,7 @@ mod tests {
         Task {
             name: name.to_string(),
             source,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,

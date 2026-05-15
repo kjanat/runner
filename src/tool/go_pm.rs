@@ -17,14 +17,30 @@ pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// Extract local Go commands from `cmd/<name>` packages.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
-    let cmd_dir = dir.join("cmd");
-    if !cmd_dir.is_dir() {
-        return Ok(Vec::new());
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExtractedTask {
+    pub name: String,
+    pub run_target: String,
+}
+
+/// Extract local Go commands from root and `cmd/<name>` packages.
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
+    let mut tasks = Vec::new();
+
+    if contains_main_package(dir)?
+        && let Some(name) = dir.file_name().and_then(|name| name.to_str())
+    {
+        tasks.push(ExtractedTask {
+            name: name.to_string(),
+            run_target: ".".to_string(),
+        });
     }
 
-    let mut tasks = Vec::new();
+    let cmd_dir = dir.join("cmd");
+    if !cmd_dir.is_dir() {
+        return Ok(tasks);
+    }
+
     for entry in fs::read_dir(cmd_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -34,9 +50,12 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        tasks.push(name.to_string());
+        tasks.push(ExtractedTask {
+            name: name.to_string(),
+            run_target: format!("./cmd/{name}"),
+        });
     }
-    tasks.sort_unstable();
+    tasks.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     Ok(tasks)
 }
 
@@ -90,10 +109,10 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
-/// `go run ./cmd/<task> <args...>`
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+/// `go run <target> <args...>`
+pub(crate) fn run_cmd(target: &str, args: &[String]) -> Command {
     let mut c = super::program::command("go");
-    c.arg("run").arg(format!("./cmd/{task}")).args(args);
+    c.arg("run").arg(target).args(args);
     c
 }
 
@@ -101,8 +120,15 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 mod tests {
     use std::fs;
 
-    use super::{exec_cmd, extract_tasks, run_cmd};
+    use super::{ExtractedTask, exec_cmd, extract_tasks, run_cmd};
     use crate::tool::test_support::TempDir;
+
+    fn task(name: &str, run_target: &str) -> ExtractedTask {
+        ExtractedTask {
+            name: name.to_string(),
+            run_target: run_target.to_string(),
+        }
+    }
 
     #[test]
     fn exec_uses_go_run_passthrough() {
@@ -140,7 +166,28 @@ mod tests {
 
         let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
 
-        assert_eq!(tasks, ["serve"]);
+        assert_eq!(tasks, [task("serve", "./cmd/serve")]);
+    }
+
+    #[test]
+    fn extract_tasks_finds_root_main_package() {
+        let dir = TempDir::new("go-root-main");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("root main should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("go root task should parse");
+        let name = dir
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("temp dir should have utf-8 file name");
+
+        assert_eq!(tasks, [task(name, ".")]);
     }
 
     #[test]
@@ -176,13 +223,13 @@ mod tests {
 
         let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
 
-        assert_eq!(tasks, ["serve"]);
+        assert_eq!(tasks, [task("serve", "./cmd/serve")]);
     }
 
     #[test]
-    fn run_cmd_uses_go_run_cmd_package() {
+    fn run_cmd_uses_go_run_target() {
         let args = [String::from("--port"), String::from("3000")];
-        let built: Vec<_> = run_cmd("serve", &args)
+        let built: Vec<_> = run_cmd("./cmd/serve", &args)
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();

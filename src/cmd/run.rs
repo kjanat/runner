@@ -202,6 +202,7 @@ mod tests {
             tasks: vec![Task {
                 name: "lint:cargo".to_string(),
                 source: TaskSource::Justfile,
+                run_target: None,
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
@@ -245,6 +246,7 @@ mod tests {
             vec![Task {
                 name: "test".to_string(),
                 source: TaskSource::PackageJson,
+                run_target: None,
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
@@ -408,6 +410,7 @@ mod tests {
             Task {
                 name: "lint".to_string(),
                 source: TaskSource::BaconToml,
+                run_target: None,
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
@@ -415,6 +418,7 @@ mod tests {
             Task {
                 name: "lint".to_string(),
                 source: TaskSource::CargoAliases,
+                run_target: None,
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
@@ -463,6 +467,7 @@ mod tests {
                 Task {
                     name: "build".to_string(),
                     source: TaskSource::DenoJson,
+                    run_target: None,
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
@@ -470,6 +475,7 @@ mod tests {
                 Task {
                     name: "build".to_string(),
                     source: TaskSource::PackageJson,
+                    run_target: None,
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
@@ -505,6 +511,7 @@ mod tests {
         Task {
             name: name.to_string(),
             source,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,

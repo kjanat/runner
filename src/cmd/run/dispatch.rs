@@ -274,7 +274,12 @@ fn build_run_command(
         TaskSource::Taskfile => tool::go_task::run_cmd(&entry.name, args),
         TaskSource::DenoJson => tool::deno::run_cmd(&entry.name, args),
         TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(&entry.name, args),
-        TaskSource::GoPackage => tool::go_pm::run_cmd(&entry.name, args),
+        TaskSource::GoPackage => {
+            let Some(run_target) = entry.run_target.as_deref() else {
+                bail!("go task {:?} is missing its run target", entry.name);
+            };
+            tool::go_pm::run_cmd(run_target, args)
+        }
         TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args),
         TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args),
     })
@@ -328,6 +333,7 @@ mod tests {
         ctx.tasks.push(Task {
             name: "serve".to_string(),
             source: TaskSource::GoPackage,
+            run_target: Some("./cmd/serve".to_string()),
             description: None,
             alias_of: None,
             passthrough_to: None,

@@ -340,11 +340,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
             push_cargo_aliases(ctx, h.join().expect("extractor thread panicked"));
         }
         if let Some(h) = go_h {
-            push_named_tasks(
-                ctx,
-                TaskSource::GoPackage,
-                h.join().expect("extractor thread panicked"),
-            );
+            push_go_tasks(ctx, h.join().expect("extractor thread panicked"));
         }
         if let Some(h) = bacon_h {
             push_described_tasks(
@@ -357,6 +353,30 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
             push_mise_tasks(ctx, h.join().expect("extractor thread panicked"));
         }
     });
+}
+
+fn push_go_tasks(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<tool::go_pm::ExtractedTask>>,
+) {
+    match result {
+        Ok(entries) => {
+            for entry in entries {
+                ctx.tasks.push(Task {
+                    name: entry.name,
+                    source: TaskSource::GoPackage,
+                    run_target: Some(entry.run_target),
+                    description: None,
+                    alias_of: None,
+                    passthrough_to: None,
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::GoPackage.label(),
+            error: format!("{err:#}"),
+        }),
+    }
 }
 
 /// Append tasks from the mise source, preserving alias→target metadata.
@@ -391,6 +411,7 @@ fn push_cargo_aliases(
                 ctx.tasks.push(Task {
                     name: entry.name,
                     source: TaskSource::CargoAliases,
+                    run_target: None,
                     description: None,
                     alias_of,
                     passthrough_to: None,
@@ -429,6 +450,7 @@ fn push_described_tasks(
                 ctx.tasks.push(Task {
                     name,
                     source,
+                    run_target: None,
                     description,
                     alias_of: None,
                     passthrough_to: None,
@@ -460,6 +482,7 @@ fn push_package_json_tasks(
                 ctx.tasks.push(Task {
                     name,
                     source: TaskSource::PackageJson,
+                    run_target: None,
                     description: None,
                     alias_of: None,
                     passthrough_to,
@@ -512,6 +535,7 @@ fn push_recipe_alias_tasks(
                 ctx.tasks.push(Task {
                     name,
                     source,
+                    run_target: None,
                     description,
                     alias_of,
                     passthrough_to: None,
@@ -639,7 +663,34 @@ mod tests {
         let ctx = detect(dir.path());
 
         assert!(ctx.tasks.iter().any(|task| {
-            task.source == crate::types::TaskSource::GoPackage && task.name == "serve"
+            task.source == crate::types::TaskSource::GoPackage
+                && task.name == "serve"
+                && task.run_target.as_deref() == Some("./cmd/serve")
+        }));
+    }
+
+    #[test]
+    fn detect_models_root_go_main_package_as_task() {
+        let dir = TempDir::new("detect-go-root-package");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("main.go should be written");
+
+        let ctx = detect(dir.path());
+        let name = dir
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("temp dir should have utf-8 file name");
+
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::GoPackage
+                && task.name == name
+                && task.run_target.as_deref() == Some(".")
         }));
     }
 

@@ -470,6 +470,7 @@ mod tests {
         Task {
             name: name.into(),
             source,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
@@ -557,6 +558,7 @@ mod tests {
         let tasks = [Task {
             name: "b".into(),
             source: TaskSource::Justfile,
+            run_target: None,
             description: None,
             alias_of: Some("build".into()),
             passthrough_to: None,

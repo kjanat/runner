@@ -332,6 +332,7 @@ mod tests {
         Task {
             name: name.into(),
             source,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,

@@ -98,6 +98,9 @@ pub(crate) struct Task {
     pub name: String,
     /// Which config file this task was extracted from.
     pub source: TaskSource,
+    /// Tool-specific execution target. Used by Go packages to keep the
+    /// display name separate from the `go run` target (`.` vs `./cmd/name`).
+    pub run_target: Option<String>,
     /// Optional human-readable description (e.g. justfile doc comment,
     /// go-task `desc` field).
     pub description: Option<String>,
@@ -134,7 +137,7 @@ pub(crate) enum TaskSource {
     /// Cargo `[alias]` table — built-ins plus user aliases merged across the
     /// hierarchical `.cargo/config.toml` chain.
     CargoAliases,
-    /// Go `cmd/<name>` package containing `package main`.
+    /// Go root or `cmd/<name>` package containing `package main`.
     GoPackage,
     /// `bacon.toml` `[jobs.<name>]` tables.
     BaconToml,
