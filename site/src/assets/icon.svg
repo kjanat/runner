@@ -1,9 +1,0 @@
-<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
-	<rect rx="6" width="32" height="32" fill="#f4ede1" />
-	<text x="48%" y="73%"
-	      fill="#0e0e0e"
-	      font-family="monospace" font-size="26" font-weight="700" text-anchor="middle">
-		r
-	</text>
-	<rect x="18.5" y="24" rx="0.75" width="8" height="2.5" fill="#d94e2c" />
-</svg>
