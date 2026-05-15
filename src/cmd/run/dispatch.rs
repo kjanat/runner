@@ -204,7 +204,7 @@ fn build_pm_exec_command(
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
         Some(PackageManager::Go) => {
-            if task_name.contains('@') || task_name.contains('/') {
+            if task_name.contains('@') || task_name.contains('/') || task_name.contains('\\') {
                 ("go run", tool::go_pm::exec_cmd(&combined()))
             } else {
                 direct_exec()
@@ -384,6 +384,16 @@ mod tests {
         assert_eq!(label, "go run");
         assert_eq!(command.get_program().to_string_lossy(), "go");
         assert_eq!(command_args(&command), ["run", "./cmd/foo"]);
+    }
+
+    #[test]
+    fn build_pm_exec_command_go_windows_path_uses_go_run() {
+        let (label, command) =
+            build_pm_exec_command(&context(), Some(PackageManager::Go), ".\\cmd\\foo", &[]);
+
+        assert_eq!(label, "go run");
+        assert_eq!(command.get_program().to_string_lossy(), "go");
+        assert_eq!(command_args(&command), ["run", ".\\cmd\\foo"]);
     }
 
     #[test]

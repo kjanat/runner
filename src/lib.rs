@@ -327,31 +327,12 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         },
         loaded_config.as_ref(),
     )?;
-    if cli.mode.sequential || cli.mode.parallel {
-        let mode = if cli.mode.parallel {
-            chain::ChainMode::Parallel
-        } else {
-            chain::ChainMode::Sequential
-        };
-        let mut positionals: Vec<String> = Vec::new();
-        if let Some(t) = cli.task {
-            positionals.push(t);
-        }
-        positionals.extend(cli.args);
-        let items = chain::parse::parse_task_list(&positionals)?;
-        let c = chain::Chain {
-            mode,
-            items,
-            failure: overrides.failure_policy,
-        };
-        return chain::exec::run_chain(&ctx, &overrides, &c);
-    }
     match cli.task {
-        None => {
+        None if !cli.mode.sequential && !cli.mode.parallel => {
             cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
         }
-        Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args, None),
+        task => dispatch_run(&ctx, &overrides, task, cli.args, cli.mode),
     }
 }
 
@@ -1101,39 +1082,39 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_lazy_for_non_json_commands() {
-        let dir = TempDir::new("runner-schema-lazy-completions");
+    fn schema_version_rejects_invalid_for_non_json_commands() {
+        let dir = TempDir::new("runner-schema-invalid-completions");
 
         let code = run_in_dir(
             ["runner", "--schema-version", "99", "completions", "bash"],
             dir.path(),
         )
-        .expect("non-json command should ignore unsupported schema version");
+        .expect("parse errors should return an exit code");
 
-        assert_eq!(code, 0);
+        assert_ne!(code, 0);
     }
 
     #[test]
-    fn schema_version_is_lazy_for_run_alias_bare_info() {
-        let dir = TempDir::new("runner-schema-lazy-run-alias");
+    fn schema_version_rejects_invalid_for_run_alias_bare_info() {
+        let dir = TempDir::new("runner-schema-invalid-run-alias");
 
         let code = run_alias_in_dir(["run", "--schema-version", "99"], dir.path())
-            .expect("bare run alias human info should ignore unsupported schema version");
+            .expect("parse errors should return an exit code");
 
-        assert_eq!(code, 0);
+        assert_ne!(code, 0);
     }
 
     #[test]
-    fn schema_version_still_validates_json_output() {
-        let dir = TempDir::new("runner-schema-json-error");
+    fn schema_version_rejects_invalid_for_json_output() {
+        let dir = TempDir::new("runner-schema-json-invalid");
 
-        let err = run_in_dir(
+        let code = run_in_dir(
             ["runner", "--schema-version", "99", "info", "--json"],
             dir.path(),
         )
-        .expect_err("json output should validate schema version");
+        .expect("parse errors should return an exit code");
 
-        assert!(format!("{err}").contains("unsupported --schema-version 99"));
+        assert_ne!(code, 0);
     }
 
     #[test]

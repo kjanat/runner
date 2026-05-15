@@ -658,6 +658,14 @@ mod tests {
     }
 
     #[test]
+    fn schema_version_rejects_out_of_range_values() {
+        let err = Cli::try_parse_from(["runner", "--schema-version", "99", "info"])
+            .expect_err("schema version should be bounded by clap");
+
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
     fn run_alias_parses_chain_flags_too() {
         let cli = RunAliasCli::try_parse_from(["run", "-p", "lint", "test"]).expect("parses");
         assert!(cli.mode.parallel);
@@ -828,6 +836,7 @@ pub(crate) struct GlobalOpts {
     #[arg(
         long = "schema-version",
         global = true,
+        value_parser = clap::value_parser!(u32).range(1..=2),
         value_name = "N",
         help = concat!(
             "Pin JSON output schema version (",

@@ -47,6 +47,13 @@ fn contains_main_package(dir: &Path) -> anyhow::Result<bool> {
         if path.extension().and_then(|ext| ext.to_str()) != Some("go") {
             continue;
         }
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with("_test.go"))
+        {
+            continue;
+        }
         let content = fs::read_to_string(&path)?;
         if content
             .lines()
@@ -123,6 +130,24 @@ mod tests {
         let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
 
         assert_eq!(tasks, ["serve"]);
+    }
+
+    #[test]
+    fn extract_tasks_ignores_main_test_packages() {
+        let dir = TempDir::new("go-cmd-test-only");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::create_dir_all(dir.path().join("cmd").join("serve"))
+            .expect("serve dir should be created");
+        fs::write(
+            dir.path().join("cmd").join("serve").join("main_test.go"),
+            "package main\n\nfunc TestServe() {}\n",
+        )
+        .expect("test main should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
+
+        assert!(tasks.is_empty());
     }
 
     #[test]
