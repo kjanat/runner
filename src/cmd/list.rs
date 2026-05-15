@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
-use terminal_size::Height;
+use terminal_size::{Height, Width};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
@@ -85,6 +86,10 @@ enum RenderMode {
     Compact,
 }
 
+const ROW_INDENT: &str = "  ";
+const SOURCE_COL_WIDTH: usize = 16;
+const TASK_COL_MIN_WIDTH: usize = 20;
+
 fn select_render_mode(tasks: &[&Task], reserved_rows: usize) -> RenderMode {
     let height = terminal_size::terminal_size().map(|(_, Height(rows))| usize::from(rows));
     select_render_mode_for(
@@ -153,13 +158,26 @@ fn render_tasks_grouped(
     mode: RenderMode,
     stdout_is_terminal: bool,
 ) -> String {
+    let terminal_width = stdout_is_terminal.then(terminal_width).flatten();
+
     match mode {
-        RenderMode::Rich => render_tasks_grouped_rich(tasks, root, stdout_is_terminal),
+        RenderMode::Rich => {
+            render_tasks_grouped_rich(tasks, root, stdout_is_terminal, terminal_width)
+        }
         RenderMode::Compact => render_tasks_grouped_compact(tasks, stdout_is_terminal),
     }
 }
 
-fn render_tasks_grouped_rich(tasks: &[&Task], root: &Path, stdout_is_terminal: bool) -> String {
+fn terminal_width() -> Option<usize> {
+    terminal_size::terminal_size().map(|(Width(columns), _)| usize::from(columns))
+}
+
+fn render_tasks_grouped_rich(
+    tasks: &[&Task],
+    root: &Path,
+    stdout_is_terminal: bool,
+    terminal_width: Option<usize>,
+) -> String {
     let mut out = String::new();
     let sources = [
         TaskSource::PackageJson,
@@ -180,16 +198,163 @@ fn render_tasks_grouped_rich(tasks: &[&Task], root: &Path, stdout_is_terminal: b
         }
 
         let label = source_label(source, root, stdout_is_terminal);
+        let label_width = padded_column_width(source.label(), SOURCE_COL_WIDTH);
         for task in source_tasks {
-            if let Some(value) = task.alias_of.as_deref().or(task.description.as_deref()) {
-                let value = display_value(value, stdout_is_terminal);
-                let _ = writeln!(out, "  {label}{:<20} {value}", task.name);
-            } else {
-                let _ = writeln!(out, "  {label}{}", task.name);
-            }
+            let value = task.alias_of.as_deref().or(task.description.as_deref());
+            out.push_str(&render_rich_row(
+                &label,
+                label_width,
+                &task.name,
+                value,
+                stdout_is_terminal,
+                terminal_width,
+            ));
         }
     }
     out
+}
+
+fn render_rich_row(
+    label: &str,
+    label_width: usize,
+    task_name: &str,
+    value: Option<&str>,
+    stdout_is_terminal: bool,
+    terminal_width: Option<usize>,
+) -> String {
+    let task_width = padded_column_width(task_name, TASK_COL_MIN_WIDTH);
+    let task_cell = pad_visible(task_name, task_width);
+
+    match value {
+        None => format!("{ROW_INDENT}{label}{task_cell}\n"),
+        Some(value) if !stdout_is_terminal => {
+            format!(
+                "{ROW_INDENT}{label}{task_cell} {}\n",
+                display_value(value, false)
+            )
+        }
+        Some(value) => {
+            let prefix = format!("{ROW_INDENT}{label}{task_cell} ");
+            let Some(value_width) = value_column_width(label_width, task_width, terminal_width)
+            else {
+                return format!("{prefix}{}\n", display_value(value, true));
+            };
+
+            let continuation_prefix = format!(
+                "{ROW_INDENT}{}{} ",
+                " ".repeat(label_width),
+                " ".repeat(task_width)
+            );
+            let lines = wrap_visible_text(value, value_width);
+            let mut row = String::new();
+
+            for (idx, line) in lines.iter().enumerate() {
+                let prefix = if idx == 0 {
+                    &prefix
+                } else {
+                    &continuation_prefix
+                };
+                let _ = writeln!(row, "{prefix}{}", display_value(line, true));
+            }
+
+            row
+        }
+    }
+}
+
+fn value_column_width(
+    label_width: usize,
+    task_width: usize,
+    terminal_width: Option<usize>,
+) -> Option<usize> {
+    let prefix_width = ROW_INDENT.width() + label_width + task_width + 1;
+    terminal_width.and_then(|width| width.checked_sub(prefix_width).filter(|width| *width > 0))
+}
+
+fn wrap_visible_text(value: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![value.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut line_width = 0usize;
+    let mut pending_space = false;
+
+    for segment in value.split_whitespace() {
+        let segment_width = segment.width();
+        let space_width = usize::from(pending_space && line_width > 0);
+
+        if line_width > 0 && line_width + space_width + segment_width <= width {
+            if space_width == 1 {
+                line.push(' ');
+                line_width += 1;
+            }
+            line.push_str(segment);
+            line_width += segment_width;
+            pending_space = true;
+            continue;
+        }
+
+        if line_width == 0 && segment_width <= width {
+            line.push_str(segment);
+            line_width = segment_width;
+            pending_space = true;
+            continue;
+        }
+
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            line_width = 0;
+        }
+
+        let wrapped = wrap_long_segment(segment, width);
+        let last_idx = wrapped.len().saturating_sub(1);
+        for (idx, part) in wrapped.into_iter().enumerate() {
+            if idx == last_idx {
+                line_width = part.width();
+                line = part;
+            } else {
+                lines.push(part);
+            }
+        }
+        pending_space = true;
+    }
+
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+
+    lines
+}
+
+fn wrap_long_segment(value: &str, width: usize) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+
+    for ch in value.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        let would_overflow = current_width > 0 && current_width + ch_width > width;
+        if would_overflow {
+            parts.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+
+        current.push(ch);
+        current_width += ch_width;
+
+        if current_width >= width && width > 0 {
+            parts.push(std::mem::take(&mut current));
+            current_width = 0;
+        }
+    }
+
+    if !current.is_empty() || parts.is_empty() {
+        parts.push(current);
+    }
+
+    parts
 }
 
 fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> String {
@@ -229,7 +394,10 @@ fn tasks_for_source<'a>(tasks: &[&'a Task], source: TaskSource) -> Vec<&'a Task>
 }
 
 fn compact_source_label(source: TaskSource, stdout_is_terminal: bool) -> String {
-    let label = format!("{:<16}", source.label());
+    let label = pad_visible(
+        source.label(),
+        padded_column_width(source.label(), SOURCE_COL_WIDTH),
+    );
     if stdout_is_terminal {
         label.bold().to_string()
     } else {
@@ -245,6 +413,15 @@ fn display_value(value: &str, stdout_is_terminal: bool) -> String {
     }
 }
 
+fn padded_column_width(value: &str, min_width: usize) -> usize {
+    value.width().max(min_width)
+}
+
+fn pad_visible(value: &str, width: usize) -> String {
+    let padding = width.saturating_sub(value.width());
+    format!("{value}{}", " ".repeat(padding))
+}
+
 fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> String {
     // Display text is always the canonical `TaskSource::label()` — using
     // `path.file_name()` instead collapses any source whose backing file
@@ -254,8 +431,10 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
     // click through to the right file even when the displayed label is
     // the source's canonical name.
     let display = source.label().to_string();
-    let padding = 16usize.saturating_sub(display.chars().count());
-    let label = format!("{display:<16}").bold().to_string();
+    let width = padded_column_width(&display, SOURCE_COL_WIDTH);
+    let padding = width.saturating_sub(display.width());
+    let plain_label = pad_visible(&display, width);
+    let label = plain_label.bold().to_string();
 
     if !stdout_is_terminal {
         return label;
@@ -348,8 +527,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        RenderMode, file_uri, render_tasks_grouped, select_render_mode_for, source_label,
-        source_path,
+        RenderMode, file_uri, render_rich_row, render_tasks_grouped, render_tasks_grouped_rich,
+        select_render_mode_for, source_label, source_path,
     };
     use crate::tool::test_support::TempDir;
     use crate::types::{Task, TaskSource};
@@ -569,5 +748,105 @@ mod tests {
 
         assert!(rendered.contains('b'));
         assert!(rendered.contains("build"));
+    }
+
+    #[test]
+    fn rich_tty_wraps_long_values_with_hanging_indent() {
+        let tasks = [Task {
+            name: "lint".into(),
+            source: TaskSource::BaconToml,
+            run_target: None,
+            description: None,
+            alias_of: Some(
+                "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
+            ),
+            passthrough_to: None,
+        }];
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let rendered = render_tasks_grouped_rich(&refs, Path::new("."), true, Some(68));
+        let lines: Vec<&str> = rendered.lines().collect();
+
+        assert_eq!(lines.len(), 3, "expected wrap, got: {rendered:?}");
+        assert!(lines[0].contains("bacon"));
+        assert!(lines[0].contains("lint"));
+        assert!(lines[1].starts_with("                                      "));
+        assert!(lines[2].starts_with("                                      "));
+        assert!(!lines[1].starts_with("bacon"));
+    }
+
+    #[test]
+    fn rich_tty_wrap_counts_unicode_display_width() {
+        let rendered = render_rich_row(
+            "bacon           ",
+            16,
+            "lint",
+            Some("界界界界界 cargo"),
+            true,
+            Some(51),
+        );
+        let lines: Vec<&str> = rendered.lines().collect();
+
+        assert_eq!(
+            lines.len(),
+            2,
+            "expected Unicode-aware wrap, got: {rendered:?}"
+        );
+        assert!(lines[0].contains("界界界界界"));
+        assert!(lines[1].contains("cargo"));
+    }
+
+    #[test]
+    fn rich_non_tty_does_not_wrap_even_with_width() {
+        let rendered = render_rich_row(
+            "bacon           ",
+            16,
+            "lint",
+            Some("cargo clippy --all-targets --all-features --color=always -- -D warnings"),
+            false,
+            Some(32),
+        );
+
+        assert_eq!(rendered.lines().count(), 1);
+    }
+
+    #[test]
+    fn rich_tty_falls_back_to_single_line_when_terminal_too_narrow() {
+        let rendered = render_rich_row(
+            "bacon           ",
+            16,
+            "lint",
+            Some("cargo clippy"),
+            true,
+            Some(20),
+        );
+
+        assert_eq!(rendered.lines().count(), 1);
+    }
+
+    #[test]
+    fn rich_tty_keeps_osc8_label_intact_when_wrapping() {
+        let dir = TempDir::new("list-rich-wrap-osc8");
+        fs::write(
+            dir.path().join("bacon.toml"),
+            "[jobs.lint]\ncommand = ['cargo']\n",
+        )
+        .expect("bacon.toml should be written");
+        let tasks = [Task {
+            name: "lint".into(),
+            source: TaskSource::BaconToml,
+            run_target: None,
+            description: None,
+            alias_of: Some(
+                "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
+            ),
+            passthrough_to: None,
+        }];
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let rendered = render_tasks_grouped_rich(&refs, dir.path(), true, Some(68));
+
+        assert_eq!(rendered.matches("\u{1b}]8;;file://").count(), 1);
+        assert_eq!(rendered.matches("\u{1b}]8;;\u{1b}\\").count(), 1);
     }
 }
