@@ -690,14 +690,21 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::List {
             raw: false,
             json: false,
+            verbose: false,
             source: None,
         }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[], None),
-        Some(cli::Command::List { raw, json, source }) => {
+        Some(cli::Command::List {
+            raw,
+            json,
+            verbose,
+            source,
+        }) => {
             cmd::list(
                 &ctx,
                 &overrides,
                 raw,
                 json,
+                verbose,
                 source.as_deref(),
                 schema_version,
             )?;

@@ -38,8 +38,8 @@ use crate::types::ProjectContext;
 /// code. Bun special case: when `task == "test"` and no package-manifest
 /// `test` script exists, falls back to `bun test`. PM-exec fallback for
 /// unqualified misses runs the target through `npx`/`bunx`/`pnpm exec`/
-/// `deno x`/`uvx`/`go run` when the resolver lands on a PM with an
-/// exec primitive; otherwise spawns the binary directly from `PATH`.
+/// `deno x`/`uvx`, plus `go run` for Go module/path-shaped targets;
+/// otherwise spawns the binary directly from `PATH`.
 pub(crate) fn run(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,

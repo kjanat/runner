@@ -1,11 +1,13 @@
 //! `runner list` — display available tasks from all detected sources.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
+use terminal_size::Height;
 
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
@@ -28,6 +30,7 @@ pub(crate) fn list(
     overrides: &ResolutionOverrides,
     raw: bool,
     json: bool,
+    verbose: bool,
     source: Option<&str>,
     schema_version: u32,
 ) -> Result<()> {
@@ -68,20 +71,78 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        print_tasks_grouped(&filtered, &ctx.root);
+        let forced = verbose.then_some(RenderMode::Rich);
+        let mode = select_render_mode(&filtered, forced);
+        print_tasks_grouped_with_mode(&filtered, &ctx.root, mode);
     }
     Ok(())
 }
 
-/// Print tasks grouped by [`TaskSource`], one line per source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderMode {
+    Rich,
+    Compact,
+}
+
+fn select_render_mode(tasks: &[&Task], forced: Option<RenderMode>) -> RenderMode {
+    let height = terminal_size::terminal_size().map(|(_, Height(rows))| usize::from(rows));
+    select_render_mode_for(tasks, forced, std::io::stdout().is_terminal(), height)
+}
+
+const fn select_render_mode_for(
+    tasks: &[&Task],
+    forced: Option<RenderMode>,
+    stdout_is_terminal: bool,
+    terminal_height: Option<usize>,
+) -> RenderMode {
+    if let Some(mode) = forced {
+        return mode;
+    }
+    if !stdout_is_terminal {
+        return RenderMode::Rich;
+    }
+    match terminal_height {
+        Some(rows) if predicted_rich_rows(tasks) + 2 > rows => RenderMode::Compact,
+        _ => RenderMode::Rich,
+    }
+}
+
+const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
+    tasks.len()
+}
+
+/// Print tasks grouped by [`TaskSource`] with full per-task detail.
 ///
 /// Operates over a borrowed task slice + the project root — the renderer
 /// never reads other [`ProjectContext`] fields, so callers that already
 /// have a filtered task list pass the slice directly instead of forging
 /// a synthetic context.
 pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
-    let stdout_is_terminal = std::io::stdout().is_terminal();
+    print_tasks_grouped_with_mode(tasks, root, RenderMode::Rich);
+}
 
+fn print_tasks_grouped_with_mode(tasks: &[&Task], root: &Path, mode: RenderMode) {
+    let stdout_is_terminal = std::io::stdout().is_terminal();
+    print!(
+        "{}",
+        render_tasks_grouped(tasks, root, mode, stdout_is_terminal)
+    );
+}
+
+fn render_tasks_grouped(
+    tasks: &[&Task],
+    root: &Path,
+    mode: RenderMode,
+    stdout_is_terminal: bool,
+) -> String {
+    match mode {
+        RenderMode::Rich => render_tasks_grouped_rich(tasks, root, stdout_is_terminal),
+        RenderMode::Compact => render_tasks_grouped_compact(tasks, stdout_is_terminal),
+    }
+}
+
+fn render_tasks_grouped_rich(tasks: &[&Task], root: &Path, stdout_is_terminal: bool) -> String {
+    let mut out = String::new();
     let sources = [
         TaskSource::PackageJson,
         TaskSource::TurboJson,
@@ -94,70 +155,73 @@ pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path) {
         TaskSource::MiseToml,
     ];
     for source in sources {
-        let (recipes, aliases): (Vec<&Task>, Vec<&Task>) = tasks
-            .iter()
-            .copied()
-            .filter(|t| t.source == source)
-            .partition(|t| t.alias_of.is_none());
-        if recipes.is_empty() && aliases.is_empty() {
+        let source_tasks = tasks_for_source(tasks, source);
+        if source_tasks.is_empty() {
             continue;
         }
 
         let label = source_label(source, root, stdout_is_terminal);
-        if !recipes.is_empty() {
-            let has_any_desc = recipes.iter().any(|t| t.description.is_some());
-            if has_any_desc {
-                for task in &recipes {
-                    if let Some(desc) = task.description.as_deref() {
-                        println!("  {label}{:<20} {}", task.name, desc.dimmed());
-                    } else {
-                        println!("  {label}{}", task.name);
-                    }
-                }
+        for task in source_tasks {
+            if let Some(value) = task.alias_of.as_deref().or(task.description.as_deref()) {
+                let value = display_value(value, stdout_is_terminal);
+                let _ = writeln!(out, "  {label}{:<20} {value}", task.name);
             } else {
-                let names: Vec<&str> = recipes.iter().map(|t| t.name.as_str()).collect();
-                println!("  {}{}", label, names.join(", "));
+                let _ = writeln!(out, "  {label}{}", task.name);
             }
-        }
-        if !aliases.is_empty() {
-            println!(
-                "{}",
-                format_aliases_line(source, &aliases, stdout_is_terminal)
-            );
         }
     }
+    out
 }
 
-fn format_aliases_line(source: TaskSource, aliases: &[&Task], stdout_is_terminal: bool) -> String {
-    let aliases_label = alias_label(source, stdout_is_terminal);
-    let parts: Vec<String> = aliases
+fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> String {
+    let mut out = String::new();
+    let sources = [
+        TaskSource::PackageJson,
+        TaskSource::TurboJson,
+        TaskSource::Makefile,
+        TaskSource::Justfile,
+        TaskSource::Taskfile,
+        TaskSource::DenoJson,
+        TaskSource::CargoAliases,
+        TaskSource::BaconToml,
+        TaskSource::MiseToml,
+    ];
+    for source in sources {
+        let source_tasks = tasks_for_source(tasks, source);
+        if source_tasks.is_empty() {
+            continue;
+        }
+        let names: Vec<&str> = source_tasks.iter().map(|task| task.name.as_str()).collect();
+        let label = compact_source_label(source, stdout_is_terminal);
+        let _ = writeln!(out, "  {label}{}", names.join(", "));
+    }
+    out
+}
+
+fn tasks_for_source<'a>(tasks: &[&'a Task], source: TaskSource) -> Vec<&'a Task> {
+    let mut source_tasks: Vec<&Task> = tasks
         .iter()
-        .map(|t| {
-            let target = t.alias_of.as_deref().unwrap_or("?");
-            if stdout_is_terminal {
-                format!("{} {} {}", t.name, "→".dimmed(), target.dimmed())
-            } else {
-                format!("{} → {}", t.name, target)
-            }
-        })
+        .copied()
+        .filter(|task| task.source == source)
         .collect();
-    format!("  {aliases_label}{}", parts.join(", "))
+    source_tasks.sort_by(|a, b| a.name.cmp(&b.name));
+    source_tasks
 }
 
-fn alias_label(source: TaskSource, stdout_is_terminal: bool) -> String {
-    let text = format!("{} (aliases)", source.label());
-    // Alias labels like "package.json (aliases)" exceed the 16-col recipe
-    // label, so fall through to a single trailing space rather than running
-    // directly into the first alias.
-    let label = if text.chars().count() < 16 {
-        format!("{text:<16}")
-    } else {
-        format!("{text} ")
-    };
+fn compact_source_label(source: TaskSource, stdout_is_terminal: bool) -> String {
+    let label = format!("{:<16}", source.label());
     if stdout_is_terminal {
         label.bold().to_string()
     } else {
         label
+    }
+}
+
+fn display_value(value: &str, stdout_is_terminal: bool) -> String {
+    if stdout_is_terminal {
+        value.dimmed().to_string()
+    } else {
+        value.to_string()
     }
 }
 
@@ -260,8 +324,12 @@ fn osc8_link(label: &str, url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
-    use super::{file_uri, format_aliases_line, source_label, source_path};
+    use super::{
+        RenderMode, file_uri, render_tasks_grouped, select_render_mode_for, source_label,
+        source_path,
+    };
     use crate::tool::test_support::TempDir;
     use crate::types::{Task, TaskSource};
 
@@ -377,26 +445,97 @@ mod tests {
         assert!(uri.starts_with("file://"));
     }
 
+    fn task(name: &str, source: TaskSource) -> Task {
+        Task {
+            name: name.into(),
+            source,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+        }
+    }
+
     #[test]
-    fn format_aliases_line_joins_aliases_with_arrow() {
-        let aliases = [
-            Task {
-                name: "b".into(),
-                source: TaskSource::Justfile,
-                description: None,
-                alias_of: Some("build".into()),
-                passthrough_to: None,
-            },
-            Task {
-                name: "br".into(),
-                source: TaskSource::Justfile,
-                description: None,
-                alias_of: Some("build-release".into()),
-                passthrough_to: None,
-            },
+    fn compact_mode_emits_one_line_per_source() {
+        let mut tasks = [
+            task("build", TaskSource::Justfile),
+            task("test", TaskSource::Justfile),
+            task("b", TaskSource::CargoAliases),
+            task("lint", TaskSource::CargoAliases),
         ];
-        let refs: Vec<&Task> = aliases.iter().collect();
-        let line = format_aliases_line(TaskSource::Justfile, &refs, false);
-        assert_eq!(line, "  just (aliases)  b → build, br → build-release");
+        tasks[2].alias_of = Some("build".into());
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false);
+
+        assert_eq!(
+            rendered,
+            "  just            build, test\n  cargo           b, lint\n",
+        );
+    }
+
+    #[test]
+    fn auto_mode_picks_compact_when_predicted_height_exceeds_terminal() {
+        let tasks: Vec<Task> = (0..30)
+            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .collect();
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let mode = select_render_mode_for(&refs, None, true, Some(10));
+
+        assert_eq!(mode, RenderMode::Compact);
+    }
+
+    #[test]
+    fn auto_mode_picks_rich_when_terminal_height_fits() {
+        let tasks: Vec<Task> = (0..30)
+            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .collect();
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let mode = select_render_mode_for(&refs, None, true, Some(200));
+
+        assert_eq!(mode, RenderMode::Rich);
+    }
+
+    #[test]
+    fn auto_mode_defaults_rich_on_non_tty() {
+        let tasks: Vec<Task> = (0..30)
+            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .collect();
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let mode = select_render_mode_for(&refs, None, false, Some(10));
+
+        assert_eq!(mode, RenderMode::Rich);
+    }
+
+    #[test]
+    fn rich_mode_renders_alias_target_in_value_column() {
+        let tasks = [Task {
+            name: "b".into(),
+            source: TaskSource::Justfile,
+            description: None,
+            alias_of: Some("build".into()),
+            passthrough_to: None,
+        }];
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Rich, false);
+
+        assert!(rendered.contains('b'));
+        assert!(rendered.contains("build"));
+    }
+
+    #[test]
+    fn verbose_flag_overrides_compact_selection() {
+        let tasks: Vec<Task> = (0..30)
+            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .collect();
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let mode = select_render_mode_for(&refs, Some(RenderMode::Rich), true, Some(10));
+
+        assert_eq!(mode, RenderMode::Rich);
     }
 }

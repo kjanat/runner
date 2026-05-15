@@ -370,8 +370,7 @@ fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {
 }
 
 /// Append cargo aliases as tasks. Each alias's fully recursion-expanded
-/// command becomes the description (rendered as `cargo <expansion>` in the
-/// final list output).
+/// command becomes the alias target text shown by list/why/completion.
 fn push_cargo_aliases(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::cargo_aliases::ExtractedAlias>>,
@@ -379,12 +378,12 @@ fn push_cargo_aliases(
     match result {
         Ok(entries) => {
             for entry in entries {
-                let description = Some(entry.display_command());
+                let alias_of = Some(entry.display_command());
                 ctx.tasks.push(Task {
                     name: entry.name,
                     source: TaskSource::CargoAliases,
-                    description,
-                    alias_of: None,
+                    description: None,
+                    alias_of,
                     passthrough_to: None,
                 });
             }
@@ -589,6 +588,33 @@ mod tests {
             detail.contains("npm|pnpm|yarn|bun|deno"),
             "warning should list the accepted values: {detail}",
         );
+    }
+
+    #[test]
+    fn detect_models_cargo_aliases_as_aliases() {
+        let dir = TempDir::new("detect-cargo-alias-shape");
+        let cargo_dir = dir.path().join(".cargo");
+        fs::create_dir_all(&cargo_dir).expect(".cargo dir should be created");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .expect("Cargo.toml should be written");
+        fs::write(
+            cargo_dir.join("config.toml"),
+            "[alias]\nl = \"clippy --all-targets\"\n",
+        )
+        .expect("config.toml should be written");
+
+        let ctx = detect(dir.path());
+        let task = ctx
+            .tasks
+            .iter()
+            .find(|task| task.source == crate::types::TaskSource::CargoAliases && task.name == "l")
+            .expect("cargo alias should be detected");
+
+        assert_eq!(task.description, None);
+        assert_eq!(task.alias_of.as_deref(), Some("clippy --all-targets"));
     }
 
     #[test]

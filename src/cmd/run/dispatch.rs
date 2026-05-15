@@ -193,6 +193,11 @@ fn build_pm_exec_command(
         v.extend(args.iter().cloned());
         v
     };
+    let direct_exec = || {
+        let mut c = tool::program::command(task_name);
+        c.args(args);
+        ("exec", c)
+    };
     match resolved_pm {
         Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
         Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined())),
@@ -200,16 +205,14 @@ fn build_pm_exec_command(
         Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
-        // Go intentionally falls through to direct PATH spawn alongside
-        // Cargo/Poetry/Pipenv/Bundler/Composer. `go run <name>` only
-        // works for Go module paths (`example.com/foo@v1`, `./main.go`, `.`),
-        // not arbitrary tools the user wants to exec — so it
-        // isn't a comparable PM-exec primitive like `npx`/`bunx`/`uvx`.
-        None | Some(_) => {
-            let mut c = tool::program::command(task_name);
-            c.args(args);
-            ("exec", c)
+        Some(PackageManager::Go) => {
+            if task_name.contains('@') || task_name.contains('/') {
+                ("go run", tool::go_pm::exec_cmd(&combined()))
+            } else {
+                direct_exec()
+            }
         }
+        None | Some(_) => direct_exec(),
     }
 }
 
@@ -277,4 +280,85 @@ fn build_run_command(
         TaskSource::BaconToml => tool::bacon::run_cmd(task, args),
         TaskSource::MiseToml => tool::mise::run_cmd(task, args),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::build_pm_exec_command;
+    use crate::types::{PackageManager, ProjectContext};
+
+    fn context() -> ProjectContext {
+        ProjectContext {
+            root: PathBuf::from("."),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn command_args(command: &std::process::Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn build_pm_exec_command_go_versioned_uses_go_run() {
+        let args = [String::from("--help")];
+        let (label, command) = build_pm_exec_command(
+            &context(),
+            Some(PackageManager::Go),
+            "github.com/foo/tool@v1.2.3",
+            &args,
+        );
+
+        assert_eq!(label, "go run");
+        assert_eq!(command.get_program().to_string_lossy(), "go");
+        assert_eq!(
+            command_args(&command),
+            ["run", "github.com/foo/tool@v1.2.3", "--help"],
+        );
+    }
+
+    #[test]
+    fn build_pm_exec_command_go_import_path_uses_go_run() {
+        let (label, command) = build_pm_exec_command(
+            &context(),
+            Some(PackageManager::Go),
+            "github.com/foo/tool",
+            &[],
+        );
+
+        assert_eq!(label, "go run");
+        assert_eq!(command.get_program().to_string_lossy(), "go");
+        assert_eq!(command_args(&command), ["run", "github.com/foo/tool"]);
+    }
+
+    #[test]
+    fn build_pm_exec_command_go_relative_path_uses_go_run() {
+        let (label, command) =
+            build_pm_exec_command(&context(), Some(PackageManager::Go), "./cmd/foo", &[]);
+
+        assert_eq!(label, "go run");
+        assert_eq!(command.get_program().to_string_lossy(), "go");
+        assert_eq!(command_args(&command), ["run", "./cmd/foo"]);
+    }
+
+    #[test]
+    fn build_pm_exec_command_go_bare_name_falls_through_to_path() {
+        let args = [String::from("run")];
+        let (label, command) =
+            build_pm_exec_command(&context(), Some(PackageManager::Go), "golangci-lint", &args);
+
+        assert_eq!(label, "exec");
+        assert_eq!(command.get_program().to_string_lossy(), "golangci-lint");
+        assert_eq!(command_args(&command), ["run"]);
+    }
 }

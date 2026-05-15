@@ -306,6 +306,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "terminal_size",
  "toml",
  "yaml-rust2",
 ]

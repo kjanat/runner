@@ -893,6 +893,9 @@ pub(crate) enum Command {
         /// Print bare task names, one per line (for scripting / completions)
         #[arg(long)]
         raw: bool,
+        /// Force detailed one-task-per-line output.
+        #[arg(short, long)]
+        verbose: bool,
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,

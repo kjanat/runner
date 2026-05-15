@@ -7,10 +7,10 @@
 //! so we always overwrite user attempts with cargo's defaults — same effective
 //! behavior as cargo itself.
 //!
-//! Each surfaced task carries the *fully-expanded* command string in its
-//! description: chains like `recursive_example = "rr --example recursions"`
-//! resolve through `rr = "run --release"` to `"run --release --example
-//! recursions"` so `runner list` shows what cargo will actually execute.
+//! Each surfaced task carries the *fully-expanded* command string as its alias
+//! target: chains like `recursive_example = "rr --example recursions"` resolve
+//! through `rr = "run --release"` to `"run --release --example recursions"` so
+//! `runner list` shows what cargo will actually execute.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -45,7 +45,7 @@ pub(crate) struct ExtractedAlias {
 }
 
 impl ExtractedAlias {
-    /// Render the expansion as a shell-quoted string for descriptions, so
+    /// Render the expansion as a shell-quoted string for alias targets, so
     /// whitespace-bearing tokens round-trip with `tokenize`.
     pub(crate) fn display_command(&self) -> String {
         shlex::try_join(self.expansion.iter().map(String::as_str))
