@@ -1,4 +1,10 @@
-<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 32 32" aria-labelledby="title desc" role="img" xmlns="http://www.w3.org/2000/svg">
+	<title id="title">
+		runner icon
+	</title>
+	<desc id="desc">
+		Cream tile with a black monospace lowercase r and tomato cursor underscore.
+	</desc>
 	<rect rx="6" width="32" height="32" fill="#f4ede1" />
 	<text x="48%" y="73%"
 	      fill="#0e0e0e"
