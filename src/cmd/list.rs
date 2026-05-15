@@ -70,9 +70,11 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        // `runner list` prints no banner above the task list.
-        let mode = select_render_mode(&filtered, 0);
-        print_tasks_grouped_with_mode(&filtered, &ctx.root, mode);
+        // `runner list` is an explicit request for the task list —
+        // always full detail, never collapse. The height-adaptive
+        // compact path is reserved for the bare `runner` / `runner
+        // info` glance view (see `print_tasks_grouped`).
+        print_tasks_grouped_with_mode(&filtered, &ctx.root, RenderMode::Rich);
     }
     Ok(())
 }
