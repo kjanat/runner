@@ -327,7 +327,6 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         },
         loaded_config.as_ref(),
     )?;
-    let schema_version = resolve_schema_version(cli.global.schema_version)?;
     if cli.mode.sequential || cli.mode.parallel {
         let mode = if cli.mode.parallel {
             chain::ChainMode::Parallel
@@ -349,7 +348,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     }
     match cli.task {
         None => {
-            cmd::info(&ctx, &overrides, false, schema_version)?;
+            cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
         }
         Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args, None),
@@ -592,13 +591,18 @@ fn dispatch_run(
     cmd::run(ctx, overrides, task, &args, None)
 }
 
-/// Resolve the effective JSON schema version for this invocation: explicit
-/// `--schema-version=N` wins, otherwise default to the latest version this
-/// binary produces. Validates the range so `--schema-version=99` errors
-/// the same on `doctor` (json) and `info` (human) — version negotiation
-/// is uniform across the four JSON surfaces and their human siblings.
+/// Resolve the effective JSON schema version for schema-aware output:
+/// explicit `--schema-version=N` wins, otherwise default to latest.
 fn resolve_schema_version(requested: Option<u32>) -> Result<u32> {
     schema::validate_schema_version(requested.unwrap_or(schema::CURRENT_VERSION))
+}
+
+fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
+    if json {
+        resolve_schema_version(requested)
+    } else {
+        Ok(schema::CURRENT_VERSION)
+    }
 }
 
 /// Build [`resolver::ResolutionOverrides`] from a parsed CLI + loaded config.
@@ -637,17 +641,17 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let ctx = detect::detect(dir);
     let loaded_config = config::load(dir)?;
     let overrides = build_overrides(&cli, loaded_config.as_ref())?;
-    let schema_version = resolve_schema_version(cli.global.schema_version)?;
 
     match cli.command {
         Some(cli::Command::Info { json: false }) if has_task(&ctx, "info") => {
             cmd::run(&ctx, &overrides, "info", &[], None)
         }
         None => {
-            cmd::info(&ctx, &overrides, false, schema_version)?;
+            cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
         }
         Some(cli::Command::Info { json }) => {
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::info(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
@@ -656,7 +660,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) => dispatch_run(&ctx, &overrides, task, args, mode),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
-                cmd::info(&ctx, &overrides, false, schema_version)?;
+                cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
                 Ok(0)
             } else {
                 cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
@@ -672,10 +676,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
             dispatch_install_chain(&ctx, &overrides, frozen, &tasks)
         }
-        Some(cli::Command::Install { frozen, .. }) => {
-            cmd::install(&ctx, frozen)?;
-            Ok(0)
-        }
+        Some(cli::Command::Install { frozen, .. }) => cmd::install(&ctx, frozen),
         Some(cli::Command::Clean {
             yes: false,
             include_framework: false,
@@ -699,6 +700,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             verbose,
             source,
         }) => {
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::list(
                 &ctx,
                 &overrides,
@@ -719,10 +721,12 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
         Some(cli::Command::Doctor { json }) => {
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Why { task, json }) => {
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::why(&ctx, &overrides, &task, json, schema_version)?;
             Ok(0)
         }
@@ -1101,6 +1105,42 @@ mod tests {
 
         let err = result.expect_err("unknown --pm should error");
         assert!(format!("{err}").contains("unknown package manager"));
+    }
+
+    #[test]
+    fn schema_version_is_lazy_for_non_json_commands() {
+        let dir = TempDir::new("runner-schema-lazy-completions");
+
+        let code = run_in_dir(
+            ["runner", "--schema-version", "99", "completions", "bash"],
+            dir.path(),
+        )
+        .expect("non-json command should ignore unsupported schema version");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn schema_version_is_lazy_for_run_alias_bare_info() {
+        let dir = TempDir::new("runner-schema-lazy-run-alias");
+
+        let code = run_alias_in_dir(["run", "--schema-version", "99"], dir.path())
+            .expect("bare run alias human info should ignore unsupported schema version");
+
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn schema_version_still_validates_json_output() {
+        let dir = TempDir::new("runner-schema-json-error");
+
+        let err = run_in_dir(
+            ["runner", "--schema-version", "99", "info", "--json"],
+            dir.path(),
+        )
+        .expect_err("json output should validate schema version");
+
+        assert!(format!("{err}").contains("unsupported --schema-version 99"));
     }
 
     #[test]

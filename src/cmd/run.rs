@@ -78,10 +78,10 @@ mod tests {
 
     use super::dispatch::should_use_bun_test_fallback;
     use super::qualify::{detect_reversed_qualifier, parse_qualified_task};
-    use super::select_task_entry;
+    use super::{precheck_task, select_task_entry};
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
-    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+    use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     #[test]
     fn parse_qualified_task_splits_source_and_name() {
@@ -168,6 +168,20 @@ mod tests {
         let got = detect_reversed_qualifier("foo:bar:cargo");
         assert_eq!(got, Some((TaskSource::CargoAliases, "foo:bar")));
         assert!(detect_reversed_qualifier("lint:cargo:extra").is_none());
+    }
+
+    #[test]
+    fn precheck_reversed_qualifier_beats_runner_constraint() {
+        let ctx = context(vec![], vec![]);
+        let overrides = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+
+        let err = precheck_task(&ctx, &overrides, "lint:cargo")
+            .expect_err("reversed qualifier should fail precheck");
+
+        assert!(format!("{err:#}").contains("cargo:lint"));
     }
 
     #[test]
@@ -510,7 +524,7 @@ mod tests {
         );
         let found: Vec<_> = ctx.tasks.iter().collect();
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![crate::types::TaskRunner::Just],
+            prefer_runners: vec![TaskRunner::Just],
             ..ResolutionOverrides::default()
         };
         let entry = select_task_entry(&ctx, &overrides, &found);

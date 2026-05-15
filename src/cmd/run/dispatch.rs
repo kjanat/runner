@@ -84,12 +84,6 @@ pub(super) fn resolve_dispatch(
         // `--runner` / `[task_runner].prefer`, so report the qualified
         // miss directly instead of surfacing a runner-constraint error
         // the user can't act on.
-        if qualifier.is_none()
-            && let Some(reason) = runner_constraint_error(overrides, &found)
-        {
-            return Err(reason.into());
-        }
-
         if qualifier.is_none() {
             // Fast-fail on the reversed qualifier shape (`task:source`).
             // Without this guard, `lint:cargo` slips through as an
@@ -102,6 +96,10 @@ pub(super) fn resolve_dispatch(
                     "unknown qualifier in {task:?}: source {src_label:?} must come first.\n\
                      hint: did you mean \"{src_label}:{task_part}\"?",
                 );
+            }
+
+            if let Some(reason) = runner_constraint_error(overrides, &found) {
+                return Err(reason.into());
             }
 
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
@@ -286,8 +284,9 @@ fn build_run_command(
 mod tests {
     use std::path::PathBuf;
 
-    use super::build_pm_exec_command;
-    use crate::types::{PackageManager, ProjectContext};
+    use super::{build_pm_exec_command, resolve_dispatch};
+    use crate::resolver::ResolutionOverrides;
+    use crate::types::{PackageManager, ProjectContext, TaskRunner};
 
     fn context() -> ProjectContext {
         ProjectContext {
@@ -307,6 +306,19 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn resolve_dispatch_reversed_qualifier_beats_runner_constraint() {
+        let overrides = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+
+        let err = resolve_dispatch(&context(), &overrides, "lint:cargo", &[], None)
+            .expect_err("reversed qualifier should fail dispatch");
+
+        assert!(format!("{err:#}").contains("cargo:lint"));
     }
 
     #[test]

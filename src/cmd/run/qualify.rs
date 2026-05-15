@@ -99,16 +99,16 @@ pub(crate) fn precheck_task(
         bail!("task {task_name:?} not found in {}", source.label());
     }
 
-    if let Some(reason) = runner_constraint_error(overrides, &found) {
-        return Err(reason.into());
-    }
-
     if let Some((src, task_part)) = detect_reversed_qualifier(task) {
         let src_label = src.label();
         bail!(
             "unknown qualifier in {task:?}: source {src_label:?} must come first.\n\
              hint: did you mean \"{src_label}:{task_part}\"?",
         );
+    }
+
+    if let Some(reason) = runner_constraint_error(overrides, &found) {
+        return Err(reason.into());
     }
 
     // Unqualified miss with no constraint and no reversed shape: dispatch

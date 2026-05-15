@@ -14,14 +14,9 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 ///
 /// Warns when the current Node.js version doesn't match the project's
 /// expected version before proceeding. Thin wrapper over [`install_pms`]
-/// that bails on first non-zero exit so existing single-install callers
-/// keep their `Result<()>` shape.
-pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<()> {
-    let code = install_pms(ctx, frozen, None)?;
-    if code != 0 {
-        bail!("install failed (exit {code})");
-    }
-    Ok(())
+/// that preserves the package manager's actual exit code for callers.
+pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
+    install_pms(ctx, frozen, None)
 }
 
 /// Chain-aware install entry. Runs install across every detected PM and

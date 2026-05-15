@@ -34,9 +34,8 @@ pub(crate) fn info(
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
-    // `schema_version` is accepted (and validated by the caller) even on
-    // the human-output path so an invalid value errors uniformly across
-    // surfaces; the human renderer itself doesn't read it.
+    // Human output is not schema-versioned; callers pass the current version
+    // only to keep the JSON-capable function signature narrow.
     let _ = schema_version;
 
     super::print_warnings(ctx, overrides, None);
