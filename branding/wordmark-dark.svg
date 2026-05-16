@@ -1,0 +1,23 @@
+<svg viewBox="0 0 640 160"
+     aria-labelledby="title desc" role="img"
+     xmlns="http://www.w3.org/2000/svg">
+	<title id="title">
+		runner wordmark
+	</title>
+	<desc id="desc">
+		The runner wordmark with a tomato cursor.
+	</desc>
+	<text x="0" y="118"
+	      fill="#f1f1f1"
+	      font-family="ui-monospace, Menlo, Consolas, monospace"
+	      font-size="148"
+	      font-weight="700"
+	      letter-spacing="-0.045em">
+		runner
+	</text>
+	<text x="518" y="118"
+	      fill="#d94e2c"
+	      font-family="ui-monospace, Menlo, Consolas, monospace" font-size="148" font-weight="700">
+		_
+	</text>
+</svg>
