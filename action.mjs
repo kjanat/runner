@@ -1,278 +1,116 @@
 // @ts-check
-import { delimiter } from "node:path";
 import { env } from "node:process";
 
 /**
- * Setup runner — composite action body.
+ * Setup runner — composite action body. A single `actions/github-script@v9`
+ * step (no cache step ⇒ nothing to split around):
  *
- * Two phases, dispatched by the `PHASE` env var set in `action.yml`:
+ *   1. Resolve the npm version spec — `inputs.version` / `github.action_ref`
+ *      if it looks like semver pins that exact version; anything else
+ *      (`@master`, a branch/SHA ref, empty input) uses the `latest`
+ *      dist-tag.
+ *   2. `npm install --global runner-run@<spec>`. npm selects the correct
+ *      prebuilt platform package (incl. musl — verified) via the facade's
+ *      optionalDependencies; the binaries are static-pie so libc selection
+ *      is robust regardless.
+ *   3. Append npm's global bin dir to `$GITHUB_PATH` so `runner` / `run`
+ *      are on PATH for every subsequent step in the caller's job — the
+ *      whole point of a setup action (hence not npx/bunx, which are
+ *      ephemeral).
  *
- *   - `resolve`: pick version tag + rust triple, append the (not-yet-
- *                populated) install dir to `$GITHUB_PATH`, and return the
- *                resolved `ResolveMeta`.
- *   - `install`: download cargo-binstall then
- *                `cargo-binstall runner-run@<ver>` into the install dir.
- *
- * Each phase is a separate `actions/github-script@v9` step in `action.yml`,
- * which is what lets the `actions/cache` step sit between `resolve` and
- * `install`. The PATH append lives in `resolve` because `$GITHUB_PATH` only
- * affects *later* steps and tolerates a dir that doesn't exist yet — so the
- * `install` step can be skipped wholesale (`if: cache-hit != 'true'`) when
- * `actions/cache` already restored the binaries.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments} args
- */
-export default async function run(args) {
-	const phase = env.PHASE ?? "";
-	switch (phase) {
-		case "resolve":
-			return resolve(args);
-		case "install":
-			return install(args);
-		default:
-			throw new Error(`unknown PHASE: ${phase || "(unset)"}`);
-	}
-}
-
-/**
- * Everything `resolve` hands to `install`: returned from the `resolve`
- * script so github-script JSON-encodes it into `steps.resolve.outputs.result`.
- * `tag`/`triple`/`dest` are also read in `action.yml` via `fromJSON()`
- * (cache key, action outputs); `cbhome`/`ext` are JS-only.
- *
- * @typedef {object} ResolveMeta
- * @property {string} tag      Release tag, e.g. `v0.10.0`.
- * @property {string} triple   Rust target triple.
- * @property {string} dest     Install dir (also the cache path + `bin-dir`).
- * @property {string} cbhome   cargo-binstall's `CARGO_HOME`.
- * @property {string} ext      Executable suffix (`.exe` on Windows, else ``).
- * @property {string} cacheKey `actions/cache` key (JS-built, YAML-consumed).
- */
-
-/**
- * The action's `inputs`, marshalled as one `INPUTS` env var via
- * `${{ toJSON(inputs) }}`. Composite actions get no automatic
- * `INPUT_<NAME>` vars, so this is how `resolve` reads them. Keys are the
- * input ids verbatim. Only `version`/`target` are consumed in JS;
- * `cache`/`github-token` are handled in YAML but listed for fidelity.
- *
- * @typedef {object} ActionInputs
- * @property {string} version
- * @property {string} target
- * @property {string} cache
- * @property {string} github-token
- */
-
-/**
- * Parse the `INPUTS` env var (the JSON `${{ toJSON(inputs) }}` blob).
- *
- * @returns {ActionInputs}
- */
-function actionInputs() {
-	/** @type {ActionInputs} */
-	const parsed = JSON.parse(required("INPUTS"));
-	return parsed;
-}
-
-/* ────────────────────────────── resolve ──────────────────────────────── */
-
-/**
- * Resolve the release tag + rust target triple and export them as step
- * outputs. Also pre-computes derived paths (`dest`, `cbhome`, `ext`) that
- * downstream steps need so the YAML never has to recompute them.
- *
- * Version sourcing order:
- *   1. `inputs.version` (from the `INPUTS` JSON) if it looks like semver.
- *   2. `github.action_ref` (passed via `ACTION_REF`) if it looks like semver
- *      — this is what makes `uses: kjanat/runner@v0.10.0` pin v0.10.0.
- *   3. Otherwise, the latest release via the REST API (no scraping, no
- *      pipe-to-curl, no SIGPIPE class of bug).
- *
- * Target sourcing order:
- *   1. `inputs.target` (from the `INPUTS` JSON) if non-empty.
- *   2. First match in `npm/targets.json` for the current `RUNNER_OS` /
- *      `RUNNER_ARCH` (preferring glibc when libc is set). Single source of
- *      truth shared with the release matrix.
+ * No GitHub API in the path ⇒ no token, no rate limit, no cargo-binstall,
+ * no rust-triple mapping.
  *
  * @param {import('@actions/github-script').AsyncFunctionArguments} args
  */
-function resolve({ github, core }) {
-	return core.group("runner-run | resolve version + target", async () => {
-		const inputs = actionInputs();
-		const tag = await resolveTag(github, core, inputs.version);
-		const triple = await resolveTriple(core, inputs.target);
+export default async function run({ core, exec }) {
+	return core.group("runner-run | setup", async () => {
+		const spec = resolveSpec(core);
 
-		const runnerOs = env.RUNNER_OS ?? "";
-		const ext = runnerOs === "Windows" ? ".exe" : "";
-
-		const toolCache = required("RUNNER_TOOL_CACHE");
-		const runnerTemp = required("RUNNER_TEMP");
-		const dest = `${toolCache}/runner-run/${tag}/${triple}`;
-		const cbhome = `${runnerTemp}/cargo-binstall`;
-
-		core.info(`tag: ${tag}`);
-		core.info(`triple: ${triple}`);
-		core.info(`dest: ${dest}`);
-
-		// Safe here even though `dest` is empty until the cache restore /
-		// install: `$GITHUB_PATH` only prepends for *subsequent* steps and a
-		// nonexistent PATH entry is inert. Doing it here lets `install` be
-		// skipped entirely on a cache hit.
-		core.addPath(dest);
-
-		// Returned to github-script, which JSON-encodes it into
-		// `steps.resolve.outputs.result` (default result-encoding: json).
-		/** @type {ResolveMeta} */
-		const meta = { tag, triple, dest, cbhome, ext, cacheKey: `runner-run-${tag}-${triple}` };
-		return meta;
-	});
-}
-
-/**
- * Pick the release tag. Returns a string like `v0.10.0`.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments['github']} github
- * @param {import('@actions/github-script').AsyncFunctionArguments['core']} core
- * @param {string} version `inputs.version`.
- * @returns {Promise<string>}
- */
-async function resolveTag(github, core, version) {
-	const semver = /^v?\d+\.\d+\.\d+/;
-	const requested = version || env.ACTION_REF || "";
-
-	if (semver.test(requested)) {
-		return `v${requested.replace(/^v/, "")}`;
-	}
-
-	core.info(`'${requested || "(empty)"}' is not semver — fetching latest release`);
-	const { data } = await github.rest.repos.getLatestRelease({
-		owner: "kjanat",
-		repo: "runner",
-	});
-
-	if (!/^v\d/.test(data.tag_name)) {
-		throw new Error(`failed to resolve latest runner-run release (got '${data.tag_name}')`);
-	}
-	return data.tag_name;
-}
-
-/**
- * Pick the rust target triple. Returns a string like
- * `x86_64-unknown-linux-gnu`.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments['core']} core
- * @param {string} target `inputs.target`.
- * @returns {Promise<string>}
- */
-async function resolveTriple(core, target) {
-	if (target) return target;
-
-	const runnerOs = required("RUNNER_OS");
-	const runnerArch = required("RUNNER_ARCH");
-	const actionPath = required("GITHUB_ACTION_PATH");
-
-	/** @type {Record<string, string>} */
-	const osMap = { Linux: "linux", macOS: "darwin", Windows: "win32" };
-	/** @type {Record<string, string>} */
-	const archMap = { X64: "x64", ARM64: "arm64", ARM: "arm", X86: "ia32" };
-
-	const nodeOs = osMap[runnerOs] ?? "";
-	const nodeCpu = archMap[runnerArch] ?? "";
-
-	const fs = await import("node:fs/promises");
-	const raw = await fs.readFile(`${actionPath}/npm/targets.json`, "utf8");
-	/** @type {{ targets: Array<{ os: string[]; cpu: string[]; libc?: string[] | null; rust: string }> }} */
-	const data = JSON.parse(raw);
-
-	const match = data.targets.find((t) =>
-		t.os.includes(nodeOs)
-		&& t.cpu.includes(nodeCpu)
-		&& (t.libc == null || t.libc.includes("glibc"))
-	);
-
-	if (!match) {
-		core.setFailed(
-			`No prebuilt target in npm/targets.json for ${runnerOs}-${runnerArch}; pass an explicit \`target\` input.`,
-		);
-		throw new Error("target resolution failed");
-	}
-	return match.rust;
-}
-
-/* ────────────────────────────── install ──────────────────────────────── */
-
-/**
- * Install cargo-binstall (installer pinned by commit SHA via `BINSTALL_SHA`;
- * the release it downloads pinned by `BINSTALL_VERSION`, which the upstream
- * script reads from the inherited env), then use it to install
- * `runner-run@<tag>` into `meta.dest`. Only runs on a cache miss — the
- * step-level `if:` in `action.yml` skips it on a hit; PATH was already
- * appended by `resolve`.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments} args
- */
-async function install({ core, exec }) {
-	/** @type {ResolveMeta} */
-	const meta = JSON.parse(required("META"));
-	const { tag, triple, dest, cbhome, ext } = meta;
-
-	const binstallSha = required("BINSTALL_SHA");
-	// `github-script` is a JS action, so its `with: github-token:` lands as
-	// the step input `github-token` — read it here rather than restating
-	// `${{ inputs.github-token }}` as a separate env var in action.yml.
-	const token = core.getInput("github-token");
-
-	await core.group("runner-run | install cargo-binstall", async () => {
-		// Pre-add CARGO_HOME/bin to PATH for the spawned bash so the upstream
-		// installer detects it as already-present and skips writing to
-		// $GITHUB_PATH. We invoke cargo-binstall by absolute path next; it
-		// does not need to be on the consumer's PATH.
-		const newPath = `${cbhome}/bin${delimiter}${env.PATH ?? ""}`;
-		const url =
-			`https://raw.githubusercontent.com/cargo-bins/cargo-binstall/${binstallSha}/install-from-binstall-release.sh`;
-
-		const res = await fetch(url);
-		if (!res.ok) {
-			throw new Error(`failed to fetch cargo-binstall installer: ${res.status} ${res.statusText}`);
-		}
-		const script = await res.text();
-
-		await exec.exec("bash", ["-s"], {
-			input: Buffer.from(script),
-			env: { ...env, CARGO_HOME: cbhome, PATH: newPath },
+		await core.group(`npm install --global runner-run@${spec}`, async () => {
+			await exec.exec(npm(), ["install", "--global", `runner-run@${spec}`]);
 		});
-	});
 
-	await core.group(`runner-run | cargo-binstall runner-run@${tag.replace(/^v/, "")}`, async () => {
-		const cbin = `${cbhome}/bin/cargo-binstall${ext}`;
-		await exec.exec(cbin, [`runner-run@${tag.replace(/^v/, "")}`, "--install-path", dest], {
-			env: {
-				...env,
-				// cargo-binstall reads GITHUB_TOKEN for GitHub API auth
-				// (release lookups); without it CI hits the 60 req/hr
-				// anonymous limit. Omit when empty so it isn't masked as a
-				// "no token" being explicitly set.
-				...(token ? { GITHUB_TOKEN: token } : {}),
-				CARGO_BUILD_TARGET: triple,
-				BINSTALL_NO_CONFIRM: "true",
-				// Fail fast in CI; never silently build from source.
-				BINSTALL_DISABLE_STRATEGIES: "compile",
-			},
-		});
+		const version = await installedVersion(exec);
+		const binDir = await npmGlobalBin(exec);
+
+		core.addPath(binDir);
+		core.info(`version: ${version}`);
+		core.info(`bin-dir: ${binDir}`);
+
+		core.setOutput("version", version);
+		core.setOutput("bin-dir", binDir);
 	});
 }
 
-/* ────────────────────────────── helpers ──────────────────────────────── */
-
 /**
- * Read a required env var or throw. Mirrors `${VAR:?}` from the bash
- * originals.
+ * `npm` is `npm.cmd` on Windows runners — `@actions/exec` does not append
+ * the `.cmd` itself.
  *
- * @param {string} name
  * @returns {string}
  */
-function required(name) {
-	const v = env[name];
-	if (!v) throw new Error(`required env var not set: ${name}`);
+function npm() {
+	return env.RUNNER_OS === "Windows" ? "npm.cmd" : "npm";
+}
+
+/**
+ * npm version spec. Semver from `INPUT_VERSION` (the `version` input;
+ * composite actions get no automatic `INPUT_*`, so `action.yml` maps it) or
+ * `ACTION_REF` (`github.action_ref`, what makes `uses: kjanat/runner@v0.10.0`
+ * pin) → that exact version, leading `v` stripped (npm wants `0.10.0`).
+ * Anything else → the `latest` dist-tag.
+ *
+ * @param {import('@actions/github-script').AsyncFunctionArguments['core']} core
+ * @returns {string}
+ */
+function resolveSpec(core) {
+	const semver = /^v?\d+\.\d+\.\d+/;
+	const requested = env.INPUT_VERSION || env.ACTION_REF || "";
+
+	if (semver.test(requested)) {
+		const v = requested.replace(/^v/, "");
+		core.info(`version: ${v} (pinned)`);
+		return v;
+	}
+
+	core.info(`'${requested || "(empty)"}' is not semver — using 'latest' dist-tag`);
+	return "latest";
+}
+
+/**
+ * The concrete installed version, queried post-install so the `version`
+ * output is the real number even when the spec was `latest`.
+ *
+ * @param {import('@actions/github-script').AsyncFunctionArguments['exec']} exec
+ * @returns {Promise<string>}
+ */
+async function installedVersion(exec) {
+	const { stdout } = await exec.getExecOutput(
+		npm(),
+		["ls", "--global", "--depth=0", "--json", "runner-run"],
+		{ silent: true },
+	);
+	/** @type {{ dependencies?: Record<string, { version?: string }> }} */
+	const tree = JSON.parse(stdout);
+	const v = tree.dependencies?.["runner-run"]?.version;
+	if (!v) throw new Error("could not determine installed runner-run version from `npm ls`");
 	return v;
+}
+
+/**
+ * npm's global bin directory, cross-platform. On Windows npm links bins at
+ * the prefix root; elsewhere at `<prefix>/bin`.
+ *
+ * @param {import('@actions/github-script').AsyncFunctionArguments['exec']} exec
+ * @returns {Promise<string>}
+ */
+async function npmGlobalBin(exec) {
+	const { stdout } = await exec.getExecOutput(
+		npm(),
+		["prefix", "--global"],
+		{ silent: true },
+	);
+	const prefix = stdout.trim();
+	if (!prefix) throw new Error("`npm prefix --global` returned empty");
+	return env.RUNNER_OS === "Windows" ? prefix : `${prefix}/bin`;
 }

@@ -10,5 +10,9 @@
 		"@actions/github-script": "actions/github-script#v9",
 		"@types/node": ">=22.18.0",
 		"typescript": "^5"
+	},
+	"volta": {
+		"node": "24.14.1",
+		"npm": "11.6.2"
 	}
 }

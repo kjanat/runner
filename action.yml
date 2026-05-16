@@ -1,75 +1,26 @@
-name: Setup runner
-description: Install the runner / run CLI via cargo-binstall (prebuilt GitHub release binaries).
+name: Setup runner cli
+description: Install the runner / run CLI from npm (prebuilt, platform-resolved binaries).
 author: Kaj Kowalski
 branding: { icon: play, color: blue }
 
 inputs:
   version:
-    description: >-
-      Crate version (e.g. `v0.10.0` / `0.10.0`) or `latest`. Defaults to
-      the action's own ref, so `uses: kjanat/runner@v0.10.0` pins that
-      version. Non-semver refs (e.g. `@master`) resolve to latest.
+    description: "Version (e.g. `v0.10.0` / `0.10.0`) or `latest`. Defaults to the action's own ref, so `uses: kjanat/runner@v0.10.0` pins that version."
+    default: latest
     required: false
-    default: ""
-  target:
-    description: >-
-      Rust target triple override (e.g. `x86_64-unknown-linux-musl`).
-      Empty = auto-detect from the runner.
-    required: false
-    default: ""
-  cache:
-    description: Cache the installed binaries between runs.
-    required: false
-    default: "true"
-  github-token:
-    description: Token for cargo-binstall's GitHub API access (avoids rate limits).
-    required: false
-    default: ${{ github.token }}
-
 outputs:
-  version:
-    description: Resolved release tag (e.g. `v0.10.0`).
-    value: ${{ fromJSON(steps.resolve.outputs.meta).tag }}
-  target:
-    description: Rust target triple installed.
-    value: ${{ fromJSON(steps.resolve.outputs.meta).triple }}
-  bin-dir:
-    description: Directory containing the installed binaries (also added to PATH).
-    value: ${{ fromJSON(steps.resolve.outputs.meta).dest }}
+  version: { description: "Concrete installed version (e.g. `0.10.0`), resolved post-install.", value: "${{ steps.setup.outputs.version }}" }
+  bin-dir: { description: npm global bin directory containing `runner` / `run` (added to PATH)., value: "${{ steps.setup.outputs.bin-dir }}" }
 
 runs:
   using: composite
   steps:
-    - id: resolve
+    - id: setup
       uses: actions/github-script@v9
       env:
-        PHASE: resolve
-        INPUTS: ${{ toJSON(inputs) }}
+        INPUT_VERSION: ${{ inputs.version }}
         ACTION_REF: ${{ github.action_ref }}
       with:
-        github-token: ${{ inputs.github-token }}
-        script: |
-          import { env } from 'node:process';
-          const { default: run } = await import(`${env.GITHUB_ACTION_PATH}/action.mjs`)
-          return await run({ github, context, core, exec, glob, io })
-
-    - id: cache
-      if: inputs.cache == 'true'
-      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-      with:
-        path: ${{ fromJSON(steps.resolve.outputs.result).dest }}
-        key: ${{ fromJSON(steps.resolve.outputs.result).cacheKey }}
-
-    - id: install
-      if: inputs.cache != 'true' || steps.cache.outputs.cache-hit != 'true'
-      uses: actions/github-script@v9
-      env:
-        PHASE: install
-        META: ${{ steps.resolve.outputs.result }}
-        BINSTALL_SHA: aaa84a43aec4955a42c5ffc65d258961e39f276e
-        BINSTALL_VERSION: 1.19.1
-      with:
-        github-token: ${{ inputs.github-token }}
         script: |
           import { env } from 'node:process';
           const { default: run } = await import(`${env.GITHUB_ACTION_PATH}/action.mjs`)
