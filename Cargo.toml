@@ -1,19 +1,20 @@
 [package]
-name         = "runner-run"
-version      = "0.11.0"
-edition      = "2024"
-rust-version = "1.95"
-description  = "Universal project task runner"
-readme       = "README.md"
-homepage     = "https://runner.kjanat.dev"
-repository   = "https://github.com/kjanat/runner/"
-license      = "MIT"
-keywords     = ["automation", "build-tool", "cli", "task-runner"]
-categories   = ["command-line-utilities", "development-tools"]
-build        = "build.rs"
-include      = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/examples", "/schemas", "/src", "/tests"]
-default-run  = "runner"
-autobins     = false
+name          = "runner-run"
+version       = "0.11.0"
+edition       = "2024"
+rust-version  = "1.95"
+description   = "Universal project task runner"
+documentation = "https://docs.rs/runner-run"
+readme        = "README.md"
+homepage      = "https://runner.kjanat.dev"
+repository    = "https://github.com/kjanat/runner/"
+license       = "MIT"
+keywords      = ["automation", "build-tool", "cli", "task-runner"]
+categories    = ["command-line-utilities", "development-tools"]
+build         = "build.rs"
+include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/examples", "/schemas", "/src", "/tests"]
+default-run   = "runner"
+autobins      = false
 
 [[package.metadata.authors]]
 name  = "Kaj Kowalski"
