@@ -81,7 +81,7 @@ pub(crate) enum TaskRunner {
     Nx,
     /// GNU Make — detected via `Makefile` / `GNUmakefile` / `makefile`.
     Make,
-    /// just — detected via `justfile` / `Justfile` / `.justfile`.
+    /// just — detected via case-insensitive `justfile` / `.justfile`.
     Just,
     /// go-task — detected via `Taskfile.yml` and variants.
     GoTask,
@@ -98,6 +98,9 @@ pub(crate) struct Task {
     pub name: String,
     /// Which config file this task was extracted from.
     pub source: TaskSource,
+    /// Tool-specific execution target. Used by Go packages to keep the
+    /// display name separate from the `go run` target (`.` vs `./cmd/name`).
+    pub run_target: Option<String>,
     /// Optional human-readable description (e.g. justfile doc comment,
     /// go-task `desc` field).
     pub description: Option<String>,
@@ -134,6 +137,8 @@ pub(crate) enum TaskSource {
     /// Cargo `[alias]` table — built-ins plus user aliases merged across the
     /// hierarchical `.cargo/config.toml` chain.
     CargoAliases,
+    /// Go root or `cmd/<name>` package containing `package main`.
+    GoPackage,
     /// `bacon.toml` `[jobs.<name>]` tables.
     BaconToml,
     /// `mise.toml` / `.mise.toml` `[tasks.<name>]` tables (and the
@@ -159,7 +164,7 @@ pub(crate) struct NodeVersion {
 /// trivial. The [`Display`] impl renders the same `"<source>: <detail>"`
 /// shape every printer expects, so introducing a new variant doesn't
 /// churn output sites.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum DetectionWarning {
     /// Manifest declaration (`packageManager` / `devEngines.packageManager`)
     /// disagrees with the detected lockfile. Declaration wins; the lockfile
@@ -541,36 +546,55 @@ impl TaskRunner {
 }
 
 impl TaskSource {
-    /// Config filename shown to the user (e.g. `"package.json"`, `"Makefile"`).
+    /// Canonical display label shown to the user — the *tool* name where a
+    /// single tool owns the source (`"make"`, `"just"`, `"bacon"`, …), or
+    /// the filename when multiple tools share the source (`"package.json"`
+    /// is read by npm/yarn/pnpm/bun, so there's no single owner to name).
+    ///
+    /// Previously a mix of tool names (`"cargo"`) and filenames
+    /// (`"bacon.toml"`, `"turbo.json"`); the inconsistency made the
+    /// `runner list` column read like a typo. Standardizing on tool
+    /// names also stops cases like `bacon.toml` claiming jobs that
+    /// actually come from `~/.config/bacon/prefs.toml` — the label
+    /// "bacon" is honest about that breadth, the label "bacon.toml"
+    /// isn't.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::PackageJson => "package.json",
-            Self::Makefile => "Makefile",
-            Self::Justfile => "justfile",
-            Self::Taskfile => "Taskfile",
-            Self::TurboJson => "turbo.json",
-            Self::DenoJson => "deno.json",
+            Self::Makefile => "make",
+            Self::Justfile => "just",
+            Self::Taskfile => "task",
+            Self::TurboJson => "turbo",
+            Self::DenoJson => "deno",
             // Synthetic source — aliases merge across the hierarchical
             // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
             // file name represents it.
             Self::CargoAliases => "cargo",
-            Self::BaconToml => "bacon.toml",
-            Self::MiseToml => "mise.toml",
+            Self::GoPackage => "go",
+            Self::BaconToml => "bacon",
+            Self::MiseToml => "mise",
         }
     }
 
-    /// Parse a source label back to a [`TaskSource`].
+    /// Parse a source label back to a [`TaskSource`]. Accepts both the
+    /// current canonical [`label`]s and the older filename-style labels
+    /// (`"justfile"`, `"bacon.toml"`, `"turbo.json"`, …) so qualified
+    /// task syntax (`bacon.toml:check`) that users may have in shell
+    /// history, scripts, or muscle memory keeps working unchanged.
+    ///
+    /// [`label`]: TaskSource::label
     pub(crate) fn from_label(label: &str) -> Option<Self> {
         match label {
             "package.json" => Some(Self::PackageJson),
-            "Makefile" => Some(Self::Makefile),
-            "justfile" => Some(Self::Justfile),
-            "Taskfile" => Some(Self::Taskfile),
-            "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
-            "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
+            "make" | "Makefile" => Some(Self::Makefile),
+            "just" | "justfile" => Some(Self::Justfile),
+            "task" | "Taskfile" | "go-task" => Some(Self::Taskfile),
+            "turbo" | "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
+            "deno" | "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
             "cargo" => Some(Self::CargoAliases),
-            "bacon.toml" => Some(Self::BaconToml),
-            "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
+            "go" | "go.mod" => Some(Self::GoPackage),
+            "bacon" | "bacon.toml" => Some(Self::BaconToml),
+            "mise" | "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
             _ => None,
         }
     }
@@ -585,8 +609,9 @@ impl TaskSource {
             Self::TurboJson => 4,
             Self::DenoJson => 5,
             Self::CargoAliases => 6,
-            Self::BaconToml => 7,
-            Self::MiseToml => 8,
+            Self::GoPackage => 7,
+            Self::BaconToml => 8,
+            Self::MiseToml => 9,
         }
     }
 }
@@ -631,10 +656,33 @@ pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::version_matches;
+    use super::{DetectionWarning, PackageManager};
 
     #[test]
     fn dotted_versions_match_segment_boundaries_only() {
         assert!(version_matches("20.11", "20.11.0"));
         assert!(!version_matches("20.11", "20.110.0"));
+    }
+
+    #[test]
+    fn detection_warning_can_be_hashed() {
+        use std::collections::HashSet;
+
+        let a = DetectionWarning::DevEnginesBinaryMissing {
+            pm: PackageManager::Pnpm,
+        };
+        let b = DetectionWarning::DevEnginesBinaryMissing {
+            pm: PackageManager::Pnpm,
+        };
+        let c = DetectionWarning::DevEnginesBinaryMissing {
+            pm: PackageManager::Yarn,
+        };
+
+        let mut set = HashSet::new();
+        set.insert(a);
+        set.insert(b);
+        set.insert(c);
+
+        assert_eq!(set.len(), 2, "equal variants should dedup");
     }
 }

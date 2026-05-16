@@ -26,7 +26,7 @@ impl ExtractedTask {
     }
 }
 
-/// Detected via `justfile`, `Justfile`, or `.justfile`.
+/// Detected via case-insensitive `justfile`, or hidden `.justfile`.
 pub(crate) fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
@@ -144,8 +144,8 @@ fn extract_tasks_with_just(path: &Path) -> Option<Vec<ExtractedTask>> {
 
 /// Resolve the active justfile path in the current directory.
 ///
-/// Honors standard filenames and falls back to an ASCII case-insensitive
-/// `justfile` match (e.g. `JUSTFILE`).
+/// Honors standard filenames and falls back to ASCII case-insensitive
+/// `justfile` / `.justfile` matches (e.g. `JUSTFILE`, `.JUSTFILE`).
 pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
     if let Some(path) = files::find_first(dir, FILENAMES).filter(|path| path.is_file()) {
         return Some(path);
@@ -159,12 +159,16 @@ pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.eq_ignore_ascii_case("justfile"))
+                .is_some_and(is_justfile_name)
         })
         .collect();
 
     paths.sort_unstable();
     paths.into_iter().next()
+}
+
+const fn is_justfile_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case("justfile") || name.eq_ignore_ascii_case(".justfile")
 }
 
 struct ParsedRecipe {
@@ -406,6 +410,15 @@ mod tests {
         let dir = TempDir::new("just-uppercase");
         fs::write(dir.path().join("JUSTFILE"), "build:\n  echo build\n")
             .expect("JUSTFILE should be written");
+
+        assert!(detect(dir.path()));
+    }
+
+    #[test]
+    fn detect_supports_uppercase_hidden_justfile_name() {
+        let dir = TempDir::new("just-hidden-uppercase");
+        fs::write(dir.path().join(".JUSTFILE"), "build:\n  echo build\n")
+            .expect(".JUSTFILE should be written");
 
         assert!(detect(dir.path()));
     }

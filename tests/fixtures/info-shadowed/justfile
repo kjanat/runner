@@ -1,0 +1,5 @@
+info:
+    @echo "project-info-recipe-ran"
+
+build:
+    @echo "build-ran"

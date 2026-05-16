@@ -12,7 +12,7 @@ mod clean;
 mod completions;
 mod doctor;
 mod info;
-mod install;
+pub(crate) mod install;
 mod list;
 pub(crate) mod run;
 mod why;
@@ -34,7 +34,7 @@ fn configure_command(command: &mut Command, dir: &Path) {
         .stderr(Stdio::inherit());
 }
 
-fn exit_code(status: ExitStatus) -> i32 {
+pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt as _;
@@ -50,15 +50,52 @@ fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
-fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides) {
-    print_warning_slice(&ctx.warnings, overrides);
+/// Optional warning collector. `None` means "emit warnings to stderr
+/// directly" (single-task path). `Some(set)` means "stash for deduped
+/// emission later" (chain dispatch — chain executor emits the deduped
+/// set once at the end).
+pub(crate) type WarningSink<'a> = Option<&'a mut std::collections::HashSet<DetectionWarning>>;
+
+fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides, sink: WarningSink<'_>) {
+    print_warning_slice(&ctx.warnings, overrides, sink);
 }
 
-fn print_warning_slice(warnings: &[DetectionWarning], overrides: &ResolutionOverrides) {
+fn print_warning_slice(
+    warnings: &[DetectionWarning],
+    overrides: &ResolutionOverrides,
+    sink: WarningSink<'_>,
+) {
     if overrides.no_warnings {
         return;
     }
+    if let Some(set) = sink {
+        for warning in warnings {
+            set.insert(warning.clone());
+        }
+        return;
+    }
     for warning in warnings {
+        eprintln!("{} {warning}", "warn:".yellow().bold());
+    }
+}
+
+/// Emit a previously-collected warning set to stderr. Used by the chain
+/// executor after all per-task resolutions have populated the sink.
+///
+/// Sorted by `Display` form before emission so output is stable across
+/// runs — `HashSet` iteration order is unspecified, which made the
+/// warning block jump around between invocations of the same chain.
+pub(crate) fn emit_collected_warnings(
+    warnings: &std::collections::HashSet<DetectionWarning>,
+    overrides: &ResolutionOverrides,
+) {
+    if overrides.no_warnings {
+        return;
+    }
+    let mut sorted: Vec<(String, &DetectionWarning)> =
+        warnings.iter().map(|w| (w.to_string(), w)).collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, warning) in sorted {
         eprintln!("{} {warning}", "warn:".yellow().bold());
     }
 }
@@ -98,7 +135,7 @@ mod tests {
             no_warnings: true,
             ..ResolutionOverrides::default()
         };
-        print_warning_slice(&warnings, &overrides);
+        print_warning_slice(&warnings, &overrides, None);
     }
 
     #[cfg(unix)]

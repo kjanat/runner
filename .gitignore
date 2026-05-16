@@ -7,3 +7,7 @@ node_modules/
 .wrangler/
 .dev.vars
 .dev.vars.*
+
+# serena MCP cache
+/.serena/
+/proposal.md

@@ -71,6 +71,14 @@ pub(crate) enum ResolveError {
         /// so the `Display` impl produces a clean one-line message.
         reason: &'static str,
     },
+    /// Both `keep_going` and `kill_on_fail` were set to true at the same
+    /// source (or once layered across CLI/env/config). The chain executor
+    /// can't honour both, so fail loudly before dispatching anything.
+    ConflictingFailurePolicy {
+        /// Where the conflict was detected: `"CLI flags"`, `"env vars"`,
+        /// `"[chain] config"`, or `"cross-source"`.
+        source: &'static str,
+    },
 }
 
 /// Why a `devEngines.packageManager` `onFail = error` check rejected the
@@ -129,8 +137,28 @@ impl fmt::Display for ResolveError {
             Self::InvalidOverride { value, reason } => {
                 write!(f, "invalid override value {value:?}: {reason}")
             }
+            Self::ConflictingFailurePolicy { source } => write!(
+                f,
+                "`keep_going` and `kill_on_fail` are mutually exclusive but both were set ({source}). \
+                 Unset one of `--keep-going` / `RUNNER_KEEP_GOING` / `[chain].keep_going` or \
+                 `--kill-on-fail` / `RUNNER_KILL_ON_FAIL` / `[chain].kill_on_fail` to pick a policy.",
+            ),
         }
     }
 }
 
 impl std::error::Error for ResolveError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflicting_failure_policy_display_includes_source() {
+        let err = ResolveError::ConflictingFailurePolicy { source: "env vars" };
+        let msg = format!("{err}");
+        assert!(msg.contains("keep_going"), "msg: {msg}");
+        assert!(msg.contains("kill_on_fail"), "msg: {msg}");
+        assert!(msg.contains("env vars"), "msg: {msg}");
+    }
+}

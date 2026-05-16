@@ -1,4 +1,4 @@
-//! # Runner
+//! # Runner (`runner-run` crate)
 //!
 //! ## Overview
 //!
@@ -52,16 +52,16 @@
 //! runner clean        # remove caches and build artifacts
 //! runner list         # list available tasks from all sources
 //! ```
-//!
-//! Generate docs with `cargo doc --document-private-items --open`.
+// Generate docs with `cargo doc --document-private-items --open`.
 
+pub(crate) mod chain;
 mod cli;
 mod cmd;
 mod complete;
 mod config;
 mod detect;
-mod report;
 mod resolver;
+mod schema;
 mod tool;
 mod types;
 
@@ -71,6 +71,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, FromArgMatches};
+use colored::Colorize;
 
 use resolver::ResolveError;
 
@@ -317,16 +318,22 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
         cli.global.on_mismatch.as_deref(),
-        cli.global.no_warnings,
-        cli.global.explain,
+        resolver::DiagnosticFlags {
+            no_warnings: cli.global.no_warnings,
+            explain: cli.global.explain,
+        },
+        cli::ChainFailureFlags {
+            keep_going: cli.failure.keep_going,
+            kill_on_fail: cli.failure.kill_on_fail,
+        },
         loaded_config.as_ref(),
     )?;
     match cli.task {
-        None => {
-            cmd::info(&ctx, &overrides, false)?;
+        None if !cli.mode.sequential && !cli.mode.parallel => {
+            cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
         }
-        Some(task) => cmd::run(&ctx, &overrides, &task, &cli.args),
+        task => dispatch_run(&ctx, &overrides, task, cli.args, cli.mode),
     }
 }
 
@@ -334,12 +341,20 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
 ///
 /// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
 ///
+/// Strips a trailing `.exe` suffix (case-insensitive) so Windows builds present the
+/// same `runner` / `run` identifier in `--version`, `--help`, and the `Usage:` line
+/// as Unix builds. Without this, clap's bin-name plumbing surfaces the raw
+/// `runner.exe` from `argv[0]`, leaking the platform-specific extension into UX.
+///
 /// # Examples
 ///
 /// ```rust
 /// use std::ffi::OsString;
 /// let name = runner::bin_name_from_arg0(&OsString::from("/usr/bin/runner"));
 /// assert_eq!(name.as_deref(), Some("runner"));
+///
+/// let win = runner::bin_name_from_arg0(&OsString::from("runner.exe"));
+/// assert_eq!(win.as_deref(), Some("runner"));
 /// ```
 #[must_use]
 pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
@@ -347,7 +362,26 @@ pub fn bin_name_from_arg0(arg0: &OsString) -> Option<String> {
         .file_name()
         .map(|segment| segment.to_string_lossy().into_owned())?;
 
-    (!name.is_empty()).then_some(name)
+    let trimmed = strip_exe_suffix(&name);
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Strip a trailing `.exe` extension (ASCII case-insensitive) from a file name.
+///
+/// Returns the input unchanged if no such suffix is present. The match is
+/// ASCII-only because Windows treats `.EXE`, `.Exe`, `.exe` etc. as the same
+/// extension, and that case-fold is bounded to ASCII regardless of the active
+/// code page.
+fn strip_exe_suffix(name: &str) -> &str {
+    const SUFFIX: &str = ".exe";
+    if name.len() > SUFFIX.len()
+        && name.is_char_boundary(name.len() - SUFFIX.len())
+        && name[name.len() - SUFFIX.len()..].eq_ignore_ascii_case(SUFFIX)
+    {
+        &name[..name.len() - SUFFIX.len()]
+    } else {
+        name
+    }
 }
 
 /// Attaches the generated help byline to a clap command.
@@ -489,51 +523,165 @@ fn render_clap_error(err: &clap::Error) -> Result<i32> {
     Ok(exit_code)
 }
 
-fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
-    let ctx = detect::detect(dir);
-    let loaded_config = config::load(dir)?;
-    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
+fn dispatch_install_chain(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    frozen: bool,
+    tasks: &[String],
+) -> Result<i32> {
+    let mut items = vec![chain::ChainItem::install(frozen)];
+    items.extend(chain::parse::parse_task_list(tasks)?);
+    let c = chain::Chain {
+        mode: chain::ChainMode::Sequential,
+        items,
+        failure: overrides.failure_policy,
+    };
+    chain::exec::run_chain(ctx, overrides, &c)
+}
+
+fn dispatch_run(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    task: Option<String>,
+    args: Vec<String>,
+    mode: cli::ChainModeFlags,
+) -> Result<i32> {
+    if mode.sequential || mode.parallel {
+        let chain_mode = if mode.parallel {
+            chain::ChainMode::Parallel
+        } else {
+            chain::ChainMode::Sequential
+        };
+        let mut positionals: Vec<String> = Vec::new();
+        if let Some(t) = task {
+            positionals.push(t);
+        }
+        positionals.extend(args);
+        let items = chain::parse::parse_task_list(&positionals)?;
+        let c = chain::Chain {
+            mode: chain_mode,
+            items,
+            failure: overrides.failure_policy,
+        };
+        return chain::exec::run_chain(ctx, overrides, &c);
+    }
+    let Some(task) = task.as_deref() else {
+        bail!(
+            "task name required (drop -s/-p for single-task mode or supply at least one task name)"
+        );
+    };
+    cmd::run(ctx, overrides, task, &args, None)
+}
+
+/// Resolve the effective JSON schema version for schema-aware output:
+/// explicit `--schema-version=N` wins, otherwise default to latest.
+fn resolve_schema_version(requested: Option<u32>) -> Result<u32> {
+    schema::validate_schema_version(requested.unwrap_or(schema::CURRENT_VERSION))
+}
+
+fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
+    if json {
+        resolve_schema_version(requested)
+    } else {
+        Ok(schema::CURRENT_VERSION)
+    }
+}
+
+/// Build [`resolver::ResolutionOverrides`] from a parsed CLI + loaded config.
+/// Lifted out of [`dispatch`] so the latter stays under clippy's
+/// `too_many_lines` budget; the chain-failure inputs come from whichever
+/// subcommand carries them (`Run` / `Install`), with `false` defaults for
+/// subcommands that don't.
+fn build_overrides(
+    cli: &cli::Cli,
+    loaded_config: Option<&config::LoadedConfig>,
+) -> Result<resolver::ResolutionOverrides> {
+    let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
+        Some(cli::Command::Run { failure, .. } | cli::Command::Install { failure, .. }) => {
+            (failure.keep_going, failure.kill_on_fail)
+        }
+        _ => (false, false),
+    };
+    resolver::ResolutionOverrides::from_cli_and_env(
         cli.global.pm_override.as_deref(),
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
         cli.global.on_mismatch.as_deref(),
-        cli.global.no_warnings,
-        cli.global.explain,
-        loaded_config.as_ref(),
-    )?;
+        resolver::DiagnosticFlags {
+            no_warnings: cli.global.no_warnings,
+            explain: cli.global.explain,
+        },
+        cli::ChainFailureFlags {
+            keep_going: cli_keep_going,
+            kill_on_fail: cli_kill_on_fail,
+        },
+        loaded_config,
+    )
+}
+
+fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
+    let ctx = detect::detect(dir);
+    let loaded_config = config::load(dir)?;
+    let overrides = build_overrides(&cli, loaded_config.as_ref())?;
 
     match cli.command {
-        Some(cli::Command::Info { json: false }) if has_task(&ctx, "info") => {
-            cmd::run(&ctx, &overrides, "info", &[])
+        // A project task named `info` always shadows the deprecated
+        // subcommand, regardless of flags.
+        Some(cli::Command::Info { .. }) if has_task(&ctx, "info") => {
+            cmd::run(&ctx, &overrides, "info", &[], None)
         }
         None => {
-            cmd::info(&ctx, &overrides, false)?;
+            cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
         }
+        // `info` is a deprecated alias for `list`. Bare `runner` (the
+        // `None` arm above) keeps the dashboard; only the explicit verb
+        // is deprecated.
         Some(cli::Command::Info { json }) => {
-            cmd::info(&ctx, &overrides, json)?;
+            eprintln!(
+                "{} `runner info` is deprecated; use `runner list`",
+                "warn:".yellow().bold(),
+            );
+            // Under GitHub Actions, also emit a workflow-command
+            // annotation so the deprecation surfaces in the run summary
+            // / inline, not just buried in the step log. Kept on stderr
+            // so `runner info --json` stdout stays a clean pipe; the
+            // runner scans both streams for `::` commands.
+            if std::env::var_os("GITHUB_ACTIONS").as_deref() == Some(std::ffi::OsStr::new("true")) {
+                eprintln!(
+                    "::warning title=Deprecation::`runner info` is deprecated; use `runner list`"
+                );
+            }
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::list(&ctx, &overrides, false, json, None, schema_version)?;
             Ok(0)
         }
-        Some(cli::Command::Run { task, args }) => cmd::run(&ctx, &overrides, &task, &args),
+        Some(cli::Command::Run {
+            task, args, mode, ..
+        }) => dispatch_run(&ctx, &overrides, task, args, mode),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
-                cmd::info(&ctx, &overrides, false)?;
+                cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
                 Ok(0)
             } else {
-                cmd::run(&ctx, &overrides, &args[0], &args[1..])
+                cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
             }
         }
-        Some(cli::Command::Install { frozen: false }) if has_task(&ctx, "install") => {
-            cmd::run(&ctx, &overrides, "install", &[])
+        Some(cli::Command::Install {
+            frozen: false,
+            tasks,
+            ..
+        }) if tasks.is_empty() && has_task(&ctx, "install") => {
+            cmd::run(&ctx, &overrides, "install", &[], None)
         }
-        Some(cli::Command::Install { frozen }) => {
-            cmd::install(&ctx, frozen)?;
-            Ok(0)
+        Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
+            dispatch_install_chain(&ctx, &overrides, frozen, &tasks)
         }
+        Some(cli::Command::Install { frozen, .. }) => cmd::install(&ctx, frozen),
         Some(cli::Command::Clean {
             yes: false,
             include_framework: false,
-        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[]),
+        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[], None),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -545,25 +693,35 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             raw: false,
             json: false,
             source: None,
-        }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[]),
+        }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[], None),
         Some(cli::Command::List { raw, json, source }) => {
-            cmd::list(&ctx, &overrides, raw, json, source.as_deref())?;
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::list(
+                &ctx,
+                &overrides,
+                raw,
+                json,
+                source.as_deref(),
+                schema_version,
+            )?;
             Ok(0)
         }
         Some(cli::Command::Completions {
             shell: None,
             output: None,
-        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[]),
+        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[], None),
         Some(cli::Command::Completions { shell, output }) => {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
         Some(cli::Command::Doctor { json }) => {
-            cmd::doctor(&ctx, &overrides, json)?;
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::doctor(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Why { task, json }) => {
-            cmd::why(&ctx, &overrides, &task, json)?;
+            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::why(&ctx, &overrides, &task, json, schema_version)?;
             Ok(0)
         }
     }
@@ -725,6 +883,48 @@ mod tests {
         assert_eq!(name.as_deref(), Some("run"));
     }
 
+    #[test]
+    fn bin_name_from_arg0_strips_windows_exe_suffix() {
+        // Windows builds inherit `runner.exe` / `run.exe` from argv[0]; clap
+        // pipes that straight into `--version` / `--help` / Usage unless we
+        // normalize it here. We feed bare file names rather than full Windows
+        // paths because `Path::file_name` is host-OS-aware and won't split on
+        // `\` when the tests run on Unix.
+        let runner = bin_name_from_arg0(&OsString::from("runner.exe"));
+        assert_eq!(runner.as_deref(), Some("runner"));
+
+        let run = bin_name_from_arg0(&OsString::from("run.exe"));
+        assert_eq!(run.as_deref(), Some("run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_exe_case_insensitive() {
+        let upper = bin_name_from_arg0(&OsString::from("RUNNER.EXE"));
+        assert_eq!(upper.as_deref(), Some("RUNNER"));
+
+        let mixed = bin_name_from_arg0(&OsString::from("Run.Exe"));
+        assert_eq!(mixed.as_deref(), Some("Run"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_preserves_unrelated_extensions() {
+        // `.exe` only — names that happen to embed those characters in other
+        // positions, or carry different extensions, pass through unchanged.
+        let dotted = bin_name_from_arg0(&OsString::from("/tmp/runner.exe.bak"));
+        assert_eq!(dotted.as_deref(), Some("runner.exe.bak"));
+
+        let other = bin_name_from_arg0(&OsString::from("/tmp/runner.sh"));
+        assert_eq!(other.as_deref(), Some("runner.sh"));
+    }
+
+    #[test]
+    fn bin_name_from_arg0_handles_bare_dot_exe() {
+        // `.exe` alone shouldn't strip to an empty name; the suffix length
+        // guard keeps the input intact.
+        let bare = bin_name_from_arg0(&OsString::from(".exe"));
+        assert_eq!(bare.as_deref(), Some(".exe"));
+    }
+
     fn stub_context(tasks: &[&str]) -> ProjectContext {
         ProjectContext {
             root: PathBuf::from("."),
@@ -735,6 +935,7 @@ mod tests {
                 .map(|name| Task {
                     name: (*name).to_string(),
                     source: TaskSource::PackageJson,
+                    run_target: None,
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
@@ -816,8 +1017,30 @@ mod tests {
         let cli = parse_cli(["runner", "install", "--frozen"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Install { frozen: true }) => {}
+            Some(cli::Command::Install { frozen: true, .. }) => {}
             other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn runner_cli_parses_install_chain_flags_after_task_names() {
+        // `runner install build test --kill-on-fail` must parse
+        // `--kill-on-fail` as a chain-failure flag, not as a task name.
+        // Regression for the `trailing_var_arg` consumption bug.
+        let cli =
+            parse_cli(["runner", "install", "build", "test", "--kill-on-fail"]).expect("parses");
+        match cli.command {
+            Some(cli::Command::Install {
+                tasks,
+                failure:
+                    cli::ChainFailureFlags {
+                        kill_on_fail: true, ..
+                    },
+                ..
+            }) => assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]),
+            other => {
+                panic!("expected Install with kill_on_fail=true and clean task list, got {other:?}")
+            }
         }
     }
 
@@ -851,8 +1074,8 @@ mod tests {
         assert_eq!(cli.global.pm_override.as_deref(), Some("pnpm"));
         assert_eq!(cli.global.runner_override.as_deref(), Some("just"));
         match cli.command {
-            Some(cli::Command::Run { task, args }) => {
-                assert_eq!(task, "build");
+            Some(cli::Command::Run { task, args, .. }) => {
+                assert_eq!(task.as_deref(), Some("build"));
                 assert!(args.is_empty());
             }
             other => panic!("expected Run, got {other:?}"),
@@ -877,6 +1100,42 @@ mod tests {
 
         let err = result.expect_err("unknown --pm should error");
         assert!(format!("{err}").contains("unknown package manager"));
+    }
+
+    #[test]
+    fn schema_version_rejects_invalid_for_non_json_commands() {
+        let dir = TempDir::new("runner-schema-invalid-completions");
+
+        let code = run_in_dir(
+            ["runner", "--schema-version", "99", "completions", "bash"],
+            dir.path(),
+        )
+        .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn schema_version_rejects_invalid_for_run_alias_bare_info() {
+        let dir = TempDir::new("runner-schema-invalid-run-alias");
+
+        let code = run_alias_in_dir(["run", "--schema-version", "99"], dir.path())
+            .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
+    }
+
+    #[test]
+    fn schema_version_rejects_invalid_for_json_output() {
+        let dir = TempDir::new("runner-schema-json-invalid");
+
+        let code = run_in_dir(
+            ["runner", "--schema-version", "99", "info", "--json"],
+            dir.path(),
+        )
+        .expect("parse errors should return an exit code");
+
+        assert_ne!(code, 0);
     }
 
     #[test]

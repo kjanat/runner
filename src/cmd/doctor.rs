@@ -17,8 +17,8 @@ use anyhow::Result;
 use colored::Colorize;
 use serde_json::{Map, Value};
 
-use crate::report::Project;
 use crate::resolver::ResolutionOverrides;
+use crate::schema::Project;
 use crate::types::ProjectContext;
 
 /// Print a full diagnostic dump of the resolver's view of `ctx`.
@@ -32,8 +32,9 @@ pub(crate) fn doctor(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     json: bool,
+    schema_version: u32,
 ) -> Result<()> {
-    let project = Project::build(ctx, overrides);
+    let project = Project::build_with_schema(ctx, overrides, schema_version);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&project)?);
@@ -189,8 +190,13 @@ fn print_human(report: &Value, overrides: &ResolutionOverrides) {
     });
 
     print_section("Decisions", |out| {
+        // `Map<String, Value>` indexes panic on missing keys (unlike
+        // `Value` indexing, which yields `Null`). Use `.get` so a
+        // `node_pm` decision missing its `via` field renders `?`
+        // instead of crashing the renderer.
         if let Some(pm) = report["decisions"]["node_pm"].as_object() {
-            writeln_field(out, "node scripts", pm["via"].as_str().unwrap_or("?"));
+            let via = pm.get("via").and_then(Value::as_str).unwrap_or("?");
+            writeln_field(out, "node scripts", via);
         }
         if let Some(err) = report["decisions"]["node_pm_error"].as_str() {
             writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
@@ -256,7 +262,7 @@ mod tests {
         let ctx = context();
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
-        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["schema_version"], 2);
     }
 
     #[test]
@@ -288,8 +294,20 @@ mod tests {
         let ctx = context();
         // Ensure both rendering paths are exercised; output goes to stdout
         // which is fine in tests (captured by `cargo test`).
-        doctor(&ctx, &ResolutionOverrides::default(), true).expect("json render should succeed");
-        doctor(&ctx, &ResolutionOverrides::default(), false).expect("human render should succeed");
+        doctor(
+            &ctx,
+            &ResolutionOverrides::default(),
+            true,
+            crate::schema::CURRENT_VERSION,
+        )
+        .expect("json render should succeed");
+        doctor(
+            &ctx,
+            &ResolutionOverrides::default(),
+            false,
+            crate::schema::CURRENT_VERSION,
+        )
+        .expect("human render should succeed");
     }
 
     #[test]

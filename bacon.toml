@@ -2,11 +2,10 @@
 #
 # Bacon — https://dystroy.org/bacon/
 #
-# Project-local jobs for the `runner` crate. Bacon merges these on top of
-# its own built-ins (`check`, `check-all`, `clippy`, `clippy-all`, `doc`,
-# `doc-open`, `nextest`, `pedantic`, `run`, `test`, …); only the overrides
-# and additions live here. List the merged set with `bacon --list-jobs`
-# (or `runner list`, which delegates to that under the hood).
+# Project-local jobs for the `runner` crate. Bacon merges these on top of its own built-ins
+# (`check`, `check-all`, `clippy`, `clippy-all`, `doc`, `doc-open`, `nextest`, `pedantic`, `run`, `test`, …);
+# only the overrides and additions live here.
+# List the merged set with `bacon --list-jobs` (or `runner list`, which delegates to that under the hood).
 
 default_job = "lint"
 
