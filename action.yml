@@ -1,9 +1,7 @@
 name: Setup runner
 description: Install the runner / run CLI via cargo-binstall (prebuilt GitHub release binaries).
 author: Kaj Kowalski
-branding:
-  icon: play
-  color: blue
+branding: { icon: play, color: blue }
 
 inputs:
   version:
@@ -31,59 +29,51 @@ inputs:
 outputs:
   version:
     description: Resolved release tag (e.g. `v0.10.0`).
-    value: ${{ steps.resolve.outputs.tag }}
+    value: ${{ fromJSON(steps.resolve.outputs.meta).tag }}
   target:
     description: Rust target triple installed.
-    value: ${{ steps.resolve.outputs.triple }}
+    value: ${{ fromJSON(steps.resolve.outputs.meta).triple }}
   bin-dir:
     description: Directory containing the installed binaries (also added to PATH).
-    value: ${{ steps.resolve.outputs.dest }}
+    value: ${{ fromJSON(steps.resolve.outputs.meta).dest }}
 
 runs:
   using: composite
   steps:
     - id: resolve
-      shell: bash
+      uses: actions/github-script@v9
       env:
-        INPUT_VERSION: ${{ inputs.version }}
-        INPUT_TARGET: ${{ inputs.target }}
+        PHASE: resolve
+        INPUTS: ${{ toJSON(inputs) }}
         ACTION_REF: ${{ github.action_ref }}
-        ACTION_PATH: ${{ github.action_path }}
-      run: bash "${ACTION_PATH}/.github/scripts/action/resolve.sh"
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          import { env } from 'node:process';
+          const { default: run } = await import(`${env.GITHUB_ACTION_PATH}/action.mjs`)
+          return await run({ github, context, core, exec, glob, io })
 
     - id: cache
       if: inputs.cache == 'true'
       uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-      with: { path: "${{ steps.resolve.outputs.dest }}", key: "runner-run-${{ steps.resolve.outputs.tag }}-${{ steps.resolve.outputs.triple }}" }
+      with:
+        path: ${{ fromJSON(steps.resolve.outputs.result).dest }}
+        key: ${{ fromJSON(steps.resolve.outputs.result).cacheKey }}
 
-    - name: Install cargo-binstall
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
+    - id: install
+      if: inputs.cache != 'true' || steps.cache.outputs.cache-hit != 'true'
+      uses: actions/github-script@v9
       env:
-        BINSTALL_SHA: "aaa84a43aec4955a42c5ffc65d258961e39f276e" # v1.19.1
-        BINSTALL_VERSION: "1.19.1"
-        CARGO_HOME: ${{ steps.resolve.outputs.cbhome }} # controlled install dir
-        ACTION_PATH: ${{ github.action_path }}
-      run: bash "${ACTION_PATH}/.github/scripts/action/install-binstall.sh"
-
-    - name: Install runner-run
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      env:
-        TAG: ${{ steps.resolve.outputs.tag }}
-        DEST: ${{ steps.resolve.outputs.dest }}
-        CBIN: ${{ steps.resolve.outputs.cbhome }}/bin/cargo-binstall${{ steps.resolve.outputs.ext }}
-        GITHUB_TOKEN: ${{ inputs.github-token }}
-        CARGO_BUILD_TARGET: ${{ steps.resolve.outputs.triple }}
-        BINSTALL_NO_CONFIRM: "true"
-        BINSTALL_DISABLE_STRATEGIES: compile # fail fast in CI; never silently build from source
-        ACTION_PATH: ${{ github.action_path }}
-      run: bash "${ACTION_PATH}/.github/scripts/action/install-runner.sh"
-
-    - name: Add to PATH
-      shell: bash
-      env: { DEST: "${{ steps.resolve.outputs.dest }}", ACTION_PATH: "${{ github.action_path }}" }
-      run: bash "${ACTION_PATH}/.github/scripts/action/add-path.sh"
+        PHASE: install
+        META: ${{ steps.resolve.outputs.result }}
+        BINSTALL_SHA: aaa84a43aec4955a42c5ffc65d258961e39f276e
+        BINSTALL_VERSION: 1.19.1
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          import { env } from 'node:process';
+          const { default: run } = await import(`${env.GITHUB_ACTION_PATH}/action.mjs`)
+          return await run({ github, context, core, exec, glob, io })
 
     - name: Verify
       shell: bash
