@@ -8,8 +8,8 @@ branding:
 inputs:
   version:
     description: >-
-      Release tag (e.g. `v0.7.1`) or `latest`. Defaults to the action's
-      own ref, so `uses: kjanat/runner@v0.7.1` installs v0.7.1 with
+      Release tag (e.g. `v0.10.0`) or `latest`. Defaults to the action's
+      own ref, so `uses: kjanat/runner@v0.10.0` installs v0.10.0 with
       zero API calls. Use `latest` to resolve newest at runtime.
     required: false
     default: ""
@@ -54,12 +54,17 @@ runs:
         tag="${INPUT_VERSION:-${ACTION_REF}}"
         # API call only if we don't already have a vX.Y.Z tag in hand.
         if [[ -z "${tag}" || "${tag}" == "latest" || ! "${tag}" =~ ^v[0-9] ]]; then
+          # Any early-exiting pipe consumer (`grep -m1`, `head -1`) closes
+          # the pipe before curl finishes; on a >64 KB pretty-printed
+          # response that means EPIPE (curl error 23), which
+          # --retry-all-errors then loops on. awk reads the whole stream
+          # and never exits early, so the pipe is never closed prematurely.
           tag=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
                   --connect-timeout 3 --max-time 8 \
                   -H "Accept: application/vnd.github+json" \
                   -H "Authorization: Bearer ${GH_TOKEN}" \
                   https://api.github.com/repos/kjanat/runner/releases/latest \
-                | grep -m1 '"tag_name":' | cut -d'"' -f4)
+                | awk -F'"' '/"tag_name":/ && !t { t=$4 } END { print t }')
         fi
 
         triple="${INPUT_TARGET}"
