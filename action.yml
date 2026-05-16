@@ -1,5 +1,5 @@
 name: Setup runner
-description: Install the runner / run CLI from GitHub Releases.
+description: Install the runner / run CLI via cargo-binstall (prebuilt GitHub release binaries).
 author: Kaj Kowalski
 branding:
   icon: play
@@ -8,32 +8,32 @@ branding:
 inputs:
   version:
     description: >-
-      Release tag (e.g. `v0.10.0`) or `latest`. Defaults to the action's
-      own ref, so `uses: kjanat/runner@v0.10.0` installs v0.10.0 with
-      zero API calls. Use `latest` to resolve newest at runtime.
+      Crate version (e.g. `v0.10.0` / `0.10.0`) or `latest`. Defaults to
+      the action's own ref, so `uses: kjanat/runner@v0.10.0` pins that
+      version. Non-semver refs (e.g. `@master`) resolve to latest.
     required: false
     default: ""
   target:
     description: >-
       Rust target triple override (e.g. `x86_64-unknown-linux-musl`).
-      Empty = auto-detect.
+      Empty = auto-detect from the runner.
     required: false
     default: ""
   cache:
-    description: Cache the unpacked binary between runs.
+    description: Cache the installed binaries between runs.
     required: false
     default: "true"
   github-token:
-    description: Token for the `latest` API lookup (only needed when version=latest).
+    description: Token for cargo-binstall's GitHub API access (avoids rate limits).
     required: false
     default: ${{ github.token }}
 
 outputs:
   version:
-    description: Resolved release tag.
+    description: Resolved release tag (e.g. `v0.10.0`).
     value: ${{ steps.resolve.outputs.tag }}
   target:
-    description: Rust target triple used.
+    description: Rust target triple installed.
     value: ${{ steps.resolve.outputs.triple }}
   bin-dir:
     description: Directory containing the installed binaries (also added to PATH).
@@ -48,102 +48,89 @@ runs:
         INPUT_VERSION: ${{ inputs.version }}
         INPUT_TARGET: ${{ inputs.target }}
         ACTION_REF: ${{ github.action_ref }}
-        GH_TOKEN: ${{ inputs.github-token }}
       run: |
         set -euo pipefail
-        tag="${INPUT_VERSION:-${ACTION_REF}}"
-        # API call only if we don't already have a vX.Y.Z tag in hand.
-        if [[ -z "${tag}" || "${tag}" == "latest" || ! "${tag}" =~ ^v[0-9] ]]; then
-          # Any early-exiting pipe consumer (`grep -m1`, `head -1`) closes
-          # the pipe before curl finishes; on a >64 KB pretty-printed
-          # response that means EPIPE (curl error 23), which
-          # --retry-all-errors then loops on. awk reads the whole stream
-          # and never exits early, so the pipe is never closed prematurely.
-          tag=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
-                  --connect-timeout 3 --max-time 8 \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "Authorization: Bearer ${GH_TOKEN}" \
-                  https://api.github.com/repos/kjanat/runner/releases/latest \
-                | awk -F'"' '/"tag_name":/ && !t { t=$4 } END { print t }')
+
+        # --- version: resolved by us, not scraped from binstall ---
+        req="${INPUT_VERSION:-${ACTION_REF}}"
+        if [[ "${req}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+          tag="v${req#v}"
+        else
+          # latest/master/empty: follow the /releases/latest redirect.
+          # No JSON, no token, no pipe (the curl-23 SIGPIPE bug class).
+          url="$(curl -fsSLS -o /dev/null -w '%{url_effective}' \
+                   --retry 5 --retry-all-errors --retry-delay 1 \
+                   --connect-timeout 3 --max-time 8 \
+                   https://github.com/kjanat/runner/releases/latest)"
+          tag="${url##*/}"
+          tag="${tag%%\?*}"
+          if [[ ! "${tag}" =~ ^v[0-9] ]]; then
+            echo "::error::failed to resolve latest runner-run release (got '${tag}')"
+            exit 1
+          fi
         fi
 
+        # --- target: input override, else resolved from npm/targets.json
+        # (the single source of truth shared with the release matrix and
+        # npm packaging — no hand-maintained map to drift). ---
         triple="${INPUT_TARGET}"
         if [[ -z "${triple}" ]]; then
-          case "${RUNNER_OS}-${RUNNER_ARCH}" in
-            Linux-X64)     triple=x86_64-unknown-linux-gnu ;;
-            Linux-ARM64)   triple=aarch64-unknown-linux-gnu ;;
-            Linux-ARM)     triple=armv7-unknown-linux-gnueabihf ;;
-            macOS-X64)     triple=x86_64-apple-darwin ;;
-            macOS-ARM64)   triple=aarch64-apple-darwin ;;
-            Windows-X64)   triple=x86_64-pc-windows-msvc ;;
-            Windows-ARM64) triple=aarch64-pc-windows-msvc ;;
-            Windows-X86)   triple=i686-pc-windows-msvc ;;
-            *)
-              echo "::error::No prebuilt for ${RUNNER_OS}-${RUNNER_ARCH}; pass an explicit \`target\` input."
-              exit 1
-              ;;
+          case "${RUNNER_OS}" in
+            Linux)   node_os=linux ;;
+            macOS)   node_os=darwin ;;
+            Windows) node_os=win32 ;;
+            *)       node_os="" ;;
           esac
+          case "${RUNNER_ARCH}" in
+            X64)   node_cpu=x64 ;;
+            ARM64) node_cpu=arm64 ;;
+            ARM)   node_cpu=arm ;;
+            X86)   node_cpu=ia32 ;;
+            *)     node_cpu="" ;;
+          esac
+          triple="$(jq -r --arg os "${node_os}" --arg cpu "${node_cpu}" '
+            [ .targets[]
+              | select(.os|index($os)) | select(.cpu|index($cpu))
+              | select((.libc == null) or (.libc|index("glibc")))
+              | .rust ] | first // empty' "${GITHUB_ACTION_PATH}/npm/targets.json")"
+          if [[ -z "${triple}" ]]; then
+            echo "::error::No prebuilt target in npm/targets.json for ${RUNNER_OS}-${RUNNER_ARCH}; pass an explicit \`target\` input."
+            exit 1
+          fi
         fi
 
-        if [[ "${RUNNER_OS}" == "Windows" ]]; then
-          ext=.exe
-        else
-          ext=""
-        fi
-        dest="${RUNNER_TOOL_CACHE}/runner/${tag}/${triple}"
+        dest="${RUNNER_TOOL_CACHE}/runner-run/${tag}/${triple}"
 
         {
           echo "tag=${tag}"
           echo "triple=${triple}"
-          echo "ext=${ext}"
           echo "dest=${dest}"
-        } >> "${GITHUB_OUTPUT}"
+        } | tee -a "${GITHUB_OUTPUT}"
 
     - id: cache
       if: inputs.cache == 'true'
-      uses: actions/cache@v5
+      uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
       with:
         path: ${{ steps.resolve.outputs.dest }}
-        key: runner-${{ steps.resolve.outputs.tag }}-${{ steps.resolve.outputs.triple }}
+        key: runner-run-${{ steps.resolve.outputs.tag }}-${{ steps.resolve.outputs.triple }}
 
-    - if: steps.cache.outputs.cache-hit != 'true'
+    - name: Install cargo-binstall
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: cargo-bins/cargo-binstall@aaa84a43aec4955a42c5ffc65d258961e39f276e # v1.19.1
+
+    - name: Install runner-run
+      if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         TAG: ${{ steps.resolve.outputs.tag }}
-        TRIPLE: ${{ steps.resolve.outputs.triple }}
         DEST: ${{ steps.resolve.outputs.dest }}
-        EXT: ${{ steps.resolve.outputs.ext }}
-      run: |
-        set -euo pipefail
-        archive="runner-${TAG}-${TRIPLE}.tar.gz"
-        sum="runner-${TAG}-${TRIPLE}.sha256"
-        base="https://github.com/kjanat/runner/releases/download/${TAG}"
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        CARGO_BUILD_TARGET: ${{ steps.resolve.outputs.triple }}
+        BINSTALL_NO_CONFIRM: "true"
+        BINSTALL_DISABLE_STRATEGIES: compile # fail fast in CI; never silently build from source
+      run: cargo-binstall "runner-run@${TAG#v}" --install-path "${DEST}"
 
-        tmp=$(mktemp -d)
-        trap 'rm -rf "${tmp}"' EXIT
-        cd "${tmp}"
-
-        # Parallel fetch; both retry on transient failures. --max-time
-        # caps each download at 20s so a stuck connection can't hang
-        # the workflow.
-        fetch() {
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
-               --connect-timeout 5 --max-time 20 \
-               -o "$1" "${base}/$1"
-        }
-        fetch "${archive}" &
-        a=$!
-        fetch "${sum}" &
-        s=$!
-        wait "${a}" "${s}"
-
-        sha256sum -c "${sum}"
-        mkdir -p "${DEST}"
-        tar -xzf "${archive}" -C "${DEST}"
-        chmod +x "${DEST}/runner${EXT}" "${DEST}/run${EXT}" 2>/dev/null || true
-        "${DEST}/runner${EXT}" --version
-
-    - shell: bash
-      env:
-        DEST: ${{ steps.resolve.outputs.dest }}
+    - name: Add to PATH
+      shell: bash
+      env: { DEST: "${{ steps.resolve.outputs.dest }}" }
       run: echo "${DEST}" >> "${GITHUB_PATH}"

@@ -144,6 +144,22 @@ Or use the dev wrapper:
 runner <args>
 ```
 
+In GitHub Actions (installs the prebuilt binary via `cargo-binstall`, caches
+it, and adds it to `PATH`):
+
+```yaml
+- uses: kjanat/runner@master # use @master until the next release; the
+# action on the v0.10.0 tag is broken. @master installs the latest
+# released binary (non-semver ref → latest).
+# with:
+#   version: latest                  # or an explicit v0.10.0 / 0.10.0
+#   target: x86_64-unknown-linux-musl # override auto-detection
+- run: runner --version
+```
+
+Outputs: `version` (resolved tag), `target` (triple), `bin-dir` (install dir,
+also on `PATH`).
+
 ## Shell Completions
 
 ```sh
