@@ -50,6 +50,7 @@ runs:
         ACTION_REF: ${{ github.action_ref }}
       run: |
         set -euo pipefail
+        echo "::group::runner-run | resolve version + target"
 
         # --- version: resolved by us, not scraped from binstall ---
         req="${INPUT_VERSION:-${ACTION_REF}}"
@@ -106,6 +107,7 @@ runs:
           echo "triple=${triple}"
           echo "dest=${dest}"
         } | tee -a "${GITHUB_OUTPUT}"
+        echo "::endgroup::"
 
     - id: cache
       if: inputs.cache == 'true'
@@ -128,9 +130,19 @@ runs:
         CARGO_BUILD_TARGET: ${{ steps.resolve.outputs.triple }}
         BINSTALL_NO_CONFIRM: "true"
         BINSTALL_DISABLE_STRATEGIES: compile # fail fast in CI; never silently build from source
-      run: cargo-binstall "runner-run@${TAG#v}" --install-path "${DEST}"
+      run: |
+        echo "::group::runner-run | cargo-binstall runner-run@${TAG#v}"
+        cargo-binstall "runner-run@${TAG#v}" --install-path "${DEST}"
+        echo "::endgroup::"
 
     - name: Add to PATH
       shell: bash
       env: { DEST: "${{ steps.resolve.outputs.dest }}" }
-      run: echo "${DEST}" >> "${GITHUB_PATH}"
+      run: |
+        echo "::group::runner-run | add to PATH"
+        tee -a "${GITHUB_PATH}" <<< "${DEST}"
+        echo "::endgroup::"
+
+    - name: Verify
+      shell: bash
+      run: runner --version
