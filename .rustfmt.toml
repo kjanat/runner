@@ -1,4 +1,6 @@
+#:tombi schema.strict = false
 # rustfmt --help=config
+
 max_width                           = 100
 hard_tabs                           = false
 tab_spaces                          = 4

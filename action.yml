@@ -101,11 +101,16 @@ runs:
         fi
 
         dest="${RUNNER_TOOL_CACHE}/runner-run/${tag}/${triple}"
+        cbhome="${RUNNER_TEMP}/cargo-binstall"   # our controlled install root
+        ext=""
+        [[ "${RUNNER_OS}" == "Windows" ]] && ext=".exe"
 
         {
           echo "tag=${tag}"
           echo "triple=${triple}"
           echo "dest=${dest}"
+          echo "cbhome=${cbhome}"
+          echo "ext=${ext}"
         } | tee -a "${GITHUB_OUTPUT}"
         echo "::endgroup::"
 
@@ -118,7 +123,23 @@ runs:
 
     - name: Install cargo-binstall
       if: steps.cache.outputs.cache-hit != 'true'
-      uses: cargo-bins/cargo-binstall@aaa84a43aec4955a42c5ffc65d258961e39f276e # v1.19.1
+      shell: bash
+      env:
+        BINSTALL_SHA: "aaa84a43aec4955a42c5ffc65d258961e39f276e" # v1.19.1
+        BINSTALL_VERSION: "1.19.1"
+        CARGO_HOME: ${{ steps.resolve.outputs.cbhome }} # controlled install dir
+      run: |
+        set -euo pipefail
+        echo "::group::runner-run | install cargo-binstall"
+        # Pre-add CARGO_HOME/bin to this shell's PATH so the installer
+        # script sees it already present and does NOT write $GITHUB_PATH
+        # (we never put cargo-binstall on the consumer's PATH; it is
+        # invoked by absolute path in the next step).
+        export PATH="${CARGO_HOME}/bin:${PATH}"
+        curl -L --proto '=https' --tlsv1.2 -sSf \
+          "https://raw.githubusercontent.com/cargo-bins/cargo-binstall/${BINSTALL_SHA}/install-from-binstall-release.sh" \
+          | bash
+        echo "::endgroup::"
 
     - name: Install runner-run
       if: steps.cache.outputs.cache-hit != 'true'
@@ -126,13 +147,16 @@ runs:
       env:
         TAG: ${{ steps.resolve.outputs.tag }}
         DEST: ${{ steps.resolve.outputs.dest }}
+        CBIN: ${{ steps.resolve.outputs.cbhome }}/bin/cargo-binstall${{ steps.resolve.outputs.ext }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         CARGO_BUILD_TARGET: ${{ steps.resolve.outputs.triple }}
         BINSTALL_NO_CONFIRM: "true"
         BINSTALL_DISABLE_STRATEGIES: compile # fail fast in CI; never silently build from source
       run: |
         echo "::group::runner-run | cargo-binstall runner-run@${TAG#v}"
-        cargo-binstall "runner-run@${TAG#v}" --install-path "${DEST}"
+        # Invoke by absolute path — never relies on cargo-binstall being
+        # on PATH (irresponsible on minimal/self-hosted runners).
+        "${CBIN}" "runner-run@${TAG#v}" --install-path "${DEST}"
         echo "::endgroup::"
 
     - name: Add to PATH
