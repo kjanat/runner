@@ -244,22 +244,26 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 /// Extract tasks only from tools that were actually detected, avoiding
 /// unnecessary filesystem reads.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    if tool::node::has_package_json(dir)
-        && ctx
-            .package_managers
-            .iter()
-            .any(|pm| pm.is_node() || *pm == PackageManager::Deno)
-    {
+    // Script discovery is decoupled from package-manager detection: a
+    // `package.json` *is* the Node signal, and *which* PM dispatches its
+    // scripts is the resolver's runtime job, not the task finder's.
+    // Gating extraction on a detected node PM made a lockfile-less,
+    // `packageManager`-less workspace member ("just a package.json with
+    // scripts") report as "no project". A manifest-less subdirectory
+    // still lists scripts when it provably sits inside a JS monorepo, so
+    // a workspace member is never met with "No project detected".
+    let with_deno = ctx.package_managers.contains(&PackageManager::Deno);
+    let has_local_manifest = tool::node::has_package_json(dir);
+    let workspace_member = !has_local_manifest && tool::node::within_workspace_upwards(dir);
+    if has_local_manifest || workspace_member || with_deno {
         push_package_json_tasks(
             ctx,
-            if ctx.package_managers.contains(&PackageManager::Deno) {
-                tool::node::extract_scripts_upwards(dir)
-            } else {
+            if has_local_manifest && !with_deno {
                 tool::node::extract_scripts(dir)
+            } else {
+                tool::node::extract_scripts_upwards(dir)
             },
         );
-    } else if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_package_json_tasks(ctx, tool::node::extract_scripts_upwards(dir));
     }
     if ctx.task_runners.contains(&TaskRunner::Turbo) {
         push_named_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
@@ -579,5 +583,83 @@ mod tests {
         );
         assert!(ctx.tasks.iter().any(|task| task.name == "member"));
         assert!(ctx.tasks.iter().any(|task| task.name == "root"));
+    }
+
+    #[test]
+    fn detect_lists_scripts_without_lockfile_or_pm_field() {
+        // Headline regression: a `package.json` with scripts but no
+        // lockfile and no `packageManager`/`devEngines` field (a typical
+        // pnpm-workspace member dir) used to detect zero node PMs and so
+        // skip script extraction entirely → "No project detected".
+        let dir = TempDir::new("detect-scripts-no-pm-signal");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "name": "leaf", "scripts": { "build": "wxt build" } }"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(
+            ctx.package_managers.is_empty(),
+            "no lockfile/pm field → no PM detected, yet scripts must still list",
+        );
+        assert!(ctx.tasks.iter().any(
+            |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
+        ));
+    }
+
+    #[test]
+    fn detect_lists_workspace_member_scripts_from_manifestless_subdir() {
+        // Workspace-root-aware upward walk: a manifest-less subdir inside
+        // a monorepo (root `pnpm-workspace.yaml`) adopts the nearest
+        // ancestor manifest's scripts.
+        let dir = TempDir::new("detect-workspace-member-subdir");
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - apps/*\n",
+        )
+        .expect("pnpm-workspace.yaml should be written");
+        let member = dir.path().join("apps").join("ext");
+        let nested = member.join("src");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(
+            member.join("package.json"),
+            r#"{ "scripts": { "ext-build": "wxt build" } }"#,
+        )
+        .expect("member package.json should be written");
+
+        let ctx = detect(&nested);
+
+        assert!(
+            ctx.tasks
+                .iter()
+                .any(|task| task.source == crate::types::TaskSource::PackageJson
+                    && task.name == "ext-build")
+        );
+    }
+
+    #[test]
+    fn detect_skips_ancestor_manifest_outside_a_workspace() {
+        // The workspace-root-aware guard: a manifest-less subdir with NO
+        // workspace marker must NOT silently adopt an unrelated ancestor
+        // `package.json` from some outer project.
+        let dir = TempDir::new("detect-no-workspace-no-adopt");
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "root-only": "echo nope" } }"#,
+        )
+        .expect("ancestor package.json should be written");
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).expect("subdir should be created");
+
+        let ctx = detect(&sub);
+
+        assert!(
+            !ctx.tasks.iter().any(|task| task.name == "root-only"),
+            "no workspace marker → ancestor manifest must not be adopted",
+        );
     }
 }
