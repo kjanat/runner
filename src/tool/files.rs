@@ -10,18 +10,28 @@ pub(crate) fn find_first(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-/// Return the first existing file matching `filenames` while walking upward.
-pub(crate) fn find_first_upwards(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
+/// Walk `dir` and its ancestors — bounded to the VCS root when one is
+/// found — returning the first `pred` result that is `Some`. Shared by
+/// every upward probe so the VCS-boundary rule lives in exactly one place.
+pub(crate) fn find_in_ancestors<T>(
+    dir: &Path,
+    mut pred: impl FnMut(&Path) -> Option<T>,
+) -> Option<T> {
     let mut ancestors = dir.ancestors();
 
     if let Some(boundary) = vcs_root(dir) {
         ancestors
             .by_ref()
             .take_while(|ancestor| starts_with_boundary(ancestor, &boundary))
-            .find_map(|ancestor| find_first(ancestor, filenames))
+            .find_map(&mut pred)
     } else {
-        ancestors.find_map(|ancestor| find_first(ancestor, filenames))
+        ancestors.find_map(&mut pred)
     }
+}
+
+/// Return the first existing file matching `filenames` while walking upward.
+pub(crate) fn find_first_upwards(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
+    find_in_ancestors(dir, |ancestor| find_first(ancestor, filenames))
 }
 
 fn vcs_root(dir: &Path) -> Option<PathBuf> {
