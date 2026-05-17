@@ -1,10 +1,10 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { EOL } from "node:os";
 import { join } from "node:path";
-import { env, exit, stdout } from "node:process";
+import { env, exit, platform, stdout } from "node:process";
 
 /**
  * @param {"GITHUB_PATH" | "GITHUB_OUTPUT"} name
@@ -126,22 +126,24 @@ function installPrefix() {
 }
 
 /**
- * @param {string} binDir
+ * @param {string} prefix
  * @returns {string}
  */
-function verifyVersion(binDir) {
-	const res = run(join(binDir, "runner"), ["--version"], "pipe");
-	const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
-	stdout.write(out.endsWith("\n") ? out : `${out}${EOL}`);
-	const m = /\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/.exec(out);
-	if (!m) throw new Error(`could not parse version from \`runner --version\`: ${out.trim()}`);
-	return m[1];
+function installedVersion(prefix) {
+	const nodeModules = platform === "win32"
+		? join(prefix, "node_modules")
+		: join(prefix, "lib", "node_modules");
+	const pkgPath = join(nodeModules, "runner-run", "package.json");
+	/** @type {{ version?: string }} */
+	const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+	if (!pkg.version) throw new Error(`no version field in ${pkgPath}`);
+	return pkg.version;
 }
 
 try {
 	const spec = resolveSpec();
 	const prefix = installPrefix();
-	const binDir = join(prefix, "bin");
+	const binDir = platform === "win32" ? prefix : join(prefix, "bin");
 
 	startGroup(`npm install --global --prefix ${prefix} runner-run@${spec}`);
 	try {
@@ -153,7 +155,7 @@ try {
 		endGroup();
 	}
 
-	const version = verifyVersion(binDir);
+	const version = installedVersion(prefix);
 
 	addPath(binDir);
 	console.log(`version: ${version}`);
