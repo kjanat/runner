@@ -7,7 +7,6 @@
 		"npm/facade"
 	],
 	"devDependencies": {
-		"@actions/github-script": "actions/github-script#v9",
 		"@types/node": ">=22.18.0",
 		"typescript": "^5"
 	},
