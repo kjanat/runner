@@ -1,116 +1,168 @@
 // @ts-check
-import { env } from "node:process";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { EOL } from "node:os";
+import { join } from "node:path";
+import { env, exit, stdout } from "node:process";
 
 /**
- * Setup runner — composite action body. A single `actions/github-script@v9`
- * step (no cache step ⇒ nothing to split around):
- *
- *   1. Resolve the npm version spec — `inputs.version` / `github.action_ref`
- *      if it looks like semver pins that exact version; anything else
- *      (`@master`, a branch/SHA ref, empty input) uses the `latest`
- *      dist-tag.
- *   2. `npm install --global runner-run@<spec>`. npm selects the correct
- *      prebuilt platform package (incl. musl — verified) via the facade's
- *      optionalDependencies; the binaries are static-pie so libc selection
- *      is robust regardless.
- *   3. Append npm's global bin dir to `$GITHUB_PATH` so `runner` / `run`
- *      are on PATH for every subsequent step in the caller's job — the
- *      whole point of a setup action (hence not npx/bunx, which are
- *      ephemeral).
- *
- * No GitHub API in the path ⇒ no token, no rate limit, no cargo-binstall,
- * no rust-triple mapping.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments} args
+ * @param {"GITHUB_PATH" | "GITHUB_OUTPUT"} name
+ * @param {string} block
  */
-export default async function run({ core, exec }) {
-	return core.group("runner-run | setup", async () => {
-		const spec = resolveSpec(core);
+function fileCommand(name, block) {
+	const file = env[name];
+	if (!file) throw new Error(`${name} is not set — not running inside a GitHub Action?`);
+	appendFileSync(file, `${block}${EOL}`);
+}
 
-		await core.group(`npm install --global runner-run@${spec}`, async () => {
-			await exec.exec(npm(), ["install", "--global", `runner-run@${spec}`]);
-		});
-
-		const version = await installedVersion(exec);
-		const binDir = await npmGlobalBin(exec);
-
-		core.addPath(binDir);
-		core.info(`version: ${version}`);
-		core.info(`bin-dir: ${binDir}`);
-
-		core.setOutput("version", version);
-		core.setOutput("bin-dir", binDir);
-	});
+/** @param {string} dir */
+function addPath(dir) {
+	fileCommand("GITHUB_PATH", dir);
 }
 
 /**
- * `npm` is `npm.cmd` on Windows runners — `@actions/exec` does not append
- * the `.cmd` itself.
- *
- * @returns {string}
+ * @param {string} name
+ * @param {string} value
  */
-function npm() {
-	return env.RUNNER_OS === "Windows" ? "npm.cmd" : "npm";
+function setOutput(name, value) {
+	const delim = `ghadelimiter_${randomUUID()}`;
+	if (name.includes(delim) || value.includes(delim)) {
+		throw new Error("output delimiter collision (astronomically unlikely — retry)");
+	}
+	fileCommand("GITHUB_OUTPUT", `${name}<<${delim}${EOL}${value}${EOL}${delim}`);
 }
 
 /**
- * npm version spec. Semver from `INPUT_VERSION` (the `version` input;
- * composite actions get no automatic `INPUT_*`, so `action.yml` maps it) or
- * `ACTION_REF` (`github.action_ref`, what makes `uses: kjanat/runner@v0.10.0`
- * pin) → that exact version, leading `v` stripped (npm wants `0.10.0`).
- * Anything else → the `latest` dist-tag.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments['core']} core
+ * @param {string} s
  * @returns {string}
  */
-function resolveSpec(core) {
-	const semver = /^v?\d+\.\d+\.\d+/;
-	const requested = env.INPUT_VERSION || env.ACTION_REF || "";
+function escapeData(s) {
+	return s.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+}
 
-	if (semver.test(requested)) {
-		const v = requested.replace(/^v/, "");
-		core.info(`version: ${v} (pinned)`);
-		return v;
+/** @param {string} title */
+function startGroup(title) {
+	stdout.write(`::group::${escapeData(title)}${EOL}`);
+}
+
+function endGroup() {
+	stdout.write(`::endgroup::${EOL}`);
+}
+
+/** @param {string} msg */
+function warn(msg) {
+	stdout.write(`::warning::${escapeData(msg)}${EOL}`);
+}
+
+/** @param {string} msg */
+function debug(msg) {
+	stdout.write(`::debug::${escapeData(msg)}${EOL}`);
+}
+
+/**
+ * @param {string} file
+ * @param {string[]} args
+ * @param {"inherit" | "pipe"} stdio
+ * @returns {import("node:child_process").SpawnSyncReturns<string>}
+ */
+function run(file, args, stdio) {
+	const res = spawnSync(file, args, { encoding: "utf8", stdio });
+	if (res.error) throw res.error;
+	if (res.status !== 0) {
+		throw new Error(`\`${file} ${args.join(" ")}\` exited with ${res.status ?? "signal"}`);
+	}
+	return res;
+}
+
+/** @param {number} ms */
+function sleep(ms) {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * @param {() => void} fn
+ * @param {number[]} backoffsMs
+ */
+function withRetry(fn, backoffsMs) {
+	for (let attempt = 0;; attempt++) {
+		try {
+			fn();
+			return;
+		} catch (err) {
+			if (attempt >= backoffsMs.length) throw err;
+			const wait = backoffsMs[attempt];
+			const msg = err instanceof Error ? err.message : String(err);
+			debug(`attempt ${attempt + 1} failed (${msg}) — retrying in ${wait}ms`);
+			sleep(wait);
+		}
+	}
+}
+
+/** @returns {string} */
+function resolveSpec() {
+	const requested = env.INPUT_VERSION || "";
+	if (requested === "" || requested === "latest") {
+		console.log("version: latest");
+		return "latest";
+	}
+	const m = /^v?(\d{1,9}(?:\.\d{1,9}){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/
+		.exec(requested);
+	if (!m) {
+		warn(`'${requested}' is not a semver pin or 'latest' — falling back to 'latest'`);
+		return "latest";
+	}
+	console.log(`version: ${m[1]} (from '${requested}')`);
+	return m[1];
+}
+
+/** @returns {string} */
+function installPrefix() {
+	const toolCache = env.RUNNER_TOOL_CACHE;
+	if (!toolCache) throw new Error("RUNNER_TOOL_CACHE is not set — not running inside a GitHub Action?");
+	const prefix = join(toolCache, "runner-cli");
+	mkdirSync(prefix, { recursive: true });
+	return prefix;
+}
+
+/**
+ * @param {string} binDir
+ * @returns {string}
+ */
+function verifyVersion(binDir) {
+	const res = run(join(binDir, "runner"), ["--version"], "pipe");
+	const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+	stdout.write(out.endsWith("\n") ? out : `${out}${EOL}`);
+	const m = /\b(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/.exec(out);
+	if (!m) throw new Error(`could not parse version from \`runner --version\`: ${out.trim()}`);
+	return m[1];
+}
+
+try {
+	const spec = resolveSpec();
+	const prefix = installPrefix();
+	const binDir = join(prefix, "bin");
+
+	startGroup(`npm install --global --prefix ${prefix} runner-run@${spec}`);
+	try {
+		withRetry(
+			() => run("npm", ["install", "--global", "--prefix", prefix, `runner-run@${spec}`], "inherit"),
+			[2000, 4000],
+		);
+	} finally {
+		endGroup();
 	}
 
-	core.info(`'${requested || "(empty)"}' is not semver — using 'latest' dist-tag`);
-	return "latest";
-}
+	const version = verifyVersion(binDir);
 
-/**
- * The concrete installed version, queried post-install so the `version`
- * output is the real number even when the spec was `latest`.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments['exec']} exec
- * @returns {Promise<string>}
- */
-async function installedVersion(exec) {
-	const { stdout } = await exec.getExecOutput(
-		npm(),
-		["ls", "--global", "--depth=0", "--json", "runner-run"],
-		{ silent: true },
-	);
-	/** @type {{ dependencies?: Record<string, { version?: string }> }} */
-	const tree = JSON.parse(stdout);
-	const v = tree.dependencies?.["runner-run"]?.version;
-	if (!v) throw new Error("could not determine installed runner-run version from `npm ls`");
-	return v;
-}
+	addPath(binDir);
+	console.log(`version: ${version}`);
+	console.log(`bin-dir: ${binDir}`);
 
-/**
- * npm's global bin directory, cross-platform. On Windows npm links bins at
- * the prefix root; elsewhere at `<prefix>/bin`.
- *
- * @param {import('@actions/github-script').AsyncFunctionArguments['exec']} exec
- * @returns {Promise<string>}
- */
-async function npmGlobalBin(exec) {
-	const { stdout } = await exec.getExecOutput(
-		npm(),
-		["prefix", "--global"],
-		{ silent: true },
-	);
-	const prefix = stdout.trim();
-	if (!prefix) throw new Error("`npm prefix --global` returned empty");
-	return env.RUNNER_OS === "Windows" ? prefix : `${prefix}/bin`;
+	setOutput("version", version);
+	setOutput("bin-dir", binDir);
+} catch (err) {
+	const msg = err instanceof Error ? err.message : String(err);
+	stdout.write(`::error::${escapeData(msg)}${EOL}`);
+	exit(1);
 }
