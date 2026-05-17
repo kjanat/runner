@@ -39,6 +39,29 @@ pub(crate) fn find_manifest_upwards(dir: &Path) -> Option<PathBuf> {
     files::find_first_upwards(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
 }
 
+/// Returns `true` if `dir` sits inside a JS monorepo — i.e. some ancestor
+/// (within the VCS root) declares a workspace via `pnpm-workspace.yaml`,
+/// `lerna.json`, or a `package.json` carrying a `"workspaces"` key.
+///
+/// This is the *workspace-root-aware* guard for upward script discovery:
+/// a manifest-less subdirectory only adopts a parent manifest's scripts
+/// when it provably belongs to a workspace, so an unrelated ancestor
+/// `package.json` from some outer project is never silently picked up.
+pub(crate) fn within_workspace_upwards(dir: &Path) -> bool {
+    files::find_in_ancestors(dir, |ancestor| {
+        if ancestor.join("pnpm-workspace.yaml").is_file() || ancestor.join("lerna.json").is_file() {
+            return Some(());
+        }
+        // npm / yarn / bun declare workspaces inside package.json itself.
+        let has_workspaces = std::fs::read_to_string(ancestor.join(PACKAGE_JSON_FILENAME))
+            .ok()
+            .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
+            .is_some_and(|json| json.get("workspaces").is_some());
+        has_workspaces.then_some(())
+    })
+    .is_some()
+}
+
 /// Detect the package manager named by the `"packageManager"` field in the
 /// supported package manifest.
 pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
