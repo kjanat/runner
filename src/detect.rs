@@ -67,14 +67,23 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
         // value (typo, unsupported PM) doesn't disappear silently —
         // emit a `DetectionWarning::UnparseablePackageManager` so the
         // user sees the raw value they wrote and can fix it.
-        let (pm, unparseable) = tool::node::detect_pm_field_with_diagnostics(dir);
+        let (field_pm, unparseable) = tool::node::detect_pm_field_with_diagnostics(dir);
         if let Some(raw) = unparseable {
             ctx.warnings
                 .push(DetectionWarning::UnparseablePackageManager { raw });
         }
-        pm.filter(|pm| pm.is_node())
+        // Mirror the resolver's manifest chain: legacy `packageManager`
+        // first, then `devEngines.packageManager`. When the manifest
+        // declares nothing (or only an unparseable legacy field, which
+        // per Corepack must not be substituted), fall back to the
+        // governing lockfile/manifest of an enclosing workspace so a
+        // member dir's `info`/`install` still target the right PM.
+        field_pm
+            .or_else(|| tool::node::detect_pm_from_manifest(dir).map(|decl| decl.pm))
+            .filter(|pm| pm.is_node())
+            .or_else(|| detect_node_pm_upwards(dir))
     } else {
-        None
+        detect_node_pm_upwards(dir)
     };
     if let Some(pm) = node_pm {
         ctx.package_managers.push(pm);
@@ -102,6 +111,35 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     if tool::composer::detect(dir) {
         ctx.package_managers.push(PackageManager::Composer);
     }
+}
+
+/// Walk upward — workspace-root-aware and VCS-bounded — for the package
+/// manager that governs a manifest-less (or PM-less) workspace member:
+/// the nearest ancestor Node lockfile, else the nearest ancestor
+/// manifest's `packageManager`/`devEngines` declaration.
+///
+/// Returns `None` outside a JS workspace so an unrelated outer-project
+/// lockfile is never adopted — the same guard that gates upward script
+/// discovery, applied to PM resolution.
+fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
+    if !tool::node::within_workspace_upwards(dir) {
+        return None;
+    }
+    tool::files::find_in_ancestors(dir, |ancestor| {
+        if tool::bun::detect(ancestor) {
+            Some(PackageManager::Bun)
+        } else if tool::pnpm::detect(ancestor) {
+            Some(PackageManager::Pnpm)
+        } else if tool::yarn::detect(ancestor) {
+            Some(PackageManager::Yarn)
+        } else if tool::npm::detect(ancestor) {
+            Some(PackageManager::Npm)
+        } else {
+            tool::node::detect_pm_from_manifest(ancestor)
+                .map(|decl| decl.pm)
+                .filter(|pm| pm.is_node())
+        }
+    })
 }
 
 // Task runners
@@ -819,5 +857,59 @@ mod tests {
             !ctx.tasks.iter().any(|task| task.name == "root-only"),
             "no workspace marker → ancestor manifest must not be adopted",
         );
+    }
+
+    #[test]
+    fn detect_pm_from_dev_engines_without_lockfile() {
+        // devEngines-only manifest (no lockfile, no legacy
+        // packageManager) must resolve a node PM so info/install work.
+        let dir = TempDir::new("detect-dev-engines-pm");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devEngines": { "packageManager": { "name": "pnpm", "version": "9" } },
+                 "scripts": { "build": "vite build" } }"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path());
+
+        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Pnpm]);
+        assert!(ctx.tasks.iter().any(
+            |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
+        ));
+    }
+
+    #[test]
+    fn detect_pm_upwards_for_workspace_member() {
+        // A member dir with its own lockfile-less, PM-less package.json
+        // inside a pnpm workspace whose root carries the lockfile: the
+        // member must inherit the root's pnpm so `runner install` here
+        // doesn't fall back to the wrong manager.
+        let dir = TempDir::new("detect-pm-upwards-member");
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - apps/*\n",
+        )
+        .expect("pnpm-workspace.yaml should be written");
+        fs::write(
+            dir.path().join("pnpm-lock.yaml"),
+            "lockfileVersion: '9.0'\n",
+        )
+        .expect("root pnpm-lock.yaml should be written");
+        let member = dir.path().join("apps").join("ext");
+        fs::create_dir_all(&member).expect("member dir should be created");
+        fs::write(
+            member.join("package.json"),
+            r#"{ "name": "ext", "scripts": { "build": "wxt build" } }"#,
+        )
+        .expect("member package.json should be written");
+
+        let ctx = detect(&member);
+
+        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Pnpm]);
+        assert!(ctx.tasks.iter().any(
+            |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
+        ));
     }
 }
