@@ -153,21 +153,17 @@ test-all                       -- cargo test --all-features --all-targets --colo
 runner detects the project, finds its tasks, and completes them through one
 command.
 
-> [!CAUTION]
-> Chained commands like `runner install build test deploy` is an [UPCOMING](https://github.com/kjanat/runner/pull/27) feauture.\
-> They are still in development, but mentioned in the master readme in advance, as I can't be bothered to prompt AI to correct shit anymore.\
-> To view the currently supported feature list/readme open: [README.md@7e522d0](https://github.com/kjanat/runner/blob/7e522d081eff16be135572b8c497caf470c6d95b/README.md)
-
----
-
-In CI, use the same shape everywhere:
+Use the same shape everywhere:
 
 ```sh
-runner install test build deploy
+run <TAB>
+runner install --frozen
+run test
+run build
+run deploy
 ```
 
-One local command. One CI command. Let each repo decide what the tasks actually
-mean.
+Let each repo decide what the tasks actually mean.
 
 ## Install
 
@@ -193,8 +189,8 @@ cargo install --path .
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
 bash install.sh
-bash install.sh 0.1.0
-bash install.sh v0.1.0
+bash install.sh 0.10.0
+bash install.sh v0.10.0
 ```
 
 ---
@@ -207,28 +203,46 @@ Use the action to install runner in CI:
 
 ```yaml
 - uses: kjanat/runner@master
+- run: runner install --frozen
+- run: run test
+- run: run build
+```
+
+<!--
+Future shorthand once install/task chaining is supported:
+
+```yaml
+- uses: kjanat/runner@master
 - run: runner install test build deploy
 #             ^^^^^^^
 # `runner install` here is not a task, but runs the needed toolchain command(s)
 # for the project, such as `npm ci`, `cargo fetch`, `uv sync`, etc.
 ```
+-->
+
+`runner install` here is not a task, but runs the needed toolchain command(s)
+for the project, such as `npm ci`, `cargo fetch`, `uv sync`, etc.
 
 That is the point: the workflow stays boring even when the project underneath is
-npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation gremlin lives
-in that repo.
+npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation that repo
+uses.
 
 <details>
-<summary><i>GitHub Action I/O</i></summary>
+<summary><i>Install mechanics and outputs</i></summary>
 
-| I/O    | name           | description                                                     |
-| ------ | -------------- | --------------------------------------------------------------- |
-| Input  | `version`      | Release tag: defaults to the action ref, falls back to `latest` |
-| Input  | `target`       | Optional target triple override                                 |
-| Input  | `cache`        | Enable/disable caching                                          |
-| Input  | `github-token` | Token used for GitHub API requests                              |
-| Output | `version`      | Installed runner version                                        |
-| Output | `target`       | Detected target triple                                          |
-| Output | `bin-dir`      | Directory where runner binaries are installed                   |
+The action installs the `runner-run` npm package into the runner tool cache with
+`npm install --global --ignore-scripts --prefix`, verifies the installed
+`runner` shim by running `runner --version`, and adds the npm bin directory to
+`PATH` for later steps.
+
+| I/O    | name      | description                                                                           |
+| ------ | --------- | ------------------------------------------------------------------------------------- |
+| Input  | `version` | npm version spec for `runner-run`; defaults to `latest`; accepts numeric `v?` forms   |
+| Output | `version` | Concrete version reported by the installed `runner --version` smoke test              |
+| Output | `bin-dir` | npm global bin directory containing `runner` / `run`; added to `PATH` for later steps |
+
+Exact `X.Y.Z` pins are checked against the executed CLI version; a mismatch
+fails the action.
 
 ---
 
@@ -244,19 +258,12 @@ run <target> [-- <args...>]         # alias for `runner run`
 
 runner install [--frozen]           # install dependencies
 runner clean [-y] [--include-framework]
-runner list [--raw]                 # list available tasks
-runner completions [<shell>]        # generate shell completions
+runner list [--raw] [--json]        # list available tasks
+runner info [--json]                # show detected project info
+runner doctor [--json]              # show every resolver signal
+runner why <task> [--json]          # explain how a task would dispatch
+runner completions [<shell>] [-o <path>]
 ```
-
-The commands that matter most:
-
-```sh
-run <TAB>
-# run <TASK> <task> <task>
-runner install test build deploy
-```
-
-One for local task discovery. One for CI.
 
 ## Completions
 
@@ -307,8 +314,12 @@ If no task exists, it falls back to executing `<target>` through the detected
 toolchain where appropriate, such as:
 
 ```text
-npx, pnpm exec, bunx, cargo, uv run
+npm exec / npx, yarn run / yarn exec, pnpm exec, bun x / bunx,
+deno x, uvx, go run
 ```
+
+For package managers without a matching exec primitive, runner falls back to
+executing `<target>` directly from `PATH`.
 
 The `run` binary is equivalent to `runner run`, so:
 
@@ -338,6 +349,8 @@ Makefile
 justfile
 Taskfile
 bacon.toml
+mise.toml / .mise.toml
+Cargo aliases from .cargo/config.toml
 ```
 
 It also understands monorepo/workspace context from:
@@ -349,13 +362,8 @@ turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces
 <details>
 <summary><i>Support notes</i></summary>
 
-`nx` and `mise` are currently detection-only. runner uses them for metadata and
-project context, but does not execute them as direct task backends.
-
-> *well, mise is supported I believe in v0.10.0, but I'm not sure...*\
-> *if not it should be in v0.11.0...*
->
-> - me...
+`nx` is currently detection-only. runner uses it for project context, but does
+not extract Nx tasks as direct task entries yet.
 
 When multiple sources define the same task, runner chooses deterministically:
 turbo tasks first, then package manifest scripts, then other matching sources.
@@ -368,7 +376,7 @@ turbo tasks first, then package manifest scripts, then other matching sources.
 
 - `run <TAB>` task completion across projects
 - One command shape across many ecosystems
-- Simple CI with `run install test build deploy`
+- Simple CI with `runner install --frozen` plus `run <task>` steps
 - First-class GitHub Actions install step
 - Automatic toolchain detection
 - Task aggregation from common config files

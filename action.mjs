@@ -1,7 +1,7 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { EOL } from "node:os";
 import { join } from "node:path";
 import { env, exit, platform, stdout } from "node:process";
@@ -64,10 +64,11 @@ function debug(msg) {
  * @param {string} file
  * @param {string[]} args
  * @param {"inherit" | "pipe"} stdio
+ * @param {boolean} [shell]
  * @returns {import("node:child_process").SpawnSyncReturns<string>}
  */
-function run(file, args, stdio) {
-	const res = spawnSync(file, args, { encoding: "utf8", stdio });
+function run(file, args, stdio, shell = false) {
+	const res = spawnSync(file, args, { encoding: "utf8", shell, stdio });
 	if (res.error) throw res.error;
 	if (res.status !== 0) {
 		throw new Error(`\`${file} ${args.join(" ")}\` exited with ${res.status ?? "signal"}`);
@@ -126,18 +127,25 @@ function installPrefix() {
 }
 
 /**
- * @param {string} prefix
+ * @param {string} spec
+ * @returns {boolean}
+ */
+function isExactPin(spec) {
+	return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(spec);
+}
+
+/**
+ * @param {string} binDir
  * @returns {string}
  */
-function installedVersion(prefix) {
-	const nodeModules = platform === "win32"
-		? join(prefix, "node_modules")
-		: join(prefix, "lib", "node_modules");
-	const pkgPath = join(nodeModules, "runner-run", "package.json");
-	/** @type {{ version?: string }} */
-	const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-	if (!pkg.version) throw new Error(`no version field in ${pkgPath}`);
-	return pkg.version;
+function verifyVersion(binDir) {
+	const runner = platform === "win32" ? join(binDir, "runner.cmd") : join(binDir, "runner");
+	const res = run(runner, ["--version"], "pipe", platform === "win32");
+	const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+	stdout.write(out.endsWith("\n") ? out : `${out}${EOL}`);
+	const m = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/.exec(out);
+	if (!m) throw new Error(`could not parse version from \`${runner} --version\`: ${out.trim()}`);
+	return m[1];
 }
 
 try {
@@ -145,17 +153,26 @@ try {
 	const prefix = installPrefix();
 	const binDir = platform === "win32" ? prefix : join(prefix, "bin");
 
-	startGroup(`npm install --global --prefix ${prefix} runner-run@${spec}`);
+	startGroup(`npm install --global --ignore-scripts --prefix ${prefix} runner-run@${spec}`);
 	try {
 		withRetry(
-			() => run("npm", ["install", "--global", "--prefix", prefix, `runner-run@${spec}`], "inherit"),
+			() =>
+				run(
+					"npm",
+					["install", "--global", "--ignore-scripts", "--prefix", prefix, `runner-run@${spec}`],
+					"inherit",
+					platform === "win32",
+				),
 			[2000, 4000],
 		);
 	} finally {
 		endGroup();
 	}
 
-	const version = installedVersion(prefix);
+	const version = verifyVersion(binDir);
+	if (isExactPin(spec) && version !== spec) {
+		throw new Error(`requested runner-run@${spec} but runner --version reported ${version}`);
+	}
 
 	addPath(binDir);
 	console.log(`version: ${version}`);
