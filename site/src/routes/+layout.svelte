@@ -57,3 +57,37 @@ afterNavigate(({ from }) => {
 
 	<SiteFooter {site} />
 </main>
+
+<style>
+/* Scoped: skip link + primary nav are authored only in this
+ * layout. .visually-hidden stays global (generic utility). */
+.skip-link {
+	position: absolute;
+	left: 0.5rem;
+	top: -3rem;
+	z-index: 10;
+	padding: 0.5rem 0.85rem;
+	color: var(--bg);
+	background: var(--ink);
+	border-radius: var(--radius-sm);
+	transition: top var(--dur-base) linear;
+}
+.skip-link:focus {
+	top: 0.5rem;
+}
+nav.site {
+	position: relative;
+	z-index: 1;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 1.25rem;
+	/* Clear separation from the hero: the wordmark is up to 6.5rem
+	 * at line-height 0.95, so its glyphs overflow their box upward.
+	 * A bare top margin let them render over these links. */
+	margin: 0 0 3.25rem;
+	font-size: 0.875rem;
+}
+nav.site a[aria-current="page"] {
+	color: var(--tomato);
+}
+</style>

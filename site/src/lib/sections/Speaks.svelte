@@ -66,3 +66,58 @@ const taskSources = [
 	</div>
 	<p class="meta">nx is detection-only for now.</p>
 </section>
+
+<style>
+/* Scoped: .matrix* is authored only here. */
+.matrix {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 1.75rem;
+	margin: 0.5rem 0 0;
+}
+@media (min-width: 44rem) {
+	.matrix {
+		grid-template-columns: 1.4fr 1fr 1.4fr;
+		gap: 2rem;
+	}
+}
+.matrix h3 {
+	margin-bottom: 0.5rem;
+	font-size: var(--text-xs);
+	color: var(--dim);
+	text-transform: uppercase;
+	letter-spacing: var(--ls-caps);
+}
+.matrix ul {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	columns: 2;
+	column-gap: 1.25rem;
+}
+.matrix .single ul {
+	columns: 1;
+}
+.matrix li {
+	padding: 0.05rem 0;
+	break-inside: avoid;
+}
+@media (max-width: 40rem) {
+	.matrix ul {
+		columns: auto;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		font-size: 0.9rem;
+	}
+	.matrix li {
+		padding: 0;
+	}
+	.matrix li + li::before {
+		padding: 0 0.5rem;
+		color: var(--dim);
+		content: "·";
+		opacity: 0.7;
+	}
+}
+</style>

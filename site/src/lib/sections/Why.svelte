@@ -20,3 +20,38 @@
 		</li>
 	</ol>
 </section>
+
+<style>
+/* Scoped: .why* is authored only here. */
+.why {
+	padding: 0;
+	margin: 0.5rem 0 0;
+	list-style: none;
+	counter-reset: why;
+}
+.why li {
+	position: relative;
+	padding: 0.5rem 0 0.5rem 3.25rem;
+	counter-increment: why;
+	border-top: 1px dashed var(--rule);
+}
+.why li:first-child {
+	padding-top: 0.25rem;
+	border-top: 0;
+}
+.why li:last-child {
+	padding-bottom: 0.25rem;
+}
+.why li::before {
+	position: absolute;
+	top: 0.55rem;
+	left: 0;
+	font-size: 0.78rem;
+	color: var(--dim);
+	letter-spacing: 0.06em;
+	content: counter(why, decimal-leading-zero);
+}
+.why li:first-child::before {
+	top: 0.3rem;
+}
+</style>

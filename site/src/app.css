@@ -1,8 +1,12 @@
-/* Ported verbatim from the previous site (base.css + index.css) so the
- * visual design language is unchanged. A later iteration extracts the
- * :root tokens into lib/styles/tokens.css and moves section-specific
- * rules into component-scoped <style> blocks; the rendered result must
- * stay pixel-equivalent through that refactor. */
+/* Global stylesheet — reduced to ONLY what cannot be component-scoped:
+ *  - design tokens + colour scheme
+ *  - element resets / base typography
+ *  - shared utility classes used by multiple components
+ *    (.section-tag, .tagline, .meta, .install, hr.rule)
+ *  - the entire .term* terminal theme: Demo/Completion inject their
+ *    transcripts via {@html}, and Svelte scoped styles never reach
+ *    {@html} content, so these MUST stay global.
+ * Component-unique rules live in each component's scoped <style>. */
 
 :root {
 	--bg: #f4ede1;
@@ -100,20 +104,6 @@ a:focus-visible:hover {
 	border: 0;
 	clip-path: inset(50%);
 }
-.skip-link {
-	position: absolute;
-	left: 0.5rem;
-	top: -3rem;
-	z-index: 10;
-	padding: 0.5rem 0.85rem;
-	color: var(--bg);
-	background: var(--ink);
-	border-radius: var(--radius-sm);
-	transition: top var(--dur-base) linear;
-}
-.skip-link:focus {
-	top: 0.5rem;
-}
 main {
 	max-width: 72ch;
 	padding: 4rem 1.5rem 6rem;
@@ -137,6 +127,25 @@ h3 {
 	content: "_";
 	animation: idle-double-blink 11s steps(1) infinite;
 }
+@keyframes idle-double-blink {
+	0%,
+	90% {
+		opacity: 1;
+	}
+	91% {
+		opacity: 0;
+	}
+	92% {
+		opacity: 1;
+	}
+	93% {
+		opacity: 0;
+	}
+	94%,
+	100% {
+		opacity: 1;
+	}
+}
 .tagline {
 	max-width: 52ch;
 	margin: 1.25rem 0 0;
@@ -147,27 +156,11 @@ h3 {
 	font-size: 0.875rem;
 	color: var(--dim);
 }
-footer a,
 .meta a {
 	color: var(--dim);
 }
 .meta a:hover {
 	color: var(--bg);
-}
-nav.site {
-	position: relative;
-	z-index: 1;
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.25rem 1.25rem;
-	/* Clear separation from the hero: the wordmark is up to 6.5rem at
-	 * line-height 0.95, so its glyphs overflow their box upward. A bare
-	 * top margin let them render over these links. */
-	margin: 0 0 3.25rem;
-	font-size: 0.875rem;
-}
-nav.site a[aria-current="page"] {
-	color: var(--tomato);
 }
 hr.rule {
 	margin: 3rem 0 2rem;
@@ -187,99 +180,6 @@ hr.rule {
 	grid-template-columns: 1fr;
 	gap: 0.625rem;
 	margin: 0.75rem 0 0;
-}
-.copy {
-	position: relative;
-	min-width: 0;
-	max-width: 100%;
-	padding: 0.85rem 1rem;
-	font: inherit;
-	color: var(--ink);
-	text-align: left;
-	cursor: pointer;
-	background: transparent;
-	border: 1px solid var(--ink);
-	border-radius: var(--radius-sm);
-	transition: background var(--dur-fast) linear, color var(--dur-fast) linear;
-}
-.copy:hover {
-	color: var(--bg);
-	background: var(--ink);
-}
-.copy:focus-visible {
-	outline: var(--ring-width) solid var(--tomato);
-	outline-offset: var(--ring-offset);
-}
-.copy.pri {
-	border-color: var(--tomato);
-}
-.copy.pri:hover {
-	color: var(--bg);
-	background: var(--tomato);
-	border-color: var(--tomato);
-}
-.copy .label {
-	display: block;
-	margin-bottom: 0.25rem;
-	font-size: var(--text-micro);
-	color: var(--dim);
-	text-transform: uppercase;
-	letter-spacing: var(--ls-caps);
-}
-.copy:hover .label {
-	color: inherit;
-	opacity: 0.7;
-}
-.copy .cmd {
-	display: block;
-	overflow: hidden;
-	font-size: 0.95rem;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.copy .cmd-split {
-	display: flex;
-}
-.copy .cmd-split::before {
-	content: "$\00a0";
-}
-.copy .cmd-split .cmd-shrink {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	min-width: 0;
-}
-.copy .cmd::before {
-	content: "$\00a0";
-	opacity: 0.5;
-}
-.copy .toast {
-	position: absolute;
-	top: 0.4rem;
-	right: 0.55rem;
-	visibility: hidden;
-	font-size: var(--text-micro);
-	color: var(--moss);
-	text-transform: uppercase;
-	letter-spacing: var(--ls-caps);
-	pointer-events: none;
-	opacity: 0;
-	transform: translateY(-2px);
-	transition:
-		opacity var(--dur-base) linear,
-		transform var(--dur-base) linear,
-		visibility 0s linear var(--dur-base);
-}
-.copy.copied .toast {
-	visibility: visible;
-	opacity: 1;
-	transform: translateY(0);
-	transition:
-		opacity var(--dur-base) linear,
-		transform var(--dur-base) linear,
-		visibility 0s linear 0s;
-}
-.copy:hover .toast {
-	color: var(--bg);
 }
 .term {
 	padding: 1.1rem 1.25rem 1.4rem;
@@ -339,101 +239,11 @@ hr.rule {
 		opacity: 0;
 	}
 }
-@keyframes idle-double-blink {
-	0%,
-	90% {
-		opacity: 1;
-	}
-	91% {
-		opacity: 0;
-	}
-	92% {
-		opacity: 1;
-	}
-	93% {
-		opacity: 0;
-	}
-	94%,
-	100% {
-		opacity: 1;
-	}
-}
 @media (prefers-reduced-motion: reduce) {
 	.wordmark::after,
 	.term .cursor {
 		animation: none;
 	}
-}
-.matrix {
-	display: grid;
-	grid-template-columns: 1fr;
-	gap: 1.75rem;
-	margin: 0.5rem 0 0;
-}
-@media (min-width: 44rem) {
-	.matrix {
-		grid-template-columns: 1.4fr 1fr 1.4fr;
-		gap: 2rem;
-	}
-}
-.matrix h3 {
-	margin-bottom: 0.5rem;
-	font-size: var(--text-xs);
-	color: var(--dim);
-	text-transform: uppercase;
-	letter-spacing: var(--ls-caps);
-}
-.matrix ul {
-	margin: 0;
-	padding: 0;
-	list-style: none;
-	columns: 2;
-	column-gap: 1.25rem;
-}
-.matrix .single ul {
-	columns: 1;
-}
-.matrix li {
-	padding: 0.05rem 0;
-	break-inside: avoid;
-}
-.why {
-	padding: 0;
-	margin: 0.5rem 0 0;
-	list-style: none;
-	counter-reset: why;
-}
-.why li {
-	position: relative;
-	padding: 0.5rem 0 0.5rem 3.25rem;
-	counter-increment: why;
-	border-top: 1px dashed var(--rule);
-}
-.why li:first-child {
-	padding-top: 0.25rem;
-	border-top: 0;
-}
-.why li:last-child {
-	padding-bottom: 0.25rem;
-}
-.why li::before {
-	position: absolute;
-	top: 0.55rem;
-	left: 0;
-	font-size: 0.78rem;
-	color: var(--dim);
-	letter-spacing: 0.06em;
-	content: counter(why, decimal-leading-zero);
-}
-.why li:first-child::before {
-	top: 0.3rem;
-}
-footer {
-	padding-top: 1.25rem;
-	margin-top: 4rem;
-	font-size: 0.85rem;
-	color: var(--dim);
-	border-top: 1px solid var(--ink);
 }
 @media (max-width: 40rem) {
 	main {
@@ -442,37 +252,6 @@ footer {
 	.term {
 		padding: 0.9rem 1rem 1.1rem;
 		font-size: 0.78rem;
-	}
-	.matrix ul {
-		columns: auto;
-		display: flex;
-		flex-wrap: wrap;
-		align-items: baseline;
-		font-size: 0.9rem;
-	}
-	.matrix li {
-		padding: 0;
-	}
-	.matrix li + li::before {
-		padding: 0 0.5rem;
-		color: var(--dim);
-		content: "·";
-		opacity: 0.7;
-	}
-	.copy {
-		padding: 0.7rem 0.85rem;
-	}
-	.copy .cmd {
-		overflow-x: visible;
-		font-size: 0.85rem;
-		overflow-wrap: anywhere;
-		white-space: normal;
-	}
-	.copy .cmd-split {
-		display: block;
-	}
-	.copy .label {
-		white-space: normal;
 	}
 	hr.rule {
 		margin: 2rem 0 1.25rem;
