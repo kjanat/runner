@@ -5,8 +5,8 @@
     "": {
       "name": "workspace",
       "devDependencies": {
-        "@types/node": ">=22.18.0",
-        "typescript": "^6",
+        "@types/node": "^25.9.0",
+        "typescript": "^6.0.3",
       },
     },
     "npm/facade": {
