@@ -155,10 +155,15 @@ footer a,
 	color: var(--bg);
 }
 nav.site {
+	position: relative;
+	z-index: 1;
 	display: flex;
 	flex-wrap: wrap;
 	gap: 0.25rem 1.25rem;
-	margin: 1.5rem 0 0;
+	/* Clear separation from the hero: the wordmark is up to 6.5rem at
+	 * line-height 0.95, so its glyphs overflow their box upward. A bare
+	 * top margin let them render over these links. */
+	margin: 0 0 3.25rem;
 	font-size: 0.875rem;
 }
 nav.site a[aria-current="page"] {

@@ -1,46 +1,66 @@
+<script lang="ts">
+// Counts in the headings derive from these arrays so they can never
+// drift from the list contents.
+const packageManagers = [
+	"npm",
+	"yarn",
+	"pnpm",
+	"bun",
+	"cargo",
+	"deno",
+	"uv",
+	"poetry",
+	"pipenv",
+	"go",
+	"bundler",
+	"composer",
+];
+const taskRunners = [
+	"turbo",
+	"nx",
+	"make",
+	"just",
+	"go-task",
+	"mise",
+	"bacon",
+];
+const taskSources = [
+	"package.json",
+	"turbo.json(c)",
+	"Makefile",
+	"justfile",
+	"Taskfile",
+	"deno.json(c)",
+	"bacon.toml",
+	"mise.toml",
+];
+</script>
+
 <section aria-labelledby="matrix-tag">
 	<span class="section-tag" id="matrix-tag">it speaks</span>
 	<div class="matrix">
 		<div>
-			<h3>Package managers · 12</h3>
+			<h3>Package managers · {packageManagers.length}</h3>
 			<ul>
-				<li>npm</li>
-				<li>yarn</li>
-				<li>pnpm</li>
-				<li>bun</li>
-				<li>cargo</li>
-				<li>deno</li>
-				<li>uv</li>
-				<li>poetry</li>
-				<li>pipenv</li>
-				<li>go</li>
-				<li>bundler</li>
-				<li>composer</li>
+				{#each packageManagers as pm (pm)}
+					<li>{pm}</li>
+				{/each}
 			</ul>
 		</div>
 		<div class="single">
-			<h3>Task runners · 7</h3>
+			<h3>Task runners · {taskRunners.length}</h3>
 			<ul>
-				<li>turbo</li>
-				<li>nx</li>
-				<li>make</li>
-				<li>just</li>
-				<li>go-task</li>
-				<li>mise</li>
-				<li>bacon</li>
+				{#each taskRunners as tr (tr)}
+					<li>{tr}</li>
+				{/each}
 			</ul>
 		</div>
 		<div>
-			<h3>Task sources · 8</h3>
+			<h3>Task sources · {taskSources.length}</h3>
 			<ul>
-				<li>package.json</li>
-				<li>turbo.json(c)</li>
-				<li>Makefile</li>
-				<li>justfile</li>
-				<li>Taskfile</li>
-				<li>deno.json(c)</li>
-				<li>bacon.toml</li>
-				<li>mise.toml</li>
+				{#each taskSources as ts (ts)}
+					<li>{ts}</li>
+				{/each}
 			</ul>
 		</div>
 	</div>

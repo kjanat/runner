@@ -16,6 +16,8 @@ const description = "One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetr
 		property="og:description"
 		content="One CLI for every toolchain. npm install -g {site.npmName}"
 	/>
+	<meta property="og:url" content="https://runner.kjanat.dev/" />
+	<meta property="og:type" content="website" />
 </svelte:head>
 
 <Wordmark {site} />

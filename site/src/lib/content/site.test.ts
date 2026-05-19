@@ -12,7 +12,9 @@ describe("site data", () => {
 		expect(site.repoShort).toBe("kjanat/runner");
 		expect(site.repo).toBe("https://github.com/kjanat/runner");
 		expect(site.repo).not.toMatch(/\/$|\.git$/);
-		expect(site.version).toMatch(/^\d+\.\d+\.\d+/);
+		expect(site.version).toMatch(
+			/^\d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?$/,
+		);
 	});
 
 	it("derives commands from the package names (no drift)", () => {
