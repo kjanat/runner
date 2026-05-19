@@ -1,20 +1,22 @@
-//! Typed schema for `--json` output across `doctor`, `info`, `list`,
-//! and `why`.
+//! Typed JSON shapes for `--json` output across `doctor`, `info`, `list`, and `why`.
 //!
-//! Per the resolved design decision in
-//! `plans/eager-squishing-peacock.md` (A4), every subcommand projects
-//! from a single source-of-truth [`Project`] struct so the JSON
-//! contract is defined in one place. Doctor emits the full struct;
-//! info/list emit projections (currently the full shape with empty
-//! task tables collapsed away by `#[serde(skip_serializing_if)]`).
+//! Every subcommand projects from the single source-of-truth [`Project`]
+//! struct so the contract is defined in one place. Doctor emits the full
+//! struct; info/list emit projections (currently the full shape with
+//! empty task tables collapsed away by `#[serde(skip_serializing_if)]`).
 //!
-//! The schema is versioned via [`Project::SCHEMA_VERSION`]; bumping it
-//! is a breaking change to the public JSON contract.
+//! Version negotiation: [`Project::build_with_schema`] takes the requested
+//! schema version and routes per-field label resolution through
+//! [`super::labels::source_label_for`]. Today the *shape* of `Project`
+//! is identical across v1 and v2 — only label *values* differ. If a
+//! future version diverges in shape, split this struct per-version and
+//! keep the builder switch in here.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
+use super::labels::source_label_for;
 use crate::resolver::{
     FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides, Resolver,
 };
@@ -54,13 +56,27 @@ pub(crate) struct Project<'a> {
 }
 
 impl<'a> Project<'a> {
-    /// Schema version for the JSON contract. Bump on any breaking change.
-    pub(crate) const SCHEMA_VERSION: u32 = 1;
-
-    /// Build the full report from a project context + resolver overrides.
-    /// Runs the resolver chain once so `decisions` reflects the current
-    /// override stack.
+    /// Build the full report at the latest [`super::CURRENT_VERSION`].
+    /// Test-only convenience — production callers go through the
+    /// dispatcher, which validates `--schema-version` and always
+    /// passes a concrete version to [`Self::build_with_schema`].
+    #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
+        Self::build_with_schema(ctx, overrides, super::CURRENT_VERSION)
+    }
+
+    /// Build the report against a specific schema version. `schema_version`
+    /// must be a value [`super::validate_schema_version`] would accept;
+    /// callers validate before calling so the CLI surfaces a useful error.
+    ///
+    /// Per-field versioning: source labels route through
+    /// [`super::labels::source_label_for`]. PM and `TaskRunner` labels
+    /// are unchanged across versions.
+    pub(crate) fn build_with_schema(
+        ctx: &'a ProjectContext,
+        overrides: &ResolutionOverrides,
+        schema_version: u32,
+    ) -> Self {
         let manifest_decl = detect_pm_from_manifest(&ctx.root);
         let manifest_pm = manifest_decl.as_ref().map(|d| ManifestPm {
             pm: d.pm.label(),
@@ -86,7 +102,7 @@ impl<'a> Project<'a> {
             .iter()
             .map(|t| TaskInfo {
                 name: &t.name,
-                source: t.source.label(),
+                source: source_label_for(t.source, schema_version),
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
                 passthrough_to: t.passthrough_to.map(crate::types::TaskRunner::label),
@@ -94,7 +110,7 @@ impl<'a> Project<'a> {
             .collect();
 
         Self {
-            schema_version: Self::SCHEMA_VERSION,
+            schema_version,
             root: ctx.root.display().to_string(),
             ecosystems: ctx
                 .package_managers
@@ -129,10 +145,16 @@ impl<'a> Project<'a> {
     /// and root. Drops resolver state — `list` is purely a directory
     /// listing for tasks.
     pub(crate) fn into_list_view(self, source: Option<TaskSource>) -> TaskListView<'a> {
+        // The filter compares against whichever label flavor the report
+        // was built with — v1 emits filename-style strings (`"justfile"`),
+        // v2 emits tool names (`"just"`). Using `t.source` (already
+        // version-resolved at build time) keeps the comparison correct
+        // no matter which schema the caller asked for.
+        let target = source.map(|s| source_label_for(s, self.schema_version));
         let tasks = self
             .tasks
             .into_iter()
-            .filter(|t| source.is_none_or(|s| s.label() == t.source))
+            .filter(|t| target.is_none_or(|expected| expected == t.source))
             .collect();
         TaskListView {
             schema_version: self.schema_version,
@@ -333,7 +355,8 @@ pub(crate) enum NodePmDecision {
 pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
-    /// Source label (e.g. `"package.json"`, `"justfile"`).
+    /// Source label — version-resolved at build time via
+    /// [`super::labels::source_label_for`].
     pub source: &'static str,
     /// Human-readable description, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -422,26 +445,51 @@ const fn mismatch_label(policy: MismatchPolicy) -> &'static str {
 /// Probe each Node PM in canonical order and report (binary, path) pairs.
 /// Used by the doctor signals section; intentionally calls the real probe
 /// so the output reflects what the resolver would see.
+///
+/// Probes run in parallel via [`std::thread::scope`]: each `probe_path_for_doctor`
+/// call walks the entire `PATH` searching for one binary, which is O(N
+/// entries) of independent `stat` syscalls. Doctor isn't on the hot
+/// path, but four-way fan-out is essentially free and keeps the
+/// rendering snappy on `PATH`s that contain network-mounted directories.
+const PATH_PROBE_PMS: [PackageManager; 4] = [
+    PackageManager::Bun,
+    PackageManager::Pnpm,
+    PackageManager::Yarn,
+    PackageManager::Npm,
+];
+
 fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
     use std::env;
+    use std::thread;
 
     let path = env::var_os("PATH").unwrap_or_default();
     let pathext = env::var_os("PATHEXT");
-    let probe = |name: &str| {
-        crate::resolver::probe_path_for_doctor(name, &path, pathext.as_deref())
-            .map(|p| p.display().to_string())
-    };
+    let pathext_ref = pathext.as_deref();
 
-    let mut map = BTreeMap::new();
-    for pm in [
-        PackageManager::Bun,
-        PackageManager::Pnpm,
-        PackageManager::Yarn,
-        PackageManager::Npm,
-    ] {
-        map.insert(pm.label(), probe(pm.label()));
-    }
-    map
+    thread::scope(|s| {
+        // Spawn all probes first (push, don't lazy-iterate) so they
+        // actually run in parallel; chaining `.map(spawn).map(join)`
+        // without the eager push would serialize — `Iterator::map` is
+        // lazy, so the next `spawn` wouldn't fire until the previous
+        // join returned.
+        let mut handles = Vec::with_capacity(PATH_PROBE_PMS.len());
+        for pm in &PATH_PROBE_PMS {
+            let path = &path;
+            handles.push(s.spawn(move || {
+                let resolved =
+                    crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref)
+                        .map(|p| p.display().to_string());
+                (pm.label(), resolved)
+            }));
+        }
+
+        let mut map = BTreeMap::new();
+        for handle in handles {
+            let (label, resolved) = handle.join().expect("path probe thread panicked");
+            map.insert(label, resolved);
+        }
+        map
+    })
 }
 
 #[cfg(test)]
@@ -450,7 +498,7 @@ mod tests {
 
     use super::Project;
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{PackageManager, ProjectContext};
+    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
     fn empty_context(root: &str) -> ProjectContext {
         ProjectContext {
@@ -472,7 +520,7 @@ mod tests {
         let project = Project::build(&ctx, &overrides);
         let value = serde_json::to_value(&project).expect("Project should serialize to JSON");
 
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["root"], "/tmp/test");
         assert!(
             value["ecosystems"]
@@ -484,9 +532,10 @@ mod tests {
     #[test]
     fn info_view_drops_tasks_array() {
         let mut ctx = empty_context("/tmp/test");
-        ctx.tasks.push(crate::types::Task {
+        ctx.tasks.push(Task {
             name: "build".to_string(),
-            source: crate::types::TaskSource::PackageJson,
+            source: TaskSource::PackageJson,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
@@ -501,24 +550,57 @@ mod tests {
     #[test]
     fn list_view_filters_by_source() {
         let mut ctx = empty_context("/tmp/test");
-        ctx.tasks.push(crate::types::Task {
+        ctx.tasks.push(Task {
             name: "build".to_string(),
-            source: crate::types::TaskSource::PackageJson,
+            source: TaskSource::PackageJson,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
         });
-        ctx.tasks.push(crate::types::Task {
+        ctx.tasks.push(Task {
             name: "fmt".to_string(),
-            source: crate::types::TaskSource::Justfile,
+            source: TaskSource::Justfile,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default());
-        let view = project.into_list_view(Some(crate::types::TaskSource::Justfile));
+        let view = project.into_list_view(Some(TaskSource::Justfile));
 
         assert_eq!(view.tasks.len(), 1);
         assert_eq!(view.tasks[0].name, "fmt");
+    }
+
+    #[test]
+    fn build_with_schema_serializes_v1_labels_for_tasks() {
+        let ctx = ProjectContext {
+            root: PathBuf::from("/tmp/test"),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: vec![Task {
+                name: "fmt".to_string(),
+                source: TaskSource::Justfile,
+                run_target: None,
+                description: None,
+                alias_of: None,
+                passthrough_to: None,
+            }],
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let v1 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 1);
+        let v1_json = serde_json::to_value(&v1).expect("v1 serialization");
+        assert_eq!(v1_json["schema_version"], 1);
+        assert_eq!(v1_json["tasks"][0]["source"], "justfile");
+
+        let v2 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 2);
+        let v2_json = serde_json::to_value(&v2).expect("v2 serialization");
+        assert_eq!(v2_json["schema_version"], 2);
+        assert_eq!(v2_json["tasks"][0]["source"], "just");
     }
 }

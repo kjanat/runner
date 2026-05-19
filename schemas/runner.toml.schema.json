@@ -4,6 +4,10 @@
   "description": "Top-level schema for `runner.toml`.",
   "type": "object",
   "properties": {
+    "chain": {
+      "description": "`[chain]` — failure policy for multi-task chains.",
+      "$ref": "#/$defs/ChainSection"
+    },
     "pm": {
       "description": "`[pm]` — per-ecosystem package-manager overrides.",
       "$ref": "#/$defs/PmSection"
@@ -19,6 +23,43 @@
   },
   "additionalProperties": false,
   "$defs": {
+    "ChainSection": {
+      "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.\n\n`Option<bool>` rather than `bool` so the resolver can distinguish\n\"user explicitly set false\" from \"user didn't say\": env-overrides-\nconfig layering means `[chain].keep_going = false` plus\n`RUNNER_KEEP_GOING=1` resolves to `true`.",
+      "type": "object",
+      "properties": {
+        "keep_going": {
+          "description": "Run every task in the chain to completion regardless of failures.\nMutually exclusive with `kill_on_fail`. Equivalent to `-k` /\n`RUNNER_KEEP_GOING`.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "kill_on_fail": {
+          "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown — uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false,
+      "not": {
+        "properties": {
+          "keep_going": {
+            "const": true
+          },
+          "kill_on_fail": {
+            "const": true
+          }
+        },
+        "required": [
+          "keep_going",
+          "kill_on_fail"
+        ]
+      }
+    },
     "PmSection": {
       "description": "`[pm]` section — per-ecosystem package manager overrides.",
       "type": "object",

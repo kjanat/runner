@@ -12,7 +12,10 @@ use anyhow::Result;
 use colored::Colorize;
 use serde_json::{Value, json};
 
-use crate::cmd::run::{select_task_entry, source_depth, source_priority};
+use crate::cmd::run::{
+    allowed_runner_sources, runner_constraint_error, select_task_entry, source_depth,
+    source_priority,
+};
 use crate::resolver::{ResolutionOverrides, Resolver};
 use crate::types::{ProjectContext, Task, TaskSource};
 
@@ -28,10 +31,27 @@ pub(crate) fn why(
     overrides: &ResolutionOverrides,
     task: &str,
     json: bool,
+    schema_version: u32,
 ) -> Result<()> {
     let candidates: Vec<&Task> = ctx.tasks.iter().filter(|t| t.name == task).collect();
+    let restricted: Vec<&Task> = allowed_runner_sources(overrides).map_or_else(
+        || candidates.clone(),
+        |allowed| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|t| allowed.contains(&t.source))
+                .collect()
+        },
+    );
 
-    let selected = (!candidates.is_empty()).then(|| select_task_entry(ctx, overrides, &candidates));
+    if restricted.is_empty()
+        && let Some(reason) = runner_constraint_error(overrides, &candidates)
+    {
+        return Err(reason.into());
+    }
+
+    let selected = (!restricted.is_empty()).then(|| select_task_entry(ctx, overrides, &restricted));
 
     let pm_decision = if selected
         .as_ref()
@@ -49,6 +69,7 @@ pub(crate) fn why(
         pm_decision.as_ref(),
         overrides,
         ctx,
+        schema_version,
     );
 
     if json {
@@ -74,12 +95,15 @@ fn build_report(
     pm_decision: Option<&Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
+    schema_version: u32,
 ) -> Value {
     json!({
-        "schema_version": 1,
+        "schema_version": schema_version,
         "task": task,
-        "candidates": candidates.iter().map(|c| candidate_json(c, overrides, ctx)).collect::<Vec<_>>(),
-        "selected": selected.map(|s| candidate_json(s, overrides, ctx)),
+        "candidates": candidates.iter()
+            .map(|c| candidate_json(c, overrides, ctx, schema_version))
+            .collect::<Vec<_>>(),
+        "selected": selected.map(|s| candidate_json(s, overrides, ctx, schema_version)),
         "pm_resolution": pm_decision.map(|res| match res {
             Ok(decision) => json!({
                 "pm": decision.pm.label(),
@@ -94,7 +118,12 @@ fn build_report(
     })
 }
 
-fn candidate_json(task: &Task, overrides: &ResolutionOverrides, ctx: &ProjectContext) -> Value {
+fn candidate_json(
+    task: &Task,
+    overrides: &ResolutionOverrides,
+    ctx: &ProjectContext,
+    schema_version: u32,
+) -> Value {
     let depth = source_depth(ctx, task.source);
     let depth_value = if depth == usize::MAX {
         Value::Null
@@ -102,7 +131,7 @@ fn candidate_json(task: &Task, overrides: &ResolutionOverrides, ctx: &ProjectCon
         json!(depth)
     };
     json!({
-        "source": task.source.label(),
+        "source": crate::schema::labels::source_label_for(task.source, schema_version),
         "source_priority": source_priority(overrides, task.source),
         "depth": depth_value,
         "display_order": task.source.display_order(),
@@ -125,6 +154,7 @@ fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
         TaskSource::Justfile => tool::just::find_file(&ctx.root),
         TaskSource::Taskfile => tool::files::find_first(&ctx.root, tool::go_task::FILENAMES),
         TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(&ctx.root),
+        TaskSource::GoPackage => tool::go_pm::find_file(&ctx.root),
         TaskSource::BaconToml => tool::files::find_first(&ctx.root, tool::bacon::FILENAMES),
         TaskSource::MiseToml => tool::mise::find_file(&ctx.root),
     }
@@ -218,7 +248,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::why;
-    use crate::resolver::ResolutionOverrides;
+    use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
     use crate::types::{ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
@@ -238,6 +268,7 @@ mod tests {
         Task {
             name: name.to_string(),
             source,
+            run_target: None,
             description: None,
             alias_of: None,
             passthrough_to: None,
@@ -247,8 +278,14 @@ mod tests {
     #[test]
     fn why_handles_missing_task() {
         let ctx = context(vec![]);
-        why(&ctx, &ResolutionOverrides::default(), "build", true)
-            .expect("why should succeed even when task is missing");
+        why(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            true,
+            crate::schema::CURRENT_VERSION,
+        )
+        .expect("why should succeed even when task is missing");
     }
 
     #[test]
@@ -257,7 +294,48 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
-        why(&ctx, &ResolutionOverrides::default(), "build", true).expect("json should succeed");
-        why(&ctx, &ResolutionOverrides::default(), "build", false).expect("human should succeed");
+        let version = crate::schema::CURRENT_VERSION;
+        why(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            true,
+            version,
+        )
+        .expect("json should succeed");
+        why(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            false,
+            version,
+        )
+        .expect("human should succeed");
+    }
+
+    #[test]
+    fn why_rejects_runner_constraint_mismatch() {
+        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let overrides = ResolutionOverrides::from_cli_and_env(
+            None,
+            Some("just"),
+            None,
+            None,
+            DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("runner override should parse");
+
+        let err = why(
+            &ctx,
+            &overrides,
+            "build",
+            true,
+            crate::schema::CURRENT_VERSION,
+        )
+        .expect_err("why should mirror run runner constraints");
+
+        assert!(format!("{err}").contains("no candidate task is registered"));
     }
 }

@@ -17,932 +17,42 @@
 //! 7. `PATH` probe in canonical order — Phase 5.
 //! 8. Terminal — error with actionable guidance — Phase 5.
 
+//! # Module layout
+//!
+//! - [`types`] — data shapes ([`Resolver`], [`ResolutionOverrides`], the
+//!   policy enums, override-builder helpers).
+//! - [`resolve`] — the resolution algorithm itself: `impl Resolver` plus
+//!   the manifest / lockfile cross-checks.
+//! - [`overrides`] — `impl ResolutionOverrides` and the CLI/env parsers
+//!   that feed it.
+//! - [`policies`] — pure string→enum parsing for the `FallbackPolicy`,
+//!   `MismatchPolicy`, and `FailurePolicy` knobs.
+//! - [`error`] — the `ResolveError` type surfaced to callers.
+//! - [`probe`] — `$PATH` probing for the fallback step.
+
 mod error;
+mod overrides;
+mod policies;
 mod probe;
+mod resolve;
+mod types;
 
 pub(crate) use error::{DevEnginesFailReason, ResolveError};
-/// Re-export of the pure-function probe variant for the `doctor`
-/// subcommand. Lets `cmd::doctor` exercise the same PATH walk the
-/// resolver uses without owning the env-reading logic.
+/// Re-export of the pure-function probe variant for the `doctor` subcommand.
+/// Lets `cmd::doctor` exercise the same PATH walk the resolver uses without
+/// owning the env-reading logic.
 pub(crate) use probe::probe_in as probe_path_for_doctor;
-
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-use anyhow::{Result, anyhow};
-
-use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
-use crate::tool::node::{
-    ManifestPmDecl, ManifestSource, OnFail, VersionCheck, check_version_constraint,
-    detect_pm_from_manifest, find_manifest_upwards,
+pub(crate) use types::{
+    DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides,
+    ResolvedPm, Resolver,
 };
-use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
-/// Resolves package managers and task sources from a [`ProjectContext`]
-/// plus a bundle of [`ResolutionOverrides`].
-pub(crate) struct Resolver<'ctx> {
-    ctx: &'ctx ProjectContext,
-    overrides: &'ctx ResolutionOverrides,
-}
-
-/// User-supplied overrides assembled from CLI flags, environment variables,
-/// and (Phase 3+) a `runner.toml` file.
-///
-/// Each field carries an [`OverrideOrigin`] so diagnostic output (Phase 6)
-/// can attribute a decision to the exact source the user set it from.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ResolutionOverrides {
-    /// Cross-ecosystem PM override from CLI/env. `--pm`/`RUNNER_PM` are not
-    /// ecosystem-qualified; the resolver applies this value only when the
-    /// named PM is compatible with the requested ecosystem.
-    pub pm: Option<PmOverride>,
-    /// Per-ecosystem PM overrides from `runner.toml`. Consulted after the
-    /// cross-ecosystem CLI/env override falls through (e.g. `--pm cargo`
-    /// against a Node resolution).
-    pub pm_by_ecosystem: HashMap<Ecosystem, PmOverride>,
-    /// Task-runner override from `--runner` / `RUNNER_RUNNER`. When set,
-    /// the source selector restricts candidates to that runner's
-    /// [`TaskRunner::task_source`]; an empty restriction list bails with
-    /// [`ResolveError::InvalidOverride`].
-    pub runner: Option<RunnerOverride>,
-    /// Ranked preference list from `[task_runner].prefer`. Empty when no
-    /// config is loaded or the section is empty. When non-empty, the
-    /// source selector restricts candidates to runners in the list (in
-    /// listed order); a miss bails with [`ResolveError::InvalidOverride`].
-    pub prefer_runners: Vec<TaskRunner>,
-    /// What to do when no signal in steps 2–6 matches.
-    pub fallback: FallbackPolicy,
-    /// What to do when the manifest declaration (step 5) disagrees with
-    /// the detected lockfile (step 6).
-    pub on_mismatch: MismatchPolicy,
-    /// When `true`, suppress all `DetectionWarning` output. Set via
-    /// `--no-warnings` / `RUNNER_NO_WARNINGS`. Errors still surface;
-    /// only non-fatal warnings are silenced.
-    pub no_warnings: bool,
-    /// When `true`, emit a one-line trace describing which chain step
-    /// produced the PM decision. Set via `--explain` / `RUNNER_EXPLAIN`.
-    pub explain: bool,
-}
-
-/// What to do when no signal in steps 2–6 matches.
-///
-/// Set via `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum FallbackPolicy {
-    /// Walk `$PATH` in canonical order and pick the first installed PM.
-    /// Errors if nothing matches.
-    #[default]
-    Probe,
-    /// Legacy: silently default to `npm` so dispatch is attempted even
-    /// when nothing is detected. Useful for backwards compatibility.
-    Npm,
-    /// Refuse to proceed when no signal matches; error out with a list of
-    /// sources that were checked.
-    Error,
-}
-
-/// How to react when manifest declaration (step 5) and lockfile (step 6)
-/// disagree about which package manager the project uses.
-///
-/// Set via `--on-mismatch` / `RUNNER_ON_MISMATCH` /
-/// `[resolution].on_mismatch`. Independent from
-/// `devEngines.packageManager` `onFail` — that policy governs whether
-/// the *declared* PM can actually run; this one governs whether the
-/// resolver tolerates the declaration disagreeing with the install
-/// state at all.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum MismatchPolicy {
-    /// Emit a `package.json` warning, prefer the declaration (Corepack
-    /// semantics — the lockfile is most likely stale).
-    #[default]
-    Warn,
-    /// Stay silent; prefer the declaration.
-    Ignore,
-    /// Bail with [`ResolveError::MismatchPolicyError`]. Intended for
-    /// CI guardrails where a mismatch should block the run.
-    Error,
-}
-
-/// A package-manager override plus the source the user set it from.
-#[derive(Debug, Clone)]
-pub(crate) struct PmOverride {
-    /// The chosen package manager.
-    pub pm: PackageManager,
-    /// Where the override came from.
-    pub origin: OverrideOrigin,
-}
-
-/// A task-runner override plus the source the user set it from.
-#[derive(Debug, Clone)]
-pub(crate) struct RunnerOverride {
-    /// The chosen task runner.
-    pub runner: TaskRunner,
-    /// Where the override came from. Surfaced by `--explain` and `doctor`
-    /// so the user can attribute the constraint to its origin.
-    #[allow(
-        dead_code,
-        reason = "consumed by --explain in Phase 6; kept on the type for future trace renderers"
-    )]
-    pub origin: OverrideOrigin,
-}
-
-/// Source the user set an override from.
-///
-/// Listed in precedence order, highest first.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OverrideOrigin {
-    /// Set via `--pm` / `--runner` on the command line.
-    CliFlag,
-    /// Set via `RUNNER_PM` / `RUNNER_RUNNER` in the environment.
-    EnvVar,
-    /// Set via a `runner.toml` at the project root.
-    ConfigFile {
-        /// Absolute path the override was loaded from. Surfaced by
-        /// `ResolvedPm::describe` (which feeds `--explain` and the
-        /// `doctor` trace) so the user can attribute a decision to the
-        /// exact config file it came from.
-        path: PathBuf,
-    },
-}
-
-/// A package-manager decision plus the chain step that produced it.
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedPm {
-    /// The chosen package manager.
-    pub pm: PackageManager,
-    /// Which step of the resolution chain produced [`Self::pm`].
-    /// Surfaced by [`Self::describe`] for `--explain` and the
-    /// `doctor` / `why` traces.
-    pub via: ResolutionStep,
-    /// Non-fatal warnings emitted while resolving — e.g. a manifest
-    /// declaration that disagrees with the detected lockfile.
-    pub warnings: Vec<DetectionWarning>,
-}
-
-/// Which step of the resolution chain produced a decision.
-///
-/// Listed in precedence order. Downstream `match` sites stay exhaustive so
-/// that adding a step is a compile error to handle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolutionStep {
-    /// Steps 2–4 — user-supplied override won.
-    Override(OverrideOrigin),
-    /// Step 5a — `package.json` legacy `packageManager` field.
-    ManifestPackageManager,
-    /// Step 5b — `package.json` `devEngines.packageManager` field.
-    ManifestDevEngines {
-        /// Effective `onFail` value for the chosen entry. Rendered into
-        /// the `--explain` / `doctor` trace via [`ResolvedPm::describe`].
-        on_fail: OnFail,
-    },
-    /// Step 6 — package manager inferred from a lockfile (or another
-    /// detector recorded in [`ProjectContext::package_managers`]).
-    Lockfile,
-    /// Step 7 — discovered via `$PATH` probe in canonical order.
-    PathProbe {
-        /// Absolute path of the executable found on PATH. Rendered by
-        /// [`ResolvedPm::describe`] so the user can spot which directory
-        /// the resolver fell back to.
-        binary: PathBuf,
-    },
-    /// Step 8 (legacy) — no signals matched, default to `npm` so that
-    /// `runner run <script>` still has a chance to dispatch. The Phase 5
-    /// default replaces this with a [`Self::PathProbe`]; this variant only
-    /// fires with `--fallback npm`.
-    LegacyNpmFallback,
-}
-
-impl<'ctx> Resolver<'ctx> {
-    /// Wrap a project context plus the override bundle for this invocation.
-    pub(crate) const fn new(
-        ctx: &'ctx ProjectContext,
-        overrides: &'ctx ResolutionOverrides,
-    ) -> Self {
-        Self { ctx, overrides }
-    }
-
-    /// Resolve the package manager used to dispatch `package.json` scripts.
-    ///
-    /// Walks the precedence chain in order:
-    /// - Step 2–3 — CLI/env PM override (when compatible with Node scripts).
-    /// - Step 4 — `runner.toml` `[pm].node` override.
-    /// - Step 5a — `package.json` legacy `packageManager` field.
-    /// - Step 5b — `package.json` `devEngines.packageManager` field
-    ///   (honoring `onFail` when the declared PM is missing from PATH).
-    /// - Step 6 — lockfile (via [`ProjectContext::primary_node_pm`]).
-    /// - Step 7 — `$PATH` probe in canonical Node order
-    ///   (`bun > pnpm > yarn > npm`). Active by default; replaced by
-    ///   step 8 when `--fallback npm` is set.
-    /// - Step 8 — error or legacy `npm` (depending on
-    ///   [`FallbackPolicy`]).
-    ///
-    /// When a manifest declaration (step 5) disagrees with a detected
-    /// lockfile (step 6), the manifest wins (Corepack semantics) and a
-    /// `package.json` warning is emitted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no signal matches and
-    /// `FallbackPolicy::Error` or `FallbackPolicy::Probe` is in effect
-    /// with nothing on `$PATH`, or when a manifest `onFail = Error`
-    /// declaration cannot be satisfied.
-    pub(crate) fn resolve_node_pm(&self) -> Result<ResolvedPm, ResolveError> {
-        let mut warnings = Vec::new();
-
-        if let Some(o) = self.overrides.pm.as_ref() {
-            if !o.pm.can_dispatch_node_scripts() {
-                // The user explicitly pinned a PM that can't dispatch
-                // package.json scripts. Falling through to step 4-7
-                // would silently disregard their intent — surface the
-                // mismatch as a hard error instead.
-                return Err(ResolveError::InvalidOverride {
-                    value: o.pm.label().to_string(),
-                    reason: "cannot dispatch package.json scripts (use a Node-ecosystem PM, or \
-                            `--pm deno` for Deno tasks)",
-                });
-            }
-            return Ok(ResolvedPm {
-                pm: o.pm,
-                via: ResolutionStep::Override(o.origin.clone()),
-                warnings,
-            });
-        }
-        if let Some(o) = self
-            .overrides
-            .pm_by_ecosystem
-            .get(&Ecosystem::Node)
-            .or_else(|| self.overrides.pm_by_ecosystem.get(&Ecosystem::Deno))
-        {
-            return Ok(ResolvedPm {
-                pm: o.pm,
-                via: ResolutionStep::Override(o.origin.clone()),
-                warnings,
-            });
-        }
-
-        if let Some(decl) = detect_pm_from_manifest(&self.ctx.root) {
-            cross_check_against_lockfile(
-                &decl,
-                self.ctx,
-                self.overrides.on_mismatch,
-                &mut warnings,
-            )?;
-            apply_manifest_on_fail(
-                &decl,
-                &mut warnings,
-                real_binary_check,
-                check_version_constraint,
-            )?;
-            let via = match decl.source {
-                ManifestSource::PackageManager => ResolutionStep::ManifestPackageManager,
-                ManifestSource::DevEngines => ResolutionStep::ManifestDevEngines {
-                    on_fail: decl.on_fail,
-                },
-            };
-            return Ok(ResolvedPm {
-                pm: decl.pm,
-                via,
-                warnings,
-            });
-        }
-
-        // Filter `primary_pm` through `can_dispatch_node_scripts` so a
-        // non-script PM (Cargo/Poetry/Bundler/…) doesn't satisfy the
-        // Node lockfile step. Without the filter, a mixed-language repo
-        // with `package.json` scripts but only `Cargo.lock` as the
-        // top-priority signal would return Cargo here and later bail
-        // with the opaque "cargo cannot run scripts" branch instead of
-        // continuing to the PATH probe / fallback.
-        if let Some(pm) = self.ctx.primary_node_pm().or_else(|| {
-            self.ctx
-                .primary_pm()
-                .filter(|pm| pm.can_dispatch_node_scripts())
-        }) {
-            return Ok(ResolvedPm {
-                pm,
-                via: ResolutionStep::Lockfile,
-                warnings,
-            });
-        }
-
-        match self.overrides.fallback {
-            FallbackPolicy::Probe => {
-                // Don't probe Node PMs in projects with no Node-ecosystem
-                // evidence. Earlier steps already covered overrides,
-                // manifest declarations, and lockfiles; the absence of a
-                // `package.json` anywhere upward means this isn't a Node
-                // project, and picking up `bun`/`pnpm`/`yarn`/`npm` from
-                // `$PATH` would dispatch through the wrong ecosystem
-                // (see issue #23: `runner run list` in a Go repo).
-                if find_manifest_upwards(&self.ctx.root).is_none() {
-                    return Err(no_pm_found_soft());
-                }
-                let mut found = probe::probe_all(probe::NODE_PROBE_ORDER);
-                if found.is_empty() {
-                    return Err(no_pm_found_soft());
-                }
-                let (picked, binary) = found.remove(0);
-                warnings.push(DetectionWarning::PathProbeFallback {
-                    picked,
-                    ecosystem: Ecosystem::Node,
-                    others_available: found.into_iter().map(|(pm, _)| pm).collect(),
-                });
-                Ok(ResolvedPm {
-                    pm: picked,
-                    via: ResolutionStep::PathProbe { binary },
-                    warnings,
-                })
-            }
-            FallbackPolicy::Npm => {
-                warnings.push(DetectionWarning::LegacyNpmFallbackUsed {
-                    ecosystem: Ecosystem::Node,
-                });
-                Ok(ResolvedPm {
-                    pm: PackageManager::Npm,
-                    via: ResolutionStep::LegacyNpmFallback,
-                    warnings,
-                })
-            }
-            FallbackPolicy::Error => Err(no_pm_found_hard()),
-        }
-    }
-}
-
-/// Apply a manifest declaration's `onFail` policy by checking that the
-/// declared PM is present on `$PATH` *and*, when a semver range is
-/// declared, that the installed version satisfies it.
-///
-/// - `Ignore` — no check.
-/// - `Warn` — emit a `package.json` warning when the PM is missing or
-///   the version doesn't match; continue with the declared PM regardless.
-/// - `Error` — bail on a missing PM or a version mismatch.
-///
-/// Version checks that can't run (unparseable range, missing
-/// `--version` output, etc.) are skipped silently: the proposal says
-/// `onFail` enforces user intent, but blocking dispatch on an
-/// unverifiable constraint would be worse than continuing — the binary
-/// will surface the real problem at spawn time.
-///
-/// Binary-presence and version-check side effects are injected so the
-/// `Error` branches stay exercisable in unit tests — `Error + missing`
-/// and `Error + mismatched version` both `bail!`, which is impossible
-/// to cover otherwise without controlling the host `$PATH` and running
-/// `<pm> --version` against a real binary. Production callers wire in
-/// [`real_binary_check`] and [`check_version_constraint`].
-fn apply_manifest_on_fail<P, V>(
-    decl: &ManifestPmDecl,
-    warnings: &mut Vec<DetectionWarning>,
-    is_present: P,
-    check_version: V,
-) -> Result<(), ResolveError>
-where
-    P: FnOnce(PackageManager) -> bool,
-    V: FnOnce(PackageManager, &str) -> VersionCheck,
-{
-    if matches!(decl.on_fail, OnFail::Ignore) {
-        return Ok(());
-    }
-
-    if !is_present(decl.pm) {
-        return on_fail_missing_binary(decl, warnings);
-    }
-
-    if let Some(range) = decl.version.as_deref()
-        && let VersionCheck::Mismatch { declared, actual } = check_version(decl.pm, range)
-    {
-        return on_fail_version_mismatch(decl, &declared, &actual, warnings);
-    }
-
-    Ok(())
-}
-
-/// Default binary-presence check used by [`Resolver::resolve_node_pm`].
-/// Walks `$PATH` via [`probe::probe`]; injectable in tests so the
-/// `Error` branches of [`apply_manifest_on_fail`] are exercisable.
-fn real_binary_check(pm: PackageManager) -> bool {
-    probe::probe(pm).is_some()
-}
-
-fn on_fail_missing_binary(
-    decl: &ManifestPmDecl,
-    warnings: &mut Vec<DetectionWarning>,
-) -> Result<(), ResolveError> {
-    match decl.on_fail {
-        OnFail::Ignore => Ok(()),
-        OnFail::Warn => {
-            warnings.push(DetectionWarning::DevEnginesBinaryMissing { pm: decl.pm });
-            Ok(())
-        }
-        OnFail::Error => Err(ResolveError::DevEnginesFailHard {
-            pm: decl.pm,
-            reason: DevEnginesFailReason::BinaryMissing,
-        }),
-    }
-}
-
-fn on_fail_version_mismatch(
-    decl: &ManifestPmDecl,
-    declared: &str,
-    actual: &str,
-    warnings: &mut Vec<DetectionWarning>,
-) -> Result<(), ResolveError> {
-    match decl.on_fail {
-        OnFail::Ignore => Ok(()),
-        OnFail::Warn => {
-            warnings.push(DetectionWarning::DevEnginesVersionMismatch {
-                pm: decl.pm,
-                declared: declared.to_string(),
-                actual: actual.to_string(),
-            });
-            Ok(())
-        }
-        OnFail::Error => Err(ResolveError::DevEnginesFailHard {
-            pm: decl.pm,
-            reason: DevEnginesFailReason::VersionMismatch {
-                declared: declared.to_string(),
-                actual: actual.to_string(),
-            },
-        }),
-    }
-}
-
-impl ResolvedPm {
-    /// Render a one-line description of the chain step that produced this
-    /// decision. Used by `--explain` to attribute the PM choice.
-    pub(crate) fn describe(&self) -> String {
-        match &self.via {
-            ResolutionStep::Override(OverrideOrigin::CliFlag) => {
-                format!("{} via --pm (CLI override)", self.pm.label())
-            }
-            ResolutionStep::Override(OverrideOrigin::EnvVar) => {
-                format!("{} via RUNNER_PM (environment)", self.pm.label())
-            }
-            ResolutionStep::Override(OverrideOrigin::ConfigFile { path }) => {
-                format!("{} via runner.toml at {}", self.pm.label(), path.display())
-            }
-            ResolutionStep::ManifestPackageManager => {
-                format!("{} via package.json \"packageManager\"", self.pm.label())
-            }
-            ResolutionStep::ManifestDevEngines { on_fail } => format!(
-                "{} via package.json \"devEngines.packageManager\" (onFail={on_fail:?})",
-                self.pm.label(),
-            ),
-            ResolutionStep::Lockfile => {
-                format!("{} via detected lockfile", self.pm.label())
-            }
-            ResolutionStep::PathProbe { binary } => {
-                format!("{} via PATH probe at {}", self.pm.label(), binary.display())
-            }
-            ResolutionStep::LegacyNpmFallback => {
-                format!("{} via --fallback=npm (legacy)", self.pm.label())
-            }
-        }
-    }
-}
-
-/// Soft "no PM found" — only emitted from the `Probe` fallback when
-/// nothing on `$PATH` matches. Callers that legitimately want to fall
-/// through to a direct PATH spawn (`cmd::run::run_pm_exec_fallback`)
-/// match on `ResolveError::NoSignalsFound { soft: true, .. }` and swallow
-/// it; every other resolver error surfaces to the user.
-const fn no_pm_found_soft() -> ResolveError {
-    ResolveError::NoSignalsFound {
-        ecosystem: Ecosystem::Node,
-        soft: true,
-    }
-}
-
-/// Hard "no PM found" — emitted from `FallbackPolicy::Error`. Carries
-/// the same payload but with `soft = false`, so `cmd::run::run`
-/// propagates it instead of falling through.
-const fn no_pm_found_hard() -> ResolveError {
-    ResolveError::NoSignalsFound {
-        ecosystem: Ecosystem::Node,
-        soft: false,
-    }
-}
-
-/// Compare a manifest declaration against the lockfile-signal recorded in
-/// [`ProjectContext`] and apply the configured [`MismatchPolicy`].
-///
-/// - [`MismatchPolicy::Warn`] — push a `PmMismatch` warning, declaration wins.
-/// - [`MismatchPolicy::Ignore`] — declaration wins silently.
-/// - [`MismatchPolicy::Error`] — bail with
-///   [`ResolveError::MismatchPolicyError`] so the CLI exits with code 2.
-///
-/// Manifest declarations frequently come from a project intentionally
-/// switching package managers; the new declaration is authoritative, but
-/// the stale lockfile is worth flagging so the user can regenerate it.
-fn cross_check_against_lockfile(
-    decl: &ManifestPmDecl,
-    ctx: &ProjectContext,
-    policy: MismatchPolicy,
-    warnings: &mut Vec<DetectionWarning>,
-) -> Result<(), ResolveError> {
-    let Some(lockfile_pm) = ctx.primary_node_pm() else {
-        return Ok(());
-    };
-    if lockfile_pm == decl.pm {
-        return Ok(());
-    }
-    let field = match decl.source {
-        ManifestSource::PackageManager => "packageManager",
-        ManifestSource::DevEngines => "devEngines.packageManager",
-    };
-    match policy {
-        MismatchPolicy::Ignore => Ok(()),
-        MismatchPolicy::Warn => {
-            warnings.push(DetectionWarning::PmMismatch {
-                declared: decl.pm,
-                field,
-                lockfile: lockfile_pm,
-            });
-            Ok(())
-        }
-        MismatchPolicy::Error => Err(ResolveError::MismatchPolicyError {
-            declared: decl.pm,
-            field,
-            lockfile: lockfile_pm,
-        }),
-    }
-}
-
-/// Sources contributing to a [`ResolutionOverrides`].
-///
-/// Bundles every CLI/env input the resolver consumes so
-/// [`ResolutionOverrides::from_sources`] stays extensible —  adding a
-/// new override (say `--on-mismatch` / `RUNNER_ON_MISMATCH`) is one
-/// field on this struct, not a positional-argument expansion across
-/// every test site.
-///
-/// Tests typically use `Default` + field updates:
-///
-/// ```ignore
-/// OverrideSources {
-///     pm: SourceValue { cli: Some("yarn"), env: None },
-///     ..OverrideSources::default()
-/// }
-/// ```
-///
-/// Production goes through [`ResolutionOverrides::from_cli_and_env`],
-/// which builds this from process state.
-#[derive(Debug, Default)]
-pub(crate) struct OverrideSources<'a> {
-    /// `--pm` flag value plus `RUNNER_PM` env.
-    pub pm: SourceValue<'a>,
-    /// `--runner` flag value plus `RUNNER_RUNNER` env.
-    pub runner: SourceValue<'a>,
-    /// `--fallback` flag value plus `RUNNER_FALLBACK` env.
-    pub fallback: SourceValue<'a>,
-    /// `--on-mismatch` flag value plus `RUNNER_ON_MISMATCH` env.
-    pub on_mismatch: SourceValue<'a>,
-    /// `--no-warnings` flag presence plus `RUNNER_NO_WARNINGS` env.
-    pub no_warnings: ExplainSource<'a>,
-    /// `--explain` flag presence plus `RUNNER_EXPLAIN` env.
-    pub explain: ExplainSource<'a>,
-    /// Loaded `runner.toml` if any.
-    pub config: Option<&'a LoadedConfig>,
-}
-
-/// CLI flag plus env-var value for a string-typed override. The
-/// resolver trims and de-duplicates these per the precedence chain in
-/// [`parse_override`] (CLI wins; whitespace-only values count as unset).
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct SourceValue<'a> {
-    /// CLI flag value, if the user passed one.
-    pub cli: Option<&'a str>,
-    /// Env-var value, if set.
-    pub env: Option<&'a str>,
-}
-
-/// CLI flag (presence) plus env-var value for a boolean-typed override
-/// like `--explain` / `RUNNER_EXPLAIN`. CLI wins; env is interpreted by
-/// [`is_env_truthy`].
-#[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct ExplainSource<'a> {
-    /// `true` when the CLI flag was passed.
-    pub cli: bool,
-    /// Env-var value, if set.
-    pub env: Option<&'a str>,
-}
-
-impl ResolutionOverrides {
-    /// Assemble overrides from CLI flag values (already parsed by clap),
-    /// the `RUNNER_*` environment variables, and an optional `runner.toml`
-    /// loaded from the project root.
-    ///
-    /// Reads `std::env` for the env-var sources; pure parsing happens in
-    /// [`Self::from_sources`]. Tests should use `from_sources` directly
-    /// with an [`OverrideSources`] builder to inject env values without
-    /// touching the process environment.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any value does not name a known package manager,
-    /// task runner, or fallback policy, or if a `runner.toml` field contains
-    /// a PM that does not belong to its target ecosystem.
-    pub(crate) fn from_cli_and_env(
-        cli_pm: Option<&str>,
-        cli_runner: Option<&str>,
-        cli_fallback: Option<&str>,
-        cli_on_mismatch: Option<&str>,
-        cli_no_warnings: bool,
-        cli_explain: bool,
-        config: Option<&LoadedConfig>,
-    ) -> Result<Self> {
-        let env_pm = std::env::var("RUNNER_PM").ok();
-        let env_runner = std::env::var("RUNNER_RUNNER").ok();
-        let env_fallback = std::env::var("RUNNER_FALLBACK").ok();
-        let env_on_mismatch = std::env::var("RUNNER_ON_MISMATCH").ok();
-        let env_no_warnings = std::env::var("RUNNER_NO_WARNINGS").ok();
-        let env_explain = std::env::var("RUNNER_EXPLAIN").ok();
-        Self::from_sources(OverrideSources {
-            pm: SourceValue {
-                cli: cli_pm,
-                env: env_pm.as_deref(),
-            },
-            runner: SourceValue {
-                cli: cli_runner,
-                env: env_runner.as_deref(),
-            },
-            fallback: SourceValue {
-                cli: cli_fallback,
-                env: env_fallback.as_deref(),
-            },
-            on_mismatch: SourceValue {
-                cli: cli_on_mismatch,
-                env: env_on_mismatch.as_deref(),
-            },
-            no_warnings: ExplainSource {
-                cli: cli_no_warnings,
-                env: env_no_warnings.as_deref(),
-            },
-            explain: ExplainSource {
-                cli: cli_explain,
-                env: env_explain.as_deref(),
-            },
-            config,
-        })
-    }
-
-    /// Pure-function constructor that consumes a fully-populated
-    /// [`OverrideSources`]. Production code uses
-    /// [`Self::from_cli_and_env`], which builds the struct from the
-    /// process environment; tests pass values directly so they don't
-    /// touch global state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any value does not name a known package manager,
-    /// task runner, or fallback policy, or if a `runner.toml` field contains
-    /// a PM that does not belong to its target ecosystem.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "OverrideSources is a single-use builder; taking by value keeps the call sites moveable"
-    )]
-    pub(crate) fn from_sources(sources: OverrideSources<'_>) -> Result<Self> {
-        let pm = parse_override(
-            sources.pm.cli,
-            sources.pm.env,
-            parse_pm_label,
-            |pm, origin| PmOverride { pm, origin },
-        )?;
-        let runner = parse_override(
-            sources.runner.cli,
-            sources.runner.env,
-            parse_runner_label,
-            |runner, origin| RunnerOverride { runner, origin },
-        )?;
-
-        let fallback =
-            resolve_fallback_policy(sources.fallback.cli, sources.fallback.env, sources.config)?;
-        let on_mismatch = resolve_mismatch_policy(
-            sources.on_mismatch.cli,
-            sources.on_mismatch.env,
-            sources.config,
-        )?;
-        let prefer_runners = parse_prefer_runners(sources.config)?;
-        let no_warnings =
-            sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
-        let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
-
-        let mut pm_by_ecosystem = HashMap::new();
-        if let Some(loaded) = sources.config {
-            if let Some(raw) = loaded.config.pm.node.as_deref() {
-                let pm_value = parse_node_pm(raw)?;
-                pm_by_ecosystem.insert(
-                    pm_value.ecosystem(),
-                    PmOverride {
-                        pm: pm_value,
-                        origin: OverrideOrigin::ConfigFile {
-                            path: loaded.path.clone(),
-                        },
-                    },
-                );
-            }
-            if let Some(raw) = loaded.config.pm.python.as_deref() {
-                let pm_value = parse_python_pm(raw)?;
-                pm_by_ecosystem.insert(
-                    Ecosystem::Python,
-                    PmOverride {
-                        pm: pm_value,
-                        origin: OverrideOrigin::ConfigFile {
-                            path: loaded.path.clone(),
-                        },
-                    },
-                );
-            }
-        }
-
-        Ok(Self {
-            pm,
-            pm_by_ecosystem,
-            runner,
-            prefer_runners,
-            fallback,
-            on_mismatch,
-            no_warnings,
-            explain,
-        })
-    }
-}
-
-/// Treat any env-var value as truthy unless it's empty, `"0"`, or a
-/// case-insensitive variant of `false` / `no` / `off`.
-///
-/// Surrounding whitespace is stripped first so a trailing newline (the
-/// shell-export pattern `RUNNER_EXPLAIN=$VAR \n …`) doesn't accidentally
-/// flip an explicit "off" into truthy. Without the case-insensitive
-/// compare, `RUNNER_EXPLAIN=FALSE` would silently enable the trace —
-/// the opposite of what the user clearly meant.
-fn is_env_truthy(raw: &str) -> bool {
-    let v = raw.trim();
-    !v.is_empty()
-        && v != "0"
-        && !v.eq_ignore_ascii_case("false")
-        && !v.eq_ignore_ascii_case("no")
-        && !v.eq_ignore_ascii_case("off")
-}
-
-fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
-    match raw {
-        "probe" => Ok(FallbackPolicy::Probe),
-        "npm" => Ok(FallbackPolicy::Npm),
-        "error" => Ok(FallbackPolicy::Error),
-        other => Err(anyhow!(
-            "unknown fallback policy {other:?}; expected one of probe, npm, error",
-        )),
-    }
-}
-
-fn resolve_fallback_policy(
-    cli: Option<&str>,
-    env: Option<&str>,
-    config: Option<&LoadedConfig>,
-) -> Result<FallbackPolicy> {
-    // Mirror `parse_override`'s whitespace handling so
-    // `RUNNER_FALLBACK=" probe "` and `[resolution].fallback = " npm "`
-    // work the same as their stripped forms. Empty/whitespace-only
-    // values count as unset and fall through to the next source.
-    if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
-        return parse_fallback_label(raw);
-    }
-    if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
-        return parse_fallback_label(raw);
-    }
-    if let Some(loaded) = config
-        && let Some(raw) = loaded
-            .config
-            .resolution
-            .fallback
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-    {
-        return parse_fallback_label(raw);
-    }
-    Ok(FallbackPolicy::default())
-}
-
-/// Parse the `[task_runner].prefer` list, validating each entry against
-/// the known [`TaskRunner`] variants. Empty/missing → empty `Vec`.
-///
-/// Per the resolved design decision, an unknown runner name in the
-/// prefer-list is a parse error (not a silent skip) so misconfigured
-/// entries surface immediately at startup rather than producing
-/// surprising selection results at run time.
-fn parse_prefer_runners(config: Option<&LoadedConfig>) -> Result<Vec<TaskRunner>> {
-    let Some(loaded) = config else {
-        return Ok(Vec::new());
-    };
-    let raw = &loaded.config.task_runner.prefer;
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::with_capacity(raw.len());
-    for entry in raw {
-        let trimmed = entry.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let runner = TaskRunner::from_label(trimmed).ok_or_else(|| {
-            anyhow!(
-                "[task_runner].prefer: unknown runner {trimmed:?}; expected one of {}",
-                join_labels(TaskRunner::all().iter().map(|r| r.label())),
-            )
-        })?;
-        out.push(runner);
-    }
-    Ok(out)
-}
-
-fn parse_mismatch_label(raw: &str) -> Result<MismatchPolicy> {
-    match raw {
-        "warn" => Ok(MismatchPolicy::Warn),
-        "error" => Ok(MismatchPolicy::Error),
-        "ignore" => Ok(MismatchPolicy::Ignore),
-        other => Err(anyhow!(
-            "unknown on-mismatch policy {other:?}; expected one of warn, error, ignore",
-        )),
-    }
-}
-
-fn resolve_mismatch_policy(
-    cli: Option<&str>,
-    env: Option<&str>,
-    config: Option<&LoadedConfig>,
-) -> Result<MismatchPolicy> {
-    if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
-        return parse_mismatch_label(raw);
-    }
-    if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
-        return parse_mismatch_label(raw);
-    }
-    if let Some(loaded) = config
-        && let Some(raw) = loaded
-            .config
-            .resolution
-            .on_mismatch
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-    {
-        return parse_mismatch_label(raw);
-    }
-    Ok(MismatchPolicy::default())
-}
-
-fn parse_pm_label(raw: &str) -> Result<PackageManager> {
-    PackageManager::from_label(raw).ok_or_else(|| {
-        anyhow!(
-            "unknown package manager {raw:?}; expected one of {}",
-            join_labels(
-                PackageManager::all()
-                    .iter()
-                    .copied()
-                    .map(PackageManager::label)
-            ),
-        )
-    })
-}
-
-fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
-    TaskRunner::from_label(raw).ok_or_else(|| {
-        anyhow!(
-            "unknown task runner {raw:?}; expected one of {}",
-            join_labels(TaskRunner::all().iter().copied().map(TaskRunner::label)),
-        )
-    })
-}
-
-/// Generic CLI-then-env override parser. CLI wins; whitespace is
-/// trimmed from both sources before parsing so `RUNNER_PM=" pnpm "`
-/// works the same as `RUNNER_PM=pnpm`. Empty/whitespace-only values
-/// are treated as unset so a user can clear an inherited variable with
-/// `RUNNER_PM= runner …`. Matches the whitespace handling used by
-/// [`is_env_truthy`] for boolean env flags.
-fn parse_override<T, P, V, B>(
-    cli: Option<&str>,
-    env: Option<&str>,
-    parse: V,
-    build: B,
-) -> Result<Option<T>>
-where
-    V: Fn(&str) -> Result<P>,
-    B: Fn(P, OverrideOrigin) -> T,
-{
-    if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = parse(raw)?;
-        return Ok(Some(build(parsed, OverrideOrigin::CliFlag)));
-    }
-    if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = parse(raw)?;
-        return Ok(Some(build(parsed, OverrideOrigin::EnvVar)));
-    }
-    Ok(None)
-}
-
-fn join_labels<I: Iterator<Item = &'static str>>(labels: I) -> String {
+/// Join an iterator of `&'static str` labels with `", "`. Used by the
+/// override and policy parsers to format `"unknown X; expected one of ..."`
+/// diagnostics. Free function rather than a method on a wrapper type
+/// because both [`overrides`] and [`policies`] reach for it without
+/// sharing other code.
+pub(super) fn join_labels<I: Iterator<Item = &'static str>>(labels: I) -> String {
     labels.collect::<Vec<_>>().join(", ")
 }
 
@@ -951,10 +61,10 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    use super::{
-        ExplainSource, FallbackPolicy, OverrideOrigin, OverrideSources, PmOverride,
-        ResolutionOverrides, ResolutionStep, ResolveError, Resolver, RunnerOverride, SourceValue,
+    use super::types::{
+        ExplainSource, OverrideSources, PmOverride, ResolutionStep, RunnerOverride, SourceValue,
     };
+    use super::{FallbackPolicy, OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
     use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
@@ -1351,6 +461,50 @@ mod tests {
     }
 
     #[test]
+    fn pm_label_that_names_a_runner_suggests_runner_flag() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("mise"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("`--pm mise` should error; mise is a task runner");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("task runner"),
+            "error should call out the category mismatch: {msg}"
+        );
+        assert!(
+            msg.contains("--runner mise"),
+            "error should suggest the correct flag: {msg}"
+        );
+    }
+
+    #[test]
+    fn runner_label_that_names_a_pm_suggests_pm_flag() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: Some("pnpm"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("`--runner pnpm` should error; pnpm is a package manager");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("package manager"),
+            "error should call out the category mismatch: {msg}"
+        );
+        assert!(
+            msg.contains("--pm pnpm"),
+            "error should suggest the correct flag: {msg}"
+        );
+    }
+
+    #[test]
     fn bundler_alias_bundle_is_accepted() {
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             pm: SourceValue {
@@ -1733,7 +887,8 @@ mod tests {
 
     #[test]
     fn on_mismatch_label_parses_three_values() {
-        use super::{MismatchPolicy, parse_mismatch_label};
+        use super::MismatchPolicy;
+        use super::policies::parse_mismatch_label;
 
         assert_eq!(parse_mismatch_label("warn").unwrap(), MismatchPolicy::Warn);
         assert_eq!(
@@ -1763,7 +918,7 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
-        let err = super::apply_manifest_on_fail(
+        let err = super::resolve::apply_manifest_on_fail(
             &decl,
             &mut warnings,
             |_| false,
@@ -1800,7 +955,7 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
-        let err = super::apply_manifest_on_fail(
+        let err = super::resolve::apply_manifest_on_fail(
             &decl,
             &mut warnings,
             |_| true,
@@ -1830,7 +985,7 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
-        super::apply_manifest_on_fail(
+        super::resolve::apply_manifest_on_fail(
             &decl,
             &mut warnings,
             |_| false,
@@ -1857,7 +1012,7 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
-        super::apply_manifest_on_fail(
+        super::resolve::apply_manifest_on_fail(
             &decl,
             &mut warnings,
             |_| true,
@@ -1890,7 +1045,7 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
-        super::apply_manifest_on_fail(
+        super::resolve::apply_manifest_on_fail(
             &decl,
             &mut warnings,
             |_| panic!("presence check should not run when onFail=Ignore"),
@@ -1917,7 +1072,7 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
-        super::apply_manifest_on_fail(
+        super::resolve::apply_manifest_on_fail(
             &decl,
             &mut warnings,
             |_| true,
@@ -2005,7 +1160,7 @@ mod tests {
 
     #[test]
     fn is_env_truthy_is_case_insensitive_for_falsy_values() {
-        use super::is_env_truthy;
+        use super::policies::is_env_truthy;
 
         // Falsy values in any case should be falsy.
         assert!(!is_env_truthy("false"));
@@ -2136,5 +1291,132 @@ mod tests {
             .resolve_node_pm()
             .expect("resolution should succeed");
         assert_eq!(decision.pm, PackageManager::Deno);
+    }
+
+    fn test_loaded_config_with_chain(
+        keep_going: Option<bool>,
+        kill_on_fail: Option<bool>,
+    ) -> LoadedConfig {
+        use crate::config::ChainSection;
+        LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            config: RunnerConfig {
+                chain: ChainSection {
+                    keep_going,
+                    kill_on_fail,
+                },
+                ..RunnerConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn from_sources_resolves_cli_keep_going() {
+        use crate::chain::FailurePolicy;
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_env_overrides_config_for_failure_policy() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(false), None);
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_rejects_both_keep_going_and_kill_on_fail() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            kill_on_fail: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("conflict must error");
+        let downcast = err.downcast_ref::<ResolveError>();
+        assert!(
+            matches!(
+                downcast,
+                Some(ResolveError::ConflictingFailurePolicy { .. })
+            ),
+            "expected ConflictingFailurePolicy, got: {err:#}",
+        );
+    }
+
+    #[test]
+    fn from_sources_env_false_overrides_config_true_for_failure_policy() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(true), None);
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("0"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+        assert_eq!(overrides.failure_policy, FailurePolicy::FailFast);
+    }
+
+    #[test]
+    fn from_sources_env_false_neutralises_config_conflict() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(true), Some(true));
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            kill_on_fail: ExplainSource {
+                cli: false,
+                env: Some("false"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("env=false on one side should neutralise the [chain] config conflict");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_rejects_both_env_vars_truthy() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            kill_on_fail: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("env-layer conflict must error");
+        let downcast = err.downcast_ref::<ResolveError>();
+        assert!(
+            matches!(
+                downcast,
+                Some(ResolveError::ConflictingFailurePolicy { source: "env vars" })
+            ),
+            "expected env-layer ConflictingFailurePolicy, got: {err:#}",
+        );
     }
 }

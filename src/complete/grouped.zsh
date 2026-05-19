@@ -20,97 +20,97 @@
 # like _tags, _describe, etc.
 
 function _clap_dynamic_completer_{NAME}() {
-    # Reset to zsh defaults with local scope so caller-side settings
-    # (XTRACE, shwordsplit, nullglob, aliases, …) don't leak into us
-    # and our tracing doesn't bleed into their prompt. `-o NULL_GLOB`
-    # silences "no matches found" errors that `_files` internals and
-    # user zstyles (e.g. specs tagged `globbed-files`) would otherwise
-    # raise into the prompt when an unquoted `*` fails to match — and,
-    # unlike `NO_NOMATCH`, it does so without leaving the literal glob
-    # (e.g. `*(/)` from `_files -/` in a dir with no subdirectories)
-    # as a candidate that then gets inserted into the command line.
-    # `-o EXTENDED_GLOB` is required because zsh's own `_files` builds
-    # qualifier patterns like `*(#q-/)` and uses `(#b)` backreferences
-    # internally — without extended glob, those raise
-    # `bad pattern: *(#q-/):globbed-files` the moment `_files -/` runs.
-    emulate -L zsh -o NULL_GLOB -o EXTENDED_GLOB
+	# Reset to zsh defaults with local scope so caller-side settings
+	# (XTRACE, shwordsplit, nullglob, aliases, …) don't leak into us
+	# and our tracing doesn't bleed into their prompt. `-o NULL_GLOB`
+	# silences "no matches found" errors that `_files` internals and
+	# user zstyles (e.g. specs tagged `globbed-files`) would otherwise
+	# raise into the prompt when an unquoted `*` fails to match — and,
+	# unlike `NO_NOMATCH`, it does so without leaving the literal glob
+	# (e.g. `*(/)` from `_files -/` in a dir with no subdirectories)
+	# as a candidate that then gets inserted into the command line.
+	# `-o EXTENDED_GLOB` is required because zsh's own `_files` builds
+	# qualifier patterns like `*(#q-/)` and uses `(#b)` backreferences
+	# internally — without extended glob, those raise
+	# `bad pattern: *(#q-/):globbed-files` the moment `_files -/` runs.
+	emulate -L zsh -o NULL_GLOB -o EXTENDED_GLOB
 
-    local __runner_idx=$(( CURRENT - 1 ))
-    local __runner_ifs=$'\n'
+	local __runner_idx=$((CURRENT - 1))
+	local __runner_ifs=$'\n'
 
-    # Call the binary in completion mode.
-    local __runner_raw=("${(@f)$( \
-        _CLAP_IFS="$__runner_ifs" \
-        _CLAP_COMPLETE_INDEX="$__runner_idx" \
-        {VAR}="zsh" \
-        {COMPLETER} -- "${words[@]}" 2>/dev/null \
-    )}")
+	# Call the binary in completion mode.
+	local __runner_raw=("${(@f)$(
+		_CLAP_IFS="$__runner_ifs" \
+			_CLAP_COMPLETE_INDEX="$__runner_idx" \
+			{VAR}="zsh" \
+			{COMPLETER} -- "${words[@]}" 2>/dev/null
+	)}")
 
-    [[ -z "$__runner_raw" ]] && return
+	[[ -z "$__runner_raw" ]] && return
 
-    # Path-hint delegation: when the Rust completer returns the path
-    # sentinel, hand off to zsh's `_files` builtin so tilde (`~/foo`,
-    # `~named-dir/`), globs, and `cdpath` all work natively.
-    if [[ "${__runner_raw[1]}" == __CLAP_PATHFILES__* ]]; then
-        local __runner_flags="${${__runner_raw[1]}#__CLAP_PATHFILES__}"
-        __runner_flags="${__runner_flags#$'\t'}"
-        if [[ -n "$__runner_flags" ]]; then
-            # `noglob` as a PRECOMMAND modifier (not `setopt noglob`)
-            # keeps globs like `*(*)` from expanding at the call site so
-            # they reach `_files` literally, while leaving globbing ON
-            # inside `_files` itself — `_path_files` internally does
-            # `tmp1=( $~tmp1 )` to list directories, and a function-wide
-            # `setopt noglob` would leave that pattern (e.g. `*(-/)` from
-            # `_files -/` in a dir with no subdirectories) unexpanded and
-            # thus leaked as a candidate. `NULL_GLOB` from `emulate` above
-            # then silently drops the no-match case without residue.
-            noglob _files ${=__runner_flags}
-        else
-            _files
-        fi
-        return
-    fi
+	# Path-hint delegation: when the Rust completer returns the path
+	# sentinel, hand off to zsh's `_files` builtin so tilde (`~/foo`,
+	# `~named-dir/`), globs, and `cdpath` all work natively.
+	if [[ "${__runner_raw[1]}" == __CLAP_PATHFILES__* ]]; then
+		local __runner_flags="${${__runner_raw[1]}#__CLAP_PATHFILES__}"
+		__runner_flags="${__runner_flags#$'\t'}"
+		if [[ -n "$__runner_flags" ]]; then
+			# `noglob` as a PRECOMMAND modifier (not `setopt noglob`)
+			# keeps globs like `*(*)` from expanding at the call site so
+			# they reach `_files` literally, while leaving globbing ON
+			# inside `_files` itself — `_path_files` internally does
+			# `tmp1=( $~tmp1 )` to list directories, and a function-wide
+			# `setopt noglob` would leave that pattern (e.g. `*(-/)` from
+			# `_files -/` in a dir with no subdirectories) unexpanded and
+			# thus leaked as a candidate. `NULL_GLOB` from `emulate` above
+			# then silently drops the no-match case without residue.
+			noglob _files ${=__runner_flags}
+		else
+			_files
+		fi
+		return
+	fi
 
-    # --- Pass 1: collect unique tags in insertion order ---------------
-    local -a __runner_grps=()
-    local __runner_ln
-    for __runner_ln in "${__runner_raw[@]}"; do
-        local __runner_g="${__runner_ln%%$'\x1f'*}"
-        if (( ! ${__runner_grps[(Ie)$__runner_g]} )); then
-            __runner_grps+=("$__runner_g")
-        fi
-    done
+	# --- Pass 1: collect unique tags in insertion order ---------------
+	local -a __runner_grps=()
+	local __runner_ln
+	for __runner_ln in "${__runner_raw[@]}"; do
+		local __runner_g="${__runner_ln%%$'\x1f'*}"
+		if ((!${__runner_grps[(Ie)$__runner_g]})); then
+			__runner_grps+=("$__runner_g")
+		fi
+	done
 
-    # --- Pass 2: build per-group arrays and compadd each -------------
-    # Empty assignment matters: `local NAME` with no value, on an
-    # already-set local (Pass 1 localized __runner_g), is the typeset
-    # display form and prints `__runner_g=<last value>` to the terminal.
-    # Normally invisible — zle redisplay redraws the line — but with
-    # oh-my-zsh's `COMPLETION_WAITING_DOTS` indicator already on the
-    # line, the spurious print survives the redraw and lingers next to
-    # the dots after the menu opens.
-    local __runner_g=
-    for __runner_g in "${__runner_grps[@]}"; do
-        local -a __runner_vals=()
-        local -a __runner_dsps=()
-        for __runner_ln in "${__runner_raw[@]}"; do
-            if [[ "${__runner_ln%%$'\x1f'*}" == "$__runner_g" ]]; then
-                local __runner_e="${__runner_ln#*$'\x1f'}"
-                # Split value and optional description on \t
-                if [[ "$__runner_e" == *$'\t'* ]]; then
-                    __runner_vals+=("${__runner_e%%$'\t'*}")
-                    __runner_dsps+=("${(r:30:)${__runner_e%%$'\t'*}} -- ${__runner_e#*$'\t'}")
-                else
-                    __runner_vals+=("$__runner_e")
-                    __runner_dsps+=("$__runner_e")
-                fi
-            fi
-        done
-        if (( ${#__runner_vals} )); then
-            compadd -V "$__runner_g" -X "-- $__runner_g --" \
-                -d __runner_dsps -a -- __runner_vals
-        fi
-    done
+	# --- Pass 2: build per-group arrays and compadd each -------------
+	# Empty assignment matters: `local NAME` with no value, on an
+	# already-set local (Pass 1 localized __runner_g), is the typeset
+	# display form and prints `__runner_g=<last value>` to the terminal.
+	# Normally invisible — zle redisplay redraws the line — but with
+	# oh-my-zsh's `COMPLETION_WAITING_DOTS` indicator already on the
+	# line, the spurious print survives the redraw and lingers next to
+	# the dots after the menu opens.
+	local __runner_g=
+	for __runner_g in "${__runner_grps[@]}"; do
+		local -a __runner_vals=()
+		local -a __runner_dsps=()
+		for __runner_ln in "${__runner_raw[@]}"; do
+			if [[ "${__runner_ln%%$'\x1f'*}" == "$__runner_g" ]]; then
+				local __runner_e="${__runner_ln#*$'\x1f'}"
+				# Split value and optional description on \t
+				if [[ "$__runner_e" == *$'\t'* ]]; then
+					__runner_vals+=("${__runner_e%%$'\t'*}")
+					__runner_dsps+=("${(r:30:)${__runner_e%%$'\t'*}} -- ${__runner_e#*$'\t'}")
+				else
+					__runner_vals+=("$__runner_e")
+					__runner_dsps+=("$__runner_e")
+				fi
+			fi
+		done
+		if ((${#__runner_vals})); then
+			compadd -V "$__runner_g" -X "-- $__runner_g --" \
+				-d __runner_dsps -a -- __runner_vals
+		fi
+	done
 }
 
 compdef _clap_dynamic_completer_{NAME} {BIN}

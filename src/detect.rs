@@ -243,47 +243,139 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 
 /// Extract tasks only from tools that were actually detected, avoiding
 /// unnecessary filesystem reads.
+///
+/// Each enabled extractor runs in its own scoped thread. The slow path
+/// is always a subprocess wait — `just --summary --justfile <path>`,
+/// `mise tasks ls`, `task --list`, `cargo metadata`, `turbo run` schema
+/// reads, etc. — and those waits dominate cold-run wall-clock for any
+/// project that detects more than two task sources. Serial extraction
+/// costs O(N) subprocesses worth of latency; scoped parallelism brings
+/// it down to ~`max(extractor_latency)` plus thread-spawn overhead.
+///
+/// Pushes are applied in the original declaration order so the task
+/// list keeps the source ordering the resolver and snapshot tests
+/// rely on. `JoinHandle::join` panics propagate the same way a panic
+/// in the previous serial code would have, which is the right
+/// behavior; silently swallowing a poisoned extractor would mask a
+/// real bug.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    if tool::node::has_package_json(dir)
+    use std::thread;
+
+    let with_deno = ctx.package_managers.contains(&PackageManager::Deno);
+    let want_pkg_json_node = tool::node::has_package_json(dir)
         && ctx
             .package_managers
             .iter()
-            .any(|pm| pm.is_node() || *pm == PackageManager::Deno)
-    {
-        push_package_json_tasks(
-            ctx,
-            if ctx.package_managers.contains(&PackageManager::Deno) {
-                tool::node::extract_scripts_upwards(dir)
-            } else {
-                tool::node::extract_scripts(dir)
-            },
-        );
-    } else if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_package_json_tasks(ctx, tool::node::extract_scripts_upwards(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Turbo) {
-        push_named_tasks(ctx, TaskSource::TurboJson, tool::turbo::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Make) {
-        push_described_tasks(ctx, TaskSource::Makefile, tool::make::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Just) {
-        push_just_tasks(ctx, tool::just::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::GoTask) {
-        push_described_tasks(ctx, TaskSource::Taskfile, tool::go_task::extract_tasks(dir));
-    }
-    if ctx.package_managers.contains(&PackageManager::Deno) {
-        push_named_tasks(ctx, TaskSource::DenoJson, tool::deno::extract_tasks(dir));
-    }
-    if ctx.package_managers.contains(&PackageManager::Cargo) {
-        push_cargo_aliases(ctx, tool::cargo_aliases::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Bacon) {
-        push_described_tasks(ctx, TaskSource::BaconToml, tool::bacon::extract_tasks(dir));
-    }
-    if ctx.task_runners.contains(&TaskRunner::Mise) {
-        push_mise_tasks(ctx, tool::mise::extract_tasks(dir));
+            .any(|pm| pm.is_node() || *pm == PackageManager::Deno);
+    let want_pkg_json_deno = !want_pkg_json_node && with_deno;
+    let want_turbo = ctx.task_runners.contains(&TaskRunner::Turbo);
+    let want_make = ctx.task_runners.contains(&TaskRunner::Make);
+    let want_just = ctx.task_runners.contains(&TaskRunner::Just);
+    let want_go_task = ctx.task_runners.contains(&TaskRunner::GoTask);
+    let want_deno_tasks = with_deno;
+    let want_cargo = ctx.package_managers.contains(&PackageManager::Cargo);
+    let want_go_packages = ctx.package_managers.contains(&PackageManager::Go);
+    let want_bacon = ctx.task_runners.contains(&TaskRunner::Bacon);
+    let want_mise = ctx.task_runners.contains(&TaskRunner::Mise);
+
+    thread::scope(|s| {
+        let pkg_json_h = if want_pkg_json_node {
+            Some(s.spawn(move || {
+                if with_deno {
+                    tool::node::extract_scripts_upwards(dir)
+                } else {
+                    tool::node::extract_scripts(dir)
+                }
+            }))
+        } else if want_pkg_json_deno {
+            Some(s.spawn(move || tool::node::extract_scripts_upwards(dir)))
+        } else {
+            None
+        };
+        let turbo_h = want_turbo.then(|| s.spawn(move || tool::turbo::extract_tasks(dir)));
+        let make_h = want_make.then(|| s.spawn(move || tool::make::extract_tasks(dir)));
+        let just_h = want_just.then(|| s.spawn(move || tool::just::extract_tasks(dir)));
+        let go_task_h = want_go_task.then(|| s.spawn(move || tool::go_task::extract_tasks(dir)));
+        let deno_h = want_deno_tasks.then(|| s.spawn(move || tool::deno::extract_tasks(dir)));
+        let cargo_h = want_cargo.then(|| s.spawn(move || tool::cargo_aliases::extract_tasks(dir)));
+        let go_h = want_go_packages.then(|| s.spawn(move || tool::go_pm::extract_tasks(dir)));
+        let bacon_h = want_bacon.then(|| s.spawn(move || tool::bacon::extract_tasks(dir)));
+        let mise_h = want_mise.then(|| s.spawn(move || tool::mise::extract_tasks(dir)));
+
+        if let Some(h) = pkg_json_h {
+            push_package_json_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = turbo_h {
+            push_named_tasks(
+                ctx,
+                TaskSource::TurboJson,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = make_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::Makefile,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = just_h {
+            push_just_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = go_task_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::Taskfile,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = deno_h {
+            push_named_tasks(
+                ctx,
+                TaskSource::DenoJson,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = cargo_h {
+            push_cargo_aliases(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = go_h {
+            push_go_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = bacon_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::BaconToml,
+                h.join().expect("extractor thread panicked"),
+            );
+        }
+        if let Some(h) = mise_h {
+            push_mise_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+    });
+}
+
+fn push_go_tasks(
+    ctx: &mut ProjectContext,
+    result: anyhow::Result<Vec<tool::go_pm::ExtractedTask>>,
+) {
+    match result {
+        Ok(entries) => {
+            for entry in entries {
+                ctx.tasks.push(Task {
+                    name: entry.name,
+                    source: TaskSource::GoPackage,
+                    run_target: Some(entry.run_target),
+                    description: None,
+                    alias_of: None,
+                    passthrough_to: None,
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::GoPackage.label(),
+            error: format!("{err:#}"),
+        }),
     }
 }
 
@@ -307,8 +399,7 @@ fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {
 }
 
 /// Append cargo aliases as tasks. Each alias's fully recursion-expanded
-/// command becomes the description (rendered as `cargo <expansion>` in the
-/// final list output).
+/// command becomes the alias target text shown by list/why/completion.
 fn push_cargo_aliases(
     ctx: &mut ProjectContext,
     result: anyhow::Result<Vec<tool::cargo_aliases::ExtractedAlias>>,
@@ -316,12 +407,13 @@ fn push_cargo_aliases(
     match result {
         Ok(entries) => {
             for entry in entries {
-                let description = Some(entry.display_command());
+                let alias_of = Some(entry.display_command());
                 ctx.tasks.push(Task {
                     name: entry.name,
                     source: TaskSource::CargoAliases,
-                    description,
-                    alias_of: None,
+                    run_target: None,
+                    description: None,
+                    alias_of,
                     passthrough_to: None,
                 });
             }
@@ -358,6 +450,7 @@ fn push_described_tasks(
                 ctx.tasks.push(Task {
                     name,
                     source,
+                    run_target: None,
                     description,
                     alias_of: None,
                     passthrough_to: None,
@@ -389,6 +482,7 @@ fn push_package_json_tasks(
                 ctx.tasks.push(Task {
                     name,
                     source: TaskSource::PackageJson,
+                    run_target: None,
                     description: None,
                     alias_of: None,
                     passthrough_to,
@@ -441,6 +535,7 @@ fn push_recipe_alias_tasks(
                 ctx.tasks.push(Task {
                     name,
                     source,
+                    run_target: None,
                     description,
                     alias_of,
                     passthrough_to: None,
@@ -488,7 +583,7 @@ mod tests {
         let ctx = detect(dir.path());
 
         assert_eq!(ctx.warnings.len(), 1);
-        assert_eq!(ctx.warnings[0].source(), "turbo.json");
+        assert_eq!(ctx.warnings[0].source(), "turbo");
     }
 
     #[test]
@@ -526,6 +621,74 @@ mod tests {
             detail.contains("npm|pnpm|yarn|bun|deno"),
             "warning should list the accepted values: {detail}",
         );
+    }
+
+    #[test]
+    fn detect_models_cargo_aliases_as_aliases() {
+        let dir = TempDir::new("detect-cargo-alias-shape");
+        let cargo_dir = dir.path().join(".cargo");
+        fs::create_dir_all(&cargo_dir).expect(".cargo dir should be created");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .expect("Cargo.toml should be written");
+        fs::write(
+            cargo_dir.join("config.toml"),
+            "[alias]\nl = \"clippy --all-targets\"\n",
+        )
+        .expect("config.toml should be written");
+
+        let ctx = detect(dir.path());
+        let task = ctx
+            .tasks
+            .iter()
+            .find(|task| task.source == crate::types::TaskSource::CargoAliases && task.name == "l")
+            .expect("cargo alias should be detected");
+
+        assert_eq!(task.description, None);
+        assert_eq!(task.alias_of.as_deref(), Some("clippy --all-targets"));
+    }
+
+    #[test]
+    fn detect_models_go_cmd_packages_as_tasks() {
+        let dir = TempDir::new("detect-go-cmd-package");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        let cmd_dir = dir.path().join("cmd").join("serve");
+        fs::create_dir_all(&cmd_dir).expect("cmd package dir should be created");
+        fs::write(cmd_dir.join("main.go"), "package main\n\nfunc main() {}\n")
+            .expect("main.go should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::GoPackage
+                && task.name == "serve"
+                && task.run_target.as_deref() == Some("./cmd/serve")
+        }));
+    }
+
+    #[test]
+    fn detect_models_root_go_main_package_as_task() {
+        let dir = TempDir::new("detect-go-root-package");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("main.go should be written");
+
+        let ctx = detect(dir.path());
+
+        // Root task name is the last `module` path segment (deterministic),
+        // not the temp directory's randomized name.
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::GoPackage
+                && task.name == "app"
+                && task.run_target.as_deref() == Some(".")
+        }));
     }
 
     #[test]

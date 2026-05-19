@@ -9,8 +9,8 @@ use anyhow::Result;
 use colored::Colorize;
 
 use super::list::print_tasks_grouped;
-use crate::report::Project;
 use crate::resolver::ResolutionOverrides;
+use crate::schema::Project;
 use crate::types::{ProjectContext, version_matches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
@@ -27,14 +27,18 @@ pub(crate) fn info(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     json: bool,
+    schema_version: u32,
 ) -> Result<()> {
     if json {
-        let view = Project::build(ctx, overrides).into_info_view();
+        let view = Project::build_with_schema(ctx, overrides, schema_version).into_info_view();
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
+    // Human output is not schema-versioned; callers pass the current version
+    // only to keep the JSON-capable function signature narrow.
+    let _ = schema_version;
 
-    super::print_warnings(ctx, overrides);
+    super::print_warnings(ctx, overrides, None);
 
     println!(
         "{}",
@@ -77,8 +81,18 @@ pub(crate) fn info(
 
     if !ctx.tasks.is_empty() {
         println!();
+        // Rows already printed above the task list: title line + the
+        // blank after it, each conditional metadata row, and the blank
+        // separator just below. The renderer reserves this so the list
+        // collapses to compact before the banner pushes it offscreen.
+        let banner_rows = 2 // title + trailing blank
+            + usize::from(!ctx.package_managers.is_empty())
+            + usize::from(!ctx.task_runners.is_empty())
+            + usize::from(ctx.node_version.is_some() || ctx.current_node.is_some())
+            + usize::from(ctx.is_monorepo)
+            + 1; // blank separator before the task list
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
-        print_tasks_grouped(&refs, &ctx.root);
+        print_tasks_grouped(&refs, &ctx.root, banner_rows);
     }
     Ok(())
 }
