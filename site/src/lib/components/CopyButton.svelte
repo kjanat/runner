@@ -24,7 +24,7 @@ async function copy(): Promise<void> {
 		await navigator.clipboard.writeText(command);
 		ok = true;
 	} catch {
-		ok = false;
+		// ok stays false
 	}
 	announce(ok ? "Copied to clipboard" : "Copy failed");
 	if (!ok) return;

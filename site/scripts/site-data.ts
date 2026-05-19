@@ -70,7 +70,9 @@ export function parseCargoToml(raw: string): GenData {
 	const cratesName = required("name");
 	const repoRaw = required("repository");
 
-	const repo = repoRaw.replace(/\.git$/, "").replace(/\/$/, "");
+	// Trim trailing slashes first, then a `.git` suffix, so both
+	// `…/repo.git/` and `…/repo/` and `…/repo.git` normalize cleanly.
+	const repo = repoRaw.replace(/\/+$/, "").replace(/\.git$/, "");
 	const authors = pkg["authors"];
 	const author = Array.isArray(authors) ? authors[0] ?? "" : "";
 	const authorMatch = author.match(/^\s*(.+?)\s*(?:<([^>]+)>)?\s*$/);

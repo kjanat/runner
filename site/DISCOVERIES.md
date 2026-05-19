@@ -26,8 +26,9 @@ Completion), `hr.rule` (route pages), and `.wordmark` (Wordmark
 component. Svelte cannot share one component's scoped style with
 another, so these are global by necessity. The `.wordmark`/404
 coupling was caught only by a post-refactor selector-accounting
-sweep — re-run that sweep after any further scoping:
-`for sel in ...; do grep -rl "$sel" src/app.css src/lib src/routes; done`
+sweep — re-run that sweep after any further scoping (`-F` = fixed-string, so
+selectors like `.copy .toast` aren't treated as regexes):
+`for sel in ...; do grep -rlF "$sel" src/app.css src/lib src/routes; done`
 
 ## What is legitimately scoped
 

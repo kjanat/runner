@@ -24,9 +24,12 @@ const routes = {
 const html = new Map<string, string>();
 
 beforeAll(() => {
-	// Build once if the output is stale/absent; reuse it otherwise so
-	// the suite stays fast on repeat runs.
-	if (!existsSync(join(pagesDir, "index.html"))) {
+	// Build once if ANY expected route file is stale/absent; reuse
+	// otherwise so the suite stays fast on repeat runs. Checking every
+	// file (not just index.html) stops a partial build from causing an
+	// ENOENT in the readFileSync loop below.
+	const allPresent = Object.values(routes).every((file) => existsSync(join(pagesDir, file)));
+	if (!allPresent) {
 		execSync("bun run build", { cwd: root, stdio: "inherit" });
 	}
 	for (const [route, file] of Object.entries(routes)) {
