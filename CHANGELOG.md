@@ -57,6 +57,36 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   flag into the synthetic install head of the chain, so the
   install step runs lockfile-only when the flag is set. Previous
   behavior silently dropped the flag in chain mode.
+- Root single-binary Go task name now derives from the `module`
+  path in `go.mod` (last segment, with a `/vN` major-version
+  suffix dropped to match how Go names the built binary) instead
+  of the project directory name, so cloning a repo into a
+  differently-named directory no longer changes the task name.
+  Falls back to the directory name only when `go.mod` is absent
+  or has no parseable `module` line.
+
+### Fixed
+
+- Node script discovery is no longer gated on a *detected*
+  package manager. A `package.json` with `scripts` but no
+  lockfile and no `packageManager` / `devEngines` field (a
+  typical pnpm-workspace member directory) reported "No project
+  detected" and `runner run build` fell through to a bogus
+  `bun build`. Manifest presence is now the Node signal; *which*
+  PM dispatches scripts is the resolver's runtime job. A
+  manifest-less subdirectory still lists ancestor scripts, but
+  only when it provably sits inside a JS monorepo
+  (workspace-root-aware, VCS-bounded), so an unrelated outer
+  project's `package.json` is never silently adopted.
+  https://github.com/kjanat/runner/pull/32
+- Detection now mirrors the resolver's package-manager chain
+  (`packageManager` → `devEngines.packageManager` →
+  enclosing-workspace lockfile/manifest), so `runner info` /
+  `runner install` from a workspace member target the
+  workspace's tool instead of resolving nothing. Corepack
+  semantics preserved: a present-but-unparseable legacy
+  `packageManager` still warns and is not silently superseded by
+  `devEngines`.
 
 ## [0.10.0] - 2026-05-14
 
