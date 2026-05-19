@@ -159,6 +159,11 @@ fn chain_rejects_whitespace_positional_in_v1() {
 
 #[test]
 fn install_completion_includes_tasks_and_options() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+
     let output = Command::new(runner_binary())
         .env("COMPLETE", "zsh")
         .env("_CLAP_COMPLETE_INDEX", "4")
