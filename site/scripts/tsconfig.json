@@ -1,0 +1,16 @@
+{
+	// Bun build tooling — typechecked under Bun's types, separate from
+	// the SvelteKit app tsconfig (which has no node/Bun globals).
+	"compilerOptions": {
+		"target": "ESNext",
+		"module": "Preserve",
+		"moduleResolution": "bundler",
+		"lib": ["ESNext"],
+		"types": ["bun"],
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"verbatimModuleSyntax": true
+	},
+	"include": ["**/*.ts"]
+}

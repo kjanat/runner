@@ -11,5 +11,12 @@
 		"strict": true,
 		"moduleResolution": "bundler"
 	},
-	"exclude": ["dist", "build", ".svelte-kit/output", ".wrangler", "node_modules"]
+	"exclude": [
+		"dist",
+		"build",
+		"scripts",
+		".svelte-kit/output",
+		".wrangler",
+		"node_modules"
+	]
 }
