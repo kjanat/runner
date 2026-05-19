@@ -681,15 +681,12 @@ mod tests {
         .expect("main.go should be written");
 
         let ctx = detect(dir.path());
-        let name = dir
-            .path()
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("temp dir should have utf-8 file name");
 
+        // Root task name is the last `module` path segment (deterministic),
+        // not the temp directory's randomized name.
         assert!(ctx.tasks.iter().any(|task| {
             task.source == crate::types::TaskSource::GoPackage
-                && task.name == name
+                && task.name == "app"
                 && task.run_target.as_deref() == Some(".")
         }));
     }

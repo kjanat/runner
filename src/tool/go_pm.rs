@@ -28,10 +28,11 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let mut tasks = Vec::new();
 
     if contains_main_package(dir)?
-        && let Some(name) = dir.file_name().and_then(|name| name.to_str())
+        && let Some(name) = module_name(dir)
+            .or_else(|| dir.file_name().and_then(|n| n.to_str()).map(str::to_string))
     {
         tasks.push(ExtractedTask {
-            name: name.to_string(),
+            name,
             run_target: ".".to_string(),
         });
     }
@@ -57,6 +58,47 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     }
     tasks.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     Ok(tasks)
+}
+
+/// Last path segment of the `module` directive in `dir/go.mod`, used as the
+/// root single-binary task name so it tracks the module's identity rather
+/// than the filesystem location (cloning to a differently-named directory
+/// must not change the task name). A trailing `/vN` major-version suffix is
+/// dropped, matching how Go names the produced binary (`example.com/foo/v2`
+/// builds `foo`). `None` if `go.mod` is absent or has no parseable `module`
+/// line, so the caller can fall back to the directory name.
+fn module_name(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(dir.join("go.mod")).ok()?;
+    let path = content.lines().find_map(parse_module_line)?;
+    let mut segments = path.rsplit('/');
+    let last = segments.next()?;
+    let name = if is_major_version(last) {
+        segments.next().unwrap_or(last)
+    } else {
+        last
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Extract the module path from a single `go.mod` line, or `None` if the
+/// line is not a `module` directive. Requires a whitespace boundary after
+/// `module` so identifiers like `modulefoo` do not match, tolerates a
+/// trailing `// comment`, and strips optional surrounding quotes.
+fn parse_module_line(line: &str) -> Option<&str> {
+    let rest = line.trim_start().strip_prefix("module")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let tok = rest.split_whitespace().next()?.trim_matches('"');
+    (!tok.is_empty()).then_some(tok)
+}
+
+/// A Go major-version path segment: `v` followed by one or more digits
+/// (`v2`, `v10`). These are suffixes on the module path, not the binary
+/// name, so they are skipped when deriving the task name.
+fn is_major_version(seg: &str) -> bool {
+    seg.strip_prefix('v')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 fn contains_main_package(dir: &Path) -> anyhow::Result<bool> {
@@ -170,10 +212,46 @@ mod tests {
     }
 
     #[test]
-    fn extract_tasks_finds_root_main_package() {
+    fn extract_tasks_root_name_from_go_mod_module() {
         let dir = TempDir::new("go-root-main");
-        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+        fs::write(
+            dir.path().join("go.mod"),
+            "module github.com/kjanat/some-cli-app // root\n",
+        )
+        .expect("go.mod should be written");
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("root main should be written");
+
+        // Last module-path segment, not the (temp, randomized) directory name.
+        let tasks = extract_tasks(dir.path()).expect("go root task should parse");
+
+        assert_eq!(tasks, [task("some-cli-app", ".")]);
+    }
+
+    #[test]
+    fn extract_tasks_root_name_drops_major_version_suffix() {
+        let dir = TempDir::new("go-root-v2");
+        fs::write(dir.path().join("go.mod"), "module example.com/widget/v2\n")
             .expect("go.mod should be written");
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("root main should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("go root task should parse");
+
+        assert_eq!(tasks, [task("widget", ".")]);
+    }
+
+    #[test]
+    fn extract_tasks_root_name_falls_back_to_dir_without_module_line() {
+        let dir = TempDir::new("go-root-no-module");
+        // go.mod present (project still detected) but no `module` directive.
+        fs::write(dir.path().join("go.mod"), "go 1.22\n").expect("go.mod should be written");
         fs::write(
             dir.path().join("main.go"),
             "package main\n\nfunc main() {}\n",
