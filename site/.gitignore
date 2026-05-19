@@ -1,0 +1,9 @@
+node_modules/
+/.svelte-kit/
+/build/
+/dist/
+/.wrangler/
+# Generated at build time from workspace-root Cargo.toml by
+# scripts/gen-site-data.ts (prebuild). Never hand-edited, never committed.
+/src/lib/content/generated.ts
+.DS_Store

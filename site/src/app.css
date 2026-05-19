@@ -1,6 +1,93 @@
+/* Ported verbatim from the previous site (base.css + index.css) so the
+ * visual design language is unchanged. A later iteration extracts the
+ * :root tokens into lib/styles/tokens.css and moves section-specific
+ * rules into component-scoped <style> blocks; the rendered result must
+ * stay pixel-equivalent through that refactor. */
+
+:root {
+	--bg: #f4ede1;
+	--ink: #0e0e0e;
+	--dim: #5a5a52;
+	--moss: #3d5a36;
+	--tomato: #d94e2c;
+	--rule: #1a1a1a14;
+	--term-bg: #0a0a0a;
+	--term-fg: #e5e5e5;
+	--term-dim: color-mix(in srgb, var(--term-fg) 70%, var(--term-bg));
+	--term-bold: #fff;
+	--term-green: #a3cf95;
+	--term-red: #f47a59;
+	--mono: ui-monospace, Menlo, Consolas, monospace;
+	--radius-sm: 2px;
+	--radius-md: 4px;
+	--ring-width: 2px;
+	--ring-offset: 3px;
+	--dur-fast: 80ms;
+	--dur-base: 120ms;
+	--lh-base: 1.55;
+	--ls-caps: 0.16em;
+	--text-micro: 0.7rem;
+	--text-xs: 0.75rem;
+	color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--bg: #221d15;
+		--ink: #f4ecd9;
+		--dim: #c0b8a8;
+		--moss: #a3cf95;
+		--tomato: #f47a59;
+		--rule: #ffffff40;
+	}
+}
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
 html,
 body {
 	overflow-x: hidden;
+}
+body {
+	margin: 0;
+	font-family: var(--mono);
+	font-size: 1rem;
+	line-height: var(--lh-base);
+	color: var(--ink);
+	background: var(--bg);
+}
+code {
+	padding: 0.05em 0.35em;
+	color: var(--ink);
+	background: color-mix(in srgb, var(--ink) 7%, transparent);
+	border-radius: var(--radius-sm);
+	-webkit-user-select: all;
+	user-select: all;
+}
+::selection {
+	color: var(--bg);
+	background: var(--ink);
+}
+.term ::selection {
+	color: var(--term-bg);
+	background: var(--tomato);
+}
+a {
+	color: var(--moss);
+	text-underline-offset: 0.18em;
+}
+a:hover {
+	color: var(--bg);
+	background: var(--moss);
+}
+a:focus-visible {
+	outline: var(--ring-width) solid var(--tomato);
+	outline-offset: var(--ring-offset);
+}
+a:focus-visible:hover {
+	color: var(--moss);
+	background: transparent;
 }
 .visually-hidden {
 	position: absolute;
@@ -13,8 +100,24 @@ body {
 	border: 0;
 	clip-path: inset(50%);
 }
+.skip-link {
+	position: absolute;
+	left: 0.5rem;
+	top: -3rem;
+	z-index: 10;
+	padding: 0.5rem 0.85rem;
+	color: var(--bg);
+	background: var(--ink);
+	border-radius: var(--radius-sm);
+	transition: top var(--dur-base) linear;
+}
+.skip-link:focus {
+	top: 0.5rem;
+}
 main {
 	max-width: 72ch;
+	padding: 4rem 1.5rem 6rem;
+	margin: 0 auto;
 }
 h1,
 h2,
@@ -22,8 +125,22 @@ h3 {
 	margin: 0;
 	font-weight: 700;
 }
+.wordmark {
+	margin: 0;
+	font-size: clamp(3.25rem, 11vw, 6.5rem);
+	font-weight: 700;
+	line-height: 0.95;
+	letter-spacing: -0.045em;
+}
 .wordmark::after {
+	color: var(--tomato);
+	content: "_";
 	animation: idle-double-blink 11s steps(1) infinite;
+}
+.tagline {
+	max-width: 52ch;
+	margin: 1.25rem 0 0;
+	font-size: 1.0625rem;
 }
 .meta {
 	margin: 0.75rem 0 0;
@@ -36,6 +153,16 @@ footer a,
 }
 .meta a:hover {
 	color: var(--bg);
+}
+nav.site {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 1.25rem;
+	margin: 1.5rem 0 0;
+	font-size: 0.875rem;
+}
+nav.site a[aria-current="page"] {
+	color: var(--tomato);
 }
 hr.rule {
 	margin: 3rem 0 2rem;
@@ -149,10 +276,29 @@ hr.rule {
 .copy:hover .toast {
 	color: var(--bg);
 }
+.term {
+	padding: 1.1rem 1.25rem 1.4rem;
+	margin: 0;
+	overflow-x: auto;
+	font-size: 0.875rem;
+	line-height: var(--lh-base);
+	color: var(--term-fg);
+	white-space: pre;
+	background: var(--term-bg);
+	border: 1px solid var(--rule);
+	border-radius: var(--radius-md);
+}
 .install + .term {
 	margin-top: 1.25rem;
 }
 .term .prompt {
+	color: var(--term-dim);
+}
+.term .prompt::before {
+	color: var(--term-dim);
+	content: "$ ";
+}
+.term .dim {
 	color: var(--term-dim);
 }
 .term .bold {
@@ -285,6 +431,13 @@ footer {
 	border-top: 1px solid var(--ink);
 }
 @media (max-width: 40rem) {
+	main {
+		padding: 2.5rem 1.1rem 4rem;
+	}
+	.term {
+		padding: 0.9rem 1rem 1.1rem;
+		font-size: 0.78rem;
+	}
 	.matrix ul {
 		columns: auto;
 		display: flex;
