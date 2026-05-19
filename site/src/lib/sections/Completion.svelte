@@ -8,7 +8,7 @@ const cmd = $derived(commands(site));
 // See Demo.svelte: whitespace-exact, string literal, trusted static
 // content rendered with {@html}.
 const transcript = `<span class="prompt"></span><span>cd ~/some-project</span>
-<span class="prompt"></span><span>runner </span><span class="dim">&lt;TAB&gt;</span>
+<span class="prompt"></span><span>runner </span><span class="cursor"> </span><span class="dim"> &lt;TAB&gt;</span>
 <span class="dim">-- package.json --</span>
 build      <span class="dim">compile the thing</span>
 test       <span class="dim">run tests</span>
@@ -23,7 +23,7 @@ t          <span class="dim">→ test</span>
 <span class="dim">-- Commands --</span>
 list       <span class="dim">list tasks</span>
 info       <span class="dim">show detected project</span>
-clean      <span class="dim">clean build artefacts</span><span class="cursor"> </span>`;
+clean      <span class="dim">clean build artefacts</span>`;
 </script>
 
 <section aria-labelledby="completion-tag">
