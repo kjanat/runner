@@ -62,6 +62,36 @@ jobs:
           draft: true
           branch: master
 
+      - name: append GitHub auto-generated notes
+        # taiki-e set the body to our extracted CHANGELOG section only.
+        # Append GitHub's auto-generated "What's Changed" + contributors
+        # + "Full Changelog" compare link below it. The `release:
+        # published` event never fires for token-created releases, so
+        # this is the one place the final body can be assembled — no
+        # more manual appending after every cut.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          our_body="$(gh release view "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" --json body --jq .body)"
+          # previous_tag_name is omitted: GitHub derives it from the
+          # latest published release, which is correct here (this one is
+          # still a draft). On the first-ever release it degrades to a
+          # from-start "What's Changed", which is the desired behavior.
+          gen_body="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${RELEASE_TAG}" --jq .body)"
+          combined="$(mktemp)"
+          # No `---` rule: past releases (v0.8.1, v0.9.0, v0.10.0) put a
+          # bare blank line between the changelog and `## What's
+          # Changed`. Match that exactly.
+          printf '%s\n\n%s\n' "${our_body}" "${gen_body}" >"${combined}"
+          gh release edit "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" --notes-file "${combined}"
+          rm -f "${combined}"
+
   matrix:
     name: build matrix
     needs: verify
