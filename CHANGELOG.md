@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
-## [0.11.0] - TBD
+## [0.11.0] - 2026-05-19
 
 ### Added
 
@@ -968,5 +968,5 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 [0.2.0]: https://github.com/kjanat/runner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0
 
-<!--markdownlint-disable-file no-duplicate-heading-->
-<!-- rumdl-disable-file MD013 MD024 -->
+<!-- markdownlint-disable-file no-duplicate-heading MD034 -->
+<!-- rumdl-disable-file MD013 MD024 MD034 -->
