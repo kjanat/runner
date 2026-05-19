@@ -1,5 +1,6 @@
 <script lang="ts">
 import { afterNavigate } from "$app/navigation";
+import { resolve } from "$app/paths";
 import { page } from "$app/state";
 import { live } from "$lib/announce.svelte";
 import { site } from "$lib/content/site";
@@ -9,12 +10,14 @@ import "../app.css";
 let { children } = $props();
 
 const nav = [
-	{ href: "/", label: "home" },
-	{ href: "/demo/", label: "demo" },
-	{ href: "/completion/", label: "completion" },
-	{ href: "/why/", label: "why" },
-	{ href: "/changelog/", label: "changelog" },
-];
+	{ id: "/", label: "home" },
+	{ id: "/demo", label: "demo" },
+	{ id: "/completion", label: "completion" },
+	{ id: "/why", label: "why" },
+	{ id: "/changelog", label: "changelog" },
+] as const;
+
+const norm = (p: string) => (p.length > 1 ? p.replace(/\/$/, "") : p);
 
 let mainEl: HTMLElement | undefined = $state();
 
@@ -42,10 +45,10 @@ afterNavigate(({ from }) => {
 
 <main id="main" bind:this={mainEl} tabindex="-1">
 	<nav class="site" aria-label="Primary">
-		{#each nav as item (item.href)}
+		{#each nav as item (item.id)}
 			<a
-				href={item.href}
-				aria-current={page.url.pathname === item.href
+				href={resolve(item.id)}
+				aria-current={norm(page.url.pathname) === norm(resolve(item.id))
 				? "page"
 				: undefined}
 			>

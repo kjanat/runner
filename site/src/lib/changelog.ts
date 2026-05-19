@@ -97,24 +97,39 @@ export function parseChangelog(md: string): ChangelogRelease[] {
 	return releases.filter((r) => r.groups.some((g) => g.items.length > 0));
 }
 
+export type InlineToken =
+	| { kind: "text"; value: string }
+	| { kind: "code"; value: string }
+	| { kind: "strong"; value: string }
+	| { kind: "link"; value: string; href: string };
+
+const TOKEN_RE = /(`[^`]+`)|(\*\*[^*]+\*\*)|(https?:\/\/[^\s<)]+)/g;
+
 /**
- * Render one item's restricted inline markdown to safe HTML. HTML is
- * escaped first, then a fixed allow-list is reintroduced: `code`,
- * **bold**, and autolinked bare http(s) URLs. Source is our own
- * changelog, but escaping first keeps this injection-safe regardless
- * (it is fed to `{@html}`).
+ * Split one item's restricted inline markdown into typed tokens:
+ * `code`, **bold**, autolinked bare http(s) URLs, and plain text.
+ * The component renders these as real elements, so there is no
+ * `{@html}` and no escaping concern — Svelte escapes text bindings.
  */
-export function renderInline(md: string): string {
-	let s = md
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-	s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
-	s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-	s = s.replace(
-		/(^|[\s(])(https?:\/\/[^\s<)]+)/g,
-		(_m, pre: string, url: string) => `${pre}<a href="${url}" rel="noopener noreferrer">${url}</a>`,
-	);
-	return s;
+export function tokenizeInline(md: string): InlineToken[] {
+	const tokens: InlineToken[] = [];
+	let last = 0;
+	for (const m of md.matchAll(TOKEN_RE)) {
+		const idx = m.index;
+		if (idx > last) {
+			tokens.push({ kind: "text", value: md.slice(last, idx) });
+		}
+		if (m[1] !== undefined) {
+			tokens.push({ kind: "code", value: m[1].slice(1, -1) });
+		} else if (m[2] !== undefined) {
+			tokens.push({ kind: "strong", value: m[2].slice(2, -2) });
+		} else if (m[3] !== undefined) {
+			tokens.push({ kind: "link", value: m[3], href: m[3] });
+		}
+		last = idx + m[0].length;
+	}
+	if (last < md.length) {
+		tokens.push({ kind: "text", value: md.slice(last) });
+	}
+	return tokens;
 }

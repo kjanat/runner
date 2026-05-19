@@ -1,4 +1,5 @@
 <script lang="ts">
+import { resolve } from "$app/paths";
 import { page } from "$app/state";
 </script>
 
@@ -12,5 +13,5 @@ import { page } from "$app/state";
 	<p class="tagline">
 		{page.error?.message ?? "Something went sideways."}
 	</p>
-	<p class="meta"><a href="/">← back to runner</a></p>
+	<p class="meta"><a href={resolve("/")}>← back to runner</a></p>
 </header>

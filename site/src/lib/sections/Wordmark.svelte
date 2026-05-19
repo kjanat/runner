@@ -11,6 +11,7 @@ let { site }: { site: SiteData } = $props();
 	</p>
 	<p class="meta">
 		v{site.version} ·
-		<a href={site.repo}>{site.repoShort}</a> · {site.license}
+		<a href={site.repo} rel="external noopener noreferrer">{site.repoShort}</a>
+		· {site.license}
 	</p>
 </header>

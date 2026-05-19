@@ -1,4 +1,5 @@
 <script lang="ts">
+import { resolve } from "$app/paths";
 import { site } from "$lib/content/site";
 import Install from "$lib/sections/Install.svelte";
 import Wordmark from "$lib/sections/Wordmark.svelte";
@@ -25,7 +26,7 @@ const description = "One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetr
 <Install {site} />
 <hr class="rule" />
 <p class="meta">
-	See it run → <a href="/demo/">what it looks like</a> ·
-	<a href="/completion/">tab completion</a> ·
-	<a href="/why/">why it's not shit</a>
+	See it run → <a href={resolve("/demo")}>what it looks like</a> ·
+	<a href={resolve("/completion")}>tab completion</a> ·
+	<a href={resolve("/why")}>why it's not shit</a>
 </p>

@@ -32,20 +32,4 @@ export default [
 			},
 		},
 	},
-	{
-		rules: {
-			// Deliberate, reviewed project-wide decisions (not silent
-			// per-line suppressions):
-			// - no-at-html-tags: every {@html} renders trusted
-			//   build-time content via an escape-first (`renderInline`,
-			//   test-covered) or whitespace-exact-literal renderer; no
-			//   user input ever reaches it.
-			// - no-navigation-without-resolve: fully prerendered site
-			//   at the domain root, no `base` path, no i18n; internal
-			//   links gain nothing from resolve() and external links
-			//   (github/crates/npm/mailto) cannot use it.
-			"svelte/no-at-html-tags": "off",
-			"svelte/no-navigation-without-resolve": "off",
-		},
-	},
 ];

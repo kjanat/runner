@@ -1,5 +1,5 @@
 <script lang="ts">
-import { renderInline } from "$lib/changelog";
+import InlineMd from "$lib/components/InlineMd.svelte";
 import type { PageData } from "./$types";
 
 let { data }: { data: PageData } = $props();
@@ -26,12 +26,7 @@ let { data }: { data: PageData } = $props();
 				<h3>{group.name}</h3>
 				<ul>
 					{#each group.items as item, i (i)}
-						<!-- Safe {@html}: renderInline() escapes all HTML first,
-						then reintroduces only a fixed allow-list (code / bold /
-						autolinked http(s) URLs). Source is the trusted
-						build-time CHANGELOG.md. Invariant covered by
-						changelog.test.ts. -->
-						<li>{@html renderInline(item)}</li>
+						<li><InlineMd md={item} /></li>
 					{/each}
 				</ul>
 			{/each}

@@ -30,8 +30,10 @@ const installerUrl = $derived(
 	</div>
 	<p class="meta">
 		The npm package is a façade — installs only the
-		<a href="{site.repo}/tree/master/npm">prebuilt binary</a> for your platform via <code>optionalDependencies</code>. No postinstall, no network at install
-		time.
+		<a
+			href="{site.repo}/tree/master/npm"
+			rel="external noopener noreferrer"
+		>prebuilt binary</a> for your platform via <code>optionalDependencies</code>. No postinstall, no network at install time.
 	</p>
 	<p class="meta">
 		Using <code>cargo binstall</code>? Run

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseChangelog, renderInline } from "./changelog";
+import { parseChangelog, tokenizeInline } from "./changelog";
 
 const sample = `# Changelog
 
@@ -62,22 +62,41 @@ describe("parseChangelog", () => {
 	});
 });
 
-describe("renderInline", () => {
-	it("escapes HTML before reintroducing the allow-list", () => {
-		expect(renderInline("a <script>x</script> b")).toBe(
-			"a &lt;script&gt;x&lt;/script&gt; b",
-		);
+describe("tokenizeInline", () => {
+	it("keeps plain text as a single text token (no HTML)", () => {
+		expect(tokenizeInline("a <script> b")).toEqual([
+			{ kind: "text", value: "a <script> b" },
+		]);
 	});
 
-	it("renders code spans, bold, and autolinks bare URLs", () => {
-		expect(renderInline("use `runner run`")).toBe("use <code>runner run</code>");
-		expect(renderInline("**important**")).toBe("<strong>important</strong>");
-		expect(renderInline("see https://example.com/x done")).toContain(
-			"<a href=\"https://example.com/x\" rel=\"noopener noreferrer\">https://example.com/x</a>",
-		);
+	it("splits code / bold / bare-URL out of surrounding text", () => {
+		expect(tokenizeInline("use `runner run` now")).toEqual([
+			{ kind: "text", value: "use " },
+			{ kind: "code", value: "runner run" },
+			{ kind: "text", value: " now" },
+		]);
+		expect(tokenizeInline("**important**")).toEqual([
+			{ kind: "strong", value: "important" },
+		]);
+		expect(tokenizeInline("see https://example.com/x done")).toEqual([
+			{ kind: "text", value: "see " },
+			{ kind: "link", value: "https://example.com/x", href: "https://example.com/x" },
+			{ kind: "text", value: " done" },
+		]);
 	});
 
-	it("does not autolink a javascript: pseudo-URL", () => {
-		expect(renderInline("javascript:alert(1)")).not.toContain("<a ");
+	it("does not linkify a javascript: pseudo-URL", () => {
+		expect(tokenizeInline("javascript:alert(1)")).toEqual([
+			{ kind: "text", value: "javascript:alert(1)" },
+		]);
+	});
+
+	it("reassembles to the original text (lossless)", () => {
+		const src = "mix `code`, **bold** and https://x.dev/p end";
+		expect(
+			tokenizeInline(src).map((t) =>
+				t.kind === "code" ? `\`${t.value}\`` : t.kind === "strong" ? `**${t.value}**` : t.value
+			).join(""),
+		).toBe(src);
 	});
 });
