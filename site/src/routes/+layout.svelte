@@ -13,6 +13,7 @@ const nav = [
 	{ href: "/demo/", label: "demo" },
 	{ href: "/completion/", label: "completion" },
 	{ href: "/why/", label: "why" },
+	{ href: "/changelog/", label: "changelog" },
 ];
 
 let mainEl: HTMLElement | undefined = $state();

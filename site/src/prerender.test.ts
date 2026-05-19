@@ -18,6 +18,7 @@ const routes = {
 	"/demo/": join("demo", "index.html"),
 	"/completion/": join("completion", "index.html"),
 	"/why/": join("why", "index.html"),
+	"/changelog/": join("changelog", "index.html"),
 } as const;
 
 const html = new Map<string, string>();
@@ -40,8 +41,13 @@ describe("prerendered output", () => {
 		}
 	});
 
-	it("contains no unresolved {{placeholders}}", () => {
+	it("contains no unresolved {{placeholders}} on marketing routes", () => {
 		for (const [route, doc] of html) {
+			// /changelog/ renders historical CHANGELOG prose that itself
+			// documents the retired build.ts `{{var}}` templating, so a
+			// literal "{{" is valid content there. The leak invariant
+			// only applies to the build-data-templated marketing pages.
+			if (route === "/changelog/") continue;
 			expect(doc, `${route} has no {{}}`).not.toMatch(/\{\{/);
 		}
 	});
@@ -91,5 +97,19 @@ describe("prerendered output", () => {
 		expect(home).toContain(`npm.im/${site.npmName}`);
 		expect(home).toContain(`mailto:${site.authorEmail}`);
 		expect(home).toContain(`${site.repo}/blob/master/CHANGELOG.md`);
+	});
+
+	it("renders the parsed changelog (current version + a code span)", () => {
+		const cl = html.get("/changelog/") ?? "";
+		// The site's own release is in CHANGELOG.md, so it must appear.
+		expect(cl).toContain(site.version);
+		expect(cl).toContain("class=\"section-tag\"");
+		// Scope-tolerant: Svelte adds a hashed class to scoped tags.
+		expect(cl).toMatch(/<article[^>]*>\s*<h2[^>]*>/);
+		// Inline markdown was rendered, not dumped raw, and the raw
+		// "## [x.y.z]" / "### Group" markdown headings never leak.
+		expect(cl).toContain("<code>");
+		expect(cl).not.toContain("## [");
+		expect(cl).not.toMatch(/^### /m);
 	});
 });
