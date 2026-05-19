@@ -1,0 +1,17 @@
+{
+	"name": "workspace",
+	"private": true,
+	"type": "module",
+	"workspaces": [
+		"site",
+		"npm/facade"
+	],
+	"devDependencies": {
+		"@types/node": ">=22.18.0",
+		"typescript": "^5"
+	},
+	"volta": {
+		"node": "24.14.1",
+		"npm": "11.6.2"
+	}
+}

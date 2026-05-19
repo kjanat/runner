@@ -47,8 +47,5 @@
 		"README.md",
 		"LICENSE"
 	],
-	"devDependencies": {
-		"@types/node": ">=22.18.0"
-	},
 	"optionalDependencies": {}
 }

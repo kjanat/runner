@@ -1,151 +1,15 @@
-name: Setup runner
-description: Install the runner / run CLI from GitHub Releases.
+name: Setup runner cli
+description: Install the runner / run CLI from npm (prebuilt, platform-resolved binaries).
 author: Kaj Kowalski
-branding:
-  icon: play
-  color: blue
+branding: { icon: play, color: blue }
 
 inputs:
-  version:
-    description: >-
-      Release tag (e.g. `v0.10.0`) or `latest`. Defaults to the action's
-      own ref, so `uses: kjanat/runner@v0.10.0` installs v0.10.0 with
-      zero API calls. Use `latest` to resolve newest at runtime.
-    required: false
-    default: ""
-  target:
-    description: >-
-      Rust target triple override (e.g. `x86_64-unknown-linux-musl`).
-      Empty = auto-detect.
-    required: false
-    default: ""
-  cache:
-    description: Cache the unpacked binary between runs.
-    required: false
-    default: "true"
-  github-token:
-    description: Token for the `latest` API lookup (only needed when version=latest).
-    required: false
-    default: ${{ github.token }}
+  version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver/tag (`1`, `0.10`, `v0.10`).", default: latest }
 
 outputs:
-  version:
-    description: Resolved release tag.
-    value: ${{ steps.resolve.outputs.tag }}
-  target:
-    description: Rust target triple used.
-    value: ${{ steps.resolve.outputs.triple }}
-  bin-dir:
-    description: Directory containing the installed binaries (also added to PATH).
-    value: ${{ steps.resolve.outputs.dest }}
+  version: { description: "Concrete installed version (e.g. `0.10.0`), resolved post-install." }
+  bin-dir: { description: npm global bin directory containing `runner` / `run` (added to PATH). }
 
 runs:
-  using: composite
-  steps:
-    - id: resolve
-      shell: bash
-      env:
-        INPUT_VERSION: ${{ inputs.version }}
-        INPUT_TARGET: ${{ inputs.target }}
-        ACTION_REF: ${{ github.action_ref }}
-        GH_TOKEN: ${{ inputs.github-token }}
-      run: |
-        set -euo pipefail
-        tag="${INPUT_VERSION:-${ACTION_REF}}"
-        # API call only if we don't already have a vX.Y.Z tag in hand.
-        if [[ -z "${tag}" || "${tag}" == "latest" || ! "${tag}" =~ ^v[0-9] ]]; then
-          tag=$(curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
-                  --connect-timeout 3 --max-time 8 \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "Authorization: Bearer ${GH_TOKEN}" \
-                  https://api.github.com/repos/kjanat/runner/releases/latest \
-                | grep -m1 '"tag_name":' | cut -d'"' -f4)
-        fi
-
-        if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-          echo "::error::Invalid runner version: ${tag}"
-          exit 1
-        fi
-
-        triple="${INPUT_TARGET}"
-        if [[ -z "${triple}" ]]; then
-          case "${RUNNER_OS}-${RUNNER_ARCH}" in
-            Linux-X64)     triple=x86_64-unknown-linux-gnu ;;
-            Linux-ARM64)   triple=aarch64-unknown-linux-gnu ;;
-            Linux-ARM)     triple=armv7-unknown-linux-gnueabihf ;;
-            macOS-X64)     triple=x86_64-apple-darwin ;;
-            macOS-ARM64)   triple=aarch64-apple-darwin ;;
-            Windows-X64)   triple=x86_64-pc-windows-msvc ;;
-            Windows-ARM64) triple=aarch64-pc-windows-msvc ;;
-            Windows-X86)   triple=i686-pc-windows-msvc ;;
-            *)
-              echo "::error::No prebuilt for ${RUNNER_OS}-${RUNNER_ARCH}; pass an explicit \`target\` input."
-              exit 1
-              ;;
-          esac
-        fi
-
-        if [[ ! "${triple}" =~ ^[0-9A-Za-z._+-]+(-[0-9A-Za-z._+-]+)+$ ]]; then
-          echo "::error::Invalid Rust target triple: ${triple}"
-          exit 1
-        fi
-
-        if [[ "${RUNNER_OS}" == "Windows" ]]; then
-          ext=.exe
-        else
-          ext=""
-        fi
-        dest="${RUNNER_TOOL_CACHE}/runner/${tag}/${triple}"
-
-        printf 'tag=%s\ntriple=%s\next=%s\ndest=%s\n' \
-          "${tag}" "${triple}" "${ext}" "${dest}" \
-          | tee -a "${GITHUB_OUTPUT}"
-
-    - id: cache
-      if: inputs.cache == 'true'
-      uses: actions/cache@v5
-      with:
-        path: ${{ steps.resolve.outputs.dest }}
-        key: runner-${{ steps.resolve.outputs.tag }}-${{ steps.resolve.outputs.triple }}
-
-    - if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      env:
-        TAG: ${{ steps.resolve.outputs.tag }}
-        TRIPLE: ${{ steps.resolve.outputs.triple }}
-        DEST: ${{ steps.resolve.outputs.dest }}
-        EXT: ${{ steps.resolve.outputs.ext }}
-      run: |
-        set -euo pipefail
-        archive="runner-${TAG}-${TRIPLE}.tar.gz"
-        sum="runner-${TAG}-${TRIPLE}.sha256"
-        base="https://github.com/kjanat/runner/releases/download/${TAG}"
-
-        tmp=$(mktemp -d)
-        trap 'rm -rf "${tmp}"' EXIT
-        cd "${tmp}"
-
-        # Parallel fetch; both retry on transient failures. --max-time
-        # caps each download at 20s so a stuck connection can't hang
-        # the workflow.
-        fetch() {
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 1 \
-               --connect-timeout 5 --max-time 20 \
-               -o "$1" "${base}/$1"
-        }
-        fetch "${archive}" &
-        a=$!
-        fetch "${sum}" &
-        s=$!
-        wait "${a}" "${s}"
-
-        sha256sum -c "${sum}"
-        mkdir -p "${DEST}"
-        tar -xzf "${archive}" -C "${DEST}"
-        chmod +x "${DEST}/runner${EXT}" "${DEST}/run${EXT}" 2>/dev/null || true
-        "${DEST}/runner${EXT}" --version
-
-    - shell: bash
-      env:
-        DEST: ${{ steps.resolve.outputs.dest }}
-      run: printf '%s\n' "${DEST}" >> "${GITHUB_PATH}"
+  using: node24
+  main: action.mjs

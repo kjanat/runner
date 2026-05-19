@@ -1,169 +1,408 @@
 # runner
 
+<picture height="160" align="right" alt="runner logo">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.github.com/kjanat/runner/ea333a0e/branding/wordmark-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.github.com/kjanat/runner/f90940f8/branding/wordmark.svg">
+  <img alt="Fallback image" height="160" align="right" src="https://raw.github.com/kjanat/runner/ea333a0e/branding/wordmark-dark.svg">
+</picture>
+
+<!--
+TODO: add back the supported task runners that gippity deleted out of spite
+And re-read/review the readme...
+-->
+
 [![Crates.io](https://img.shields.io/crates/v/runner-run?logo=rust&labelColor=B7410E&color=black)][crates]
 [![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
 [![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)][LICENSE]
 
-Universal project task runner. Auto-detects toolchain, provides unified CLI.\
-AND tab-completion for all!!!
+**runner** is for people who bounce between codebases and refuse to memorize
+each repo’s private little task-running religion.
 
-- Site: **<https://runner.kjanat.dev/>** — landing page; source in [`site/`](./site/)
-- npm: **[`runner-run`](https://npm.im/runner-run)**
-
-  ```sh
-  npm install -g runner-run
-  ```
-
-- crates.io: **[`runner-run`](https://crates.io/crates/runner-run)**
-
-  ```sh
-  # fastest — prebuilt binary, no toolchain needed
-  # (requires `cargo install cargo-binstall` once)
-  cargo binstall runner-run
-
-  # or compile from source
-  cargo install runner-run
-  ```
-
-## Features
-
-- **Auto-detection**: Scans for lockfiles/configs and picks the right tool
-- **Unified interface**: Same workflow across npm/yarn/pnpm/bun/cargo/deno/uv/poetry/pipenv/go/bundler/composer
-- **Task aggregation**: Lists tasks from package.json/package.json5/package.yaml,
-  Makefile, justfile, Taskfile, turbo.json(c), deno.json(c), bacon.toml
-- **Deterministic task routing**: Prefers turbo task, then package.json, then
-  other matching sources
-- **Monorepo aware**: Detects workspaces (turbo, nx, pnpm, npm/yarn workspaces,
-  Cargo workspaces)
-- **Resilient detection**: Surfaces non-fatal parse/read warnings in
-  info/list/run output
-- **Safe clean defaults**: Skips framework build dirs unless explicitly requested
-- **Node version checking**: Warns on .nvmrc/.node-version mismatch
-
-## Tool Support
-
-**Package managers (detect + install + run):** npm, yarn, pnpm, bun, cargo,
-deno, uv, poetry, pipenv, go, bundler, composer
-
-**Task sources (list + run):** package manifests (`package.json`,
-`package.json5`, `package.yaml`) scripts, `turbo.json` / `turbo.jsonc`
-tasks/pipeline, Makefile, justfile, Taskfile, `deno.json` / `deno.jsonc`,
-`bacon.toml`
-
-**Task-runner detection signals:** turbo, nx, make, just, go-task, mise,
-bacon
-
-> Note: nx and mise are currently detection-only (metadata/monorepo context),
-> not direct task execution backends.
-
-## Usage
+Instead of guessing whether this one wants `npm run`, `pnpm exec`, `bunx`,
+`cargo`, `uv run`, `deno task`, `turbo`, `make`, `just`, etc. type:
 
 ```sh
-runner                              # show detected project info
-runner <task> [-- <args...>]        # run task (falls back to PM exec)
-run <task> [-- <args...>]           # alias binary: always runs as task/exec
-runner run <target> [-- <args...>]  # explicit unified task/exec form
-runner install [--frozen]           # install deps via detected PM
-runner clean [-y] [--include-framework]
-runner list [--raw]                 # list tasks (raw = one name per line)
-runner completions [<shell>] [-o <path>]
+run <TAB>
 ```
 
-`runner run <target>` resolves to a defined task first; if none matches, it
-falls back to executing `<target>` as a command through the detected package
-manager (`npx`, `pnpm exec`, `bunx`, `cargo`, `uv run`, …). The `run` binary
-is a shortcut for `runner run` — unlike `runner`, it never parses positional
-arguments as built-in subcommands, so `run clean` or `run install` always
-runs the matching task/command.
+<details><summary><i><code>run</code> ran in this very project</i></summary>
 
-When a task shadows a built-in (`clean`, `install`, `list`, `info`,
-`completions`), the shorthand `runner <name>` runs the task. To force the
-built-in, pass a flag it recognises (e.g. `runner install --frozen`,
-`runner clean -y`, `runner list --raw`) or use the short alias (`runner i`,
-`runner ls`).
+```shell
+❯ run
+run 0.10.0
+
+  Package Managers    cargo
+  Task Runners        just, bacon
+
+  justfile        build-packages
+  justfile        default
+  justfile        gen-schema           just gen-schema && git diff --exit-code schemas/
+  justfile        install
+  justfile        ls
+  justfile        run
+  justfile        runner
+  justfile        test-release         Build release bin and verify the facade shims spawn the native binary.
+  config.toml     b                    build
+  config.toml     bb                   build --bin run --bin runner
+  config.toml     bbr                  build --bin run --bin runner --release
+  config.toml     bin-run              run --bin run --quiet
+  config.toml     bin-runner           run --bin runner --quiet
+  config.toml     c                    check
+  config.toml     cl                   clippy --all-targets --all-features
+  config.toml     comp                 run --bin runner --quiet -- completions
+  config.toml     d                    doc
+  config.toml     i                    install --path .
+  config.toml     l                    clippy --all-targets --all-features -- -D warnings -D clippy::all
+  config.toml     lint                 clippy --all-targets --all-features -- -D warnings -D clippy::all
+  config.toml     meta                 metadata --format-version 1
+  config.toml     r                    run
+  config.toml     rbin-run             run --bin run --quiet --release
+  config.toml     rbin-runner          run --bin runner --quiet --release
+  config.toml     rm                   remove
+  config.toml     rr                   run --release
+  config.toml     runner               run --bin runner
+  config.toml     schema               run --quiet --example gen-schema --features schema-gen
+  config.toml     t                    test
+  bacon.toml      bins                 cargo build --bin runner --bin run --color=always
+  bacon.toml      check                cargo check
+  bacon.toml      check-all            cargo check --all-targets
+  bacon.toml      clippy               cargo clippy
+  bacon.toml      clippy-all           cargo clippy --all-targets
+  bacon.toml      doc                  cargo doc --no-deps
+  bacon.toml      doc-open             cargo doc --no-deps --open
+  bacon.toml      ex                   cargo run --example
+  bacon.toml      lint                 cargo clippy --all-targets --all-features --color=always -- -D warnings -D clippy::all
+  bacon.toml      nextest              cargo nextest run --hide-progress-bar --failure-output final
+  bacon.toml      pedantic             cargo clippy -- -W clippy::pedantic
+  bacon.toml      run                  cargo run
+  bacon.toml      run-long             cargo run
+  bacon.toml      test                 cargo test
+  bacon.toml      test-all             cargo test --all-features --all-targets --color=always
+```
+
+and `run <TAB>` (zsh):
+
+```shell
+❯ run <TAB>waiting...
+-- justfile --
+build-packages
+default
+gen-schema                     -- just gen-schema && git diff --exit-code schemas/
+install
+ls
+run
+justfile:run
+runner
+justfile:runner
+test-release                   -- Build release bin and verify the facade shims spawn the native binary.
+-- cargo --
+b                              -- build
+bb                             -- build --bin run --bin runner
+bbr                            -- build --bin run --bin runner --release
+bin-run                        -- run --bin run --quiet
+bin-runner                     -- run --bin runner --quiet
+c                              -- check
+cl                             -- clippy --all-targets --all-features
+comp                           -- run --bin runner --quiet -- completions
+d                              -- doc
+i                              -- install --path .
+l                              -- clippy --all-targets --all-features -- -D warnings -D clippy::all
+lint                           -- clippy --all-targets --all-features -- -D warnings -D clippy::all
+cargo:lint                     -- clippy --all-targets --all-features -- -D warnings -D clippy::all
+meta                           -- metadata --format-version 1
+r                              -- run
+rbin-run                       -- run --bin run --quiet --release
+rbin-runner                    -- run --bin runner --quiet --release
+rm                             -- remove
+rr                             -- run --release
+cargo:runner                   -- run --bin runner
+schema                         -- run --quiet --example gen-schema --features schema-gen
+t                              -- test
+-- bacon.toml --
+bins                           -- cargo build --bin runner --bin run --color=always
+check                          -- cargo check
+check-all                      -- cargo check --all-targets
+clippy                         -- cargo clippy
+clippy-all                     -- cargo clippy --all-targets
+doc                            -- cargo doc --no-deps
+doc-open                       -- cargo doc --no-deps --open
+ex                             -- cargo run --example
+bacon.toml:lint                -- cargo clippy --all-targets --all-features --color=always -- -D warnings -D clippy::all
+nextest                        -- cargo nextest run --hide-progress-bar --failure-output final
+pedantic                       -- cargo clippy -- -W clippy::pedantic
+bacon.toml:run                 -- cargo run
+run-long                       -- cargo run
+test                           -- cargo test
+test-all                       -- cargo test --all-features --all-targets --color=always
+-- Options --
+--dir                          -- Use this directory instead of the current one
+--pm                           -- Override the detected package manager (e.g. pnpm, bun, yarn). Also reads RUNNER_PM when omitted.
+--runner                       -- Override the detected task runner (e.g. just, turbo, make). Also reads RUNNER_RUNNER when omitted.
+--fallback                     -- What to do when no detection signal matches: probe (default, PATH probe), npm (legacy silent fallback), error (refuse). Also reads RUNNER_FALLBACK when omitted.
+--on-mismatch                  -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
+--explain                      -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
+--no-warnings                  -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
+--help                         -- Print help
+--version                      -- Print version
+```
+
+---
+
+</details>
+
+runner detects the project, finds its tasks, and completes them through one
+command.
+
+Use the same shape everywhere:
+
+```sh
+run <TAB>
+runner install --frozen
+run test
+run build
+run deploy
+```
+
+Let each repo decide what the tasks actually mean.
 
 ## Install
-
-From npm (prebuilt binaries, no Rust toolchain required):
 
 ```sh
 npm install -g runner-run
 ```
 
-The npm package is a façade that pulls in a per-platform sub-package
-(`@runner-run/<platform>-<arch>`) via `optionalDependencies`. npm filters by
-each sub-package's `os`/`cpu`/`libc` fields, so only the binary for your
-machine is installed — no postinstall script, no network at install time.
-Supports Linux (gnu+musl, x64/arm64/armv7), macOS (x64/arm64), Windows
-(x64/arm64/ia32), and experimental BSD builds (FreeBSD, NetBSD, OpenBSD;
-see `npm/targets.json` for per-target tier).
-
-From crates.io via Cargo:
+Or:
 
 ```sh
-# fastest: fetches the prebuilt binary from the matching GitHub release
-# (requires `cargo install cargo-binstall` once)
 cargo binstall runner-run
-
-# or compile both binaries (runner + run) from source
-cargo install runner-run
-
-# or from git for unreleased commits
-cargo install --git=https://github.com/kjanat/runner/ runner-run
-
-# or from a local checkout
-cargo install --path .
-```
-
-Or use the convenience installer script (latest or pinned version):
-
-```sh
-curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
-bash install.sh          # latest release
-bash install.sh 0.1.0    # pinned release
-# also works: bash install.sh v0.1.0
 ```
 
 <details>
+<summary><i>Other install methods</i></summary>
 
-```bash
-# Optional: custom destination dir
-RUNNER_INSTALL_DIR="$HOME/.local/bin" bash install.sh
-
-# Install dir precedence:
-# RUNNER_INSTALL_DIR -> XDG_BIN_HOME -> ~/.local/bin
+```sh
+cargo install runner-run
+cargo install --git=https://github.com/kjanat/runner/ runner-run
+cargo install --path .
 ```
 
-Or use the dev wrapper:
+```sh
+curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
+bash install.sh
+bash install.sh 0.10.0
+bash install.sh v0.10.0
+```
+
+---
+
+</details>
+
+## GitHub Actions
+
+Use the action to install runner in CI:
+
+```yaml
+- uses: kjanat/runner@master
+- run: runner install --frozen
+- run: run test
+- run: run build
+```
+
+<!--
+Future shorthand once install/task chaining is supported:
+
+```yaml
+- uses: kjanat/runner@master
+- run: runner install test build deploy
+#             ^^^^^^^
+# `runner install` here is not a task, but runs the needed toolchain command(s)
+# for the project, such as `npm ci`, `cargo fetch`, `uv sync`, etc.
+```
+-->
+
+`runner install` here is not a task, but runs the needed toolchain command(s)
+for the project, such as `npm ci`, `cargo fetch`, `uv sync`, etc.
+
+That is the point: the workflow stays boring even when the project underneath is
+npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation that repo
+uses.
+
+<details>
+<summary><i>Install mechanics and outputs</i></summary>
+
+The action installs the `runner-run` npm package into the runner tool cache with
+`npm install --global --ignore-scripts --prefix`, verifies the installed
+`runner` shim by running `runner --version`, and adds the npm bin directory to
+`PATH` for later steps.
+
+| I/O    | name      | description                                                                           |
+| ------ | --------- | ------------------------------------------------------------------------------------- |
+| Input  | `version` | npm version spec for `runner-run`; defaults to `latest`; accepts numeric `v?` forms   |
+| Output | `version` | Concrete version reported by the installed `runner --version` smoke test              |
+| Output | `bin-dir` | npm global bin directory containing `runner` / `run`; added to `PATH` for later steps |
+
+Exact `X.Y.Z` pins are checked against the executed CLI version; a mismatch
+fails the action.
+
+---
+
+</details>
+
+## Usage
+
+```sh
+runner                              # show detected project info
+runner <task> [-- <args...>]        # run a task
+runner run <target> [-- <args...>]  # run a task or command
+run <target> [-- <args...>]         # alias for `runner run`
+
+runner install [--frozen]           # install dependencies
+runner clean [-y] [--include-framework]
+runner list [--raw] [--json]        # list available tasks
+runner info [--json]                # show detected project info
+runner doctor [--json]              # show every resolver signal
+runner why <task> [--json]          # explain how a task would dispatch
+runner completions [<shell>] [-o <path>]
+```
+
+## Completions
+
+`runner completions` generates dynamic shell completion registrations.
+
+For bash, zsh, and fish, runner can auto-detect `$SHELL`:
+
+```sh
+eval "$(runner completions)"
+```
+
+<details>
+<summary><i>...or get explicit with it</i></summary>
+
+```sh
+eval "$(runner completions bash)"
+eval "$(runner completions zsh)"
+eval "$(runner completions fish)"
+```
+
+---
+
+</details>
+
+### PowerShell
+
+```powershell
+runner completions powershell | Out-String | Invoke-Expression
+```
+
+The generated registration includes `runner` and, when the sibling `run` binary
+exists next to it, `run` too.
+
+So after setup, this is the workflow:
+
+```sh
+run <TAB>
+```
+
+No per-project command archaeology. No guessing whether this one wants npm,
+Cargo, Make, just, Deno, uv, or some handcrafted nonsense from 2021.
+
+## Task Resolution
+
+`runner run <target>` first looks for a matching task.
+
+If no task exists, it falls back to executing `<target>` through the detected
+toolchain where appropriate, such as:
+
+```text
+npm exec / npx, yarn run / yarn exec, pnpm exec, bun x / bunx,
+deno x, uvx, go run
+```
+
+For package managers without a matching exec primitive, runner falls back to
+executing `<target>` directly from `PATH`.
+
+The `run` binary is equivalent to `runner run`, so:
+
+```sh
+run clean
+run install
+```
+
+runs a task or command named `clean` or `install`, even when those names also
+exist as built-in `runner` subcommands.
+
+## Supported Ecosystems
+
+runner detects and works with:
+
+```text
+npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer
+```
+
+It can list and run tasks from:
+
+```text
+package.json / package.json5 / package.yaml
+turbo.json / turbo.jsonc
+deno.json / deno.jsonc
+Makefile
+justfile
+Taskfile
+bacon.toml
+mise.toml / .mise.toml
+Cargo aliases from .cargo/config.toml
+```
+
+It also understands monorepo/workspace context from:
+
+```text
+turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces
+```
+
+<details>
+<summary><i>Support notes</i></summary>
+
+`nx` is currently detection-only. runner uses it for project context, but does
+not extract Nx tasks as direct task entries yet.
+
+When multiple sources define the same task, runner chooses deterministically:
+turbo tasks first, then package manifest scripts, then other matching sources.
+
+---
+
+</details>
+
+## Features
+
+- `run <TAB>` task completion across projects
+- One command shape across many ecosystems
+- Simple CI with `runner install --frozen` plus `run <task>` steps
+- First-class GitHub Actions install step
+- Automatic toolchain detection
+- Task aggregation from common config files
+- Task-first execution with command fallback
+- Monorepo/workspace awareness
+- Safe clean defaults
+- Node version mismatch warnings
+
+## Development
 
 ```sh
 ./bin/runner <args>
 ./bin/run <args>
+```
 
-# If direnv is set up, just run:
+With `direnv`:
+
+```sh
 runner <args>
 ```
 
-## Shell Completions
+## Links
 
-```sh
-mkdir -p ~/.local/share/bash-completion/completions
-runner completions bash > ~/.local/share/bash-completion/completions/runner
-
-mkdir -p ~/.zfunc
-runner completions zsh > ~/.zfunc/_runner
-# add once to ~/.zshrc:
-# fpath=(~/.zfunc $fpath)
-# autoload -Uz compinit && compinit
-
-mkdir -p ~/.config/fish/completions
-runner completions fish > ~/.config/fish/completions/runner.fish
-
-# If you use the `run` alias binary, replace `runner` with `run`
-# and output to matching completion filenames.
-```
-
-</details>
+- Site: [runner.kjanat.dev]
+- npm: [`runner-run`][npm]
+- crates.io: [`runner-run`][crates]
 
 ## License
 
@@ -171,6 +410,7 @@ runner completions fish > ~/.config/fish/completions/runner.fish
 
 [npm]: https://npm.im/runner-run
 [crates]: https://crates.io/crates/runner-run
+[runner.kjanat.dev]: https://runner.kjanat.dev "Site for runner"
 [LICENSE]: https://github.com/kjanat/runner/blob/master/LICENSE
 
-<!-- markdownlint-disable-file MD033 -->
+<!-- markdownlint-disable-file MD013 MD033 MD041 -->

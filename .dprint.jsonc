@@ -44,5 +44,6 @@
 		"https://plugins.dprint.dev/kjanat/sortpackagejson-0.2.1.wasm",
 		"https://plugins.dprint.dev/kjanat/svg-v0.4.0.wasm",
 		"https://plugins.dprint.dev/kjanat/shfmt-1.0.0.wasm",
+		"https://plugins.dprint.dev/dockerfile-0.3.3.wasm",
 	],
 }
