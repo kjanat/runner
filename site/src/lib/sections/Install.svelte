@@ -25,7 +25,7 @@ const installerUrl = $derived(
 		<CopyButton
 			label="linux installer"
 			command={cmd.linuxInstaller}
-			split={{ pre: "curl -fsSL ", shrink: installerUrl, post: " | sh" }}
+			split={{ pre: "curl -fsSL ", shrink: installerUrl, post: " | sh" }}
 		/>
 	</div>
 	<p class="meta">

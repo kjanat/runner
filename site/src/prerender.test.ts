@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -23,13 +23,39 @@ const routes = {
 
 const html = new Map<string, string>();
 
+function newestMtimeMs(dir: string): number {
+	let newest = 0;
+	for (const entry of readdirSync(dir, { withFileTypes: true })) {
+		const p = join(dir, entry.name);
+		if (entry.isDirectory()) {
+			newest = Math.max(newest, newestMtimeMs(p));
+		} else if (entry.isFile()) {
+			newest = Math.max(newest, statSync(p).mtimeMs);
+		}
+	}
+	return newest;
+}
+
 beforeAll(() => {
-	// Build once if ANY expected route file is stale/absent; reuse
-	// otherwise so the suite stays fast on repeat runs. Checking every
-	// file (not just index.html) stops a partial build from causing an
-	// ENOENT in the readFileSync loop below.
+	// CI builds unconditionally — fresh checkout has no prerender output
+	// AND we never want stale bytes validated on a release run. Locally
+	// we reuse output when every routed file is present AND newer than
+	// every input that feeds the build (the src/ tree + workspace
+	// CHANGELOG.md, which the changelog page reads at prerender time).
+	const isCI = process.env.CI === "true";
 	const allPresent = Object.values(routes).every((file) => existsSync(join(pagesDir, file)));
-	if (!allPresent) {
+	let stale = false;
+	if (!isCI && allPresent) {
+		const oldestOut = Math.min(
+			...Object.values(routes).map((file) => statSync(join(pagesDir, file)).mtimeMs),
+		);
+		const newestIn = Math.max(
+			newestMtimeMs(join(root, "src")),
+			statSync(join(root, "..", "CHANGELOG.md")).mtimeMs,
+		);
+		stale = newestIn > oldestOut;
+	}
+	if (isCI || !allPresent || stale) {
 		execSync("bun run build", { cwd: root, stdio: "inherit" });
 	}
 	for (const [route, file] of Object.entries(routes)) {
