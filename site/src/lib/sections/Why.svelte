@@ -1,5 +1,5 @@
 <section aria-labelledby="why-tag">
-	<span class="section-tag" id="why-tag">why it's not shit</span>
+	<h2 class="section-tag" id="why-tag">why it's not shit</h2>
 	<ol class="why">
 		<li>
 			Auto-detection picks the right tool from your lockfiles. No flags, no config.

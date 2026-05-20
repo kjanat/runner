@@ -15,7 +15,7 @@ let { data }: { data: PageData } = $props();
 </svelte:head>
 
 <section aria-labelledby="changelog-tag" class="changelog">
-	<span class="section-tag" id="changelog-tag">changelog</span>
+	<h2 class="section-tag" id="changelog-tag">changelog</h2>
 	{#each data.releases as release (release.version)}
 		<article>
 			<h2>
@@ -49,25 +49,25 @@ let { data }: { data: PageData } = $props();
 	margin-top: 0;
 	border-top: 0;
 }
-.changelog h2 {
+.changelog article h2 {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: baseline;
 	gap: 0 0.75rem;
 	font-size: 1.5rem;
 }
-.changelog h2 .v::before {
+.changelog article h2 .v::before {
 	color: var(--tomato);
 	content: "v";
 }
-.changelog h2 .date {
+.changelog article h2 .date {
 	font-size: var(--text-xs);
 	font-weight: 400;
 	color: var(--dim);
 	text-transform: uppercase;
 	letter-spacing: var(--ls-caps);
 }
-.changelog h3 {
+.changelog article h3 {
 	margin: 1.25rem 0 0.4rem;
 	font-size: var(--text-xs);
 	color: var(--dim);

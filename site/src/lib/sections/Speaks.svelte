@@ -37,7 +37,7 @@ const taskSources = [
 </script>
 
 <section aria-labelledby="matrix-tag">
-	<span class="section-tag" id="matrix-tag">it speaks</span>
+	<h2 class="section-tag" id="matrix-tag">it speaks</h2>
 	<div class="matrix">
 		<div>
 			<h3>Package managers · {packageManagers.length}</h3>

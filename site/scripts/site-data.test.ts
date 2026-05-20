@@ -9,6 +9,9 @@ license = "MIT"
 repository = "https://github.com/kjanat/runner/"
 authors = ["Kaj Kowalski <info@kajkowalski.nl>"]
 
+[package.metadata.site]
+default-branch = "master"
+
 [package.metadata.npm]
 name = "runner-run"
 `;
@@ -25,6 +28,23 @@ describe("parseCargoToml", () => {
 		expect(d.repoShort).toBe("kjanat/runner");
 		expect(d.authorName).toBe("Kaj Kowalski");
 		expect(d.authorEmail).toBe("info@kajkowalski.nl");
+		expect(d.defaultBranch).toBe("master");
+	});
+
+	it("falls back defaultBranch → \"master\" when the metadata section is absent", () => {
+		const noSite = valid.replace(
+			/\[package\.metadata\.site\][^[]*/,
+			"",
+		);
+		expect(parseCargoToml(noSite).defaultBranch).toBe("master");
+	});
+
+	it("uses an explicit defaultBranch override from metadata", () => {
+		const overridden = valid.replace(
+			"default-branch = \"master\"",
+			"default-branch = \"main\"",
+		);
+		expect(parseCargoToml(overridden).defaultBranch).toBe("main");
 	});
 
 	it("strips a .git suffix from the repo URL", () => {

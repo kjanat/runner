@@ -10,7 +10,7 @@ const installerUrl = $derived(
 </script>
 
 <section aria-labelledby="install-tag">
-	<span class="section-tag" id="install-tag">install</span>
+	<h2 class="section-tag" id="install-tag">install</h2>
 	<div class="install">
 		<CopyButton label="npm · primary" command={cmd.npm} primary />
 		<CopyButton

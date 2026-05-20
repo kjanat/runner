@@ -15,6 +15,11 @@ export interface GenData {
 	repoShort: string;
 	authorName: string;
 	authorEmail: string;
+	/** Repo default branch — interpolated into the footer changelog
+	 * link and the linuxInstaller raw-githubusercontent URL. Read
+	 * from `[package.metadata.site].default-branch`; defaults to
+	 * "master" if absent so existing manifests stay valid. */
+	defaultBranch: string;
 }
 
 /** Thrown when a required `[package]` field is absent — the build must
@@ -59,6 +64,7 @@ function str(
 export function parseCargoToml(raw: string): GenData {
 	const pkg = tableOf(raw, "package");
 	const npm = tableOf(raw, "package.metadata.npm");
+	const meta = tableOf(raw, "package.metadata.site");
 
 	const required = (key: string): string => {
 		const v = str(pkg, key);
@@ -86,6 +92,7 @@ export function parseCargoToml(raw: string): GenData {
 		repoShort: repo.replace(/^https?:\/\/github\.com\//, ""),
 		authorName: authorMatch?.[1] || "Kaj Kowalski",
 		authorEmail: authorMatch?.[2] || "info@kajkowalski.nl",
+		defaultBranch: str(meta, "default-branch") ?? "master",
 	};
 }
 
@@ -102,6 +109,7 @@ export const generated = {
 	repoShort: ${JSON.stringify(d.repoShort)},
 	authorName: ${JSON.stringify(d.authorName)},
 	authorEmail: ${JSON.stringify(d.authorEmail)},
+	defaultBranch: ${JSON.stringify(d.defaultBranch)},
 } as const;
 `;
 }

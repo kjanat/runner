@@ -9,7 +9,7 @@ let { site }: { site: SiteData } = $props();
 	<a href="mailto:{site.authorEmail}" rel="external">{site.authorName}</a> ·
 	<a href={site.repo} rel="external noopener noreferrer">source</a> ·
 	<a
-		href="{site.repo}/blob/master/CHANGELOG.md"
+		href="{site.repo}/blob/{site.defaultBranch}/CHANGELOG.md"
 		rel="external noopener noreferrer"
 	>changelog</a> ·
 	<a

@@ -171,6 +171,9 @@ hr.rule {
 	display: block;
 	margin: 0 0 0.75rem;
 	font-size: var(--text-xs);
+	/* Real <h2> now; the global `h1, h2, h3 { font-weight: 700 }` rule
+	 * would otherwise bold the dim caps label. */
+	font-weight: 400;
 	color: var(--dim);
 	text-transform: uppercase;
 	letter-spacing: var(--ls-caps);

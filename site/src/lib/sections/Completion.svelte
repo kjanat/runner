@@ -27,7 +27,7 @@ clean      <span class="dim">clean build artefacts</span>`;
 </script>
 
 <section aria-labelledby="completion-tag">
-	<span class="section-tag" id="completion-tag">tab-fucking completion</span>
+	<h2 class="section-tag" id="completion-tag">tab-fucking completion</h2>
 	<p class="tagline">
 		Drop one line in your shell rc. Now <code>&lt;TAB&gt;</code> hits the binary and asks <em>this</em> project what tasks it knows about — grouped by source,
 		with descriptions. Same line registers both <code>runner</code> and <code>run</code>.

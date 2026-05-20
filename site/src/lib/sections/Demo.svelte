@@ -26,6 +26,6 @@ const transcript = $derived(`<span class="prompt"></span><span>runner</span>
 </script>
 
 <section aria-labelledby="demo-tag">
-	<span class="section-tag" id="demo-tag">what it looks like</span>
+	<h2 class="section-tag" id="demo-tag">what it looks like</h2>
 	<pre class="term">{@html transcript}</pre>
 </section>

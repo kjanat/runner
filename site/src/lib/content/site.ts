@@ -20,6 +20,10 @@ export interface SiteData {
 	repoShort: string;
 	authorName: string;
 	authorEmail: string;
+	/** Repo default branch (e.g. "master"). Single source for
+	 * branch-bound URLs (footer changelog link, raw-githubuser-
+	 * content installer URL); rename = one Cargo.toml edit. */
+	defaultBranch: string;
 }
 
 export const site: SiteData = generated;
@@ -31,7 +35,7 @@ export function commands(s: SiteData) {
 		npm: `npm install -g ${s.npmName}`,
 		cargoBinstall: `cargo binstall ${s.cratesName}`,
 		cargoInstall: `cargo install ${s.cratesName}`,
-		linuxInstaller: `curl -fsSL https://raw.githubusercontent.com/${s.repoShort}/master/install.sh | sh`,
+		linuxInstaller: `curl -fsSL https://raw.githubusercontent.com/${s.repoShort}/${s.defaultBranch}/install.sh | sh`,
 		completionsPosix: `eval "$(runner completions)"`,
 		completionsPwsh: `runner completions powershell | Out-String | Invoke-Expression`,
 	} as const;
