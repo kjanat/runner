@@ -103,33 +103,95 @@ export type InlineToken =
 	| { kind: "strong"; value: string }
 	| { kind: "link"; value: string; href: string };
 
-const TOKEN_RE = /(`[^`]+`)|(\*\*[^*]+\*\*)|(https?:\/\/[^\s<)]+)/g;
-
 /**
  * Split one item's restricted inline markdown into typed tokens:
- * `code`, **bold**, autolinked bare http(s) URLs, and plain text.
+ * `code` (including double-backtick spans containing a single
+ * backtick, e.g. `` `cmd` ``), **bold**, CommonMark autolinks
+ * `<https://…>`, bare http(s) URLs, and plain text. Trailing
+ * `.,;:!?` after a bare URL stay as text. Manual scanner because
+ * a single regex cannot handle double-backtick code spans without
+ * leaving a stray backtick that swallows arbitrary downstream text.
+ *
  * The component renders these as real elements, so there is no
  * `{@html}` and no escaping concern — Svelte escapes text bindings.
  */
 export function tokenizeInline(md: string): InlineToken[] {
 	const tokens: InlineToken[] = [];
-	let last = 0;
-	for (const m of md.matchAll(TOKEN_RE)) {
-		const idx = m.index;
-		if (idx > last) {
-			tokens.push({ kind: "text", value: md.slice(last, idx) });
+	let text = "";
+	const flushText = (): void => {
+		if (text.length > 0) {
+			tokens.push({ kind: "text", value: text });
+			text = "";
 		}
-		if (m[1] !== undefined) {
-			tokens.push({ kind: "code", value: m[1].slice(1, -1) });
-		} else if (m[2] !== undefined) {
-			tokens.push({ kind: "strong", value: m[2].slice(2, -2) });
-		} else if (m[3] !== undefined) {
-			tokens.push({ kind: "link", value: m[3], href: m[3] });
+	};
+
+	let i = 0;
+	while (i < md.length) {
+		const ch = md[i] ?? "";
+
+		// Code span: N backticks open, N backticks close. Per CommonMark,
+		// one leading + one trailing space is stripped if present.
+		if (ch === "`") {
+			let n = 0;
+			while (md[i + n] === "`") n++;
+			const close = md.indexOf("`".repeat(n), i + n);
+			const isExact = close !== -1 && md[close + n] !== "`";
+			if (isExact) {
+				let content = md.slice(i + n, close);
+				if (
+					content.startsWith(" ") && content.endsWith(" ") && content.trim() !== ""
+				) {
+					content = content.slice(1, -1);
+				}
+				flushText();
+				tokens.push({ kind: "code", value: content });
+				i = close + n;
+				continue;
+			}
 		}
-		last = idx + m[0].length;
+
+		// Bold: **text**.
+		if (ch === "*" && md[i + 1] === "*") {
+			const end = md.indexOf("**", i + 2);
+			if (end > i + 2) {
+				flushText();
+				tokens.push({ kind: "strong", value: md.slice(i + 2, end) });
+				i = end + 2;
+				continue;
+			}
+		}
+
+		// CommonMark autolink: <https://…> or <http://…>. Strip the
+		// angle brackets entirely — they're markup, not content.
+		if (ch === "<") {
+			const rest = md.slice(i + 1);
+			const m = rest.match(/^(https?:\/\/[^\s<>]+)>/);
+			if (m && m[1]) {
+				flushText();
+				tokens.push({ kind: "link", value: m[1], href: m[1] });
+				i += 1 + m[0].length;
+				continue;
+			}
+		}
+
+		// Bare http(s) URL. Trailing sentence punctuation falls back to
+		// text so e.g. "see https://x.dev." doesn't capture the period.
+		if ((ch === "h" || ch === "H") && /^https?:\/\//i.test(md.slice(i))) {
+			const m = md.slice(i).match(/^https?:\/\/[^\s<>)]+/);
+			if (m) {
+				const url = m[0].replace(/[.,;:!?]+$/, "");
+				if (url.length > 0) {
+					flushText();
+					tokens.push({ kind: "link", value: url, href: url });
+					i += url.length;
+					continue;
+				}
+			}
+		}
+
+		text += ch;
+		i++;
 	}
-	if (last < md.length) {
-		tokens.push({ kind: "text", value: md.slice(last) });
-	}
+	flushText();
 	return tokens;
 }

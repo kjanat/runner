@@ -91,6 +91,36 @@ describe("tokenizeInline", () => {
 		]);
 	});
 
+	it("handles double-backtick code spans containing a single backtick", () => {
+		// Real changelog case: "backtick `` `cmd` ``, arithmetic ..."
+		// must NOT let the trailing single backtick swallow downstream
+		// text into a wrong code span.
+		expect(tokenizeInline("backtick `` `cmd` ``, arithmetic `$((expr))`")).toEqual([
+			{ kind: "text", value: "backtick " },
+			{ kind: "code", value: "`cmd`" },
+			{ kind: "text", value: ", arithmetic " },
+			{ kind: "code", value: "$((expr))" },
+		]);
+	});
+
+	it("strips angle brackets on CommonMark autolinks", () => {
+		// Real changelog case: <https://runner.kjanat.com> — the URL
+		// must NOT include the trailing `>,` punctuation.
+		expect(tokenizeInline("see <https://runner.kjanat.com>, then")).toEqual([
+			{ kind: "text", value: "see " },
+			{ kind: "link", value: "https://runner.kjanat.com", href: "https://runner.kjanat.com" },
+			{ kind: "text", value: ", then" },
+		]);
+	});
+
+	it("pushes trailing sentence punctuation back into text", () => {
+		expect(tokenizeInline("see https://x.dev.")).toEqual([
+			{ kind: "text", value: "see " },
+			{ kind: "link", value: "https://x.dev", href: "https://x.dev" },
+			{ kind: "text", value: "." },
+		]);
+	});
+
 	it("reassembles to the original text (lossless)", () => {
 		const src = "mix `code`, **bold** and https://x.dev/p end";
 		expect(
