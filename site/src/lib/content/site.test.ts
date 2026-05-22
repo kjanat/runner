@@ -22,7 +22,9 @@ describe("site data", () => {
 		expect(c.npm).toBe(`npm install -g ${site.npmName}`);
 		expect(c.cargoBinstall).toBe(`cargo binstall ${site.cratesName}`);
 		expect(c.cargoInstall).toBe(`cargo install ${site.cratesName}`);
-		expect(c.linuxInstaller).toContain(`/${site.repoShort}/master/install.sh`);
+		expect(c.linuxInstaller).toContain(
+			`/${site.repoShort}/${site.defaultBranch}/install.sh`,
+		);
 		expect(c.completionsPosix).toBe("eval \"$(runner completions)\"");
 		expect(c.completionsPwsh).toContain("runner completions powershell");
 	});

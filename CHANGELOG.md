@@ -18,12 +18,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Changed
 
 - Marketing site (<https://runner.kjanat.dev>) rewritten as a
-  SvelteKit 2 / Svelte 5 prerendered static app on Cloudflare. Five
-  composable sections, build-time CHANGELOG.md ingestion via a
-  SvelteKit server-load + Vite `?raw` import, ESLint with the Svelte
-  plugin, and a prerender-output validation suite (freshness-aware
-  in CI). Added `[package.metadata.site].default-branch` so the
-  footer changelog link and installer-script URL share one source.
+  SvelteKit 2 / Svelte 5 prerendered static app on Cloudflare. Seven
+  composable section components, build-time CHANGELOG.md ingestion
+  via a SvelteKit server-load + Vite `?raw` import, ESLint with the
+  Svelte plugin, and a prerender-output validation suite
+  (freshness-aware in CI). Added `[package.metadata.site].default-
+  branch` so the footer changelog link and installer-script URL
+  share one source.
 
 ## [0.11.0] - 2026-05-19
 

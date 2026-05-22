@@ -24,7 +24,10 @@ const routes = {
 const html = new Map<string, string>();
 
 function newestMtimeMs(dir: string): number {
-	let newest = 0;
+	// Stat the directory itself first — `rm file` and `mv` bump the
+	// containing dir's mtime even when no surviving file's mtime moves,
+	// so a file-only walk misses pure deletions/renames.
+	let newest = statSync(dir).mtimeMs;
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		const p = join(dir, entry.name);
 		if (entry.isDirectory()) {
@@ -40,8 +43,10 @@ beforeAll(() => {
 	// CI builds unconditionally — fresh checkout has no prerender output
 	// AND we never want stale bytes validated on a release run. Locally
 	// we reuse output when every routed file is present AND newer than
-	// every input that feeds the build (the src/ tree + workspace
-	// CHANGELOG.md, which the changelog page reads at prerender time).
+	// every input that feeds the build: the src/ tree, the workspace
+	// CHANGELOG.md (changelog page reads it at prerender time), and the
+	// workspace-root Cargo.toml (gen-site-data.ts derives version,
+	// defaultBranch, etc. from it on every build).
 	const isCI = process.env.CI === "true";
 	const allPresent = Object.values(routes).every((file) => existsSync(join(pagesDir, file)));
 	let stale = false;
@@ -52,6 +57,7 @@ beforeAll(() => {
 		const newestIn = Math.max(
 			newestMtimeMs(join(root, "src")),
 			statSync(join(root, "..", "CHANGELOG.md")).mtimeMs,
+			statSync(join(root, "..", "Cargo.toml")).mtimeMs,
 		);
 		stale = newestIn > oldestOut;
 	}
@@ -125,7 +131,7 @@ describe("prerendered output", () => {
 		expect(home).toContain(`crates.io/crates/${site.cratesName}`);
 		expect(home).toContain(`npm.im/${site.npmName}`);
 		expect(home).toContain(`mailto:${site.authorEmail}`);
-		expect(home).toContain(`${site.repo}/blob/master/CHANGELOG.md`);
+		expect(home).toContain(`${site.repo}/blob/${site.defaultBranch}/CHANGELOG.md`);
 	});
 
 	it("renders the parsed changelog (current version + a code span)", () => {

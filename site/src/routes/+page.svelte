@@ -26,7 +26,7 @@ const description = "One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetr
 <Install {site} />
 <hr class="rule" />
 <p class="meta">
-	See it run → <a href={resolve("/demo")}>what it looks like</a> ·
-	<a href={resolve("/completion")}>tab completion</a> ·
-	<a href={resolve("/why")}>why it's not shit</a>
+	See it run → <a href={resolve("/demo/")}>what it looks like</a> ·
+	<a href={resolve("/completion/")}>tab completion</a> ·
+	<a href={resolve("/why/")}>why it's not shit</a>
 </p>

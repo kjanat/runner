@@ -9,12 +9,18 @@ import "../app.css";
 
 let { children } = $props();
 
+// Trailing slashes are CANONICAL — `+layout.ts` sets
+// `trailingSlash = "always"`. `resolve()` does not auto-append, so
+// hrefs without the slash hit a 307 redirect AND, for any route with
+// a `+page.server.ts` (just `/changelog/` today), make SvelteKit's
+// client-side router fetch `<route>__data.json` (no slash) → 404 →
+// the click silently aborts. Keep the slashes here.
 const nav = [
 	{ id: "/", label: "home" },
-	{ id: "/demo", label: "demo" },
-	{ id: "/completion", label: "completion" },
-	{ id: "/why", label: "why" },
-	{ id: "/changelog", label: "changelog" },
+	{ id: "/demo/", label: "demo" },
+	{ id: "/completion/", label: "completion" },
+	{ id: "/why/", label: "why" },
+	{ id: "/changelog/", label: "changelog" },
 ] as const;
 
 const norm = (p: string) => (p.length > 1 ? p.replace(/\/$/, "") : p);

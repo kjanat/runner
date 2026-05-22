@@ -5,7 +5,7 @@ import { commands, type SiteData } from "$lib/content/site";
 let { site }: { site: SiteData } = $props();
 const cmd = $derived(commands(site));
 const installerUrl = $derived(
-	`https://raw.githubusercontent.com/${site.repoShort}/master/install.sh`,
+	`https://raw.githubusercontent.com/${site.repoShort}/${site.defaultBranch}/install.sh`,
 );
 </script>
 
@@ -31,7 +31,7 @@ const installerUrl = $derived(
 	<p class="meta">
 		The npm package is a façade — installs only the
 		<a
-			href="{site.repo}/tree/master/npm"
+			href="{site.repo}/tree/{site.defaultBranch}/npm"
 			rel="external noopener noreferrer"
 		>prebuilt binary</a> for your platform via <code>optionalDependencies</code>. No postinstall, no network at install time.
 	</p>
