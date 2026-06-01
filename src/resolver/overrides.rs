@@ -129,6 +129,16 @@ impl ResolutionOverrides {
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
+        // Output grouping toggles (no CLI/env layer in v1). `group_output`
+        // (default true) is the broad GitHub Actions grouping switch.
+        // Parallel grouping diverges by environment: `github_group_parallel`
+        // (default true) applies under Actions only when `group_output` is
+        // also true; `parallel_grouped` (default false) applies elsewhere.
+        let group_output = sources.config.is_none_or(|c| c.config.github.group_output);
+        let github_group_parallel = sources
+            .config
+            .is_none_or(|c| c.config.github.group_parallel);
+        let parallel_grouped = sources.config.is_some_and(|c| c.config.parallel.grouped);
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -168,6 +178,9 @@ impl ResolutionOverrides {
             no_warnings,
             explain,
             failure_policy,
+            group_output,
+            github_group_parallel,
+            parallel_grouped,
         })
     }
 }

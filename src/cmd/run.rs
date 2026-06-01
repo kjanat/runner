@@ -48,6 +48,11 @@ pub(crate) fn run(
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
     let mut cmd = dispatch::resolve_dispatch(ctx, overrides, task, args, sink)?;
+    // Wrap the child's output in a collapsible GitHub Actions group
+    // (`runner: <task>`) when enabled. Opened after resolution so the `→`
+    // dispatch arrow stays visible above the fold and a resolver error
+    // never leaves an empty group; the guard closes the group on drop.
+    let _group = super::task_group(overrides, task);
     Ok(super::exit_code(cmd.status()?))
 }
 

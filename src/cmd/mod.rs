@@ -50,6 +50,25 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
+/// Whether to wrap a run in a GitHub Actions log group: only when the user
+/// hasn't opted out (`[github].group_output`) *and* we're under GitHub
+/// Actions, so `::group::` markers never leak into a normal terminal.
+const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
+    group_output && under_github_actions
+}
+
+/// Open a collapsible GitHub Actions log group titled `runner: {name}` when
+/// grouping is enabled (see [`should_group`]).
+///
+/// The returned [`actions_rs::log::GroupGuard`] emits `::endgroup::` when it
+/// is dropped — including on the `?` error path and on panic — so callers
+/// just bind it for the duration of the run. Returns `None` (emitting
+/// nothing) when grouping is off, which lets callers hold it unconditionally.
+fn task_group(overrides: &ResolutionOverrides, name: &str) -> Option<actions_rs::log::GroupGuard> {
+    should_group(overrides.group_output, actions_rs::env::is_github_actions())
+        .then(|| actions_rs::log::group_guard(format!("runner: {name}")))
+}
+
 /// Optional warning collector. `None` means "emit warnings to stderr
 /// directly" (single-task path). `Some(set)` means "stash for deduped
 /// emission later" (chain dispatch — chain executor emits the deduped
@@ -145,5 +164,18 @@ mod tests {
 
         assert_eq!(exit_code(std::process::ExitStatus::from_raw(5 << 8)), 5);
         assert_eq!(exit_code(std::process::ExitStatus::from_raw(2)), 130);
+    }
+
+    #[test]
+    fn should_group_requires_both_opt_in_and_github_actions() {
+        use super::should_group;
+
+        assert!(should_group(true, true));
+        assert!(!should_group(false, true), "config opt-out wins");
+        assert!(
+            !should_group(true, false),
+            "no grouping outside GitHub Actions"
+        );
+        assert!(!should_group(false, false));
     }
 }

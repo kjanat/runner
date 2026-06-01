@@ -87,6 +87,33 @@ fn run_parallel(
     chain: &Chain,
     warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
+    // Whether to buffer each task and print it as one block on completion
+    // (first done, first shown) instead of interleaving lines live. Under
+    // GitHub Actions, `[github].group_output = false` is the broad opt-out
+    // that restores the live muxer; `[github].group_parallel` only controls
+    // the parallel grouping feature while grouping is enabled.
+    let in_gha = actions_rs::env::is_github_actions();
+    let grouped = if in_gha {
+        overrides.group_output && overrides.github_group_parallel
+    } else {
+        overrides.parallel_grouped
+    };
+    if grouped {
+        // `::group::` workflow-command syntax is GitHub-only; elsewhere
+        // grouped blocks get plain headers.
+        let gha_syntax = in_gha;
+        run_parallel_grouped(ctx, overrides, chain, warnings, gha_syntax)
+    } else {
+        run_parallel_streaming(ctx, overrides, chain, warnings)
+    }
+}
+
+fn run_parallel_streaming(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    chain: &Chain,
+    warnings: &mut HashSet<DetectionWarning>,
+) -> Result<i32> {
     use std::process::Child;
     use std::sync::Arc;
 
@@ -201,6 +228,206 @@ fn run_parallel(
     Ok(first_failure.unwrap_or(0))
 }
 
+/// Per-task state for grouped parallel execution: the child, the
+/// sink its reader threads append into, and those reader handles.
+struct GroupedTask {
+    name: String,
+    child: std::process::Child,
+    sink: std::sync::Arc<crate::chain::mux::BufferSink>,
+    readers: Vec<std::thread::JoinHandle<()>>,
+}
+
+const READER_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Parallel execution that buffers each task's output and displays it as one
+/// contiguous block the moment that task finishes (completion order — first
+/// done, first shown). Under GitHub Actions each block is a `::group::`
+/// section; elsewhere it gets a plain header. See [`run_parallel`].
+fn run_parallel_grouped(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    chain: &Chain,
+    warnings: &mut HashSet<DetectionWarning>,
+    gha_syntax: bool,
+) -> Result<i32> {
+    use std::sync::Arc;
+
+    use crate::chain::mux::{BufferSink, LineSink, spawn_readers};
+
+    // Spawn each task with piped stdio + a per-task spooling sink. Same
+    // explicit-cleanup contract as the streaming path: a spawn failure must
+    // kill + reap already-spawned children and stop accepting reader output.
+    let mut tasks: Vec<GroupedTask> = Vec::with_capacity(chain.items.len());
+    let spawn_outcome: Result<()> = (|| {
+        for item in &chain.items {
+            let (name, mut child, sink) = match &item.kind {
+                ChainItemKind::Task(task_name) => {
+                    let sink = Arc::new(BufferSink::new()?);
+                    let child = crate::cmd::run::dispatch_task_piped(
+                        ctx,
+                        overrides,
+                        task_name,
+                        &item.args,
+                        Some(warnings),
+                    )?;
+                    (item.display_name().to_string(), child, sink)
+                }
+                ChainItemKind::Install { .. } => {
+                    anyhow::bail!("install items cannot run in parallel chains")
+                }
+            };
+            let stdout: Box<dyn std::io::Read + Send> =
+                Box::new(child.stdout.take().expect("stdout piped"));
+            let stderr: Box<dyn std::io::Read + Send> =
+                Box::new(child.stderr.take().expect("stderr piped"));
+            // `.clone()` resolves on the concrete `Arc<BufferSink>` then
+            // unsizes to the trait object; `Arc::clone(&sink)` would instead
+            // infer its generic from the annotation and fail to coerce.
+            let dyn_sink: Arc<dyn LineSink> = sink.clone();
+            // No prefix — the group title identifies the task, while the sink
+            // preserves stdout/stderr identity for replay.
+            let readers = spawn_readers(
+                vec![
+                    (String::new(), false, stdout),
+                    (String::new(), true, stderr),
+                ],
+                &dyn_sink,
+            );
+            tasks.push(GroupedTask {
+                name,
+                child,
+                sink,
+                readers,
+            });
+        }
+        Ok(())
+    })();
+    if let Err(e) = spawn_outcome {
+        for mut t in tasks {
+            let _ = t.child.kill();
+            let _ = t.child.wait();
+            t.sink.close();
+            wait_for_readers(&mut t.readers, READER_DRAIN_GRACE);
+        }
+        return Err(e);
+    }
+
+    // `gha_syntax` (passed in) selects `::group::` vs a plain header per
+    // block; colorize the plain headers only when stdout supports it.
+    let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
+
+    // Poll children; flush each task's block the moment it completes, so
+    // blocks appear in completion order (first done, first shown). Only this
+    // thread writes them, one at a time, so blocks never overlap.
+    let mut remaining = tasks;
+    let mut first_failure: Option<i32> = None;
+    let kill_on_fail = matches!(chain.failure, FailurePolicy::KillOnFail);
+
+    while !remaining.is_empty() {
+        let mut next: Vec<GroupedTask> = Vec::with_capacity(remaining.len());
+        for mut t in std::mem::take(&mut remaining) {
+            match t.child.try_wait()? {
+                Some(status) => {
+                    let code = crate::cmd::exit_code(status);
+                    if code != 0 {
+                        first_failure.get_or_insert(code);
+                    }
+                    flush_task_group(&t.name, gha_syntax, colorize, &t.sink, t.readers);
+                }
+                None => {
+                    if kill_on_fail && first_failure.is_some() {
+                        let _ = t.child.kill();
+                        let _ = t.child.wait();
+                        flush_task_group(&t.name, gha_syntax, colorize, &t.sink, t.readers);
+                    } else {
+                        next.push(t);
+                    }
+                }
+            }
+        }
+        remaining = next;
+        if !remaining.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    Ok(first_failure.unwrap_or(0))
+}
+
+/// Give a finished task's reader threads a bounded chance to drain, then
+/// print its spooled output as one contiguous `runner: <name>` block. The
+/// bounded drain prevents descendants that inherit stdio from blocking the
+/// supervisor loop forever after the direct task process exits.
+fn flush_task_group(
+    name: &str,
+    gha_syntax: bool,
+    colorize: bool,
+    sink: &crate::chain::mux::BufferSink,
+    mut readers: Vec<std::thread::JoinHandle<()>>,
+) {
+    use std::io::Write as _;
+
+    wait_for_readers(&mut readers, READER_DRAIN_GRACE);
+    sink.close();
+    join_finished_readers(&mut readers);
+
+    if gha_syntax {
+        // GroupGuard writes `::group::` now and `::endgroup::` on drop; don't
+        // hold the stdout lock across the guard's Drop.
+        let _group = actions_rs::log::group_guard(format!("runner: {name}"));
+        let mut stdout = std::io::stdout();
+        let mut stderr = std::io::stderr();
+        let _ = sink.replay_to(&mut stdout, &mut stderr);
+    } else {
+        let header = format!("runner: {name}");
+        let header = if colorize {
+            use colored::Colorize as _;
+            header
+                .color(crate::chain::mux::color_for(name))
+                .bold()
+                .to_string()
+        } else {
+            header
+        };
+        {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{header}");
+            let _ = out.flush();
+        }
+        let mut stdout = std::io::stdout();
+        let mut stderr = std::io::stderr();
+        let _ = sink.replay_to(&mut stdout, &mut stderr);
+    }
+}
+
+fn wait_for_readers(readers: &mut Vec<std::thread::JoinHandle<()>>, grace: std::time::Duration) {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        join_finished_readers(readers);
+        if readers.is_empty() {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return;
+        }
+        std::thread::sleep((deadline - now).min(std::time::Duration::from_millis(10)));
+    }
+}
+
+fn join_finished_readers(readers: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < readers.len() {
+        if readers[index].is_finished() {
+            let handle = readers.swap_remove(index);
+            let _ = handle.join();
+        } else {
+            index += 1;
+        }
+    }
+}
+
 fn dispatch_item(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -213,7 +440,7 @@ fn dispatch_item(
             crate::cmd::run::run(ctx, overrides, name, &item.args, Some(warnings))
         }
         ChainItemKind::Install { frozen } => {
-            crate::cmd::install::install_pms(ctx, *frozen, Some(warnings))
+            crate::cmd::install::install_pms(ctx, overrides, *frozen, Some(warnings))
         }
     }
 }

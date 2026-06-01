@@ -3,11 +3,19 @@
 //! writes to the parent terminal. Color and prefix-padding are derived
 //! from the set of task names supplied up front.
 
-use std::io::{BufRead, BufReader, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use colored::{Color, Colorize};
+
+static BUFFER_SINK_ID: AtomicU64 = AtomicU64::new(0);
+
+const STREAM_STDOUT: u8 = 0;
+const STREAM_STDERR: u8 = 1;
 
 /// Synchronous, thread-safe destination for prefixed chain output. Each
 /// `emit` call writes a single line and releases the underlying lock
@@ -29,11 +37,157 @@ impl LineSink for StdioSink {
     fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
         use std::io::Write;
         if is_stderr {
-            let mut h = std::io::stderr().lock();
+            let mut h = io::stderr().lock();
             let _ = writeln!(h, "{prefix} {line}");
         } else {
-            let mut h = std::io::stdout().lock();
+            let mut h = io::stdout().lock();
             let _ = writeln!(h, "{prefix} {line}");
+        }
+    }
+}
+
+/// Spooling sink for grouped parallel output. Reader threads append records to
+/// a temp file instead of writing live; the caller replays the file once the
+/// task finishes. Each record keeps stdout/stderr identity, so grouped mode
+/// preserves stream semantics while avoiding unbounded in-memory buffers.
+pub(crate) struct BufferSink {
+    file: std::sync::Mutex<File>,
+    path: PathBuf,
+    closed: AtomicBool,
+}
+
+impl BufferSink {
+    pub(crate) fn new() -> io::Result<Self> {
+        let dir = std::env::temp_dir();
+        for _ in 0..100 {
+            let id = BUFFER_SINK_ID.fetch_add(1, Ordering::Relaxed);
+            let path = dir.join(format!(
+                "runner-grouped-output-{}-{id}.tmp",
+                std::process::id()
+            ));
+            match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        file: std::sync::Mutex::new(file),
+                        path,
+                        closed: AtomicBool::new(false),
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "failed to create unique runner output buffer",
+        ))
+    }
+
+    /// Stop accepting late records. Used before replay when descendant
+    /// processes keep a pipe open after the direct task process has exited.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    fn file(&self) -> io::Result<std::sync::MutexGuard<'_, File>> {
+        self.file
+            .lock()
+            .map_err(|_| io::Error::other("buffer sink lock poisoned"))
+    }
+
+    /// Replay buffered records to their original streams.
+    pub(crate) fn replay_to(
+        &self,
+        stdout: &mut dyn Write,
+        stderr: &mut dyn Write,
+    ) -> io::Result<()> {
+        self.close();
+        {
+            let mut file = self.file()?;
+            file.flush()?;
+        }
+        let mut file = File::open(&self.path)?;
+
+        loop {
+            let mut stream = [0_u8; 1];
+            match file.read_exact(&mut stream) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(e),
+            }
+
+            let mut len = [0_u8; 8];
+            file.read_exact(&mut len)?;
+            let len = usize::try_from(u64::from_le_bytes(len)).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "buffer record too large")
+            })?;
+            let mut bytes = vec![0_u8; len];
+            file.read_exact(&mut bytes)?;
+
+            match stream[0] {
+                STREAM_STDOUT => stdout.write_all(&bytes)?,
+                STREAM_STDERR => stderr.write_all(&bytes)?,
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid buffer stream marker",
+                    ));
+                }
+            }
+        }
+
+        stdout.flush()?;
+        stderr.flush()
+    }
+}
+
+impl Drop for BufferSink {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl LineSink for BufferSink {
+    fn emit(&self, _prefix: &str, is_stderr: bool, line: &str) {
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let Some(len) = line
+            .len()
+            .checked_add(1)
+            .and_then(|len| u64::try_from(len).ok())
+        else {
+            return;
+        };
+        let marker = if is_stderr {
+            STREAM_STDERR
+        } else {
+            STREAM_STDOUT
+        };
+        let mut record_header = [0_u8; 9];
+        record_header[0] = marker;
+        record_header[1..].copy_from_slice(&len.to_le_bytes());
+
+        let Ok(mut file) = self.file() else {
+            return;
+        };
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        if file
+            .write_all(&record_header)
+            .and_then(|()| file.write_all(line.as_bytes()))
+            .and_then(|()| file.write_all(b"\n"))
+            .is_err()
+        {
+            self.close();
         }
     }
 }
@@ -164,9 +318,25 @@ mod tests {
     }
 
     #[test]
+    fn buffer_sink_replays_both_streams_to_original_destinations() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[ignored]", false, "first");
+        sink.emit("[ignored]", true, "second");
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr)
+            .expect("buffer should replay");
+
+        assert_eq!(stdout, b"first\n");
+        assert_eq!(stderr, b"second\n");
+    }
+
+    #[test]
     fn spawn_readers_streams_lines_through_sink() {
         let sink = Arc::new(VecSink::new());
-        let stream = std::io::Cursor::new(b"hello\nworld\n".to_vec());
+        let stream = io::Cursor::new(b"hello\nworld\n".to_vec());
         let handles = spawn_readers(
             vec![("[t]".into(), false, stream)],
             &(Arc::clone(&sink) as Arc<dyn LineSink>),
@@ -182,8 +352,8 @@ mod tests {
     #[test]
     fn spawn_readers_routes_stderr_flag_through_sink() {
         let sink = Arc::new(VecSink::new());
-        let out = std::io::Cursor::new(b"o\n".to_vec());
-        let err = std::io::Cursor::new(b"e\n".to_vec());
+        let out = io::Cursor::new(b"o\n".to_vec());
+        let err = io::Cursor::new(b"e\n".to_vec());
         let handles = spawn_readers(
             vec![("[t]".into(), false, out), ("[t]".into(), true, err)],
             &(Arc::clone(&sink) as Arc<dyn LineSink>),

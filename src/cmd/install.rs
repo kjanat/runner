@@ -9,6 +9,7 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
+use crate::resolver::ResolutionOverrides;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 
@@ -17,8 +18,12 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 /// Warns when the current Node.js version doesn't match the project's
 /// expected version before proceeding. Thin wrapper over [`install_pms`]
 /// that preserves the package manager's actual exit code for callers.
-pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
-    install_pms(ctx, frozen, None)
+pub(crate) fn install(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    frozen: bool,
+) -> Result<i32> {
+    install_pms(ctx, overrides, frozen, None)
 }
 
 /// Chain-aware install entry. Runs install across every detected PM and
@@ -34,12 +39,18 @@ pub(crate) fn install(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
 /// chain item (i.e. `runner install <tasks>`).
 pub(crate) fn install_pms(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     frozen: bool,
     _sink: super::WarningSink<'_>,
 ) -> Result<i32> {
     if ctx.package_managers.is_empty() {
         bail!("No package manager detected.");
     }
+
+    // Collapse the whole install (single- or multi-PM) under one
+    // `runner: install` GitHub Actions group when enabled. Opened after the
+    // no-PM bail so a failed detection doesn't emit an empty group.
+    let _group = super::task_group(overrides, "install");
 
     if let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)
         && !version_matches(&nv.expected, cur)

@@ -8,6 +8,14 @@
       "description": "`[chain]` — failure policy for multi-task chains.",
       "$ref": "#/$defs/ChainSection"
     },
+    "github": {
+      "description": "`[github]` — GitHub Actions integration (output grouping).",
+      "$ref": "#/$defs/GitHubSection"
+    },
+    "parallel": {
+      "description": "`[parallel]` — presentation of parallel (`-p`) chain output.",
+      "$ref": "#/$defs/ParallelSection"
+    },
     "pm": {
       "description": "`[pm]` — per-ecosystem package-manager overrides.",
       "$ref": "#/$defs/PmSection"
@@ -59,6 +67,35 @@
           "kill_on_fail"
         ]
       }
+    },
+    "GitHubSection": {
+      "description": "`[github]` section — GitHub Actions integration. Both knobs only take\neffect under GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing here\nchanges behavior.",
+      "type": "object",
+      "properties": {
+        "group_output": {
+          "description": "Wrap task output in `runner: <task>` groups under GitHub Actions.\nDefaults to `true`; set `false` to restore the old ungrouped output,\nincluding the live `[task]`-prefixed muxer for parallel runs.",
+          "type": "boolean",
+          "default": true
+        },
+        "group_parallel": {
+          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped), but only when\n`group_output` is also true. The non-CI equivalent is\n`[parallel].grouped` (default `false`), so CI and local diverge unless\nyou set them to match.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParallelSection": {
+      "description": "`[parallel]` section — how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n[`GitHubSection::group_parallel`].)",
+      "type": "object",
+      "properties": {
+        "grouped": {
+          "description": "Buffer each parallel task's output and print it as one contiguous\nblock the moment that task finishes (completion order — first done,\nfirst shown), instead of interleaving prefixed lines live. Defaults to\n`false` (the live `[task]`-prefixed muxer); set `true` to group even in\na plain terminal, where a colored header delimits each block.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
     },
     "PmSection": {
       "description": "`[pm]` section — per-ecosystem package manager overrides.",

@@ -63,6 +63,12 @@ pub(crate) struct RunnerConfig {
     /// `[chain]` — failure policy for multi-task chains.
     #[serde(default)]
     pub chain: ChainSection,
+    /// `[github]` — GitHub Actions integration (output grouping).
+    #[serde(default)]
+    pub github: GitHubSection,
+    /// `[parallel]` — presentation of parallel (`-p`) chain output.
+    #[serde(default)]
+    pub parallel: ParallelSection,
 }
 
 /// `[chain]` section — failure policy for `run -s/-p` chains and
@@ -99,6 +105,67 @@ pub(crate) struct ChainSection {
     /// contexts.
     #[serde(default)]
     pub kill_on_fail: Option<bool>,
+}
+
+/// `[github]` section — GitHub Actions integration. Both knobs only take
+/// effect under GitHub Actions (gated at the call site by
+/// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
+/// changes behavior.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GitHubSection {
+    /// Wrap task output in `runner: <task>` groups under GitHub Actions.
+    /// Defaults to `true`; set `false` to restore the old ungrouped output,
+    /// including the live `[task]`-prefixed muxer for parallel runs.
+    #[serde(default = "default_group_output")]
+    pub group_output: bool,
+
+    /// Under GitHub Actions, group parallel (`-p`) output: buffer each task
+    /// and print it as one block on completion instead of interleaving lines
+    /// live. Defaults to `true` (CI logs read better grouped), but only when
+    /// [`Self::group_output`] is also true. The non-CI equivalent is
+    /// `[parallel].grouped` (default `false`), so CI and local diverge unless
+    /// you set them to match.
+    #[serde(default = "default_github_group_parallel")]
+    pub group_parallel: bool,
+}
+
+impl Default for GitHubSection {
+    fn default() -> Self {
+        Self {
+            group_output: default_group_output(),
+            group_parallel: default_github_group_parallel(),
+        }
+    }
+}
+
+/// Default for [`GitHubSection::group_output`]: grouping is on unless the
+/// user opts out, so the CI-readability win is automatic.
+const fn default_group_output() -> bool {
+    true
+}
+
+/// Default for [`GitHubSection::group_parallel`]: under GitHub Actions,
+/// parallel output is grouped by default for readable CI logs.
+const fn default_github_group_parallel() -> bool {
+    true
+}
+
+/// `[parallel]` section — how parallel (`-p`) chains present their output
+/// **outside** GitHub Actions. (Under GitHub Actions, see
+/// [`GitHubSection::group_parallel`].)
+#[derive(Debug, Clone, Default, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ParallelSection {
+    /// Buffer each parallel task's output and print it as one contiguous
+    /// block the moment that task finishes (completion order — first done,
+    /// first shown), instead of interleaving prefixed lines live. Defaults to
+    /// `false` (the live `[task]`-prefixed muxer); set `true` to group even in
+    /// a plain terminal, where a colored header delimits each block.
+    #[serde(default)]
+    pub grouped: bool,
 }
 
 /// `[pm]` section — per-ecosystem package manager overrides.
@@ -332,5 +399,130 @@ mod tests {
         let err = load(dir.path()).expect_err("unknown [chain] key should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse"));
+    }
+
+    #[test]
+    fn load_parses_github_section() {
+        let dir = TempDir::new("config-github");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[github]\ngroup_output = false\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(!loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn github_group_output_defaults_true_when_key_omitted() {
+        let dir = TempDir::new("config-github-default");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[github]\n")
+            .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn github_group_output_defaults_true_when_section_absent() {
+        let dir = TempDir::new("config-github-absent");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n")
+            .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn load_rejects_unknown_github_key() {
+        let dir = TempDir::new("config-unknown-github-key");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[github]\nfoo = true\n")
+            .expect("config should be written");
+
+        let err = load(dir.path()).expect_err("unknown [github] key should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse"));
+    }
+
+    #[test]
+    fn load_parses_parallel_grouped() {
+        let dir = TempDir::new("config-parallel-grouped");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[parallel]\ngrouped = true\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.config.parallel.grouped);
+    }
+
+    #[test]
+    fn parallel_grouped_defaults_false_when_section_absent() {
+        let dir = TempDir::new("config-parallel-default");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n")
+            .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        // Off by default outside GitHub Actions.
+        assert!(!loaded.config.parallel.grouped);
+    }
+
+    #[test]
+    fn load_rejects_unknown_parallel_key() {
+        let dir = TempDir::new("config-unknown-parallel-key");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[parallel]\nfoo = true\n")
+            .expect("config should be written");
+
+        let err = load(dir.path()).expect_err("unknown [parallel] key should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse"));
+    }
+
+    #[test]
+    fn load_parses_github_group_parallel() {
+        let dir = TempDir::new("config-github-group-parallel");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[github]\ngroup_parallel = false\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(!loaded.config.github.group_parallel);
+        // group_output is independent and still defaults true.
+        assert!(loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn github_group_parallel_defaults_true() {
+        let dir = TempDir::new("config-github-group-parallel-default");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[github]\n")
+            .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.config.github.group_parallel);
     }
 }

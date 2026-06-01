@@ -647,7 +647,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             // / inline, not just buried in the step log. Kept on stderr
             // so `runner info --json` stdout stays a clean pipe; the
             // runner scans both streams for `::` commands.
-            if std::env::var_os("GITHUB_ACTIONS").as_deref() == Some(std::ffi::OsStr::new("true")) {
+            if actions_rs::env::is_github_actions() {
                 eprintln!(
                     "::warning title=Deprecation::`runner info` is deprecated; use `runner list`"
                 );
@@ -677,7 +677,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
             dispatch_install_chain(&ctx, &overrides, frozen, &tasks)
         }
-        Some(cli::Command::Install { frozen, .. }) => cmd::install(&ctx, frozen),
+        Some(cli::Command::Install { frozen, .. }) => cmd::install(&ctx, &overrides, frozen),
         Some(cli::Command::Clean {
             yes: false,
             include_framework: false,

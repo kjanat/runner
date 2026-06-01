@@ -1,0 +1,4 @@
+# Opt into grouped parallel output outside GitHub Actions (off by default);
+# exercised by `parallel_chain_grouped_with_plain_headers_outside_github_actions`.
+[parallel]
+grouped = true

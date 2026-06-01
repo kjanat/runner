@@ -1,6 +1,6 @@
 [package]
 name          = "runner-run"
-version       = "0.11.0"
+version       = "0.12.0"
 edition       = "2024"
 rust-version  = "1.95"
 description   = "Universal project task runner"
@@ -58,6 +58,7 @@ name              = "gen-schema"
 required-features = ["schema-gen"]
 
 [dependencies]
+actions-rs    = "0.1"
 anyhow        = "1"
 colored       = "3"
 json5         = "1"
