@@ -130,10 +130,10 @@ impl ResolutionOverrides {
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
         // Output grouping toggles (no CLI/env layer in v1). `group_output`
-        // (default true) is the GitHub Actions `::group::` syntax switch.
+        // (default true) is the broad GitHub Actions grouping switch.
         // Parallel grouping diverges by environment: `github_group_parallel`
-        // (default true) applies under Actions, `parallel_grouped` (default
-        // false) elsewhere — the emit site selects which one.
+        // (default true) applies under Actions only when `group_output` is
+        // also true; `parallel_grouped` (default false) applies elsewhere.
         let group_output = sources.config.is_none_or(|c| c.config.github.group_output);
         let github_group_parallel = sources
             .config

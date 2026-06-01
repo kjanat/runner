@@ -64,15 +64,15 @@ pub(crate) struct ResolutionOverrides {
     /// Resolved from `-k`/`--kill-on-fail` (CLI) → `RUNNER_KEEP_GOING`/
     /// `RUNNER_KILL_ON_FAIL` (env) → `[chain]` (config) → `FailFast`.
     pub failure_policy: FailurePolicy,
-    /// Whether to wrap task / install output in GitHub Actions `::group::`
-    /// sections. Sourced from `[github].group_output` (default `true`);
-    /// combined with `actions_rs::env::is_github_actions()` at the emit
-    /// site so the markers only ever appear under GitHub Actions.
+    /// Broad GitHub Actions grouping switch. Sourced from
+    /// `[github].group_output` (default `true`); when false, GitHub Actions
+    /// runs use the same ungrouped output shape as before this feature.
     pub group_output: bool,
     /// Whether to group parallel (`-p`) output **under GitHub Actions**:
     /// buffer each task and print it as one block on completion rather than
     /// interleaving lines live. Sourced from `[github].group_parallel`
-    /// (default `true`). The emit site picks this under GitHub Actions and
+    /// (default `true`) and only active when [`Self::group_output`] is true.
+    /// The emit site picks this under GitHub Actions and
     /// [`Self::parallel_grouped`] otherwise.
     pub github_group_parallel: bool,
     /// Whether to group parallel (`-p`) output **outside GitHub Actions**.

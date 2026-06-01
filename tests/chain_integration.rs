@@ -10,7 +10,9 @@
 //! --test chain_integration`.
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+use std::{io::Read, thread};
 
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
@@ -413,6 +415,40 @@ fn config_opt_out_disables_grouping_under_github_actions() {
 }
 
 #[test]
+fn github_group_output_false_restores_live_parallel_muxer() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("github-no-group").to_str().unwrap(),
+            "run",
+            "-p",
+            "build",
+            "test",
+        ])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("[build") && stdout.contains("[test"),
+        "GHA group_output=false should restore live prefixes. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("::group::") && !stdout.contains("runner: build"),
+        "GHA group_output=false should not emit grouped blocks. stdout: {stdout}",
+    );
+}
+
+#[test]
 fn parallel_chain_grouped_under_github_actions() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
@@ -520,5 +556,92 @@ fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
     assert!(
         stdout.contains("runner: test"),
         "missing test header. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn parallel_grouped_preserves_child_stderr_stream() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("parallel-grouped").to_str().unwrap(),
+            "run",
+            "-p",
+            "build",
+            "err",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("err-ran"),
+        "child stderr must stay on stderr. stderr: {stderr}",
+    );
+    assert!(
+        !stdout.contains("err-ran"),
+        "child stderr must not be replayed to stdout. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn parallel_grouped_does_not_wait_forever_on_inherited_stdout() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let mut child = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("parallel-grouped").to_str().unwrap(),
+            "run",
+            "-p",
+            "hold-open",
+            "build",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("runner binary spawns");
+
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("runner status checks") {
+            break status;
+        }
+        if started.elapsed() > Duration::from_secs(2) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("grouped parallel waited on inherited stdout for too long");
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        pipe.read_to_string(&mut stdout)
+            .expect("stdout should be readable");
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_string(&mut stderr)
+            .expect("stderr should be readable");
+    }
+
+    assert!(status.success(), "stdout: {stdout}; stderr: {stderr}");
+    assert!(
+        stdout.contains("foreground-ran"),
+        "completed task output should still flush. stdout: {stdout}",
     );
 }

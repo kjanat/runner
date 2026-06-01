@@ -73,12 +73,12 @@
       "type": "object",
       "properties": {
         "group_output": {
-          "description": "Wrap each task / install run in a collapsible `::group::` …\n`::endgroup::` section titled `runner: <task>` under GitHub Actions.\nDefaults to `true`; set `false` to disable the workflow-command syntax\n(sequential groups and parallel block delimiters alike).",
+          "description": "Wrap task output in `runner: <task>` groups under GitHub Actions.\nDefaults to `true`; set `false` to restore the old ungrouped output,\nincluding the live `[task]`-prefixed muxer for parallel runs.",
           "type": "boolean",
           "default": true
         },
         "group_parallel": {
-          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped). The non-CI\nequivalent is `[parallel].grouped` (default `false`), so CI and local\ndiverge unless you set them to match.",
+          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped), but only when\n`group_output` is also true. The non-CI equivalent is\n`[parallel].grouped` (default `false`), so CI and local diverge unless\nyou set them to match.",
           "type": "boolean",
           "default": true
         }

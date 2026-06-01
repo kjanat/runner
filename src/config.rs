@@ -115,18 +115,18 @@ pub(crate) struct ChainSection {
 #[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GitHubSection {
-    /// Wrap each task / install run in a collapsible `::group::` …
-    /// `::endgroup::` section titled `runner: <task>` under GitHub Actions.
-    /// Defaults to `true`; set `false` to disable the workflow-command syntax
-    /// (sequential groups and parallel block delimiters alike).
+    /// Wrap task output in `runner: <task>` groups under GitHub Actions.
+    /// Defaults to `true`; set `false` to restore the old ungrouped output,
+    /// including the live `[task]`-prefixed muxer for parallel runs.
     #[serde(default = "default_group_output")]
     pub group_output: bool,
 
     /// Under GitHub Actions, group parallel (`-p`) output: buffer each task
     /// and print it as one block on completion instead of interleaving lines
-    /// live. Defaults to `true` (CI logs read better grouped). The non-CI
-    /// equivalent is `[parallel].grouped` (default `false`), so CI and local
-    /// diverge unless you set them to match.
+    /// live. Defaults to `true` (CI logs read better grouped), but only when
+    /// [`Self::group_output`] is also true. The non-CI equivalent is
+    /// `[parallel].grouped` (default `false`), so CI and local diverge unless
+    /// you set them to match.
     #[serde(default = "default_github_group_parallel")]
     pub group_parallel: bool,
 }

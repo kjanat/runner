@@ -16,15 +16,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   as `::group::` / `::endgroup::` workflow commands under GitHub Actions
   (and left untouched in a plain terminal). Toggle with
   `[github].group_output` in `runner.toml` (default `true`).
-- Grouped parallel (`-p`) output. Each task's stdout/stderr is buffered
+- Grouped parallel (`-p`) output. Each task's stdout/stderr is captured
   and printed as one contiguous `runner: <task>` block when that task
   finishes (completion order — first done, first shown), instead of
   interleaving lines live. Under GitHub Actions the block is a `::group::`
   section; elsewhere it gets a plain colored header. Defaults diverge by
   environment so CI and local can differ: `[github].group_parallel`
-  (default `true`) governs runs under GitHub Actions, `[parallel].grouped`
-  (default `false`) governs runs elsewhere. Opting out on either path
-  restores the live `[<task>]`-prefixed multiplexer.
+  (default `true`, only when `[github].group_output` is also `true`)
+  governs runs under GitHub Actions, `[parallel].grouped` (default
+  `false`) governs runs elsewhere. Opting out on either path restores the
+  live `[<task>]`-prefixed multiplexer.
 - `[github]` and `[parallel]` sections in `runner.toml`, reflected in the
   generated JSON schema, for the grouping toggles above.
 - `actions-rs` dependency for emitting GitHub Actions workflow commands.

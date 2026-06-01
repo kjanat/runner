@@ -88,21 +88,20 @@ fn run_parallel(
     warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
     // Whether to buffer each task and print it as one block on completion
-    // (first done, first shown) instead of interleaving lines live. The
-    // default diverges by environment, as preferred: under GitHub Actions it
-    // is on (`[github].group_parallel`, default true); elsewhere it is off
-    // (`[parallel].grouped`, default false). Both are configurable, so CI and
-    // local can be made to match or differ.
+    // (first done, first shown) instead of interleaving lines live. Under
+    // GitHub Actions, `[github].group_output = false` is the broad opt-out
+    // that restores the live muxer; `[github].group_parallel` only controls
+    // the parallel grouping feature while grouping is enabled.
     let in_gha = actions_rs::env::is_github_actions();
     let grouped = if in_gha {
-        overrides.github_group_parallel
+        overrides.group_output && overrides.github_group_parallel
     } else {
         overrides.parallel_grouped
     };
     if grouped {
-        // `::group::` workflow-command syntax is GitHub-only and further gated
-        // by `[github].group_output`; elsewhere blocks get plain headers.
-        let gha_syntax = in_gha && overrides.group_output;
+        // `::group::` workflow-command syntax is GitHub-only; elsewhere
+        // grouped blocks get plain headers.
+        let gha_syntax = in_gha;
         run_parallel_grouped(ctx, overrides, chain, warnings, gha_syntax)
     } else {
         run_parallel_streaming(ctx, overrides, chain, warnings)
@@ -229,7 +228,7 @@ fn run_parallel_streaming(
     Ok(first_failure.unwrap_or(0))
 }
 
-/// Per-task state for buffered (grouped) parallel execution: the child, the
+/// Per-task state for grouped parallel execution: the child, the
 /// sink its reader threads append into, and those reader handles.
 struct GroupedTask {
     name: String,
@@ -237,6 +236,8 @@ struct GroupedTask {
     sink: std::sync::Arc<crate::chain::mux::BufferSink>,
     readers: Vec<std::thread::JoinHandle<()>>,
 }
+
+const READER_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Parallel execution that buffers each task's output and displays it as one
 /// contiguous block the moment that task finishes (completion order — first
@@ -253,9 +254,9 @@ fn run_parallel_grouped(
 
     use crate::chain::mux::{BufferSink, LineSink, spawn_readers};
 
-    // Spawn each task with piped stdio + a per-task buffering sink. Same
+    // Spawn each task with piped stdio + a per-task spooling sink. Same
     // explicit-cleanup contract as the streaming path: a spawn failure must
-    // kill + reap already-spawned children and join their readers.
+    // kill + reap already-spawned children and stop accepting reader output.
     let mut tasks: Vec<GroupedTask> = Vec::with_capacity(chain.items.len());
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
@@ -275,13 +276,13 @@ fn run_parallel_grouped(
                 Box::new(child.stdout.take().expect("stdout piped"));
             let stderr: Box<dyn std::io::Read + Send> =
                 Box::new(child.stderr.take().expect("stderr piped"));
-            let sink = Arc::new(BufferSink::default());
+            let sink = Arc::new(BufferSink::new()?);
             // `.clone()` resolves on the concrete `Arc<BufferSink>` then
             // unsizes to the trait object; `Arc::clone(&sink)` would instead
             // infer its generic from the annotation and fail to coerce.
             let dyn_sink: Arc<dyn LineSink> = sink.clone();
-            // No prefix — the group title identifies the task; both streams
-            // fold into the one group in arrival order.
+            // No prefix — the group title identifies the task, while the sink
+            // preserves stdout/stderr identity for replay.
             let readers = spawn_readers(
                 vec![
                     (String::new(), false, stdout),
@@ -302,9 +303,8 @@ fn run_parallel_grouped(
         for mut t in tasks {
             let _ = t.child.kill();
             let _ = t.child.wait();
-            for h in t.readers {
-                let _ = h.join();
-            }
+            t.sink.close();
+            wait_for_readers(&mut t.readers, READER_DRAIN_GRACE);
         }
         return Err(e);
     }
@@ -351,32 +351,30 @@ fn run_parallel_grouped(
     Ok(first_failure.unwrap_or(0))
 }
 
-/// Join a finished task's reader threads (so its buffer holds the complete
-/// output), then print that buffer as one contiguous `runner: <name>` block
-/// on stdout, in arrival order. Under GitHub Actions (`gha_syntax`) the block
-/// is wrapped in `::group::`/`::endgroup::` workflow commands; otherwise a
-/// plain (optionally colored) header line delimits it — same grouping, no
-/// workflow-command bloat.
+/// Give a finished task's reader threads a bounded chance to drain, then
+/// print its spooled output as one contiguous `runner: <name>` block. The
+/// bounded drain prevents descendants that inherit stdio from blocking the
+/// supervisor loop forever after the direct task process exits.
 fn flush_task_group(
     name: &str,
     gha_syntax: bool,
     colorize: bool,
     sink: &crate::chain::mux::BufferSink,
-    readers: Vec<std::thread::JoinHandle<()>>,
+    mut readers: Vec<std::thread::JoinHandle<()>>,
 ) {
     use std::io::Write as _;
 
-    for h in readers {
-        let _ = h.join();
-    }
-    let bytes = sink.take();
+    wait_for_readers(&mut readers, READER_DRAIN_GRACE);
+    sink.close();
+    join_finished_readers(&mut readers);
 
     if gha_syntax {
         // GroupGuard writes `::group::` now and `::endgroup::` on drop; don't
         // hold the stdout lock across the guard's Drop.
         let _group = actions_rs::log::group_guard(format!("runner: {name}"));
-        let _ = std::io::stdout().write_all(&bytes);
-        let _ = std::io::stdout().flush();
+        let mut stdout = std::io::stdout();
+        let mut stderr = std::io::stderr();
+        let _ = sink.replay_to(&mut stdout, &mut stderr);
     } else {
         let header = format!("runner: {name}");
         let header = if colorize {
@@ -388,10 +386,42 @@ fn flush_task_group(
         } else {
             header
         };
-        let mut out = std::io::stdout().lock();
-        let _ = writeln!(out, "{header}");
-        let _ = out.write_all(&bytes);
-        let _ = out.flush();
+        {
+            let mut out = std::io::stdout().lock();
+            let _ = writeln!(out, "{header}");
+            let _ = out.flush();
+        }
+        let mut stdout = std::io::stdout();
+        let mut stderr = std::io::stderr();
+        let _ = sink.replay_to(&mut stdout, &mut stderr);
+    }
+}
+
+fn wait_for_readers(readers: &mut Vec<std::thread::JoinHandle<()>>, grace: std::time::Duration) {
+    let deadline = std::time::Instant::now() + grace;
+    loop {
+        join_finished_readers(readers);
+        if readers.is_empty() {
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return;
+        }
+        std::thread::sleep((deadline - now).min(std::time::Duration::from_millis(10)));
+    }
+}
+
+fn join_finished_readers(readers: &mut Vec<std::thread::JoinHandle<()>>) {
+    let mut index = 0;
+    while index < readers.len() {
+        if readers[index].is_finished() {
+            let handle = readers.swap_remove(index);
+            let _ = handle.join();
+        } else {
+            index += 1;
+        }
     }
 }
 

@@ -3,3 +3,9 @@ build:
 
 test:
     @echo "test-ran"
+
+err:
+    @echo "err-ran" >&2
+
+hold-open:
+    @sh -c 'sleep 3 & echo "foreground-ran"'
