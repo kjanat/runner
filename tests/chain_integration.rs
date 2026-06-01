@@ -418,8 +418,8 @@ fn parallel_chain_grouped_under_github_actions() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // Default `[parallel].grouped` buffers each task and emits it as its own
-    // ::group:: block under GitHub Actions — no live `[task]` prefixes.
+    // Default `[github].group_parallel` buffers each task and emits it as its
+    // own ::group:: block under GitHub Actions — no live `[task]` prefixes.
     let output = Command::new(runner_binary())
         .args([
             "--dir",
