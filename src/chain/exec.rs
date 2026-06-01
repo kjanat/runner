@@ -260,14 +260,18 @@ fn run_parallel_grouped(
     let mut tasks: Vec<GroupedTask> = Vec::with_capacity(chain.items.len());
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
-            let mut child = match &item.kind {
-                ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
-                    ctx,
-                    overrides,
-                    name,
-                    &item.args,
-                    Some(warnings),
-                )?,
+            let (name, mut child, sink) = match &item.kind {
+                ChainItemKind::Task(task_name) => {
+                    let sink = Arc::new(BufferSink::new()?);
+                    let child = crate::cmd::run::dispatch_task_piped(
+                        ctx,
+                        overrides,
+                        task_name,
+                        &item.args,
+                        Some(warnings),
+                    )?;
+                    (item.display_name().to_string(), child, sink)
+                }
                 ChainItemKind::Install { .. } => {
                     anyhow::bail!("install items cannot run in parallel chains")
                 }
@@ -276,7 +280,6 @@ fn run_parallel_grouped(
                 Box::new(child.stdout.take().expect("stdout piped"));
             let stderr: Box<dyn std::io::Read + Send> =
                 Box::new(child.stderr.take().expect("stderr piped"));
-            let sink = Arc::new(BufferSink::new()?);
             // `.clone()` resolves on the concrete `Arc<BufferSink>` then
             // unsizes to the trait object; `Arc::clone(&sink)` would instead
             // infer its generic from the annotation and fail to coerce.
@@ -291,7 +294,7 @@ fn run_parallel_grouped(
                 &dyn_sink,
             );
             tasks.push(GroupedTask {
-                name: item.display_name().to_string(),
+                name,
                 child,
                 sink,
                 readers,
