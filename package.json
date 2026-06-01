@@ -7,8 +7,8 @@
 		"npm/facade"
 	],
 	"devDependencies": {
-		"@types/node": ">=22.18.0",
-		"typescript": "^5"
+		"@types/node": "^25.9.1",
+		"typescript": "^6.0.3"
 	},
 	"volta": {
 		"node": "24.14.1",

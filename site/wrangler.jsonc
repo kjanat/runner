@@ -2,9 +2,13 @@
 	"$schema": "https://www.unpkg.com/wrangler/config-schema.json",
 	"name": "runner",
 	"compatibility_date": "2026-05-05",
+	"compatibility_flags": ["nodejs_compat"],
+	// @sveltejs/adapter-cloudflare emits the worker + prerendered
+	// assets here. `bun run build` regenerates it; never hand-edited.
+	"main": ".svelte-kit/cloudflare/_worker.js",
 	"assets": {
-		"directory": "./dist",
-		"not_found_handling": "404-page",
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare",
 	},
 	"routes": [
 		{ "pattern": "runner.kjanat.dev", "custom_domain": true },
