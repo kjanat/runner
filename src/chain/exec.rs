@@ -213,7 +213,7 @@ fn dispatch_item(
             crate::cmd::run::run(ctx, overrides, name, &item.args, Some(warnings))
         }
         ChainItemKind::Install { frozen } => {
-            crate::cmd::install::install_pms(ctx, *frozen, Some(warnings))
+            crate::cmd::install::install_pms(ctx, overrides, *frozen, Some(warnings))
         }
     }
 }

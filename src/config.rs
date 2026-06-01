@@ -63,6 +63,9 @@ pub(crate) struct RunnerConfig {
     /// `[chain]` — failure policy for multi-task chains.
     #[serde(default)]
     pub chain: ChainSection,
+    /// `[github]` — GitHub Actions integration (output grouping).
+    #[serde(default)]
+    pub github: GitHubSection,
 }
 
 /// `[chain]` section — failure policy for `run -s/-p` chains and
@@ -99,6 +102,38 @@ pub(crate) struct ChainSection {
     /// contexts.
     #[serde(default)]
     pub kill_on_fail: Option<bool>,
+}
+
+/// `[github]` section — GitHub Actions integration.
+///
+/// One knob today: whether each task / install run is wrapped in a
+/// collapsible `::group::` log section. The markers are only ever emitted
+/// under GitHub Actions (gated at the call site by
+/// `actions_rs::env::is_github_actions`); in a normal terminal nothing
+/// changes regardless of this setting.
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub(crate) struct GitHubSection {
+    /// Wrap each task / install run in a collapsible `::group::` …
+    /// `::endgroup::` section titled `runner: <task>` when running under
+    /// GitHub Actions. Defaults to `true`; set `false` to disable grouping.
+    #[serde(default = "default_group_output")]
+    pub group_output: bool,
+}
+
+impl Default for GitHubSection {
+    fn default() -> Self {
+        Self {
+            group_output: default_group_output(),
+        }
+    }
+}
+
+/// Default for [`GitHubSection::group_output`]: grouping is on unless the
+/// user opts out, so the CI-readability win is automatic.
+const fn default_group_output() -> bool {
+    true
 }
 
 /// `[pm]` section — per-ecosystem package manager overrides.
@@ -330,6 +365,59 @@ mod tests {
             .expect("config should be written");
 
         let err = load(dir.path()).expect_err("unknown [chain] key should error");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("failed to parse"));
+    }
+
+    #[test]
+    fn load_parses_github_section() {
+        let dir = TempDir::new("config-github");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[github]\ngroup_output = false\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(!loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn github_group_output_defaults_true_when_key_omitted() {
+        let dir = TempDir::new("config-github-default");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[github]\n")
+            .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn github_group_output_defaults_true_when_section_absent() {
+        let dir = TempDir::new("config-github-absent");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n")
+            .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.config.github.group_output);
+    }
+
+    #[test]
+    fn load_rejects_unknown_github_key() {
+        let dir = TempDir::new("config-unknown-github-key");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[github]\nfoo = true\n")
+            .expect("config should be written");
+
+        let err = load(dir.path()).expect_err("unknown [github] key should error");
         let msg = format!("{err:#}");
         assert!(msg.contains("failed to parse"));
     }

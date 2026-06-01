@@ -248,3 +248,163 @@ fn chain_prevalidates_all_tokens_before_running_any_task() {
         "pre-validation should have skipped `test`. stdout: {stdout}",
     );
 }
+
+#[test]
+fn sequential_chain_wraps_steps_in_github_actions_groups() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-s",
+            "build",
+            "test",
+        ])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+
+    let g_build = stdout
+        .find("::group::runner: build")
+        .unwrap_or_else(|| panic!("missing build group. stdout: {stdout}"));
+    let end_build = g_build
+        + stdout[g_build..]
+            .find("::endgroup::")
+            .unwrap_or_else(|| panic!("build group not closed. stdout: {stdout}"));
+    let g_test = stdout
+        .find("::group::runner: test")
+        .unwrap_or_else(|| panic!("missing test group. stdout: {stdout}"));
+    let build_ran = stdout
+        .find("build-ran")
+        .unwrap_or_else(|| panic!("build-ran missing. stdout: {stdout}"));
+
+    // build's group opens, contains its output, and closes before test's
+    // group opens — flat, non-overlapping groups (GitHub Actions can't
+    // render nested ones).
+    assert!(
+        g_build < build_ran && build_ran < end_build && end_build < g_test,
+        "expected build group to open, contain build-ran, close, then test group. stdout: {stdout}",
+    );
+    assert_eq!(
+        stdout.matches("::group::runner: ").count(),
+        2,
+        "expected exactly two groups. stdout: {stdout}",
+    );
+    assert_eq!(
+        stdout.matches("::endgroup::").count(),
+        2,
+        "expected exactly two endgroups. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn single_task_is_grouped_under_github_actions() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // A bare single task (no `-s`) still gets one group under GitHub Actions
+    // — grouping covers every task run, not just multi-step chains.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "build",
+        ])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("::group::runner: build"),
+        "single task should be wrapped in a group. stdout: {stdout}",
+    );
+    assert_eq!(
+        stdout.matches("::group::").count(),
+        1,
+        "exactly one group for a single task. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn no_groups_emitted_outside_github_actions() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Scrub GITHUB_ACTIONS so this is deterministic even when the test host
+    // itself runs under GitHub Actions (mirrors info_deprecation.rs).
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-s",
+            "build",
+            "test",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("::group::"),
+        "no GHA groups in a normal terminal. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("::endgroup::"),
+        "no GHA endgroups in a normal terminal. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn config_opt_out_disables_grouping_under_github_actions() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // The `github-no-group` fixture ships a runner.toml with
+    // `[github] group_output = false`, so even under GitHub Actions no
+    // groups are emitted.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("github-no-group").to_str().unwrap(),
+            "run",
+            "build",
+        ])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("::group::"),
+        "config opt-out must suppress groups. stdout: {stdout}",
+    );
+}

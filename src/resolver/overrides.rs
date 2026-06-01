@@ -129,6 +129,9 @@ impl ResolutionOverrides {
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
+        // GitHub Actions output grouping: on by default, opt out via
+        // `[github].group_output = false`. No CLI/env layer in v1.
+        let group_output = sources.config.is_none_or(|c| c.config.github.group_output);
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -168,6 +171,7 @@ impl ResolutionOverrides {
             no_warnings,
             explain,
             failure_policy,
+            group_output,
         })
     }
 }

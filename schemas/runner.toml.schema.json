@@ -8,6 +8,10 @@
       "description": "`[chain]` — failure policy for multi-task chains.",
       "$ref": "#/$defs/ChainSection"
     },
+    "github": {
+      "description": "`[github]` — GitHub Actions integration (output grouping).",
+      "$ref": "#/$defs/GitHubSection"
+    },
     "pm": {
       "description": "`[pm]` — per-ecosystem package-manager overrides.",
       "$ref": "#/$defs/PmSection"
@@ -59,6 +63,18 @@
           "kill_on_fail"
         ]
       }
+    },
+    "GitHubSection": {
+      "description": "`[github]` section — GitHub Actions integration.\n\nOne knob today: whether each task / install run is wrapped in a\ncollapsible `::group::` log section. The markers are only ever emitted\nunder GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing\nchanges regardless of this setting.",
+      "type": "object",
+      "properties": {
+        "group_output": {
+          "description": "Wrap each task / install run in a collapsible `::group::` …\n`::endgroup::` section titled `runner: <task>` when running under\nGitHub Actions. Defaults to `true`; set `false` to disable grouping.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
     },
     "PmSection": {
       "description": "`[pm]` section — per-ecosystem package manager overrides.",

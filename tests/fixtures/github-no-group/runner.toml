@@ -1,0 +1,5 @@
+# Opt out of GitHub Actions log grouping; exercised by
+# `config_opt_out_disables_grouping_under_github_actions` in
+# tests/chain_integration.rs.
+[github]
+group_output = false

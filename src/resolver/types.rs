@@ -60,6 +60,11 @@ pub(crate) struct ResolutionOverrides {
     /// Resolved from `-k`/`--kill-on-fail` (CLI) → `RUNNER_KEEP_GOING`/
     /// `RUNNER_KILL_ON_FAIL` (env) → `[chain]` (config) → `FailFast`.
     pub failure_policy: FailurePolicy,
+    /// Whether to wrap task / install output in GitHub Actions `::group::`
+    /// sections. Sourced from `[github].group_output` (default `true`);
+    /// combined with `actions_rs::env::is_github_actions()` at the emit
+    /// site so the markers only ever appear under GitHub Actions.
+    pub group_output: bool,
 }
 
 /// What to do when no signal in steps 2–6 matches.
