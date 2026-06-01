@@ -87,6 +87,34 @@ fn run_parallel(
     chain: &Chain,
     warnings: &mut HashSet<DetectionWarning>,
 ) -> Result<i32> {
+    // Whether to buffer each task and print it as one block on completion
+    // (first done, first shown) instead of interleaving lines live. The
+    // default diverges by environment, as preferred: under GitHub Actions it
+    // is on (`[github].group_parallel`, default true); elsewhere it is off
+    // (`[parallel].grouped`, default false). Both are configurable, so CI and
+    // local can be made to match or differ.
+    let in_gha = actions_rs::env::is_github_actions();
+    let grouped = if in_gha {
+        overrides.github_group_parallel
+    } else {
+        overrides.parallel_grouped
+    };
+    if grouped {
+        // `::group::` workflow-command syntax is GitHub-only and further gated
+        // by `[github].group_output`; elsewhere blocks get plain headers.
+        let gha_syntax = in_gha && overrides.group_output;
+        run_parallel_grouped(ctx, overrides, chain, warnings, gha_syntax)
+    } else {
+        run_parallel_streaming(ctx, overrides, chain, warnings)
+    }
+}
+
+fn run_parallel_streaming(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    chain: &Chain,
+    warnings: &mut HashSet<DetectionWarning>,
+) -> Result<i32> {
     use std::process::Child;
     use std::sync::Arc;
 
@@ -199,6 +227,172 @@ fn run_parallel(
     }
 
     Ok(first_failure.unwrap_or(0))
+}
+
+/// Per-task state for buffered (grouped) parallel execution: the child, the
+/// sink its reader threads append into, and those reader handles.
+struct GroupedTask {
+    name: String,
+    child: std::process::Child,
+    sink: std::sync::Arc<crate::chain::mux::BufferSink>,
+    readers: Vec<std::thread::JoinHandle<()>>,
+}
+
+/// Parallel execution that buffers each task's output and displays it as one
+/// contiguous block the moment that task finishes (completion order — first
+/// done, first shown). Under GitHub Actions each block is a `::group::`
+/// section; elsewhere it gets a plain header. See [`run_parallel`].
+fn run_parallel_grouped(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    chain: &Chain,
+    warnings: &mut HashSet<DetectionWarning>,
+    gha_syntax: bool,
+) -> Result<i32> {
+    use std::sync::Arc;
+
+    use crate::chain::mux::{BufferSink, LineSink, spawn_readers};
+
+    // Spawn each task with piped stdio + a per-task buffering sink. Same
+    // explicit-cleanup contract as the streaming path: a spawn failure must
+    // kill + reap already-spawned children and join their readers.
+    let mut tasks: Vec<GroupedTask> = Vec::with_capacity(chain.items.len());
+    let spawn_outcome: Result<()> = (|| {
+        for item in &chain.items {
+            let mut child = match &item.kind {
+                ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
+                    ctx,
+                    overrides,
+                    name,
+                    &item.args,
+                    Some(warnings),
+                )?,
+                ChainItemKind::Install { .. } => {
+                    anyhow::bail!("install items cannot run in parallel chains")
+                }
+            };
+            let stdout: Box<dyn std::io::Read + Send> =
+                Box::new(child.stdout.take().expect("stdout piped"));
+            let stderr: Box<dyn std::io::Read + Send> =
+                Box::new(child.stderr.take().expect("stderr piped"));
+            let sink = Arc::new(BufferSink::default());
+            // `.clone()` resolves on the concrete `Arc<BufferSink>` then
+            // unsizes to the trait object; `Arc::clone(&sink)` would instead
+            // infer its generic from the annotation and fail to coerce.
+            let dyn_sink: Arc<dyn LineSink> = sink.clone();
+            // No prefix — the group title identifies the task; both streams
+            // fold into the one group in arrival order.
+            let readers = spawn_readers(
+                vec![
+                    (String::new(), false, stdout),
+                    (String::new(), true, stderr),
+                ],
+                &dyn_sink,
+            );
+            tasks.push(GroupedTask {
+                name: item.display_name().to_string(),
+                child,
+                sink,
+                readers,
+            });
+        }
+        Ok(())
+    })();
+    if let Err(e) = spawn_outcome {
+        for mut t in tasks {
+            let _ = t.child.kill();
+            let _ = t.child.wait();
+            for h in t.readers {
+                let _ = h.join();
+            }
+        }
+        return Err(e);
+    }
+
+    // `gha_syntax` (passed in) selects `::group::` vs a plain header per
+    // block; colorize the plain headers only when stdout supports it.
+    let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
+
+    // Poll children; flush each task's block the moment it completes, so
+    // blocks appear in completion order (first done, first shown). Only this
+    // thread writes them, one at a time, so blocks never overlap.
+    let mut remaining = tasks;
+    let mut first_failure: Option<i32> = None;
+    let kill_on_fail = matches!(chain.failure, FailurePolicy::KillOnFail);
+
+    while !remaining.is_empty() {
+        let mut next: Vec<GroupedTask> = Vec::with_capacity(remaining.len());
+        for mut t in std::mem::take(&mut remaining) {
+            match t.child.try_wait()? {
+                Some(status) => {
+                    let code = crate::cmd::exit_code(status);
+                    if code != 0 {
+                        first_failure.get_or_insert(code);
+                    }
+                    flush_task_group(&t.name, gha_syntax, colorize, &t.sink, t.readers);
+                }
+                None => {
+                    if kill_on_fail && first_failure.is_some() {
+                        let _ = t.child.kill();
+                        let _ = t.child.wait();
+                        flush_task_group(&t.name, gha_syntax, colorize, &t.sink, t.readers);
+                    } else {
+                        next.push(t);
+                    }
+                }
+            }
+        }
+        remaining = next;
+        if !remaining.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    Ok(first_failure.unwrap_or(0))
+}
+
+/// Join a finished task's reader threads (so its buffer holds the complete
+/// output), then print that buffer as one contiguous `runner: <name>` block
+/// on stdout, in arrival order. Under GitHub Actions (`gha_syntax`) the block
+/// is wrapped in `::group::`/`::endgroup::` workflow commands; otherwise a
+/// plain (optionally colored) header line delimits it — same grouping, no
+/// workflow-command bloat.
+fn flush_task_group(
+    name: &str,
+    gha_syntax: bool,
+    colorize: bool,
+    sink: &crate::chain::mux::BufferSink,
+    readers: Vec<std::thread::JoinHandle<()>>,
+) {
+    use std::io::Write as _;
+
+    for h in readers {
+        let _ = h.join();
+    }
+    let bytes = sink.take();
+
+    if gha_syntax {
+        // GroupGuard writes `::group::` now and `::endgroup::` on drop; don't
+        // hold the stdout lock across the guard's Drop.
+        let _group = actions_rs::log::group_guard(format!("runner: {name}"));
+        let _ = std::io::stdout().write_all(&bytes);
+        let _ = std::io::stdout().flush();
+    } else {
+        let header = format!("runner: {name}");
+        let header = if colorize {
+            use colored::Colorize as _;
+            header
+                .color(crate::chain::mux::color_for(name))
+                .bold()
+                .to_string()
+        } else {
+            header
+        };
+        let mut out = std::io::stdout().lock();
+        let _ = writeln!(out, "{header}");
+        let _ = out.write_all(&bytes);
+        let _ = out.flush();
+    }
 }
 
 fn dispatch_item(

@@ -94,7 +94,10 @@ fn parallel_chain_exit_code_reflects_first_failure() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Parallel output should be line-prefixed.
+    // The fixture's runner.toml disables parallel grouping on both the CI
+    // (`[github].group_parallel`) and non-CI (`[parallel].grouped`) paths, so
+    // this deterministically exercises the live line-prefixed muxer
+    // regardless of environment. Output is line-prefixed.
     assert!(
         stdout.contains("[ok-one"),
         "expected `[ok-one ]` prefix on ok-one's output. stdout: {stdout}",
@@ -406,5 +409,116 @@ fn config_opt_out_disables_grouping_under_github_actions() {
     assert!(
         !stdout.contains("::group::"),
         "config opt-out must suppress groups. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn parallel_chain_grouped_under_github_actions() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Default `[parallel].grouped` buffers each task and emits it as its own
+    // ::group:: block under GitHub Actions — no live `[task]` prefixes.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-p",
+            "build",
+            "test",
+        ])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("[build"),
+        "grouped parallel output must not use live prefixes. stdout: {stdout}",
+    );
+
+    // Each task's output sits inside its own group; completion order between
+    // the two is nondeterministic, so assert per-task containment, not order.
+    let g_build = stdout
+        .find("::group::runner: build")
+        .unwrap_or_else(|| panic!("missing build group. stdout: {stdout}"));
+    let build_ran = stdout
+        .find("build-ran")
+        .unwrap_or_else(|| panic!("build-ran missing. stdout: {stdout}"));
+    assert!(
+        g_build < build_ran,
+        "build output must sit inside build's group. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("::group::runner: test"),
+        "missing test group. stdout: {stdout}",
+    );
+    assert_eq!(
+        stdout.matches("::group::runner: ").count(),
+        2,
+        "expected exactly two groups. stdout: {stdout}",
+    );
+    assert_eq!(
+        stdout.matches("::endgroup::").count(),
+        2,
+        "expected exactly two endgroups. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Grouping is not GitHub-specific: outside Actions each block gets a plain
+    // `runner: <task>` header and no ::group:: workflow-command bloat.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("parallel-grouped").to_str().unwrap(),
+            "run",
+            "-p",
+            "build",
+            "test",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("::group::") && !stdout.contains("::endgroup::"),
+        "no workflow-command syntax outside GitHub Actions. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("[build"),
+        "grouped parallel output must not use live prefixes. stdout: {stdout}",
+    );
+
+    // Each task gets a plain header block, with its output underneath.
+    let h_build = stdout
+        .find("runner: build")
+        .unwrap_or_else(|| panic!("missing build header. stdout: {stdout}"));
+    let build_ran = stdout
+        .find("build-ran")
+        .unwrap_or_else(|| panic!("build-ran missing. stdout: {stdout}"));
+    assert!(
+        h_build < build_ran,
+        "build output must follow its header. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("runner: test"),
+        "missing test header. stdout: {stdout}",
     );
 }

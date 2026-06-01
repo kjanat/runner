@@ -12,6 +12,10 @@
       "description": "`[github]` — GitHub Actions integration (output grouping).",
       "$ref": "#/$defs/GitHubSection"
     },
+    "parallel": {
+      "description": "`[parallel]` — presentation of parallel (`-p`) chain output.",
+      "$ref": "#/$defs/ParallelSection"
+    },
     "pm": {
       "description": "`[pm]` — per-ecosystem package-manager overrides.",
       "$ref": "#/$defs/PmSection"
@@ -65,13 +69,30 @@
       }
     },
     "GitHubSection": {
-      "description": "`[github]` section — GitHub Actions integration.\n\nOne knob today: whether each task / install run is wrapped in a\ncollapsible `::group::` log section. The markers are only ever emitted\nunder GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing\nchanges regardless of this setting.",
+      "description": "`[github]` section — GitHub Actions integration. Both knobs only take\neffect under GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing here\nchanges behavior.",
       "type": "object",
       "properties": {
         "group_output": {
-          "description": "Wrap each task / install run in a collapsible `::group::` …\n`::endgroup::` section titled `runner: <task>` when running under\nGitHub Actions. Defaults to `true`; set `false` to disable grouping.",
+          "description": "Wrap each task / install run in a collapsible `::group::` …\n`::endgroup::` section titled `runner: <task>` under GitHub Actions.\nDefaults to `true`; set `false` to disable the workflow-command syntax\n(sequential groups and parallel block delimiters alike).",
           "type": "boolean",
           "default": true
+        },
+        "group_parallel": {
+          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped). The non-CI\nequivalent is `[parallel].grouped` (default `false`), so CI and local\ndiverge unless you set them to match.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "ParallelSection": {
+      "description": "`[parallel]` section — how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n[`GitHubSection::group_parallel`].)",
+      "type": "object",
+      "properties": {
+        "grouped": {
+          "description": "Buffer each parallel task's output and print it as one contiguous\nblock the moment that task finishes (completion order — first done,\nfirst shown), instead of interleaving prefixed lines live. Defaults to\n`false` (the live `[task]`-prefixed muxer); set `true` to group even in\na plain terminal, where a colored header delimits each block.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

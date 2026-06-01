@@ -38,6 +38,33 @@ impl LineSink for StdioSink {
     }
 }
 
+/// Buffering sink for grouped parallel output. Reader threads append their
+/// lines here instead of writing live; the caller drains the buffer with
+/// [`BufferSink::take`] once the task finishes and emits it inside one
+/// collapsible group. Both reader threads share the mutex, so stdout/stderr
+/// interleave in arrival order at line granularity. `prefix` and `is_stderr`
+/// are ignored — the group title identifies the task and both streams fold
+/// into the single group.
+#[derive(Default)]
+pub(crate) struct BufferSink {
+    buf: std::sync::Mutex<Vec<u8>>,
+}
+
+impl BufferSink {
+    /// Drain the accumulated bytes, leaving the buffer empty.
+    pub(crate) fn take(&self) -> Vec<u8> {
+        std::mem::take(&mut *self.buf.lock().unwrap())
+    }
+}
+
+impl LineSink for BufferSink {
+    fn emit(&self, _prefix: &str, _is_stderr: bool, line: &str) {
+        let mut buf = self.buf.lock().unwrap();
+        buf.extend_from_slice(line.as_bytes());
+        buf.push(b'\n');
+    }
+}
+
 /// Compute the right-padded width for prefix labels in the chain.
 pub(crate) fn prefix_width(names: &[&str]) -> usize {
     names.iter().map(|n| n.chars().count()).max().unwrap_or(0)
@@ -161,6 +188,16 @@ mod tests {
         colored::control::unset_override();
         assert!(p.contains("[a]"));
         assert!(p.contains("\u{1b}["), "expected ANSI escape, got: {p:?}");
+    }
+
+    #[test]
+    fn buffer_sink_accumulates_both_streams_in_order_then_drains() {
+        let sink = BufferSink::default();
+        sink.emit("[ignored]", false, "first");
+        sink.emit("[ignored]", true, "second");
+        assert_eq!(sink.take(), b"first\nsecond\n");
+        // take() drains, so a second call yields nothing.
+        assert!(sink.take().is_empty());
     }
 
     #[test]
