@@ -26,11 +26,9 @@ prepare() {
 build() {
 	cd "runner-$pkgver"
 	export RUSTUP_TOOLCHAIN=stable
-	export CARGO_TARGET_DIR=target
-	cargo run --frozen --release --example gen-man --features man-gen
-	# `run` rides the default `run` feature; name both bins explicitly so a
-	# future default-feature change can't silently drop one.
 	cargo build --frozen --release --bin runner --bin run
+	env CARGO_TARGET_DIR=target/man-gen \
+		cargo run --frozen --features man-gen -- man --output man
 }
 
 check() {

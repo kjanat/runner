@@ -70,7 +70,7 @@ jobs:
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo run --quiet --example gen-man --features man-gen
+      - run: cargo run --quiet --features man-gen -- man --output man
       - name: archive and upload to release
         run: |
           set -euo pipefail

@@ -1,8 +1,31 @@
-//! Man-page rendering for the `gen-man` example (feature `man-gen`).
+//! Man-page rendering for `runner man` (feature `man-gen`).
 
+use std::io::Write as _;
+use std::path::Path;
+
+use anyhow::{Context as _, Result};
 use clap::{Command, CommandFactory as _};
 
 use crate::cli::{Cli, RunAliasCli};
+
+/// Write the top-level `runner` page to stdout as roff.
+pub(crate) fn write_runner_page_to_stdout() -> Result<()> {
+    let roff = render_command(Cli::command(), "runner");
+    std::io::stdout()
+        .write_all(&roff)
+        .context("failed to write man page to stdout")
+}
+
+/// Render every page and write each as `<stem>.1` under `dir`.
+pub(crate) fn write_man_pages(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
+    for (stem, roff) in man_pages() {
+        let path = dir.join(format!("{stem}.1"));
+        std::fs::write(&path, roff)
+            .with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    Ok(())
+}
 
 const AUTHOR: &str = env!("RUNNER_AUTHOR_NAME");
 const SOURCE: &str = concat!("runner ", env!("CARGO_PKG_VERSION"));
@@ -20,7 +43,8 @@ pub(crate) fn man_pages() -> Vec<(String, Vec<u8>)> {
     ));
 
     for sub in runner.get_subcommands() {
-        if sub.is_hide_set() {
+        // `man` itself only exists in featured builds; don't document it.
+        if sub.is_hide_set() || sub.get_name() == "man" {
             continue;
         }
         let stem = format!("runner-{}", sub.get_name());

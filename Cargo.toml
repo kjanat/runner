@@ -57,10 +57,6 @@ required-features = ["run"]
 name              = "gen-schema"
 required-features = ["schema-gen"]
 
-[[example]]
-name              = "gen-man"
-required-features = ["man-gen"]
-
 [dependencies]
 actions-rs    = "0.1"
 anyhow        = "1"

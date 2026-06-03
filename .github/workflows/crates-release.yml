@@ -66,7 +66,7 @@ jobs:
           echo "ok: tag ${RELEASE_TAG} matches Cargo.toml version ${manifest_version}"
 
       - name: render man pages
-        run: cargo run --quiet --example gen-man --features man-gen
+        run: cargo run --quiet --features man-gen -- man --output man
 
       - name: cargo publish (dry-run verification)
         run: cargo publish --locked --dry-run --allow-dirty

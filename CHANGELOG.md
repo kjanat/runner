@@ -42,10 +42,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   anything containing `&`, `/`, `\`, or newlines before any `sed`
   runs.
 - Man pages for `runner`, `run`, and each subcommand. Rendered from the
-  clap command tree by the `gen-man` example (feature `man-gen`, off by
-  default — never in the shipped binary, never committed) and shipped by
-  every channel: crates.io (in the published crate), npm (facade `man`
-  field), both AUR packages (`/usr/share/man/man1/`), and a
+  clap command tree by a `man` subcommand gated behind the `man-gen`
+  feature (off by default — never in the shipped binary, never committed)
+  and shipped by every channel: crates.io (in the published crate), npm
+  (facade `man` field), both AUR packages (`/usr/share/man/man1/`), and a
   `runner-<tag>-man.tar.gz` GitHub release asset that `install.sh` and
   `runner-run-bin` pull from. `man runner` / `man run` work everywhere.
 

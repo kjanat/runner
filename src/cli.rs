@@ -981,6 +981,20 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Render roff man pages (build: --features man-gen)
+    #[cfg(feature = "man-gen")]
+    Man {
+        /// Write every page into this dir instead of the `runner` page to stdout.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "DIR",
+            value_hint = clap::ValueHint::DirPath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
+    },
+
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),

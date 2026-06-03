@@ -89,13 +89,6 @@ pub fn config_schema() -> schemars::Schema {
     schemars::schema_for!(config::RunnerConfig)
 }
 
-/// `(stem, roff)` man pages for the CLIs. For the `gen-man` example.
-#[cfg(feature = "man-gen")]
-#[must_use]
-pub fn man_pages() -> Vec<(String, Vec<u8>)> {
-    man::man_pages()
-}
-
 /// Exit code semantics:
 /// - `0` — success
 /// - `1` — generic failure (I/O, detection, child-process non-zero)
@@ -723,6 +716,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
+        #[cfg(feature = "man-gen")]
+        Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
         Some(cli::Command::Doctor { json }) => {
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;
@@ -734,6 +729,15 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
     }
+}
+
+#[cfg(feature = "man-gen")]
+fn dispatch_man(output: Option<&Path>) -> Result<i32> {
+    match output {
+        Some(dir) => man::write_man_pages(dir)?,
+        None => man::write_runner_page_to_stdout()?,
+    }
+    Ok(0)
 }
 
 /// Whether the detected project defines a task with the given name.
