@@ -123,10 +123,7 @@ Use the same shape everywhere:
 
 ```sh
 run <TAB>
-runner install --frozen
-run test
-run build
-run deploy
+runner install test build deploy
 ```
 
 Let each repo decide what the tasks actually mean.
