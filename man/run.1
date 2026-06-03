@@ -1,0 +1,62 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH run 1  "runner 0.12.0" "Runner Manual"
+.SH NAME
+run \- Run a project task or exec a command through the detected package manager
+.SH SYNOPSIS
+\fBrun\fR [\fB\-\-dir\fR] [\fB\-\-pm\fR] [\fB\-\-runner\fR] [\fB\-\-fallback\fR] [\fB\-\-on\-mismatch\fR] [\fB\-\-explain\fR] [\fB\-\-no\-warnings\fR] [\fB\-\-schema\-version\fR] [\fB\-s\fR|\fB\-\-sequential\fR] [\fB\-p\fR|\fB\-\-parallel\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-kill\-on\-fail\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] [\fITASK\fR] [\fIARGS\fR] 
+.SH DESCRIPTION
+Run a project task or exec a command through the detected package manager
+.SH OPTIONS
+.TP
+\fB\-\-dir\fR \fI<PATH>\fR
+Use this directory instead of the current one
+.TP
+\fB\-\-pm\fR \fI<NAME>\fR
+Override the detected package manager (also reads RUNNER_PM when omitted). Valid: npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler (alias: bundle), composer
+.TP
+\fB\-\-runner\fR \fI<NAME>\fR
+Override the detected task runner (also reads RUNNER_RUNNER when omitted). Valid: turbo, nx, make, just, task (alias: go\-task), mise, bacon
+.TP
+\fB\-\-fallback\fR \fI<POLICY>\fR
+What to do when no detection signal matches: probe (default, PATH probe), npm (legacy silent fallback), error (refuse). Also reads RUNNER_FALLBACK when omitted.
+.TP
+\fB\-\-on\-mismatch\fR \fI<POLICY>\fR
+What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
+.TP
+\fB\-\-explain\fR
+Print a one\-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
+.TP
+\fB\-\-no\-warnings\fR
+Suppress all non\-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
+.TP
+\fB\-\-schema\-version\fR \fI<N>\fR
+Pin JSON output schema version (1 or 2). Defaults to latest. Affects \-\-json output of doctor/list/why only.
+.TP
+\fB\-s\fR, \fB\-\-sequential\fR
+Run the given tasks sequentially. Conflicts with `\-\-parallel`
+.TP
+\fB\-p\fR, \fB\-\-parallel\fR
+Run the given tasks in parallel. Conflicts with `\-\-sequential`
+.TP
+\fB\-k\fR, \fB\-\-keep\-going\fR
+Run every task in the chain regardless of failures. Conflicts with `\-\-kill\-on\-fail`
+.TP
+\fB\-\-kill\-on\-fail\fR
+Parallel only: SIGKILL siblings on first failure. Accepted but unused in sequential mode
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fITASK\fR]
+Task name or command. When omitted, prints project info
+.TP
+[\fIARGS\fR]
+Arguments forwarded to the task/command, OR additional task names in chain mode. Same `trailing_var_arg` trade\-off as `Cli::Run.args`: bare forwarding supported (`run test \-\-watch`); chain\-failure flags must precede task names in chain mode
+.SH VERSION
+v0.12.0
+.SH AUTHORS
+Kaj Kowalski

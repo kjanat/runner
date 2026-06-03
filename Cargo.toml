@@ -12,7 +12,7 @@ license       = "MIT"
 keywords      = ["automation", "build-tool", "cli", "task-runner"]
 categories    = ["command-line-utilities", "development-tools"]
 build         = "build.rs"
-include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/examples", "/schemas", "/src", "/tests"]
+include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/examples", "/man", "/schemas", "/src", "/tests"]
 default-run   = "runner"
 autobins      = false
 
@@ -57,6 +57,10 @@ required-features = ["run"]
 name              = "gen-schema"
 required-features = ["schema-gen"]
 
+[[example]]
+name              = "gen-man"
+required-features = ["man-gen"]
+
 [dependencies]
 actions-rs    = "0.1"
 anyhow        = "1"
@@ -78,11 +82,12 @@ version  = "4"
 features = ["unstable-dynamic"]
 
 # Renders roff man pages from the same clap `Command` tree the CLI is built
-# from, powering `runner man`. Default-on (not feature-gated) so every
-# distribution channel — including the prebuilt-binary AUR package and
-# `cargo install` — can generate `runner.1` / `run.1` from the binary itself.
+# from. Only pulled in for `cargo run --example gen-man --features man-gen`
+# (kept off the shipped binary, like `schemars`/`schema-gen`). The committed
+# `man/*.1` files are what every distribution channel actually ships.
 [dependencies.clap_mangen]
-version = "0.3"
+version  = "0.3"
+optional = true
 
 # Optional: only pulled in for `cargo run --example gen-schema --features
 # schema-gen`. Kept out of the release build so the binary doesn't carry
@@ -111,6 +116,10 @@ features         = ["parse", "serde"]
 
 [features]
 default    = ["run"]
+# Enables the `gen-man` example + `runner::man_pages()`, which render the
+# committed `man/*.1` files via `clap_mangen`. Off by default so the shipped
+# binary stays lean (no `clap_mangen`/`roff`).
+man-gen    = ["dep:clap_mangen"]
 run        = []
 # Enables the `gen-schema` example + the `pub use` of `RunnerConfig`
 # needed for `schemars::schema_for!` to reach it from outside the crate.

@@ -1,0 +1,21 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH runner-why 1  "runner 0.12.0" "Runner Manual"
+.SH NAME
+runner\-why \- Explain how a specific task would dispatch (sources + PM trace)
+.SH SYNOPSIS
+\fBrunner\-why\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fITASK\fR> 
+.SH DESCRIPTION
+Explain how a specific task would dispatch (sources + PM trace)
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Emit JSON instead of human\-readable output
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fITASK\fR>
+Task name to analyze
+.SH AUTHORS
+Kaj Kowalski

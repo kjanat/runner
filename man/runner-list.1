@@ -1,0 +1,24 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH runner-list 1  "runner 0.12.0" "Runner Manual"
+.SH NAME
+runner\-list \- List available tasks across all detected sources
+.SH SYNOPSIS
+\fBrunner\-list\fR [\fB\-\-raw\fR] [\fB\-\-json\fR] [\fB\-\-source\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+List available tasks across all detected sources
+.SH OPTIONS
+.TP
+\fB\-\-raw\fR
+Print bare task names, one per line (for scripting / completions)
+.TP
+\fB\-\-json\fR
+Emit JSON instead of human\-readable output
+.TP
+\fB\-\-source\fR \fI<SOURCE>\fR
+Restrict output to a single source (e.g. `package.json`, `Makefile`, `justfile`)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH AUTHORS
+Kaj Kowalski

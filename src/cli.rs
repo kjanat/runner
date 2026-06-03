@@ -981,22 +981,6 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Generate roff man pages for `runner` and `run`
-    Man {
-        /// Write man pages to <DIR> instead of stdout — one `.1` file per
-        /// page (`runner`, `run`, and each subcommand). The directory is
-        /// created if missing. Without it, the top-level `runner` page is
-        /// written to stdout.
-        #[arg(
-            short = 'o',
-            long = "output",
-            value_name = "DIR",
-            value_hint = clap::ValueHint::DirPath,
-            value_parser = clap::value_parser!(PathBuf),
-        )]
-        output: Option<PathBuf>,
-    },
-
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),

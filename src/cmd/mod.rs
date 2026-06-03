@@ -1,5 +1,4 @@
-//! Subcommand implementations: info, run, install, clean, list, completions,
-//! man.
+//! Subcommand implementations: info, run, install, clean, list, completions.
 
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
@@ -15,7 +14,6 @@ mod doctor;
 mod info;
 pub(crate) mod install;
 mod list;
-mod man;
 pub(crate) mod run;
 mod why;
 
@@ -25,7 +23,6 @@ pub(crate) use doctor::doctor;
 pub(crate) use info::info;
 pub(crate) use install::install;
 pub(crate) use list::list;
-pub(crate) use man::man;
 pub(crate) use run::run;
 pub(crate) use why::why;
 
