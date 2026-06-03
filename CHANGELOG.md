@@ -9,6 +9,50 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- AUR distribution channel. Two packages on the Arch User Repository:
+  `runner-run-bin` (prebuilt binaries for `x86_64`, `aarch64`, `armv7h`)
+  and `runner-run` (source build for `x86_64`, `aarch64`). `-bin`
+  `provides`/`conflicts` `runner-run`, so install whichever you prefer —
+  https://aur.archlinux.org/packages/runner-run-bin and
+  https://aur.archlinux.org/packages/runner-run.
+- Shell completions shipped by both AUR packages and auto-loaded from
+  the canonical system dirs: bash at
+  `/usr/share/bash-completion/completions/{runner,run}`, zsh at
+  `/usr/share/zsh/site-functions/{_runner,_run}`, fish at
+  `/usr/share/fish/vendor_completions.d/{runner,run}.fish`. PowerShell
+  on Linux has no autoload convention, so the pwsh script is installed
+  at `/usr/share/runner/runner.ps1` for users to dot-source from their
+  `$PROFILE`. Completions are clap-dynamic — the shell shells out to
+  the binary for candidates, so tab-completing in a project picks up
+  the *current* task list from `package.json` / `turbo.json` /
+  `Justfile` / etc., not a static snapshot.
+- `.github/workflows/aur-release.yml` publishes both packages on every
+  `release: published` event (with manual `workflow_dispatch` +
+  `dry-run` for validation). Gated behind a dedicated `aur` GitHub
+  Environment so the `AUR_SSH_PRIVATE_KEY` secret is only readable from
+  that job. Per-pkg `concurrency:` group serializes manual + automatic
+  triggers for the same package without blocking the other matrix leg.
+- `.github/scripts/publish/aur-prepare.sh` rewrites `pkgver`/`pkgrel`
+  in the checked-in PKGBUILDs and, for the `-bin` package, injects
+  per-arch `sha256sums_*` read directly from the release's published
+  `.sha256` companion assets (avoids the `updpkgsums` host-arch-only
+  limitation). Strict semver regex on the version input refuses
+  anything containing `&`, `/`, `\`, or newlines before any `sed`
+  runs.
+
+### Security
+
+- All third-party `uses:` in `crates-release.yml`, `npm-release.yml`,
+  and `release.yml` pinned to commit SHAs (with a `# vN` trailing
+  comment for readability), so an upstream tag rewrite or
+  account-takeover cannot silently swap in a different action build.
+- `persist-credentials: false` added to the two `actions/checkout`
+  steps in `release.yml` that were missing it (`create-release`,
+  `upload-assets`), matching the hardening already in place on the
+  other checkouts.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
