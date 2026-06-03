@@ -1,0 +1,51 @@
+# Maintainer: Kaj Kowalski <info+runner@kajkowalski.nl>
+
+# Source package: builds the `runner` + `run` binaries from the tagged
+# GitHub source tarball with cargo. `pkgver`/`sha256sums` are rewritten by
+# CI (.github/workflows/aur-release.yml) on every release; the values below
+# are only a checked-in reference snapshot.
+pkgname=runner-run
+pkgver=0.12.0
+pkgrel=1
+pkgdesc='Universal project task runner'
+arch=('x86_64' 'aarch64')
+url='https://github.com/kjanat/runner'
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+makedepends=('cargo')
+checkdepends=('just')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/kjanat/runner/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+	cd "runner-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+	cd "runner-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	export CARGO_TARGET_DIR=target
+	# `run` rides the default `run` feature; name both bins explicitly so a
+	# future default-feature change can't silently drop one.
+	cargo build --frozen --release --bin runner --bin run
+}
+
+check() {
+	cd "runner-$pkgver"
+	export RUSTUP_TOOLCHAIN=stable
+	# Integration tests shell out to `just` only (checkdepends); no network.
+	cargo test --frozen --release
+}
+
+package() {
+	cd "runner-$pkgver"
+	install -Dm0755 -t "$pkgdir/usr/bin/" target/release/runner target/release/run
+	install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+	# No completion files: `runner completions` emits clap *dynamic*
+	# (eval-based) scripts that bake in the generating binary's path and
+	# expect `eval "$(runner completions <shell>)"` in an rc file, not
+	# static autoload placement. See aur/README.md.
+}

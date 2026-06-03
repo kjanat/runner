@@ -7,55 +7,33 @@ run-name: >-
         format('release {0}', github.ref_name),
       format('verify {0}', github.ref_name)
     ) }}
-
-on:
-  pull_request:
-  push:
-    branches:
-      - master
-    tags:
-      - v*
-
-permissions:
-  contents: read
-
-env:
-  CARGO_TERM_COLOR: always
+on: { pull_request: null, push: { branches: [master], tags: [v*] } }
+permissions: { contents: read }
+env: { CARGO_TERM_COLOR: always }
 
 jobs:
   verify:
     name: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-
-      - name: install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: cargo fmt --check
-        run: cargo fmt --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D clippy::all
-
-      - name: cargo test
-        run: cargo test
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D clippy::all
+      - run: cargo test
 
   create-release:
     name: create draft release
     needs: verify
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
+    permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: create github release
-        uses: taiki-e/create-gh-release-action@v1
+        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1
         with:
           token: ${{ github.token }}
           changelog: CHANGELOG.md
@@ -69,9 +47,7 @@ jobs:
         # published` event never fires for token-created releases, so
         # this is the one place the final body can be assembled — no
         # more manual appending after every cut.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+        env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
         run: |
           set -euo pipefail
           our_body="$(gh release view "${RELEASE_TAG}" \
@@ -97,12 +73,10 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: read
-    outputs:
-      include: ${{ steps.gen.outputs.include }}
+    permissions: { contents: read }
+    outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           sparse-checkout: npm/targets.json
           sparse-checkout-cone-mode: false
@@ -133,17 +107,12 @@ jobs:
     name: build+upload ${{ matrix.target }}
     needs: [matrix, create-release]
     runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+    permissions: { contents: write }
+    strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.matrix.outputs.include) }}" } }
     continue-on-error: ${{ matrix.experimental }}
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
+    env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # Rust toolchain has to land BEFORE setup-cross-toolchain-action: the
       # latter calls rustup against whatever's active. Tier-2 paths use
@@ -153,15 +122,13 @@ jobs:
       # blocking the release.
       - name: install stable rust
         if: matrix.build-tool == 'cargo-cross-toolchain'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with: { targets: "${{ matrix.target }}" }
 
       - name: install nightly rust (tier-3 build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with: { components: rust-src }
 
       # Tier-2 BSD targets where Rust ships prebuilt std but `cross` has no
       # working docker image. setup-cross-toolchain-action installs the
@@ -171,13 +138,12 @@ jobs:
       # nightly + -Z build-std route to construct std locally.
       - name: setup cross toolchain
         if: contains(fromJSON('["cargo-cross-toolchain", "cargo-build-std"]'), matrix.build-tool)
-        uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: ${{ matrix.target }}
+        uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b # v1
+        with: { target: "${{ matrix.target }}" }
 
       - name: build and upload binaries (taiki-e)
         if: contains(fromJSON('["cargo", "cross", "cargo-cross-toolchain"]'), matrix.build-tool)
-        uses: taiki-e/upload-rust-binary-action@v1
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:
           token: ${{ github.token }}
           bin: runner,run
@@ -198,8 +164,7 @@ jobs:
       # env honors the same shape as `-Z build-std=...` on the cargo CLI.
       - name: build (cargo + -Z build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        env:
-          CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+        env: { CARGO_UNSTABLE_BUILD_STD: std, panic_abort }
         run: |
           cargo +nightly build \
             --release --locked \
@@ -222,15 +187,13 @@ jobs:
     # Need write so `gh release download` can see the still-draft release;
     # drafts are invisible to read-only tokens, which surfaces as the
     # misleading "release not found" error we hit on v0.6.0.
-    permissions:
-      contents: write
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
+    permissions: { contents: write }
+    env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with: { persist-credentials: false }
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with: { node-version: latest }
 
       - name: download release archives
@@ -259,7 +222,7 @@ jobs:
           "${bin}" --version
 
       - name: upload npm/dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: npm-dist
           path: npm/dist/
@@ -275,10 +238,6 @@ jobs:
     needs: [build-npm-dist]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ github.ref_name }}
-    steps:
-      - run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+    permissions: { contents: write }
+    env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
+    steps: [{ run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false' }]

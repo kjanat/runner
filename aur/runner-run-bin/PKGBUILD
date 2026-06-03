@@ -1,0 +1,39 @@
+# Maintainer: Kaj Kowalski <info+runner@kajkowalski.nl>
+
+# Prebuilt package: installs the release binaries straight from the GitHub
+# release `.tar.gz` assets (no compile). `pkgver`/`sha256sums_*` are rewritten
+# by CI (.github/workflows/aur-release.yml) on every release; the values below
+# are only a checked-in reference snapshot.
+pkgname=runner-run-bin
+pkgver=0.12.0
+pkgrel=1
+pkgdesc='Universal project task runner (prebuilt binary)'
+arch=('x86_64' 'aarch64' 'armv7h')
+url='https://github.com/kjanat/runner'
+license=('MIT')
+# Prebuilt binaries are dynamically linked against glibc + libgcc_s.
+depends=('glibc' 'gcc-libs')
+provides=('runner-run')
+conflicts=('runner-run')
+
+# Per-arch release tarballs. Basenames already carry the Rust triple, so
+# each arch downloads to a distinct file — no `name::` rename needed (and
+# none with a literal arch that namcap would flag).
+_url="https://github.com/kjanat/runner/releases/download/v$pkgver/runner-v$pkgver"
+source_x86_64=("$_url-x86_64-unknown-linux-gnu.tar.gz")
+source_aarch64=("$_url-aarch64-unknown-linux-gnu.tar.gz")
+source_armv7h=("$_url-armv7-unknown-linux-gnueabihf.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+sha256sums_armv7h=('SKIP')
+
+package() {
+	# Archives are flat: runner, run, README.md, LICENSE at the root.
+	install -Dm0755 -t "$pkgdir/usr/bin/" runner run
+	install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+	install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+	# No completion files: `runner completions` emits clap *dynamic*
+	# (eval-based) scripts that bake in the generating binary's path and
+	# expect `eval "$(runner completions <shell>)"` in an rc file, not
+	# static autoload placement. See aur/README.md.
+}

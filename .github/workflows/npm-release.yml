@@ -58,13 +58,12 @@ jobs:
       id-token: write # for npm provenance
       actions: read # for cross-workflow artifact download
     environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
-    outputs:
-      dry-run: ${{ steps.derive.outputs.dry-run }}
+    outputs: { dry-run: "${{ steps.derive.outputs.dry-run }}" }
     steps:
       # Sparse-checkout from the DEFAULT BRANCH gets us the trusted publish
       # scripts only. No tag-supplied code on disk → no untrusted code
       # execution → no cache-poisoning vector.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -73,7 +72,7 @@ jobs:
             npm/targets.json
           sparse-checkout-cone-mode: false
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: ${{ env.REGISTRY }}
@@ -117,7 +116,7 @@ jobs:
           echo "run-id=${run_id}" >> "${GITHUB_OUTPUT}"
 
       - name: download npm-dist artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: npm-dist
           path: npm/dist/

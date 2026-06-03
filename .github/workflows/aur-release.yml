@@ -1,0 +1,69 @@
+name: aur-release
+run-name: >-
+  ${{ format('aur publish {0}', case(github.event_name == 'release',
+                                     github.event.release.tag_name,
+                                     inputs.tag)) }}
+
+on:
+  release: { types: [published] }
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.12.0)
+        required: true
+        type: string
+      dry-run:
+        description: Prepare + validate PKGBUILDs but do not push to AUR
+        required: true
+        default: false
+        type: boolean
+
+permissions: { contents: read }
+
+jobs:
+  publish:
+    name: publish ${{ matrix.pkgname }}
+    runs-on: ubuntu-latest
+    # Independent AUR repos: a failure pushing one shouldn't block the other.
+    strategy: { fail-fast: false, matrix: { pkgname: [runner-run, runner-run-bin] } }
+    # Gates access to the AUR_SSH_PRIVATE_KEY secret behind the `aur` GitHub
+    # Environment — same pattern as crates-release.yml uses for crates-io.
+    # Lets deployment protection rules (reviewers, wait timers, branch
+    # filters) apply to AUR pushes, and surfaces each matrix leg as its own
+    # deployment record in the repo's Environments tab.
+    environment:
+      name: aur
+      url: https://aur.archlinux.org/packages/${{ matrix.pkgname }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: >-
+        ${{ case(github.event_name == 'release',
+                  github.event.release.tag_name,
+                  inputs.tag) }}
+      # workflow_dispatch supplies dry-run; the release trigger never does, so
+      # it coerces to the always-publish 'false'.
+      DRY_RUN: ${{ inputs.dry-run || 'false' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with: { persist-credentials: false }
+
+      - name: prepare PKGBUILD
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/publish/aur-prepare.sh" \
+            "${{ matrix.pkgname }}" "${version}"
+
+      - name: publish to AUR
+        if: env.DRY_RUN != 'true'
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
+        with:
+          pkgname: ${{ matrix.pkgname }}
+          pkgbuild: aur/${{ matrix.pkgname }}/PKGBUILD
+          commit_username: Kaj Kowalski
+          commit_email: info+runner@kajkowalski.nl
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: ${{ format('Update to {0}', env.RELEASE_TAG) }}
+          # Source pkg has one arch-independent source → let the action compute
+          # its sum. -bin already has per-arch sums injected by aur-prepare.sh.
+          updpkgsums: ${{ matrix.pkgname == 'runner-run' }}
