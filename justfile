@@ -3,7 +3,6 @@ set unstable
 
 cargo-version := `cargo read-manifest | jq -r .version`
 triple := `rustc --print host-tuple`
-default-member := `cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]'`
 npm-pkg-name := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.name'`
 npm-pkg-scope := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.subpkgscope'`
 build-pkgscript := "npm" / "scripts" / "build-packages.ts"

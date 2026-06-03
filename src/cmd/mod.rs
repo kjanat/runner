@@ -14,10 +14,10 @@ mod doctor;
 mod info;
 pub(crate) mod install;
 mod list;
-#[cfg(feature = "man-gen")]
+#[cfg(feature = "man")]
 mod man;
 pub(crate) mod run;
-#[cfg(feature = "schema-gen")]
+#[cfg(feature = "schema")]
 mod schema;
 mod why;
 
@@ -27,10 +27,10 @@ pub(crate) use doctor::doctor;
 pub(crate) use info::info;
 pub(crate) use install::install;
 pub(crate) use list::list;
-#[cfg(feature = "man-gen")]
+#[cfg(feature = "man")]
 pub(crate) use man::{write_man_pages, write_runner_page_to_stdout};
 pub(crate) use run::run;
-#[cfg(feature = "schema-gen")]
+#[cfg(feature = "schema")]
 pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 

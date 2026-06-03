@@ -2,8 +2,9 @@
 
 [alias]
 # one-letter
+f = "format"
 i = "install --path ."
-l = "cl -- -D warnings -D clippy::all"
+l = "lint"
 t = "test --all-features --all-targets"
 
 # other short
@@ -14,13 +15,14 @@ rq  = "run --quiet"
 rr  = "run --release"
 
 # other
-comp = "bin-runner -- completions"
-lint = "l"
-meta = "metadata --format-version 1"
+comp   = "bin-runner -- completions"
+format = "bin-run -- --pm npm dprint fmt"
+lint   = "cl -- -D warnings -D clippy::all"
+meta   = "metadata --format-version 1"
 
 # features
-man    = "rq --features man-gen -- man"
-schema = "rq --features schema-gen -- schema"
+man    = "rq --features man -- man"
+schema = "rq --features schema -- schema"
 
 # bin commands
 bin-run     = "rq --bin run"

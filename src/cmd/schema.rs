@@ -1,4 +1,4 @@
-//! `runner schema` — emit the `runner.toml` JSON Schema (feature `schema-gen`).
+//! `runner schema` — emit the `runner.toml` JSON Schema (feature `schema`).
 
 use std::io::Write as _;
 use std::path::Path;

@@ -1,7 +1,7 @@
 target/
 dist/
 downloads/
-# Generated man pages (`just gen-man`).
+# Generated man pages.
 /man/
 package-lock.json
 node_modules/

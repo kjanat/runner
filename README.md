@@ -61,7 +61,7 @@ run 0.10.0
   config.toml     rm                   remove
   config.toml     rr                   run --release
   config.toml     runner               run --bin runner
-  config.toml     schema               run --quiet --example gen-schema --features schema-gen
+  config.toml     schema               run --quiet --features schema -- schema
   config.toml     t                    test
   bacon.toml      bins                 cargo build --bin runner --bin run --color=always
   bacon.toml      check                cargo check
@@ -116,7 +116,7 @@ rbin-runner                    -- run --bin runner --quiet --release
 rm                             -- remove
 rr                             -- run --release
 cargo:runner                   -- run --bin runner
-schema                         -- run --quiet --example gen-schema --features schema-gen
+schema                         -- run --quiet --features schema -- schema
 t                              -- test
 -- bacon.toml --
 bins                           -- cargo build --bin runner --bin run --color=always

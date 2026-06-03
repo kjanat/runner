@@ -1,4 +1,4 @@
-//! `runner man` — render roff man pages (feature `man-gen`).
+//! `runner man` — render roff man pages (feature `man`).
 
 use std::io::Write as _;
 use std::path::Path;

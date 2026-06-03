@@ -100,10 +100,10 @@ default-features = false
 features         = ["parse", "serde"]
 
 [features]
-default    = ["run"]
-man-gen    = ["dep:clap_mangen"]
-run        = []
-schema-gen = ["dep:schemars"]
+default = ["run"]
+man     = ["dep:clap_mangen"]
+run     = []
+schema  = ["dep:schemars"]
 
 [lints.clippy]
 cargo_common_metadata   = "allow"

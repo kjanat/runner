@@ -27,8 +27,8 @@ build() {
 	cd "runner-$pkgver"
 	export RUSTUP_TOOLCHAIN=stable
 	cargo build --frozen --release --bin runner --bin run
-	env CARGO_TARGET_DIR=target/man-gen \
-		cargo run --frozen --features man-gen -- man --output man
+	env CARGO_TARGET_DIR=target/man \
+		cargo run --frozen --features man -- man --output man
 }
 
 check() {

@@ -976,8 +976,8 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Render roff man pages (build: --features man-gen)
-    #[cfg(feature = "man-gen")]
+    /// Render roff man pages (build: --features man)
+    #[cfg(feature = "man")]
     Man {
         /// Write every page into this dir instead of the `runner` page to stdout.
         #[arg(
@@ -990,8 +990,8 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Emit the runner.toml JSON Schema (build: --features schema-gen)
-    #[cfg(feature = "schema-gen")]
+    /// Emit the runner.toml JSON Schema (build: --features schema)
+    #[cfg(feature = "schema")]
     Schema {
         /// Write the schema to this file instead of stdout.
         #[arg(
