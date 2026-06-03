@@ -60,8 +60,6 @@ mod cmd;
 mod complete;
 mod config;
 mod detect;
-#[cfg(feature = "man-gen")]
-mod man;
 mod resolver;
 mod schema;
 mod tool;
@@ -734,8 +732,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
 #[cfg(feature = "man-gen")]
 fn dispatch_man(output: Option<&Path>) -> Result<i32> {
     match output {
-        Some(dir) => man::write_man_pages(dir)?,
-        None => man::write_runner_page_to_stdout()?,
+        Some(dir) => cmd::write_man_pages(dir)?,
+        None => cmd::write_runner_page_to_stdout()?,
     }
     Ok(0)
 }

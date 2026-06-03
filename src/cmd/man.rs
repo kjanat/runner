@@ -1,4 +1,4 @@
-//! Man-page rendering for `runner man` (feature `man-gen`).
+//! `runner man` — render roff man pages (feature `man-gen`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -33,7 +33,7 @@ const SOURCE: &str = concat!("runner ", env!("CARGO_PKG_VERSION"));
 /// `(stem, roff)` for `runner`, `run`, and each visible subcommand
 /// (`runner-<sub>`). Hidden subcommands are skipped.
 #[must_use]
-pub(crate) fn man_pages() -> Vec<(String, Vec<u8>)> {
+fn man_pages() -> Vec<(String, Vec<u8>)> {
     let runner = Cli::command();
 
     let mut pages = Vec::new();
