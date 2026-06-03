@@ -17,6 +17,8 @@ mod list;
 #[cfg(feature = "man-gen")]
 mod man;
 pub(crate) mod run;
+#[cfg(feature = "schema-gen")]
+mod schema;
 mod why;
 
 pub(crate) use clean::clean;
@@ -28,6 +30,8 @@ pub(crate) use list::list;
 #[cfg(feature = "man-gen")]
 pub(crate) use man::{write_man_pages, write_runner_page_to_stdout};
 pub(crate) use run::run;
+#[cfg(feature = "schema-gen")]
+pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 
 fn configure_command(command: &mut Command, dir: &Path) {

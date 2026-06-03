@@ -12,7 +12,7 @@ license       = "MIT"
 keywords      = ["automation", "build-tool", "cli", "task-runner"]
 categories    = ["command-line-utilities", "development-tools"]
 build         = "build.rs"
-include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/examples", "/man", "/schemas", "/src", "/tests"]
+include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/man", "/schemas", "/src", "/tests"]
 default-run   = "runner"
 autobins      = false
 
@@ -53,10 +53,6 @@ name              = "run"
 path              = "src/bin/run.rs"
 required-features = ["run"]
 
-[[example]]
-name              = "gen-schema"
-required-features = ["schema-gen"]
-
 [dependencies]
 actions-rs    = "0.1"
 anyhow        = "1"
@@ -81,9 +77,6 @@ features = ["unstable-dynamic"]
 version  = "0.3"
 optional = true
 
-# Optional: only pulled in for `cargo run --example gen-schema --features
-# schema-gen`. Kept out of the release build so the binary doesn't carry
-# the JSON Schema generator at runtime.
 [dependencies.schemars]
 version  = "1.2"
 optional = true
@@ -110,9 +103,6 @@ features         = ["parse", "serde"]
 default    = ["run"]
 man-gen    = ["dep:clap_mangen"]
 run        = []
-# Enables the `gen-schema` example + the `pub use` of `RunnerConfig`
-# needed for `schemars::schema_for!` to reach it from outside the crate.
-# Off by default so production builds don't pull in `schemars`.
 schema-gen = ["dep:schemars"]
 
 [lints.clippy]
