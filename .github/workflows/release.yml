@@ -7,55 +7,34 @@ run-name: >-
         format('release {0}', github.ref_name),
       format('verify {0}', github.ref_name)
     ) }}
-
-on:
-  pull_request:
-  push:
-    branches:
-      - master
-    tags:
-      - v*
-
-permissions:
-  contents: read
-
-env:
-  CARGO_TERM_COLOR: always
+on: { pull_request: null, push: { branches: [master], tags: [v*] } }
+permissions: { contents: read }
+env: { CARGO_TERM_COLOR: always }
 
 jobs:
   verify:
     name: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-
-      - name: install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: rust cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: cargo fmt --check
-        run: cargo fmt --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D clippy::all
-
-      - name: cargo test
-        run: cargo test
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D clippy::all
+      - run: cargo test
 
   create-release:
     name: create draft release
     needs: verify
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
+    permissions: { contents: write }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with: { persist-credentials: false }
 
       - name: create github release
-        uses: taiki-e/create-gh-release-action@v1
+        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1
         with:
           token: ${{ github.token }}
           changelog: CHANGELOG.md
@@ -63,30 +42,17 @@ jobs:
           branch: master
 
       - name: append GitHub auto-generated notes
-        # taiki-e set the body to our extracted CHANGELOG section only.
-        # Append GitHub's auto-generated "What's Changed" + contributors
-        # + "Full Changelog" compare link below it. The `release:
-        # published` event never fires for token-created releases, so
-        # this is the one place the final body can be assembled — no
-        # more manual appending after every cut.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+        # release:published never fires for token-created releases, so we
+        # assemble the final body here.
+        env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
         run: |
           set -euo pipefail
           our_body="$(gh release view "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" --json body --jq .body)"
-          # previous_tag_name is omitted: GitHub derives it from the
-          # latest published release, which is correct here (this one is
-          # still a draft). On the first-ever release it degrades to a
-          # from-start "What's Changed", which is the desired behavior.
           gen_body="$(gh api \
             "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f tag_name="${RELEASE_TAG}" --jq .body)"
           combined="$(mktemp)"
-          # No `---` rule: past releases (v0.8.1, v0.9.0, v0.10.0) put a
-          # bare blank line between the changelog and `## What's
-          # Changed`. Match that exactly.
           printf '%s\n\n%s\n' "${our_body}" "${gen_body}" >"${combined}"
           gh release edit "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" --notes-file "${combined}"
@@ -97,29 +63,19 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: read
-    outputs:
-      include: ${{ steps.gen.outputs.include }}
+    permissions: { contents: read }
+    outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           sparse-checkout: npm/targets.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - id: gen
-        # Single source of truth: npm/targets.json. Each entry maps to the
-        # fields upload-assets consumes. `vm`-typed targets are filtered out
-        # because they need a target-OS VM that taiki-e/upload-rust-binary-action
-        # can't reach; if any are reintroduced they need a dedicated job.
-        # Missing `experimental` coerces to false so `continue-on-error`
-        # evaluates cleanly.
-        # NOTE: `target: .rust` (the Rust triple) is mandatory — both
-        # taiki-e and npm/scripts/build-packages.ts derive the release-asset
-        # filename `runner-<tag>-<rust>.tar.gz` from this exact field. Don't
-        # swap it for `.pkg` (npm package suffix) without updating both
-        # consumers in lockstep.
+        # `target: .rust` is mandatory — taiki-e and build-packages.ts both
+        # derive the asset filename `runner-<tag>-<rust>.tar.gz` from it.
+        # `vm`-typed targets need a dedicated job; filtered out here.
         run: |
           include=$(jq -c '[.targets[] | select(.build != "vm") | {
             target: .rust,
@@ -133,58 +89,42 @@ jobs:
     name: build+upload ${{ matrix.target }}
     needs: [matrix, create-release]
     runs-on: ${{ matrix.runner }}
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+    permissions: { contents: write }
+    strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.matrix.outputs.include) }}" } }
     continue-on-error: ${{ matrix.experimental }}
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
+    env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with: { persist-credentials: false }
 
-      # Rust toolchain has to land BEFORE setup-cross-toolchain-action: the
-      # latter calls rustup against whatever's active. Tier-2 paths use
-      # stable; tier-3 paths float on `nightly` because pinning to a snapshot
-      # rots — and these targets are `experimental: true`, so a transient
-      # nightly regression is absorbed by `continue-on-error` rather than
-      # blocking the release.
+      # Toolchain MUST land before setup-cross-toolchain-action (it calls
+      # rustup against whatever's active). Tier-3 floats on nightly because
+      # `experimental: true` + `continue-on-error` absorbs regressions.
       - name: install stable rust
         if: matrix.build-tool == 'cargo-cross-toolchain'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with: { targets: "${{ matrix.target }}" }
 
       - name: install nightly rust (tier-3 build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
+        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        with: { components: rust-src }
 
-      # Tier-2 BSD targets where Rust ships prebuilt std but `cross` has no
-      # working docker image. setup-cross-toolchain-action installs the
-      # matching cross C toolchain (e.g. x86_64-unknown-netbsd-gcc) and
-      # exports CARGO_TARGET_*_LINKER so host `cargo` builds work. Tier-3
-      # `cargo-build-std` reuses the same C toolchain step but goes the
-      # nightly + -Z build-std route to construct std locally.
+      # Tier-2 BSD + tier-3: installs the cross C toolchain and exports
+      # CARGO_TARGET_*_LINKER so host cargo can link the target.
       - name: setup cross toolchain
         if: contains(fromJSON('["cargo-cross-toolchain", "cargo-build-std"]'), matrix.build-tool)
-        uses: taiki-e/setup-cross-toolchain-action@v1
-        with:
-          target: ${{ matrix.target }}
+        uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b # v1
+        with: { target: "${{ matrix.target }}" }
 
       - name: build and upload binaries (taiki-e)
         if: contains(fromJSON('["cargo", "cross", "cargo-cross-toolchain"]'), matrix.build-tool)
-        uses: taiki-e/upload-rust-binary-action@v1
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:
           token: ${{ github.token }}
           bin: runner,run
           target: ${{ matrix.target }}
-          # Map our extended enum onto values upload-rust-binary-action accepts.
-          # `cargo-cross-toolchain` builds with host cargo (the toolchain step
-          # above already configured it), so `cargo` is the right value here.
+          # Our `cargo-cross-toolchain` is host cargo with a pre-set linker.
           build-tool: ${{ case(matrix.build-tool == 'cargo-cross-toolchain', 'cargo', matrix.build-tool) }}
           archive: runner-$tag-$target
           tar: all
@@ -193,13 +133,11 @@ jobs:
           include: README.md,LICENSE
           locked: true
 
-      # Tier-3 path: upload-rust-binary-action can't inject `-Z build-std`,
-      # so we build, archive, and upload manually. The CARGO_UNSTABLE_BUILD_STD
-      # env honors the same shape as `-Z build-std=...` on the cargo CLI.
+      # Tier-3: build/archive/upload manually since upload-rust-binary-action
+      # can't inject `-Z build-std`.
       - name: build (cargo + -Z build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        env:
-          CARGO_UNSTABLE_BUILD_STD: std,panic_abort
+        env: { CARGO_UNSTABLE_BUILD_STD: std, panic_abort }
         run: |
           cargo +nightly build \
             --release --locked \
@@ -219,18 +157,14 @@ jobs:
     needs: [upload-assets]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # Need write so `gh release download` can see the still-draft release;
-    # drafts are invisible to read-only tokens, which surfaces as the
-    # misleading "release not found" error we hit on v0.6.0.
-    permissions:
-      contents: write
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
+    # contents: write — drafts are invisible to read-only tokens.
+    permissions: { contents: write }
+    env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with: { persist-credentials: false }
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with: { node-version: latest }
 
       - name: download release archives
@@ -245,10 +179,7 @@ jobs:
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/build-npm-packages.sh"
 
       - name: smoke-test packaged linux-x64-gnu binary
-        # Sanity-check that the binary we just packaged actually runs
-        # before we upload it for the publish job. linux-x64-gnu is the
-        # only target executable on ubuntu-latest; cross-target binaries
-        # are exercised by the publish job's install-time checks.
+        # Only target executable on ubuntu-latest; others exercised at install.
         run: |
           set -euo pipefail
           bin="${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin/runner"
@@ -259,26 +190,20 @@ jobs:
           "${bin}" --version
 
       - name: upload npm/dist artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: npm-dist
           path: npm/dist/
           retention-days: 14
           if-no-files-found: error
 
-  # Flip the draft release that create-release produced to published once
-  # binaries and the npm-dist artifact are in place. This event drives the
-  # downstream npm-release.yml workflow. Idempotent — `gh release edit
-  # --draft=false` on an already-published release is a no-op.
+  # Flip draft→published once binaries + npm-dist are in place. Drives
+  # npm-release.yml via release:published. Idempotent.
   publish-release:
     name: publish github release
     needs: [build-npm-dist]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: ${{ github.ref_name }}
-    steps:
-      - run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false
+    permissions: { contents: write }
+    env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
+    steps: [{ run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false' }]

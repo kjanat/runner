@@ -42,16 +42,16 @@ jobs:
              github.ref_name) }}
       INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
 
       - name: install rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: verify tag matches Cargo.toml version
         run: |
@@ -71,10 +71,9 @@ jobs:
       - name: mint crates.io token (trusted publishing)
         if: env.INPUT_DRY_RUN != 'true'
         id: auth
-        uses: rust-lang/crates-io-auth-action@v1
+        uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1
 
       - name: cargo publish
         if: env.INPUT_DRY_RUN != 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        env: { CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}" }
         run: cargo publish --locked
