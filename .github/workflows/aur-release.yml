@@ -18,8 +18,6 @@ on:
         default: false
         type: boolean
 
-permissions: { contents: read }
-
 jobs:
   publish:
     name: publish ${{ matrix.pkgname }}
@@ -27,15 +25,11 @@ jobs:
     # Serialize per-pkg so dispatch + release-published can't race the AUR push.
     concurrency: { group: "aur-publish-${{ matrix.pkgname }}", cancel-in-progress: false }
     strategy: { fail-fast: false, matrix: { pkgname: [runner-run, runner-run-bin] } }
-    environment:
-      name: aur
-      url: https://aur.archlinux.org/packages/${{ matrix.pkgname }}
+    permissions: { contents: read }
+    environment: { name: aur, url: "https://aur.archlinux.org/packages/${{ matrix.pkgname }}" }
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: >-
-        ${{ case(github.event_name == 'release',
-                  github.event.release.tag_name,
-                  inputs.tag) }}
+      RELEASE_TAG: ${{ case(github.event_name == 'release', github.event.release.tag_name, inputs.tag) }}
       DRY_RUN: ${{ inputs.dry-run || 'false' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6

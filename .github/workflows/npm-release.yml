@@ -37,8 +37,7 @@ permissions:
 env:
   NODE_VERSION: latest
   REGISTRY: https://registry.npmjs.org/
-  # RELEASE_TAG comes from trusted trigger metadata only — never from
-  # anything build-time scripts could influence.
+  # Trusted trigger metadata only.
   RELEASE_TAG: ${{ case(github.event_name == 'release', github.event.release.tag_name, inputs.tag) }}
   EVENT_NAME: ${{ github.event_name }}
   INPUT_DIST_TAG: ${{ inputs.dist-tag }}
@@ -48,8 +47,6 @@ jobs:
   publish:
     name: publish to npm
     runs-on: ubuntu-latest
-    # Triggered by release:published (real flow) or workflow_dispatch (manual
-    # republish). Reject anything else — no workflow_run, no schedule.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v'))
@@ -60,9 +57,7 @@ jobs:
     environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
     outputs: { dry-run: "${{ steps.derive.outputs.dry-run }}" }
     steps:
-      # Sparse-checkout from the DEFAULT BRANCH gets us the trusted publish
-      # scripts only. No tag-supplied code on disk → no untrusted code
-      # execution → no cache-poisoning vector.
+      # Sparse-checkout from default branch — no tag-supplied code on disk.
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -77,12 +72,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: ${{ env.REGISTRY }}
 
-      # Cross-workflow artifact download: npm-dist lives in the release.yml
-      # run that built this tag. For workflow_dispatch the user supplies the
-      # run-id explicitly. For release:published we look it up by querying
-      # the most recent successful release.yml run for this tag — release.yml
-      # only marks success after publish-release flips draft→published, so
-      # by the time release:published fires the run is already success.
+      # release.yml's run is already success-marked by the time
+      # release:published fires (publish-release is the last job).
       - name: resolve build run-id
         id: resolve
         env:
@@ -106,9 +97,7 @@ jobs:
             echo "error: no run-id resolvable for ${RELEASE_TAG}" >&2
             exit 1
           fi
-          # Numeric guard — refuses anything that could inject extra GITHUB_OUTPUT
-          # lines (newlines, '=', etc.). gh API returns a bare integer; a
-          # workflow_dispatch input from a trusted dispatcher should match too.
+          # Numeric guard — blocks GITHUB_OUTPUT injection.
           if ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
             echo "error: run-id '${run_id}' is not a positive integer" >&2
             exit 1
