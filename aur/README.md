@@ -17,6 +17,14 @@ the binary for candidates), so tab-completing in a project picks up the
 *current* task list from `package.json` / `turbo.json` / `Justfile` /
 etc., not a static snapshot.
 
+PowerShell has no system autoload dir on Linux. The pwsh script is
+installed at `/usr/share/runner/runner.ps1` for users to dot-source
+from their `$PROFILE`:
+
+```powershell
+if (Test-Path /usr/share/runner/runner.ps1) { . /usr/share/runner/runner.ps1 }
+```
+
 ## Automation
 
 `.github/workflows/aur-release.yml` publishes both on every `release:
