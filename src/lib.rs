@@ -89,13 +89,7 @@ pub fn config_schema() -> schemars::Schema {
     schemars::schema_for!(config::RunnerConfig)
 }
 
-/// Render roff man pages for the `runner` and `run` CLIs.
-///
-/// Only exposed when the `man-gen` feature is on; the `gen-man` example
-/// calls this and writes the committed pages under `man/`. Returns
-/// `(stem, roff)` pairs — `runner`, `run`, and one `runner-<sub>` per
-/// visible subcommand. Off by default so production builds never pull in
-/// `clap_mangen`.
+/// `(stem, roff)` man pages for the CLIs. For the `gen-man` example.
 #[cfg(feature = "man-gen")]
 #[must_use]
 pub fn man_pages() -> Vec<(String, Vec<u8>)> {

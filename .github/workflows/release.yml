@@ -16,9 +16,9 @@ jobs:
     name: verify
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D clippy::all
       - run: cargo test
@@ -30,11 +30,11 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
 
       - name: create github release
-        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1
+        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1.11.0
         with:
           token: ${{ github.token }}
           changelog: CHANGELOG.md
@@ -58,6 +58,30 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" --notes-file "${combined}"
           rm -f "${combined}"
 
+  man:
+    name: man pages
+    needs: [verify, create-release]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions: { contents: write }
+    env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with: { persist-credentials: false }
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo run --quiet --example gen-man --features man-gen
+      - name: archive and upload to release
+        run: |
+          set -euo pipefail
+          archive="runner-${RELEASE_TAG}-man.tar.gz"
+          tar -C man -czf "${archive}" .
+          sha256sum "${archive}" >"runner-${RELEASE_TAG}-man.sha256"
+          gh release upload "${RELEASE_TAG}" \
+            "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with: { name: man-pages, path: man/, if-no-files-found: error, retention-days: 14 }
+
   matrix:
     name: build matrix
     needs: verify
@@ -66,7 +90,7 @@ jobs:
     permissions: { contents: read }
     outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           sparse-checkout: npm/targets.json
           sparse-checkout-cone-mode: false
@@ -94,7 +118,7 @@ jobs:
     continue-on-error: ${{ matrix.experimental }}
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
 
       # Toolchain MUST land before setup-cross-toolchain-action (it calls
@@ -114,12 +138,12 @@ jobs:
       # CARGO_TARGET_*_LINKER so host cargo can link the target.
       - name: setup cross toolchain
         if: contains(fromJSON('["cargo-cross-toolchain", "cargo-build-std"]'), matrix.build-tool)
-        uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b # v1
+        uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b # v1.41.0
         with: { target: "${{ matrix.target }}" }
 
       - name: build and upload binaries (taiki-e)
         if: contains(fromJSON('["cargo", "cross", "cargo-cross-toolchain"]'), matrix.build-tool)
-        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
+        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         with:
           token: ${{ github.token }}
           bin: runner,run
@@ -154,22 +178,26 @@ jobs:
 
   build-npm-dist:
     name: build npm dist
-    needs: [upload-assets]
+    needs: [upload-assets, man]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # contents: write — drafts are invisible to read-only tokens.
     permissions: { contents: write }
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { persist-credentials: false }
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with: { node-version: latest }
 
       - name: download release archives
         env: { GH_TOKEN: "${{ github.token }}" }
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/download-release-archives.sh"
+
+      - name: download man pages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with: { name: man-pages, path: man }
 
       - name: verify checksums
         working-directory: npm/downloads
@@ -190,7 +218,7 @@ jobs:
           "${bin}" --version
 
       - name: upload npm/dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: npm-dist
           path: npm/dist/

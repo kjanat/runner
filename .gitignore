@@ -1,6 +1,8 @@
 target/
 dist/
 downloads/
+# Generated man pages (`just gen-man`).
+/man/
 package-lock.json
 node_modules/
 .playwright-mcp/

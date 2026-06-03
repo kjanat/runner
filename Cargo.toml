@@ -81,10 +81,6 @@ features = ["cargo", "derive", "env", "string", "wrap_help"]
 version  = "4"
 features = ["unstable-dynamic"]
 
-# Renders roff man pages from the same clap `Command` tree the CLI is built
-# from. Only pulled in for `cargo run --example gen-man --features man-gen`
-# (kept off the shipped binary, like `schemars`/`schema-gen`). The committed
-# `man/*.1` files are what every distribution channel actually ships.
 [dependencies.clap_mangen]
 version  = "0.3"
 optional = true
@@ -116,9 +112,6 @@ features         = ["parse", "serde"]
 
 [features]
 default    = ["run"]
-# Enables the `gen-man` example + `runner::man_pages()`, which render the
-# committed `man/*.1` files via `clap_mangen`. Off by default so the shipped
-# binary stays lean (no `clap_mangen`/`roff`).
 man-gen    = ["dep:clap_mangen"]
 run        = []
 # Enables the `gen-schema` example + the `pub use` of `RunnerConfig`

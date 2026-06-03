@@ -30,6 +30,7 @@ build() {
 	# `run` rides the default `run` feature; name both bins explicitly so a
 	# future default-feature change can't silently drop one.
 	cargo build --frozen --release --bin runner --bin run
+	cargo run --frozen --example gen-man --features man-gen
 }
 
 check() {
@@ -83,10 +84,6 @@ package() {
 	# this file from their `$PROFILE`:  . /usr/share/runner/runner.ps1
 	install -Dm0644 "$g/runner.ps1" "$pkgdir/usr/share/runner/runner.ps1"
 
-	# Man pages. `runner man --output <dir>` renders roff for `runner`, `run`,
-	# and one page per subcommand (`runner-run.1`, `runner-list.1`, …).
-	# makepkg's default `zipman` option gzips everything under man*/ for us,
-	# so install the raw `.1` files.
-	"$bin_runner" man --output "$g/man"
-	install -Dm0644 -t "$pkgdir/usr/share/man/man1/" "$g"/man/*.1
+	# Man pages rendered into ./man by build(). makepkg gzips them (zipman).
+	install -Dm0644 -t "$pkgdir/usr/share/man/man1/" man/*.1
 }

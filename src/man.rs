@@ -1,29 +1,14 @@
-//! Man-page rendering (feature `man-gen`).
-//!
-//! Renders roff man pages from the same clap [`Command`] tree the CLI is
-//! built from. Gated behind the `man-gen` feature and consumed only by the
-//! `gen-man` example (`cargo run --example gen-man --features man-gen`),
-//! which writes the committed pages under `man/`. Kept out of the default
-//! build so `clap_mangen` never lands in the shipped binary.
+//! Man-page rendering for the `gen-man` example (feature `man-gen`).
 
 use clap::{Command, CommandFactory as _};
 
 use crate::cli::{Cli, RunAliasCli};
 
-/// Build-time author, shared with the help byline. Populates each page's
-/// `AUTHORS` section.
 const AUTHOR: &str = env!("RUNNER_AUTHOR_NAME");
-
-/// Footer source line (`runner X.Y.Z`) shown at the bottom of every page.
 const SOURCE: &str = concat!("runner ", env!("CARGO_PKG_VERSION"));
 
-/// Render the full page set: the top-level `runner` page, a page per visible
-/// `runner` subcommand (`runner-<sub>`), and the `run` alias page.
-///
-/// Each entry is `(stem, roff)` — the example writes it as `<stem>.1`.
-/// Hidden subcommands (e.g. the deprecated `info`) are skipped; the
-/// external-subcommand catch-all has no name and never appears in
-/// [`Command::get_subcommands`].
+/// `(stem, roff)` for `runner`, `run`, and each visible subcommand
+/// (`runner-<sub>`). Hidden subcommands are skipped.
 #[must_use]
 pub(crate) fn man_pages() -> Vec<(String, Vec<u8>)> {
     let runner = Cli::command();
@@ -50,12 +35,6 @@ pub(crate) fn man_pages() -> Vec<(String, Vec<u8>)> {
     pages
 }
 
-/// Render one clap [`Command`] to roff, titled `page_name`, in man section 1.
-///
-/// The rendered bytes are run through [`strip_ansi`] because the CLI's help
-/// strings embed raw ANSI escapes for terminal coloring (see the `cyan!`
-/// macro in [`crate::cli`]); `clap_mangen` copies that help text verbatim,
-/// so the escapes would otherwise corrupt the roff output.
 fn render_command(cmd: Command, page_name: &str) -> Vec<u8> {
     let cmd = cmd.name(page_name.to_string()).author(AUTHOR);
     let man = clap_mangen::Man::new(cmd)
@@ -64,19 +43,13 @@ fn render_command(cmd: Command, page_name: &str) -> Vec<u8> {
         .source(SOURCE);
 
     let mut raw = Vec::new();
-    // Writing to a `Vec` is infallible — the only error path in `render` is
-    // the underlying `io::Write`, which never fails for an in-memory buffer.
     man.render(&mut raw)
-        .expect("rendering man page to a Vec cannot fail");
+        .expect("rendering to a Vec cannot fail");
     strip_ansi(&raw)
 }
 
-/// Strip ANSI control sequences (CSI `ESC [ … <final>` and OSC
-/// `ESC ] … BEL|ST`) from a byte stream, leaving all other bytes intact.
-///
-/// roff is plain text — a CSI/OSC sequence never legitimately appears in it
-/// — so removing them is lossless for our purpose and rescues man output
-/// from the color escapes baked into the CLI help strings.
+/// Drop ANSI escapes (CSI/OSC) that the CLI help strings bake in for color —
+/// they have no place in roff and would corrupt the page otherwise.
 fn strip_ansi(input: &[u8]) -> Vec<u8> {
     const ESC: u8 = 0x1b;
     const BEL: u8 = 0x07;

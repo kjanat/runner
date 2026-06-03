@@ -20,9 +20,12 @@ conflicts=('runner-run')
 # each arch downloads to a distinct file — no `name::` rename needed (and
 # none with a literal arch that namcap would flag).
 _url="https://github.com/kjanat/runner/releases/download/v$pkgver/runner-v$pkgver"
+# Arch-independent man pages (one archive for all arches).
+source=("$_url-man.tar.gz")
 source_x86_64=("$_url-x86_64-unknown-linux-gnu.tar.gz")
 source_aarch64=("$_url-aarch64-unknown-linux-gnu.tar.gz")
 source_armv7h=("$_url-armv7-unknown-linux-gnueabihf.tar.gz")
+sha256sums=('SKIP')
 sha256sums_x86_64=('SKIP')
 sha256sums_aarch64=('SKIP')
 sha256sums_armv7h=('SKIP')
@@ -69,10 +72,6 @@ package() {
 	# this file from their `$PROFILE`:  . /usr/share/runner/runner.ps1
 	install -Dm0644 "$g/runner.ps1" "$pkgdir/usr/share/runner/runner.ps1"
 
-	# Man pages. `runner man --output <dir>` renders roff for `runner`, `run`,
-	# and one page per subcommand (`runner-run.1`, `runner-list.1`, …).
-	# makepkg's default `zipman` option gzips everything under man*/ for us,
-	# so install the raw `.1` files.
-	./runner man --output "$g/man"
-	install -Dm0644 -t "$pkgdir/usr/share/man/man1/" "$g"/man/*.1
+	# Man pages from the -man.tar.gz source (flat *.1 in $srcdir). zipman gzips.
+	install -Dm0644 -t "$pkgdir/usr/share/man/man1/" "$srcdir"/*.1
 }
