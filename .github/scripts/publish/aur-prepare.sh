@@ -17,6 +17,16 @@ pkgname="${1:?usage: aur-prepare.sh <pkgname> <version>}"
 version="${2:?usage: aur-prepare.sh <pkgname> <version>}"
 pkgbuild="aur/${pkgname}/PKGBUILD"
 
+# Reject anything that isn't strict semver (with optional prerelease) before
+# touching files. The downstream `sed -i ".../pkgver=${version}/"` would
+# otherwise be at the mercy of `&` (sed backreference), `/` (delimiter),
+# `\`, and newlines in whatever the workflow handed us. Keeping the alphabet
+# to [0-9A-Za-z.-] guarantees the substitution is byte-for-byte literal.
+if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+	echo "error: version '${version}' does not match semver (X.Y.Z or X.Y.Z-prerelease)" >&2
+	exit 1
+fi
+
 if [[ ! -f "${pkgbuild}" ]]; then
 	echo "error: ${pkgbuild} not found" >&2
 	exit 1

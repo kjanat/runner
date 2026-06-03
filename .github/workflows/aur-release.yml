@@ -24,13 +24,9 @@ jobs:
   publish:
     name: publish ${{ matrix.pkgname }}
     runs-on: ubuntu-latest
-    # Independent AUR repos: a failure pushing one shouldn't block the other.
+    # Serialize per-pkg so dispatch + release-published can't race the AUR push.
+    concurrency: { group: "aur-publish-${{ matrix.pkgname }}", cancel-in-progress: false }
     strategy: { fail-fast: false, matrix: { pkgname: [runner-run, runner-run-bin] } }
-    # Gates access to the AUR_SSH_PRIVATE_KEY secret behind the `aur` GitHub
-    # Environment — same pattern as crates-release.yml uses for crates-io.
-    # Lets deployment protection rules (reviewers, wait timers, branch
-    # filters) apply to AUR pushes, and surfaces each matrix leg as its own
-    # deployment record in the repo's Environments tab.
     environment:
       name: aur
       url: https://aur.archlinux.org/packages/${{ matrix.pkgname }}
@@ -40,8 +36,6 @@ jobs:
         ${{ case(github.event_name == 'release',
                   github.event.release.tag_name,
                   inputs.tag) }}
-      # workflow_dispatch supplies dry-run; the release trigger never does, so
-      # it coerces to the always-publish 'false'.
       DRY_RUN: ${{ inputs.dry-run || 'false' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -64,6 +58,5 @@ jobs:
           commit_email: info@kajkowalski.nl
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: ${{ format('Update to {0}', env.RELEASE_TAG) }}
-          # Source pkg has one arch-independent source → let the action compute
-          # its sum. -bin already has per-arch sums injected by aur-prepare.sh.
+          # -bin already has per-arch sums injected by aur-prepare.sh.
           updpkgsums: ${{ matrix.pkgname == 'runner-run' }}
