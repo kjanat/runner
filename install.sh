@@ -145,6 +145,18 @@ main() {
 		print_item "warning: failed to execute ${expected_runner} -V"
 	fi
 
+	# Man pages. The binary renders its own roff via `runner man --output`,
+	# so this works without shipping pre-built pages in the release tarball.
+	# Install into the XDG user man path; `man runner` / `man run` pick it up
+	# (it's on the default MANPATH). Best-effort — a read-only $HOME or an
+	# older binary without the `man` subcommand must not fail the install.
+	local man_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/man/man1"
+	if mkdir -p "${man_dir}" 2>/dev/null && "${expected_runner}" man --output "${man_dir}" >/dev/null 2>&1; then
+		print_item "man pages: ${man_dir}"
+	else
+		print_item "man pages: skipped (generate later with: runner man --output ${man_dir})"
+	fi
+
 	case ":${PATH:-}:" in
 		*:${INSTALL_DIR}:*) ;;
 		*)

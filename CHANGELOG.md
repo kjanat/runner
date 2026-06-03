@@ -41,6 +41,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   limitation). Strict semver regex on the version input refuses
   anything containing `&`, `/`, `\`, or newlines before any `sed`
   runs.
+- `runner man` subcommand renders roff man pages straight from the clap
+  command tree — `runner.1`, `run.1`, and one page per subcommand
+  (`runner-run.1`, `runner-list.1`, …). `runner man --output <dir>`
+  writes the full set; bare `runner man` emits the top-level `runner`
+  page to stdout. Embedded help-text color escapes are stripped so the
+  output is clean roff that passes `man` with zero warnings.
+- Man pages shipped by every distribution channel that supports them.
+  Both AUR packages install to `/usr/share/man/man1/` (gzipped by
+  makepkg's `zipman`); the npm facade ships them via its package.json
+  `man` field so `npm i -g runner-run` wires up `man runner` / `man run`;
+  `install.sh` renders them into the XDG user man path. `cargo install`
+  users generate on demand with `runner man --output <dir>`.
 
 ### Security
 

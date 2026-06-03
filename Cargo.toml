@@ -77,6 +77,13 @@ features = ["cargo", "derive", "env", "string", "wrap_help"]
 version  = "4"
 features = ["unstable-dynamic"]
 
+# Renders roff man pages from the same clap `Command` tree the CLI is built
+# from, powering `runner man`. Default-on (not feature-gated) so every
+# distribution channel — including the prebuilt-binary AUR package and
+# `cargo install` — can generate `runner.1` / `run.1` from the binary itself.
+[dependencies.clap_mangen]
+version = "0.3"
+
 # Optional: only pulled in for `cargo run --example gen-schema --features
 # schema-gen`. Kept out of the release build so the binary doesn't carry
 # the JSON Schema generator at runtime.

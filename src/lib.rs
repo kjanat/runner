@@ -573,6 +573,24 @@ fn dispatch_run(
     cmd::run(ctx, overrides, task, &args, None)
 }
 
+/// Dispatch the `man` subcommand.
+///
+/// Bare `runner man` (no `--output`) yields to a project task named `man`
+/// when one exists — mirroring the shadowing the other built-ins do — so a
+/// project that defines its own `man` task keeps it. Otherwise (or whenever
+/// `--output` is given) the built-in roff generator runs.
+fn dispatch_man(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    output: Option<&Path>,
+) -> Result<i32> {
+    if output.is_none() && has_task(ctx, "man") {
+        return cmd::run(ctx, overrides, "man", &[], None);
+    }
+    cmd::man(output)?;
+    Ok(0)
+}
+
 /// Resolve the effective JSON schema version for schema-aware output:
 /// explicit `--schema-version=N` wins, otherwise default to latest.
 fn resolve_schema_version(requested: Option<u32>) -> Result<u32> {
@@ -714,6 +732,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
+        Some(cli::Command::Man { output }) => dispatch_man(&ctx, &overrides, output.as_deref()),
         Some(cli::Command::Doctor { json }) => {
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;

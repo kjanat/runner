@@ -274,6 +274,7 @@ runner info [--json]                # show detected project info
 runner doctor [--json]              # show every resolver signal
 runner why <task> [--json]          # explain how a task would dispatch
 runner completions [<shell>] [-o <path>]
+runner man [-o <dir>]               # generate roff man pages
 ```
 
 ## Completions
@@ -316,6 +317,29 @@ run <TAB>
 
 No per-project command archaeology. No guessing whether this one wants npm,
 Cargo, Make, just, Deno, uv, or some handcrafted nonsense from 2021.
+
+## Man pages
+
+`runner man` renders roff man pages straight from the CLI definition — one
+for `runner`, one for `run`, and one per subcommand (`runner-run`,
+`runner-list`, …).
+
+The system packages wire this up for you: install via the AUR
+(`runner-run` / `runner-run-bin`) or npm (`npm i -g runner-run`) and
+`man runner` / `man run` just work. `install.sh` drops them into your XDG
+user man path too.
+
+For a `cargo install` (or any manual setup), generate them into a directory
+on your `MANPATH`:
+
+```sh
+runner man --output ~/.local/share/man/man1
+man runner
+man run
+```
+
+Without `-o`/`--output`, the top-level `runner` page is written to stdout —
+handy for a quick preview: `runner man | man -l -`.
 
 ## Task Resolution
 
