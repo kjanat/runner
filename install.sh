@@ -145,11 +145,14 @@ main() {
 		print_item "warning: failed to execute ${expected_runner} -V"
 	fi
 
-	# Man pages from the release archive, into the XDG user man path.
-	# Best-effort: a read-only $HOME or a missing asset must not fail install.
+	# Man pages from the release archive, into the XDG user man path. Verified like the binaries above.
+	# Best-effort: a read-only $HOME, a missing asset, or a checksum mismatch must not fail the install.
 	local man_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/man/man1"
 	local man_asset="runner-${version}-man.tar.gz"
+	local man_checksum="runner-${version}-man.sha256"
 	if curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_asset}" "${base_url}/${man_asset}" 2>/dev/null \
+		&& curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_checksum}" "${base_url}/${man_checksum}" 2>/dev/null \
+		&& (cd "${tmp_dir}" && sha256sum -c --status "${man_checksum}") \
 		&& mkdir -p "${man_dir}" \
 		&& tar -xzf "${tmp_dir}/${man_asset}" -C "${man_dir}"; then
 		print_item "man pages: ${man_dir}"
