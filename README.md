@@ -177,6 +177,12 @@ Or:
 cargo binstall runner-run
 ```
 
+Or on Arch Linux:
+
+```sh
+yay -S runner-run-bin
+```
+
 <details>
 <summary><i>Other install methods</i></summary>
 
@@ -184,6 +190,11 @@ cargo binstall runner-run
 cargo install runner-run
 cargo install --git=https://github.com/kjanat/runner/ runner-run
 cargo install --path .
+```
+
+```sh
+# AUR source build (compiles via cargo):
+yay -S runner-run
 ```
 
 ```sh
