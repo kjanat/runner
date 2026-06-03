@@ -10,11 +10,12 @@ Two packages on the [AUR](https://aur.archlinux.org/):
 `runner-run-bin` `provides`/`conflicts` `runner-run`, so it is a drop-in
 replacement — install whichever you prefer, not both.
 
-Neither package ships static shell completions: `runner completions` emits
-clap *dynamic* scripts that bake in the generating binary's path and are
-meant to be evaluated live, not dropped into the system completion dirs.
-Users opt in per shell, e.g. `eval "$(runner completions zsh)"` in `~/.zshrc`
-(also registers the `run` alias).
+Both packages install bash, zsh, and fish completion files for `runner`
+and `run` into the system autoload dirs — no `eval` line needed in a
+user's rc. The completions are clap-dynamic (the shell shells out to
+the binary for candidates), so tab-completing in a project picks up the
+*current* task list from `package.json` / `turbo.json` / `Justfile` /
+etc., not a static snapshot.
 
 ## Automation
 
