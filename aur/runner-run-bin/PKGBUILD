@@ -1,4 +1,4 @@
-# Maintainer: Kaj Kowalski <info+runner@kajkowalski.nl>
+# Maintainer: Kaj Kowalski <info@kajkowalski.nl>
 
 # Prebuilt package: installs the release binaries straight from the GitHub
 # release `.tar.gz` assets (no compile). `pkgver`/`sha256sums_*` are rewritten

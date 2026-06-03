@@ -1,4 +1,4 @@
-# Maintainer: Kaj Kowalski <info+runner@kajkowalski.nl>
+# Maintainer: Kaj Kowalski <info@kajkowalski.nl>
 
 # Source package: builds the `runner` + `run` binaries from the tagged
 # GitHub source tarball with cargo. `pkgver`/`sha256sums` are rewritten by

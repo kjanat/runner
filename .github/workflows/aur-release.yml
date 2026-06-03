@@ -61,7 +61,7 @@ jobs:
           pkgname: ${{ matrix.pkgname }}
           pkgbuild: aur/${{ matrix.pkgname }}/PKGBUILD
           commit_username: Kaj Kowalski
-          commit_email: info+runner@kajkowalski.nl
+          commit_email: info@kajkowalski.nl
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: ${{ format('Update to {0}', env.RELEASE_TAG) }}
           # Source pkg has one arch-independent source → let the action compute
