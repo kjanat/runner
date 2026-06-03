@@ -29,121 +29,87 @@ run <TAB>
 
 ```shell
 ❯ run
-run 0.10.0
+run 0.12.0
 
-  Package Managers    cargo
-  Task Runners        just, bacon
+  Package Managers    bun, cargo
+  Task Runners        just
+  Node                24.14.1
+  Monorepo            yes
 
-  justfile        build-packages
-  justfile        default
-  justfile        gen-schema           just gen-schema && git diff --exit-code schemas/
-  justfile        install
-  justfile        ls
-  justfile        run
-  justfile        runner
-  justfile        test-release         Build release bin and verify the facade shims spawn the native binary.
-  config.toml     b                    build
-  config.toml     bb                   build --bin run --bin runner
-  config.toml     bbr                  build --bin run --bin runner --release
-  config.toml     bin-run              run --bin run --quiet
-  config.toml     bin-runner           run --bin runner --quiet
-  config.toml     c                    check
-  config.toml     cl                   clippy --all-targets --all-features
-  config.toml     comp                 run --bin runner --quiet -- completions
-  config.toml     d                    doc
-  config.toml     i                    install --path .
-  config.toml     l                    clippy --all-targets --all-features -- -D warnings -D clippy::all
-  config.toml     lint                 clippy --all-targets --all-features -- -D warnings -D clippy::all
-  config.toml     meta                 metadata --format-version 1
-  config.toml     r                    run
-  config.toml     rbin-run             run --bin run --quiet --release
-  config.toml     rbin-runner          run --bin runner --quiet --release
-  config.toml     rm                   remove
-  config.toml     rr                   run --release
-  config.toml     runner               run --bin runner
-  config.toml     schema               run --quiet --features schema -- schema
-  config.toml     t                    test
-  bacon.toml      bins                 cargo build --bin runner --bin run --color=always
-  bacon.toml      check                cargo check
-  bacon.toml      check-all            cargo check --all-targets
-  bacon.toml      clippy               cargo clippy
-  bacon.toml      clippy-all           cargo clippy --all-targets
-  bacon.toml      doc                  cargo doc --no-deps
-  bacon.toml      doc-open             cargo doc --no-deps --open
-  bacon.toml      ex                   cargo run --example
-  bacon.toml      lint                 cargo clippy --all-targets --all-features --color=always -- -D warnings -D clippy::all
-  bacon.toml      nextest              cargo nextest run --hide-progress-bar --failure-output final
-  bacon.toml      pedantic             cargo clippy -- -W clippy::pedantic
-  bacon.toml      run                  cargo run
-  bacon.toml      run-long             cargo run
-  bacon.toml      test                 cargo test
-  bacon.toml      test-all             cargo test --all-features --all-targets --color=always
+  just            build-packages
+  just            default
+  just            gen-schema           Drift guard: just gen-schema && git diff --exit-code schemas/
+  just            install
+  just            ls
+  just            run
+  just            runner
+  just            test-release         Build release bin and verify the facade shims spawn the native binary.
+  cargo           b                    build
+  cargo           bb                   build --bin run --bin runner
+  cargo           bbr                  build --bin run --bin runner --release
+  cargo           bin-run              run --quiet --bin run
+  cargo           bin-runner           run --quiet --bin runner
+  cargo           c                    check
+  cargo           cl                   clippy --all-targets --all-features
+  cargo           comp                 run --quiet --bin runner -- completions
+  cargo           d                    doc
+  cargo           f                    run --quiet --bin run -- --pm npm dprint fmt
+  cargo           format               run --quiet --bin run -- --pm npm dprint fmt
+  cargo           i                    install --path .
+  cargo           l                    clippy --all-targets --all-features -- -D warnings -D clippy::all
+  cargo           lint                 clippy --all-targets --all-features -- -D warnings -D clippy::all
+  cargo           man                  run --quiet --features man -- man
+  cargo           meta                 metadata --format-version 1
+  cargo           r                    run
+  cargo           rbin-run             run --quiet --bin run --release
+  cargo           rbin-runner          run --quiet --bin runner --release
+  cargo           rm                   remove
+  cargo           rq                   run --quiet
+  cargo           rr                   run --release
+  cargo           runner               run --quiet --bin runner
+  cargo           schema               run --quiet --features schema -- schema
+  cargo           t                    test
 ```
 
 and `run <TAB>` (zsh):
 
 ```shell
-❯ run <TAB>waiting...
--- justfile --
-build-packages
-default
-gen-schema                     -- just gen-schema && git diff --exit-code schemas/
-install
+❯ run <TAB>
+-- just --
+build-packages                                                                    run
+default                                                                           runner
+gen-schema      -- Drift guard: just gen-schema && git diff --exit-code schemas/  just:runner
+install                                                                           test-release    -- Build release bin and verify the facade shims spawn the native binary.
 ls
-run
-justfile:run
-runner
-justfile:runner
-test-release                   -- Build release bin and verify the facade shims spawn the native binary.
--- cargo --
-b                              -- build
-bb                             -- build --bin run --bin runner
-bbr                            -- build --bin run --bin runner --release
-bin-run                        -- run --bin run --quiet
-bin-runner                     -- run --bin runner --quiet
-c                              -- check
-cl                             -- clippy --all-targets --all-features
-comp                           -- run --bin runner --quiet -- completions
-d                              -- doc
-i                              -- install --path .
-l                              -- clippy --all-targets --all-features -- -D warnings -D clippy::all
-lint                           -- clippy --all-targets --all-features -- -D warnings -D clippy::all
-cargo:lint                     -- clippy --all-targets --all-features -- -D warnings -D clippy::all
-meta                           -- metadata --format-version 1
-r                              -- run
-rbin-run                       -- run --bin run --quiet --release
-rbin-runner                    -- run --bin runner --quiet --release
-rm                             -- remove
-rr                             -- run --release
-cargo:runner                   -- run --bin runner
-schema                         -- run --quiet --features schema -- schema
-t                              -- test
--- bacon.toml --
-bins                           -- cargo build --bin runner --bin run --color=always
-check                          -- cargo check
-check-all                      -- cargo check --all-targets
-clippy                         -- cargo clippy
-clippy-all                     -- cargo clippy --all-targets
-doc                            -- cargo doc --no-deps
-doc-open                       -- cargo doc --no-deps --open
-ex                             -- cargo run --example
-bacon.toml:lint                -- cargo clippy --all-targets --all-features --color=always -- -D warnings -D clippy::all
-nextest                        -- cargo nextest run --hide-progress-bar --failure-output final
-pedantic                       -- cargo clippy -- -W clippy::pedantic
-bacon.toml:run                 -- cargo run
-run-long                       -- cargo run
-test                           -- cargo test
-test-all                       -- cargo test --all-features --all-targets --color=always
+-- cargo (aliases) --
+b             -- → build                                                              lint          -- → clippy --all-targets --all-features -- -D warnings -D clippy::all
+bb            -- → build --bin run --bin runner                                       man           -- → run --quiet --features man -- man
+bbr           -- → build --bin run --bin runner --release                             meta          -- → metadata --format-version 1
+bin-run       -- → run --quiet --bin run                                              r             -- → run
+bin-runner    -- → run --quiet --bin runner                                           rbin-run      -- → run --quiet --bin run --release
+c             -- → check                                                              rbin-runner   -- → run --quiet --bin runner --release
+cl            -- → clippy --all-targets --all-features                                rm            -- → remove
+comp          -- → run --quiet --bin runner -- completions                            rq            -- → run --quiet
+d             -- → doc                                                                rr            -- → run --release
+f             -- → run --quiet --bin run -- --pm npm dprint fmt                       cargo:runner  -- → run --quiet --bin runner
+format        -- → run --quiet --bin run -- --pm npm dprint fmt                       schema        -- → run --quiet --features schema -- schema
+i             -- → install --path .                                                   t             -- → test
+l             -- → clippy --all-targets --all-features -- -D warnings -D clippy::all
 -- Options --
---dir                          -- Use this directory instead of the current one
---pm                           -- Override the detected package manager (e.g. pnpm, bun, yarn). Also reads RUNNER_PM when omitted.
---runner                       -- Override the detected task runner (e.g. just, turbo, make). Also reads RUNNER_RUNNER when omitted.
---fallback                     -- What to do when no detection signal matches: probe (default, PATH probe), npm (legacy silent fallback), error (refuse). Also reads RUNNER_FALLBACK when omitted.
---on-mismatch                  -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
---explain                      -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
---no-warnings                  -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
---help                         -- Print help
---version                      -- Print version
+--dir             -- Use this directory instead of the current one
+--pm              -- Override the detected package manager (also reads RUNNER_PM when omitted). Valid: npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler (alias: bundle), composer
+--runner          -- Override the detected task runner (also reads RUNNER_RUNNER when omitted). Valid: turbo, nx, make, just, task (alias: go-task), mise, bacon
+--fallback        -- What to do when no detection signal matches: probe (default, PATH probe), npm (legacy silent fallback), error (refuse). Also reads RUNNER_FALLBACK when omitted.
+--on-mismatch     -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
+--explain         -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
+--no-warnings     -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
+--schema-version  -- Pin JSON output schema version (1 or 2). Defaults to latest. Affects --json output of doctor/list/why only.
+--sequential      -- Run the given tasks sequentially. Conflicts with `--parallel`
+--parallel        -- Run the given tasks in parallel. Conflicts with `--sequential`
+--keep-going      -- Run every task in the chain regardless of failures. Conflicts with `--kill-on-fail`
+--kill-on-fail    -- Parallel only: SIGKILL siblings on first failure. Accepted but unused in sequential mode
+--help            -- Print help
+--version         -- Print version
 ```
 
 ---
@@ -200,8 +166,8 @@ yay -S runner-run
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
 bash install.sh
-bash install.sh 0.10.0
-bash install.sh v0.10.0
+bash install.sh 0.12.0
+bash install.sh v0.12.0
 ```
 
 ---
@@ -214,25 +180,12 @@ Use the action to install runner in CI:
 
 ```yaml
 - uses: kjanat/runner@master
-- run: runner install --frozen
-- run: run test
-- run: run build
+- run: runner install --frozen test build
 ```
 
-<!--
-Future shorthand once install/task chaining is supported:
-
-```yaml
-- uses: kjanat/runner@master
-- run: runner install test build deploy
-#             ^^^^^^^
-# `runner install` here is not a task, but runs the needed toolchain command(s)
-# for the project, such as `npm ci`, `cargo fetch`, `uv sync`, etc.
-```
--->
-
-`runner install` here is not a task, but runs the needed toolchain command(s)
-for the project, such as `npm ci`, `cargo fetch`, `uv sync`, etc.
+`runner install` is not a task — it runs the project's toolchain command(s)
+(`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
+(`test`, then `build`) sequentially.
 
 That is the point: the workflow stays boring even when the project underneath is
 npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation that repo
@@ -357,7 +310,13 @@ runner detects and works with:
 npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer
 ```
 
-It can list and run tasks from:
+It aggregates tasks from these runners:
+
+```text
+turbo, nx, make, just, go-task, mise, bacon
+```
+
+reading them from:
 
 ```text
 package.json / package.json5 / package.yaml
@@ -403,32 +362,22 @@ turbo tasks first, then package manifest scripts, then other matching sources.
 - Safe clean defaults
 - Node version mismatch warnings
 
-## Development
-
-```sh
-./bin/runner <args>
-./bin/run <args>
-```
-
-With `direnv`:
-
-```sh
-runner <args>
-```
-
 ## Links
 
 - Site: [runner.kjanat.dev]
 - npm: [`runner-run`][npm]
 - crates.io: [`runner-run`][crates]
+- aur: [`runner-run`][aur:runner-run], [`runner-run-bin`][aur:runner-run-bin]
 
 ## License
 
 [MIT][LICENSE] © 2026 Kaj Kowalski
 
-[npm]: https://npm.im/runner-run
-[crates]: https://crates.io/crates/runner-run
-[runner.kjanat.dev]: https://runner.kjanat.dev "Site for runner"
 [LICENSE]: https://github.com/kjanat/runner/blob/master/LICENSE
+[aur:runner-run-bin]: https://aur.archlinux.org/packages/runner-run-bin
+[aur:runner-run]: https://aur.archlinux.org/packages/runner-run
+[crates]: https://crates.io/crates/runner-run
+[npm]: https://npm.im/runner-run
+[runner.kjanat.dev]: https://runner.kjanat.dev "Site for runner"
 
 <!-- markdownlint-disable-file MD013 MD033 MD041 -->
