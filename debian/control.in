@@ -1,0 +1,22 @@
+Package: runner-run
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Kaj Kowalski <info@kajkowalski.nl>
+Installed-Size: @INSTALLED_SIZE@
+Depends: libc6, libgcc-s1
+Section: devel
+Priority: optional
+Homepage: https://runner.kjanat.dev
+Description: Universal project task runner
+ runner inspects a project and dispatches to the right tool, so one set of
+ commands works in every repo no matter the underlying package manager or
+ task runner. Type `run test` / `run build` and it figures out whether the
+ project wants npm, pnpm, yarn, bun, cargo, deno, uv, poetry, go, make,
+ just, turbo, nx (and more), then runs the matching command.
+ .
+ It is monorepo-aware and, for a name that is not a defined task, falls
+ through to the package manager's exec primitive (npx, bunx, pnpm exec,
+ uv run, ...).
+ .
+ This package provides the `runner` and `run` binaries together with bash,
+ zsh, and fish shell completions for both.

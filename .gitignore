@@ -1,6 +1,7 @@
 target/
 dist/
 downloads/
+debian/.work/
 package-lock.json
 node_modules/
 .playwright-mcp/
