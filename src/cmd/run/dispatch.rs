@@ -20,7 +20,7 @@ use super::qualify::{
     runner_constraint_error,
 };
 use super::select::select_task_entry;
-use crate::resolver::{ResolutionOverrides, ResolveError, Resolver};
+use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
 use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
@@ -214,6 +214,38 @@ fn build_pm_exec_command(
     }
 }
 
+/// Python package manager decision for `[project.scripts]` dispatch.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedPythonPm {
+    pub(crate) pm: PackageManager,
+    via: PythonPmResolution,
+}
+
+#[derive(Debug, Clone)]
+enum PythonPmResolution {
+    Override(OverrideOrigin),
+    DetectedProject,
+}
+
+impl ResolvedPythonPm {
+    pub(crate) fn describe(&self) -> String {
+        match &self.via {
+            PythonPmResolution::Override(OverrideOrigin::CliFlag) => {
+                format!("{} via --pm (CLI override)", self.pm.label())
+            }
+            PythonPmResolution::Override(OverrideOrigin::EnvVar) => {
+                format!("{} via RUNNER_PM (environment)", self.pm.label())
+            }
+            PythonPmResolution::Override(OverrideOrigin::ConfigFile { path }) => {
+                format!("{} via runner.toml at {}", self.pm.label(), path.display())
+            }
+            PythonPmResolution::DetectedProject => {
+                format!("{} via detected Python project", self.pm.label())
+            }
+        }
+    }
+}
+
 /// Bun special-case for `runner test` when the project has no
 /// `package.json` `test` script: forward to `bun test`.
 ///
@@ -283,12 +315,21 @@ fn build_run_command(
         TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args),
         TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args),
         TaskSource::PyprojectScripts => {
-            let Some(pm) = resolve_python_pm(ctx, overrides) else {
+            let Some(decision) = resolve_python_pm(ctx, overrides) else {
                 bail!(
                     "no Python package manager detected to run {:?}; install uv, poetry, or pipenv",
                     entry.name,
                 );
             };
+            if overrides.explain {
+                eprintln!(
+                    "{} {} resolved: {}",
+                    "·".dimmed(),
+                    "runner".dimmed(),
+                    decision.describe(),
+                );
+            }
+            let pm = decision.pm;
             match pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args),
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args),
@@ -305,22 +346,32 @@ fn build_run_command(
 /// detected for the project. A non-Python `--pm` (e.g. `--pm pnpm` in a
 /// mixed repo) is ignored here rather than forced, falling through to the
 /// detected Python PM.
-fn resolve_python_pm(
+pub(crate) fn resolve_python_pm(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-) -> Option<PackageManager> {
+) -> Option<ResolvedPythonPm> {
     if let Some(o) = overrides.pm.as_ref()
         && o.pm.ecosystem() == Ecosystem::Python
     {
-        return Some(o.pm);
+        return Some(ResolvedPythonPm {
+            pm: o.pm,
+            via: PythonPmResolution::Override(o.origin.clone()),
+        });
     }
     if let Some(o) = overrides.pm_by_ecosystem.get(&Ecosystem::Python) {
-        return Some(o.pm);
+        return Some(ResolvedPythonPm {
+            pm: o.pm,
+            via: PythonPmResolution::Override(o.origin.clone()),
+        });
     }
     ctx.package_managers
         .iter()
         .copied()
         .find(|pm| pm.ecosystem() == Ecosystem::Python)
+        .map(|pm| ResolvedPythonPm {
+            pm,
+            via: PythonPmResolution::DetectedProject,
+        })
 }
 
 #[cfg(test)]

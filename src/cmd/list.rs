@@ -37,10 +37,10 @@ pub(crate) fn list(
     let parsed_source = match source {
         None => None,
         Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
+            let expected = expected_source_labels();
             anyhow!(
-                "--source {label:?}: unknown source label (expected one of: package.json, \
-                 make, just, task, turbo, deno, cargo, go, bacon, mise — legacy filename \
-                 forms like justfile/bacon.toml/Makefile are also accepted)",
+                "--source {label:?}: unknown source label (expected one of: {expected} — legacy \
+                 filename forms like justfile/bacon.toml/Makefile are also accepted)",
             )
         })?),
     };
@@ -78,6 +78,15 @@ pub(crate) fn list(
         print_tasks_grouped_with_mode(&filtered, &ctx.root, RenderMode::Rich);
     }
     Ok(())
+}
+
+fn expected_source_labels() -> String {
+    TaskSource::all()
+        .iter()
+        .copied()
+        .map(TaskSource::label)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,7 +484,7 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
         }
         TaskSource::MiseToml => tool::mise::find_file(root),
         TaskSource::PyprojectScripts => {
-            tool::files::find_first_upwards(root, &["pyproject.toml"]).filter(|path| path.is_file())
+            tool::python::find_pyproject_upwards(root).filter(|path| path.is_file())
         }
     }?;
 
@@ -529,14 +538,16 @@ fn osc8_link(label: &str, url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use super::{
-        RenderMode, file_uri, render_rich_row, render_tasks_grouped, render_tasks_grouped_rich,
-        select_render_mode_for, source_label, source_path,
+        RenderMode, expected_source_labels, file_uri, render_rich_row, render_tasks_grouped,
+        render_tasks_grouped_rich, select_render_mode_for, source_label, source_path,
     };
+    use crate::resolver::ResolutionOverrides;
+    use crate::schema::CURRENT_VERSION;
     use crate::tool::test_support::TempDir;
-    use crate::types::{Task, TaskSource};
+    use crate::types::{ProjectContext, Task, TaskSource};
 
     #[test]
     fn source_path_finds_existing_config_variant() {
@@ -573,6 +584,34 @@ mod tests {
             .expect("taskfile path should resolve from dist variant");
 
         assert!(path.ends_with("Taskfile.dist.yml"));
+    }
+
+    #[test]
+    fn invalid_source_error_mentions_pyproject() {
+        let ctx = ProjectContext {
+            root: PathBuf::from("."),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        };
+
+        let err = super::list(
+            &ctx,
+            &ResolutionOverrides::default(),
+            false,
+            false,
+            Some("wat"),
+            CURRENT_VERSION,
+        )
+        .expect_err("invalid source should error");
+
+        let message = format!("{err:#}");
+        assert!(message.contains("pyproject.toml"));
+        assert!(expected_source_labels().contains("pyproject.toml"));
     }
 
     #[test]

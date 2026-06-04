@@ -1,7 +1,7 @@
 //! Shared Python tooling helpers.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -27,6 +27,8 @@ const PROJECT_MARKERS: &[&str] = &[
     "poetry.lock",
     "uv.lock",
 ];
+
+const PYPROJECT_FILENAMES: &[&str] = &["pyproject.toml"];
 
 /// Detected via common Python project markers.
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -64,6 +66,12 @@ pub(crate) fn clean_dirs(dir: &Path) -> Vec<String> {
     dirs
 }
 
+/// Find the nearest `pyproject.toml` at `dir` or above, bounded by the
+/// containing VCS root when one exists.
+pub(crate) fn find_pyproject_upwards(dir: &Path) -> Option<PathBuf> {
+    super::files::find_first_upwards(dir, PYPROJECT_FILENAMES)
+}
+
 /// Extract `[project.scripts]` entry points (PEP 621 console scripts)
 /// from `pyproject.toml`, each paired with its entry-point target as a
 /// description (e.g. `("greenpy", Some("greenpy.main:main"))`).
@@ -80,10 +88,9 @@ pub(crate) fn clean_dirs(dir: &Path) -> Vec<String> {
 pub(crate) fn extract_pyproject_scripts(
     dir: &Path,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
-    let path = dir.join("pyproject.toml");
-    if !path.exists() {
+    let Some(path) = find_pyproject_upwards(dir) else {
         return Ok(vec![]);
-    }
+    };
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let doc: PyprojectDoc =
@@ -179,6 +186,25 @@ mod tests {
             extract_pyproject_scripts(dir.path())
                 .expect("absent file is not an error")
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn extract_scripts_reads_nearest_upward_pyproject() {
+        let dir = TempDir::new("pyproject-upwards");
+        let nested = dir.path().join("src").join("pkg");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\n\n[project.scripts]\ngreenpy = \"greenpy.main:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let scripts = extract_pyproject_scripts(&nested).expect("scripts should parse");
+
+        assert_eq!(
+            scripts,
+            [("greenpy".to_string(), Some("greenpy.main:main".to_string()))]
         );
     }
 

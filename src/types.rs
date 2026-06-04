@@ -550,6 +550,24 @@ impl TaskRunner {
 }
 
 impl TaskSource {
+    /// Every task source in display order. Used by renderers and error
+    /// messages so adding a source updates diagnostics from one place.
+    pub(crate) const fn all() -> &'static [Self] {
+        &[
+            Self::PackageJson,
+            Self::Makefile,
+            Self::Justfile,
+            Self::Taskfile,
+            Self::TurboJson,
+            Self::DenoJson,
+            Self::CargoAliases,
+            Self::GoPackage,
+            Self::BaconToml,
+            Self::MiseToml,
+            Self::PyprojectScripts,
+        ]
+    }
+
     /// Canonical display label shown to the user — the *tool* name where a
     /// single tool owns the source (`"make"`, `"just"`, `"bacon"`, …), or
     /// the filename when multiple tools share the source (`"package.json"`
