@@ -316,7 +316,7 @@ checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
 name = "runner-run"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "actions-rs",
  "anyhow",

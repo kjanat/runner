@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.12.1] - 2026-06-04
+
 ### Added
 
 - AUR distribution channel. Two packages on the Arch User Repository:
@@ -55,16 +63,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   and `release.yml` pinned to commit SHAs (with a `# vN` trailing
   comment for readability), so an upstream tag rewrite or
   account-takeover cannot silently swap in a different action build.
-- `persist-credentials: false` added to the two `actions/checkout`
-  steps in `release.yml` that were missing it (`create-release`,
-  `upload-assets`), matching the hardening already in place on the
-  other checkouts.
+- `persist-credentials: false` added to every `actions/checkout` step
+  in `release.yml`, so `GITHUB_TOKEN` is not persisted into git config.
+- Release verification no longer saves Rust caches from pull request
+  runs, preventing untrusted PRs from persisting cache contents.
 
-### Post-release checklist
+### Fixed
 
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- Restore the `multiple_crate_versions` Clippy allow so CI accepts the
+  current unavoidable duplicate transitive crate versions while keeping
+  the broader `clippy::cargo` deny group enabled.
+- Hide the feature-only `runner man` generator from shipped `runner.1`
+  output, so installed man pages no longer document an unavailable
+  subcommand.
 
 ## [0.12.0] - 2026-06-01
 
@@ -1023,7 +1034,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/kjanat/runner/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/kjanat/runner/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kjanat/runner/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/kjanat/runner/compare/v0.9.0...v0.10.0

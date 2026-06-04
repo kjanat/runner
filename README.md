@@ -29,7 +29,7 @@ run <TAB>
 
 ```shell
 ❯ run
-run 0.12.0
+run 0.12.1
 
   Package Managers    bun, cargo
   Task Runners        just
@@ -163,8 +163,8 @@ yay -S runner-run
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
 bash install.sh
-bash install.sh 0.12.0
-bash install.sh v0.12.0
+bash install.sh 0.12.1
+bash install.sh v0.12.1
 ```
 
 ---
