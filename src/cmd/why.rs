@@ -13,10 +13,10 @@ use colored::Colorize;
 use serde_json::{Value, json};
 
 use crate::cmd::run::{
-    allowed_runner_sources, runner_constraint_error, select_task_entry, source_depth,
-    source_priority,
+    ResolvedPythonPm, allowed_runner_sources, resolve_python_pm, runner_constraint_error,
+    select_task_entry, source_depth, source_priority,
 };
-use crate::resolver::{ResolutionOverrides, Resolver};
+use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::types::{ProjectContext, Task, TaskSource};
 
 /// Explain how `task` would resolve in the current project.
@@ -53,14 +53,7 @@ pub(crate) fn why(
 
     let selected = (!restricted.is_empty()).then(|| select_task_entry(ctx, overrides, &restricted));
 
-    let pm_decision = if selected
-        .as_ref()
-        .is_some_and(|t| t.source == TaskSource::PackageJson)
-    {
-        Some(Resolver::new(ctx, overrides).resolve_node_pm())
-    } else {
-        None
-    };
+    let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
 
     let report = build_report(
         task,
@@ -88,11 +81,35 @@ pub(crate) fn why(
     Ok(())
 }
 
+enum PmDecision {
+    Node(Result<ResolvedPm, ResolveError>),
+    Python(Result<ResolvedPythonPm, String>),
+}
+
+fn pm_decision_for_selected(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    selected: Option<&Task>,
+) -> Option<PmDecision> {
+    match selected.map(|task| task.source) {
+        Some(TaskSource::PackageJson) => {
+            Some(PmDecision::Node(Resolver::new(ctx, overrides).resolve_node_pm()))
+        }
+        Some(TaskSource::PyprojectScripts) => Some(PmDecision::Python(
+            resolve_python_pm(ctx, overrides).ok_or_else(|| {
+                "no Python package manager detected to run pyproject scripts; install uv, poetry, or pipenv"
+                    .to_string()
+            }),
+        )),
+        _ => None,
+    }
+}
+
 fn build_report(
     task: &str,
     candidates: &[&Task],
     selected: Option<&Task>,
-    pm_decision: Option<&Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>>,
+    pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
     schema_version: u32,
@@ -104,18 +121,28 @@ fn build_report(
             .map(|c| candidate_json(c, overrides, ctx, schema_version))
             .collect::<Vec<_>>(),
         "selected": selected.map(|s| candidate_json(s, overrides, ctx, schema_version)),
-        "pm_resolution": pm_decision.map(|res| match res {
-            Ok(decision) => json!({
-                "pm": decision.pm.label(),
-                "via": decision.describe(),
-                "warnings": decision.warnings.iter().map(|w| json!({
-                    "source": w.source(),
-                    "detail": w.detail(),
-                })).collect::<Vec<_>>(),
-            }),
-            Err(err) => json!({ "error": format!("{err}") }),
-        }),
+        "pm_resolution": pm_decision.map(pm_decision_json),
     })
+}
+
+fn pm_decision_json(decision: &PmDecision) -> Value {
+    match decision {
+        PmDecision::Node(Ok(decision)) => json!({
+            "pm": decision.pm.label(),
+            "via": decision.describe(),
+            "warnings": decision.warnings.iter().map(|w| json!({
+                "source": w.source(),
+                "detail": w.detail(),
+            })).collect::<Vec<_>>(),
+        }),
+        PmDecision::Node(Err(err)) => json!({ "error": format!("{err}") }),
+        PmDecision::Python(Ok(decision)) => json!({
+            "pm": decision.pm.label(),
+            "via": decision.describe(),
+            "warnings": [],
+        }),
+        PmDecision::Python(Err(err)) => json!({ "error": err }),
+    }
 }
 
 fn candidate_json(
@@ -157,6 +184,7 @@ fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
         TaskSource::GoPackage => tool::go_pm::find_file(&ctx.root),
         TaskSource::BaconToml => tool::files::find_first(&ctx.root, tool::bacon::FILENAMES),
         TaskSource::MiseToml => tool::mise::find_file(&ctx.root),
+        TaskSource::PyprojectScripts => tool::python::find_pyproject_upwards(&ctx.root),
     }
 }
 
@@ -164,7 +192,7 @@ fn print_human(
     task: &str,
     candidates: &[&Task],
     selected: Option<&Task>,
-    pm_decision: Option<&Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>>,
+    pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
 ) {
@@ -230,15 +258,17 @@ fn print_human(
         println!();
         println!("{}", "PM resolution".bold());
         match res {
-            Ok(decision) => {
+            PmDecision::Node(Ok(decision)) => {
                 println!("  {}", decision.describe());
                 for w in &decision.warnings {
                     println!("  {} {w}", "warn:".yellow().bold());
                 }
             }
-            Err(err) => {
+            PmDecision::Node(Err(err)) => {
                 println!("  {} {err}", "error:".red().bold());
             }
+            PmDecision::Python(Ok(decision)) => println!("  {}", decision.describe()),
+            PmDecision::Python(Err(err)) => println!("  {} {err}", "error:".red().bold()),
         }
     }
 }
@@ -247,9 +277,9 @@ fn print_human(
 mod tests {
     use std::path::PathBuf;
 
-    use super::why;
+    use super::{PmDecision, build_report, pm_decision_for_selected, why};
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
-    use crate::types::{ProjectContext, Task, TaskSource};
+    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
@@ -337,5 +367,58 @@ mod tests {
         .expect_err("why should mirror run runner constraints");
 
         assert!(format!("{err}").contains("no candidate task is registered"));
+    }
+
+    #[test]
+    fn why_pyproject_script_reports_detected_python_pm() {
+        let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
+        ctx.package_managers.push(PackageManager::Uv);
+        let selected = ctx.tasks.first();
+        let pm_decision = pm_decision_for_selected(&ctx, &ResolutionOverrides::default(), selected)
+            .expect("pyproject task should resolve PM diagnostics");
+
+        let report = build_report(
+            "greenpy",
+            &[&ctx.tasks[0]],
+            selected,
+            Some(&pm_decision),
+            &ResolutionOverrides::default(),
+            &ctx,
+            crate::schema::CURRENT_VERSION,
+        );
+
+        assert_eq!(report["pm_resolution"]["pm"], serde_json::json!("uv"));
+        assert!(
+            report["pm_resolution"]["via"]
+                .as_str()
+                .is_some_and(|via| via.contains("detected Python project"))
+        );
+    }
+
+    #[test]
+    fn why_pyproject_script_reports_python_pm_override() {
+        let ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
+        let overrides = ResolutionOverrides::from_cli_and_env(
+            Some("uv"),
+            None,
+            None,
+            None,
+            DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("PM override should parse");
+        let selected = ctx.tasks.first();
+        let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected)
+            .expect("pyproject task should resolve PM diagnostics");
+
+        match pm_decision {
+            PmDecision::Python(Ok(decision)) => {
+                assert_eq!(decision.pm, PackageManager::Uv);
+                assert!(decision.describe().contains("--pm"));
+            }
+            PmDecision::Python(Err(err)) => panic!("override should resolve: {err}"),
+            PmDecision::Node(_) => panic!("pyproject script should use Python PM resolver"),
+        }
     }
 }

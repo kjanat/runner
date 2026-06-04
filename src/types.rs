@@ -144,6 +144,10 @@ pub(crate) enum TaskSource {
     /// `mise.toml` / `.mise.toml` `[tasks.<name>]` tables (and the
     /// inline `[tasks]` flat form).
     MiseToml,
+    /// `pyproject.toml` `[project.scripts]` — PEP 621 console-script
+    /// entry points, dispatched via the detected Python PM's `run`
+    /// (`uv run`, `poetry run`, `pipenv run`).
+    PyprojectScripts,
 }
 
 /// Expected Node.js version parsed from a version file.
@@ -546,6 +550,24 @@ impl TaskRunner {
 }
 
 impl TaskSource {
+    /// Every task source in display order. Used by renderers and error
+    /// messages so adding a source updates diagnostics from one place.
+    pub(crate) const fn all() -> &'static [Self] {
+        &[
+            Self::PackageJson,
+            Self::Makefile,
+            Self::Justfile,
+            Self::Taskfile,
+            Self::TurboJson,
+            Self::DenoJson,
+            Self::CargoAliases,
+            Self::GoPackage,
+            Self::BaconToml,
+            Self::MiseToml,
+            Self::PyprojectScripts,
+        ]
+    }
+
     /// Canonical display label shown to the user — the *tool* name where a
     /// single tool owns the source (`"make"`, `"just"`, `"bacon"`, …), or
     /// the filename when multiple tools share the source (`"package.json"`
@@ -573,6 +595,9 @@ impl TaskSource {
             Self::GoPackage => "go",
             Self::BaconToml => "bacon",
             Self::MiseToml => "mise",
+            // Filename, not a tool name: `[project.scripts]` is read by
+            // uv, poetry, and pipenv alike, so no single tool owns it.
+            Self::PyprojectScripts => "pyproject.toml",
         }
     }
 
@@ -595,6 +620,7 @@ impl TaskSource {
             "go" | "go.mod" => Some(Self::GoPackage),
             "bacon" | "bacon.toml" => Some(Self::BaconToml),
             "mise" | "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
+            "pyproject" | "pyproject.toml" => Some(Self::PyprojectScripts),
             _ => None,
         }
     }
@@ -612,6 +638,7 @@ impl TaskSource {
             Self::GoPackage => 7,
             Self::BaconToml => 8,
             Self::MiseToml => 9,
+            Self::PyprojectScripts => 10,
         }
     }
 }

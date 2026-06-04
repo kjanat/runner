@@ -95,12 +95,8 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     if tool::deno::detect(dir) {
         ctx.package_managers.push(PackageManager::Deno);
     }
-    if tool::uv::detect(dir) {
-        ctx.package_managers.push(PackageManager::Uv);
-    } else if tool::poetry::detect(dir) {
-        ctx.package_managers.push(PackageManager::Poetry);
-    } else if tool::pipenv::detect(dir) {
-        ctx.package_managers.push(PackageManager::Pipenv);
+    if let Some(pm) = detect_python_pm_upwards(dir) {
+        ctx.package_managers.push(pm);
     }
     if tool::go_pm::detect(dir) {
         ctx.package_managers.push(PackageManager::Go);
@@ -138,6 +134,23 @@ fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
             tool::node::detect_pm_from_manifest(ancestor)
                 .map(|decl| decl.pm)
                 .filter(|pm| pm.is_node())
+        }
+    })
+}
+
+/// Walk upward — VCS-bounded — for the Python package manager governing
+/// a nested project directory. Nearest ancestor wins; within one directory
+/// keep the same uv > poetry > pipenv priority as local detection.
+fn detect_python_pm_upwards(dir: &Path) -> Option<PackageManager> {
+    tool::files::find_in_ancestors(dir, |ancestor| {
+        if tool::uv::detect(ancestor) {
+            Some(PackageManager::Uv)
+        } else if tool::poetry::detect(ancestor) {
+            Some(PackageManager::Poetry)
+        } else if tool::pipenv::detect(ancestor) {
+            Some(PackageManager::Pipenv)
+        } else {
+            None
         }
     })
 }
@@ -318,6 +331,10 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     let want_go_packages = ctx.package_managers.contains(&PackageManager::Go);
     let want_bacon = ctx.task_runners.contains(&TaskRunner::Bacon);
     let want_mise = ctx.task_runners.contains(&TaskRunner::Mise);
+    // `[project.scripts]` is shared PEP 621 metadata. Task discovery only
+    // needs the manifest; PM choice is resolved later, so `--pm uv` or
+    // `[pm].python` can dispatch even without a lockfile.
+    let want_pyproject_scripts = tool::python::find_pyproject_upwards(dir).is_some();
 
     thread::scope(|s| {
         let pkg_json_h = want_pkg_json.then(|| {
@@ -338,6 +355,8 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         let go_h = want_go_packages.then(|| s.spawn(move || tool::go_pm::extract_tasks(dir)));
         let bacon_h = want_bacon.then(|| s.spawn(move || tool::bacon::extract_tasks(dir)));
         let mise_h = want_mise.then(|| s.spawn(move || tool::mise::extract_tasks(dir)));
+        let pyproject_h = want_pyproject_scripts
+            .then(|| s.spawn(move || tool::python::extract_pyproject_scripts(dir)));
 
         if let Some(h) = pkg_json_h {
             push_package_json_tasks(ctx, h.join().expect("extractor thread panicked"));
@@ -388,6 +407,13 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         }
         if let Some(h) = mise_h {
             push_mise_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = pyproject_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::PyprojectScripts,
+                h.join().expect("extractor thread panicked"),
+            );
         }
     });
 }
@@ -725,6 +751,101 @@ mod tests {
             task.source == crate::types::TaskSource::GoPackage
                 && task.name == "app"
                 && task.run_target.as_deref() == Some(".")
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_for_uv_projects() {
+        // Headline regression (issue): a uv project's `[project.scripts]`
+        // console entry points were detected as a package manager but
+        // never surfaced as runnable tasks.
+        let dir = TempDir::new("detect-pyproject-scripts-uv");
+        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\nbodysuit = \"greenpy.bodysuit:main\"\ngreenpy = \"greenpy.main:main\"\nnavel-stamper = \"greenpy.navel_stamper:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(
+            ctx.package_managers
+                .contains(&crate::types::PackageManager::Uv)
+        );
+        let names: Vec<&str> = ctx
+            .tasks
+            .iter()
+            .filter(|t| t.source == crate::types::TaskSource::PyprojectScripts)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(names, ["bodysuit", "greenpy", "navel-stamper"]);
+        // The entry-point target rides along as the task description.
+        assert!(ctx.tasks.iter().any(|t| {
+            t.source == crate::types::TaskSource::PyprojectScripts
+                && t.name == "greenpy"
+                && t.description.as_deref() == Some("greenpy.main:main")
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_from_nested_uv_project() {
+        let dir = TempDir::new("detect-pyproject-nested-uv");
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        let nested = dir.path().join("src").join("pkg");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \"greenpy.main:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(&nested);
+
+        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Uv]);
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_without_detected_python_pm() {
+        let dir = TempDir::new("detect-pyproject-scripts-no-pm");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \"greenpy.main:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(
+            ctx.package_managers.is_empty(),
+            "generic pyproject scripts do not imply a specific Python PM",
+        );
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_for_poetry_projects() {
+        let dir = TempDir::new("detect-pyproject-scripts-poetry");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[project.scripts]\ncli = \"demo.cli:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(
+            ctx.package_managers
+                .contains(&crate::types::PackageManager::Poetry)
+        );
+        assert!(ctx.tasks.iter().any(|t| {
+            t.source == crate::types::TaskSource::PyprojectScripts && t.name == "cli"
         }));
     }
 

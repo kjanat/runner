@@ -325,6 +325,7 @@ Taskfile
 bacon.toml
 mise.toml / .mise.toml
 Cargo aliases from .cargo/config.toml
+pyproject.toml [project.scripts] (run via uv / poetry / pipenv)
 ```
 
 It also understands monorepo/workspace context from:
