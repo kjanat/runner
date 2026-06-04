@@ -1,0 +1,6 @@
+# runner links the pure-Rust `yaml-rust2` crate, not the C libyaml. lintian's
+# byte-signature heuristic matches the YAML tag URIs (`tag:yaml.org,2002:...`)
+# compiled into the binary and misreports an embedded copy of libyaml; there
+# is no C library vendored in.
+runner-run: embedded-library libyaml [usr/bin/run]
+runner-run: embedded-library libyaml [usr/bin/runner]

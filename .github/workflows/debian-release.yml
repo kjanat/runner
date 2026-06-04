@@ -1,0 +1,162 @@
+name: debian-release
+run-name: >-
+  ${{ format('debian/apt publish {0}',
+       case(github.event_name == 'release', github.event.release.tag_name,
+            inputs.tag)) }}
+
+on:
+  release: { types: [published] }
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish (e.g. v0.12.0)
+        required: true
+        type: string
+      dry-run:
+        description: Build + sign but do not upload to the release or push the apt repo
+        required: true
+        default: false
+        type: boolean
+
+permissions: { contents: read }
+
+env:
+  RELEASE_TAG: ${{ case(github.event_name == 'release', github.event.release.tag_name, inputs.tag) }}
+  DRY_RUN: ${{ inputs.dry-run || 'false' }}
+
+jobs:
+  # Repackage the prebuilt release binaries (gnu) into .debs and attach them to
+  # the GitHub release. Needs no secrets — always runs on a release.
+  build-deb:
+    name: build .deb packages
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    env: { GH_TOKEN: "${{ github.token }}" }
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with: { persist-credentials: false }
+
+      - name: install lintian
+        run: sudo apt-get update && sudo apt-get install -y lintian
+
+      - name: download release tarballs
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/deb-download.sh"
+
+      - name: build .deb packages
+        run: |
+          set -euo pipefail
+          # deb-build.sh wants the version without the leading v.
+          VERSION="${RELEASE_TAG#v}" bash "${GITHUB_WORKSPACE}/.github/scripts/build/deb-build.sh"
+
+      - name: lint (fail on errors; overrides + warnings allowed)
+        run: |
+          set -euo pipefail
+          for deb in debian/.work/out/*.deb; do
+            echo "::group::lintian ${deb##*/}"
+            lintian --fail-on error --tag-display-limit 0 "${deb}"
+            echo "::endgroup::"
+          done
+
+      - name: upload .deb assets to the release
+        if: env.DRY_RUN != 'true'
+        run: gh release upload "${RELEASE_TAG}" debian/.work/out/*.deb --repo "${GITHUB_REPOSITORY}" --clobber
+
+      - name: upload deb-packages artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: deb-packages
+          path: debian/.work/out/*.deb
+          retention-days: 14
+          if-no-files-found: error
+
+  # Assemble + GPG-sign the apt repository and publish it to the gh-pages branch
+  # (served at https://apt.runner.kjanat.dev). Inert until the APT_GPG_PRIVATE_KEY
+  # secret is added to the `apt` environment — the .debs above ship regardless.
+  publish-apt:
+    name: publish apt repo
+    needs: build-deb
+    runs-on: ubuntu-latest
+    # actions: read so same-run download-artifact can reach the artifact API.
+    permissions: { contents: write, actions: read }
+    environment: { name: apt, url: "https://apt.runner.kjanat.dev" }
+    concurrency: { group: apt-publish, cancel-in-progress: false }
+    env:
+      GH_TOKEN: ${{ github.token }}
+      APT_DOMAIN: apt.runner.kjanat.dev
+      APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+      APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+    steps:
+      - name: gate on signing key
+        id: gate
+        run: |
+          if [[ -z "${APT_GPG_PRIVATE_KEY}" ]]; then
+            echo "::notice::APT_GPG_PRIVATE_KEY not set — apt repo publish skipped. The .deb files are still attached to the release. Add the secret to the 'apt' environment to enable apt.runner.kjanat.dev."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        if: steps.gate.outputs.enabled == 'true'
+        with: { persist-credentials: false }
+
+      - name: install apt tooling
+        if: steps.gate.outputs.enabled == 'true'
+        run: sudo apt-get update && sudo apt-get install -y apt-utils dpkg-dev
+
+      - name: download deb-packages artifact
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with: { name: deb-packages, path: debian/.work/out }
+
+      - name: import signing key
+        id: gpg
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${APT_GPG_PRIVATE_KEY}" | gpg --batch --import
+          fpr=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
+          if [[ -z "${fpr}" ]]; then
+            echo "error: no secret key found after import" >&2
+            exit 1
+          fi
+          echo "key-id=${fpr}" >> "${GITHUB_OUTPUT}"
+
+      - name: fetch published repo state (gh-pages)
+        if: steps.gate.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # Preserve pool/ from prior releases; start fresh on the very first run.
+          if ! git clone --depth 1 --branch gh-pages "${remote}" apt-pages 2>/dev/null; then
+            echo "gh-pages branch absent — initializing a fresh one"
+            rm -rf apt-pages
+            git init -q apt-pages
+            git -C apt-pages checkout -q -b gh-pages
+            git -C apt-pages remote add origin "${remote}"
+          fi
+
+      - name: assemble + sign apt repository
+        if: steps.gate.outputs.enabled == 'true'
+        env:
+          DEB_DIR: debian/.work/out
+          APT_REPO_DIR: apt-pages
+          APT_SIGN: "true"
+          GPG_KEY_ID: ${{ steps.gpg.outputs.key-id }}
+          GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/apt-repo.sh"
+
+      - name: commit + push gh-pages
+        if: steps.gate.outputs.enabled == 'true' && env.DRY_RUN != 'true'
+        working-directory: apt-pages
+        run: |
+          set -euo pipefail
+          git config user.name "Kaj Kowalski"
+          git config user.email "info@kajkowalski.nl"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "apt repo already up to date — nothing to publish"
+          else
+            git commit -m "apt: publish ${RELEASE_TAG}"
+            git push -u origin gh-pages
+          fi
