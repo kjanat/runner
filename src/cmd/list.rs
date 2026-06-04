@@ -475,7 +475,7 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
         }
         TaskSource::MiseToml => tool::mise::find_file(root),
         TaskSource::PyprojectScripts => {
-            tool::files::find_first(root, &["pyproject.toml"]).filter(|path| path.is_file())
+            tool::files::find_first_upwards(root, &["pyproject.toml"]).filter(|path| path.is_file())
         }
     }?;
 

@@ -157,7 +157,9 @@ fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
         TaskSource::GoPackage => tool::go_pm::find_file(&ctx.root),
         TaskSource::BaconToml => tool::files::find_first(&ctx.root, tool::bacon::FILENAMES),
         TaskSource::MiseToml => tool::mise::find_file(&ctx.root),
-        TaskSource::PyprojectScripts => tool::files::find_first(&ctx.root, &["pyproject.toml"]),
+        TaskSource::PyprojectScripts => {
+            tool::files::find_first_upwards(&ctx.root, &["pyproject.toml"])
+        }
     }
 }
 
