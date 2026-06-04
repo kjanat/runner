@@ -78,6 +78,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `runner list`, `runner run`, and `runner why` now find
+  `pyproject.toml` scripts and Python package-manager signals from
+  nested directories (bounded by the containing VCS root), so running
+  from `src/` inside a uv/poetry/pipenv project still surfaces and
+  dispatches `[project.scripts]` tasks.
+- `runner why` now reports Python package-manager resolution for
+  `pyproject.toml` tasks, including `--pm` and `[pm].python`
+  overrides, matching the actual `runner run` dispatch path.
+- `runner list --source` invalid-label help now includes
+  `pyproject.toml` in the accepted source list.
 - Restore the `multiple_crate_versions` Clippy allow so CI accepts the
   current unavoidable duplicate transitive crate versions while keeping
   the broader `clippy::cargo` deny group enabled.
