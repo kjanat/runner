@@ -1,0 +1,5 @@
+TIMESTAMP = 1780337058
+SHA256 (runner-v0.12.0-x86_64-unknown-freebsd.tar.gz) = 578d21585769670d47798cbed4f292cf3eb294e868ca190910d8408ad131f685
+SIZE (runner-v0.12.0-x86_64-unknown-freebsd.tar.gz) = 2281230
+SHA256 (runner-v0.12.0-aarch64-unknown-freebsd.tar.gz) = 17b74daaf9cbb61f388e2736c27f58091377533b2b91940dcf12ede449454084
+SIZE (runner-v0.12.0-aarch64-unknown-freebsd.tar.gz) = 2059418

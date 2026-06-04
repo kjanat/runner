@@ -11,6 +11,33 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- FreeBSD distribution channel. A prebuilt port (`freebsd/runner`,
+  package name `runner-bin`) installs the `runner` + `run` binaries from
+  the GitHub release `*-unknown-freebsd` tarballs the `release.yml` matrix
+  already publishes — no recompile — for `amd64` and `aarch64`. Since
+  FreeBSD has no AUR-style push-to-git remote, the channel ships an
+  installable amd64 `.pkg` attached to each release:
+  `pkg add https://github.com/kjanat/runner/releases/latest/download/runner-freebsd-amd64.pkg`.
+- FreeBSD completions shipped by the port and auto-loaded from the
+  canonical `${LOCALBASE}` dirs: bash at
+  `share/bash-completion/completions/{runner,run}`, zsh at
+  `share/zsh/site-functions/{_runner,_run}`, fish at
+  `share/fish/vendor_completions.d/{runner,run}.fish`. PowerShell has no
+  autoload convention, so the pwsh script is installed at
+  `share/runner/runner.ps1` for users to dot-source from their `$PROFILE`.
+- `.github/workflows/freebsd-release.yml` builds and attaches the `.pkg`
+  on every `release: published` event (with manual `workflow_dispatch` +
+  `dry-run` for validation). It runs the real ports build (`make package`)
+  inside a FreeBSD VM (`vmactions/freebsd-vm`) against a blobless, sparse
+  checkout of the ports `Mk/` infrastructure, so the staging QA and plist
+  checks gate every release. Third-party `uses:` pinned to commit SHAs.
+- `.github/scripts/publish/freebsd-prepare.sh` rewrites `DISTVERSION` and
+  regenerates `distinfo` (per-arch `SHA256` + `SIZE`) from the release's
+  published `.sha256` companion assets and asset metadata. The mandatory
+  `amd64` entry aborts on a missing asset; the `experimental` `aarch64`
+  build is skipped with a warning when absent. Strict semver regex on the
+  version input refuses anything containing `&`, `/`, `\`, or newlines
+  before any `sed` runs.
 - AUR distribution channel. Two packages on the Arch User Repository:
   `runner-run-bin` (prebuilt binaries for `x86_64`, `aarch64`, `armv7h`)
   and `runner-run` (source build for `x86_64`, `aarch64`). `-bin`

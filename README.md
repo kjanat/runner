@@ -183,6 +183,12 @@ Or on Arch Linux:
 yay -S runner-run-bin
 ```
 
+Or on FreeBSD:
+
+```sh
+pkg add https://github.com/kjanat/runner/releases/latest/download/runner-freebsd-amd64.pkg
+```
+
 <details>
 <summary><i>Other install methods</i></summary>
 
@@ -195,6 +201,12 @@ cargo install --path .
 ```sh
 # AUR source build (compiles via cargo):
 yay -S runner-run
+```
+
+```sh
+# FreeBSD/aarch64: build the prebuilt port locally (distinfo already
+# carries the aarch64 distfile checksum), or fetch the amd64 .pkg above.
+cd /usr/ports/devel/runner && make package
 ```
 
 ```sh
