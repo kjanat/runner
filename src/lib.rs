@@ -75,13 +75,9 @@ use colored::Colorize;
 
 use resolver::ResolveError;
 
-/// Generate the JSON Schema for `runner.toml`.
-///
-/// Only exposed when the `schema-gen` feature is on; the `gen-schema`
-/// example calls this to keep `RunnerConfig` and its inner section
-/// structs `pub(crate)` permanently — no permanent public-API
-/// expansion just to derive a schema once.
-#[cfg(feature = "schema-gen")]
+/// JSON Schema for `runner.toml`. Built under the `schema` feature;
+/// `runner schema` renders it.
+#[cfg(feature = "schema")]
 #[must_use]
 pub fn config_schema() -> schemars::Schema {
     schemars::schema_for!(config::RunnerConfig)
@@ -714,6 +710,10 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
+        #[cfg(all(feature = "man", not(windows)))]
+        Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
+        #[cfg(feature = "schema")]
+        Some(cli::Command::Schema { output }) => dispatch_schema(output.as_deref()),
         Some(cli::Command::Doctor { json }) => {
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;
@@ -725,6 +725,21 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
     }
+}
+
+#[cfg(all(feature = "man", not(windows)))]
+fn dispatch_man(output: Option<&Path>) -> Result<i32> {
+    match output {
+        Some(dir) => cmd::write_man_pages(dir)?,
+        None => cmd::write_runner_page_to_stdout()?,
+    }
+    Ok(0)
+}
+
+#[cfg(feature = "schema")]
+fn dispatch_schema(output: Option<&Path>) -> Result<i32> {
+    cmd::write_schema(output)?;
+    Ok(0)
 }
 
 /// Whether the detected project defines a task with the given name.

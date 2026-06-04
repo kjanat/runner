@@ -56,6 +56,16 @@ if [[ "${pkgname}" == 'runner-run-bin' ]]; then
 		fi
 		sed -i -E "s/^sha256sums_${carch}=\(.*/sha256sums_${carch}=('${sum}')/" "${pkgbuild}"
 	done
+
+	# Arch-independent man archive (generic sha256sums=()).
+	man_sum="$(gh release download "v${version}" \
+		--repo "${GITHUB_REPOSITORY}" \
+		--pattern "runner-v${version}-man.sha256" --output - | awk 'NR==1{print $1}')"
+	if [[ ! "${man_sum}" =~ ^[0-9a-f]{64}$ ]]; then
+		echo "error: bad sha256 for man archive: '${man_sum}'" >&2
+		exit 1
+	fi
+	sed -i -E "s/^sha256sums=\(.*/sha256sums=('${man_sum}')/" "${pkgbuild}"
 fi
 
 echo "--- prepared ${pkgbuild} ---"

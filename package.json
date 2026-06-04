@@ -6,6 +6,7 @@
 		"site",
 		"npm/facade"
 	],
+	"scripts": { "fmt": "bunx dprint fmt" },
 	"devDependencies": {
 		"@types/node": ">=22.18.0",
 		"typescript": "^5"

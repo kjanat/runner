@@ -48,7 +48,7 @@ pub(crate) struct LoadedConfig {
 
 /// Top-level schema for `runner.toml`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RunnerConfig {
     /// `[pm]` — per-ecosystem package-manager overrides.
@@ -79,9 +79,9 @@ pub(crate) struct RunnerConfig {
 /// config layering means `[chain].keep_going = false` plus
 /// `RUNNER_KEEP_GOING=1` resolves to `true`.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
-    feature = "schema-gen",
+    feature = "schema",
     schemars(extend("not" = {
         "required": ["keep_going", "kill_on_fail"],
         "properties": {
@@ -112,7 +112,7 @@ pub(crate) struct ChainSection {
 /// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 /// changes behavior.
 #[derive(Debug, Clone, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GitHubSection {
     /// Wrap task output in `runner: <task>` groups under GitHub Actions.
@@ -156,7 +156,7 @@ const fn default_github_group_parallel() -> bool {
 /// **outside** GitHub Actions. (Under GitHub Actions, see
 /// [`GitHubSection::group_parallel`].)
 #[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ParallelSection {
     /// Buffer each parallel task's output and print it as one contiguous
@@ -170,20 +170,20 @@ pub(crate) struct ParallelSection {
 
 /// `[pm]` section — per-ecosystem package manager overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PmSection {
     /// Package manager used to dispatch Node `package.json` scripts.
     /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
     #[cfg_attr(
-        feature = "schema-gen",
+        feature = "schema",
         schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))
     )]
     pub node: Option<String>,
     /// Package manager used for Python ecosystems.
     /// Valid values: `uv`, `poetry`, `pipenv`.
     #[cfg_attr(
-        feature = "schema-gen",
+        feature = "schema",
         schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))
     )]
     pub python: Option<String>,
@@ -191,7 +191,7 @@ pub(crate) struct PmSection {
 
 /// `[task_runner]` section — preferred ordering for ambiguous tasks.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TaskRunnerSection {
     /// Ranked preference list. Restricts candidates to runners in the
@@ -209,20 +209,20 @@ pub(crate) struct TaskRunnerSection {
 
 /// `[resolution]` section — resolver policy knobs.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[cfg_attr(feature = "schema-gen", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default) — PATH probe in canonical order when no signals
     /// match; `npm` — legacy silent fallback; `error` — refuse to proceed.
     #[cfg_attr(
-        feature = "schema-gen",
+        feature = "schema",
         schemars(extend("enum" = ["probe", "npm", "error", null]))
     )]
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore` — how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
     #[cfg_attr(
-        feature = "schema-gen",
+        feature = "schema",
         schemars(extend("enum" = ["warn", "error", "ignore", null]))
     )]
     pub on_mismatch: Option<String>,

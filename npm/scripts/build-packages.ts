@@ -16,7 +16,7 @@
  *   node npm/scripts/build-packages.ts --downloads=/tmp/artifacts
  */
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, resolve } from "node:path";
 import { argv, env, exit, stderr, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -346,6 +346,8 @@ interface BuildOptions {
 	only: Set<string> | null;
 	skipMissing: boolean;
 	downloadsDir: string;
+	/** Dir of `*.1` man pages to ship in the facade; `null` to skip. */
+	manDir: string | null;
 }
 
 interface TarEntry {
@@ -420,6 +422,7 @@ function readOptions(defaultVersion: string): BuildOptions {
 			only: { type: "string" },
 			"skip-missing": { type: "boolean", default: false },
 			downloads: { type: "string" },
+			"man-dir": { type: "string" },
 		},
 	});
 
@@ -428,6 +431,7 @@ function readOptions(defaultVersion: string): BuildOptions {
 		only: parseOnlyList(values.only),
 		skipMissing: values["skip-missing"] ?? false,
 		downloadsDir: values.downloads ? resolve(values.downloads) : join(npmDir, "downloads"),
+		manDir: values["man-dir"] ? resolve(values["man-dir"]) : null,
 	};
 }
 
@@ -490,27 +494,35 @@ async function buildFacade(
 	version: string,
 	builtTargets: Target[],
 	meta: Record<string, unknown>,
+	manDir: string | null,
 ): Promise<void> {
 	const templatePath = join(npmDir, "facade", "package.json");
 	const template = JSON.parse(await readFile(templatePath, "utf8")) as Record<string, unknown>;
-
-	// Cargo metadata wins over the template for fields it owns (license,
-	// author, homepage, repository, bugs, engines). Keeps the facade and
-	// sub-packages in lockstep on engines/runtime contract — drop those
-	// fields from the template so there's only one source of truth.
-	const packageJson = {
-		...template,
-		...meta,
-		version,
-		optionalDependencies: Object.fromEntries(
-			builtTargets.map((target) => [`${matrix.scope}/${target.pkg}`, version]),
-		),
-	};
 
 	const dest = join(distDir, matrix.facade);
 
 	await mkdir(join(dest, "bin"), { recursive: true });
 	await mkdir(join(dest, "lib"), { recursive: true });
+
+	// npm symlinks these into share/man on global install.
+	const manFiles = await stageManPages(dest, manDir);
+
+	// Cargo metadata wins over the template for fields it owns (license,
+	// author, homepage, repository, bugs, engines). Keeps the facade and
+	// sub-packages in lockstep on engines/runtime contract — drop those
+	// fields from the template so there's only one source of truth.
+	const files = Array.isArray(template.files) ? [...template.files] : [];
+	if (manFiles.length > 0 && !files.includes("man/")) files.push("man/");
+
+	const packageJson = {
+		...template,
+		...meta,
+		version,
+		...(manFiles.length > 0 ? { man: manFiles, files } : {}),
+		optionalDependencies: Object.fromEntries(
+			builtTargets.map((target) => [`${matrix.scope}/${target.pkg}`, version]),
+		),
+	};
 
 	await writeJson(join(dest, "package.json"), packageJson);
 	await cp(join(npmDir, "facade", "README.md"), join(dest, "README.md"));
@@ -520,6 +532,23 @@ async function buildFacade(
 	await copyFiles(join(npmDir, "facade", "lib"), join(dest, "lib"), FACADE_LIB_FILES);
 
 	console.log(`built ${formatPackage(undefined, matrix.facade, version)}`);
+}
+
+/** Copy `*.1` from `manDir` into `<dest>/man/`; return their `man/<file>` paths. */
+async function stageManPages(dest: string, manDir: string | null): Promise<string[]> {
+	if (!manDir) return [];
+
+	const entries = (await readdir(manDir)).filter((name) => name.endsWith(".1")).sort();
+	if (entries.length === 0) return [];
+
+	await mkdir(join(dest, "man"), { recursive: true });
+	const manFiles: string[] = [];
+	for (const entry of entries) {
+		await cp(join(manDir, entry), join(dest, "man", entry));
+		manFiles.push(posix.join("man", entry));
+	}
+
+	return manFiles;
 }
 
 /**
@@ -932,7 +961,10 @@ async function main(): Promise<void> {
 		);
 	}
 
-	await withLogGroup(matrix.facade, () => buildFacade(matrix, opts.version, builtTargets, meta));
+	await withLogGroup(
+		matrix.facade,
+		() => buildFacade(matrix, opts.version, builtTargets, meta, opts.manDir),
+	);
 }
 
 if (import.meta.main) {

@@ -16,7 +16,7 @@
 			"initialization_options": {
 				"diagnostics": { "experimental": { "enable": true } },
 				"check": { "workspace": true, "allTargets": true, "features": "all" },
-				"cargo": { "allTargets": true, "features": ["schema-gen", "run"] }
+				"cargo": { "allTargets": true, "features": ["man", "schema", "run"] }
 			}
 		}
 	},

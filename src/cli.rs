@@ -874,14 +874,9 @@ pub(crate) enum Command {
         /// Task name or command to execute. In chain mode, the first task in the chain.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: Option<String>,
-        /// Arguments forwarded to the task, OR additional task names in
-        /// chain mode. `trailing_var_arg` + `allow_hyphen_values`
-        /// support the documented bare-forward shape
-        /// (`runner run test --watch` → `--watch` reaches the task).
-        /// Trade-off: chain-failure flags (`-k`, `--kill-on-fail`)
-        /// must precede task names in chain mode
-        /// (`runner run -s -k build test`), since anything after the
-        /// first positional is consumed as a forwarded value.
+        /// Arguments forwarded to the task, or extra task names in chain mode.
+        // In chain mode, chain-failure flags (`-k`) must precede task names —
+        // `trailing_var_arg` consumes everything after the first positional.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
         /// Chain mode flags: `-s` / `-p`.
@@ -981,6 +976,35 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Render roff man pages (build: --features man)
+    #[cfg(all(feature = "man", not(windows)))]
+    #[command(hide = true)]
+    Man {
+        /// Write every page into this dir instead of the `runner` page to stdout.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "DIR",
+            value_hint = clap::ValueHint::DirPath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
+    },
+
+    /// Emit the runner.toml JSON Schema (build: --features schema)
+    #[cfg(feature = "schema")]
+    Schema {
+        /// Write the schema to this file instead of stdout.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "FILE",
+            value_hint = clap::ValueHint::FilePath,
+            value_parser = clap::value_parser!(PathBuf),
+        )]
+        output: Option<PathBuf>,
+    },
+
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -1009,11 +1033,9 @@ pub(crate) struct RunAliasCli {
     #[arg(add = ArgValueCandidates::new(task_candidates))]
     pub task: Option<String>,
 
-    /// Arguments forwarded to the task/command, OR additional task
-    /// names in chain mode. Same `trailing_var_arg` trade-off as
-    /// `Cli::Run.args`: bare forwarding supported
-    /// (`run test --watch`); chain-failure flags must precede task
-    /// names in chain mode.
+    /// Arguments forwarded to the task, or extra task names in chain mode.
+    // In chain mode, chain-failure flags (`-k`) must precede task names —
+    // `trailing_var_arg` consumes everything after the first positional.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 

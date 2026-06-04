@@ -78,7 +78,7 @@
           "default": true
         },
         "group_parallel": {
-          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped), but only when\n`group_output` is also true. The non-CI equivalent is\n`[parallel].grouped` (default `false`), so CI and local diverge unless\nyou set them to match.",
+          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped), but only when\n[`Self::group_output`] is also true. The non-CI equivalent is\n`[parallel].grouped` (default `false`), so CI and local diverge unless\nyou set them to match.",
           "type": "boolean",
           "default": true
         }
