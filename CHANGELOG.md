@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- `pyproject.toml` `[project.scripts]` entry points (PEP 621 console
+  scripts) are now extracted as runnable tasks for Python projects. They
+  surface under the `pyproject.toml` source in `runner list` (with the
+  entry-point target shown as the description) and dispatch via the
+  detected Python package manager's `run` subcommand — `uv run <name>`,
+  `poetry run <name>`, or `pipenv run <name>`. Previously a uv/poetry
+  project's declared scripts were invisible to `runner`, which detected
+  the package manager but listed no tasks.
 - AUR distribution channel. Two packages on the Arch User Repository:
   `runner-run-bin` (prebuilt binaries for `x86_64`, `aarch64`, `armv7h`)
   and `runner-run` (source build for `x86_64`, `aarch64`). `-bin`

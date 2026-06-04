@@ -53,12 +53,29 @@ pub(crate) fn install_cmd() -> Command {
     c
 }
 
+/// `poetry run <script> [args...]` — run a `[project.scripts]` console
+/// entry point inside the project's virtualenv.
+pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("poetry");
+    c.arg("run").arg(script).args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::detect;
+    use super::{detect, run_cmd};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn run_cmd_forwards_script_and_args() {
+        let args: Vec<_> = run_cmd("greenpy", &["--verbose".into()])
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["run", "greenpy", "--verbose"]);
+    }
 
     #[test]
     fn detects_poetry_lockfile() {

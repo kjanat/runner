@@ -28,9 +28,17 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
     c
 }
 
+/// `pipenv run <script> [args...]` — run a `[project.scripts]` console
+/// entry point inside the project's virtualenv.
+pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("pipenv");
+    c.arg("run").arg(script).args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
-    use super::install_cmd;
+    use super::{install_cmd, run_cmd};
 
     #[test]
     fn install_unfrozen_uses_install_subcommand() {
@@ -48,5 +56,14 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args, ["sync"]);
+    }
+
+    #[test]
+    fn run_cmd_forwards_script_and_args() {
+        let args: Vec<_> = run_cmd("serve", &["--port".into(), "8000".into()])
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["run", "serve", "--port", "8000"]);
     }
 }
