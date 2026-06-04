@@ -190,6 +190,7 @@ fn render_tasks_grouped_rich(
         TaskSource::GoPackage,
         TaskSource::BaconToml,
         TaskSource::MiseToml,
+        TaskSource::PyprojectScripts,
     ];
     for source in sources {
         let source_tasks = tasks_for_source(tasks, source);
@@ -370,6 +371,7 @@ fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> St
         TaskSource::GoPackage,
         TaskSource::BaconToml,
         TaskSource::MiseToml,
+        TaskSource::PyprojectScripts,
     ];
     for source in sources {
         let source_tasks = tasks_for_source(tasks, source);
@@ -472,6 +474,9 @@ fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
             tool::files::find_first(root, tool::bacon::FILENAMES).filter(|path| path.is_file())
         }
         TaskSource::MiseToml => tool::mise::find_file(root),
+        TaskSource::PyprojectScripts => {
+            tool::files::find_first(root, &["pyproject.toml"]).filter(|path| path.is_file())
+        }
     }?;
 
     Some(path.canonicalize().unwrap_or(path))

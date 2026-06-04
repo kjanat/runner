@@ -125,6 +125,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
         TaskSource::Taskfile => tool::files::find_first_upwards(root, tool::go_task::FILENAMES),
         TaskSource::BaconToml => tool::files::find_first_upwards(root, tool::bacon::FILENAMES),
         TaskSource::MiseToml => tool::files::find_first_upwards(root, tool::mise::FILENAMES),
+        TaskSource::PyprojectScripts => tool::files::find_first_upwards(root, &["pyproject.toml"]),
     };
     path.and_then(|path| path.parent().map(Path::to_path_buf))
 }

@@ -28,5 +28,6 @@ pub(crate) const fn source_label(source: TaskSource) -> &'static str {
         TaskSource::GoPackage => "go",
         TaskSource::BaconToml => "bacon.toml",
         TaskSource::MiseToml => "mise.toml",
+        TaskSource::PyprojectScripts => "pyproject.toml",
     }
 }

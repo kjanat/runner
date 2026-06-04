@@ -22,7 +22,7 @@ use super::qualify::{
 use super::select::select_task_entry;
 use crate::resolver::{ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
-use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
 /// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
@@ -282,7 +282,45 @@ fn build_run_command(
         }
         TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args),
         TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args),
+        TaskSource::PyprojectScripts => {
+            let Some(pm) = resolve_python_pm(ctx, overrides) else {
+                bail!(
+                    "no Python package manager detected to run {:?}; install uv, poetry, or pipenv",
+                    entry.name,
+                );
+            };
+            match pm {
+                PackageManager::Uv => tool::uv::run_cmd(&entry.name, args),
+                PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args),
+                PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args),
+                other => bail!("{} cannot run pyproject scripts", other.label()),
+            }
+        }
     })
+}
+
+/// Pick the Python package manager that dispatches a `[project.scripts]`
+/// entry: an explicit Python-ecosystem `--pm` / `RUNNER_PM` override
+/// first, then a `[pm].python` `runner.toml` override, then the PM
+/// detected for the project. A non-Python `--pm` (e.g. `--pm pnpm` in a
+/// mixed repo) is ignored here rather than forced, falling through to the
+/// detected Python PM.
+fn resolve_python_pm(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+) -> Option<PackageManager> {
+    if let Some(o) = overrides.pm.as_ref()
+        && o.pm.ecosystem() == Ecosystem::Python
+    {
+        return Some(o.pm);
+    }
+    if let Some(o) = overrides.pm_by_ecosystem.get(&Ecosystem::Python) {
+        return Some(o.pm);
+    }
+    ctx.package_managers
+        .iter()
+        .copied()
+        .find(|pm| pm.ecosystem() == Ecosystem::Python)
 }
 
 #[cfg(test)]
@@ -348,6 +386,53 @@ mod tests {
             command_args(&command),
             ["run", "./cmd/serve", "--port", "3000"]
         );
+    }
+
+    #[test]
+    fn resolve_dispatch_pyproject_script_uses_uv_run() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Uv);
+        ctx.tasks.push(Task {
+            name: "greenpy".to_string(),
+            source: TaskSource::PyprojectScripts,
+            run_target: None,
+            description: Some("greenpy.main:main".to_string()),
+            alias_of: None,
+            passthrough_to: None,
+        });
+        let args = [String::from("--flag")];
+
+        let command = resolve_dispatch(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "greenpy",
+            &args,
+            None,
+        )
+        .expect("pyproject script should dispatch");
+
+        assert_eq!(command.get_program().to_string_lossy(), "uv");
+        assert_eq!(command_args(&command), ["run", "greenpy", "--flag"]);
+    }
+
+    #[test]
+    fn resolve_dispatch_pyproject_script_uses_poetry_run_when_detected() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Poetry);
+        ctx.tasks.push(Task {
+            name: "greenpy".to_string(),
+            source: TaskSource::PyprojectScripts,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+        });
+
+        let command = resolve_dispatch(&ctx, &ResolutionOverrides::default(), "greenpy", &[], None)
+            .expect("pyproject script should dispatch");
+
+        assert_eq!(command.get_program().to_string_lossy(), "poetry");
+        assert_eq!(command_args(&command), ["run", "greenpy"]);
     }
 
     #[test]

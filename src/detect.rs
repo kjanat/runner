@@ -8,7 +8,8 @@ use serde::Deserialize;
 
 use crate::tool;
 use crate::types::{
-    DetectionWarning, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+    DetectionWarning, Ecosystem, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner,
+    TaskSource,
 };
 
 /// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
@@ -318,6 +319,13 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     let want_go_packages = ctx.package_managers.contains(&PackageManager::Go);
     let want_bacon = ctx.task_runners.contains(&TaskRunner::Bacon);
     let want_mise = ctx.task_runners.contains(&TaskRunner::Mise);
+    // `[project.scripts]` is shared PEP 621 metadata; surface it whenever
+    // any Python package manager (uv, poetry, pipenv) governs the project,
+    // since each dispatches the same entry points via its own `run`.
+    let want_pyproject_scripts = ctx
+        .package_managers
+        .iter()
+        .any(|pm| pm.ecosystem() == Ecosystem::Python);
 
     thread::scope(|s| {
         let pkg_json_h = want_pkg_json.then(|| {
@@ -338,6 +346,8 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         let go_h = want_go_packages.then(|| s.spawn(move || tool::go_pm::extract_tasks(dir)));
         let bacon_h = want_bacon.then(|| s.spawn(move || tool::bacon::extract_tasks(dir)));
         let mise_h = want_mise.then(|| s.spawn(move || tool::mise::extract_tasks(dir)));
+        let pyproject_h = want_pyproject_scripts
+            .then(|| s.spawn(move || tool::python::extract_pyproject_scripts(dir)));
 
         if let Some(h) = pkg_json_h {
             push_package_json_tasks(ctx, h.join().expect("extractor thread panicked"));
@@ -388,6 +398,13 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
         }
         if let Some(h) = mise_h {
             push_mise_tasks(ctx, h.join().expect("extractor thread panicked"));
+        }
+        if let Some(h) = pyproject_h {
+            push_described_tasks(
+                ctx,
+                TaskSource::PyprojectScripts,
+                h.join().expect("extractor thread panicked"),
+            );
         }
     });
 }
@@ -725,6 +742,60 @@ mod tests {
             task.source == crate::types::TaskSource::GoPackage
                 && task.name == "app"
                 && task.run_target.as_deref() == Some(".")
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_for_uv_projects() {
+        // Headline regression (issue): a uv project's `[project.scripts]`
+        // console entry points were detected as a package manager but
+        // never surfaced as runnable tasks.
+        let dir = TempDir::new("detect-pyproject-scripts-uv");
+        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\nbodysuit = \"greenpy.bodysuit:main\"\ngreenpy = \"greenpy.main:main\"\nnavel-stamper = \"greenpy.navel_stamper:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(
+            ctx.package_managers
+                .contains(&crate::types::PackageManager::Uv)
+        );
+        let names: Vec<&str> = ctx
+            .tasks
+            .iter()
+            .filter(|t| t.source == crate::types::TaskSource::PyprojectScripts)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(names, ["bodysuit", "greenpy", "navel-stamper"]);
+        // The entry-point target rides along as the task description.
+        assert!(ctx.tasks.iter().any(|t| {
+            t.source == crate::types::TaskSource::PyprojectScripts
+                && t.name == "greenpy"
+                && t.description.as_deref() == Some("greenpy.main:main")
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_for_poetry_projects() {
+        let dir = TempDir::new("detect-pyproject-scripts-poetry");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[project.scripts]\ncli = \"demo.cli:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path());
+
+        assert!(
+            ctx.package_managers
+                .contains(&crate::types::PackageManager::Poetry)
+        );
+        assert!(ctx.tasks.iter().any(|t| {
+            t.source == crate::types::TaskSource::PyprojectScripts && t.name == "cli"
         }));
     }
 
