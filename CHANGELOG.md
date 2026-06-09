@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Fixed
+
+- `runner completions` now detects PowerShell when `$SHELL` is unset or
+  unrecognized by falling back to the presence of `$PSModulePath`, which
+  pwsh exports on every platform (it never sets `$SHELL`). A recognized
+  `$SHELL` still takes precedence, so a pwsh session launched from bash
+  keeps completing for the login shell. Previously bare
+  `runner completions` always errored under pwsh.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
