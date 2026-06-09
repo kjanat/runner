@@ -12,8 +12,9 @@ use crate::complete::SHELLS;
 /// Write dynamic completion registration scripts for both the `runner` and
 /// `run` binaries.
 ///
-/// Resolves the target shell from the explicit argument or `$SHELL`, looks
-/// up the matching completer from our [`SHELLS`] table, and calls
+/// Resolves the target shell from the explicit argument, `$SHELL`, or the
+/// presence of `$PSModulePath` (PowerShell sets it but never `$SHELL`),
+/// looks up the matching completer from our [`SHELLS`] table, and calls
 /// [`clap_complete::env::EnvCompleter::write_registration`] directly — once
 /// per binary — so users only need a single
 /// `eval "$(runner completions zsh)"` in their rc file to get completion
@@ -108,9 +109,27 @@ const fn run_binary_filename() -> &'static str {
     if cfg!(windows) { "run.exe" } else { "run" }
 }
 
-/// Detect the current shell from `$SHELL`.
+/// Detect the current shell from the process environment.
 fn detect_shell() -> Option<Shell> {
-    shell_from_path(Path::new(&std::env::var_os("SHELL")?))
+    shell_from_env(
+        std::env::var_os("SHELL").as_deref(),
+        std::env::var_os("PSModulePath").is_some(),
+    )
+}
+
+/// Resolve a shell from `$SHELL`, falling back to PowerShell when
+/// `$PSModulePath` is present.
+///
+/// PowerShell never sets `$SHELL` on any platform, but it always exports
+/// `PSModulePath` for module discovery, so its presence is the reliable
+/// pwsh signal when `$SHELL` is missing or names a shell we don't know.
+/// `$SHELL` still wins when it resolves: a pwsh session launched from bash
+/// inherits `SHELL=/bin/bash`, and second-guessing the user's login shell
+/// there would be worse than honoring it.
+fn shell_from_env(shell_var: Option<&std::ffi::OsStr>, has_psmodulepath: bool) -> Option<Shell> {
+    shell_var
+        .and_then(|raw| shell_from_path(Path::new(raw)))
+        .or_else(|| has_psmodulepath.then_some(Shell::PowerShell))
 }
 
 /// Map a shell binary path to a [`Shell`] variant.
@@ -157,7 +176,9 @@ mod tests {
 
     use clap_complete::aot::Shell;
 
-    use super::{completions, parse_shell_arg, run_binary_filename, shell_from_path};
+    use super::{
+        completions, parse_shell_arg, run_binary_filename, shell_from_env, shell_from_path,
+    };
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -261,6 +282,35 @@ mod tests {
     #[test]
     fn shell_from_path_returns_none_for_unknown() {
         assert_eq!(shell_from_path(Path::new("/usr/bin/ksh")), None);
+    }
+
+    #[test]
+    fn shell_from_env_prefers_recognized_shell_var() {
+        // A pwsh session launched from bash inherits SHELL=/bin/bash; the
+        // login shell the user opted into still wins over the fallback.
+        assert_eq!(
+            shell_from_env(Some("/bin/bash".as_ref()), true),
+            Some(Shell::Bash)
+        );
+    }
+
+    #[test]
+    fn shell_from_env_falls_back_to_psmodulepath_when_shell_unset() {
+        assert_eq!(shell_from_env(None, true), Some(Shell::PowerShell));
+    }
+
+    #[test]
+    fn shell_from_env_falls_back_to_psmodulepath_when_shell_unrecognized() {
+        assert_eq!(
+            shell_from_env(Some("/usr/bin/ksh".as_ref()), true),
+            Some(Shell::PowerShell)
+        );
+    }
+
+    #[test]
+    fn shell_from_env_returns_none_without_any_signal() {
+        assert_eq!(shell_from_env(None, false), None);
+        assert_eq!(shell_from_env(Some("/usr/bin/ksh".as_ref()), false), None);
     }
 
     #[test]

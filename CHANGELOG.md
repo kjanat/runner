@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.12.2] - 2026-06-10
+
+### Fixed
+
+- `runner completions` now detects PowerShell when `$SHELL` is unset or
+  unrecognized by falling back to the presence of `$PSModulePath`, which
+  pwsh exports on every platform (it never sets `$SHELL`). A recognized
+  `$SHELL` still takes precedence, so a pwsh session launched from bash
+  keeps completing for the login shell. Previously bare
+  `runner completions` always errored under pwsh.
+
 ## [0.12.1] - 2026-06-04
 
 ### Added
@@ -1052,7 +1063,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/kjanat/runner/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/kjanat/runner/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/kjanat/runner/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/kjanat/runner/compare/v0.10.0...v0.11.0
