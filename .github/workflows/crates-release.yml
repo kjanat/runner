@@ -1,15 +1,17 @@
 name: crates-release
-run-name: ${{ format('crates publish {0}', case(github.event_name == 'workflow_dispatch', inputs.tag, github.ref_name)) }}
+run-name: ${{ format('crates publish {0}', inputs.tag) }}
 
 on:
-  push: { tags: [v*] }
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
   workflow_dispatch:
     inputs:
       tag: { description: Release tag to publish (e.g. vX.Y.Z), required: true, type: string }
       dry-run: { description: Dry run only (no upload to crates.io), required: false, default: false, type: boolean }
 
 env:
-  RELEASE_TAG: ${{ case(github.event_name == 'workflow_dispatch', inputs.tag, github.ref_name) }}
+  RELEASE_TAG: ${{ inputs.tag }}
   INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
   CARGO_TERM_COLOR: always
 
