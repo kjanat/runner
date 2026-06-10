@@ -977,7 +977,7 @@ pub(crate) enum Command {
     },
 
     /// Render roff man pages (build: --features man)
-    #[cfg(all(feature = "man", not(windows)))]
+    #[cfg(feature = "man")]
     #[command(hide = true)]
     Man {
         /// Write every page into this dir instead of the `runner` page to stdout.

@@ -710,7 +710,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
         }
-        #[cfg(all(feature = "man", not(windows)))]
+        #[cfg(feature = "man")]
         Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
         #[cfg(feature = "schema")]
         Some(cli::Command::Schema { output }) => dispatch_schema(output.as_deref()),
@@ -727,7 +727,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     }
 }
 
-#[cfg(all(feature = "man", not(windows)))]
+#[cfg(feature = "man")]
 fn dispatch_man(output: Option<&Path>) -> Result<i32> {
     match output {
         Some(dir) => cmd::write_man_pages(dir)?,
