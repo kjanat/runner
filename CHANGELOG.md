@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Fixed
+
+- The no-argument project-info banner no longer leaks the Windows `.exe`
+  suffix in its title line (e.g. `run.exe 0.12.2`). It now shows the same
+  `run` / `runner` identity as `--version`, `--help`, and the `Usage:`
+  line. The banner had its own copy of the arg0-parsing helper that
+  skipped the `.exe` stripping done everywhere else; it now reuses the
+  canonical `bin_name_from_arg0`.
+
 ## [0.12.2] - 2026-06-10
 
 ### Fixed

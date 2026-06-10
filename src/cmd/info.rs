@@ -3,7 +3,6 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
-use std::path::Path;
 
 use anyhow::Result;
 use colored::Colorize;
@@ -117,13 +116,11 @@ fn release_url() -> String {
 }
 
 fn bin_name_from_arg0(arg0: Option<OsString>) -> String {
-    arg0.and_then(|raw| {
-        Path::new(&raw)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-    })
-    .filter(|name| !name.is_empty())
-    .unwrap_or_else(|| "runner".to_string())
+    // Delegate to the canonical helper so the banner presents the same
+    // `run` / `runner` identity as `--version` and `--help` — notably it
+    // strips the Windows `.exe` suffix that `argv[0]` carries.
+    arg0.and_then(|raw| crate::bin_name_from_arg0(&raw))
+        .unwrap_or_else(|| "runner".to_string())
 }
 
 fn osc8_link(label: &str, url: &str) -> String {
@@ -139,6 +136,24 @@ mod tests {
     #[test]
     fn bin_name_from_arg0_uses_path_file_name() {
         assert_eq!(bin_name_from_arg0(Some(OsString::from("/tmp/run"))), "run");
+    }
+
+    #[test]
+    fn bin_name_from_arg0_strips_windows_exe_suffix() {
+        // The banner must match `--version` / `--help`, which never leak the
+        // platform-specific `.exe` extension carried by `argv[0]`. Bare file
+        // names are used because `Path::file_name` won't split on `\` when the
+        // tests run on Unix.
+        assert_eq!(bin_name_from_arg0(Some(OsString::from("run.exe"))), "run");
+        assert_eq!(
+            bin_name_from_arg0(Some(OsString::from("runner.EXE"))),
+            "runner"
+        );
+    }
+
+    #[test]
+    fn bin_name_from_arg0_falls_back_when_absent() {
+        assert_eq!(bin_name_from_arg0(None), "runner");
     }
 
     #[test]
