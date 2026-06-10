@@ -10,22 +10,30 @@
 		"directory": "site"
 	},
 	"scripts": {
-		"bd": "bun --silent run build",
+		"bd": "run build",
 		"build": "bun build.ts",
 		"check": "biome check",
-		"deploy": "bun run build && wrangler deploy",
+		"deploy": "run -s build wrangler:deploy",
 		"dev": "bun run dev.ts",
 		"fmt": "bunx dprint fmt",
 		"lint": "biome lint",
-		"prestart": "bun run build",
-		"start": "wrangler preview",
-		"tail": "wrangler tail",
-		"typecheck": "tsc --noEmit"
+		"prestart": "run build",
+		"start": "run wrangler:preview",
+		"tail": "run wrangler:tail",
+		"typecheck": "tsc --noEmit",
+		"wrangler:deploy": "wrangler deploy",
+		"wrangler:preview": "wrangler preview",
+		"wrangler:tail": "wrangler tail"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.4.14",
-		"@types/bun": "^1.3.13",
-		"typescript": "^6.0.3",
-		"wrangler": "^4.87.0"
+		"@biomejs/biome": "catalog:",
+		"@types/bun": "catalog:",
+		"runner-run": "catalog:",
+		"typescript": "catalog:",
+		"wrangler": "catalog:"
+	},
+	"packageManager": "bun@1.3.14",
+	"volta": {
+		"extends": "../package.json"
 	}
 }

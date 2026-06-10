@@ -6,13 +6,26 @@
 		"site",
 		"npm/facade"
 	],
-	"scripts": { "fmt": "bunx dprint fmt" },
-	"devDependencies": {
-		"@types/node": ">=22.18.0",
-		"typescript": "^5"
+	"scripts": {
+		"fmt": "bunx dprint fmt",
+		"typecheck": "tsc --noEmit"
 	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"runner-run": "catalog:",
+		"typescript": "catalog:"
+	},
+	"packageManager": "bun@1.3.14",
 	"volta": {
 		"node": "24.14.1",
 		"npm": "11.6.2"
+	},
+	"catalog": {
+		"@biomejs/biome": "^2",
+		"@types/bun": "^1.3",
+		"@types/node": ">=22.18.0",
+		"runner-run": "npm:runner-run@^0",
+		"typescript": "^6",
+		"wrangler": "^4"
 	}
 }

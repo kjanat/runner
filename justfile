@@ -16,9 +16,6 @@ schema := "schemas" / "runner.toml.schema.json"
 default bin=env("BIN", "runner") profile="dev" *args:
     env PROFILE={{ profile }} just {{ bin }} {{ args }}
 
-install:
-    cargo i
-
 [group('bins')]
 run *args:
     cargo bin-run --profile={{ env("PROFILE", "dev") }} -- {{ args }}
