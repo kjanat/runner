@@ -161,10 +161,14 @@ yay -S runner-run
 ```
 
 ```sh
+# One-liner (latest):
+curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh
+
+# Or download then run, optionally pinning a version:
 curl -fsSLO https://raw.githubusercontent.com/kjanat/runner/master/install.sh
-bash install.sh
-bash install.sh 0.12.2
-bash install.sh v0.12.2
+sh install.sh
+sh install.sh 0.12.2
+sh install.sh v0.12.2
 ```
 
 ---
