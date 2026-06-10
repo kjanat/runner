@@ -12,7 +12,7 @@ man_arg=()
 
 # build-packages.ts is tier-aware: tier-3 (experimental) targets are
 # silently skipped when missing; tier-1/2 missing fails the job. This
-# script is only invoked from release.yml's build-npm-dist (tag-push
+# script is only invoked from release.yml's build-dist (tag-push
 # context), so a missing tier-1/2 tarball is always a real failure —
 # no --skip-missing relaxation. The flag still exists in the script
 # for local dev partial builds.

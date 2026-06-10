@@ -73,8 +73,8 @@ RUN set -eux; \
         echo "resolveBinary(${name}) -> ${P}"; \
         case "${P}" in \
             *musl*) echo "PASS: ${name} resolved to a musl sub-package" ;; \
-            *gnu*)  echo "FAIL: ${name} resolved to a GLIBC (-gnu) build on musl — shim picked wrong"; exit 1 ;; \
-            *)      echo "WARN: ${name} path has no libc marker: ${P}" ;; \
+            *gnu*) echo "FAIL: ${name} resolved to a GLIBC (-gnu) build on musl — shim picked wrong"; exit 1 ;; \
+            *) echo "WARN: ${name} path has no libc marker: ${P}" ;; \
         esac; \
     done
 
@@ -96,7 +96,7 @@ RUN set -eux; \
 RUN set -eux; \
     echo "================ EXECUTION ================"; \
     echo "--- runner --version ---"; runner --version; \
-    echo "--- run --version ---";    run --version; \
+    echo "--- run --version ---"; run --version; \
     echo "--- runner --help (head) ---"; runner --help 2>&1 | head -5; \
     echo "================================================"; \
     echo "ALL CHECKS PASSED — npm/musl path is sound for VER=${VER}"

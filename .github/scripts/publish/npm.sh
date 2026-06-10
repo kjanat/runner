@@ -13,7 +13,7 @@ REGISTRY="${REGISTRY:?REGISTRY required}"
 # Optional: set by GHA, absent for local runs.
 GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 
-# The artifact is built by release.yml's `build-npm-dist` job (tag-push
+# The artifact is built by release.yml's `build-dist` job (tag-push
 # context) and downloaded here via cross-workflow `download-artifact`.
 # We still treat it as untrusted: defense-in-depth against a tampered
 # artifact at the cross-workflow handoff or a malicious tag committer.
@@ -191,7 +191,7 @@ publish_allowed() {
 }
 
 # Tier-1/2 are always required: the artifact is built by release.yml's
-# build-npm-dist (where missing tier-1/2 tarballs already fail loud),
+# build-dist (where missing tier-1/2 tarballs already fail loud),
 # so a missing dir here means the artifact was tampered with or the
 # build silently dropped a target — either case warrants a hard fail.
 # Sub-packages first so the façade's optionalDependencies resolve on install.

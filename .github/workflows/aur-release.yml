@@ -1,22 +1,15 @@
 name: aur-release
-run-name: >-
-  ${{ format('aur publish {0}', case(github.event_name == 'release',
-                                     github.event.release.tag_name,
-                                     inputs.tag)) }}
+run-name: ${{ format('aur publish {0}', case(github.event_name == 'release', github.event.release.tag_name, inputs.tag)) }}
 
 on:
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
   release: { types: [published] }
   workflow_dispatch:
     inputs:
-      tag:
-        description: Release tag to publish (e.g. v0.12.1)
-        required: true
-        type: string
-      dry-run:
-        description: Prepare + validate PKGBUILDs but do not push to AUR
-        required: true
-        default: false
-        type: boolean
+      tag: { description: Release tag to publish (e.g. v0.12.1), required: true, type: string }
+      dry-run: { description: Prepare + validate PKGBUILDs but do not push to AUR, required: true, default: false, type: boolean }
 
 jobs:
   publish:
@@ -36,11 +29,12 @@ jobs:
         with: { persist-credentials: false }
 
       - name: prepare PKGBUILD
+        env: { PKG: "${{ matrix.pkgname }}" }
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
           bash "${GITHUB_WORKSPACE}/.github/scripts/publish/aur-prepare.sh" \
-            "${{ matrix.pkgname }}" "${version}"
+            "${PKG}" "${version}"
 
       - name: publish to AUR
         if: env.DRY_RUN != 'true'

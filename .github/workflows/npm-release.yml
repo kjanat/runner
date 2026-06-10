@@ -5,6 +5,10 @@ run-name: >-
             inputs.tag)) }}
 
 on:
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
+      run-id: { required: true, type: string }
   release: { types: [published] }
   workflow_dispatch:
     inputs:
@@ -48,7 +52,7 @@ jobs:
     name: publish to npm
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      startsWith(inputs.tag, 'v') ||
       (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v'))
     permissions:
       contents: read
@@ -72,8 +76,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: ${{ env.REGISTRY }}
 
-      # release.yml's run is already success-marked by the time
-      # release:published fires (publish-release is the last job).
       - name: resolve build run-id
         id: resolve
         env:
@@ -81,7 +83,7 @@ jobs:
           INPUT_RUN_ID: ${{ inputs.run-id }}
         run: |
           set -euo pipefail
-          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+          if [[ -n "${INPUT_RUN_ID}" ]]; then
             run_id="${INPUT_RUN_ID}"
           else
             run_id=$(gh run list \

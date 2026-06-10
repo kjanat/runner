@@ -178,8 +178,8 @@ jobs:
           BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
 
-  build-npm-dist:
-    name: build npm dist
+  build-dist:
+    name: build dist
     needs: [upload-assets, man]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -208,32 +208,42 @@ jobs:
       - name: build npm packages
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/build-npm-packages.sh"
 
+      - name: add bin dir to path
+        run: echo "${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin" >> "${GITHUB_PATH}"
+
+      # Only target executable on ubuntu-latest; others exercised at install.
       - name: smoke-test packaged linux-x64-gnu binary
-        # Only target executable on ubuntu-latest; others exercised at install.
-        run: |
-          set -euo pipefail
-          bin="${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin/runner"
-          if [[ ! -x "${bin}" ]]; then
-            echo "error: ${bin} missing or not executable" >&2
-            exit 1
-          fi
-          "${bin}" --version
+        shell: pwsh
+        run: "& (gcm runner -CommandType Application).Path --version"
 
       - name: upload npm/dist artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: npm-dist
-          path: npm/dist/
-          retention-days: 14
-          if-no-files-found: error
+        with: { name: npm-dist, path: npm/dist/, retention-days: 14, if-no-files-found: error }
 
-  # Flip draft→published once binaries + npm-dist are in place. Drives
-  # npm-release.yml via release:published. Idempotent.
+  # Flip draft→published once binaries + npm-dist are in place.
   publish-release:
     name: publish github release
-    needs: [build-npm-dist]
+    needs: [build-dist]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions: { contents: write }
     env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
     steps: [{ run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false' }]
+
+  call-npm-release:
+    name: npm publish
+    needs: [publish-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions: { contents: read, id-token: write, actions: read }
+    uses: ./.github/workflows/npm-release.yml
+    with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
+    secrets: inherit
+
+  call-aur-release:
+    name: aur publish
+    needs: [publish-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions: { contents: read }
+    uses: ./.github/workflows/aur-release.yml
+    with: { tag: "${{ github.ref_name }}" }
+    secrets: inherit
