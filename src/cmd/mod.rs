@@ -131,7 +131,7 @@ pub(crate) fn emit_collected_warnings(
 mod tests {
     use std::process::Command;
 
-    use super::{configure_command, exit_code};
+    use super::configure_command;
 
     #[test]
     fn configure_command_sets_current_dir() {
@@ -169,6 +169,8 @@ mod tests {
     #[test]
     fn exit_code_preserves_signal_status() {
         use std::os::unix::process::ExitStatusExt as _;
+
+        use super::exit_code;
 
         assert_eq!(exit_code(std::process::ExitStatus::from_raw(5 << 8)), 5);
         assert_eq!(exit_code(std::process::ExitStatus::from_raw(2)), 130);
