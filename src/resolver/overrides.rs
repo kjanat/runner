@@ -287,6 +287,40 @@ fn sanitize_raw_label(raw: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lenient_policy_env_garbage_does_not_leak_full_raw_value() {
+        let token_prefix = "ghp_";
+        let fake_token = format!(
+            "{token_prefix}{}DO_NOT_LEAK_ME",
+            "A".repeat(MAX_RAW_DISPLAY.saturating_sub(token_prefix.len()))
+        );
+        let huge = fake_token.repeat(6);
+        let (_overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            fallback: SourceValue {
+                cli: None,
+                env: Some(&huge),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("lenient pass must absorb fallback env garbage");
+
+        assert_eq!(warnings.len(), 1);
+        let detail = warnings[0].detail();
+        assert!(
+            detail.contains('…'),
+            "long invalid env value should be truncated in warning detail"
+        );
+        assert!(
+            !detail.contains("DO_NOT_LEAK_ME"),
+            "secret-looking env tail must not leak in warning detail"
+        );
+    }
+}
+
 /// The CLI-flag half of an override assembly, bundled so
 /// [`EnvSnapshot::sources`] pairs one CLI side with one env snapshot
 /// instead of threading seven loose parameters.
