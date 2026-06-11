@@ -18,6 +18,25 @@ fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
 
+/// Command for the runner binary with every inherited `RUNNER_*`
+/// variable scrubbed, so only what a test sets explicitly reaches the
+/// child. A dev box exporting e.g. `RUNNER_NO_WARNINGS` or
+/// `RUNNER_FALLBACK` would otherwise flip these assertions. Matched
+/// case-insensitively — Windows env lookups ignore case.
+fn runner_command() -> Command {
+    let mut cmd = Command::new(runner_binary());
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("RUNNER_")
+        {
+            cmd.env_remove(&key);
+        }
+    }
+    cmd
+}
+
 /// Minimal self-cleaning temp project: a directory holding only a
 /// `Cargo.toml`, so detection finds exactly one PM (cargo) and the
 /// doctor report is deterministic.
@@ -61,10 +80,9 @@ const CAPTURED_BANNER: &str = "Deno 2.8.2 exit using ctrl+d\n\u{1b}[33mREPL is r
 #[test]
 fn doctor_survives_env_pm_garbage_and_reports_it() {
     let project = TempProject::new("doctor-lenient");
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .args(["--dir", project.path().to_str().unwrap(), "doctor"])
         .env("RUNNER_PM", CAPTURED_BANNER)
-        .env_remove("RUNNER_RUNNER")
         .output()
         .expect("runner binary spawns");
 
@@ -91,10 +109,9 @@ fn doctor_survives_env_pm_garbage_and_reports_it() {
 #[test]
 fn other_commands_stay_strict_on_env_pm_garbage() {
     let project = TempProject::new("list-strict");
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .args(["--dir", project.path().to_str().unwrap(), "list"])
         .env("RUNNER_PM", CAPTURED_BANNER)
-        .env_remove("RUNNER_RUNNER")
         .output()
         .expect("runner binary spawns");
 
@@ -112,7 +129,7 @@ fn other_commands_stay_strict_on_env_pm_garbage() {
 #[test]
 fn doctor_with_cli_pm_garbage_still_errors() {
     let project = TempProject::new("doctor-cli-strict");
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .args([
             "--dir",
             project.path().to_str().unwrap(),
@@ -120,8 +137,6 @@ fn doctor_with_cli_pm_garbage_still_errors() {
             "zoot",
             "doctor",
         ])
-        .env_remove("RUNNER_PM")
-        .env_remove("RUNNER_RUNNER")
         .output()
         .expect("runner binary spawns");
 

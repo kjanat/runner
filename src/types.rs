@@ -700,15 +700,17 @@ pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
 /// whether `current` starts with the cleaned `expected` value at a
 /// segment boundary. A bare major version like `"20"` matches `"20.x.y"`.
 fn prefix_version_matches(expected: &str, current: &str) -> bool {
-    let expected_clean = expected
+    let after_ops = expected
+        .trim()
         .trim_start_matches(">=")
         .trim_start_matches("<=")
         .trim_start_matches('>')
         .trim_start_matches('<')
+        .trim_start_matches('=')
         .trim_start_matches('~')
         .trim_start_matches('^')
-        .trim_start_matches('v')
-        .trim();
+        .trim_start();
+    let expected_clean = strip_v(after_ops).trim();
 
     current.starts_with(expected_clean)
         && current[expected_clean.len()..]
@@ -952,6 +954,16 @@ mod tests {
     #[test]
     fn unparseable_current_falls_back_to_prefix() {
         assert!(!version_matches(">=18", "not-a-version"));
+    }
+
+    #[test]
+    fn prefix_fallback_strips_equals_and_spaced_v() {
+        // An unparseable `current` forces the prefix fallback; the
+        // cleaned expected value must survive a bare `=` operator and
+        // whitespace between the operator and a `v`-prefixed version.
+        assert!(version_matches("=20.11", "20.11.beta"));
+        assert!(!version_matches("=20.11", "20.12.beta"));
+        assert!(version_matches(">= v18", "18.unknown"));
     }
 
     #[test]
