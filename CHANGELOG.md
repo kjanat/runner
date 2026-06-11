@@ -17,6 +17,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Node version constraints are now evaluated with real range semantics
+  (via the `semver` crate) instead of a prefix match that treated
+  `>=22.22.2` as `=22.22.2`. Operators (`>=`, `>`, `<=`, `<`, `=`),
+  caret/tilde ranges, space-separated AND comparators, `||` unions,
+  hyphen ranges, and `x` wildcards all match per node-semver rules, so
+  `engines.node: ">=22.22.2"` no longer warns on Node 22.22.3 or 25.9.0.
+  Bare versions (`.nvmrc` `20.11`) keep the stricter
+  prefix-at-segment-boundary behavior; unevaluable inputs (`lts/*`) fall
+  back to the previous prefix match.
 - The no-argument project-info banner no longer leaks the Windows `.exe`
   suffix in its title line (e.g. `run.exe 0.12.2`). It now shows the same
   `run` / `runner` identity as `--version`, `--help`, and the `Usage:`
