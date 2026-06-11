@@ -615,10 +615,62 @@ fn build_overrides(
     )
 }
 
+/// Lenient sibling of [`build_overrides`] used when strict parsing
+/// failed and the command is `doctor`: invalid env-sourced override
+/// values degrade to [`types::DetectionWarning`]s instead of killing
+/// the one command whose job is to report a broken environment.
+fn build_overrides_lenient(
+    cli: &cli::Cli,
+    loaded_config: Option<&config::LoadedConfig>,
+) -> Result<(resolver::ResolutionOverrides, Vec<types::DetectionWarning>)> {
+    let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
+        Some(cli::Command::Run { failure, .. } | cli::Command::Install { failure, .. }) => {
+            (failure.keep_going, failure.kill_on_fail)
+        }
+        _ => (false, false),
+    };
+    resolver::ResolutionOverrides::from_cli_and_env_lenient(
+        cli.global.pm_override.as_deref(),
+        cli.global.runner_override.as_deref(),
+        cli.global.fallback.as_deref(),
+        cli.global.on_mismatch.as_deref(),
+        resolver::DiagnosticFlags {
+            no_warnings: cli.global.no_warnings,
+            explain: cli.global.explain,
+        },
+        cli::ChainFailureFlags {
+            keep_going: cli_keep_going,
+            kill_on_fail: cli_kill_on_fail,
+        },
+        loaded_config,
+    )
+}
+
+/// Resolve overrides for [`dispatch`]. Strict for every command;
+/// `doctor` retries leniently on failure because it must survive the
+/// misconfigured environment it exists to diagnose — env garbage
+/// degrades to warnings appended to `ctx`, while CLI flag garbage
+/// re-raises from the lenient pass and stays fatal.
+fn dispatch_overrides(
+    cli: &cli::Cli,
+    loaded_config: Option<&config::LoadedConfig>,
+    ctx: &mut types::ProjectContext,
+) -> Result<resolver::ResolutionOverrides> {
+    match build_overrides(cli, loaded_config) {
+        Ok(overrides) => Ok(overrides),
+        Err(_) if matches!(cli.command, Some(cli::Command::Doctor { .. })) => {
+            let (overrides, env_warnings) = build_overrides_lenient(cli, loaded_config)?;
+            ctx.warnings.extend(env_warnings);
+            Ok(overrides)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
-    let ctx = detect::detect(dir);
+    let mut ctx = detect::detect(dir);
     let loaded_config = config::load(dir)?;
-    let overrides = build_overrides(&cli, loaded_config.as_ref())?;
+    let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
 
     match cli.command {
         // A project task named `info` always shadows the deprecated

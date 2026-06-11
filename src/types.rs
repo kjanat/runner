@@ -236,6 +236,20 @@ pub(crate) enum DetectionWarning {
         /// the user can spot their typo without re-reading the file.
         raw: String,
     },
+    /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
+    /// that doesn't parse, and the command chose to report it instead
+    /// of dying — `runner doctor` must be able to diagnose the broken
+    /// environment it exists to diagnose. Strict commands still treat
+    /// the same condition as a fatal error.
+    InvalidEnvOverride {
+        /// The variable that carried the value (`"RUNNER_PM"`).
+        var: &'static str,
+        /// The offending value, pre-sanitized for display (control
+        /// chars escaped, truncated).
+        raw: String,
+        /// Rendered parse error, already source-prefixed.
+        message: String,
+    },
 }
 
 impl DetectionWarning {
@@ -252,6 +266,7 @@ impl DetectionWarning {
             | Self::UnparseablePackageManager { .. } => "package.json",
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
+            Self::InvalidEnvOverride { .. } => "env",
         }
     }
 
@@ -317,6 +332,9 @@ impl DetectionWarning {
                  (expected one of npm|pnpm|yarn|bun|deno, optionally followed by @<version>); \
                  declaration ignored, falling back to lockfile / PATH probe",
             ),
+            Self::InvalidEnvOverride { var, message, .. } => {
+                format!("{var} is set but invalid and was ignored for this report: {message}")
+            }
         }
     }
 }

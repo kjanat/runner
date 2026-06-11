@@ -34,6 +34,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `runner doctor` no longer dies when a `RUNNER_*` override variable
+  holds an unparseable value — the condition it exists to diagnose. The
+  invalid value is ignored for the report and surfaced as an `env:`
+  warning (human output and the `warnings` array of `doctor --json`,
+  additively — no schema bump). Every other command, and an explicit bad
+  `--pm`/`--runner` flag even on doctor, still fails fast.
 - Node version constraints are now evaluated with real range semantics
   (via the `semver` crate) instead of a prefix match that treated
   `>=22.22.2` as `=22.22.2`. Operators (`>=`, `>`, `<=`, `<`, `=`),
