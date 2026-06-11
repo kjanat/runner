@@ -1,6 +1,7 @@
 //! Subcommand implementations: info, run, install, clean, list, completions.
 
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use colored::Colorize;
@@ -34,12 +35,116 @@ pub(crate) use run::run;
 pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 
+/// Shared setup for every spawned task: project-local `node_modules/.bin`
+/// dirs on the child `PATH`, working directory, inherited stdio.
 fn configure_command(command: &mut Command, dir: &Path) {
+    prepend_node_bin_path(command, dir);
     command
         .current_dir(dir)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+}
+
+/// Every existing `node_modules/.bin` from `dir` up to the filesystem
+/// root, nearest first — the same set (and order) `npm run` exposes to
+/// `package.json` scripts. Levels without an installed `.bin` are
+/// skipped, so non-Node projects collect nothing and the whole
+/// augmentation becomes a no-op.
+fn node_bin_dirs(dir: &Path) -> Vec<PathBuf> {
+    dir.ancestors()
+        .map(|ancestor| ancestor.join("node_modules").join(".bin"))
+        .filter(|bin| bin.is_dir())
+        .collect()
+}
+
+/// Prepend the project's `node_modules/.bin` dirs to the child's `PATH`.
+///
+/// `npm run` / `pnpm run` / `bun run` do this for `package.json` scripts,
+/// but tasks runner spawns *directly* — `turbo run <task>` for
+/// `turbo.json` entries, the bare-binary exec fallback — inherited the
+/// shell's `PATH` unchanged, so a devDependency-only binary died with
+/// ENOENT unless it also happened to be installed globally. The OS-level
+/// bare-name lookup honors a `PATH` set on the [`Command`] itself
+/// (documented on [`Command::new`]), so prepending here fixes both the
+/// spawn and anything the task launches in turn.
+///
+/// Entries already present in the parent `PATH` are not deduplicated:
+/// prepending unconditionally is what gives local bins priority over
+/// global installs, matching the Node PMs (nested `npm run` invocations
+/// stack duplicates the same way).
+fn prepend_node_bin_path(command: &mut Command, dir: &Path) {
+    let bins = node_bin_dirs(dir);
+    if bins.is_empty() {
+        return;
+    }
+    #[cfg(windows)]
+    resolve_program_in_bins(command, &bins);
+    if let Some(path) = prepended_path(&bins, std::env::var_os("PATH").as_deref()) {
+        command.env("PATH", path);
+    }
+}
+
+/// `bins` followed by the entries of `parent`, joined with the platform
+/// separator. `None` when joining fails (a bin dir embeds the separator
+/// itself) — the caller leaves `PATH` untouched rather than corrupt it.
+fn prepended_path(bins: &[PathBuf], parent: Option<&OsStr>) -> Option<OsString> {
+    let inherited = parent.map(std::env::split_paths).into_iter().flatten();
+    std::env::join_paths(bins.iter().cloned().chain(inherited)).ok()
+}
+
+/// Re-resolve a bare program name against the project's bin dirs.
+///
+/// [`crate::tool::program::command`] resolves bare names against the
+/// *parent* `PATH` × `PATHEXT` at build time — before this module gets a
+/// chance to prepend the bin dirs — and the child-`PATH` search the
+/// standard library performs at spawn time only appends `.exe`, so a
+/// `turbo.cmd`/`.ps1` shim that exists only under `node_modules/.bin`
+/// would still fail to spawn. When the (still-bare) name resolves inside
+/// `bins`, rebuild the command around the absolute shim path, preserving
+/// args and env tweaks (e.g. bacon's `COLUMNS`). Absolute/relative
+/// programs and parent-`PATH` hits are left alone — which also means a
+/// global install currently shadows a local one on Windows, the reverse
+/// of the Unix precedence; fixing that would require resolution order to
+/// live inside `tool::program` where the project root isn't known.
+#[cfg(windows)]
+fn resolve_program_in_bins(command: &mut Command, bins: &[PathBuf]) {
+    let program = command.get_program().to_os_string();
+    let Some(name) = program.to_str() else { return };
+    if Path::new(name).components().count() > 1 {
+        return;
+    }
+    let Ok(joined) = std::env::join_paths(bins.iter().cloned()) else {
+        return;
+    };
+    let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    let Some(resolved) = crate::tool::program::resolve_windows(name, &joined, &pathext) else {
+        return;
+    };
+
+    let args: Vec<OsString> = command.get_args().map(ToOwned::to_owned).collect();
+    let envs: Vec<(OsString, Option<OsString>)> = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+        .collect();
+    let cwd = command.get_current_dir().map(Path::to_path_buf);
+
+    let mut next = Command::new(resolved);
+    next.args(args);
+    for (key, value) in envs {
+        match value {
+            Some(value) => {
+                next.env(key, value);
+            }
+            None => {
+                next.env_remove(key);
+            }
+        }
+    }
+    if let Some(cwd) = cwd {
+        next.current_dir(cwd);
+    }
+    *command = next;
 }
 
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {
@@ -129,9 +234,13 @@ pub(crate) fn emit_collected_warnings(
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
     use std::process::Command;
 
-    use super::configure_command;
+    use super::{configure_command, node_bin_dirs, prepended_path};
+    use crate::tool::test_support::TempDir;
 
     #[test]
     fn configure_command_sets_current_dir() {
@@ -141,6 +250,128 @@ mod tests {
         configure_command(&mut command, dir.as_path());
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn node_bin_dirs_walks_ancestors_nearest_first() {
+        let dir = TempDir::new("node-bin-walk");
+        let member = dir.path().join("apps").join("web");
+        let member_bin = member.join("node_modules").join(".bin");
+        let root_bin = dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&member_bin).expect("member bin should be created");
+        fs::create_dir_all(&root_bin).expect("root bin should be created");
+
+        let bins = node_bin_dirs(&member);
+
+        // `apps/` has no node_modules — levels without an installed
+        // `.bin` are skipped, not invented. Entries past the temp root
+        // (a stray `/tmp/node_modules`) are out of our control, so only
+        // pin the leading order and that nothing else came from inside
+        // the fixture.
+        assert_eq!(&bins[..2], [member_bin, root_bin]);
+        assert!(bins.iter().skip(2).all(|bin| !bin.starts_with(dir.path())));
+    }
+
+    #[test]
+    fn node_bin_dirs_requires_bin_subdir() {
+        // A `node_modules` without `.bin` (no dependencies expose
+        // binaries) must not contribute a phantom PATH entry.
+        let dir = TempDir::new("node-bin-missing");
+        fs::create_dir_all(dir.path().join("node_modules")).expect("dir should be created");
+
+        let bins = node_bin_dirs(dir.path());
+
+        assert!(bins.iter().all(|bin| !bin.starts_with(dir.path())));
+    }
+
+    #[test]
+    fn prepended_path_orders_bins_before_parent() {
+        let bins = vec![
+            PathBuf::from("/repo/apps/web/node_modules/.bin"),
+            PathBuf::from("/repo/node_modules/.bin"),
+        ];
+        let parent = OsString::from("/usr/bin");
+
+        let joined = prepended_path(&bins, Some(parent.as_os_str()))
+            .expect("plain paths should always join");
+
+        let parts: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(
+            parts,
+            [
+                PathBuf::from("/repo/apps/web/node_modules/.bin"),
+                PathBuf::from("/repo/node_modules/.bin"),
+                PathBuf::from("/usr/bin"),
+            ],
+        );
+    }
+
+    #[test]
+    fn prepended_path_handles_missing_parent() {
+        let bins = vec![PathBuf::from("/repo/node_modules/.bin")];
+
+        let joined = prepended_path(&bins, None).expect("plain paths should always join");
+
+        let parts: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(parts, [PathBuf::from("/repo/node_modules/.bin")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_resolves_dev_dependency_binary_via_child_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // End-to-end pin for the mechanism the PATH fix relies on: the
+        // OS-level bare-name lookup must honor the PATH set on the
+        // child Command (std documents this on `Command::new`). A
+        // devDependency-style shim that exists only under the project's
+        // `node_modules/.bin` has to spawn — this is exactly the
+        // "turbo.json task dies with ENOENT because turbo is only a
+        // devDependency" report.
+        let dir = TempDir::new("child-path-spawn");
+        let bin = dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).expect("bin dir should be created");
+        let shim = bin.join("runner-test-shim");
+        fs::write(&shim, "#!/bin/sh\nexit 42\n").expect("shim should be written");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755))
+            .expect("shim should be marked executable");
+
+        let mut command = Command::new("runner-test-shim");
+        configure_command(&mut command, dir.path());
+
+        let status = command
+            .status()
+            .expect("shim should spawn via the child PATH");
+        assert_eq!(status.code(), Some(42));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configure_command_resolves_cmd_shim_from_bin_dir() {
+        use std::ffi::OsStr;
+
+        // `CreateProcessW` never consults PATHEXT and the std child-PATH
+        // search only appends `.exe`, so a bare name backed only by a
+        // `.cmd` shim in node_modules/.bin must be rebuilt around the
+        // absolute shim path — with args and env tweaks surviving.
+        let dir = TempDir::new("win-bin-shim");
+        let bin = dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).expect("bin dir should be created");
+        let shim = bin.join("runner-test-shim.cmd");
+        fs::write(&shim, "@echo off\r\n").expect("shim should be written");
+
+        let mut command = Command::new("runner-test-shim");
+        command.arg("run").env("RUNNER_TEST_MARKER", "1");
+        configure_command(&mut command, dir.path());
+
+        assert_eq!(PathBuf::from(command.get_program()), shim);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, [OsStr::new("run")]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "RUNNER_TEST_MARKER" && value == Some(OsStr::new("1"))),
+        );
     }
 
     #[test]

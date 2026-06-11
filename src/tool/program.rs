@@ -33,7 +33,7 @@ pub(crate) fn command(name: &str) -> Command {
 /// it on any host. Returns `None` when `name` already contains a path
 /// separator (`CreateProcessW` handles those directly) or no candidate matches.
 #[cfg(any(windows, test))]
-fn resolve_windows(
+pub(crate) fn resolve_windows(
     name: &str,
     path: &std::ffi::OsStr,
     pathext: &std::ffi::OsStr,
