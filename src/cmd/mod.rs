@@ -117,7 +117,8 @@ fn resolve_program_in_bins(command: &mut Command, bins: &[PathBuf]) {
     let Ok(joined) = std::env::join_paths(bins.iter().cloned()) else {
         return;
     };
-    let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    let pathext =
+        std::env::var_os("PATHEXT").unwrap_or_else(|| crate::tool::program::DEFAULT_PATHEXT.into());
     let Some(resolved) = crate::tool::program::resolve_windows(name, &joined, &pathext) else {
         return;
     };
