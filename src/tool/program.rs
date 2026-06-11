@@ -8,6 +8,15 @@
 
 use std::process::Command;
 
+/// Fallback when `PATHEXT` is unset: the stock Windows value (from
+/// `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`),
+/// so resolution matches what cmd.exe would do on a vanilla host. Shared
+/// with the bin-dir re-resolution in `cmd::configure_command` so the two
+/// fallbacks cannot drift.
+#[cfg(windows)]
+pub(crate) const DEFAULT_PATHEXT: &str =
+    ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL";
+
 /// Build a [`Command`] for `name`, resolving Windows shims via `PATHEXT`.
 ///
 /// On non-Windows targets this is a thin wrapper around [`Command::new`]. On
@@ -19,7 +28,7 @@ pub(crate) fn command(name: &str) -> Command {
     #[cfg(windows)]
     {
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+        let pathext = std::env::var_os("PATHEXT").unwrap_or_else(|| DEFAULT_PATHEXT.into());
         if let Some(resolved) = resolve_windows(name, &path, &pathext) {
             return Command::new(resolved);
         }
@@ -33,7 +42,7 @@ pub(crate) fn command(name: &str) -> Command {
 /// it on any host. Returns `None` when `name` already contains a path
 /// separator (`CreateProcessW` handles those directly) or no candidate matches.
 #[cfg(any(windows, test))]
-fn resolve_windows(
+pub(crate) fn resolve_windows(
     name: &str,
     path: &std::ffi::OsStr,
     pathext: &std::ffi::OsStr,

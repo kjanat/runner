@@ -17,6 +17,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Task dispatch now prepends every existing `node_modules/.bin` between
+  the project directory and the filesystem root (nearest first) to the
+  child's `PATH`, the way `npm run` / `pnpm run` / `bun run` do for
+  `package.json` scripts. Tools that runner spawns directly — `turbo`
+  for `turbo.json` tasks, and the bare-binary exec fallback — used to
+  inherit the shell's `PATH` unchanged, so a devDependency-only `turbo`
+  failed with `Error: No such file or directory (os error 2)` unless it
+  was also installed globally. On Windows, bare program names are
+  additionally re-resolved against those bin dirs with `PATHEXT`, since
+  `CreateProcessW` would never find the `.cmd` shims npm and pnpm
+  install there. Local bins now shadow global installs for the spawned
+  task and everything it launches, matching Node package-manager
+  semantics.
 - The no-argument project-info banner no longer leaks the Windows `.exe`
   suffix in its title line (e.g. `run.exe 0.12.2`). It now shows the same
   `run` / `runner` identity as `--version`, `--help`, and the `Usage:`
