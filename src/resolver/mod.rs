@@ -71,6 +71,7 @@ mod tests {
     };
     use super::{FallbackPolicy, OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
+    use crate::tool::test_support::TempDir;
     use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
     fn context(package_managers: Vec<PackageManager>) -> ProjectContext {
@@ -84,6 +85,22 @@ mod tests {
             is_monorepo: false,
             warnings: Vec::new(),
         }
+    }
+
+    /// Like [`context`], but rooted in a fresh temp dir instead of `"."`.
+    ///
+    /// Tests that exercise the manifest-blind steps — lockfile and the
+    /// fallback policies — must not anchor at the repo checkout: the
+    /// manifest walk (`detect_pm_from_manifest` / `find_manifest_upwards`)
+    /// starts at `ctx.root`, and runner's own `package.json` declares
+    /// `"packageManager": "bun@…"`, which outranks the synthetic context
+    /// and flips the step under test. The [`TempDir`] rides along so the
+    /// directory outlives the context.
+    fn isolated_context(package_managers: Vec<PackageManager>) -> (TempDir, ProjectContext) {
+        let dir = TempDir::new("resolver-isolated");
+        let mut ctx = context(package_managers);
+        ctx.root = dir.path().to_path_buf();
+        (dir, ctx)
     }
 
     fn resolver<'ctx>(
@@ -119,7 +136,7 @@ mod tests {
 
     #[test]
     fn resolves_detected_node_pm_via_lockfile() {
-        let ctx = context(vec![PackageManager::Pnpm]);
+        let (_dir, ctx) = isolated_context(vec![PackageManager::Pnpm]);
         let overrides = ResolutionOverrides::default();
         let decision = resolver(&ctx, &overrides)
             .resolve_node_pm()
@@ -131,7 +148,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_legacy_npm_when_fallback_policy_is_npm() {
-        let ctx = context(vec![]);
+        let (_dir, ctx) = isolated_context(vec![]);
         let overrides = ResolutionOverrides {
             fallback: FallbackPolicy::Npm,
             ..ResolutionOverrides::default()
@@ -146,7 +163,7 @@ mod tests {
 
     #[test]
     fn fallback_error_policy_returns_helpful_error_when_no_signal() {
-        let ctx = context(vec![]);
+        let (_dir, ctx) = isolated_context(vec![]);
         let overrides = ResolutionOverrides {
             fallback: FallbackPolicy::Error,
             ..ResolutionOverrides::default()
@@ -166,7 +183,7 @@ mod tests {
         // error must propagate through `cmd::run::run` instead of
         // collapsing into the soft fall-through, so it carries
         // `soft: false`.
-        let ctx = context(vec![]);
+        let (_dir, ctx) = isolated_context(vec![]);
         let overrides = ResolutionOverrides {
             fallback: FallbackPolicy::Error,
             ..ResolutionOverrides::default()
@@ -191,7 +208,6 @@ mod tests {
         // A TempDir with no `package.json` short-circuits the probe
         // entirely (issue #23 guard), making the assertion
         // deterministic regardless of what's on the host `$PATH`.
-        use crate::tool::test_support::TempDir;
 
         let dir = TempDir::new("resolver-soft-no-signals");
         let mut ctx = context(vec![]);
@@ -215,7 +231,6 @@ mod tests {
         // through to a Node PM via PATH. The soft `NoSignalsFound`
         // lets `cmd::run` direct-spawn the target instead of
         // routing through `bun`/`pnpm`/`yarn`/`npm`.
-        use crate::tool::test_support::TempDir;
 
         let dir = TempDir::new("resolver-no-pkgjson");
         // Detected ecosystem signals are non-Node — mirrors what
@@ -245,8 +260,6 @@ mod tests {
         // return firing despite Node evidence.
         use std::fs;
 
-        use crate::tool::test_support::TempDir;
-
         let dir = TempDir::new("resolver-greenfield-node");
         fs::write(dir.path().join("package.json"), "{}").expect("package.json should be written");
 
@@ -270,7 +283,7 @@ mod tests {
 
     #[test]
     fn prefers_node_pm_over_non_node_primary() {
-        let ctx = context(vec![PackageManager::Cargo, PackageManager::Bun]);
+        let (_dir, ctx) = isolated_context(vec![PackageManager::Cargo, PackageManager::Bun]);
         let overrides = ResolutionOverrides::default();
         let decision = resolver(&ctx, &overrides)
             .resolve_node_pm()
@@ -282,7 +295,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_primary_pm_when_no_node_pm_detected() {
-        let ctx = context(vec![PackageManager::Deno]);
+        let (_dir, ctx) = isolated_context(vec![PackageManager::Deno]);
         let overrides = ResolutionOverrides::default();
         let decision = resolver(&ctx, &overrides)
             .resolve_node_pm()
@@ -866,7 +879,6 @@ mod tests {
         use std::fs;
 
         use crate::detect::detect;
-        use crate::tool::test_support::TempDir;
 
         let dir = TempDir::new("resolver-manifest-wins");
         fs::write(
@@ -902,7 +914,6 @@ mod tests {
         use std::fs;
 
         use crate::detect::detect;
-        use crate::tool::test_support::TempDir;
 
         let dir = TempDir::new("resolver-dev-engines-only");
         fs::write(
@@ -928,7 +939,6 @@ mod tests {
         use std::fs;
 
         use crate::detect::detect;
-        use crate::tool::test_support::TempDir;
 
         let dir = TempDir::new("resolver-cli-beats-manifest");
         fs::write(
@@ -955,7 +965,6 @@ mod tests {
         use std::fs;
 
         use crate::detect::detect;
-        use crate::tool::test_support::TempDir;
 
         let dir = TempDir::new("resolver-matching-signals");
         fs::write(
@@ -976,10 +985,9 @@ mod tests {
         assert!(decision.warnings.is_empty());
     }
 
-    fn mismatch_dir(name: &str) -> crate::tool::test_support::TempDir {
+    fn mismatch_dir(name: &str) -> TempDir {
         use std::fs;
 
-        use crate::tool::test_support::TempDir;
         let dir = TempDir::new(name);
         fs::write(
             dir.path().join("package.json"),
