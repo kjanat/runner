@@ -46,7 +46,7 @@ pub(crate) fn list(
     };
 
     if json {
-        let view = Project::build_with_schema(ctx, overrides, schema_version)
+        let view = Project::build_with_schema(ctx, overrides, schema_version, false)
             .into_list_view(parsed_source);
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());

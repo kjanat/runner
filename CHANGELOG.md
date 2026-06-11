@@ -15,6 +15,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `runner doctor` (and `info --json`) now classify PATH-probe hits that
+  are Volta shims and resolve them to the real provisioned binary via
+  `volta which`: the `PATH probe` line shows
+  `npm=<shim> -> <real bin> (volta)`, or
+  `(volta shim, not provisioned)` when Volta fronts a tool it has no
+  version of. JSON gains an additive `signals.node.volta_shims` map
+  (omitted on hosts without Volta; no schema bump). Display only —
+  execution still spawns the shim, which performs Volta's per-project
+  version selection.
+
 ### Changed
 
 - `runner install` now honors the `--pm`/`RUNNER_PM` override: when set,

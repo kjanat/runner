@@ -34,7 +34,7 @@ pub(crate) fn doctor(
     json: bool,
     schema_version: u32,
 ) -> Result<()> {
-    let project = Project::build_with_schema(ctx, overrides, schema_version);
+    let project = Project::build_with_schema(ctx, overrides, schema_version, true);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&project)?);
@@ -176,13 +176,11 @@ fn print_human(report: &Value, overrides: &ResolutionOverrides) {
             );
         }
         if let Some(probe) = node["path_probe"].as_object() {
+            let shims = node["volta_shims"].as_object();
             let parts: Vec<String> = probe
                 .iter()
                 .map(|(bin, path)| {
-                    let val = path
-                        .as_str()
-                        .map_or_else(|| "not found".dimmed().to_string(), ToOwned::to_owned);
-                    format!("{bin}={val}")
+                    format_probe_entry(bin, path.as_str(), shims.and_then(|s| s.get(bin)))
                 })
                 .collect();
             writeln_field(out, "PATH probe", &parts.join(", "));
@@ -215,6 +213,22 @@ fn print_human(report: &Value, overrides: &ResolutionOverrides) {
                 w["detail"].as_str().unwrap_or("?"),
             );
         }
+    }
+}
+
+/// Render one `PATH probe` entry. Four cases:
+/// `npm=not found` (dimmed), `bun=<path>`,
+/// `npm=<shim> -> <real> (volta)` for a provisioned Volta shim, and
+/// `pnpm=<shim> (volta shim, not provisioned)` (dimmed suffix) when
+/// Volta fronts the tool but has no version of it.
+fn format_probe_entry(bin: &str, path: Option<&str>, shim: Option<&Value>) -> String {
+    let Some(path) = path else {
+        return format!("{bin}={}", "not found".dimmed());
+    };
+    match shim.map(|s| s["resolved"].as_str()) {
+        Some(Some(real)) => format!("{bin}={path} -> {real} {}", "(volta)".dimmed()),
+        Some(None) => format!("{bin}={path} {}", "(volta shim, not provisioned)".dimmed()),
+        None => format!("{bin}={path}"),
     }
 }
 
@@ -255,6 +269,55 @@ mod tests {
             is_monorepo: false,
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn format_probe_entry_renders_all_four_cases() {
+        use serde_json::json;
+
+        use super::format_probe_entry;
+
+        // Strip color control codes by asserting on substrings only.
+        let not_found = format_probe_entry("npm", None, None);
+        assert!(not_found.starts_with("npm="), "{not_found}");
+        assert!(not_found.contains("not found"), "{not_found}");
+
+        let plain = format_probe_entry("bun", Some(r"C:\bun\bun.EXE"), None);
+        assert!(plain.contains(r"bun=C:\bun\bun.EXE"), "{plain}");
+        assert!(!plain.contains("volta"), "{plain}");
+
+        let shim = json!({ "resolved": r"C:\Volta\image\npm\11.6.2\npm.cmd" });
+        let resolved = format_probe_entry("npm", Some(r"C:\Volta\npm.EXE"), Some(&shim));
+        assert!(
+            resolved.contains(r"npm=C:\Volta\npm.EXE -> C:\Volta\image\npm\11.6.2\npm.cmd"),
+            "{resolved}"
+        );
+        assert!(resolved.contains("(volta)"), "{resolved}");
+
+        let phantom = json!({ "resolved": null });
+        let unprovisioned = format_probe_entry("pnpm", Some(r"C:\Volta\pnpm.EXE"), Some(&phantom));
+        assert!(
+            unprovisioned.contains("volta shim, not provisioned"),
+            "{unprovisioned}"
+        );
+    }
+
+    #[test]
+    fn build_report_omits_volta_shims_when_not_resolving() {
+        let ctx = context();
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        // `Project::build` passes `resolve_shims = false`; the additive
+        // field must vanish entirely, keeping the v1/v2 shape untouched.
+        assert!(
+            report["signals"]["node"].get("volta_shims").is_none(),
+            "volta_shims must be omitted when empty: {}",
+            report["signals"]["node"],
+        );
+        assert!(
+            report["signals"]["node"].get("path_probe").is_some(),
+            "path_probe shape must be unchanged",
+        );
     }
 
     #[test]
