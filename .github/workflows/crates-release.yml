@@ -8,6 +8,8 @@ on:
       tag: { description: Release tag to publish (e.g. vX.Y.Z), required: true, type: string }
       dry-run: { description: Dry run only (no upload to crates.io), required: false, default: false, type: boolean }
 
+permissions: { contents: read, id-token: write }
+
 env:
   RELEASE_TAG: ${{ case(github.event_name == 'workflow_dispatch', inputs.tag, github.ref_name) }}
   INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
@@ -17,8 +19,7 @@ jobs:
   publish:
     name: publish to crates.io
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write }
-    environment: { name: crates-io, url: "${{ format('https://crates.io/crates/runner-run/{0}', steps.verify.outputs.version) }}" }
+    environment: { name: crates-io, url: "https://crates.io/crates/runner-run/${{ steps.verify.outputs.version }}" }
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }

@@ -1,12 +1,5 @@
 name: release
-run-name: >-
-  ${{ case(
-      github.event_name == 'pull_request',
-        format('verify PR #{0}', github.event.pull_request.number),
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'),
-        format('release {0}', github.ref_name),
-      format('verify {0}', github.ref_name)
-    ) }}
+run-name: "${{ case(github.event_name == 'pull_request', format('verify PR {0}{1}', '#', github.event.pull_request.number), github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'), format('release {0}', github.ref_name), format('verify {0}', github.ref_name)) }}"
 on: { pull_request: null, push: { branches: [master], tags: [v*] } }
 permissions: { contents: read }
 env: { CARGO_TERM_COLOR: always }
@@ -37,28 +30,17 @@ jobs:
 
       - name: create github release
         uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1.11.0
-        with:
-          token: ${{ github.token }}
-          changelog: CHANGELOG.md
-          draft: true
-          branch: master
+        with: { token: "${{ github.token }}", changelog: CHANGELOG.md, draft: true, branch: master }
 
       - name: append GitHub auto-generated notes
         # release:published never fires for token-created releases, so we
         # assemble the final body here.
-        env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
-        run: |
-          set -euo pipefail
-          our_body="$(gh release view "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" --json body --jq .body)"
-          gen_body="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="${RELEASE_TAG}" --jq .body)"
-          combined="$(mktemp)"
-          printf '%s\n\n%s\n' "${our_body}" "${gen_body}" >"${combined}"
-          gh release edit "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" --notes-file "${combined}"
-          rm -f "${combined}"
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          retries: 3
+          script: |
+            const { default: appendGeneratedReleaseNotes } = await import("${{ github.workspace }}/.github/scripts/release/notes.mjs");
+            await appendGeneratedReleaseNotes({ core, github, context });
 
   man:
     name: man pages
@@ -74,13 +56,11 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - run: cargo run --quiet --features man -- man --output man
       - name: archive and upload to release
-        run: |
-          set -euo pipefail
-          archive="runner-${RELEASE_TAG}-man.tar.gz"
-          tar -C man -czf "${archive}" .
-          sha256sum "${archive}" >"runner-${RELEASE_TAG}-man.sha256"
-          gh release upload "${RELEASE_TAG}" \
-            "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { default: archiveManPages } = await import("${{ github.workspace }}/.github/scripts/build/man-archive.mjs");
+            await archiveManPages({ core, exec });
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with: { name: man-pages, path: man/, if-no-files-found: error, retention-days: 14 }
 
@@ -93,23 +73,29 @@ jobs:
     outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          sparse-checkout: npm/targets.json
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+        with: { sparse-checkout: npm/targets.json, sparse-checkout-cone-mode: false, persist-credentials: false }
 
       - id: gen
         # `target: .rust` is mandatory — taiki-e and build-packages.ts both
         # derive the asset filename `runner-<tag>-<rust>.tar.gz` from it.
         # `vm`-typed targets need a dedicated job; filtered out here.
-        run: |
-          include=$(jq -c '[.targets[] | select(.build != "vm") | {
-            target: .rust,
-            runner: .runner,
-            "build-tool": .build,
-            experimental: (.experimental // false)
-          }]' npm/targets.json)
-          echo "include=${include}" >> "${GITHUB_OUTPUT}"
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { readFile } = await import('node:fs/promises');
+
+            const { targets } = JSON.parse(await readFile('npm/targets.json', 'utf8'));
+            const include = targets
+              .filter(({ build }) => build !== 'vm')
+              .map((target) => ({
+                target: target.rust,
+                runner: target.runner,
+                'build-tool': target.build,
+                experimental: target.experimental ?? false,
+              }));
+
+            core.setOutput('include', JSON.stringify(include));
+            await core.summary.addHeading('Build matrix').addRaw(`Generated ${include.length} release build targets.`).write();
 
   upload-assets:
     name: build+upload ${{ matrix.target }}
@@ -159,24 +145,20 @@ jobs:
           include: README.md,LICENSE
           locked: true
 
-      # Tier-3: build/archive/upload manually since upload-rust-binary-action
-      # can't inject `-Z build-std`.
+      # Tier-3: build/archive/upload manually since upload-rust-binary-action can't inject `-Z build-std`.
       - name: build (cargo + -Z build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        env: { CARGO_UNSTABLE_BUILD_STD: std, panic_abort }
-        run: |
-          cargo +nightly build \
-            --release --locked \
-            --bin runner --bin run \
-            --target "${{ matrix.target }}"
+        env: { CARGO_UNSTABLE_BUILD_STD: "std, panic_abort", T: "${{ matrix.target }}" }
+        run: cargo +nightly build --release --locked --bin runner --bin run --target "${T}"
 
       - name: package and upload (cargo-build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET: ${{ matrix.target }}
-          BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
+        env: { GH_TOKEN: "${{ github.token }}", TARGET: "${{ matrix.target }}", BIN_DIR: "${{ github.workspace }}/target/${{ matrix.target }}/release" }
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { default: packageReleaseAsset } = await import("${{ github.workspace }}/.github/scripts/build/package-release-asset.mjs");
+            await packageReleaseAsset({ core, exec });
 
   build-npm-dist:
     name: build npm dist
@@ -191,22 +173,33 @@ jobs:
         with: { persist-credentials: false }
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with: { node-version: latest }
+        with: { node-version-file: .node-version }
 
       - name: download release archives
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/download-release-archives.sh"
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { default: downloadReleaseArchives } = await import("${{ github.workspace }}/.github/scripts/build/download-release-archives.mjs");
+            await downloadReleaseArchives({ core, context, exec });
 
       - name: download man pages
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with: { name: man-pages, path: man }
 
       - name: verify checksums
-        working-directory: npm/downloads
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/verify-checksum.sh"
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { default: verifyChecksums } = await import("${{ github.workspace }}/.github/scripts/build/verify-checksum.mjs");
+            await verifyChecksums({ core });
 
       - name: build npm packages
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/build-npm-packages.sh"
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          script: |
+            const { default: buildNpmPackages } = await import("${{ github.workspace }}/.github/scripts/build/npm.mjs");
+            await buildNpmPackages({ core, context, exec });
 
       - name: smoke-test packaged linux-x64-gnu binary
         # Only target executable on ubuntu-latest; others exercised at install.
@@ -221,19 +214,30 @@ jobs:
 
       - name: upload npm/dist artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: npm-dist
-          path: npm/dist/
-          retention-days: 14
-          if-no-files-found: error
+        with: { name: npm-dist, path: npm/dist/, retention-days: 14, if-no-files-found: error }
 
-  # Flip draft→published once binaries + npm-dist are in place. Drives
-  # npm-release.yml via release:published. Idempotent.
+  # Flip draft→published once binaries + npm-dist are in place. Releases
+  # published with GITHUB_TOKEN do not emit downstream release:published
+  # workflow runs, so explicitly dispatch package publishers afterward.
   publish-release:
     name: publish github release
     needs: [build-npm-dist]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions: { contents: write }
-    env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
-    steps: [{ run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false' }]
+    permissions: { actions: write, contents: write }
+    steps:
+      - name: publish github release
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          retries: 3
+          script: |
+            const { publishGithubRelease } = await import("${{ github.workspace }}/.github/scripts/release/publish.mjs");
+            await publishGithubRelease({ core, github, context });
+
+      - name: dispatch package publishes
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553 # v9
+        with:
+          retries: 3
+          script: |
+            const { dispatchPackagePublishes } = await import("${{ github.workspace }}/.github/scripts/release/publish.mjs");
+            await dispatchPackagePublishes({ core, github, context });

@@ -13,3 +13,7 @@ node_modules/
 # serena MCP cache
 /.serena/
 /proposal.md
+
+# build scripts
+!.github/scripts/build
+!.cargo

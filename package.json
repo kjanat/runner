@@ -6,13 +6,16 @@
 		"site",
 		"npm/facade"
 	],
-	"scripts": { "fmt": "bunx dprint fmt" },
+	"scripts": {
+		"fmt": "bunx dprint fmt"
+	},
 	"devDependencies": {
+		"@actions/github-script": "github:actions/github-script#373c709c69115d41ff229c7e5df9f8788daa9553",
 		"@types/node": ">=22.18.0",
 		"typescript": "^5"
 	},
 	"volta": {
-		"node": "24.14.1",
-		"npm": "11.6.2"
+		"node": "26.3.0",
+		"npm": "11.16.0"
 	}
 }

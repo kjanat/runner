@@ -23,6 +23,6 @@
 		"resolveJsonModule": true,
 		"typeRoots": ["./npm/facade/node_modules/@types"]
 	},
-	"include": ["npm/**/*", "action.mjs"],
+	"include": ["npm", "action.mjs", ".github/scripts"],
 	"exclude": ["node_modules", "dist"]
 }
