@@ -106,12 +106,14 @@ impl ResolutionOverrides {
         let pm = parse_override(
             sources.pm.cli,
             sources.pm.env,
+            &PM_SOURCE_NAMES,
             parse_pm_label,
             |pm, origin| PmOverride { pm, origin },
         )?;
         let runner = parse_override(
             sources.runner.cli,
             sources.runner.env,
+            &RUNNER_SOURCE_NAMES,
             parse_runner_label,
             |runner, origin| RunnerOverride { runner, origin },
         )?;
@@ -197,7 +199,8 @@ fn parse_pm_label(raw: &str) -> Result<PackageManager> {
         ));
     }
     Err(anyhow!(
-        "unknown package manager {raw:?}; expected one of {}",
+        "unknown package manager \"{}\"; expected one of {}",
+        sanitize_raw_label(raw),
         join_labels(
             PackageManager::all()
                 .iter()
@@ -219,9 +222,85 @@ fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
         ));
     }
     Err(anyhow!(
-        "unknown task runner {raw:?}; expected one of {}",
+        "unknown task runner \"{}\"; expected one of {}",
+        sanitize_raw_label(raw),
         join_labels(TaskRunner::all().iter().copied().map(TaskRunner::label)),
     ))
+}
+
+/// Maximum characters of a raw override value rendered in an error.
+const MAX_RAW_DISPLAY: usize = 60;
+
+/// Render an untrusted override value safely for a one-line error:
+/// control characters (ANSI escapes, newlines) are escaped via
+/// [`char::escape_debug`], then the escaped string is truncated to
+/// [`MAX_RAW_DISPLAY`] characters with an ellipsis. Values come straight
+/// from the environment and can be arbitrary captured command output —
+/// an unquoted PowerShell `$env:RUNNER_PM=deno` assigns deno's entire
+/// REPL banner, ANSI codes and all.
+fn sanitize_raw_label(raw: &str) -> String {
+    let escaped: String = raw.chars().flat_map(char::escape_debug).collect();
+    let mut chars = escaped.chars();
+    let truncated: String = chars.by_ref().take(MAX_RAW_DISPLAY).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+/// Source names for the cross-ecosystem PM override.
+const PM_SOURCE_NAMES: SourceNames = SourceNames {
+    cli: "--pm",
+    env: "RUNNER_PM",
+    example: "pnpm",
+};
+
+/// Source names for the task-runner override.
+const RUNNER_SOURCE_NAMES: SourceNames = SourceNames {
+    cli: "--runner",
+    env: "RUNNER_RUNNER",
+    example: "just",
+};
+
+/// The user-facing names of one override's sources, used to attribute
+/// parse errors to the flag or variable that carried the bad value.
+struct SourceNames {
+    /// CLI flag, e.g. `--pm`.
+    cli: &'static str,
+    /// Environment variable, e.g. `RUNNER_PM`.
+    env: &'static str,
+    /// A valid example value, e.g. `pnpm`.
+    example: &'static str,
+}
+
+impl SourceNames {
+    /// Prefix `err` with the source that supplied `raw`. When the value
+    /// contains line breaks it is almost certainly captured command
+    /// output rather than a name the user typed (the PowerShell
+    /// unquoted-assignment footgun), so append a hint showing the
+    /// correct spelling for that source.
+    fn decorate(&self, err: &anyhow::Error, raw: &str, origin: &OverrideOrigin) -> anyhow::Error {
+        let from_env = matches!(origin, OverrideOrigin::EnvVar);
+        let source = if from_env { self.env } else { self.cli };
+        let hint = if raw.contains('\n') || raw.contains('\r') {
+            let example = if from_env {
+                format!(
+                    "$env:{}='{}' (quote the value in PowerShell)",
+                    self.env, self.example
+                )
+            } else {
+                format!("{} {}", self.cli, self.example)
+            };
+            format!(
+                "\n  hint: the value contains line breaks and looks like captured command \
+                 output; pass a plain name instead, e.g. {example}"
+            )
+        } else {
+            String::new()
+        };
+        anyhow!("{source}: {err}{hint}")
+    }
 }
 
 /// Generic CLI-then-env override parser. CLI wins; whitespace is
@@ -230,9 +309,13 @@ fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
 /// are treated as unset so a user can clear an inherited variable with
 /// `RUNNER_PM= runner …`. Matches the whitespace handling used by
 /// [`super::policies::is_env_truthy`] for boolean env flags.
+///
+/// Parse failures are attributed to the source that carried the value
+/// (`names.cli` or `names.env`) via [`SourceNames::decorate`].
 fn parse_override<T, P, V, B>(
     cli: Option<&str>,
     env: Option<&str>,
+    names: &SourceNames,
     parse: V,
     build: B,
 ) -> Result<Option<T>>
@@ -241,11 +324,13 @@ where
     B: Fn(P, OverrideOrigin) -> T,
 {
     if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = parse(raw)?;
+        let parsed =
+            parse(raw).map_err(|err| names.decorate(&err, raw, &OverrideOrigin::CliFlag))?;
         return Ok(Some(build(parsed, OverrideOrigin::CliFlag)));
     }
     if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = parse(raw)?;
+        let parsed =
+            parse(raw).map_err(|err| names.decorate(&err, raw, &OverrideOrigin::EnvVar))?;
         return Ok(Some(build(parsed, OverrideOrigin::EnvVar)));
     }
     Ok(None)

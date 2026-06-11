@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Changed
+
+- Invalid `--pm`/`RUNNER_PM`/`--runner`/`RUNNER_RUNNER` values now produce
+  a readable error: the message names the source that carried the value,
+  escapes control characters (no more raw ANSI codes), truncates long
+  garbage, and — when the value contains line breaks — hints that it
+  looks like captured command output with the correctly quoted PowerShell
+  spelling. (An unquoted `$env:RUNNER_PM=deno` executes deno and assigns
+  its REPL banner to the variable.)
+
 ### Fixed
 
 - Node version constraints are now evaluated with real range semantics

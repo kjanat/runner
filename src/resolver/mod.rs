@@ -461,6 +461,106 @@ mod tests {
     }
 
     #[test]
+    fn unknown_pm_env_value_names_env_source() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some("zoot"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown PM via env should error");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("RUNNER_PM"),
+            "should name the env source: {msg}"
+        );
+        assert!(msg.contains("unknown package manager"));
+    }
+
+    #[test]
+    fn unknown_pm_cli_value_names_cli_source() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("zoot"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown PM via CLI should error");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("--pm"), "should name the CLI source: {msg}");
+    }
+
+    #[test]
+    fn multiline_env_pm_value_is_sanitized_and_hinted() {
+        // The PowerShell unquoted-assignment footgun: `$env:RUNNER_PM=deno`
+        // executes deno and captures its REPL banner (ANSI codes included)
+        // into the variable.
+        let banner = "Deno 2.8.2 exit using ctrl+d\n\u{1b}[33mREPL is running\u{1b}[0m";
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some(banner),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("captured banner should error");
+
+        let msg = format!("{err}");
+        assert!(!msg.contains('\u{1b}'), "raw ESC byte must not leak: {msg}");
+        assert!(
+            msg.contains("captured command output"),
+            "should hint at the footgun: {msg}"
+        );
+        assert!(
+            msg.contains("$env:RUNNER_PM='pnpm'"),
+            "should show the quoted PowerShell spelling: {msg}"
+        );
+    }
+
+    #[test]
+    fn oversized_pm_value_is_truncated() {
+        let huge = "z".repeat(500);
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some(&huge),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("oversized garbage should error");
+
+        let msg = format!("{err}");
+        assert!(msg.contains('…'), "long values should be truncated: {msg}");
+        assert!(
+            !msg.contains(&"z".repeat(100)),
+            "the full 500-char value must not be rendered: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_runner_env_value_names_env_source() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: None,
+                env: Some("zoot"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown runner via env should error");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("RUNNER_RUNNER"),
+            "should name the env source: {msg}"
+        );
+        assert!(msg.contains("unknown task runner"));
+    }
+
+    #[test]
     fn pm_label_that_names_a_runner_suggests_runner_flag() {
         let err = ResolutionOverrides::from_sources(OverrideSources {
             pm: SourceValue {
