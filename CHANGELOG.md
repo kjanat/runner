@@ -17,6 +17,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
+- `runner install` now honors the `--pm`/`RUNNER_PM` override: when set,
+  only that package manager installs (previously the override was
+  ignored and every detected PM installed — e.g. a project with both
+  `bun.lock` and `deno.json` always ran `deno install` too, writing an
+  unwanted `deno.lock`). An override naming a PM that detection did not
+  find refuses the install with exit code 2. runner.toml
+  `[pm].node`/`[pm].python` continue to scope script dispatch only.
 - Invalid `--pm`/`RUNNER_PM`/`--runner`/`RUNNER_RUNNER` values now produce
   a readable error: the message names the source that carried the value,
   escapes control characters (no more raw ANSI codes), truncates long

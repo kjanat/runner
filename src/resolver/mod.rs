@@ -42,6 +42,11 @@ pub(crate) use error::{DevEnginesFailReason, ResolveError};
 /// Lets `cmd::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.
 pub(crate) use probe::probe_in as probe_path_for_doctor;
+/// Re-exported for unit tests that need to construct override state
+/// directly (e.g. `cmd::install::tests`); production code receives
+/// overrides fully built by [`ResolutionOverrides::from_cli_and_env`].
+#[cfg(test)]
+pub(crate) use types::PmOverride;
 pub(crate) use types::{
     DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides,
     ResolvedPm, Resolver,

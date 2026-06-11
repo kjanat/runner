@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
-use crate::resolver::ResolutionOverrides;
+use crate::resolver::{ResolutionOverrides, ResolveError};
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 
@@ -47,9 +47,13 @@ pub(crate) fn install_pms(
         bail!("No package manager detected.");
     }
 
+    // Resolved before the GHA group opens so a refused override doesn't
+    // emit an empty `runner: install` group — same rationale as the
+    // no-PM bail above.
+    let pms = select_install_pms(ctx, overrides)?;
+
     // Collapse the whole install (single- or multi-PM) under one
-    // `runner: install` GitHub Actions group when enabled. Opened after the
-    // no-PM bail so a failed detection doesn't emit an empty group.
+    // `runner: install` GitHub Actions group when enabled.
     let _group = super::task_group(overrides, "install");
 
     if let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)
@@ -65,20 +69,48 @@ pub(crate) fn install_pms(
         suggest_version_switch(ctx);
     }
 
-    if ctx.package_managers.len() == 1 {
-        let pm = ctx.package_managers[0];
-        eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
-        let mut cmd = build_install_command(ctx, pm, frozen);
-        super::configure_command(&mut cmd, &ctx.root);
-        let status = cmd.status()?;
-        return Ok(if status.success() {
-            0
-        } else {
-            super::exit_code(status)
-        });
+    if let [pm] = pms.as_slice() {
+        return install_single(ctx, *pm, frozen);
     }
 
-    run_installs_parallel(ctx, frozen)
+    run_installs_parallel(ctx, &pms, frozen)
+}
+
+/// Which PMs this invocation installs with: the cross-ecosystem
+/// `--pm`/`RUNNER_PM` override when present (which must name a detected
+/// PM), else every detected PM.
+///
+/// `pm_by_ecosystem` (runner.toml `[pm].node`/`[pm].python`) is
+/// deliberately NOT consulted: it scopes *script dispatch* to an
+/// ecosystem, and filtering a polyglot install by it is ill-defined —
+/// `[pm].node = "yarn"` saying anything about whether `cargo fetch`
+/// runs would be surprising in both directions.
+fn select_install_pms(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+) -> Result<Vec<PackageManager>, ResolveError> {
+    match &overrides.pm {
+        Some(o) if ctx.package_managers.contains(&o.pm) => Ok(vec![o.pm]),
+        Some(o) => Err(ResolveError::PmOverrideNotDetected {
+            pm: o.pm,
+            origin: o.origin.clone(),
+            detected: ctx.package_managers.clone(),
+        }),
+        None => Ok(ctx.package_managers.clone()),
+    }
+}
+
+/// Run a single PM's install in the foreground, inheriting stdio.
+fn install_single(ctx: &ProjectContext, pm: PackageManager, frozen: bool) -> Result<i32> {
+    eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+    let mut cmd = build_install_command(ctx, pm, frozen);
+    super::configure_command(&mut cmd, &ctx.root);
+    let status = cmd.status()?;
+    Ok(if status.success() {
+        0
+    } else {
+        super::exit_code(status)
+    })
 }
 
 /// Run every detected package manager's install in parallel, multiplexing
@@ -91,19 +123,23 @@ pub(crate) fn install_pms(
 /// isn't exposed yet — the v1 `runner install` CLI has no flag for it,
 /// and the conservative default for a top-level command is "don't tear
 /// down the user's slow `cargo fetch` because `npm` blew up on a 404."
-fn run_installs_parallel(ctx: &ProjectContext, frozen: bool) -> Result<i32> {
+fn run_installs_parallel(
+    ctx: &ProjectContext,
+    pms: &[PackageManager],
+    frozen: bool,
+) -> Result<i32> {
     use std::process::Child;
 
-    let names: Vec<&str> = ctx.package_managers.iter().map(|pm| pm.label()).collect();
+    let names: Vec<&str> = pms.iter().map(|pm| pm.label()).collect();
     let width = prefix_width(&names);
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
     let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
 
-    let mut children: Vec<(PackageManager, Child)> = Vec::with_capacity(ctx.package_managers.len());
+    let mut children: Vec<(PackageManager, Child)> = Vec::with_capacity(pms.len());
     let mut reader_handles = Vec::new();
 
     let spawn_outcome: Result<()> = (|| {
-        for pm in &ctx.package_managers {
+        for pm in pms {
             eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
             let mut cmd = build_install_command(ctx, *pm, frozen);
             super::configure_command(&mut cmd, &ctx.root);
@@ -203,4 +239,98 @@ fn suggest_version_switch(ctx: &ProjectContext) {
         "switch to the expected Node version"
     };
     eprintln!("       {} {}", "hint:".dimmed(), hint);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use super::select_install_pms;
+    use crate::resolver::{OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError};
+    use crate::types::{Ecosystem, PackageManager, ProjectContext};
+
+    fn context(pms: Vec<PackageManager>) -> ProjectContext {
+        ProjectContext {
+            root: PathBuf::from("/tmp/test"),
+            package_managers: pms,
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn override_pm(pm: PackageManager, origin: OverrideOrigin) -> ResolutionOverrides {
+        ResolutionOverrides {
+            pm: Some(PmOverride { pm, origin }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_override_installs_with_every_detected_pm() {
+        let ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
+        let pms = select_install_pms(&ctx, &ResolutionOverrides::default())
+            .expect("default selection should succeed");
+        assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Deno]);
+    }
+
+    #[test]
+    fn detected_override_installs_with_it_alone() {
+        // The dreamcli CI bug: bun + deno detected, RUNNER_PM=bun set —
+        // deno must not install (and must not write deno.lock).
+        let ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
+        let overrides = override_pm(PackageManager::Bun, OverrideOrigin::EnvVar);
+        let pms = select_install_pms(&ctx, &overrides).expect("detected override should filter");
+        assert_eq!(pms, vec![PackageManager::Bun]);
+    }
+
+    #[test]
+    fn undetected_override_errors_with_origin_and_detected_list() {
+        let ctx = context(vec![PackageManager::Cargo]);
+        let overrides = override_pm(PackageManager::Npm, OverrideOrigin::EnvVar);
+        let err = select_install_pms(&ctx, &overrides).expect_err("undetected override must error");
+
+        assert!(matches!(err, ResolveError::PmOverrideNotDetected { .. }));
+        let msg = format!("{err}");
+        assert!(msg.contains("RUNNER_PM"), "should name the source: {msg}");
+        assert!(msg.contains("cargo"), "should list detected PMs: {msg}");
+    }
+
+    #[test]
+    fn undetected_cli_override_names_the_flag() {
+        let ctx = context(vec![PackageManager::Cargo]);
+        let overrides = override_pm(PackageManager::Npm, OverrideOrigin::CliFlag);
+        let err = select_install_pms(&ctx, &overrides).expect_err("undetected override must error");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("--pm"), "should name the flag: {msg}");
+    }
+
+    #[test]
+    fn ecosystem_config_override_does_not_filter_installs() {
+        // Pins the documented non-goal: `[pm].node` in runner.toml scopes
+        // script dispatch, not the install set.
+        let ctx = context(vec![PackageManager::Bun, PackageManager::Cargo]);
+        let mut pm_by_ecosystem = HashMap::new();
+        pm_by_ecosystem.insert(
+            Ecosystem::Node,
+            PmOverride {
+                pm: PackageManager::Pnpm,
+                origin: OverrideOrigin::ConfigFile {
+                    path: PathBuf::from("/tmp/test/runner.toml"),
+                },
+            },
+        );
+        let overrides = ResolutionOverrides {
+            pm_by_ecosystem,
+            ..Default::default()
+        };
+
+        let pms = select_install_pms(&ctx, &overrides).expect("config must not filter installs");
+        assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Cargo]);
+    }
 }

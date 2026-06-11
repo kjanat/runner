@@ -1118,6 +1118,51 @@ mod tests {
     }
 
     #[test]
+    fn install_with_undetected_pm_override_exits_2() {
+        // A cargo-only project with `--pm npm`: the override can't be
+        // honored, so install must refuse with a ResolveError (exit 2)
+        // before spawning anything.
+        let dir = TempDir::new("runner-install-undetected-pm");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("write Cargo.toml");
+
+        let err = run_in_dir(["runner", "--pm", "npm", "install"], dir.path())
+            .expect_err("undetected --pm should refuse the install");
+
+        assert_eq!(
+            exit_code_for_error(&err),
+            2,
+            "ResolveError must map to exit 2"
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("--pm"), "should name the source: {msg}");
+        assert!(msg.contains("cargo"), "should list detected PMs: {msg}");
+    }
+
+    #[test]
+    fn install_chain_with_undetected_pm_override_exits_2() {
+        // Same refusal through the chain path (`runner install <task>`).
+        let dir = TempDir::new("runner-install-chain-undetected-pm");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("write Cargo.toml");
+
+        let err = run_in_dir(["runner", "--pm", "npm", "install", "build"], dir.path())
+            .expect_err("undetected --pm should refuse the install chain");
+
+        assert_eq!(
+            exit_code_for_error(&err),
+            2,
+            "ResolveError must map to exit 2"
+        );
+    }
+
+    #[test]
     fn schema_version_rejects_invalid_for_non_json_commands() {
         let dir = TempDir::new("runner-schema-invalid-completions");
 
