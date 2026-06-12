@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+invoked_name="$(basename -- "$0")"
+
+case "${invoked_name}" in
+	run | runner) ;;
+	*)
+		printf 'error: unsupported launcher name: %s\n' "${invoked_name}" >&2
+		exit 1
+		;;
+esac
+
+source_path="${BASH_SOURCE[0]}"
+
+while [[ -L "${source_path}" ]]; do
+	source_dir="$(
+		unset CDPATH
+		cd -- "$(dirname -- "${source_path}")"
+		pwd -P
+	)"
+
+	link_target="$(readlink -- "${source_path}")"
+
+	case "${link_target}" in
+		/*) source_path="${link_target}" ;;
+		*) source_path="${source_dir}/${link_target}" ;;
+	esac
+done
+
+script_dir="$(
+	unset CDPATH
+	cd -- "$(dirname -- "${source_path}")"
+	pwd -P
+)"
+
+manifest="${script_dir}/../Cargo.toml"
+target_dir="${script_dir}/../target/runner-dev"
+
+[[ -f "${manifest}" ]] || {
+	printf 'error: %s not found\n' "${manifest}" >&2
+	exit 1
+}
+
+exec cargo run --locked --quiet \
+	--bin "${invoked_name}" \
+	--features=run,man,schema \
+	--manifest-path="${manifest}" \
+	--target-dir="${target_dir}" \
+	-- "$@"

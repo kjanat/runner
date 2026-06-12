@@ -8,7 +8,7 @@ npm-pkg-scope := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "
 build-pkgscript := "npm" / "scripts" / "build-packages.ts"
 downloads-dir := "npm" / "downloads"
 
-schema := "schemas" / "runner.toml.schema.json"
+schema-dir := "schemas"
 
 [arg('bin', pattern='run|runner')]
 [arg('profile', pattern='dev|release|')]
@@ -27,12 +27,12 @@ runner *args:
 ls:
     @just --list
 
-# Regenerate the committed JSON Schema for `runner.toml`.
+# Regenerate the committed JSON Schemas.
 # Drift guard: just gen-schema && git diff --exit-code schemas/
 [group('schema')]
 gen-schema:
-    @echo "→ regenerating {{ BLUE }}{{ schema }}{{ NORMAL }}"
-    @cargo schema --output {{ schema }}
+    @echo "→ regenerating {{ BLUE }}{{ schema-dir }}{{ NORMAL }}"
+    @cargo schema --all --output {{ schema-dir }}
 
 [group('npm')]
 build-packages only="" skip="false" version=cargo-version:

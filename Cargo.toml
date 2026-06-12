@@ -69,6 +69,11 @@ features = ["unstable-dynamic"]
 version  = "0.3"
 optional = true
 
+[dependencies.json-schema-sort]
+version          = "0.1"
+default-features = false
+optional         = true
+
 [dependencies.schemars]
 version  = "1.2"
 optional = true
@@ -95,7 +100,7 @@ features         = ["parse", "serde"]
 default = ["run"]
 man     = ["dep:clap_mangen"]
 run     = []
-schema  = ["dep:schemars"]
+schema  = ["dep:json-schema-sort", "dep:schemars"]
 
 [lints.clippy]
 all         = { level = "deny", priority = -1 }

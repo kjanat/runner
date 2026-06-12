@@ -1,0 +1,14 @@
+---
+name: Upload schemas to GitHub Pages
+on: { push: { branches: [master], paths: [schemas/**] } }
+permissions: { contents: read, id-token: write, pages: write }
+jobs:
+  upload:
+    runs-on: ubuntu-slim
+    environment: { name: github-pages, url: "${{ steps.deployment.outputs.page_url }}" }
+    steps: [
+      { uses: actions/checkout@v6, with: { sparse-checkout: schemas/*.schema.json } },
+      { uses: actions/configure-pages@v5, with: { enablement: true }, id: conf },
+      { uses: actions/upload-pages-artifact@v4, with: { path: . } },
+      { uses: actions/deploy-pages@v4, id: deployment },
+    ]

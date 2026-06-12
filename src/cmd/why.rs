@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use colored::Colorize;
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use crate::cmd::run::{
     ResolvedPythonPm, allowed_runner_sources, resolve_python_pm, runner_constraint_error,
@@ -86,6 +86,61 @@ enum PmDecision {
     Python(Result<ResolvedPythonPm, String>),
 }
 
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+pub(super) struct WhyReport<'a> {
+    #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "URI of the JSON Schema that describes this payload.")
+    )]
+    schema: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Schema contract version for this JSON payload.")
+    )]
+    schema_version: u32,
+    task: &'a str,
+    candidates: Vec<WhyCandidate<'a>>,
+    selected: Option<WhyCandidate<'a>>,
+    pm_resolution: Option<PmResolution>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+struct WhyCandidate<'a> {
+    source: &'static str,
+    source_priority: u16,
+    depth: Option<usize>,
+    display_order: u8,
+    is_alias: bool,
+    alias_of: Option<&'a str>,
+    description: Option<&'a str>,
+    passthrough_to: Option<&'static str>,
+    source_dir: Option<String>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum PmResolution {
+    Resolved {
+        pm: &'static str,
+        via: String,
+        warnings: Vec<WhyWarning>,
+    },
+    Error {
+        error: String,
+    },
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+struct WhyWarning {
+    source: &'static str,
+    detail: String,
+}
+
 fn pm_decision_for_selected(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -105,69 +160,77 @@ fn pm_decision_for_selected(
     }
 }
 
-fn build_report(
-    task: &str,
-    candidates: &[&Task],
-    selected: Option<&Task>,
+fn build_report<'a>(
+    task: &'a str,
+    candidates: &[&'a Task],
+    selected: Option<&'a Task>,
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
     schema_version: u32,
-) -> Value {
-    json!({
-        "schema_version": schema_version,
-        "task": task,
-        "candidates": candidates.iter()
-            .map(|c| candidate_json(c, overrides, ctx, schema_version))
+) -> WhyReport<'a> {
+    WhyReport {
+        schema: String::new(),
+        schema_version,
+        task,
+        candidates: candidates
+            .iter()
+            .map(|candidate| candidate_json(candidate, overrides, ctx, schema_version))
             .collect::<Vec<_>>(),
-        "selected": selected.map(|s| candidate_json(s, overrides, ctx, schema_version)),
-        "pm_resolution": pm_decision.map(pm_decision_json),
-    })
-}
-
-fn pm_decision_json(decision: &PmDecision) -> Value {
-    match decision {
-        PmDecision::Node(Ok(decision)) => json!({
-            "pm": decision.pm.label(),
-            "via": decision.describe(),
-            "warnings": decision.warnings.iter().map(|w| json!({
-                "source": w.source(),
-                "detail": w.detail(),
-            })).collect::<Vec<_>>(),
-        }),
-        PmDecision::Node(Err(err)) => json!({ "error": format!("{err}") }),
-        PmDecision::Python(Ok(decision)) => json!({
-            "pm": decision.pm.label(),
-            "via": decision.describe(),
-            "warnings": [],
-        }),
-        PmDecision::Python(Err(err)) => json!({ "error": err }),
+        selected: selected.map(|task| candidate_json(task, overrides, ctx, schema_version)),
+        pm_resolution: pm_decision.map(pm_resolution),
     }
 }
 
-fn candidate_json(
-    task: &Task,
+fn pm_resolution(decision: &PmDecision) -> PmResolution {
+    match decision {
+        PmDecision::Node(Ok(decision)) => PmResolution::Resolved {
+            pm: decision.pm.label(),
+            via: decision.describe(),
+            warnings: decision
+                .warnings
+                .iter()
+                .map(|warning| WhyWarning {
+                    source: warning.source(),
+                    detail: warning.detail(),
+                })
+                .collect(),
+        },
+        PmDecision::Node(Err(err)) => PmResolution::Error {
+            error: format!("{err}"),
+        },
+        PmDecision::Python(Ok(decision)) => PmResolution::Resolved {
+            pm: decision.pm.label(),
+            via: decision.describe(),
+            warnings: Vec::new(),
+        },
+        PmDecision::Python(Err(err)) => PmResolution::Error { error: err.clone() },
+    }
+}
+
+fn candidate_json<'a>(
+    task: &'a Task,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
     schema_version: u32,
-) -> Value {
+) -> WhyCandidate<'a> {
     let depth = source_depth(ctx, task.source);
-    let depth_value = if depth == usize::MAX {
-        Value::Null
+    let depth = if depth == usize::MAX {
+        None
     } else {
-        json!(depth)
+        Some(depth)
     };
-    json!({
-        "source": crate::schema::labels::source_label_for(task.source, schema_version),
-        "source_priority": source_priority(overrides, task.source),
-        "depth": depth_value,
-        "display_order": task.source.display_order(),
-        "is_alias": task.alias_of.is_some(),
-        "alias_of": task.alias_of,
-        "description": task.description,
-        "passthrough_to": task.passthrough_to.map(crate::types::TaskRunner::label),
-        "source_dir": source_dir_for_task(task, ctx).map(|p| p.display().to_string()),
-    })
+    WhyCandidate {
+        source: crate::schema::labels::source_label_for(task.source, schema_version),
+        source_priority: source_priority(overrides, task.source),
+        depth,
+        display_order: task.source.display_order(),
+        is_alias: task.alias_of.is_some(),
+        alias_of: task.alias_of.as_deref(),
+        description: task.description.as_deref(),
+        passthrough_to: task.passthrough_to.map(crate::types::TaskRunner::label),
+        source_dir: source_dir_for_task(task, ctx).map(|path| path.display().to_string()),
+    }
 }
 
 fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
@@ -386,6 +449,7 @@ mod tests {
             &ctx,
             crate::schema::CURRENT_VERSION,
         );
+        let report = serde_json::to_value(report).expect("why report should serialize");
 
         assert_eq!(report["pm_resolution"]["pm"], serde_json::json!("uv"));
         assert!(
