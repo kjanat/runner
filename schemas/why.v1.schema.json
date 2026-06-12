@@ -1,0 +1,192 @@
+{
+  "$id": "https://kjanat.github.io/schemas/why.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "PmResolution": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "pm",
+            "via",
+            "warnings"
+          ],
+          "properties": {
+            "pm": {
+              "type": "string"
+            },
+            "via": {
+              "type": "string"
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WhyWarning"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "TaskSourceLabel": {
+      "type": "string",
+      "enum": [
+        "package.json",
+        "Makefile",
+        "justfile",
+        "Taskfile",
+        "turbo.json",
+        "deno.json",
+        "cargo",
+        "go",
+        "bacon.toml",
+        "mise.toml",
+        "pyproject.toml"
+      ]
+    },
+    "WhyCandidate": {
+      "type": "object",
+      "required": [
+        "alias_of",
+        "depth",
+        "description",
+        "display_order",
+        "is_alias",
+        "passthrough_to",
+        "source",
+        "source_dir",
+        "source_priority"
+      ],
+      "properties": {
+        "alias_of": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "format": "uint"
+        },
+        "description": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "is_alias": {
+          "type": "boolean"
+        },
+        "passthrough_to": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/TaskSourceLabel"
+        },
+        "source_dir": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source_priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "format": "uint16"
+        }
+      }
+    },
+    "WhyWarning": {
+      "type": "object",
+      "required": [
+        "detail",
+        "source"
+      ],
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "title": "runner why <task> --json --schema-version 1",
+  "description": "JSON schema for `runner why <task> --json --schema-version 1`.",
+  "type": "object",
+  "required": [
+    "candidates",
+    "pm_resolution",
+    "schema_version",
+    "selected",
+    "task"
+  ],
+  "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema that describes this payload.",
+      "type": "string"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WhyCandidate"
+      }
+    },
+    "pm_resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PmResolution"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "description": "Schema contract version for this JSON payload.",
+      "type": "integer",
+      "const": 1,
+      "minimum": 0,
+      "format": "uint32"
+    },
+    "selected": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhyCandidate"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "task": {
+      "type": "string"
+    }
+  }
+}

@@ -8,6 +8,7 @@
 	],
 	"scripts": {
 		"fmt": "bunx dprint fmt",
+		"fmt:update": "bunx dprint config update --yes",
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {

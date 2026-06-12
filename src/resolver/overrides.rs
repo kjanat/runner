@@ -429,13 +429,19 @@ fn lenient_env_field(
         return;
     };
     if let Err(err) = validate(raw) {
+        let sanitized = sanitize_raw_label(raw);
         warnings.push(DetectionWarning::InvalidEnvOverride {
             var,
-            raw: sanitize_raw_label(raw),
-            message: format!("{err}"),
+            raw: sanitized.clone(),
+            message: sanitize_error_message(raw, &sanitized, &format!("{err}")),
         });
         field.env = None;
     }
+}
+
+fn sanitize_error_message(raw: &str, sanitized: &str, message: &str) -> String {
+    let escaped: String = raw.chars().flat_map(char::escape_debug).collect();
+    message.replace(raw, sanitized).replace(&escaped, sanitized)
 }
 
 /// Source names for the cross-ecosystem PM override.

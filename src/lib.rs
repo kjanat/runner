@@ -765,7 +765,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         #[cfg(feature = "man")]
         Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
         #[cfg(feature = "schema")]
-        Some(cli::Command::Schema { output }) => dispatch_schema(output.as_deref()),
+        Some(cli::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
         Some(cli::Command::Doctor { json }) => {
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;
@@ -789,8 +789,8 @@ fn dispatch_man(output: Option<&Path>) -> Result<i32> {
 }
 
 #[cfg(feature = "schema")]
-fn dispatch_schema(output: Option<&Path>) -> Result<i32> {
-    cmd::write_schema(output)?;
+fn dispatch_schema(all: bool, output: Option<&Path>) -> Result<i32> {
+    cmd::write_schema(all, output)?;
     Ok(0)
 }
 

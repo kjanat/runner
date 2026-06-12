@@ -1,0 +1,234 @@
+{
+  "schema_version": 2,
+  "root": "/home/kjanat/projects/runner",
+  "ecosystems": [
+    "node",
+    "rust"
+  ],
+  "detected": {
+    "package_managers": [
+      "bun",
+      "cargo"
+    ],
+    "task_runners": [
+      "just"
+    ],
+    "node_version": null,
+    "current_node": "24.14.1",
+    "monorepo": true
+  },
+  "overrides": {
+    "pm": null,
+    "pm_by_ecosystem": {},
+    "runner": null,
+    "prefer_runners": [],
+    "fallback": "probe",
+    "on_mismatch": "warn",
+    "explain": false,
+    "no_warnings": false
+  },
+  "signals": {
+    "node": {
+      "lockfile_pm": "bun",
+      "manifest_pm": {
+        "pm": "bun",
+        "source": "packageManager",
+        "version": "1.3.14",
+        "on_fail": "ignore"
+      },
+      "path_probe": {
+        "bun": "/home/kjanat/.bun/bin/bun",
+        "npm": "/home/kjanat/.volta/bin/npm",
+        "pnpm": "/home/kjanat/.volta/bin/pnpm",
+        "yarn": "/home/kjanat/.volta/bin/yarn"
+      },
+      "volta_shims": {
+        "npm": {
+          "resolved": "/home/kjanat/.volta/tools/image/npm/11.6.2/bin/npm"
+        },
+        "pnpm": {
+          "resolved": "/home/kjanat/.volta/tools/image/packages/pnpm/bin/pnpm"
+        },
+        "yarn": {
+          "resolved": "/home/kjanat/.volta/tools/image/yarn/1.22.22/bin/yarn"
+        }
+      }
+    }
+  },
+  "decisions": {
+    "node_pm": {
+      "pm": "bun",
+      "via": "bun via package.json \"packageManager\""
+    }
+  },
+  "tasks": [
+    {
+      "name": "fmt",
+      "source": "package.json"
+    },
+    {
+      "name": "fmt:update",
+      "source": "package.json"
+    },
+    {
+      "name": "typecheck",
+      "source": "package.json"
+    },
+    {
+      "name": "build-packages",
+      "source": "just"
+    },
+    {
+      "name": "default",
+      "source": "just"
+    },
+    {
+      "name": "gen-schema",
+      "source": "just",
+      "description": "Drift guard: just gen-schema && git diff --exit-code schemas/"
+    },
+    {
+      "name": "ls",
+      "source": "just"
+    },
+    {
+      "name": "run",
+      "source": "just"
+    },
+    {
+      "name": "runner",
+      "source": "just"
+    },
+    {
+      "name": "test-release",
+      "source": "just",
+      "description": "Build release bin and verify the facade shims spawn the native binary."
+    },
+    {
+      "name": "b",
+      "source": "cargo",
+      "alias_of": "build"
+    },
+    {
+      "name": "bb",
+      "source": "cargo",
+      "alias_of": "build --bin run --bin runner"
+    },
+    {
+      "name": "bbr",
+      "source": "cargo",
+      "alias_of": "build --bin run --bin runner --release"
+    },
+    {
+      "name": "bin-run",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin run"
+    },
+    {
+      "name": "bin-runner",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin runner"
+    },
+    {
+      "name": "c",
+      "source": "cargo",
+      "alias_of": "check"
+    },
+    {
+      "name": "cl",
+      "source": "cargo",
+      "alias_of": "clippy --all-targets --all-features"
+    },
+    {
+      "name": "comp",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin runner -- completions"
+    },
+    {
+      "name": "d",
+      "source": "cargo",
+      "alias_of": "doc"
+    },
+    {
+      "name": "f",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin run -- --pm npm dprint fmt"
+    },
+    {
+      "name": "format",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin run -- --pm npm dprint fmt"
+    },
+    {
+      "name": "i",
+      "source": "cargo",
+      "alias_of": "install --path ."
+    },
+    {
+      "name": "l",
+      "source": "cargo",
+      "alias_of": "clippy --all-targets --all-features -- -D warnings -D clippy::all"
+    },
+    {
+      "name": "lint",
+      "source": "cargo",
+      "alias_of": "clippy --all-targets --all-features -- -D warnings -D clippy::all"
+    },
+    {
+      "name": "man",
+      "source": "cargo",
+      "alias_of": "run --quiet --features man -- man"
+    },
+    {
+      "name": "meta",
+      "source": "cargo",
+      "alias_of": "metadata --format-version 1"
+    },
+    {
+      "name": "r",
+      "source": "cargo",
+      "alias_of": "run"
+    },
+    {
+      "name": "rbin-run",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin run --release"
+    },
+    {
+      "name": "rbin-runner",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin runner --release"
+    },
+    {
+      "name": "rm",
+      "source": "cargo",
+      "alias_of": "remove"
+    },
+    {
+      "name": "rq",
+      "source": "cargo",
+      "alias_of": "run --quiet"
+    },
+    {
+      "name": "rr",
+      "source": "cargo",
+      "alias_of": "run --release"
+    },
+    {
+      "name": "runner",
+      "source": "cargo",
+      "alias_of": "run --quiet --bin runner"
+    },
+    {
+      "name": "schema",
+      "source": "cargo",
+      "alias_of": "run --quiet --features schema -- schema"
+    },
+    {
+      "name": "t",
+      "source": "cargo",
+      "alias_of": "test"
+    }
+  ],
+  "warnings": []
+}

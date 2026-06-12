@@ -1,35 +1,5 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "RunnerConfig",
-  "description": "Top-level schema for `runner.toml`.",
-  "type": "object",
-  "properties": {
-    "chain": {
-      "description": "`[chain]` — failure policy for multi-task chains.",
-      "$ref": "#/$defs/ChainSection"
-    },
-    "github": {
-      "description": "`[github]` — GitHub Actions integration (output grouping).",
-      "$ref": "#/$defs/GitHubSection"
-    },
-    "parallel": {
-      "description": "`[parallel]` — presentation of parallel (`-p`) chain output.",
-      "$ref": "#/$defs/ParallelSection"
-    },
-    "pm": {
-      "description": "`[pm]` — per-ecosystem package-manager overrides.",
-      "$ref": "#/$defs/PmSection"
-    },
-    "resolution": {
-      "description": "`[resolution]` — resolver-policy knobs.",
-      "$ref": "#/$defs/ResolutionSection"
-    },
-    "task_runner": {
-      "description": "`[task_runner]` — task-runner preferences.",
-      "$ref": "#/$defs/TaskRunnerSection"
-    }
-  },
-  "additionalProperties": false,
   "$defs": {
     "ChainSection": {
       "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.\n\n`Option<bool>` rather than `bool` so the resolver can distinguish\n\"user explicitly set false\" from \"user didn't say\": env-overrides-\nconfig layering means `[chain].keep_going = false` plus\n`RUNNER_KEEP_GOING=1` resolves to `true`.",
@@ -37,23 +7,27 @@
       "properties": {
         "keep_going": {
           "description": "Run every task in the chain to completion regardless of failures.\nMutually exclusive with `kill_on_fail`. Equivalent to `-k` /\n`RUNNER_KEEP_GOING`.",
+          "default": null,
           "type": [
             "boolean",
             "null"
-          ],
-          "default": null
+          ]
         },
         "kill_on_fail": {
           "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown — uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
+          "default": null,
           "type": [
             "boolean",
             "null"
-          ],
-          "default": null
+          ]
         }
       },
       "additionalProperties": false,
       "not": {
+        "required": [
+          "keep_going",
+          "kill_on_fail"
+        ],
         "properties": {
           "keep_going": {
             "const": true
@@ -61,11 +35,7 @@
           "kill_on_fail": {
             "const": true
           }
-        },
-        "required": [
-          "keep_going",
-          "kill_on_fail"
-        ]
+        }
       }
     },
     "GitHubSection": {
@@ -74,13 +44,13 @@
       "properties": {
         "group_output": {
           "description": "Wrap task output in `runner: <task>` groups under GitHub Actions.\nDefaults to `true`; set `false` to restore the old ungrouped output,\nincluding the live `[task]`-prefixed muxer for parallel runs.",
-          "type": "boolean",
-          "default": true
+          "default": true,
+          "type": "boolean"
         },
         "group_parallel": {
           "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped), but only when\n[`Self::group_output`] is also true. The non-CI equivalent is\n`[parallel].grouped` (default `false`), so CI and local diverge unless\nyou set them to match.",
-          "type": "boolean",
-          "default": true
+          "default": true,
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -91,8 +61,8 @@
       "properties": {
         "grouped": {
           "description": "Buffer each parallel task's output and print it as one contiguous\nblock the moment that task finishes (completion order — first done,\nfirst shown), instead of interleaving prefixed lines live. Defaults to\n`false` (the live `[task]`-prefixed muxer); set `true` to group even in\na plain terminal, where a colored header delimits each block.",
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         }
       },
       "additionalProperties": false
@@ -104,8 +74,8 @@
         "node": {
           "description": "Package manager used to dispatch Node `package.json` scripts.\nValid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ],
           "enum": [
             "npm",
@@ -119,8 +89,8 @@
         "python": {
           "description": "Package manager used for Python ecosystems.\nValid values: `uv`, `poetry`, `pipenv`.",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ],
           "enum": [
             "uv",
@@ -139,8 +109,8 @@
         "fallback": {
           "description": "`probe` (default) — PATH probe in canonical order when no signals\nmatch; `npm` — legacy silent fallback; `error` — refuse to proceed.",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ],
           "enum": [
             "probe",
@@ -152,8 +122,8 @@
         "on_mismatch": {
           "description": "`warn` (default), `error`, `ignore` — how to react when declaration\n(manifest field) disagrees with detection (lockfile).",
           "type": [
-            "string",
-            "null"
+            "null",
+            "string"
           ],
           "enum": [
             "warn",
@@ -171,8 +141,8 @@
       "properties": {
         "prefer": {
           "description": "Ranked preference list. Restricts candidates to runners in the\nlist (in listed order); a same-named task under a runner not in\nthe list is hard-rejected. Parsed into [`crate::types::TaskRunner`]\nat resolver-init time so unknown labels fail fast.\n\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,\n`bacon`. (Not constrained in the JSON Schema — the runtime\nparser emits a more helpful error than a schema-validation\nfailure would.)",
-          "type": "array",
           "default": [],
+          "type": "array",
           "items": {
             "type": "string"
           }
@@ -180,5 +150,35 @@
       },
       "additionalProperties": false
     }
-  }
+  },
+  "title": "RunnerConfig",
+  "description": "Top-level schema for `runner.toml`.",
+  "type": "object",
+  "properties": {
+    "chain": {
+      "$ref": "#/$defs/ChainSection",
+      "description": "`[chain]` — failure policy for multi-task chains."
+    },
+    "github": {
+      "$ref": "#/$defs/GitHubSection",
+      "description": "`[github]` — GitHub Actions integration (output grouping)."
+    },
+    "parallel": {
+      "$ref": "#/$defs/ParallelSection",
+      "description": "`[parallel]` — presentation of parallel (`-p`) chain output."
+    },
+    "pm": {
+      "$ref": "#/$defs/PmSection",
+      "description": "`[pm]` — per-ecosystem package-manager overrides."
+    },
+    "resolution": {
+      "$ref": "#/$defs/ResolutionSection",
+      "description": "`[resolution]` — resolver-policy knobs."
+    },
+    "task_runner": {
+      "$ref": "#/$defs/TaskRunnerSection",
+      "description": "`[task_runner]` — task-runner preferences."
+    }
+  },
+  "additionalProperties": false
 }

@@ -991,14 +991,17 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Emit the runner.toml JSON Schema (build: --features schema)
+    /// Emit JSON Schemas (build: --features schema)
     #[cfg(feature = "schema")]
     Schema {
-        /// Write the schema to this file instead of stdout.
+        /// Emit every committed schema into the output directory.
+        #[arg(long)]
+        all: bool,
+        /// Write the schema to this file, or all schemas to this directory with --all.
         #[arg(
             short = 'o',
             long = "output",
-            value_name = "FILE",
+            value_name = "PATH",
             value_hint = clap::ValueHint::FilePath,
             value_parser = clap::value_parser!(PathBuf),
         )]
