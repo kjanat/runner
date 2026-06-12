@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.13.0] - 2026-06-12
+
 ### Added
 
 - `runner doctor` (and `info --json`) now classify PATH-probe hits that
@@ -80,6 +82,20 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   line. The banner had its own copy of the arg0-parsing helper that
   skipped the `.exe` stripping done everywhere else; it now reuses the
   canonical `bin_name_from_arg0`.
+- `runner man` now works on Windows under `--features man` builds. The
+  subcommand was gated `not(windows)`, so with `external_subcommand` in
+  play it silently degraded to task dispatch (`bun man` → "Script not
+  found") instead of rendering. Rendering is pure `clap_mangen` with no
+  OS-specific code, so the gate bought nothing and is gone.
+- `install.sh` runs under any POSIX `sh`. It carried a `#!/usr/bin/env
+  bash` shebang, but `curl … | sh` ignores the shebang, so the bash-only
+  `set -o pipefail` aborted on line 2 under dash/busybox — the default
+  `/bin/sh` on the `-musl` targets. Rewritten POSIX-clean. It also picks
+  the install dir more intelligently now: reuse an already-installed
+  runner's directory (verified by its `-V` banner, so a system `run`/
+  `runner` is never clobbered), otherwise prefer `~/bin` or
+  `~/.local/bin` already on `PATH` (then one that exists), falling back
+  to `~/.local/bin`.
 
 ## [0.12.2] - 2026-06-10
 
@@ -1129,7 +1145,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/kjanat/runner/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/kjanat/runner/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/kjanat/runner/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/kjanat/runner/compare/v0.11.0...v0.12.0
