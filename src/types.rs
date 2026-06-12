@@ -236,6 +236,20 @@ pub(crate) enum DetectionWarning {
         /// the user can spot their typo without re-reading the file.
         raw: String,
     },
+    /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
+    /// that doesn't parse, and the command chose to report it instead
+    /// of dying — `runner doctor` must be able to diagnose the broken
+    /// environment it exists to diagnose. Strict commands still treat
+    /// the same condition as a fatal error.
+    InvalidEnvOverride {
+        /// The variable that carried the value (`"RUNNER_PM"`).
+        var: &'static str,
+        /// The offending value, pre-sanitized for display (control
+        /// chars escaped, truncated).
+        raw: String,
+        /// Rendered parse error, already source-prefixed.
+        message: String,
+    },
 }
 
 impl DetectionWarning {
@@ -252,6 +266,7 @@ impl DetectionWarning {
             | Self::UnparseablePackageManager { .. } => "package.json",
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
+            Self::InvalidEnvOverride { .. } => "env",
         }
     }
 
@@ -317,6 +332,9 @@ impl DetectionWarning {
                  (expected one of npm|pnpm|yarn|bun|deno, optionally followed by @<version>); \
                  declaration ignored, falling back to lockfile / PATH probe",
             ),
+            Self::InvalidEnvOverride { var, message, .. } => {
+                format!("{var} is set but invalid and was ignored for this report: {message}")
+            }
         }
     }
 }
@@ -643,41 +661,173 @@ impl TaskSource {
     }
 }
 
-/// Loose semver prefix match.
+/// Does `current` satisfy the `expected` version constraint?
 ///
-/// Strips leading range operators (`>=`, `~`, `^`, etc.) and checks whether
-/// `current` starts with the cleaned `expected` value. A bare major version
-/// like `"20"` matches `"20.x.y"`.
+/// `expected` accepts the node-semver range grammar found in `.nvmrc`,
+/// `.node-version`, `.tool-versions`, and `package.json` `engines.node`:
+/// comparator sets (`>=22.22.2`, `>=18 <21`), caret/tilde ranges
+/// (`^20.11`, `~18.15`), `||` unions, hyphen ranges (`18 - 20`), and
+/// wildcards (`20.x`). Evaluation is delegated to the `semver` crate
+/// after normalizing node's grammar into the comma-separated comparator
+/// form it parses.
 ///
-/// This intentionally ignores operator semantics — use the `semver` crate
-/// for precise constraint evaluation.
+/// Bare versions (`"20"`, `"20.11"`) keep prefix-at-segment-boundary
+/// semantics — a `.nvmrc` saying `20.11` means "any 20.11.x", which is
+/// narrower than the caret default the `semver` crate would apply.
+///
+/// Anything unevaluable (`lts/*`, malformed ranges, a non-version
+/// `current`) falls back to the historical prefix match, so this never
+/// panics and never rejects input it used to accept.
+///
+/// A prerelease `current` (e.g. `23.0.0-nightly`) only matches a
+/// comparator that pins the same triple with a prerelease tag — the
+/// `semver` crate's gate, mirroring node-semver's default behavior.
 pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
     let expected = expected.trim();
     let current = current.trim();
 
-    let expected_clean = expected
+    if bare_version(expected) {
+        return prefix_version_matches(expected, current);
+    }
+    range_matches(expected, current).unwrap_or_else(|| prefix_version_matches(expected, current))
+}
+
+/// The historical loose prefix match, kept as the fallback for inputs
+/// the range path can't evaluate and as the primary semantics for bare
+/// versions.
+///
+/// Strips leading range operators (`>=`, `~`, `^`, etc.) and checks
+/// whether `current` starts with the cleaned `expected` value at a
+/// segment boundary. A bare major version like `"20"` matches `"20.x.y"`.
+fn prefix_version_matches(expected: &str, current: &str) -> bool {
+    let after_ops = expected
+        .trim()
         .trim_start_matches(">=")
         .trim_start_matches("<=")
         .trim_start_matches('>')
         .trim_start_matches('<')
+        .trim_start_matches('=')
         .trim_start_matches('~')
         .trim_start_matches('^')
-        .trim_start_matches('v')
-        .trim();
-
-    if !expected_clean.contains('.') {
-        return current.starts_with(expected_clean)
-            && current[expected_clean.len()..]
-                .chars()
-                .next()
-                .is_none_or(|c| c == '.');
-    }
+        .trim_start();
+    let expected_clean = strip_v(after_ops).trim();
 
     current.starts_with(expected_clean)
         && current[expected_clean.len()..]
             .chars()
             .next()
             .is_none_or(|c| c == '.')
+}
+
+/// True when `s` is a plain version literal — optionally `v`-prefixed,
+/// then nothing but ASCII digits and dots (`20`, `20.11`, `v20.11.0`).
+/// Operators, wildcards, and named aliases (`lts/*`) all return false.
+fn bare_version(s: &str) -> bool {
+    let stripped = strip_v(s);
+    !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Strip a single leading `v` (`v18` → `18`) per nvm/Corepack convention.
+fn strip_v(s: &str) -> &str {
+    s.strip_prefix('v').unwrap_or(s)
+}
+
+/// Evaluate `expected` as a node-semver range against `current`.
+///
+/// Returns `None` when the outcome could not be determined — `current`
+/// isn't a version, or no `||` group both parsed and matched while at
+/// least one group was unparseable — so the caller can fall back to the
+/// prefix match. A parsed-and-matching group wins immediately, letting
+/// `">=18 || lts/*"` succeed on the evaluable half.
+fn range_matches(expected: &str, current: &str) -> Option<bool> {
+    let cur = parse_current_version(current)?;
+    let mut any_unparseable = false;
+    for group in expected.split("||") {
+        let group = group.trim();
+        if group.is_empty() {
+            any_unparseable = true;
+            continue;
+        }
+        let req = normalize_range_group(group)
+            .and_then(|normalized| semver::VersionReq::parse(&normalized).ok());
+        match req {
+            Some(req) if req.matches(&cur) => return Some(true),
+            Some(_) => {}
+            None => any_unparseable = true,
+        }
+    }
+    if any_unparseable { None } else { Some(false) }
+}
+
+/// Rewrite one `||`-free node-semver comparator group into the
+/// comma-separated grammar `semver::VersionReq::parse` accepts.
+///
+/// Handles hyphen ranges (`18 - 20` → `>=18, <=20`; a partial upper
+/// bound is already inclusive of its whole segment in the crate's
+/// grammar), whitespace-separated AND comparators, operators detached
+/// from their version (`>= 18`), and per-token `v` prefixes. Bare
+/// digit-leading tokens get an `=` operator — the crate would otherwise
+/// default them to caret, which is looser than node's exact-partial
+/// semantics. Wildcard tokens (`*`, `x`) pass through untouched because
+/// `=*` does not parse.
+fn normalize_range_group(group: &str) -> Option<String> {
+    let group = group.replace(',', " ");
+    let tokens: Vec<&str> = group.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    if let [low, "-", high] = tokens.as_slice() {
+        return Some(format!(">={}, <={}", strip_v(low), strip_v(high)));
+    }
+    if tokens.contains(&"-") {
+        return None;
+    }
+
+    let mut parts: Vec<String> = Vec::with_capacity(tokens.len());
+    let mut iter = tokens.iter();
+    while let Some(token) = iter.next() {
+        let (op, rest) = split_operator(token);
+        if op.is_empty() {
+            let rest = strip_v(rest);
+            if rest.starts_with(|c: char| c.is_ascii_digit()) {
+                parts.push(format!("={rest}"));
+            } else {
+                parts.push(rest.to_string());
+            }
+        } else if rest.is_empty() {
+            let version = iter.next()?;
+            parts.push(format!("{op}{}", strip_v(version)));
+        } else {
+            parts.push(format!("{op}{}", strip_v(rest)));
+        }
+    }
+    Some(parts.join(", "))
+}
+
+/// Split a leading range operator off a comparator token. Returns
+/// `(op, rest)` with `op` ∈ {`>=`, `<=`, `>`, `<`, `=`, `~`, `^`, ``""``}.
+fn split_operator(token: &str) -> (&str, &str) {
+    for op in [">=", "<=", ">", "<", "=", "~", "^"] {
+        if let Some(rest) = token.strip_prefix(op) {
+            return (op, rest);
+        }
+    }
+    ("", token)
+}
+
+/// Parse `current` (a `node --version`-style string with the `v`
+/// already stripped by detection) into a full [`semver::Version`],
+/// padding bare `major`/`major.minor` forms to a triple. Deliberately
+/// duplicates the padding in `tool::node::normalize_version` — `types`
+/// must not grow a dependency on `tool`.
+fn parse_current_version(current: &str) -> Option<semver::Version> {
+    let padded = match current.split('.').count() {
+        1 => format!("{current}.0.0"),
+        2 => format!("{current}.0"),
+        _ => current.to_string(),
+    };
+    semver::Version::parse(&padded).ok()
 }
 
 #[cfg(test)]
@@ -689,6 +839,131 @@ mod tests {
     fn dotted_versions_match_segment_boundaries_only() {
         assert!(version_matches("20.11", "20.11.0"));
         assert!(!version_matches("20.11", "20.110.0"));
+    }
+
+    #[test]
+    fn gte_range_matches_higher_versions() {
+        // Regression: ">=22.22.2" used to prefix-match as "=22.22.2",
+        // warning on 22.22.3 and 25.9.0 — both satisfy the range.
+        assert!(version_matches(">=22.22.2", "22.22.3"));
+        assert!(version_matches(">=22.22.2", "25.9.0"));
+        assert!(!version_matches(">=22.22.2", "22.22.1"));
+    }
+
+    #[test]
+    fn operator_with_space_before_version() {
+        assert!(version_matches(">= 18", "20.0.0"));
+        assert!(!version_matches(">= 18", "17.9.0"));
+    }
+
+    #[test]
+    fn partial_comparator_bounds() {
+        assert!(version_matches(">=18", "18.0.0"));
+        // node desugars ">22" to ">=23.0.0": 22.x never qualifies.
+        assert!(!version_matches(">22", "22.5.0"));
+        assert!(version_matches(">22", "23.0.0"));
+        assert!(version_matches("<21", "20.99.0"));
+        assert!(!version_matches("<21", "21.0.0"));
+        assert!(version_matches("<=20", "20.99.0"));
+    }
+
+    #[test]
+    fn caret_ranges() {
+        // The case bare-prefix semantics must reject but caret accepts.
+        assert!(version_matches("^20.11", "20.12.0"));
+        assert!(!version_matches("^20.11", "20.10.9"));
+        assert!(!version_matches("^20.11", "21.0.0"));
+        assert!(version_matches("^0.3", "0.3.9"));
+        assert!(!version_matches("^0.3", "0.4.0"));
+    }
+
+    #[test]
+    fn tilde_ranges() {
+        assert!(version_matches("~18.15", "18.15.7"));
+        assert!(!version_matches("~18.15", "18.16.0"));
+        assert!(version_matches("~18.15.0", "18.15.3"));
+    }
+
+    #[test]
+    fn space_separated_and_conjunction() {
+        assert!(version_matches(">=18 <21", "20.5.1"));
+        assert!(!version_matches(">=18 <21", "21.0.0"));
+        assert!(!version_matches(">=18 <21", "17.0.0"));
+    }
+
+    #[test]
+    fn or_unions() {
+        assert!(version_matches("18||20", "20.4.2"));
+        assert!(!version_matches("18||20", "19.0.0"));
+        assert!(version_matches(">=18 <19 || >=20", "18.5.0"));
+        assert!(!version_matches(">=18 <19 || >=20", "19.5.0"));
+        assert!(version_matches(">=18 <19 || >=20", "25.9.0"));
+    }
+
+    #[test]
+    fn hyphen_ranges() {
+        assert!(version_matches("18 - 20", "19.0.0"));
+        // Inclusive partial upper bound: node treats "- 20" as "<21".
+        assert!(version_matches("18 - 20", "20.9.9"));
+        assert!(!version_matches("18 - 20", "21.0.0"));
+        assert!(!version_matches("18 - 20", "17.9.9"));
+    }
+
+    #[test]
+    fn wildcard_ranges() {
+        assert!(version_matches("20.x", "20.5.1"));
+        assert!(!version_matches("20.x", "21.0.0"));
+        assert!(version_matches("20.*", "20.0.0"));
+        assert!(version_matches("*", "99.0.0"));
+    }
+
+    #[test]
+    fn bare_versions_keep_prefix_semantics() {
+        // Regression guard for the caret trap: the semver crate would
+        // read a bare "20.11" as "^20.11" and accept 20.12.
+        assert!(!version_matches("20.11", "20.12.0"));
+        assert!(version_matches("20", "20.11.0"));
+        assert!(!version_matches("2", "20.11.0"));
+        assert!(version_matches("v20", "20.1.0"));
+        assert!(version_matches("20.11.0", "20.11.0"));
+    }
+
+    #[test]
+    fn exact_operator_partial_equality() {
+        assert!(version_matches("=20.11", "20.11.5"));
+        assert!(!version_matches("=20.11", "20.12.0"));
+    }
+
+    #[test]
+    fn operator_with_v_prefix() {
+        assert!(version_matches(">=v18", "18.0.0"));
+    }
+
+    #[test]
+    fn unparseable_expected_falls_back_to_prefix() {
+        assert!(!version_matches("lts/*", "22.0.0"));
+        assert!(!version_matches("lts/jod", "22.0.0"));
+        assert!(!version_matches("", "20.0.0"));
+    }
+
+    #[test]
+    fn unparseable_or_group_does_not_block_parsed_match() {
+        assert!(version_matches(">=18 || lts/*", "20.0.0"));
+    }
+
+    #[test]
+    fn unparseable_current_falls_back_to_prefix() {
+        assert!(!version_matches(">=18", "not-a-version"));
+    }
+
+    #[test]
+    fn prefix_fallback_strips_equals_and_spaced_v() {
+        // An unparseable `current` forces the prefix fallback; the
+        // cleaned expected value must survive a bare `=` operator and
+        // whitespace between the operator and a `v`-prefixed version.
+        assert!(version_matches("=20.11", "20.11.beta"));
+        assert!(!version_matches("=20.11", "20.12.beta"));
+        assert!(version_matches(">= v18", "18.unknown"));
     }
 
     #[test]

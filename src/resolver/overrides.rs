@@ -8,15 +8,15 @@ use anyhow::{Result, anyhow};
 
 use super::join_labels;
 use super::policies::{
-    is_env_truthy, parse_prefer_runners, resolve_failure_policy, resolve_fallback_policy,
-    resolve_mismatch_policy,
+    is_env_truthy, parse_fallback_label, parse_mismatch_label, parse_prefer_runners,
+    resolve_failure_policy, resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
     DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
     ResolutionOverrides, RunnerOverride, SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
-use crate::types::{Ecosystem, PackageManager, TaskRunner};
+use crate::types::{DetectionWarning, Ecosystem, PackageManager, TaskRunner};
 
 impl ResolutionOverrides {
     /// Assemble overrides from CLI flag values (already parsed by clap),
@@ -42,49 +42,87 @@ impl ResolutionOverrides {
         failure: crate::cli::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
-        let env_pm = std::env::var("RUNNER_PM").ok();
-        let env_runner = std::env::var("RUNNER_RUNNER").ok();
-        let env_fallback = std::env::var("RUNNER_FALLBACK").ok();
-        let env_on_mismatch = std::env::var("RUNNER_ON_MISMATCH").ok();
-        let env_no_warnings = std::env::var("RUNNER_NO_WARNINGS").ok();
-        let env_explain = std::env::var("RUNNER_EXPLAIN").ok();
-        let env_keep_going = std::env::var("RUNNER_KEEP_GOING").ok();
-        let env_kill_on_fail = std::env::var("RUNNER_KILL_ON_FAIL").ok();
-        Self::from_sources(OverrideSources {
-            pm: SourceValue {
-                cli: cli_pm,
-                env: env_pm.as_deref(),
-            },
-            runner: SourceValue {
-                cli: cli_runner,
-                env: env_runner.as_deref(),
-            },
-            fallback: SourceValue {
-                cli: cli_fallback,
-                env: env_fallback.as_deref(),
-            },
-            on_mismatch: SourceValue {
-                cli: cli_on_mismatch,
-                env: env_on_mismatch.as_deref(),
-            },
-            no_warnings: ExplainSource {
-                cli: diagnostics.no_warnings,
-                env: env_no_warnings.as_deref(),
-            },
-            explain: ExplainSource {
-                cli: diagnostics.explain,
-                env: env_explain.as_deref(),
-            },
-            keep_going: ExplainSource {
-                cli: failure.keep_going,
-                env: env_keep_going.as_deref(),
-            },
-            kill_on_fail: ExplainSource {
-                cli: failure.kill_on_fail,
-                env: env_kill_on_fail.as_deref(),
-            },
-            config,
-        })
+        let env = EnvSnapshot::capture();
+        let cli = CliSides {
+            pm: cli_pm,
+            runner: cli_runner,
+            fallback: cli_fallback,
+            on_mismatch: cli_on_mismatch,
+            diagnostics,
+            failure,
+        };
+        Self::from_sources(env.sources(cli, config))
+    }
+
+    /// Lenient sibling of [`Self::from_cli_and_env`] for commands that
+    /// must keep working when the *environment* is misconfigured —
+    /// `runner doctor` exists to diagnose exactly that, so it can't die
+    /// on the condition it should report. Invalid env-sourced override
+    /// values are blanked and returned as
+    /// [`DetectionWarning::InvalidEnvOverride`]; CLI flag values stay
+    /// strict (an explicit flag is an explicit failure).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for everything the strict path rejects except
+    /// unparseable env override values: bad CLI values, invalid
+    /// `runner.toml` fields, conflicting failure-policy toggles.
+    pub(crate) fn from_cli_and_env_lenient(
+        cli_pm: Option<&str>,
+        cli_runner: Option<&str>,
+        cli_fallback: Option<&str>,
+        cli_on_mismatch: Option<&str>,
+        diagnostics: DiagnosticFlags,
+        failure: crate::cli::ChainFailureFlags,
+        config: Option<&LoadedConfig>,
+    ) -> Result<(Self, Vec<DetectionWarning>)> {
+        let env = EnvSnapshot::capture();
+        let cli = CliSides {
+            pm: cli_pm,
+            runner: cli_runner,
+            fallback: cli_fallback,
+            on_mismatch: cli_on_mismatch,
+            diagnostics,
+            failure,
+        };
+        Self::from_sources_lenient(env.sources(cli, config))
+    }
+
+    /// Pure-function counterpart of [`Self::from_cli_and_env_lenient`]:
+    /// pre-validates every env-sourced string field, blanking invalid
+    /// values into warnings, then delegates to [`Self::from_sources`].
+    ///
+    /// Mirrors [`parse_override`] precedence exactly — an env value
+    /// shadowed by a CLI value is never parsed by the strict path, so
+    /// it is not validated (or warned about) here either.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_cli_and_env_lenient`].
+    pub(crate) fn from_sources_lenient(
+        mut sources: OverrideSources<'_>,
+    ) -> Result<(Self, Vec<DetectionWarning>)> {
+        let mut warnings = Vec::new();
+        lenient_env_field(&mut sources.pm, "RUNNER_PM", &mut warnings, |raw| {
+            parse_pm_label(raw).map(drop)
+        });
+        lenient_env_field(&mut sources.runner, "RUNNER_RUNNER", &mut warnings, |raw| {
+            parse_runner_label(raw).map(drop)
+        });
+        lenient_env_field(
+            &mut sources.fallback,
+            "RUNNER_FALLBACK",
+            &mut warnings,
+            |raw| parse_fallback_label(raw).map(drop),
+        );
+        lenient_env_field(
+            &mut sources.on_mismatch,
+            "RUNNER_ON_MISMATCH",
+            &mut warnings,
+            |raw| parse_mismatch_label(raw).map(drop),
+        );
+        let overrides = Self::from_sources(sources)?;
+        Ok((overrides, warnings))
     }
 
     /// Pure-function constructor that consumes a fully-populated
@@ -106,12 +144,14 @@ impl ResolutionOverrides {
         let pm = parse_override(
             sources.pm.cli,
             sources.pm.env,
+            &PM_SOURCE_NAMES,
             parse_pm_label,
             |pm, origin| PmOverride { pm, origin },
         )?;
         let runner = parse_override(
             sources.runner.cli,
             sources.runner.env,
+            &RUNNER_SOURCE_NAMES,
             parse_runner_label,
             |runner, origin| RunnerOverride { runner, origin },
         )?;
@@ -197,7 +237,8 @@ fn parse_pm_label(raw: &str) -> Result<PackageManager> {
         ));
     }
     Err(anyhow!(
-        "unknown package manager {raw:?}; expected one of {}",
+        "unknown package manager \"{}\"; expected one of {}",
+        sanitize_raw_label(raw),
         join_labels(
             PackageManager::all()
                 .iter()
@@ -219,9 +260,242 @@ fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
         ));
     }
     Err(anyhow!(
-        "unknown task runner {raw:?}; expected one of {}",
+        "unknown task runner \"{}\"; expected one of {}",
+        sanitize_raw_label(raw),
         join_labels(TaskRunner::all().iter().copied().map(TaskRunner::label)),
     ))
+}
+
+/// Maximum characters of a raw override value rendered in an error.
+const MAX_RAW_DISPLAY: usize = 60;
+
+/// Render an untrusted override value safely for a one-line error:
+/// control characters (ANSI escapes, newlines) are escaped via
+/// [`char::escape_debug`], then the escaped string is truncated to
+/// [`MAX_RAW_DISPLAY`] characters with an ellipsis. Values come straight
+/// from the environment and can be arbitrary captured command output —
+/// an unquoted PowerShell `$env:RUNNER_PM=deno` assigns deno's entire
+/// REPL banner, ANSI codes and all.
+fn sanitize_raw_label(raw: &str) -> String {
+    let escaped: String = raw.chars().flat_map(char::escape_debug).collect();
+    let mut chars = escaped.chars();
+    let truncated: String = chars.by_ref().take(MAX_RAW_DISPLAY).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lenient_policy_env_garbage_does_not_leak_full_raw_value() {
+        let token_prefix = "ghp_";
+        let fake_token = format!(
+            "{token_prefix}{}DO_NOT_LEAK_ME",
+            "A".repeat(MAX_RAW_DISPLAY.saturating_sub(token_prefix.len()))
+        );
+        let huge = fake_token.repeat(6);
+        let (_overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            fallback: SourceValue {
+                cli: None,
+                env: Some(&huge),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("lenient pass must absorb fallback env garbage");
+
+        assert_eq!(warnings.len(), 1);
+        let detail = warnings[0].detail();
+        assert!(
+            detail.contains('…'),
+            "long invalid env value should be truncated in warning detail"
+        );
+        assert!(
+            !detail.contains("DO_NOT_LEAK_ME"),
+            "secret-looking env tail must not leak in warning detail"
+        );
+    }
+}
+
+/// The CLI-flag half of an override assembly, bundled so
+/// [`EnvSnapshot::sources`] pairs one CLI side with one env snapshot
+/// instead of threading seven loose parameters.
+#[derive(Clone, Copy)]
+struct CliSides<'a> {
+    pm: Option<&'a str>,
+    runner: Option<&'a str>,
+    fallback: Option<&'a str>,
+    on_mismatch: Option<&'a str>,
+    diagnostics: DiagnosticFlags,
+    failure: crate::cli::ChainFailureFlags,
+}
+
+/// Captured `RUNNER_*` environment, separated from [`OverrideSources`]
+/// assembly so the strict and lenient constructors share one read path
+/// and can never drift on which variables they consult.
+struct EnvSnapshot {
+    pm: Option<String>,
+    runner: Option<String>,
+    fallback: Option<String>,
+    on_mismatch: Option<String>,
+    no_warnings: Option<String>,
+    explain: Option<String>,
+    keep_going: Option<String>,
+    kill_on_fail: Option<String>,
+}
+
+impl EnvSnapshot {
+    /// Read every `RUNNER_*` override variable from the process
+    /// environment.
+    fn capture() -> Self {
+        Self {
+            pm: std::env::var("RUNNER_PM").ok(),
+            runner: std::env::var("RUNNER_RUNNER").ok(),
+            fallback: std::env::var("RUNNER_FALLBACK").ok(),
+            on_mismatch: std::env::var("RUNNER_ON_MISMATCH").ok(),
+            no_warnings: std::env::var("RUNNER_NO_WARNINGS").ok(),
+            explain: std::env::var("RUNNER_EXPLAIN").ok(),
+            keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
+            kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
+        }
+    }
+
+    /// Pair the captured environment with the CLI flag values into the
+    /// [`OverrideSources`] consumed by the constructors.
+    fn sources<'a>(
+        &'a self,
+        cli: CliSides<'a>,
+        config: Option<&'a LoadedConfig>,
+    ) -> OverrideSources<'a> {
+        OverrideSources {
+            pm: SourceValue {
+                cli: cli.pm,
+                env: self.pm.as_deref(),
+            },
+            runner: SourceValue {
+                cli: cli.runner,
+                env: self.runner.as_deref(),
+            },
+            fallback: SourceValue {
+                cli: cli.fallback,
+                env: self.fallback.as_deref(),
+            },
+            on_mismatch: SourceValue {
+                cli: cli.on_mismatch,
+                env: self.on_mismatch.as_deref(),
+            },
+            no_warnings: ExplainSource {
+                cli: cli.diagnostics.no_warnings,
+                env: self.no_warnings.as_deref(),
+            },
+            explain: ExplainSource {
+                cli: cli.diagnostics.explain,
+                env: self.explain.as_deref(),
+            },
+            keep_going: ExplainSource {
+                cli: cli.failure.keep_going,
+                env: self.keep_going.as_deref(),
+            },
+            kill_on_fail: ExplainSource {
+                cli: cli.failure.kill_on_fail,
+                env: self.kill_on_fail.as_deref(),
+            },
+            config,
+        }
+    }
+}
+
+/// Pre-validate one env-sourced override field for the lenient
+/// constructor. The env side is only consulted (and therefore only
+/// validated) when the CLI side is unset or whitespace-only — exactly
+/// the precedence [`parse_override`] applies — so CLI-shadowed env
+/// garbage stays invisible, same as the strict path. An invalid env
+/// value is blanked from `field` and reported as a warning carrying
+/// the sanitized value and the bare parse error.
+fn lenient_env_field(
+    field: &mut SourceValue<'_>,
+    var: &'static str,
+    warnings: &mut Vec<DetectionWarning>,
+    validate: impl Fn(&str) -> Result<()>,
+) {
+    if field.cli.map(str::trim).is_some_and(|s| !s.is_empty()) {
+        return;
+    }
+    let Some(raw) = field.env.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if let Err(err) = validate(raw) {
+        let sanitized = sanitize_raw_label(raw);
+        warnings.push(DetectionWarning::InvalidEnvOverride {
+            var,
+            raw: sanitized.clone(),
+            message: sanitize_error_message(raw, &sanitized, &format!("{err}")),
+        });
+        field.env = None;
+    }
+}
+
+fn sanitize_error_message(raw: &str, sanitized: &str, message: &str) -> String {
+    let escaped: String = raw.chars().flat_map(char::escape_debug).collect();
+    message.replace(raw, sanitized).replace(&escaped, sanitized)
+}
+
+/// Source names for the cross-ecosystem PM override.
+const PM_SOURCE_NAMES: SourceNames = SourceNames {
+    cli: "--pm",
+    env: "RUNNER_PM",
+    example: "pnpm",
+};
+
+/// Source names for the task-runner override.
+const RUNNER_SOURCE_NAMES: SourceNames = SourceNames {
+    cli: "--runner",
+    env: "RUNNER_RUNNER",
+    example: "just",
+};
+
+/// The user-facing names of one override's sources, used to attribute
+/// parse errors to the flag or variable that carried the bad value.
+struct SourceNames {
+    /// CLI flag, e.g. `--pm`.
+    cli: &'static str,
+    /// Environment variable, e.g. `RUNNER_PM`.
+    env: &'static str,
+    /// A valid example value, e.g. `pnpm`.
+    example: &'static str,
+}
+
+impl SourceNames {
+    /// Prefix `err` with the source that supplied `raw`. When the value
+    /// contains line breaks it is almost certainly captured command
+    /// output rather than a name the user typed (the PowerShell
+    /// unquoted-assignment footgun), so append a hint showing the
+    /// correct spelling for that source.
+    fn decorate(&self, err: &anyhow::Error, raw: &str, origin: &OverrideOrigin) -> anyhow::Error {
+        let from_env = matches!(origin, OverrideOrigin::EnvVar);
+        let source = if from_env { self.env } else { self.cli };
+        let hint = if raw.contains('\n') || raw.contains('\r') {
+            let example = if from_env {
+                format!(
+                    "$env:{}='{}' (quote the value in PowerShell)",
+                    self.env, self.example
+                )
+            } else {
+                format!("{} {}", self.cli, self.example)
+            };
+            format!(
+                "\n  hint: the value contains line breaks and looks like captured command \
+                 output; pass a plain name instead, e.g. {example}"
+            )
+        } else {
+            String::new()
+        };
+        anyhow!("{source}: {err}{hint}")
+    }
 }
 
 /// Generic CLI-then-env override parser. CLI wins; whitespace is
@@ -230,9 +504,13 @@ fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
 /// are treated as unset so a user can clear an inherited variable with
 /// `RUNNER_PM= runner …`. Matches the whitespace handling used by
 /// [`super::policies::is_env_truthy`] for boolean env flags.
+///
+/// Parse failures are attributed to the source that carried the value
+/// (`names.cli` or `names.env`) via [`SourceNames::decorate`].
 fn parse_override<T, P, V, B>(
     cli: Option<&str>,
     env: Option<&str>,
+    names: &SourceNames,
     parse: V,
     build: B,
 ) -> Result<Option<T>>
@@ -241,11 +519,13 @@ where
     B: Fn(P, OverrideOrigin) -> T,
 {
     if let Some(raw) = cli.map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = parse(raw)?;
+        let parsed =
+            parse(raw).map_err(|err| names.decorate(&err, raw, &OverrideOrigin::CliFlag))?;
         return Ok(Some(build(parsed, OverrideOrigin::CliFlag)));
     }
     if let Some(raw) = env.map(str::trim).filter(|s| !s.is_empty()) {
-        let parsed = parse(raw)?;
+        let parsed =
+            parse(raw).map_err(|err| names.decorate(&err, raw, &OverrideOrigin::EnvVar))?;
         return Ok(Some(build(parsed, OverrideOrigin::EnvVar)));
     }
     Ok(None)

@@ -15,8 +15,52 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `runner doctor` (and `info --json`) now classify PATH-probe hits that
+  are Volta shims and resolve them to the real provisioned binary via
+  `volta which`: the `PATH probe` line shows
+  `npm=<shim> -> <real bin> (volta)`, or
+  `(volta shim, not provisioned)` when Volta fronts a tool it has no
+  version of. JSON gains an additive `signals.node.volta_shims` map
+  (omitted on hosts without Volta; no schema bump). Display only —
+  execution still spawns the shim, which performs Volta's per-project
+  version selection.
+
+### Changed
+
+- `runner install` now honors the `--pm`/`RUNNER_PM` override: when set,
+  only that package manager installs (previously the override was
+  ignored and every detected PM installed — e.g. a project with both
+  `bun.lock` and `deno.json` always ran `deno install` too, writing an
+  unwanted `deno.lock`). An override naming a PM that detection did not
+  find refuses the install with exit code 2. runner.toml
+  `[pm].node`/`[pm].python` continue to scope script dispatch only.
+- Invalid `--pm`/`RUNNER_PM`/`--runner`/`RUNNER_RUNNER` values now produce
+  a readable error: the message names the source that carried the value,
+  escapes control characters (no more raw ANSI codes), truncates long
+  garbage, and — when the value contains line breaks — hints that it
+  looks like captured command output with the correctly quoted PowerShell
+  spelling. (An unquoted `$env:RUNNER_PM=deno` executes deno and assigns
+  its REPL banner to the variable.)
+
 ### Fixed
 
+- `runner doctor` no longer dies when a `RUNNER_*` override variable
+  holds an unparseable value — the condition it exists to diagnose. The
+  invalid value is ignored for the report and surfaced as an `env:`
+  warning (human output and the `warnings` array of `doctor --json`,
+  additively — no schema bump). Every other command, and an explicit bad
+  `--pm`/`--runner` flag even on doctor, still fails fast.
+- Node version constraints are now evaluated with real range semantics
+  (via the `semver` crate) instead of a prefix match that treated
+  `>=22.22.2` as `=22.22.2`. Operators (`>=`, `>`, `<=`, `<`, `=`),
+  caret/tilde ranges, space-separated AND comparators, `||` unions,
+  hyphen ranges, and `x` wildcards all match per node-semver rules, so
+  `engines.node: ">=22.22.2"` no longer warns on Node 22.22.3 or 25.9.0.
+  Bare versions (`.nvmrc` `20.11`) keep the stricter
+  prefix-at-segment-boundary behavior; unevaluable inputs (`lts/*`) fall
+  back to the previous prefix match.
 - Task dispatch now prepends every existing `node_modules/.bin` between
   the project directory and the filesystem root (nearest first) to the
   child's `PATH`, the way `npm run` / `pnpm run` / `bun run` do for

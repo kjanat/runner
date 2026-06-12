@@ -42,6 +42,11 @@ pub(crate) use error::{DevEnginesFailReason, ResolveError};
 /// Lets `cmd::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.
 pub(crate) use probe::probe_in as probe_path_for_doctor;
+/// Re-exported for unit tests that need to construct override state
+/// directly (e.g. `cmd::install::tests`); production code receives
+/// overrides fully built by [`ResolutionOverrides::from_cli_and_env`].
+#[cfg(test)]
+pub(crate) use types::PmOverride;
 pub(crate) use types::{
     DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides,
     ResolvedPm, Resolver,
@@ -67,7 +72,7 @@ mod tests {
     use super::{FallbackPolicy, OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
     use crate::tool::test_support::TempDir;
-    use crate::types::{Ecosystem, PackageManager, ProjectContext, TaskRunner};
+    use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
     fn context(package_managers: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
@@ -471,6 +476,216 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("unknown task runner"));
         assert!(msg.contains("turbo"));
+    }
+
+    #[test]
+    fn unknown_pm_env_value_names_env_source() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some("zoot"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown PM via env should error");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("RUNNER_PM"),
+            "should name the env source: {msg}"
+        );
+        assert!(msg.contains("unknown package manager"));
+    }
+
+    #[test]
+    fn unknown_pm_cli_value_names_cli_source() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: Some("zoot"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown PM via CLI should error");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("--pm"), "should name the CLI source: {msg}");
+    }
+
+    #[test]
+    fn multiline_env_pm_value_is_sanitized_and_hinted() {
+        // The PowerShell unquoted-assignment footgun: `$env:RUNNER_PM=deno`
+        // executes deno and captures its REPL banner (ANSI codes included)
+        // into the variable.
+        let banner = "Deno 2.8.2 exit using ctrl+d\n\u{1b}[33mREPL is running\u{1b}[0m";
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some(banner),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("captured banner should error");
+
+        let msg = format!("{err}");
+        assert!(!msg.contains('\u{1b}'), "raw ESC byte must not leak: {msg}");
+        assert!(
+            msg.contains("captured command output"),
+            "should hint at the footgun: {msg}"
+        );
+        assert!(
+            msg.contains("$env:RUNNER_PM='pnpm'"),
+            "should show the quoted PowerShell spelling: {msg}"
+        );
+    }
+
+    #[test]
+    fn oversized_pm_value_is_truncated() {
+        let huge = "z".repeat(500);
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some(&huge),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("oversized garbage should error");
+
+        let msg = format!("{err}");
+        assert!(msg.contains('…'), "long values should be truncated: {msg}");
+        assert!(
+            !msg.contains(&"z".repeat(100)),
+            "the full 500-char value must not be rendered: {msg}"
+        );
+    }
+
+    #[test]
+    fn unknown_runner_env_value_names_env_source() {
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            runner: SourceValue {
+                cli: None,
+                env: Some("zoot"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown runner via env should error");
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("RUNNER_RUNNER"),
+            "should name the env source: {msg}"
+        );
+        assert!(msg.contains("unknown task runner"));
+    }
+
+    #[test]
+    fn lenient_env_pm_garbage_degrades_to_warning() {
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some("Deno 2.8.2 exit using ctrl+d\n\u{1b}[33mbanner"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("lenient pass must absorb env garbage");
+
+        assert!(overrides.pm.is_none(), "garbage override must be blanked");
+        assert_eq!(warnings.len(), 1);
+        match &warnings[0] {
+            DetectionWarning::InvalidEnvOverride { var, raw, .. } => {
+                assert_eq!(*var, "RUNNER_PM");
+                assert!(!raw.contains('\u{1b}'), "raw must be sanitized: {raw}");
+            }
+            other => panic!("expected InvalidEnvOverride, got {other:?}"),
+        }
+        let detail = warnings[0].detail();
+        assert!(detail.contains("ignored"), "detail: {detail}");
+    }
+
+    #[test]
+    fn lenient_cli_garbage_still_errors() {
+        ResolutionOverrides::from_sources_lenient(OverrideSources {
+            pm: SourceValue {
+                cli: Some("zoot"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("explicit CLI garbage must stay fatal even leniently");
+    }
+
+    #[test]
+    fn lenient_valid_env_produces_no_warnings() {
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            pm: SourceValue {
+                cli: None,
+                env: Some("bun"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("valid env value should parse");
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            overrides.pm.expect("pm should be set").pm,
+            PackageManager::Bun
+        );
+    }
+
+    #[test]
+    fn lenient_cli_value_shadows_env_garbage() {
+        // Strict precedence never parses a CLI-shadowed env value, so the
+        // lenient pass must not warn about it either.
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            pm: SourceValue {
+                cli: Some("yarn"),
+                env: Some("complete garbage\nwith newlines"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("CLI value should shadow env garbage");
+
+        assert!(
+            warnings.is_empty(),
+            "shadowed env must not warn: {warnings:?}"
+        );
+        assert_eq!(
+            overrides.pm.expect("pm should be set").pm,
+            PackageManager::Yarn
+        );
+    }
+
+    #[test]
+    fn lenient_covers_runner_fallback_and_mismatch_vars() {
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            runner: SourceValue {
+                cli: None,
+                env: Some("bogus-runner"),
+            },
+            fallback: SourceValue {
+                cli: None,
+                env: Some("bogus-policy"),
+            },
+            on_mismatch: SourceValue {
+                cli: None,
+                env: Some("bogus-mismatch"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("lenient pass must absorb all env-sourced garbage");
+
+        assert!(overrides.runner.is_none());
+        let vars: Vec<&str> = warnings
+            .iter()
+            .map(|w| match w {
+                DetectionWarning::InvalidEnvOverride { var, .. } => *var,
+                other => panic!("expected InvalidEnvOverride, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            vars,
+            vec!["RUNNER_RUNNER", "RUNNER_FALLBACK", "RUNNER_ON_MISMATCH"]
+        );
     }
 
     #[test]

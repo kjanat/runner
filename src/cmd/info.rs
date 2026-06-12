@@ -29,7 +29,8 @@ pub(crate) fn info(
     schema_version: u32,
 ) -> Result<()> {
     if json {
-        let view = Project::build_with_schema(ctx, overrides, schema_version).into_info_view();
+        let view =
+            Project::build_with_schema(ctx, overrides, schema_version, true).into_info_view();
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }

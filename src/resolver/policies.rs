@@ -30,7 +30,7 @@ pub(super) fn is_env_truthy(raw: &str) -> bool {
         && !v.eq_ignore_ascii_case("off")
 }
 
-fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
+pub(super) fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
     match raw {
         "probe" => Ok(FallbackPolicy::Probe),
         "npm" => Ok(FallbackPolicy::Npm),

@@ -62,7 +62,9 @@ impl<'a> Project<'a> {
     /// passes a concrete version to [`Self::build_with_schema`].
     #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
-        Self::build_with_schema(ctx, overrides, super::CURRENT_VERSION)
+        // `resolve_shims = false` keeps unit tests hermetic — no `volta
+        // which` spawns against the test host.
+        Self::build_with_schema(ctx, overrides, super::CURRENT_VERSION, false)
     }
 
     /// Build the report against a specific schema version. `schema_version`
@@ -72,10 +74,16 @@ impl<'a> Project<'a> {
     /// Per-field versioning: source labels route through
     /// [`super::labels::source_label_for`]. PM and `TaskRunner` labels
     /// are unchanged across versions.
+    ///
+    /// `resolve_shims` controls whether PATH-probe hits are classified
+    /// against a Volta installation (one `volta which` spawn per
+    /// shimmed tool). Diagnostic surfaces (`doctor`, `info --json`)
+    /// pass `true`; `list` passes `false` — it drops signals anyway.
     pub(crate) fn build_with_schema(
         ctx: &'a ProjectContext,
         overrides: &ResolutionOverrides,
         schema_version: u32,
+        resolve_shims: bool,
     ) -> Self {
         let manifest_decl = detect_pm_from_manifest(&ctx.root);
         let manifest_pm = manifest_decl.as_ref().map(|d| ManifestPm {
@@ -109,6 +117,8 @@ impl<'a> Project<'a> {
             })
             .collect();
 
+        let probes = probe_signals(&ctx.root, resolve_shims);
+
         Self {
             schema_version,
             root: ctx.root.display().to_string(),
@@ -123,7 +133,8 @@ impl<'a> Project<'a> {
                 node: NodeSignals {
                     lockfile_pm: ctx.primary_node_pm().map(PackageManager::label),
                     manifest_pm,
-                    path_probe: path_probe_map(),
+                    path_probe: probes.path_probe,
+                    volta_shims: probes.volta_shims,
                 },
             },
             decisions,
@@ -306,6 +317,20 @@ pub(crate) struct NodeSignals {
     pub manifest_pm: Option<ManifestPm>,
     /// `bun`/`pnpm`/`yarn`/`npm` -> absolute path on `$PATH` (or null).
     pub path_probe: BTreeMap<&'static str, Option<String>>,
+    /// PATH-probe hits identified as Volta shims, keyed like
+    /// [`Self::path_probe`]. Additive field (no schema bump): absent on
+    /// hosts without Volta and on surfaces that skip shim resolution.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
+}
+
+/// What `volta which` said about one shimmed tool.
+#[derive(Debug, Serialize)]
+pub(crate) struct VoltaShimInfo {
+    /// Real provisioned binary behind the shim; `null` when Volta has
+    /// no version of the tool ("not provisioned"). Shims Volta could
+    /// not classify at all are omitted from the map instead of guessed.
+    pub resolved: Option<String>,
 }
 
 /// Manifest-level PM declaration plus the field it came from.
@@ -458,13 +483,30 @@ const PATH_PROBE_PMS: [PackageManager; 4] = [
     PackageManager::Npm,
 ];
 
-fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
+/// Probe results for the signals section: every PATH hit, plus Volta
+/// shim classification when requested.
+struct ProbeSignals {
+    path_probe: BTreeMap<&'static str, Option<String>>,
+    volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
+}
+
+fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> ProbeSignals {
     use std::env;
     use std::thread;
+
+    use crate::tool::volta::{ShimResolution, VoltaInstall};
 
     let path = env::var_os("PATH").unwrap_or_default();
     let pathext = env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
+    // Located once, shared by every probe thread. `None` either means
+    // "no Volta on this host" or "shim resolution not requested" —
+    // both collapse to "classify nothing".
+    let volta = if resolve_shims {
+        VoltaInstall::locate()
+    } else {
+        None
+    };
 
     thread::scope(|s| {
         // Spawn all probes first (push, don't lazy-iterate) so they
@@ -475,20 +517,46 @@ fn path_probe_map() -> BTreeMap<&'static str, Option<String>> {
         let mut handles = Vec::with_capacity(PATH_PROBE_PMS.len());
         for pm in &PATH_PROBE_PMS {
             let path = &path;
+            let volta = volta.as_ref();
             handles.push(s.spawn(move || {
                 let resolved =
-                    crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref)
-                        .map(|p| p.display().to_string());
-                (pm.label(), resolved)
+                    crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref);
+                // The `volta which` spawn rides the same per-PM thread
+                // as the probe, so shim resolution adds one process
+                // wait of wall time, not four.
+                let shim = resolved
+                    .as_deref()
+                    .filter(|hit| volta.is_some_and(|v| v.is_shim(hit)))
+                    .map(|_| crate::tool::volta::resolve_shim(pm.label(), root));
+                (pm.label(), resolved.map(|p| p.display().to_string()), shim)
             }));
         }
 
-        let mut map = BTreeMap::new();
+        let mut path_probe = BTreeMap::new();
+        let mut volta_shims = BTreeMap::new();
         for handle in handles {
-            let (label, resolved) = handle.join().expect("path probe thread panicked");
-            map.insert(label, resolved);
+            let (label, resolved, shim) = handle.join().expect("path probe thread panicked");
+            path_probe.insert(label, resolved);
+            match shim {
+                Some(ShimResolution::Resolved(real)) => {
+                    volta_shims.insert(
+                        label,
+                        VoltaShimInfo {
+                            resolved: Some(real.display().to_string()),
+                        },
+                    );
+                }
+                Some(ShimResolution::NotProvisioned) => {
+                    volta_shims.insert(label, VoltaShimInfo { resolved: None });
+                }
+                // Unknown: volta failed to answer — claim nothing.
+                Some(ShimResolution::Unknown) | None => {}
+            }
         }
-        map
+        ProbeSignals {
+            path_probe,
+            volta_shims,
+        }
     })
 }
 
@@ -593,12 +661,12 @@ mod tests {
             warnings: Vec::new(),
         };
 
-        let v1 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 1);
+        let v1 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 1, false);
         let v1_json = serde_json::to_value(&v1).expect("v1 serialization");
         assert_eq!(v1_json["schema_version"], 1);
         assert_eq!(v1_json["tasks"][0]["source"], "justfile");
 
-        let v2 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 2);
+        let v2 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 2, false);
         let v2_json = serde_json::to_value(&v2).expect("v2 serialization");
         assert_eq!(v2_json["schema_version"], 2);
         assert_eq!(v2_json["tasks"][0]["source"], "just");

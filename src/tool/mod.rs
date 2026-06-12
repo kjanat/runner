@@ -60,6 +60,8 @@ pub(crate) mod python;
 pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).
 pub(crate) mod uv;
+/// Volta toolchain manager — shim classification and `volta which` resolution.
+pub(crate) mod volta;
 /// Yarn, a Node.js package manager (`yarn.lock`).
 pub(crate) mod yarn;
 

@@ -164,6 +164,21 @@ pub(crate) enum OverrideOrigin {
     },
 }
 
+impl OverrideOrigin {
+    /// Render the "via …" provenance fragment for a PM override from
+    /// this origin: `via --pm (CLI override)`, `via RUNNER_PM
+    /// (environment)`, or `via runner.toml at <path>`. Shared by
+    /// [`ResolvedPm::describe`] and install's override errors so the
+    /// attribution wording stays identical everywhere.
+    pub(crate) fn describe_pm_source(&self) -> String {
+        match self {
+            Self::CliFlag => "via --pm (CLI override)".to_string(),
+            Self::EnvVar => "via RUNNER_PM (environment)".to_string(),
+            Self::ConfigFile { path } => format!("via runner.toml at {}", path.display()),
+        }
+    }
+}
+
 /// A package-manager decision plus the chain step that produced it.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedPm {
@@ -291,14 +306,8 @@ impl ResolvedPm {
     /// decision. Used by `--explain` to attribute the PM choice.
     pub(crate) fn describe(&self) -> String {
         match &self.via {
-            ResolutionStep::Override(OverrideOrigin::CliFlag) => {
-                format!("{} via --pm (CLI override)", self.pm.label())
-            }
-            ResolutionStep::Override(OverrideOrigin::EnvVar) => {
-                format!("{} via RUNNER_PM (environment)", self.pm.label())
-            }
-            ResolutionStep::Override(OverrideOrigin::ConfigFile { path }) => {
-                format!("{} via runner.toml at {}", self.pm.label(), path.display())
+            ResolutionStep::Override(origin) => {
+                format!("{} {}", self.pm.label(), origin.describe_pm_source())
             }
             ResolutionStep::ManifestPackageManager => {
                 format!("{} via package.json \"packageManager\"", self.pm.label())
