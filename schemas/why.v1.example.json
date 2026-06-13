@@ -11,7 +11,7 @@
       "alias_of": "test",
       "description": null,
       "passthrough_to": null,
-      "source_dir": "/home/kjanat/projects/runner/.cargo/config.toml"
+      "source_dir": "/path/to/project/.cargo/config.toml"
     }
   ],
   "selected": {
@@ -23,7 +23,7 @@
     "alias_of": "test",
     "description": null,
     "passthrough_to": null,
-    "source_dir": "/home/kjanat/projects/runner/.cargo/config.toml"
+    "source_dir": "/path/to/project/.cargo/config.toml"
   },
   "pm_resolution": null
 }
