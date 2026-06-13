@@ -348,12 +348,9 @@ mod tests {
 
     #[test]
     fn cross_ecosystem_pm_override_for_node_scripts_is_a_hard_error() {
-        // Pre-B5 behavior silently dropped the override and fell
-        // through to the lockfile signal. That hid user intent — an
-        // explicit `--pm cargo` on a Node project is almost always a
-        // misconfiguration the user wants surfaced, not silently
-        // disregarded. Now `InvalidOverride` is returned so `main`
-        // exits 2 with a clear message.
+        // An explicit `--pm cargo` on a Node project is a
+        // misconfiguration to surface, not silently drop: it must return
+        // `InvalidOverride` so `main` exits 2 with a clear message.
         let ctx = context(vec![PackageManager::Pnpm]);
         let overrides = with_pm_override(PackageManager::Cargo, OverrideOrigin::CliFlag);
         let err = Resolver::new(&ctx, &overrides)

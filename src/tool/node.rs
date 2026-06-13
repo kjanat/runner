@@ -43,10 +43,8 @@ pub(crate) fn find_manifest_upwards(dir: &Path) -> Option<PathBuf> {
 /// (within the VCS root) declares a workspace via `pnpm-workspace.yaml`,
 /// `lerna.json`, or a `package.json` carrying a `"workspaces"` key.
 ///
-/// This is the *workspace-root-aware* guard for upward script discovery:
-/// a manifest-less subdirectory only adopts a parent manifest's scripts
-/// when it provably belongs to a workspace, so an unrelated ancestor
-/// `package.json` from some outer project is never silently picked up.
+/// Guards upward script discovery: a manifest-less subdirectory adopts a
+/// parent's scripts only when it provably belongs to that workspace.
 pub(crate) fn within_workspace_upwards(dir: &Path) -> bool {
     files::find_in_ancestors(dir, |ancestor| {
         if ancestor.join("pnpm-workspace.yaml").is_file() || ancestor.join("lerna.json").is_file() {
@@ -108,13 +106,10 @@ fn detect_pm(package_json: Option<PackageJson>) -> Option<PackageManager> {
 }
 
 /// Parse a Corepack-style `name@version` spec into a [`PackageManager`] and
-/// optional version string. Returns `None` for unknown names or for a
-/// trailing-`@` typo (`"pnpm@"`) — the `@` separator with an empty RHS
-/// is an explicit "version intended but missing" signal, distinct from
-/// a bare `"pnpm"` (no `@` at all). Bare names are still accepted with
-/// `None` version; only the malformed `name@` form is rejected so the
-/// surrounding [`UnparseablePackageManager`] warning surfaces the typo
-/// instead of silently dropping the version constraint.
+/// optional version string. Bare `"pnpm"` parses with `None` version;
+/// the malformed `name@` form (empty version) is rejected so the
+/// [`UnparseablePackageManager`] warning surfaces the typo rather than
+/// silently dropping the constraint. Unknown names return `None`.
 fn parse_package_manager_spec(spec: Option<&str>) -> Option<(PackageManager, Option<String>)> {
     let raw = spec?.trim();
     let (name, version) = match raw.split_once('@') {
@@ -197,26 +192,16 @@ pub(crate) struct ManifestPmDecl {
 /// field is present or parseable.
 ///
 /// Entries naming a PM that cannot dispatch `package.json` scripts
-/// (e.g. `cargo`) are dropped at parse time so they never reach the
-/// resolver as an apparently-valid manifest declaration. Without this
-/// filter, an entry like `{"name": "cargo"}` would surface as a winning
-/// `devEngines` decision and then fail at spawn time with the opaque
-/// "cannot run scripts" branch.
+/// (e.g. `cargo`) are dropped at parse time so a non-script PM never
+/// wins as a manifest declaration and fails later at spawn time.
 pub(crate) fn detect_pm_from_manifest(dir: &Path) -> Option<ManifestPmDecl> {
     let parsed = parse_package_json(dir)?;
 
-    // `packageManager` is authoritative when present — that's the
-    // Corepack contract this field carries. Trim and treat
-    // whitespace-only as "not set" (round-trips trailing-newline
-    // editor mishaps). When the trimmed value is non-empty, the
-    // legacy field is the user's explicit intent and must short-circuit
-    // here: a present-but-unparseable spec (typo like `"pnpmm@9"`,
-    // non-script PM like `"cargo@1"`, malformed `"@9"`) MUST NOT let
-    // `devEngines` win silently — that would substitute a different PM
-    // than what the user wrote. Returning `None` here drops the
-    // resolver to step 6 (lockfile) / step 7 (PATH probe), which is
-    // closer to Corepack's semantics than synthesising a `devEngines`
-    // decision the user never declared.
+    // `packageManager` is authoritative when present (the Corepack
+    // contract). A non-empty value short-circuits here even when
+    // unparseable: letting `devEngines` win would substitute a PM the
+    // user never wrote, so we return `None` and drop to the lockfile /
+    // PATH-probe steps instead. Whitespace-only counts as "not set".
     let pm_spec = parsed
         .package_manager
         .as_deref()
@@ -273,11 +258,9 @@ pub(crate) fn detect_pm_from_manifest(dir: &Path) -> Option<ManifestPmDecl> {
 }
 
 /// Parse a `devEngines.packageManager` entry's `name` field, accepting
-/// only PMs that can actually run `package.json` scripts. Other
-/// ecosystems (Cargo, uv, etc.) are valid `PackageManager` variants but
-/// reaching the script-dispatch path with them yields the opaque
-/// "cannot run scripts" error from `build_run_command`, so reject them
-/// at parse time instead.
+/// only PMs that can run `package.json` scripts. Non-script ecosystems
+/// (Cargo, uv, …) are rejected at parse time rather than failing later
+/// on the dispatch path.
 fn script_dispatching_pm(label: &str) -> Option<PackageManager> {
     let pm = PackageManager::from_label(label)?;
     matches!(
@@ -389,9 +372,8 @@ pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> Ve
 /// non-zero.
 ///
 /// Spawns via `tool::program::command` so Windows `npm.cmd`/`pnpm.cmd`/
-/// `yarn.cmd` shims resolve through `PATHEXT`. Without this, the bug
-/// fixed for dispatch in 0.8.1 (#21) would silently downgrade
-/// `devEngines.version` enforcement to `Unverifiable` on Windows.
+/// `yarn.cmd` shims resolve through `PATHEXT`; otherwise
+/// `devEngines.version` enforcement silently degrades to `Unverifiable`.
 fn installed_version(pm: PackageManager) -> Option<String> {
     let out = program::command(pm.label())
         .arg("--version")
@@ -770,12 +752,9 @@ mod tests {
 
     #[test]
     fn detect_pm_from_manifest_blocks_dev_engines_when_package_manager_unparseable() {
-        // Regression: a present-but-unparseable `packageManager` value
-        // (e.g. the user typo'd `pnpm`) used to silently fall through
-        // to `devEngines`, substituting a PM the user never declared.
-        // Per Corepack semantics the legacy field is authoritative; if
-        // it can't parse we return `None` so the resolver drops to the
-        // lockfile/PATH-probe path instead.
+        // An unparseable `packageManager` must not elevate `devEngines`:
+        // the legacy field is authoritative, so a parse failure returns
+        // `None` rather than substituting the devEngines PM.
         use super::detect_pm_from_manifest;
 
         let dir = TempDir::new("node-manifest-decl-unparseable-pm-field");

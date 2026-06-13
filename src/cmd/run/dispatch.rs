@@ -37,15 +37,11 @@ use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 /// lookups so a qualified miss like `runner run justfile:test` bails on
 /// the qualifier rather than silently dispatching `bun test`.
 ///
-/// The resolver call lives inside the unqualified branch so qualified
-/// misses don't pay for PM resolution (warning emission, potential
-/// `<pm> --version` spawn for devEngines.version checks) on an error
-/// path they can't reach. Only the soft `NoSignalsFound { soft: true,
-/// .. }` outcome collapses to `None` so the direct PATH spawn can still
-/// fire for `runner run somebin`. Hard errors — `--fallback=error`,
-/// manifest `onFail = Error`, and any other resolver failure —
-/// propagate so the user sees the real diagnostic instead of a silent
-/// degrade.
+/// The resolver call sits inside the unqualified branch so qualified
+/// misses skip PM resolution entirely. Only a soft `NoSignalsFound`
+/// collapses to `None` (letting `runner run somebin` direct-spawn);
+/// hard errors (`--fallback=error`, manifest `onFail = Error`, …)
+/// propagate so the user sees the real diagnostic.
 pub(super) fn resolve_dispatch(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,

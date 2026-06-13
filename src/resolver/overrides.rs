@@ -271,11 +271,9 @@ const MAX_RAW_DISPLAY: usize = 60;
 
 /// Render an untrusted override value safely for a one-line error:
 /// control characters (ANSI escapes, newlines) are escaped via
-/// [`char::escape_debug`], then the escaped string is truncated to
-/// [`MAX_RAW_DISPLAY`] characters with an ellipsis. Values come straight
-/// from the environment and can be arbitrary captured command output —
-/// an unquoted PowerShell `$env:RUNNER_PM=deno` assigns deno's entire
-/// REPL banner, ANSI codes and all.
+/// [`char::escape_debug`], then truncated to [`MAX_RAW_DISPLAY`] chars.
+/// Env values can be arbitrary captured command output (e.g. a
+/// PowerShell REPL banner from an unquoted assignment), hence both.
 fn sanitize_raw_label(raw: &str) -> String {
     let escaped: String = raw.chars().flat_map(char::escape_debug).collect();
     let mut chars = escaped.chars();
@@ -470,11 +468,9 @@ struct SourceNames {
 }
 
 impl SourceNames {
-    /// Prefix `err` with the source that supplied `raw`. When the value
-    /// contains line breaks it is almost certainly captured command
-    /// output rather than a name the user typed (the PowerShell
-    /// unquoted-assignment footgun), so append a hint showing the
-    /// correct spelling for that source.
+    /// Prefix `err` with the source that supplied `raw`. Line breaks
+    /// signal captured command output rather than a typed name, so
+    /// append a hint showing the correct spelling for that source.
     fn decorate(&self, err: &anyhow::Error, raw: &str, origin: &OverrideOrigin) -> anyhow::Error {
         let from_env = matches!(origin, OverrideOrigin::EnvVar);
         let source = if from_env { self.env } else { self.cli };

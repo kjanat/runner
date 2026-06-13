@@ -4,25 +4,16 @@
 //! package manager, this module walks `$PATH` (and `PATHEXT` on Windows)
 //! to discover what is actually installed. The Node ecosystem returns the
 //! first match in canonical order — `bun > pnpm > yarn > npm` — matching
-//! the priority used elsewhere in detection. Phase 8 (this same step) is
-//! what replaces the silent `npm` fallback baked into the resolver since
-//! day one.
+//! the priority used elsewhere in detection. This replaces the silent
+//! `npm` fallback the resolver used to default to.
 //!
 //! ## Caching
 //!
-//! [`probe`] memoizes results in a static `[OnceLock<Option<PathBuf>>;
-//! PackageManager::COUNT]` array indexed by [`PackageManager::index`].
-//! Per-name `OnceLock::get_or_init` gives exactly-once probing — even
-//! across concurrent callers — without ever holding a lock during the
-//! PATH walk: `OnceLock` synchronises on the slot itself, so racing
-//! callers all return the same value computed by the first one to
-//! win the init race. No `Mutex` held across syscalls; the universe
-//! of probed names is closed at compile time, so an array beats a
-//! `HashMap` on lookup cost and avoids any allocation after start-up.
-//!
-//! The pure-function variant [`probe_in`] stays cache-free so tests
-//! exercise the search logic against a controlled directory without
-//! racing or polluting the shared cache.
+//! [`probe`] memoizes per-PM in a static `OnceLock` array, giving
+//! exactly-once probing across concurrent callers without holding a lock
+//! during the PATH walk. The pure-function variant [`probe_in`] stays
+//! cache-free so tests can exercise the search against a controlled
+//! directory without racing or polluting the shared cache.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -186,14 +177,10 @@ mod tests {
 
     #[test]
     fn probe_returns_consistent_value_across_calls() {
-        // `OnceLock` guarantees the initialiser runs at most once,
-        // so subsequent calls to `probe(pm)` return clones of the
-        // same cached `Option<PathBuf>`. The slot is process-wide
-        // and never cleared (that's the point — no Mutex held across
-        // PATH walks); the test asserts the caller-visible property
-        // (idempotence) rather than poking at the cache internals,
-        // which would tie this test to other tests that may have
-        // already populated the same slot in this process.
+        // Asserts the caller-visible property — repeated `probe(pm)`
+        // calls return the same cached value — rather than poking at
+        // cache internals, which other tests in this process may have
+        // already populated.
         use super::probe;
         use crate::types::PackageManager;
 

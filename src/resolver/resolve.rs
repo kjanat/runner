@@ -108,11 +108,9 @@ impl<'ctx> Resolver<'ctx> {
 
         // Filter `primary_pm` through `can_dispatch_node_scripts` so a
         // non-script PM (Cargo/Poetry/Bundler/…) doesn't satisfy the
-        // Node lockfile step. Without the filter, a mixed-language repo
-        // with `package.json` scripts but only `Cargo.lock` as the
-        // top-priority signal would return Cargo here and later bail
-        // with the opaque "cargo cannot run scripts" branch instead of
-        // continuing to the PATH probe / fallback.
+        // Node lockfile step. Otherwise a mixed-language repo whose
+        // top-priority signal is `Cargo.lock` would pick Cargo and bail
+        // later, instead of continuing to the PATH probe / fallback.
         if let Some(pm) = self.ctx.primary_node_pm().or_else(|| {
             self.ctx
                 .primary_pm()
@@ -127,13 +125,10 @@ impl<'ctx> Resolver<'ctx> {
 
         match self.overrides.fallback {
             FallbackPolicy::Probe => {
-                // Don't probe Node PMs in projects with no Node-ecosystem
-                // evidence. Earlier steps already covered overrides,
-                // manifest declarations, and lockfiles; the absence of a
-                // `package.json` anywhere upward means this isn't a Node
-                // project, and picking up `bun`/`pnpm`/`yarn`/`npm` from
-                // `$PATH` would dispatch through the wrong ecosystem
-                // (see issue #23: `runner run list` in a Go repo).
+                // Don't probe Node PMs without Node-ecosystem evidence.
+                // No `package.json` upward means this isn't a Node
+                // project, so picking `bun`/`pnpm`/`yarn`/`npm` off
+                // `$PATH` would dispatch through the wrong ecosystem.
                 if find_manifest_upwards(&self.ctx.root).is_none() {
                     return Err(no_pm_found_soft());
                 }

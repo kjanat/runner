@@ -400,7 +400,7 @@ impl<'a> DoctorReportV3<'a> {
             ecosystems: ecosystems_v3(ctx, overrides, &node_pm, resolve_shims),
             sources: sources_v3(ctx, schema_version),
             tasks: tasks_v3(ctx, &node_pm, overrides, schema_version),
-            tools: tools_v3(ctx),
+            tools: tools_v3(ctx, &node_pm),
             conflicts: conflicts_v3(ctx, overrides, schema_version),
             diagnostics,
             resolution: ResolutionPolicyV3 {
@@ -500,6 +500,17 @@ fn ecosystems_v3(
         }
     }
 
+    // Seeding from detected `package_managers` alone misses every Node
+    // resolution that doesn't leave a lockfile-detected PM behind
+    // (manifest `packageManager` without a lockfile, PATH-probe, npm
+    // fallback, override). In those cases `tasks_v3` still resolves
+    // `package.json` scripts via `npm run`, so dropping Node here would
+    // emit an internally inconsistent document. Same predicate gates the
+    // node runtime entry in `tools_v3`.
+    if has_node_context(ctx, node_pm) && !seen.contains(&Ecosystem::Node) {
+        seen.push(Ecosystem::Node);
+    }
+
     seen.into_iter()
         .map(|eco| match eco {
             Ecosystem::Node => node_ecosystem_v3(ctx, node_pm, resolve_shims),
@@ -507,6 +518,27 @@ fn ecosystems_v3(
             other => single_pm_ecosystem_v3(ctx, other),
         })
         .collect()
+}
+
+/// Whether the project carries Node context, considering resolver and
+/// task signals — not just lockfile-detected `package_managers`. A Node
+/// PM decision (`resolve_node_pm` Ok), a detected Node-ecosystem PM, or
+/// any `package.json`-sourced task each count. Gates Node inclusion in
+/// both [`ecosystems_v3`] and [`tools_v3`] so the two surfaces never
+/// disagree with what `tasks_v3` resolves.
+fn has_node_context(
+    ctx: &ProjectContext,
+    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
+) -> bool {
+    node_pm.is_ok()
+        || ctx
+            .package_managers
+            .iter()
+            .any(|pm| pm.ecosystem() == Ecosystem::Node)
+        || ctx
+            .tasks
+            .iter()
+            .any(|t| matches!(t.source, TaskSource::PackageJson))
 }
 
 fn node_ecosystem_v3(
@@ -810,18 +842,17 @@ fn anchor_file(source: TaskSource, root: &Path) -> Option<PathBuf> {
     }
 }
 
-fn tools_v3(ctx: &ProjectContext) -> Vec<ToolV3> {
+fn tools_v3(
+    ctx: &ProjectContext,
+    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
+) -> Vec<ToolV3> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
 
     let mut tools = Vec::new();
 
-    if ctx
-        .package_managers
-        .iter()
-        .any(|pm| pm.ecosystem() == Ecosystem::Node)
-    {
+    if has_node_context(ctx, node_pm) {
         tools.push(probe_tool(
             "node",
             DependencyKindV3::Runtime,
@@ -993,7 +1024,7 @@ mod tests {
 
     use super::{DoctorReportV3, rfc3339_utc};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+    use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
@@ -1096,6 +1127,35 @@ mod tests {
         assert_eq!(task["resolved"], "cargo test");
         assert_eq!(task["source_pointer"], "alias.t");
         assert_eq!(task["dependencies"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn v3_report_keeps_node_when_only_package_json_tasks_present() {
+        // package.json scripts with no lockfile-detected Node PM: the
+        // resolver still resolves them via `npm run`, so `ecosystems`
+        // and `tools` must surface Node too — otherwise the document is
+        // internally inconsistent (tasks reference a runtime the rest of
+        // the report claims absent).
+        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        assert!(
+            !ctx.package_managers
+                .iter()
+                .any(|pm| pm.ecosystem() == Ecosystem::Node),
+            "precondition: no Node PM detected"
+        );
+        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        let ecosystems = json["ecosystems"].as_array().expect("ecosystems array");
+        assert!(
+            ecosystems.iter().any(|e| e["name"] == "node"),
+            "node ecosystem must be present when package.json tasks exist"
+        );
+        let tools = json["tools"].as_array().expect("tools array");
+        assert!(
+            tools.iter().any(|t| t["name"] == "node"),
+            "node runtime tool must be probed when package.json tasks exist"
+        );
     }
 
     #[test]

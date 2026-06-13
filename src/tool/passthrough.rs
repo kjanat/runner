@@ -57,32 +57,19 @@ const CANDIDATES: &[(TaskRunner, &str, Option<&str>)] = &[
 ];
 
 /// Conservative passthrough matcher: requires `command` to be exactly
-/// `<binary> [run_subcommand] <name> [args…]`, rejecting any tail that
-/// contains a shell-active token.
-///
-/// The check is deliberately strict in the safe direction — false
-/// negatives leave a script visible in completion as a separate
-/// candidate, which is the same outcome we have today. False positives
-/// would silently swallow a real script and need to be avoided.
+/// `<binary> [run_subcommand] <name> [args…]`, rejecting any tail with a
+/// shell-active token. Strict in the safe direction — a false negative
+/// just leaves a script visible; a false positive silently swallows one.
 fn simple_passthrough(
     name: &str,
     command: &str,
     binary: &str,
     run_subcommand: Option<&str>,
 ) -> bool {
-    // Reject anything that spans multiple shell lines. `split_whitespace`
-    // treats `\n` and `\r` as ordinary separators, so a script like
-    // `"just build\necho owned"` would otherwise tokenise to
-    // `["just", "build", "echo", "owned"]` and look like a thin
-    // passthrough — the trailing `echo` is a separate command, not an
-    // argument forwarded to `just`. Bash also accepts `\r\n` on Windows
-    // editors so both characters get the early bail.
-    //
-    // Other control operators (`;`, `&&`, `||`, `|`) don't need an
-    // early check: spaced forms surface as tokens that `is_shell_active`
-    // rejects (substring `;`/`&`/`|`), and glued forms get rejected at
-    // the binary/name token comparison or by the same any-position
-    // substring scan in `is_shell_active`.
+    // Reject multi-line scripts: `split_whitespace` treats `\n`/`\r` as
+    // separators, so `"just build\necho owned"` would tokenise like a
+    // thin passthrough while hiding the trailing command. Other operators
+    // are caught downstream by `is_shell_active`.
     if command.contains('\n') || command.contains('\r') {
         return false;
     }
@@ -98,22 +85,11 @@ fn simple_passthrough(
     if tokens.next() != Some(name) {
         return false;
     }
-    // After binary + (optional run subcommand) + name, only *flags* may
-    // remain — anything positional changes behavior the wrapper would
-    // otherwise lose at dispatch time. Examples that previously slipped
-    // through and got silently dropped:
-    //
-    // * `make build clean` — two make targets, the wrapper would run
-    //   only `build` if dispatched as a thin passthrough.
-    // * `just build release` — recipe parameter for `just`, lost on
-    //   dispatch.
-    // * `nx run build extra` — extra positional that nx would forward.
-    //
-    // Flags (tokens that start with `-`: `-x`, `--flag`, `--flag=val`,
-    // the literal `--` separator) are the only safe tail tokens; their
-    // presence doesn't change which target/recipe `just`/`make`/etc.
-    // ends up running, they just configure how. `is_shell_active` still
-    // applies to catch glued shell meta-chars even inside flags.
+    // After binary + (optional run subcommand) + name, only flags may
+    // remain: a positional changes which target/recipe runs (e.g.
+    // `make build clean`, `just build release`) and would be lost on a
+    // thin dispatch. Flags only configure how, so they're safe — but
+    // `is_shell_active` still screens for glued meta-chars inside them.
     tokens.all(|token| token.starts_with('-') && !is_shell_active(token))
 }
 
@@ -127,47 +103,32 @@ fn simple_passthrough(
 /// `arg > out` respectively, so a passthrough wrapper that contains
 /// them is not actually a thin dispatch.
 fn is_shell_active(token: &str) -> bool {
-    // Expansion / substitution — `$VAR`, `$(cmd)`, `$((expr))`,
-    // `` `cmd` ``, and Windows `cmd.exe` `%VAR%` expansion (`package.json`
-    // scripts spawn through the user's shell, which on Windows is
-    // typically `cmd.exe`).
+    // Expansion / substitution: `$VAR`, `$(cmd)`, backticks, and Windows
+    // `cmd.exe` `%VAR%` (scripts spawn through the user's shell).
     if token.contains('$') || token.contains('`') || token.contains('%') {
         return true;
     }
-    // Redirects (`>`, `<`, `>>`, `<<`, `>&`, `&>`, `1>foo`, `2>&1`, …)
-    // and control operators (`&&`, `||`, `|`, `|&`, `;`, `;;`, `;&`,
-    // backgrounding `cmd&`). Substring-matching `&` subsumes `&&`,
-    // `>&`, `|&`, and trailing background; `|` subsumes `||` and
-    // `|&`; `;` subsumes the compound forms. Any one of these in any
-    // position means the shell will do real work, so we bail.
+    // Redirects and control operators, matched substring-anywhere: `&`
+    // subsumes `&&`/`>&`/backgrounding, `|` subsumes `||`/`|&`, `;` the
+    // compound forms. Any occurrence means the shell does real work.
     if token
         .chars()
         .any(|c| matches!(c, '>' | '<' | '&' | '|' | ';'))
     {
         return true;
     }
-    // Pathname / brace expansion — bash expands these *before* exec, so
-    // a script body like `just build src/*.js` is no longer a thin
-    // dispatch: the shell expands the glob into a file list and
-    // forwards that to `just`. Reject substring-anywhere so glued
-    // forms like `--filter=name{a,b}` (which expands to two args
-    // `--filter=namea --filter=nameb`) also get caught.
-    //
-    // `{` / `}` join this set because the only realistic non-expansion
-    // use of curly braces inside a single shell token is `${VAR}`,
-    // which is already caught by the `$` check above; bare `{a,b}`
-    // syntax means brace expansion.
+    // Glob / brace expansion, which the shell resolves before exec.
+    // Substring-anywhere catches glued forms like `--filter=name{a,b}`;
+    // `{`/`}` are here since `${VAR}` is already caught by `$` above.
     if token
         .chars()
         .any(|c| matches!(c, '*' | '?' | '[' | ']' | '{' | '}'))
     {
         return true;
     }
-    // `(`, `)`, `!` stay exact-match — they're only shell-active as
-    // standalone tokens (`(subshell)` requires whitespace, `! cmd`
-    // requires leading `!`). Substring-matching would over-reject
-    // benign arg literals like `--filter=name(v1)`, `arg!`, or
-    // a `package.json` script that quotes a path with parens.
+    // `(`, `)`, `!` are exact-match only — shell-active solely as
+    // standalone tokens, so substring-matching would over-reject benign
+    // arg literals like `--filter=name(v1)` or `arg!`.
     matches!(token, "!" | "(" | ")")
 }
 

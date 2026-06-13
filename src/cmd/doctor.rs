@@ -21,6 +21,11 @@ use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
 use crate::types::ProjectContext;
 
+/// Flat `Project` schema version the human doctor renderer was written
+/// against. Pinned explicitly so the non-JSON path can't silently drift
+/// if [`crate::schema::CURRENT_VERSION`] bumps for the `list` surface.
+const DOCTOR_HUMAN_PROJECT_SCHEMA_VERSION: u32 = 2;
+
 /// Print a full diagnostic dump of the resolver's view of `ctx`.
 ///
 /// # Errors
@@ -48,7 +53,7 @@ pub(crate) fn doctor(
     let build_version = if json {
         schema_version
     } else {
-        crate::schema::CURRENT_VERSION
+        DOCTOR_HUMAN_PROJECT_SCHEMA_VERSION
     };
     let project = Project::build_with_schema(ctx, overrides, build_version, true);
 
