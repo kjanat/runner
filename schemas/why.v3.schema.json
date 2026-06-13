@@ -1,0 +1,322 @@
+{
+  "$id": "https://kjanat.github.io/schemas/why.v3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "PmResolution": {
+      "anyOf": [
+        {
+          "type": "object",
+          "required": [
+            "pm",
+            "via",
+            "warnings"
+          ],
+          "properties": {
+            "pm": {
+              "type": "string"
+            },
+            "via": {
+              "type": "string"
+            },
+            "warnings": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/WhyWarning"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "error"
+          ],
+          "properties": {
+            "error": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "ProviderLabel": {
+      "type": "string",
+      "enum": [
+        "node",
+        "make",
+        "just",
+        "task",
+        "turbo",
+        "deno",
+        "cargo",
+        "go",
+        "bacon",
+        "mise",
+        "python"
+      ]
+    },
+    "TaskSourceLabel": {
+      "type": "string",
+      "enum": [
+        "package.json",
+        "make",
+        "just",
+        "task",
+        "turbo",
+        "deno",
+        "cargo-alias",
+        "go",
+        "bacon",
+        "mise",
+        "pyproject.toml"
+      ]
+    },
+    "WhyCandidateV3": {
+      "description": "One candidate: the task's identity plus how it matched the query.",
+      "type": "object",
+      "required": [
+        "match",
+        "task"
+      ],
+      "properties": {
+        "match": {
+          "$ref": "#/$defs/WhyMatchV3"
+        },
+        "task": {
+          "$ref": "#/$defs/WhyTaskV3"
+        }
+      }
+    },
+    "WhyDecisionV3": {
+      "type": "object",
+      "required": [
+        "reason",
+        "strategy"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "strategy": {
+          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, or `exec-fallback`.",
+          "type": "string"
+        }
+      }
+    },
+    "WhyMatchV3": {
+      "type": "object",
+      "required": [
+        "depth",
+        "display_order",
+        "is_alias",
+        "matched_by",
+        "passthrough_to",
+        "selector",
+        "source_priority"
+      ],
+      "properties": {
+        "depth": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "format": "uint"
+        },
+        "display_order": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "is_alias": {
+          "type": "boolean"
+        },
+        "matched_by": {
+          "description": "How the selector matched. `why` matches exact names only today.",
+          "type": "string"
+        },
+        "passthrough_to": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "selector": {
+          "type": "string"
+        },
+        "source_priority": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535,
+          "format": "uint16"
+        }
+      }
+    },
+    "WhyTaskV3": {
+      "type": "object",
+      "required": [
+        "aliases",
+        "cwd",
+        "definition",
+        "dependencies",
+        "description",
+        "fqn",
+        "kind",
+        "name",
+        "provider",
+        "resolved",
+        "source",
+        "source_pointer"
+      ],
+      "properties": {
+        "aliases": {
+          "description": "Names of sibling alias tasks that resolve to this task.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "definition": {
+          "description": "Raw definition target: alias expansion or tool-specific run target.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "dependencies": {
+          "description": "Task dependencies. Always empty today: no extractor records dependency edges yet.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "fqn": {
+          "description": "Stable task identity: `<scope>:<kind>:<name>`. Scope is `root` until workspace-member scoping lands.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskSourceLabel"
+        },
+        "name": {
+          "type": "string"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderLabel"
+        },
+        "resolved": {
+          "description": "Effective command preview. Null when it depends on a PM resolution that was not performed for this candidate.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source": {
+          "description": "Config file the task was extracted from, when resolvable.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source_pointer": {
+          "description": "Locator inside the source file: a key path for structured configs (`alias.t`, `scripts.test`), the target/recipe name for flat files.",
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      }
+    },
+    "WhyWarning": {
+      "type": "object",
+      "required": [
+        "detail",
+        "source"
+      ],
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "title": "runner why <task> --json --schema-version 3",
+  "description": "JSON schema for `runner why <task> --json --schema-version 3`.",
+  "type": "object",
+  "required": [
+    "candidates",
+    "decision",
+    "kind",
+    "pm_resolution",
+    "query",
+    "root",
+    "schema_version",
+    "selected"
+  ],
+  "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema that describes this payload.",
+      "type": "string"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/WhyCandidateV3"
+      }
+    },
+    "decision": {
+      "$ref": "#/$defs/WhyDecisionV3"
+    },
+    "kind": {
+      "description": "Payload discriminator; always \"runner.why\".",
+      "type": "string"
+    },
+    "pm_resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PmResolution"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "query": {
+      "description": "The task selector as the user typed it.",
+      "type": "string"
+    },
+    "root": {
+      "description": "Project root the query ran against.",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Schema contract version for this JSON payload.",
+      "type": "integer",
+      "const": 3,
+      "minimum": 0,
+      "format": "uint32"
+    },
+    "selected": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhyCandidateV3"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

@@ -22,6 +22,7 @@ use crate::types::TaskSource;
 pub(crate) const fn source_label_for(source: TaskSource, schema_version: u32) -> &'static str {
     match schema_version {
         1 => super::v1::source_label(source),
-        _ => super::v2::source_label(source),
+        2 => super::v2::source_label(source),
+        _ => super::v3::source_label(source),
     }
 }

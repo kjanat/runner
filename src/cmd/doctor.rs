@@ -34,7 +34,23 @@ pub(crate) fn doctor(
     json: bool,
     schema_version: u32,
 ) -> Result<()> {
-    let project = Project::build_with_schema(ctx, overrides, schema_version, true);
+    if json && schema_version >= 3 {
+        // v3 restructured the whole document; v1/v2 keep the flat
+        // `Project` shape below.
+        let report = crate::schema::doctor_v3::DoctorReportV3::build(ctx, overrides, true);
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+
+    // The human renderer still reads the flat v2 `Project` shape, so a
+    // non-JSON call always builds at the v2 contract regardless of the
+    // requested (or defaulted) version.
+    let build_version = if json {
+        schema_version
+    } else {
+        crate::schema::CURRENT_VERSION
+    };
+    let project = Project::build_with_schema(ctx, overrides, build_version, true);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&project)?);

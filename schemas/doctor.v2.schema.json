@@ -402,7 +402,7 @@
     }
   },
   "title": "runner doctor --json --schema-version 2",
-  "description": "JSON schema for the current v2 `runner doctor --json` document. v2 uses tool-name task source labels.",
+  "description": "JSON schema for the v2 `runner doctor --json` document. v2 uses tool-name task source labels.",
   "type": "object",
   "required": [
     "decisions",

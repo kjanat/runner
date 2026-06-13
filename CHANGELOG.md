@@ -15,6 +15,41 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `runner doctor --json` schema **v3** (now the default for `doctor`):
+  the flat detection dump becomes a structured diagnostic inventory —
+  `invocation`/`environment`/`runner` provenance, per-`ecosystems`
+  decisions with a `confidence` grade derived from the resolution step
+  (override/manifest/lockfile → high, PATH probe → medium, legacy npm
+  fallback → low, failure → none), task `sources` as first-class objects,
+  `fqn`-keyed `tasks` with effective `resolved` commands, PATH-probed
+  `tools`, duplicate-task-name `conflicts` (which task wins, which are
+  shadowed, and why), flattened `diagnostics`, and a self-describing
+  `resolution` policy block. Implements the former `doctor.v3-draft`
+  schema; the real output validates against both the committed
+  `doctor.v3.schema.json` and the original draft. Draft shapes nothing
+  can emit yet (rich dependency edges, workspace identity, probe errors)
+  are deferred, not declared. v1/v2 remain available via
+  `--schema-version`; human output is unchanged.
+- `runner why --json` schema **v3** (now the default for `why`): the
+  report is restructured around `{task, match}` candidate pairs plus a
+  `decision` block. Each task carries a stable identity
+  (`fqn` = `root:<kind>:<name>`, `provider`, `kind` — cargo aliases are
+  now labeled `cargo-alias`), its origin (`source` file,
+  `source_pointer` key path), and resolution data (`definition`,
+  `resolved` command preview, `cwd`, sibling `aliases`,
+  `dependencies`). The `match` half exposes the exact run-time selection
+  key (`source_priority`, `depth`, `display_order`, alias-last), and
+  `decision.strategy` names the branch taken (`single-candidate`,
+  `ranked`, `filtered`, `exec-fallback`). Implements the former
+  `why.v3-draft` example, which the real output now reproduces verbatim;
+  v1/v2 stay available via `--schema-version`. `doctor` and `list`
+  remain at v2 — their v3 drafts are still under review, and they reject
+  `--schema-version 3` rather than mislabel output.
+  `schema --all` emits the committed `schemas/why.v3.schema.json`, and
+  the example validates against it.
+
 ## [0.13.0] - 2026-06-12
 
 ### Added

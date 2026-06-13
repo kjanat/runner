@@ -58,6 +58,10 @@ fn schema_documents() -> Result<Vec<SchemaDocument>> {
             value: output_schema::<Project<'static>>("doctor", 2)?,
         },
         SchemaDocument {
+            filename: "doctor.v3.schema.json",
+            value: output_schema::<crate::schema::doctor_v3::DoctorReportV3<'static>>("doctor", 3)?,
+        },
+        SchemaDocument {
             filename: "list.v1.schema.json",
             value: output_schema::<TaskListView<'static>>("list", 1)?,
         },
@@ -72,6 +76,10 @@ fn schema_documents() -> Result<Vec<SchemaDocument>> {
         SchemaDocument {
             filename: "why.v2.schema.json",
             value: output_schema::<super::why::WhyReport<'static>>("why", 2)?,
+        },
+        SchemaDocument {
+            filename: "why.v3.schema.json",
+            value: output_schema::<super::why::WhyReportV3<'static>>("why", 3)?,
         },
     ])
 }
@@ -144,33 +152,61 @@ fn patch_source_schema(schema: &mut Value, version: u32) {
     );
     patch_task_info_source(defs);
     patch_why_candidate_source(defs);
+    patch_why_task_v3(defs);
+    patch_def_field(defs, "SourceV3", "kind", "TaskSourceLabel");
 }
 
 fn patch_task_info_source(defs: &mut Map<String, Value>) {
-    patch_def_source(defs, "TaskInfo");
+    patch_def_field(defs, "TaskInfo", "source", "TaskSourceLabel");
 }
 
 fn patch_why_candidate_source(defs: &mut Map<String, Value>) {
-    patch_def_source(defs, "WhyCandidate");
+    patch_def_field(defs, "WhyCandidate", "source", "TaskSourceLabel");
 }
 
-fn patch_def_source(defs: &mut Map<String, Value>, def_name: &'static str) {
-    let Some(source_schema) = defs
+/// The v3 `why` task object splits the old `source` label into `kind`
+/// (mechanism label) and `provider` (executing tool family); constrain
+/// both to their closed label sets.
+fn patch_why_task_v3(defs: &mut Map<String, Value>) {
+    if !defs.contains_key("WhyTaskV3") {
+        return;
+    }
+    defs.insert(
+        "ProviderLabel".to_string(),
+        json!({ "type": "string", "enum": PROVIDER_LABELS }),
+    );
+    patch_def_field(defs, "WhyTaskV3", "kind", "TaskSourceLabel");
+    patch_def_field(defs, "WhyTaskV3", "provider", "ProviderLabel");
+}
+
+fn patch_def_field(
+    defs: &mut Map<String, Value>,
+    def_name: &'static str,
+    field: &'static str,
+    target_def: &'static str,
+) {
+    let Some(field_schema) = defs
         .get_mut(def_name)
         .and_then(|definition| definition.get_mut("properties"))
         .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut("source"))
+        .and_then(|properties| properties.get_mut(field))
     else {
         return;
     };
-    *source_schema = json!({ "$ref": "#/$defs/TaskSourceLabel" });
+    *field_schema = json!({ "$ref": format!("#/$defs/{target_def}") });
 }
 
 fn task_source_label_schema(version: u32) -> Value {
     json!({ "type": "string", "enum": source_labels(version) })
 }
 
-fn source_labels(version: u32) -> &'static [&'static str] {
+/// Closed set for the v3 `provider` field — the tool family that
+/// executes the task. Mirrors `cmd::why::provider_label`.
+const PROVIDER_LABELS: &[&str] = &[
+    "node", "make", "just", "task", "turbo", "deno", "cargo", "go", "bacon", "mise", "python",
+];
+
+const fn source_labels(version: u32) -> &'static [&'static str] {
     match version {
         1 => &[
             "package.json",
@@ -185,7 +221,7 @@ fn source_labels(version: u32) -> &'static [&'static str] {
             "mise.toml",
             "pyproject.toml",
         ],
-        _ => &[
+        2 => &[
             "package.json",
             "make",
             "just",
@@ -198,11 +234,24 @@ fn source_labels(version: u32) -> &'static [&'static str] {
             "mise",
             "pyproject.toml",
         ],
+        _ => &[
+            "package.json",
+            "make",
+            "just",
+            "task",
+            "turbo",
+            "deno",
+            "cargo-alias",
+            "go",
+            "bacon",
+            "mise",
+            "pyproject.toml",
+        ],
     }
 }
 
 fn schema_id(command: &str, version: u32) -> String {
-    format!("https://kjanat.github.io/schemas/{command}.v{version}.schema.json")
+    crate::schema::schema_url(command, version)
 }
 
 fn title(command: &str, version: u32) -> String {
@@ -215,7 +264,8 @@ fn title(command: &str, version: u32) -> String {
 fn description(command: &str, version: u32) -> String {
     match (command, version) {
         ("doctor", 1) => "JSON schema for the legacy v1 `runner doctor --json` document. v1 uses filename-style task source labels.".to_string(),
-        ("doctor", _) => "JSON schema for the current v2 `runner doctor --json` document. v2 uses tool-name task source labels.".to_string(),
+        ("doctor", 2) => "JSON schema for the v2 `runner doctor --json` document. v2 uses tool-name task source labels.".to_string(),
+        ("doctor", _) => "JSON schema for the current v3 `runner doctor --json` document: structured diagnostic inventory with invocation/environment provenance, per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, and diagnostics.".to_string(),
         _ => format!("JSON schema for `{}`.", title(command, version)),
     }
 }
