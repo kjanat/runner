@@ -9,6 +9,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Changed
+
+- The `run` alias now forwards `--help`/`-h` and `--version`/`-V` to the
+  task when they follow a task name: `run <task> --help` reaches the
+  task's own help instead of printing `run`'s (previously `run <task> --`
+  was required). `run --help`/`--version` with no task — including after
+  global flags like `run --pm npm --help` — still print this binary's own
+  help/version, and `run <task> -- --help` still forwards literally. The
+  `runner run` subcommand is unchanged. Because `-h`/`--help`/`-V`/
+  `--version` are no longer clap arguments on the alias, they are
+  documented in the help footer rather than the options list.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

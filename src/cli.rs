@@ -1023,9 +1023,26 @@ pub(crate) enum Command {
     name = "run",
     about = "Run a project task or exec a command through the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
-    version,
+    // `-h`/`--help`/`-V`/`--version` are no longer clap args (see the
+    // disable note below), so document them here instead of in the options
+    // list, and flag the forwarding rule that distinguishes this binary
+    // from `runner run`.
+    after_help = "\nUse -h/--help or -V/--version before a task for this binary's own help and version. \
+After a task name they are forwarded to the task instead (use `--` to force forwarding).",
     styles = HELP_STYLES,
-    arg_required_else_help = false
+    arg_required_else_help = false,
+    // clap's built-in `--help`/`--version` short-circuit parsing wherever
+    // they appear, so `run <task> --help` printed *our* help instead of the
+    // task's. We disable them and leave `--help`/`--version` undefined: a
+    // *defined* flag would be consumed by clap even after the task (like
+    // `-k`), but an *undefined* hyphen token after the first positional is
+    // swallowed by `args` (`trailing_var_arg`) and forwarded to the task.
+    // A leading `--help`/`--version` (before any task) instead surfaces as
+    // an `UnknownArgument` error — `task` takes no hyphen values — which
+    // `run_alias_in_dir` recognises as this binary's own help/version
+    // request. `run <task> -- --help` keeps forwarding literally.
+    disable_help_flag = true,
+    disable_version_flag = true,
 )]
 pub(crate) struct RunAliasCli {
     /// Global options shared with [`Cli`].
@@ -1039,6 +1056,8 @@ pub(crate) struct RunAliasCli {
     /// Arguments forwarded to the task, or extra task names in chain mode.
     // In chain mode, chain-failure flags (`-k`) must precede task names —
     // `trailing_var_arg` consumes everything after the first positional.
+    // That same rule forwards a *trailing* `--help`/`--version` to the task
+    // rather than treating it as this binary's own.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub args: Vec<String>,
 
