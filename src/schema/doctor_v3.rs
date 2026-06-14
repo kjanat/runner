@@ -47,6 +47,7 @@ use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, 
 /// `runner doctor --json --schema-version 3` payload.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub(crate) struct DoctorReportV3<'a> {
     #[serde(rename = "$schema")]
     #[cfg_attr(
@@ -81,6 +82,7 @@ pub(crate) struct DoctorReportV3<'a> {
 /// How this report came to be: the exact process invocation.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct InvocationV3 {
     argv: Vec<String>,
     cwd: String,
@@ -94,6 +96,7 @@ struct InvocationV3 {
 /// Host facts that influence probing and dispatch.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct EnvironmentV3 {
     arch: &'static str,
     os: &'static str,
@@ -104,6 +107,7 @@ struct EnvironmentV3 {
 /// The reporting binary's own identity and contract versions.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct RunnerInfoV3 {
     binary: String,
     name: String,
@@ -114,6 +118,7 @@ struct RunnerInfoV3 {
 /// Latest schema version each `--json` surface speaks.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct SchemaVersionsV3 {
     doctor: u32,
     list: u32,
@@ -123,6 +128,7 @@ struct SchemaVersionsV3 {
 /// Project anchoring facts.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct ProjectInfoV3 {
     monorepo: bool,
     root: String,
@@ -146,6 +152,7 @@ struct ProjectInfoV3 {
 /// stays on the v2 surface.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct OverridesV3 {
     explain: bool,
     fallback: &'static str,
@@ -160,6 +167,7 @@ struct OverridesV3 {
 /// One detected ecosystem and the PM decision made for it.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct EcosystemV3 {
     decision: EcosystemDecisionV3,
     name: &'static str,
@@ -176,6 +184,7 @@ struct EcosystemV3 {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct EcosystemDecisionV3 {
     confidence: ConfidenceV3,
     reason: String,
@@ -200,6 +209,7 @@ enum ConfidenceV3 {
 /// One task-source config file as a first-class object.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct SourceV3 {
     exists: bool,
     #[cfg_attr(
@@ -237,6 +247,7 @@ struct SourceV3 {
 /// (`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct DoctorTaskV3<'a> {
     aliases: Vec<&'a str>,
     cwd: String,
@@ -300,6 +311,7 @@ impl DependencyKindV3 {
 /// One PATH-probed tool the project relies on.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct ToolV3 {
     #[cfg_attr(
         feature = "schema",
@@ -316,6 +328,7 @@ struct ToolV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 enum ToolProbeV3 {
     Found {
         path: String,
@@ -333,6 +346,7 @@ enum ToolProbeV3 {
 /// A task name claimed by more than one source: who wins, who is shadowed.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct ConflictV3 {
     kind: &'static str,
     reason: String,
@@ -357,6 +371,7 @@ enum SeverityV3 {
 /// streams.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct DiagnosticV3 {
     #[cfg_attr(
         feature = "schema",
@@ -373,6 +388,7 @@ struct DiagnosticV3 {
 /// hardcode runner's precedence rules.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct ResolutionPolicyV3 {
     fqn_policy: &'static str,
     precedence: Vec<&'static str>,

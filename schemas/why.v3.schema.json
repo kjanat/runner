@@ -85,7 +85,8 @@
         "task": {
           "$ref": "#/$defs/WhyTaskV3"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WhyDecisionV3": {
       "type": "object",
@@ -101,7 +102,8 @@
           "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, or `exec-fallback`.",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WhyMatchV3": {
       "type": "object",
@@ -151,7 +153,8 @@
           "maximum": 65535,
           "format": "uint16"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WhyTaskV3": {
       "type": "object",
@@ -234,7 +237,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WhyWarning": {
       "type": "object",
@@ -318,5 +322,6 @@
         }
       ]
     }
-  }
+  },
+  "additionalProperties": false
 }

@@ -39,8 +39,12 @@
 							"url": "./schemas/why.v2.schema.json",
 						},
 						{
-							"fileMatch": ["schemas/doctor.v3-draft.example.json", "doctor.v3-draft.example.json"],
-							"url": "./schemas/doctor.v3-draft.schema.json",
+							"fileMatch": ["schemas/doctor.v3.example.json", "doctor.v3.example.json"],
+							"url": "./schemas/doctor.v3.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/why.v3.example.json", "why.v3.example.json"],
+							"url": "./schemas/why.v3.schema.json",
 						},
 					],
 				},

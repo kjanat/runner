@@ -61,7 +61,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "DependencyKindV3": {
       "description": "What kind of thing a probed tool is. The draft's `binary` /\n`package-binary` kinds join when something probes them.",
@@ -105,7 +106,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "DoctorTaskV3": {
       "description": "One task in the doctor inventory. Same identity scheme as `why` v3\n(`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).",
@@ -184,7 +186,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "EcosystemDecisionV3": {
       "type": "object",
@@ -206,7 +209,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "EcosystemV3": {
       "description": "One detected ecosystem and the PM decision made for it.",
@@ -237,7 +241,8 @@
         "signals": {
           "description": "Detection evidence. Node carries the full signal set (lockfile/manifest/PATH probe/shim classification, keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
         }
-      }
+      },
+      "additionalProperties": false
     },
     "EnvironmentV3": {
       "description": "Host facts that influence probing and dispatch.",
@@ -267,7 +272,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "InvocationV3": {
       "description": "How this report came to be: the exact process invocation.",
@@ -291,7 +297,8 @@
           "description": "UTC RFC 3339 timestamp of report generation.",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "OverridesV3": {
       "description": "Effective override stack, labels only. Provenance (cli/env/config)\nstays on the v2 surface.",
@@ -346,7 +353,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ProjectInfoV3": {
       "description": "Project anchoring facts.",
@@ -371,7 +379,8 @@
         "workspace": {
           "description": "Workspace identity. Always null today: workspace kind/root detection is not yet modeled (the monorepo flag is the coarse signal)."
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ResolutionPolicyV3": {
       "description": "Self-description of the task-selection policy, so consumers don't\nhardcode runner's precedence rules.",
@@ -394,7 +403,8 @@
         "short_name_policy": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "RunnerInfoV3": {
       "description": "The reporting binary's own identity and contract versions.",
@@ -418,7 +428,8 @@
         "version": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "SchemaVersionsV3": {
       "description": "Latest schema version each `--json` surface speaks.",
@@ -444,7 +455,8 @@
           "minimum": 0,
           "format": "uint32"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "SeverityV3": {
       "description": "Severity of a conflict or diagnostic. The draft's `debug`/`error`\nlevels join when something emits them.",
@@ -498,7 +510,8 @@
             "string"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "TaskSourceLabel": {
       "type": "string",
@@ -541,7 +554,8 @@
                 "string"
               ]
             }
-          }
+          },
+          "additionalProperties": false
         },
         {
           "type": "object",
@@ -553,7 +567,8 @@
               "type": "string",
               "const": "missing"
             }
-          }
+          },
+          "additionalProperties": false
         }
       ]
     },
@@ -584,7 +599,8 @@
         "required": {
           "type": "boolean"
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   "title": "runner doctor --json --schema-version 3",
@@ -677,5 +693,6 @@
         "$ref": "#/$defs/ToolV3"
       }
     }
-  }
+  },
+  "additionalProperties": false
 }

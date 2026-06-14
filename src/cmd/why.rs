@@ -247,6 +247,7 @@ fn candidate_json<'a>(
 /// the committed `schemas/why.v3.example.json`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 pub(super) struct WhyReportV3<'a> {
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
     #[cfg_attr(
@@ -283,6 +284,7 @@ pub(super) struct WhyReportV3<'a> {
 /// One candidate: the task's identity plus how it matched the query.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct WhyCandidateV3<'a> {
     task: WhyTaskV3<'a>,
     #[serde(rename = "match")]
@@ -291,6 +293,7 @@ struct WhyCandidateV3<'a> {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct WhyTaskV3<'a> {
     name: &'a str,
     #[cfg_attr(
@@ -356,6 +359,7 @@ struct WhyTaskV3<'a> {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct WhyMatchV3<'a> {
     selector: &'a str,
     #[cfg_attr(
@@ -372,6 +376,7 @@ struct WhyMatchV3<'a> {
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct WhyDecisionV3 {
     #[cfg_attr(
         feature = "schema",
