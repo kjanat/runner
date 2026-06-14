@@ -76,6 +76,7 @@ pub(crate) fn list(
         // compact path is reserved for the bare `runner` / `runner
         // info` glance view (see `print_tasks_grouped`).
         print_tasks_grouped_with_mode(&filtered, &ctx.root, RenderMode::Rich);
+        print_conflicts(ctx, overrides);
     }
     Ok(())
 }
@@ -151,6 +152,86 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
 /// `0`.
 pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path, reserved_rows: usize) {
     print_tasks_grouped_with_mode(tasks, root, select_render_mode(tasks, reserved_rows));
+}
+
+/// Print duplicate-name conflicts beneath the task list so a shadowed
+/// task — one the bare-name lookup silently will *not* run (e.g. `cargo
+/// run` losing to `just run`) — doesn't go unnoticed. Resolution uses the
+/// same precedence as `runner run`, so the named winner is what actually
+/// executes. No output when there are no conflicts.
+pub(super) fn print_conflicts(ctx: &ProjectContext, overrides: &ResolutionOverrides) {
+    if let Some(report) = format_conflicts(ctx, overrides, std::io::stdout().is_terminal()) {
+        print!("{report}");
+    }
+}
+
+/// Render the duplicate-name conflict footer, or `None` when there are
+/// none. Leading blank line + trailing newline so callers can append it
+/// verbatim after the task list.
+fn format_conflicts(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    stdout_is_terminal: bool,
+) -> Option<String> {
+    use std::collections::BTreeMap;
+
+    let mut by_name: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
+    for task in &ctx.tasks {
+        by_name.entry(task.name.as_str()).or_default().push(task);
+    }
+
+    let conflicts: Vec<(String, &'static str, Vec<&'static str>)> = by_name
+        .into_iter()
+        .filter_map(|(name, group)| {
+            // A single source never duplicates a name; only cross-source
+            // collisions are conflicts.
+            if group.iter().map(|t| t.source).collect::<HashSet<_>>().len() < 2 {
+                return None;
+            }
+            let winner = crate::cmd::run::select_task_entry(ctx, overrides, &group);
+            let mut shadowed: Vec<&'static str> = group
+                .iter()
+                .filter(|t| t.source != winner.source)
+                .map(|t| t.source.label())
+                .collect();
+            shadowed.sort_unstable();
+            shadowed.dedup();
+            Some((name.to_string(), winner.source.label(), shadowed))
+        })
+        .collect();
+
+    if conflicts.is_empty() {
+        return None;
+    }
+
+    let count = conflicts.len();
+    let header = format!(
+        "{count} name conflict{} — `runner run <name>` picks one source:",
+        if count == 1 { "" } else { "s" }
+    );
+    let mut out = String::from("\n");
+    let _ = writeln!(
+        out,
+        "  {}",
+        if stdout_is_terminal {
+            header.yellow().bold().to_string()
+        } else {
+            header
+        }
+    );
+    for (name, winner, shadowed) in conflicts {
+        let line = format!("{name}: runs {winner}, shadows {}", shadowed.join(", "));
+        let _ = writeln!(
+            out,
+            "    {}",
+            if stdout_is_terminal {
+                line.dimmed().to_string()
+            } else {
+                line
+            }
+        );
+    }
+    Some(out)
 }
 
 fn print_tasks_grouped_with_mode(tasks: &[&Task], root: &Path, mode: RenderMode) {
@@ -591,8 +672,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        RenderMode, expected_source_labels, file_uri, render_rich_row, render_tasks_grouped,
-        render_tasks_grouped_rich, select_render_mode_for, source_label, source_path,
+        RenderMode, expected_source_labels, file_uri, format_conflicts, render_rich_row,
+        render_tasks_grouped, render_tasks_grouped_rich, select_render_mode_for, source_label,
+        source_path,
     };
     use crate::resolver::ResolutionOverrides;
     use crate::schema::CURRENT_VERSION;
@@ -748,6 +830,48 @@ mod tests {
             alias_of: None,
             passthrough_to: None,
         }
+    }
+
+    fn ctx_with_tasks(tasks: Vec<Task>) -> ProjectContext {
+        ProjectContext {
+            root: PathBuf::from("/tmp/conflicts"),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks,
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn format_conflicts_flags_cross_source_shadowing() {
+        let ctx = ctx_with_tasks(vec![
+            task("run", TaskSource::Justfile),
+            task("run", TaskSource::CargoAliases),
+            task("build", TaskSource::Justfile), // single source → not a conflict
+        ]);
+
+        let report = format_conflicts(&ctx, &ResolutionOverrides::default(), false)
+            .expect("`run` is defined by two sources");
+
+        assert!(report.contains("1 name conflict"), "got: {report}");
+        assert!(report.contains("run: runs"), "got: {report}");
+        assert!(report.contains("shadows cargo"), "got: {report}");
+        assert!(
+            !report.contains("build:"),
+            "single-source task is not a conflict"
+        );
+    }
+
+    #[test]
+    fn format_conflicts_returns_none_without_collisions() {
+        let ctx = ctx_with_tasks(vec![
+            task("build", TaskSource::Justfile),
+            task("test", TaskSource::CargoAliases),
+        ]);
+        assert!(format_conflicts(&ctx, &ResolutionOverrides::default(), false).is_none());
     }
 
     #[test]
