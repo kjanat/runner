@@ -49,13 +49,16 @@ pub(crate) fn run(
     args: &[String],
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    let mut cmd = dispatch::resolve_dispatch(ctx, overrides, task, args, sink)?;
+    let dispatch = dispatch::resolve_dispatch(ctx, overrides, task, args, sink, true)?;
     // Wrap the child's output in a collapsible GitHub Actions group
     // (`runner: <task>`) when enabled. Opened after resolution so the `→`
     // dispatch arrow stays visible above the fold and a resolver error
     // never leaves an empty group; the guard closes the group on drop.
     let _group = super::task_group(overrides, task);
-    Ok(super::exit_code(cmd.status()?))
+    match dispatch {
+        dispatch::Dispatch::Spawn(mut cmd) => Ok(super::exit_code(cmd.status()?)),
+        dispatch::Dispatch::DenoSelfExec(self_exec) => self_exec.run(),
+    }
 }
 
 /// Resolve `task` and spawn it with piped stdout/stderr (so the caller
@@ -72,11 +75,19 @@ pub(crate) fn dispatch_task_piped(
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
-    let mut cmd = dispatch::resolve_dispatch(ctx, overrides, task, args, sink)?;
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    Ok(cmd.spawn()?)
+    // Chain mode disables deno self-exec (in-process execution can't be
+    // piped/spawned as a child), so resolution always yields a Command.
+    match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, false)? {
+        dispatch::Dispatch::Spawn(mut cmd) => {
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            Ok(cmd.spawn()?)
+        }
+        dispatch::Dispatch::DenoSelfExec(_) => {
+            anyhow::bail!("internal: deno self-exec is not available in chain mode")
+        }
+    }
 }
 #[cfg(test)]
 mod tests {

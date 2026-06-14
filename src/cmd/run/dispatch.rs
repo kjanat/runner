@@ -22,7 +22,80 @@ use super::qualify::{
 use super::select::select_task_entry;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
+use crate::tool::deno_exec::DenoTaskPlan;
 use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
+
+/// Outcome of resolving a task: a spawnable process, or a deno task to
+/// run in-process via the embedded task shell.
+#[derive(Debug)]
+pub(super) enum Dispatch {
+    /// A configured process to spawn (`.status()` / `.spawn()`).
+    Spawn(Command),
+    /// A deno task resolved for in-process execution (no `deno` binary).
+    DenoSelfExec(DenoSelfExec),
+}
+
+/// A deno task resolved for in-process execution.
+#[derive(Debug)]
+pub(super) struct DenoSelfExec {
+    plan: DenoTaskPlan,
+    args: Vec<String>,
+    cwd: std::path::PathBuf,
+}
+
+impl DenoSelfExec {
+    /// Run the task in-process, returning its exit code.
+    pub(super) fn run(&self) -> Result<i32> {
+        tool::deno_exec::run(&self.plan, &self.args, &self.cwd)
+    }
+}
+
+/// Whether a `deno` binary is resolvable on `$PATH`.
+fn deno_present() -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var_os("PATHEXT");
+    crate::resolver::probe_path_for_doctor("deno", &path, pathext.as_deref()).is_some()
+}
+
+/// Decide whether to run a deno `entry` in-process instead of spawning
+/// `deno task`. Returns `Ok(Some(_))` to self-exec, `Ok(None)` to fall
+/// through to `deno task`, or `Err` when deno is required (the task has
+/// dependencies or invokes `deno`) but isn't installed.
+///
+/// Default policy self-execs only as a fallback when deno is absent; the
+/// `unstable-deno-exec` feature makes self-exec primary.
+fn decide_deno_self_exec(
+    ctx: &ProjectContext,
+    entry: &Task,
+    args: &[String],
+    allow_self_exec: bool,
+) -> Result<Option<DenoSelfExec>> {
+    if entry.source != TaskSource::DenoJson {
+        return Ok(None);
+    }
+    let deno = deno_present();
+    let self_exec_first = cfg!(feature = "unstable-deno-exec");
+    if !allow_self_exec || (deno && !self_exec_first) {
+        return Ok(None);
+    }
+
+    let plan = tool::deno::find_config_upwards(&ctx.root)
+        .and_then(|path| tool::deno_exec::plan(&path, &entry.name));
+    match plan {
+        Some(plan) if plan.self_executable() => Ok(Some(DenoSelfExec {
+            plan,
+            args: args.to_vec(),
+            cwd: ctx.root.clone(),
+        })),
+        // Not self-executable: real deno can still run it; otherwise bail.
+        _ if deno => Ok(None),
+        _ => bail!(
+            "task {:?} needs deno (it has dependencies or invokes `deno`), \
+             but deno is not installed",
+            entry.name
+        ),
+    }
+}
 
 /// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
@@ -48,7 +121,8 @@ pub(super) fn resolve_dispatch(
     task: &str,
     args: &[String],
     mut sink: crate::cmd::WarningSink<'_>,
-) -> Result<Command> {
+    allow_self_exec: bool,
+) -> Result<Dispatch> {
     crate::cmd::print_warnings(ctx, overrides, sink.as_deref_mut());
 
     let (qualifier, task_name) = parse_qualified_task(task);
@@ -130,7 +204,7 @@ pub(super) fn resolve_dispatch(
                 );
                 let mut cmd = tool::bun::test_cmd(args);
                 crate::cmd::configure_command(&mut cmd, &ctx.root);
-                return Ok(cmd);
+                return Ok(Dispatch::Spawn(cmd));
             }
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.
@@ -143,7 +217,7 @@ pub(super) fn resolve_dispatch(
                 args.join(" ").dimmed(),
             );
             crate::cmd::configure_command(&mut cmd, &ctx.root);
-            return Ok(cmd);
+            return Ok(Dispatch::Spawn(cmd));
         }
 
         bail!("task {task:?} not found. Run `runner list` to see available tasks.");
@@ -159,6 +233,19 @@ pub(super) fn resolve_dispatch(
         select_task_entry(ctx, overrides, &restricted)
     };
 
+    // Deno tasks may run in-process via the embedded task shell (no deno
+    // binary) per policy; otherwise fall through to `deno task`.
+    if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
+        eprintln!(
+            "{} {} {} {}",
+            "→".dimmed(),
+            "deno-shell".dimmed(),
+            task_name.bold(),
+            args.join(" ").dimmed(),
+        );
+        return Ok(Dispatch::DenoSelfExec(self_exec));
+    }
+
     eprintln!(
         "{} {} {} {}",
         "→".dimmed(),
@@ -169,7 +256,7 @@ pub(super) fn resolve_dispatch(
 
     let mut cmd = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(&mut cmd, &ctx.root);
-    Ok(cmd)
+    Ok(Dispatch::Spawn(cmd))
 }
 
 /// Build the command for the PM-exec fallback path. Used by both
@@ -374,7 +461,9 @@ pub(crate) fn resolve_python_pm(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{build_pm_exec_command, resolve_dispatch};
+    use std::process::Command;
+
+    use super::{Dispatch, build_pm_exec_command, resolve_dispatch};
     use crate::resolver::ResolutionOverrides;
     use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
@@ -391,7 +480,14 @@ mod tests {
         }
     }
 
-    fn command_args(command: &std::process::Command) -> Vec<String> {
+    fn expect_command(dispatch: Dispatch) -> Command {
+        match dispatch {
+            Dispatch::Spawn(command) => command,
+            Dispatch::DenoSelfExec(_) => panic!("expected a spawnable command, got deno self-exec"),
+        }
+    }
+
+    fn command_args(command: &Command) -> Vec<String> {
         command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -405,7 +501,7 @@ mod tests {
             ..ResolutionOverrides::default()
         };
 
-        let err = resolve_dispatch(&context(), &overrides, "lint:cargo", &[], None)
+        let err = resolve_dispatch(&context(), &overrides, "lint:cargo", &[], None, true)
             .expect_err("reversed qualifier should fail dispatch");
 
         assert!(format!("{err:#}").contains("cargo:lint"));
@@ -425,8 +521,17 @@ mod tests {
         });
         let args = [String::from("--port"), String::from("3000")];
 
-        let command = resolve_dispatch(&ctx, &ResolutionOverrides::default(), "serve", &args, None)
-            .expect("go package task should dispatch");
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "serve",
+                &args,
+                None,
+                true,
+            )
+            .expect("go package task should dispatch"),
+        );
 
         assert_eq!(command.get_program().to_string_lossy(), "go");
         assert_eq!(
@@ -449,14 +554,17 @@ mod tests {
         });
         let args = [String::from("--flag")];
 
-        let command = resolve_dispatch(
-            &ctx,
-            &ResolutionOverrides::default(),
-            "greenpy",
-            &args,
-            None,
-        )
-        .expect("pyproject script should dispatch");
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "greenpy",
+                &args,
+                None,
+                true,
+            )
+            .expect("pyproject script should dispatch"),
+        );
 
         assert_eq!(command.get_program().to_string_lossy(), "uv");
         assert_eq!(command_args(&command), ["run", "greenpy", "--flag"]);
@@ -475,8 +583,17 @@ mod tests {
             passthrough_to: None,
         });
 
-        let command = resolve_dispatch(&ctx, &ResolutionOverrides::default(), "greenpy", &[], None)
-            .expect("pyproject script should dispatch");
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "greenpy",
+                &[],
+                None,
+                true,
+            )
+            .expect("pyproject script should dispatch"),
+        );
 
         assert_eq!(command.get_program().to_string_lossy(), "poetry");
         assert_eq!(command_args(&command), ["run", "greenpy"]);

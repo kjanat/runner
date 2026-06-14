@@ -380,7 +380,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
             );
         }
         if let Some(h) = deno_h {
-            push_named_tasks(
+            push_described_tasks(
                 ctx,
                 TaskSource::DenoJson,
                 h.join().expect("extractor thread panicked"),

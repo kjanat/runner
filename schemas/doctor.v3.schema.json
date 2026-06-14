@@ -120,6 +120,7 @@
         "is_alias",
         "name",
         "resolved",
+        "self_executable",
         "source",
         "source_pointer"
       ],
@@ -166,6 +167,10 @@
             "null",
             "string"
           ]
+        },
+        "self_executable": {
+          "description": "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false.",
+          "type": "boolean"
         },
         "source": {
           "type": [

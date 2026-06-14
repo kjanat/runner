@@ -265,6 +265,13 @@ struct DoctorTaskV3<'a> {
         )
     )]
     resolved: Option<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false."
+        )
+    )]
+    self_executable: bool,
     source: Option<String>,
     source_pointer: Option<String>,
 }
@@ -757,10 +764,25 @@ fn tasks_v3<'a>(
             is_alias: task.alias_of.is_some(),
             name: &task.name,
             resolved: resolved_command_v3(task, node_pm_label, python_pm_label),
+            self_executable: deno_task_self_executable(ctx, task),
             source: anchors.get(&task.source).cloned().flatten(),
             source_pointer: source_pointer_v3(task),
         })
         .collect()
+}
+
+/// Whether runner can run `task` without its source's primary tool.
+///
+/// Only deno tasks that runner can drive through the embedded task shell
+/// (leaf command, no `dependencies`, no `deno` invocation) qualify; every
+/// other source has no in-process fallback and is therefore `false`.
+fn deno_task_self_executable(ctx: &ProjectContext, task: &Task) -> bool {
+    if task.source != TaskSource::DenoJson {
+        return false;
+    }
+    crate::tool::deno::find_config_upwards(&ctx.root)
+        .and_then(|config| crate::tool::deno_exec::plan(&config, &task.name))
+        .is_some_and(|plan| plan.self_executable())
 }
 
 /// Effective command preview. Unlike `why` v3 (which only resolves the
@@ -864,16 +886,33 @@ fn tools_v3(
             ctx.current_node
                 .as_deref()
                 .map(|v| v.trim_start_matches('v').to_string()),
+            true,
             &path,
             pathext_ref,
         ));
     }
 
+    // Deno is required only when at least one deno task can't be
+    // self-executed (it has dependencies or invokes `deno`); a project
+    // whose deno tasks all run through the embedded shell does not need
+    // the binary. Every other tool has no in-process fallback.
+    let deno_required = ctx
+        .tasks
+        .iter()
+        .filter(|task| task.source == TaskSource::DenoJson)
+        .any(|task| !deno_task_self_executable(ctx, task));
+
     for pm in &ctx.package_managers {
+        let required = if *pm == PackageManager::Deno {
+            deno_required
+        } else {
+            true
+        };
         tools.push(probe_tool(
             pm_binary_name(*pm),
             DependencyKindV3::PackageManager,
             None,
+            required,
             &path,
             pathext_ref,
         ));
@@ -883,6 +922,7 @@ fn tools_v3(
             runner.label(),
             DependencyKindV3::TaskRunner,
             None,
+            true,
             &path,
             pathext_ref,
         ));
@@ -904,6 +944,7 @@ fn probe_tool(
     name: &'static str,
     kind: DependencyKindV3,
     version: Option<String>,
+    required: bool,
     path: &std::ffi::OsStr,
     pathext: Option<&std::ffi::OsStr>,
 ) -> ToolV3 {
@@ -921,7 +962,7 @@ fn probe_tool(
         kind,
         name,
         probe,
-        required: true,
+        required,
     }
 }
 

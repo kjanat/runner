@@ -156,8 +156,13 @@ fn within_boundary(path: &Path, boundary: Option<&Path>) -> bool {
     boundary.is_none_or(|boundary| path == boundary || path.starts_with(boundary))
 }
 
-/// Parse task names from `deno.json` / `deno.jsonc`.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+/// Parse task names and descriptions from `deno.json` / `deno.jsonc`.
+///
+/// Handles both the string form (`"build": "vite build"`) and the object
+/// form (`"build": { "command": "...", "description": "..." }`). Sorted
+/// by name for deterministic output. The self-exec path re-parses the
+/// config for `command` / `dependencies` when it needs them.
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -169,7 +174,20 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     let d = json5::from_str::<Partial>(&content)
         .with_context(|| format!("{} is not valid JSON/JSONC", path.display()))?;
-    Ok(d.tasks.map_or_else(Vec::new, |t| t.into_keys().collect()))
+    let mut tasks: Vec<(String, Option<String>)> = d.tasks.map_or_else(Vec::new, |t| {
+        t.into_iter()
+            .map(|(name, value)| {
+                // String form carries no description; object form may.
+                let description = value
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                (name, description)
+            })
+            .collect()
+    });
+    tasks.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(tasks)
 }
 
 /// `deno task <task> [args...]`
@@ -239,10 +257,40 @@ mod tests {
         )
         .expect("deno.jsonc should be written");
 
-        let mut tasks = extract_tasks(dir.path()).expect("deno tasks should parse");
-        tasks.sort_unstable();
+        let tasks = extract_tasks(dir.path()).expect("deno tasks should parse");
 
-        assert_eq!(tasks, ["build", "test"]);
+        assert_eq!(
+            tasks,
+            [("build".to_string(), None), ("test".to_string(), None),]
+        );
+    }
+
+    #[test]
+    fn extract_tasks_reads_object_form_descriptions() {
+        let dir = TempDir::new("deno-task-descriptions");
+        fs::write(
+            dir.path().join("deno.json"),
+            r#"{
+  "tasks": {
+    "build": { "command": "vite build", "description": "Bundle for production" },
+    "dev": "vite"
+  }
+}"#,
+        )
+        .expect("deno.json should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("deno tasks should parse");
+
+        assert_eq!(
+            tasks,
+            [
+                (
+                    "build".to_string(),
+                    Some("Bundle for production".to_string())
+                ),
+                ("dev".to_string(), None),
+            ]
+        );
     }
 
     #[test]
