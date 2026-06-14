@@ -7,7 +7,7 @@
   "selected": {
     "task": {
       "name": "t",
-      "fqn": "root:cargo-alias:t",
+      "fqn": "root:cargo-alias#t",
       "provider": "cargo",
       "kind": "cargo-alias",
       "source": "/path/to/project/.cargo/config.toml",
@@ -33,7 +33,7 @@
     {
       "task": {
         "name": "t",
-        "fqn": "root:cargo-alias:t",
+        "fqn": "root:cargo-alias#t",
         "provider": "cargo",
         "kind": "cargo-alias",
         "source": "/path/to/project/.cargo/config.toml",

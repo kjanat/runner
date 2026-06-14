@@ -117,6 +117,7 @@
         "dependencies",
         "description",
         "fqn",
+        "is_alias",
         "name",
         "resolved",
         "source",
@@ -151,6 +152,10 @@
         },
         "fqn": {
           "type": "string"
+        },
+        "is_alias": {
+          "description": "True when this task is an alias for another target; `definition` holds the target it expands to (e.g. cargo `b` → `build`).",
+          "type": "boolean"
         },
         "name": {
           "type": "string"
@@ -525,7 +530,7 @@
               "const": "found"
             },
             "version": {
-              "description": "Version when already known from detection (probing never executes binaries).",
+              "description": "Resolved version: taken from detection when known, otherwise read by running `<binary> --version`. Null when the binary reports no parseable version.",
               "type": [
                 "null",
                 "string"

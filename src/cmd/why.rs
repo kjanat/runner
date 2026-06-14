@@ -296,7 +296,7 @@ struct WhyTaskV3<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Stable task identity: `<scope>:<kind>:<name>`. Scope is `root` until workspace-member scoping lands."
+            description = "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps a task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is `root` until workspace-member scoping lands."
         )
     )]
     fqn: String,
@@ -420,7 +420,7 @@ fn task_v3<'a>(
     let is_selected = selected.is_some_and(|sel| std::ptr::eq(sel, task));
     WhyTaskV3 {
         name: &task.name,
-        fqn: format!("root:{kind}:{name}", name = task.name),
+        fqn: crate::schema::labels::fqn(task.source, &task.name, schema_version),
         provider: provider_label(task.source),
         kind,
         source: source_dir_for_task(task, ctx).map(|path| path.display().to_string()),
@@ -816,7 +816,7 @@ mod tests {
 
         let task = &json["selected"]["task"];
         assert_eq!(task["name"], "t");
-        assert_eq!(task["fqn"], "root:cargo-alias:t");
+        assert_eq!(task["fqn"], "root:cargo-alias#t");
         assert_eq!(task["provider"], "cargo");
         assert_eq!(task["kind"], "cargo-alias");
         assert_eq!(task["source_pointer"], "alias.t");

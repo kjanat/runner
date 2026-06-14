@@ -201,7 +201,7 @@
           ]
         },
         "fqn": {
-          "description": "Stable task identity: `<scope>:<kind>:<name>`. Scope is `root` until workspace-member scoping lands.",
+          "description": "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps a task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is `root` until workspace-member scoping lands.",
           "type": "string"
         },
         "kind": {

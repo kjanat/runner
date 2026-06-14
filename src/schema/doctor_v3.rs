@@ -250,6 +250,13 @@ struct DoctorTaskV3<'a> {
     dependencies: Vec<serde_json::Value>,
     description: Option<&'a str>,
     fqn: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "True when this task is an alias for another target; `definition` holds the target it expands to (e.g. cargo `b` → `build`)."
+        )
+    )]
+    is_alias: bool,
     name: &'a str,
     #[cfg_attr(
         feature = "schema",
@@ -308,7 +315,7 @@ enum ToolProbeV3 {
         #[cfg_attr(
             feature = "schema",
             schemars(
-                description = "Version when already known from detection (probing never executes binaries)."
+                description = "Resolved version: taken from detection when known, otherwise read by running `<binary> --version`. Null when the binary reports no parseable version."
             )
         )]
         version: Option<String>,
@@ -733,27 +740,25 @@ fn tasks_v3<'a>(
 
     ctx.tasks
         .iter()
-        .map(|task| {
-            let kind = source_label_for(task.source, schema_version);
-            DoctorTaskV3 {
-                aliases: ctx
-                    .tasks
-                    .iter()
-                    .filter(|other| {
-                        other.source == task.source && other.alias_of.as_deref() == Some(&task.name)
-                    })
-                    .map(|other| other.name.as_str())
-                    .collect(),
-                cwd: ctx.root.display().to_string(),
-                definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
-                dependencies: Vec::new(),
-                description: task.description.as_deref(),
-                fqn: format!("root:{kind}:{name}", name = task.name),
-                name: &task.name,
-                resolved: resolved_command_v3(task, node_pm_label, python_pm_label),
-                source: anchors.get(&task.source).cloned().flatten(),
-                source_pointer: source_pointer_v3(task),
-            }
+        .map(|task| DoctorTaskV3 {
+            aliases: ctx
+                .tasks
+                .iter()
+                .filter(|other| {
+                    other.source == task.source && other.alias_of.as_deref() == Some(&task.name)
+                })
+                .map(|other| other.name.as_str())
+                .collect(),
+            cwd: ctx.root.display().to_string(),
+            definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
+            dependencies: Vec::new(),
+            description: task.description.as_deref(),
+            fqn: super::labels::fqn(task.source, &task.name, schema_version),
+            is_alias: task.alias_of.is_some(),
+            name: &task.name,
+            resolved: resolved_command_v3(task, node_pm_label, python_pm_label),
+            source: anchors.get(&task.source).cloned().flatten(),
+            source_pointer: source_pointer_v3(task),
         })
         .collect()
 }
@@ -905,8 +910,10 @@ fn probe_tool(
     let probe = crate::resolver::probe_path_for_doctor(name, path, pathext).map_or(
         ToolProbeV3::Missing,
         |hit| ToolProbeV3::Found {
+            // Prefer a version already known from detection (the node
+            // runtime); otherwise ask the binary directly.
+            version: version.or_else(|| probe_tool_version(&hit)),
             path: hit.display().to_string(),
-            version,
         },
     );
     ToolV3 {
@@ -916,6 +923,33 @@ fn probe_tool(
         probe,
         required: true,
     }
+}
+
+/// Run `<binary> --version` and extract the version string. Returns
+/// `None` when the spawn fails, the process errors, or no version-like
+/// token appears. Output formats vary (`cargo 1.83.0 (..)`, `just
+/// 1.36.0`, `1.1.38`, `v24.14.1`), so the first whitespace-separated
+/// token that looks like a dotted version wins, with any `v` prefix
+/// stripped.
+fn probe_tool_version(binary: &Path) -> Option<String> {
+    let output = std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .split_whitespace()
+        .map(|token| token.trim_start_matches('v'))
+        .find(|token| {
+            // Version-like: starts with a digit and carries a dotted
+            // component. Accepts `1.83.0`, `24.14.1`, and prerelease
+            // forms like `1.85.0-nightly`; skips names and build hashes.
+            token.starts_with(|c: char| c.is_ascii_digit()) && token.contains('.')
+        })
+        .map(ToString::to_string)
 }
 
 fn conflicts_v3(
@@ -933,13 +967,7 @@ fn conflicts_v3(
         .filter(|(_, group)| group.len() > 1)
         .map(|(name, group)| {
             let selected = select_task_entry(ctx, overrides, &group);
-            let fqn_of = |task: &Task| {
-                format!(
-                    "root:{kind}:{name}",
-                    kind = source_label_for(task.source, schema_version),
-                    name = task.name
-                )
-            };
+            let fqn_of = |task: &Task| super::labels::fqn(task.source, &task.name, schema_version);
             ConflictV3 {
                 kind: "duplicate-task-name",
                 reason: format!(
@@ -1107,10 +1135,10 @@ mod tests {
         assert_eq!(conflict["selector"], "t");
         // The justfile recipe wins: same tier, but recipes rank before
         // aliases.
-        assert_eq!(conflict["selected"], "root:just:t");
+        assert_eq!(conflict["selected"], "root:just#t");
         assert_eq!(
             conflict["shadowed"],
-            serde_json::json!(["root:cargo-alias:t"])
+            serde_json::json!(["root:cargo-alias#t"])
         );
     }
 
@@ -1123,7 +1151,9 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let task = &json["tasks"][0];
-        assert_eq!(task["fqn"], "root:cargo-alias:t");
+        assert_eq!(task["fqn"], "root:cargo-alias#t");
+        assert_eq!(task["is_alias"], true);
+        assert_eq!(task["definition"], "test");
         assert_eq!(task["resolved"], "cargo test");
         assert_eq!(task["source_pointer"], "alias.t");
         assert_eq!(task["dependencies"], serde_json::json!([]));
