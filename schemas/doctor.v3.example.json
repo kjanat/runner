@@ -337,6 +337,22 @@
       "source_pointer": "alias.bin-runner"
     },
     {
+      "aliases": [
+        "b"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#build",
+      "is_alias": false,
+      "name": "build",
+      "resolved": "cargo build",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.build"
+    },
+    {
       "aliases": [],
       "cwd": "/path/to/project",
       "definition": "check",
@@ -349,6 +365,22 @@
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.c"
+    },
+    {
+      "aliases": [
+        "c"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#check",
+      "is_alias": false,
+      "name": "check",
+      "resolved": "cargo check",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.check"
     },
     {
       "aliases": [],
@@ -391,6 +423,22 @@
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.d"
+    },
+    {
+      "aliases": [
+        "d"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#doc",
+      "is_alias": false,
+      "name": "doc",
+      "resolved": "cargo doc",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.doc"
     },
     {
       "aliases": [],
@@ -533,6 +581,22 @@
       "source_pointer": "alias.rbin-runner"
     },
     {
+      "aliases": [
+        "rm"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#remove",
+      "is_alias": false,
+      "name": "remove",
+      "resolved": "cargo remove",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.remove"
+    },
+    {
       "aliases": [],
       "cwd": "/path/to/project",
       "definition": "remove",
@@ -575,6 +639,22 @@
       "source_pointer": "alias.rr"
     },
     {
+      "aliases": [
+        "r"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#run",
+      "is_alias": false,
+      "name": "run",
+      "resolved": "cargo run",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.run"
+    },
+    {
       "aliases": [],
       "cwd": "/path/to/project",
       "definition": "run --quiet --bin runner",
@@ -615,6 +695,22 @@
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.t"
+    },
+    {
+      "aliases": [
+        "t"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#test",
+      "is_alias": false,
+      "name": "test",
+      "resolved": "cargo test",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.test"
     }
   ],
   "tools": [

@@ -464,7 +464,11 @@ fn push_cargo_aliases(
     match result {
         Ok(entries) => {
             for entry in entries {
-                let alias_of = Some(entry.display_command());
+                // A self-expanding entry (`test → test`) is the canonical
+                // subcommand, not an alias; only a differing expansion
+                // makes it a rename worth recording as `alias_of`.
+                let display = entry.display_command();
+                let alias_of = (display != entry.name).then_some(display);
                 ctx.tasks.push(Task {
                     name: entry.name,
                     source: TaskSource::CargoAliases,

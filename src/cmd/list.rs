@@ -209,12 +209,19 @@ fn render_tasks_grouped_rich(
 
         let label = source_label(source, root, stdout_is_terminal);
         let label_width = padded_column_width(source.label(), SOURCE_COL_WIDTH);
-        for task in source_tasks {
-            let value = task.alias_of.as_deref().or(task.description.as_deref());
+        for (task, alias_names) in fold_aliases(&source_tasks) {
+            // A folded canonical carries its aliases in the name cell; a
+            // standalone alias keeps showing its target in the value cell.
+            let name = name_with_aliases(&task.name, &alias_names);
+            let value = if alias_names.is_empty() {
+                task.alias_of.as_deref().or(task.description.as_deref())
+            } else {
+                task.description.as_deref()
+            };
             out.push_str(&render_rich_row(
                 &label,
                 label_width,
-                &task.name,
+                &name,
                 value,
                 stdout_is_terminal,
                 terminal_width,
@@ -387,7 +394,10 @@ fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> St
         if source_tasks.is_empty() {
             continue;
         }
-        let names: Vec<&str> = source_tasks.iter().map(|task| task.name.as_str()).collect();
+        let names: Vec<String> = fold_aliases(&source_tasks)
+            .iter()
+            .map(|(task, alias_names)| name_with_aliases(&task.name, alias_names))
+            .collect();
         let label = compact_source_label(source, stdout_is_terminal);
         let _ = writeln!(out, "  {label}{}", names.join(", "));
     }
@@ -402,6 +412,46 @@ fn tasks_for_source<'a>(tasks: &[&'a Task], source: TaskSource) -> Vec<&'a Task>
         .collect();
     source_tasks.sort_by(|a, b| a.name.cmp(&b.name));
     source_tasks
+}
+
+/// Fold rename-aliases into their canonical sibling: a task whose
+/// `alias_of` names another task in the same group gets no row of its
+/// own; instead its name is attached to that target. Returns each
+/// surfaced task with its sorted alias names. Preserves input order.
+fn fold_aliases<'a>(source_tasks: &[&'a Task]) -> Vec<(&'a Task, Vec<&'a str>)> {
+    use std::collections::{HashMap, HashSet};
+
+    let names: HashSet<&str> = source_tasks.iter().map(|t| t.name.as_str()).collect();
+    let mut aliases: HashMap<&str, Vec<&'a str>> = HashMap::new();
+    let mut folded: HashSet<&str> = HashSet::new();
+    for task in source_tasks {
+        if let Some(target) = task.alias_of.as_deref()
+            && target != task.name
+            && names.contains(target)
+        {
+            aliases.entry(target).or_default().push(task.name.as_str());
+            folded.insert(task.name.as_str());
+        }
+    }
+
+    source_tasks
+        .iter()
+        .filter(|task| !folded.contains(task.name.as_str()))
+        .map(|task| {
+            let mut names = aliases.remove(task.name.as_str()).unwrap_or_default();
+            names.sort_unstable();
+            (*task, names)
+        })
+        .collect()
+}
+
+/// Canonical task name with any folded aliases appended as `name (a, b)`.
+fn name_with_aliases(name: &str, aliases: &[&str]) -> String {
+    if aliases.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} ({})", aliases.join(", "))
+    }
 }
 
 fn compact_source_label(source: TaskSource, stdout_is_terminal: bool) -> String {
@@ -698,6 +748,22 @@ mod tests {
             alias_of: None,
             passthrough_to: None,
         }
+    }
+
+    #[test]
+    fn fold_groups_rename_alias_under_canonical_sibling() {
+        let mut tasks = [
+            task("build", TaskSource::CargoAliases),
+            task("b", TaskSource::CargoAliases),
+            task("lint", TaskSource::CargoAliases),
+        ];
+        tasks[1].alias_of = Some("build".into()); // b → build (sibling) folds
+        tasks[2].alias_of = Some("clippy --all".into()); // not a sibling → standalone
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false);
+
+        assert_eq!(rendered, "  cargo           build (b), lint\n");
     }
 
     #[test]

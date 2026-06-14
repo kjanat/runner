@@ -173,6 +173,16 @@ fn merge_alias_tables(paths: &[PathBuf]) -> anyhow::Result<HashMap<String, Vec<S
         merged.insert((*name).to_string(), vec![(*expansion).to_string()]);
     }
 
+    // Promote each built-in alias's target subcommand to a first-class
+    // task (`test`, `build`, …) so the short forms (`t`, `b`) fold under
+    // it as aliases instead of standing alone. `entry` keeps any
+    // user-defined alias of the same name intact.
+    for (_, canonical) in BUILTINS {
+        merged
+            .entry((*canonical).to_string())
+            .or_insert_with(|| vec![(*canonical).to_string()]);
+    }
+
     Ok(merged)
 }
 
@@ -233,10 +243,10 @@ fn expand_chain(mut tokens: Vec<String>, map: &HashMap<String, Vec<String>>) -> 
         let Some(expansion) = map.get(&head) else {
             return tokens;
         };
-        // Built-ins resolve to a real cargo subcommand whose name happens to
-        // also be a key (`r → run`, and `run` is not in the map). The Some()
-        // guard above already short-circuits there. Cycles are the genuine
-        // case for this set.
+        // Canonical subcommands are self-entries (`run → [run]`), so the
+        // cycle guard — not the Some() check — terminates them: the head
+        // is revisited on the next pass and we bail with the expansion so
+        // far. Genuine alias cycles bottom out the same way.
         if !visited.insert(head) {
             return tokens;
         }
