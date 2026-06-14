@@ -1,0 +1,698 @@
+{
+  "$id": "https://kjanat.github.io/schemas/doctor.v3.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "ConfidenceV3": {
+      "description": "How sure the resolver is about an ecosystem's PM selection.",
+      "oneOf": [
+        {
+          "description": "Explicit signal: override, manifest declaration, or lockfile.",
+          "type": "string",
+          "const": "high"
+        },
+        {
+          "description": "Inferred: PATH probe found a usable binary.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "Legacy `--fallback npm` default with no signal at all.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Resolution failed.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
+    },
+    "ConflictV3": {
+      "description": "A task name claimed by more than one source: who wins, who is shadowed.",
+      "type": "object",
+      "required": [
+        "kind",
+        "reason",
+        "selected",
+        "selector",
+        "severity",
+        "shadowed"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "selected": {
+          "description": "FQN of the winning task.",
+          "type": "string"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/SeverityV3"
+        },
+        "shadowed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "DependencyKindV3": {
+      "description": "What kind of thing a probed tool is. The draft's `binary` /\n`package-binary` kinds join when something probes them.",
+      "type": "string",
+      "enum": [
+        "runtime",
+        "package-manager",
+        "task-runner"
+      ]
+    },
+    "DiagnosticV3": {
+      "description": "One detection/resolution diagnostic, flattened from the warning\nstreams.",
+      "type": "object",
+      "required": [
+        "code",
+        "message",
+        "severity",
+        "source",
+        "task"
+      ],
+      "properties": {
+        "code": {
+          "description": "Stable warning category (the warning's source subsystem).",
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/SeverityV3"
+        },
+        "source": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "task": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "DoctorTaskV3": {
+      "description": "One task in the doctor inventory. Same identity scheme as `why` v3\n(`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).",
+      "type": "object",
+      "required": [
+        "aliases",
+        "cwd",
+        "definition",
+        "dependencies",
+        "description",
+        "fqn",
+        "is_alias",
+        "name",
+        "resolved",
+        "self_executable",
+        "source",
+        "source_pointer"
+      ],
+      "properties": {
+        "aliases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "definition": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "dependencies": {
+          "description": "Task dependencies. Always empty today: no extractor records dependency edges yet; the edge shape lands with the first extractor.",
+          "type": "array",
+          "items": true
+        },
+        "description": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "fqn": {
+          "type": "string"
+        },
+        "is_alias": {
+          "description": "True when this task is an alias for another target; `definition` holds the target it expands to (e.g. cargo `b` → `build`).",
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "resolved": {
+          "description": "Effective command preview. Null when it depends on a PM resolution that failed.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "self_executable": {
+          "description": "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false.",
+          "type": "boolean"
+        },
+        "source": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "source_pointer": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EcosystemDecisionV3": {
+      "type": "object",
+      "required": [
+        "confidence",
+        "reason",
+        "selected"
+      ],
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/ConfidenceV3"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "selected": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EcosystemV3": {
+      "description": "One detected ecosystem and the PM decision made for it.",
+      "type": "object",
+      "required": [
+        "decision",
+        "name",
+        "root",
+        "selected_package_manager",
+        "signals"
+      ],
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/EcosystemDecisionV3"
+        },
+        "name": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "selected_package_manager": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "signals": {
+          "description": "Detection evidence. Node carries the full signal set (lockfile/manifest/PATH probe/shim classification, keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnvironmentV3": {
+      "description": "Host facts that influence probing and dispatch.",
+      "type": "object",
+      "required": [
+        "arch",
+        "os",
+        "path_entries",
+        "shell"
+      ],
+      "properties": {
+        "arch": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "path_entries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "shell": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "InvocationV3": {
+      "description": "How this report came to be: the exact process invocation.",
+      "type": "object",
+      "required": [
+        "argv",
+        "cwd",
+        "started_at"
+      ],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "started_at": {
+          "description": "UTC RFC 3339 timestamp of report generation.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "OverridesV3": {
+      "description": "Effective override stack, labels only. Provenance (cli/env/config)\nstays on the v2 surface.",
+      "type": "object",
+      "required": [
+        "explain",
+        "fallback",
+        "no_warnings",
+        "on_mismatch",
+        "pm",
+        "pm_by_ecosystem",
+        "prefer_runners",
+        "runner"
+      ],
+      "properties": {
+        "explain": {
+          "type": "boolean"
+        },
+        "fallback": {
+          "type": "string"
+        },
+        "no_warnings": {
+          "type": "boolean"
+        },
+        "on_mismatch": {
+          "type": "string"
+        },
+        "pm": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "pm_by_ecosystem": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "prefer_runners": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "runner": {
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProjectInfoV3": {
+      "description": "Project anchoring facts.",
+      "type": "object",
+      "required": [
+        "monorepo",
+        "root",
+        "root_source",
+        "workspace"
+      ],
+      "properties": {
+        "monorepo": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "string"
+        },
+        "root_source": {
+          "description": "What anchored root detection. Currently always the root itself (cwd or --dir); a dedicated anchor model is future work.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Workspace identity. Always null today: workspace kind/root detection is not yet modeled (the monorepo flag is the coarse signal)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ResolutionPolicyV3": {
+      "description": "Self-description of the task-selection policy, so consumers don't\nhardcode runner's precedence rules.",
+      "type": "object",
+      "required": [
+        "fqn_policy",
+        "precedence",
+        "short_name_policy"
+      ],
+      "properties": {
+        "fqn_policy": {
+          "type": "string"
+        },
+        "precedence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "short_name_policy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RunnerInfoV3": {
+      "description": "The reporting binary's own identity and contract versions.",
+      "type": "object",
+      "required": [
+        "binary",
+        "name",
+        "schema_versions",
+        "version"
+      ],
+      "properties": {
+        "binary": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "schema_versions": {
+          "$ref": "#/$defs/SchemaVersionsV3"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SchemaVersionsV3": {
+      "description": "Latest schema version each `--json` surface speaks.",
+      "type": "object",
+      "required": [
+        "doctor",
+        "list",
+        "why"
+      ],
+      "properties": {
+        "doctor": {
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint32"
+        },
+        "list": {
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint32"
+        },
+        "why": {
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint32"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SeverityV3": {
+      "description": "Severity of a conflict or diagnostic. The draft's `debug`/`error`\nlevels join when something emits them.",
+      "type": "string",
+      "enum": [
+        "info",
+        "warning"
+      ]
+    },
+    "SourceV3": {
+      "description": "One task-source config file as a first-class object.",
+      "type": "object",
+      "required": [
+        "exists",
+        "id",
+        "kind",
+        "package",
+        "path",
+        "relpath",
+        "scope",
+        "task_pointer"
+      ],
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Stable source identity: `src:<scope>:<kind>`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TaskSourceLabel"
+        },
+        "package": {
+          "description": "Package identity for manifest-backed sources. Null today."
+        },
+        "path": {
+          "type": "string"
+        },
+        "relpath": {
+          "type": "string"
+        },
+        "scope": {
+          "description": "Project-root-relative scope; `root` until member scoping lands.",
+          "type": "string"
+        },
+        "task_pointer": {
+          "description": "Key of the container holding tasks inside the file (`scripts`, `tasks`, `alias`, …); null for flat-format files.",
+          "type": [
+            "null",
+            "string"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskSourceLabel": {
+      "type": "string",
+      "enum": [
+        "package.json",
+        "make",
+        "just",
+        "task",
+        "turbo",
+        "deno",
+        "cargo-alias",
+        "go",
+        "bacon",
+        "mise",
+        "pyproject.toml"
+      ]
+    },
+    "ToolProbeV3": {
+      "description": "PATH-probe outcome, tagged by `status`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "status",
+            "version"
+          ],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "status": {
+              "type": "string",
+              "const": "found"
+            },
+            "version": {
+              "description": "Resolved version: taken from detection when known, otherwise read by running `<binary> --version`. Null when the binary reports no parseable version.",
+              "type": [
+                "null",
+                "string"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ToolV3": {
+      "description": "One PATH-probed tool the project relies on.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "probe",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "description": "Stable tool identity: `tool:<kind>:<name>`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DependencyKindV3"
+        },
+        "name": {
+          "type": "string"
+        },
+        "probe": {
+          "$ref": "#/$defs/ToolProbeV3"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "title": "runner doctor --json --schema-version 3",
+  "description": "JSON schema for the current v3 `runner doctor --json` document: structured diagnostic inventory with invocation/environment provenance, per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, and diagnostics.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "conflicts",
+    "diagnostics",
+    "ecosystems",
+    "environment",
+    "invocation",
+    "kind",
+    "overrides",
+    "project",
+    "resolution",
+    "runner",
+    "schema_version",
+    "sources",
+    "tasks",
+    "tools"
+  ],
+  "properties": {
+    "$schema": {
+      "description": "URI of the JSON Schema that describes this payload.",
+      "type": "string"
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ConflictV3"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DiagnosticV3"
+      }
+    },
+    "ecosystems": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/EcosystemV3"
+      }
+    },
+    "environment": {
+      "$ref": "#/$defs/EnvironmentV3"
+    },
+    "invocation": {
+      "$ref": "#/$defs/InvocationV3"
+    },
+    "kind": {
+      "description": "Payload discriminator; always \"runner.doctor\".",
+      "type": "string"
+    },
+    "overrides": {
+      "$ref": "#/$defs/OverridesV3"
+    },
+    "project": {
+      "$ref": "#/$defs/ProjectInfoV3"
+    },
+    "resolution": {
+      "$ref": "#/$defs/ResolutionPolicyV3"
+    },
+    "runner": {
+      "$ref": "#/$defs/RunnerInfoV3"
+    },
+    "schema_version": {
+      "description": "Schema contract version for this JSON payload.",
+      "type": "integer",
+      "const": 3,
+      "minimum": 0,
+      "format": "uint32"
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SourceV3"
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DoctorTaskV3"
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ToolV3"
+      }
+    }
+  },
+  "additionalProperties": false
+}

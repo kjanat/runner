@@ -295,20 +295,14 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 /// Extract tasks only from tools that were actually detected, avoiding
 /// unnecessary filesystem reads.
 ///
-/// Each enabled extractor runs in its own scoped thread. The slow path
-/// is always a subprocess wait — `just --summary --justfile <path>`,
-/// `mise tasks ls`, `task --list`, `cargo metadata`, `turbo run` schema
-/// reads, etc. — and those waits dominate cold-run wall-clock for any
-/// project that detects more than two task sources. Serial extraction
-/// costs O(N) subprocesses worth of latency; scoped parallelism brings
-/// it down to ~`max(extractor_latency)` plus thread-spawn overhead.
+/// Each enabled extractor runs in its own scoped thread: the slow path
+/// is a subprocess wait (`just --summary`, `mise tasks ls`, `cargo
+/// metadata`, …) that dominates cold-run wall-clock, so parallelism cuts
+/// total latency to roughly the slowest single extractor.
 ///
-/// Pushes are applied in the original declaration order so the task
-/// list keeps the source ordering the resolver and snapshot tests
-/// rely on. `JoinHandle::join` panics propagate the same way a panic
-/// in the previous serial code would have, which is the right
-/// behavior; silently swallowing a poisoned extractor would mask a
-/// real bug.
+/// Results are applied in declaration order so the task list keeps the
+/// source ordering the resolver and snapshot tests rely on. Extractor
+/// panics propagate through `join` rather than being swallowed.
 fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     use std::thread;
 
@@ -386,7 +380,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
             );
         }
         if let Some(h) = deno_h {
-            push_named_tasks(
+            push_described_tasks(
                 ctx,
                 TaskSource::DenoJson,
                 h.join().expect("extractor thread panicked"),
@@ -470,7 +464,11 @@ fn push_cargo_aliases(
     match result {
         Ok(entries) => {
             for entry in entries {
-                let alias_of = Some(entry.display_command());
+                // A self-expanding entry (`test → test`) is the canonical
+                // subcommand, not an alias; only a differing expansion
+                // makes it a rename worth recording as `alias_of`.
+                let display = entry.display_command();
+                let alias_of = (display != entry.name).then_some(display);
                 ctx.tasks.push(Task {
                     name: entry.name,
                     source: TaskSource::CargoAliases,
@@ -904,10 +902,9 @@ mod tests {
 
     #[test]
     fn detect_lists_scripts_without_lockfile_or_pm_field() {
-        // Headline regression: a `package.json` with scripts but no
-        // lockfile and no `packageManager`/`devEngines` field (a typical
-        // pnpm-workspace member dir) used to detect zero node PMs and so
-        // skip script extraction entirely → "No project detected".
+        // A `package.json` with scripts but no lockfile and no
+        // `packageManager`/`devEngines` field (a typical pnpm-workspace
+        // member) must still list its scripts despite detecting no PM.
         let dir = TempDir::new("detect-scripts-no-pm-signal");
         fs::write(
             dir.path().join("package.json"),

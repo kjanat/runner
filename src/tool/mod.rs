@@ -26,6 +26,8 @@ pub(crate) mod cargo_pm;
 pub(crate) mod composer;
 /// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
 pub(crate) mod deno;
+/// In-process execution of deno tasks via `deno_task_shell` (no deno binary).
+pub(crate) mod deno_exec;
 /// Shared filesystem helpers for tool modules.
 pub(crate) mod files;
 /// Go modules (`go.mod`).
@@ -56,6 +58,9 @@ pub(crate) mod poetry;
 pub(crate) mod program;
 /// Shared Python tooling helpers.
 pub(crate) mod python;
+/// Cross-platform in-process shell runner (`deno_task_shell`), reusable
+/// for any tool whose task bodies are shell command strings.
+pub(crate) mod shell;
 /// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).
 pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).

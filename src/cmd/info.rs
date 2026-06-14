@@ -7,7 +7,7 @@ use std::io::IsTerminal;
 use anyhow::Result;
 use colored::Colorize;
 
-use super::list::print_tasks_grouped;
+use super::list::{print_conflicts, print_tasks_grouped};
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
 use crate::types::{ProjectContext, version_matches};
@@ -93,6 +93,7 @@ pub(crate) fn info(
             + 1; // blank separator before the task list
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
         print_tasks_grouped(&refs, &ctx.root, banner_rows);
+        print_conflicts(ctx, overrides);
     }
     Ok(())
 }

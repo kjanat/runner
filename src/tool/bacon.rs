@@ -25,15 +25,12 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// Extract job names with optional descriptions, sorted alphabetically.
 ///
-/// Prefers `bacon --list-jobs` (fast path) when the binary is on `PATH`; the
-/// CLI's view is the source of truth — it merges bacon's baked-in jobs
-/// (`check`, `clippy`, `test`, …) with whatever `bacon.toml` declares,
-/// which is exactly what `bacon <name>` will actually run. Falls back to
-/// parsing `bacon.toml` directly if the binary is missing or its output
-/// can't be parsed; the fallback is project-local-only by necessity.
+/// Prefers `bacon --list-jobs` (the source of truth — it merges bacon's
+/// baked-in jobs with whatever `bacon.toml` declares), falling back to
+/// parsing `bacon.toml` directly when the binary is missing or its
+/// output won't parse.
 ///
-/// Jobs whose names start with `_` are treated as private and hidden,
-/// mirroring the just-style convention.
+/// Jobs whose names start with `_` are hidden (just-style convention).
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     if let Some(tasks) = extract_tasks_with_bacon(dir) {
         return Ok(tasks);
@@ -62,23 +59,10 @@ fn extract_tasks_with_bacon(dir: &Path) -> Option<Vec<(String, Option<String>)>>
     parse_list_jobs_table(&output.stdout)
 }
 
-/// Parse the ASCII-bordered table emitted by `bacon --list-jobs`.
-///
-/// The format (bacon 3.20–3.22) is:
-///
-/// ```text
-/// ┌──────────┬─────────────...┐
-/// │   job    │command         │
-/// ├──────────┼─────────────...┤
-/// │  check   │cargo check     │
-/// │ ...      │...             │
-/// └──────────┴─────────────...┘
-/// default job: check
-/// ```
-///
-/// ANSI styling escapes wrap individual cells; we strip the standard CSI
-/// `m` form (color/bold) before splitting on the unicode `│` separator. The
-/// header row `job│command` is detected and skipped by literal cell match.
+/// Parse the ASCII-bordered `job │ command` table from `bacon
+/// --list-jobs`. ANSI styling is stripped (CSI `m` form) before
+/// splitting on the unicode `│` separator; the `job` header row is
+/// skipped by literal cell match.
 fn parse_list_jobs_table(stdout: &[u8]) -> Option<Vec<(String, Option<String>)>> {
     let stripped = strip_csi_m(&String::from_utf8_lossy(stdout));
     let mut tasks: Vec<(String, Option<String>)> = Vec::new();
@@ -115,10 +99,8 @@ fn parse_list_jobs_table(stdout: &[u8]) -> Option<Vec<(String, Option<String>)>>
     (!tasks.is_empty()).then_some(tasks)
 }
 
-/// Strip CSI `m` (SGR — color/bold/style) escape sequences. Custom over a
-/// regex dep because the rest of this crate's TOML/CLI parsers don't pull
-/// `regex` either; the form we care about is narrow (`\x1b[…m`) and the
-/// hand-rolled scanner avoids a 1 MB dependency for one helper.
+/// Strip CSI `m` (SGR color/bold/style) escape sequences. Hand-rolled —
+/// the form is narrow (`\x1b[…m`) and doesn't justify a `regex` dep.
 fn strip_csi_m(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();

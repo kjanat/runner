@@ -1,7 +1,7 @@
 {
 	"formatter": [
 		{ "language_server": { "name": "dprint" } },
-		{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } }
+		{ "external": { "command": "dprint", "arguments": ["fmt", "--stdin", "{buffer_path}"] } },
 	],
 	"prettier": { "allowed": false },
 	"lsp": {
@@ -10,26 +10,54 @@
 				"json": {
 					"schemas": [
 						{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" },
-						{ "fileMatch": ["schemas/*.schema.json", "*.schema.json"], "url": "https://json-schema.org/draft/2020-12/schema" },
-						{ "fileMatch": ["schemas/doctor.v1.example.json", "doctor.v1.example.json"], "url": "./schemas/doctor.v1.schema.json" },
-						{ "fileMatch": ["schemas/doctor.v2.example.json", "doctor.v2.example.json"], "url": "./schemas/doctor.v2.schema.json" },
-						{ "fileMatch": ["schemas/list.v1.example.json", "list.v1.example.json"], "url": "./schemas/list.v1.schema.json" },
-						{ "fileMatch": ["schemas/list.v2.example.json", "list.v2.example.json"], "url": "./schemas/list.v2.schema.json" },
-						{ "fileMatch": ["schemas/why.v1.example.json", "why.v1.example.json"], "url": "./schemas/why.v1.schema.json" },
-						{ "fileMatch": ["schemas/why.v2.example.json", "why.v2.example.json"], "url": "./schemas/why.v2.schema.json" },
-						{ "fileMatch": ["schemas/doctor.v3-draft.example.json", "doctor.v3-draft.example.json"], "url": "./schemas/doctor.v3-draft.schema.json" }
-					]
-				}
-			}
+						{
+							"fileMatch": ["schemas/*.schema.json", "*.schema.json"],
+							"url": "https://json-schema.org/draft/2020-12/schema",
+						},
+						{
+							"fileMatch": ["schemas/doctor.v1.example.json", "doctor.v1.example.json"],
+							"url": "./schemas/doctor.v1.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/doctor.v2.example.json", "doctor.v2.example.json"],
+							"url": "./schemas/doctor.v2.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/list.v1.example.json", "list.v1.example.json"],
+							"url": "./schemas/list.v1.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/list.v2.example.json", "list.v2.example.json"],
+							"url": "./schemas/list.v2.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/why.v1.example.json", "why.v1.example.json"],
+							"url": "./schemas/why.v1.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/why.v2.example.json", "why.v2.example.json"],
+							"url": "./schemas/why.v2.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/doctor.v3.example.json", "doctor.v3.example.json"],
+							"url": "./schemas/doctor.v3.schema.json",
+						},
+						{
+							"fileMatch": ["schemas/why.v3.example.json", "why.v3.example.json"],
+							"url": "./schemas/why.v3.schema.json",
+						},
+					],
+				},
+			},
 		},
 		"rust-analyzer": {
 			"initialization_options": {
 				"diagnostics": { "experimental": { "enable": true } },
 				"check": { "workspace": true, "allTargets": true, "features": "all" },
-				"cargo": { "allTargets": true, "features": ["man", "schema", "run"] }
-			}
-		}
+				"cargo": { "allTargets": true, "features": ["man", "schema", "run"] },
+			},
+		},
 	},
 	"file_types": { "SVG": ["*.ico"], "Shell Script": [".runner-dev", "justfile"] },
-	"languages": { "TOML": { "language_servers": ["tombi", "..."] } }
+	"languages": { "TOML": { "language_servers": ["tombi", "..."] } },
 }

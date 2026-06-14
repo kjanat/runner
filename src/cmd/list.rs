@@ -76,6 +76,7 @@ pub(crate) fn list(
         // compact path is reserved for the bare `runner` / `runner
         // info` glance view (see `print_tasks_grouped`).
         print_tasks_grouped_with_mode(&filtered, &ctx.root, RenderMode::Rich);
+        print_conflicts(ctx, overrides);
     }
     Ok(())
 }
@@ -153,6 +154,86 @@ pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path, reserved_rows: u
     print_tasks_grouped_with_mode(tasks, root, select_render_mode(tasks, reserved_rows));
 }
 
+/// Print duplicate-name conflicts beneath the task list so a shadowed
+/// task — one the bare-name lookup silently will *not* run (e.g. `cargo
+/// run` losing to `just run`) — doesn't go unnoticed. Resolution uses the
+/// same precedence as `runner run`, so the named winner is what actually
+/// executes. No output when there are no conflicts.
+pub(super) fn print_conflicts(ctx: &ProjectContext, overrides: &ResolutionOverrides) {
+    if let Some(report) = format_conflicts(ctx, overrides, std::io::stdout().is_terminal()) {
+        print!("{report}");
+    }
+}
+
+/// Render the duplicate-name conflict footer, or `None` when there are
+/// none. Leading blank line + trailing newline so callers can append it
+/// verbatim after the task list.
+fn format_conflicts(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    stdout_is_terminal: bool,
+) -> Option<String> {
+    use std::collections::BTreeMap;
+
+    let mut by_name: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
+    for task in &ctx.tasks {
+        by_name.entry(task.name.as_str()).or_default().push(task);
+    }
+
+    let conflicts: Vec<(String, &'static str, Vec<&'static str>)> = by_name
+        .into_iter()
+        .filter_map(|(name, group)| {
+            // A single source never duplicates a name; only cross-source
+            // collisions are conflicts.
+            if group.iter().map(|t| t.source).collect::<HashSet<_>>().len() < 2 {
+                return None;
+            }
+            let winner = crate::cmd::run::select_task_entry(ctx, overrides, &group);
+            let mut shadowed: Vec<&'static str> = group
+                .iter()
+                .filter(|t| t.source != winner.source)
+                .map(|t| t.source.label())
+                .collect();
+            shadowed.sort_unstable();
+            shadowed.dedup();
+            Some((name.to_string(), winner.source.label(), shadowed))
+        })
+        .collect();
+
+    if conflicts.is_empty() {
+        return None;
+    }
+
+    let count = conflicts.len();
+    let header = format!(
+        "{count} name conflict{} — `runner run <name>` picks one source:",
+        if count == 1 { "" } else { "s" }
+    );
+    let mut out = String::from("\n");
+    let _ = writeln!(
+        out,
+        "  {}",
+        if stdout_is_terminal {
+            header.yellow().bold().to_string()
+        } else {
+            header
+        }
+    );
+    for (name, winner, shadowed) in conflicts {
+        let line = format!("{name}: runs {winner}, shadows {}", shadowed.join(", "));
+        let _ = writeln!(
+            out,
+            "    {}",
+            if stdout_is_terminal {
+                line.dimmed().to_string()
+            } else {
+                line
+            }
+        );
+    }
+    Some(out)
+}
+
 fn print_tasks_grouped_with_mode(tasks: &[&Task], root: &Path, mode: RenderMode) {
     let stdout_is_terminal = std::io::stdout().is_terminal();
     print!(
@@ -209,12 +290,19 @@ fn render_tasks_grouped_rich(
 
         let label = source_label(source, root, stdout_is_terminal);
         let label_width = padded_column_width(source.label(), SOURCE_COL_WIDTH);
-        for task in source_tasks {
-            let value = task.alias_of.as_deref().or(task.description.as_deref());
+        for (task, alias_names) in fold_aliases(&source_tasks) {
+            // A folded canonical carries its aliases in the name cell; a
+            // standalone alias keeps showing its target in the value cell.
+            let name = name_with_aliases(&task.name, &alias_names);
+            let value = if alias_names.is_empty() {
+                task.alias_of.as_deref().or(task.description.as_deref())
+            } else {
+                task.description.as_deref()
+            };
             out.push_str(&render_rich_row(
                 &label,
                 label_width,
-                &task.name,
+                &name,
                 value,
                 stdout_is_terminal,
                 terminal_width,
@@ -387,7 +475,10 @@ fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> St
         if source_tasks.is_empty() {
             continue;
         }
-        let names: Vec<&str> = source_tasks.iter().map(|task| task.name.as_str()).collect();
+        let names: Vec<String> = fold_aliases(&source_tasks)
+            .iter()
+            .map(|(task, alias_names)| name_with_aliases(&task.name, alias_names))
+            .collect();
         let label = compact_source_label(source, stdout_is_terminal);
         let _ = writeln!(out, "  {label}{}", names.join(", "));
     }
@@ -402,6 +493,46 @@ fn tasks_for_source<'a>(tasks: &[&'a Task], source: TaskSource) -> Vec<&'a Task>
         .collect();
     source_tasks.sort_by(|a, b| a.name.cmp(&b.name));
     source_tasks
+}
+
+/// Fold rename-aliases into their canonical sibling: a task whose
+/// `alias_of` names another task in the same group gets no row of its
+/// own; instead its name is attached to that target. Returns each
+/// surfaced task with its sorted alias names. Preserves input order.
+fn fold_aliases<'a>(source_tasks: &[&'a Task]) -> Vec<(&'a Task, Vec<&'a str>)> {
+    use std::collections::{HashMap, HashSet};
+
+    let names: HashSet<&str> = source_tasks.iter().map(|t| t.name.as_str()).collect();
+    let mut aliases: HashMap<&str, Vec<&'a str>> = HashMap::new();
+    let mut folded: HashSet<&str> = HashSet::new();
+    for task in source_tasks {
+        if let Some(target) = task.alias_of.as_deref()
+            && target != task.name
+            && names.contains(target)
+        {
+            aliases.entry(target).or_default().push(task.name.as_str());
+            folded.insert(task.name.as_str());
+        }
+    }
+
+    source_tasks
+        .iter()
+        .filter(|task| !folded.contains(task.name.as_str()))
+        .map(|task| {
+            let mut names = aliases.remove(task.name.as_str()).unwrap_or_default();
+            names.sort_unstable();
+            (*task, names)
+        })
+        .collect()
+}
+
+/// Canonical task name with any folded aliases appended as `name (a, b)`.
+fn name_with_aliases(name: &str, aliases: &[&str]) -> String {
+    if aliases.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name} ({})", aliases.join(", "))
+    }
 }
 
 fn compact_source_label(source: TaskSource, stdout_is_terminal: bool) -> String {
@@ -541,8 +672,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        RenderMode, expected_source_labels, file_uri, render_rich_row, render_tasks_grouped,
-        render_tasks_grouped_rich, select_render_mode_for, source_label, source_path,
+        RenderMode, expected_source_labels, file_uri, format_conflicts, render_rich_row,
+        render_tasks_grouped, render_tasks_grouped_rich, select_render_mode_for, source_label,
+        source_path,
     };
     use crate::resolver::ResolutionOverrides;
     use crate::schema::CURRENT_VERSION;
@@ -698,6 +830,64 @@ mod tests {
             alias_of: None,
             passthrough_to: None,
         }
+    }
+
+    fn ctx_with_tasks(tasks: Vec<Task>) -> ProjectContext {
+        ProjectContext {
+            root: PathBuf::from("/tmp/conflicts"),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks,
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn format_conflicts_flags_cross_source_shadowing() {
+        let ctx = ctx_with_tasks(vec![
+            task("run", TaskSource::Justfile),
+            task("run", TaskSource::CargoAliases),
+            task("build", TaskSource::Justfile), // single source → not a conflict
+        ]);
+
+        let report = format_conflicts(&ctx, &ResolutionOverrides::default(), false)
+            .expect("`run` is defined by two sources");
+
+        assert!(report.contains("1 name conflict"), "got: {report}");
+        assert!(report.contains("run: runs"), "got: {report}");
+        assert!(report.contains("shadows cargo"), "got: {report}");
+        assert!(
+            !report.contains("build:"),
+            "single-source task is not a conflict"
+        );
+    }
+
+    #[test]
+    fn format_conflicts_returns_none_without_collisions() {
+        let ctx = ctx_with_tasks(vec![
+            task("build", TaskSource::Justfile),
+            task("test", TaskSource::CargoAliases),
+        ]);
+        assert!(format_conflicts(&ctx, &ResolutionOverrides::default(), false).is_none());
+    }
+
+    #[test]
+    fn fold_groups_rename_alias_under_canonical_sibling() {
+        let mut tasks = [
+            task("build", TaskSource::CargoAliases),
+            task("b", TaskSource::CargoAliases),
+            task("lint", TaskSource::CargoAliases),
+        ];
+        tasks[1].alias_of = Some("build".into()); // b → build (sibling) folds
+        tasks[2].alias_of = Some("clippy --all".into()); // not a sibling → standalone
+        let refs: Vec<&Task> = tasks.iter().collect();
+
+        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false);
+
+        assert_eq!(rendered, "  cargo           build (b), lint\n");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "root": "/home/kjanat/projects/runner",
+  "root": "/path/to/project",
   "ecosystems": [
     "node",
     "rust"
@@ -14,7 +14,7 @@
       "just"
     ],
     "node_version": null,
-    "current_node": "24.14.1",
+    "current_node": "24.0.0",
     "monorepo": true
   },
   "overrides": {
@@ -33,24 +33,21 @@
       "manifest_pm": {
         "pm": "bun",
         "source": "packageManager",
-        "version": "1.3.14",
+        "version": "1.0.0",
         "on_fail": "ignore"
       },
       "path_probe": {
-        "bun": "/home/kjanat/.bun/bin/bun",
-        "npm": "/home/kjanat/.volta/bin/npm",
-        "pnpm": "/home/kjanat/.volta/bin/pnpm",
-        "yarn": "/home/kjanat/.volta/bin/yarn"
+        "bun": "/usr/local/bin/bun",
+        "npm": "/opt/volta/bin/npm",
+        "pnpm": null,
+        "yarn": "/opt/volta/bin/yarn"
       },
       "volta_shims": {
         "npm": {
-          "resolved": "/home/kjanat/.volta/tools/image/npm/11.6.2/bin/npm"
-        },
-        "pnpm": {
-          "resolved": "/home/kjanat/.volta/tools/image/packages/pnpm/bin/pnpm"
+          "resolved": "/opt/volta/tools/image/npm/10.0.0/bin/npm"
         },
         "yarn": {
-          "resolved": "/home/kjanat/.volta/tools/image/yarn/1.22.22/bin/yarn"
+          "resolved": null
         }
       }
     }

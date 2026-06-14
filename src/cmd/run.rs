@@ -49,13 +49,16 @@ pub(crate) fn run(
     args: &[String],
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    let mut cmd = dispatch::resolve_dispatch(ctx, overrides, task, args, sink)?;
+    let dispatch = dispatch::resolve_dispatch(ctx, overrides, task, args, sink, true)?;
     // Wrap the child's output in a collapsible GitHub Actions group
     // (`runner: <task>`) when enabled. Opened after resolution so the `→`
     // dispatch arrow stays visible above the fold and a resolver error
     // never leaves an empty group; the guard closes the group on drop.
     let _group = super::task_group(overrides, task);
-    Ok(super::exit_code(cmd.status()?))
+    match dispatch {
+        dispatch::Dispatch::Spawn(mut cmd) => Ok(super::exit_code(cmd.status()?)),
+        dispatch::Dispatch::DenoSelfExec(self_exec) => self_exec.run(),
+    }
 }
 
 /// Resolve `task` and spawn it with piped stdout/stderr (so the caller
@@ -72,11 +75,19 @@ pub(crate) fn dispatch_task_piped(
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
-    let mut cmd = dispatch::resolve_dispatch(ctx, overrides, task, args, sink)?;
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    Ok(cmd.spawn()?)
+    // Chain mode disables deno self-exec (in-process execution can't be
+    // piped/spawned as a child), so resolution always yields a Command.
+    match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, false)? {
+        dispatch::Dispatch::Spawn(mut cmd) => {
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            Ok(cmd.spawn()?)
+        }
+        dispatch::Dispatch::DenoSelfExec(_) => {
+            anyhow::bail!("internal: deno self-exec is not available in chain mode")
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -291,10 +302,8 @@ mod tests {
 
     #[test]
     fn bun_test_fallback_suppressed_when_resolver_returns_non_bun() {
-        // Models `--pm npm` against a Bun-detected project: the
-        // resolver returns Npm (override wins), so the fallback must
-        // not fire. The previous-shape "user intent wins" test now
-        // collapses to a simpler assertion about the resolved verdict.
+        // `--pm npm` against a Bun-detected project: the resolver
+        // returns Npm (override wins), so the fallback must not fire.
         let ctx = context(vec![PackageManager::Bun], vec![]);
 
         assert!(!should_use_bun_test_fallback(
@@ -316,8 +325,8 @@ mod tests {
 
     #[test]
     fn bun_test_fallback_enabled_when_resolver_picks_bun_with_no_lockfile() {
-        // Models `--pm bun` against an empty ctx — resolver returns
-        // Bun even though ctx has no detected PM. Fallback fires.
+        // `--pm bun` against an empty ctx: resolver returns Bun despite
+        // no detected PM, so the fallback fires.
         let ctx = context(vec![], vec![]);
 
         assert!(should_use_bun_test_fallback(
@@ -329,11 +338,9 @@ mod tests {
 
     #[test]
     fn source_depth_walks_upward_for_non_node_sources() {
-        // Generalization landed in the same change: depth-aware tiebreak
-        // used to require a custom upward walker per source. Now every
-        // source consults `tool::files::find_first_upwards`, so a
-        // Makefile two levels up still resolves with a finite depth (and
-        // therefore beats a hypothetical sibling resolved at MAX).
+        // Every source consults `tool::files::find_first_upwards`, so a
+        // Makefile two levels up resolves with a finite depth (and thus
+        // beats a hypothetical sibling resolved at MAX).
         let dir = TempDir::new("source-depth-upward");
         let nested = dir.path().join("apps").join("api");
         fs::create_dir_all(&nested).expect("nested dir should be created");

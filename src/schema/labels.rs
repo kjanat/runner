@@ -22,6 +22,21 @@ use crate::types::TaskSource;
 pub(crate) const fn source_label_for(source: TaskSource, schema_version: u32) -> &'static str {
     match schema_version {
         1 => super::v1::source_label(source),
-        _ => super::v2::source_label(source),
+        2 => super::v2::source_label(source),
+        _ => super::v3::source_label(source),
     }
+}
+
+/// Build a task's fully-qualified name: `<scope>:<kind>#<name>`.
+///
+/// The `#` boundary separates the colon-joined structured prefix
+/// (`scope:kind`, both colon-free) from the verbatim task name, which may
+/// itself contain `:` (e.g. an npm script `fmt:update`). Consumers split
+/// once on `#`: everything after is the name, unescaped. Centralised here
+/// so `why` and `doctor` can't drift apart on the format.
+pub(crate) fn fqn(source: TaskSource, name: &str, schema_version: u32) -> String {
+    format!(
+        "root:{kind}#{name}",
+        kind = source_label_for(source, schema_version)
+    )
 }

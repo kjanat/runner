@@ -684,8 +684,7 @@ mod tests {
 
     #[test]
     fn cli_output_extracts_tasks_under_project_root() {
-        // Captured shape from `mise tasks --json` against the
-        // dprint-plugin-shfmt repo (see issue #23 follow-up).
+        // Captured shape from a real `mise tasks --json` payload.
         let dir = TempDir::new("mise-cli-payload");
         let project = dir
             .path()

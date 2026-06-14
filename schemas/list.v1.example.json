@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "root": "/home/kjanat/projects/runner",
+  "root": "/path/to/project",
   "tasks": [
     {
       "name": "fmt",

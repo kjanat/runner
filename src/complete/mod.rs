@@ -561,21 +561,11 @@ mod tests {
         assert_eq!(strip_tag_prefix("package.json", "package.json"), "");
     }
 
-    /// `_files` internals (and user zstyles keyed on the `globbed-files`
-    /// tag) evaluate specs containing unquoted `*`. Under zsh's default
-    /// `NOMATCH` behaviour those raise `no matches found: *:globbed-files`
-    /// into the user's prompt; under `NO_NOMATCH`, the unmatched pattern
-    /// (e.g. `*(/)` from `_files -/`) instead survives as a literal and
-    /// gets inserted into the command line. The completion function must
-    /// scope `NULL_GLOB` via `emulate -L zsh` so unmatched globs silently
-    /// drop out — no error, and no literal to leak.
-    ///
-    /// `EXTENDED_GLOB` is required on top of `NULL_GLOB` because zsh's
-    /// own `_files` builds qualifier patterns like `*(#q-/)` and uses
-    /// `(#b)` backreferences internally. Without extended glob, running
-    /// `_files -/` raises `bad pattern: *(#q-/):globbed-files` —
-    /// `emulate -L zsh` strips `EXTENDED_GLOB` from the caller's shell
-    /// unless we explicitly opt back in.
+    /// `_files` evaluates specs with unquoted `*`. `NULL_GLOB` makes
+    /// unmatched globs drop out silently instead of erroring or leaking
+    /// the literal pattern into the command line. `EXTENDED_GLOB` is
+    /// also needed because `_files` builds `*(#q-/)` qualifiers, and
+    /// `emulate -L zsh` would otherwise strip it from the caller's shell.
     #[test]
     fn registration_script_uses_null_glob_and_extended_glob() {
         let mut buf = Vec::new();
@@ -591,13 +581,10 @@ mod tests {
         );
     }
 
-    /// `setopt noglob` inside the function would disable globbing in
-    /// `_path_files`'s internal `tmp1=( $~tmp1 )` expansion as well,
-    /// leaving the directory-qualifier pattern (`*(-/)`) unexpanded
-    /// and thus leaked as a candidate — defeating the `NULL_GLOB` fix.
-    /// The `noglob` *precommand modifier* only suppresses glob expansion
-    /// on the arguments of the `_files` call, not its internals, so the
-    /// two must never be confused in this script.
+    /// Must use the `noglob` precommand modifier, not `setopt noglob`:
+    /// the latter also disables `_files`'s internal `$~tmp1` expansion,
+    /// leaking the directory qualifier and defeating the `NULL_GLOB` fix.
+    /// The precommand form only suppresses globbing on `_files`'s args.
     #[test]
     fn registration_script_uses_noglob_precommand_not_setopt() {
         let mut buf = Vec::new();

@@ -24,10 +24,12 @@
 //! convention (filename-style → tool names) was a rename, so it moved
 //! from v1 to v2.
 
+pub(crate) mod doctor_v3;
 pub(crate) mod labels;
 pub(crate) mod project;
 pub(crate) mod v1;
 pub(crate) mod v2;
+pub(crate) mod v3;
 
 // Re-export so callers write `crate::schema::Project` rather than
 // `crate::schema::project::Project`. The inner module stays public
@@ -35,8 +37,13 @@ pub(crate) mod v2;
 // builder methods directly without going through this shim.
 pub(crate) use project::Project;
 
-/// Highest JSON schema version this binary can produce. Increments on
-/// any breaking change to the serialized contract.
+/// Highest JSON schema version `list` can produce (and the version the
+/// flat [`project::Project`] shape serves). Increments on any breaking
+/// change to that serialized contract.
+///
+/// Surfaces version independently: `doctor` is at
+/// [`DOCTOR_CURRENT_VERSION`] and `why` at [`WHY_CURRENT_VERSION`];
+/// `list` stays here until a v3 contract for it exists.
 ///
 /// **v2** — source labels standardized to tool names (`"just"`,
 /// `"bacon"`, `"make"`, `"turbo"`, `"deno"`, `"task"`, `"mise"`).
@@ -49,9 +56,28 @@ pub(crate) use project::Project;
 /// `--schema-version=1`.
 pub(crate) const CURRENT_VERSION: u32 = 2;
 
-/// Validate that `requested` is a schema version this binary can produce.
-/// Returns the version unchanged on success so callers can chain it
-/// directly into the builder.
+/// Highest JSON schema version `doctor` can produce.
+///
+/// **v3** — structured diagnostic inventory ([`doctor_v3`]):
+/// `invocation`/`environment`/`runner` provenance, per-ecosystem
+/// decisions with confidence, first-class `sources`, `fqn`-keyed tasks,
+/// PATH-probed `tools`, duplicate-name `conflicts`, flattened
+/// `diagnostics`, and a self-describing `resolution` policy block.
+pub(crate) const DOCTOR_CURRENT_VERSION: u32 = 3;
+
+/// Highest JSON schema version `why` can produce.
+///
+/// **v3** — structured report: candidates become `{task, match}` pairs
+/// carrying identity (`fqn`, `provider`, `kind`, `source`,
+/// `source_pointer`), resolution data (`definition`, `resolved`, `cwd`,
+/// `aliases`, `dependencies`), and the match/decision breakdown that
+/// mirrors the run-time selection key. Cargo alias tasks are labeled
+/// `"cargo-alias"` (see [`v3`]).
+pub(crate) const WHY_CURRENT_VERSION: u32 = 3;
+
+/// Validate that `requested` is a schema version `doctor`/`list` can
+/// produce. Returns the version unchanged on success so callers can
+/// chain it directly into the builder.
 ///
 /// # Errors
 ///
@@ -67,9 +93,47 @@ pub(crate) fn validate_schema_version(requested: u32) -> anyhow::Result<u32> {
     Ok(requested)
 }
 
+/// Validate that `requested` is a schema version `doctor` can produce.
+///
+/// # Errors
+///
+/// Returns `Err` when `requested == 0` or `requested >
+/// DOCTOR_CURRENT_VERSION`, advertising the doctor-specific range.
+pub(crate) fn validate_doctor_schema_version(requested: u32) -> anyhow::Result<u32> {
+    if requested == 0 || requested > DOCTOR_CURRENT_VERSION {
+        anyhow::bail!(
+            "unsupported --schema-version {requested}; `runner doctor` speaks 1..={DOCTOR_CURRENT_VERSION}",
+        );
+    }
+    Ok(requested)
+}
+
+/// Canonical public URL of a committed output schema.
+pub(crate) fn schema_url(command: &str, version: u32) -> String {
+    format!("https://kjanat.github.io/schemas/{command}.v{version}.schema.json")
+}
+
+/// Validate that `requested` is a schema version `why` can produce.
+///
+/// # Errors
+///
+/// Returns `Err` when `requested == 0` or `requested >
+/// WHY_CURRENT_VERSION`, advertising the why-specific supported range.
+pub(crate) fn validate_why_schema_version(requested: u32) -> anyhow::Result<u32> {
+    if requested == 0 || requested > WHY_CURRENT_VERSION {
+        anyhow::bail!(
+            "unsupported --schema-version {requested}; `runner why` speaks 1..={WHY_CURRENT_VERSION}",
+        );
+    }
+    Ok(requested)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CURRENT_VERSION, labels::source_label_for, validate_schema_version};
+    use super::{
+        CURRENT_VERSION, DOCTOR_CURRENT_VERSION, WHY_CURRENT_VERSION, labels::source_label_for,
+        validate_doctor_schema_version, validate_schema_version, validate_why_schema_version,
+    };
     use crate::types::TaskSource;
 
     #[test]
@@ -104,13 +168,34 @@ mod tests {
 
     #[test]
     fn current_version_matches_v2_labels() {
-        // Regression guard: `CURRENT_VERSION` and the v2 module must
-        // stay in lock-step. If a future v3 lands, this test moves to
-        // assert against `v3::source_label` and `CURRENT_VERSION = 3`.
+        // Regression guard: `CURRENT_VERSION` (doctor/list) and the v2
+        // module must stay in lock-step until their v3 contracts are
+        // reviewed and implemented; `why` versions independently via
+        // `WHY_CURRENT_VERSION`.
         assert_eq!(CURRENT_VERSION, 2);
         assert_eq!(
             source_label_for(TaskSource::Justfile, CURRENT_VERSION),
             "just"
+        );
+    }
+
+    #[test]
+    fn why_version_matches_v3_labels() {
+        // v3's single label divergence: cargo aliases name the
+        // mechanism, freeing `provider` to carry `"cargo"`.
+        assert_eq!(WHY_CURRENT_VERSION, 3);
+        assert_eq!(
+            source_label_for(TaskSource::CargoAliases, WHY_CURRENT_VERSION),
+            "cargo-alias"
+        );
+        // Everything else inherits v2 unchanged.
+        assert_eq!(
+            source_label_for(TaskSource::Justfile, WHY_CURRENT_VERSION),
+            "just"
+        );
+        assert_eq!(
+            source_label_for(TaskSource::PackageJson, WHY_CURRENT_VERSION),
+            "package.json"
         );
     }
 
@@ -131,6 +216,41 @@ mod tests {
         assert!(
             msg.contains("1..=2"),
             "error should advertise the supported range: {msg}",
+        );
+
+        // doctor/list do not speak v3 yet — only `why` does.
+        let err = validate_schema_version(3).expect_err("doctor/list must reject v3");
+        assert!(format!("{err}").contains("1..=2"));
+    }
+
+    #[test]
+    fn validate_doctor_schema_version_spans_one_through_three() {
+        assert_eq!(DOCTOR_CURRENT_VERSION, 3);
+        assert_eq!(validate_doctor_schema_version(1).unwrap(), 1);
+        assert_eq!(validate_doctor_schema_version(2).unwrap(), 2);
+        assert_eq!(validate_doctor_schema_version(3).unwrap(), 3);
+
+        let err = validate_doctor_schema_version(0).expect_err("v0 must error");
+        assert!(format!("{err}").contains("unsupported"));
+        let err = validate_doctor_schema_version(4).expect_err("future versions must error");
+        assert!(
+            format!("{err}").contains("1..=3"),
+            "error should advertise the doctor range",
+        );
+    }
+
+    #[test]
+    fn validate_why_schema_version_spans_one_through_three() {
+        assert_eq!(validate_why_schema_version(1).unwrap(), 1);
+        assert_eq!(validate_why_schema_version(2).unwrap(), 2);
+        assert_eq!(validate_why_schema_version(3).unwrap(), 3);
+
+        let err = validate_why_schema_version(0).expect_err("v0 must error");
+        assert!(format!("{err}").contains("unsupported"));
+        let err = validate_why_schema_version(4).expect_err("future versions must error");
+        assert!(
+            format!("{err}").contains("1..=3"),
+            "error should advertise the why range",
         );
     }
 }

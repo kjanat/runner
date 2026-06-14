@@ -1,0 +1,785 @@
+{
+  "$schema": "https://kjanat.github.io/schemas/doctor.v3.schema.json",
+  "schema_version": 3,
+  "kind": "runner.doctor",
+  "invocation": {
+    "argv": [
+      "runner",
+      "doctor",
+      "--json"
+    ],
+    "cwd": "/path/to/project",
+    "started_at": "2026-01-01T00:00:00Z"
+  },
+  "environment": {
+    "arch": "x86_64",
+    "os": "linux",
+    "path_entries": [
+      "/usr/local/bin",
+      "/usr/bin"
+    ],
+    "shell": "bash"
+  },
+  "runner": {
+    "binary": "/usr/local/bin/runner",
+    "name": "runner",
+    "version": "0.13.1",
+    "schema_versions": {
+      "doctor": 3,
+      "list": 2,
+      "why": 3
+    }
+  },
+  "project": {
+    "monorepo": true,
+    "root": "/path/to/project",
+    "root_source": "/path/to/project",
+    "workspace": null
+  },
+  "overrides": {
+    "explain": false,
+    "fallback": "probe",
+    "no_warnings": false,
+    "on_mismatch": "warn",
+    "pm": null,
+    "pm_by_ecosystem": {},
+    "prefer_runners": [],
+    "runner": null
+  },
+  "ecosystems": [
+    {
+      "decision": {
+        "confidence": "high",
+        "reason": "bun via package.json \"packageManager\"",
+        "selected": "bun"
+      },
+      "name": "node",
+      "root": "/path/to/project",
+      "selected_package_manager": "bun",
+      "signals": {
+        "lockfile_pm": "bun",
+        "manifest_pm": "bun",
+        "path_probe": {
+          "bun": "/usr/local/bin/bun",
+          "npm": "/opt/volta/bin/npm",
+          "pnpm": null,
+          "yarn": "/opt/volta/bin/yarn"
+        },
+        "shims": {
+          "npm": {
+            "manager": "volta",
+            "resolved": "/opt/volta/tools/image/npm/10.0.0/bin/npm"
+          },
+          "yarn": {
+            "manager": "volta",
+            "resolved": null
+          }
+        }
+      }
+    },
+    {
+      "decision": {
+        "confidence": "high",
+        "reason": "detected via cargo project signal",
+        "selected": "cargo"
+      },
+      "name": "rust",
+      "root": "/path/to/project",
+      "selected_package_manager": "cargo",
+      "signals": {
+        "package_managers": [
+          "cargo"
+        ]
+      }
+    }
+  ],
+  "sources": [
+    {
+      "exists": true,
+      "id": "src:root:package.json",
+      "kind": "package.json",
+      "package": null,
+      "path": "/path/to/project/package.json",
+      "relpath": "package.json",
+      "scope": "root",
+      "task_pointer": "scripts"
+    },
+    {
+      "exists": true,
+      "id": "src:root:just",
+      "kind": "just",
+      "package": null,
+      "path": "/path/to/project/justfile",
+      "relpath": "justfile",
+      "scope": "root",
+      "task_pointer": null
+    },
+    {
+      "exists": true,
+      "id": "src:root:cargo-alias",
+      "kind": "cargo-alias",
+      "package": null,
+      "path": "/path/to/project/.cargo/config.toml",
+      "relpath": ".cargo/config.toml",
+      "scope": "root",
+      "task_pointer": "alias"
+    }
+  ],
+  "tasks": [
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:package.json#fmt",
+      "is_alias": false,
+      "name": "fmt",
+      "resolved": "bun run fmt",
+      "self_executable": false,
+      "source": "/path/to/project/package.json",
+      "source_pointer": "scripts.fmt"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:package.json#fmt:update",
+      "is_alias": false,
+      "name": "fmt:update",
+      "resolved": "bun run fmt:update",
+      "self_executable": false,
+      "source": "/path/to/project/package.json",
+      "source_pointer": "scripts.fmt:update"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:package.json#typecheck",
+      "is_alias": false,
+      "name": "typecheck",
+      "resolved": "bun run typecheck",
+      "self_executable": false,
+      "source": "/path/to/project/package.json",
+      "source_pointer": "scripts.typecheck"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:just#build-packages",
+      "is_alias": false,
+      "name": "build-packages",
+      "resolved": "just build-packages",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "build-packages"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:just#default",
+      "is_alias": false,
+      "name": "default",
+      "resolved": "just default",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "default"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": "Drift guard: just gen-schema && git diff --exit-code schemas/",
+      "fqn": "root:just#gen-schema",
+      "is_alias": false,
+      "name": "gen-schema",
+      "resolved": "just gen-schema",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "gen-schema"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:just#ls",
+      "is_alias": false,
+      "name": "ls",
+      "resolved": "just ls",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "ls"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:just#run",
+      "is_alias": false,
+      "name": "run",
+      "resolved": "just run",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "run"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:just#runner",
+      "is_alias": false,
+      "name": "runner",
+      "resolved": "just runner",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "runner"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": "Build release bin and verify the facade shims spawn the native binary.",
+      "fqn": "root:just#test-release",
+      "is_alias": false,
+      "name": "test-release",
+      "resolved": "just test-release",
+      "self_executable": false,
+      "source": "/path/to/project/justfile",
+      "source_pointer": "test-release"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "build",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#b",
+      "is_alias": true,
+      "name": "b",
+      "resolved": "cargo build",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.b"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "build --bin run --bin runner",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#bb",
+      "is_alias": true,
+      "name": "bb",
+      "resolved": "cargo build --bin run --bin runner",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.bb"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "build --bin run --bin runner --release",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#bbr",
+      "is_alias": true,
+      "name": "bbr",
+      "resolved": "cargo build --bin run --bin runner --release",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.bbr"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin run",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#bin-run",
+      "is_alias": true,
+      "name": "bin-run",
+      "resolved": "cargo run --quiet --bin run",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.bin-run"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin runner",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#bin-runner",
+      "is_alias": true,
+      "name": "bin-runner",
+      "resolved": "cargo run --quiet --bin runner",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.bin-runner"
+    },
+    {
+      "aliases": [
+        "b"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#build",
+      "is_alias": false,
+      "name": "build",
+      "resolved": "cargo build",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.build"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "check",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#c",
+      "is_alias": true,
+      "name": "c",
+      "resolved": "cargo check",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.c"
+    },
+    {
+      "aliases": [
+        "c"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#check",
+      "is_alias": false,
+      "name": "check",
+      "resolved": "cargo check",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.check"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "clippy --all-targets --all-features",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#cl",
+      "is_alias": true,
+      "name": "cl",
+      "resolved": "cargo clippy --all-targets --all-features",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.cl"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin runner -- completions",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#comp",
+      "is_alias": true,
+      "name": "comp",
+      "resolved": "cargo run --quiet --bin runner -- completions",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.comp"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "doc",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#d",
+      "is_alias": true,
+      "name": "d",
+      "resolved": "cargo doc",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.d"
+    },
+    {
+      "aliases": [
+        "d"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#doc",
+      "is_alias": false,
+      "name": "doc",
+      "resolved": "cargo doc",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.doc"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin run -- --pm npm dprint fmt",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#f",
+      "is_alias": true,
+      "name": "f",
+      "resolved": "cargo run --quiet --bin run -- --pm npm dprint fmt",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.f"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin run -- --pm npm dprint fmt",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#format",
+      "is_alias": true,
+      "name": "format",
+      "resolved": "cargo run --quiet --bin run -- --pm npm dprint fmt",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.format"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "install --path .",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#i",
+      "is_alias": true,
+      "name": "i",
+      "resolved": "cargo install --path .",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.i"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "clippy --all-targets --all-features -- -D warnings -D clippy::all",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#l",
+      "is_alias": true,
+      "name": "l",
+      "resolved": "cargo clippy --all-targets --all-features -- -D warnings -D clippy::all",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.l"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "clippy --all-targets --all-features -- -D warnings -D clippy::all",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#lint",
+      "is_alias": true,
+      "name": "lint",
+      "resolved": "cargo clippy --all-targets --all-features -- -D warnings -D clippy::all",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.lint"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --features man -- man",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#man",
+      "is_alias": true,
+      "name": "man",
+      "resolved": "cargo run --quiet --features man -- man",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.man"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "metadata --format-version 1",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#meta",
+      "is_alias": true,
+      "name": "meta",
+      "resolved": "cargo metadata --format-version 1",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.meta"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#r",
+      "is_alias": true,
+      "name": "r",
+      "resolved": "cargo run",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.r"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin run --release",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#rbin-run",
+      "is_alias": true,
+      "name": "rbin-run",
+      "resolved": "cargo run --quiet --bin run --release",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.rbin-run"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin runner --release",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#rbin-runner",
+      "is_alias": true,
+      "name": "rbin-runner",
+      "resolved": "cargo run --quiet --bin runner --release",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.rbin-runner"
+    },
+    {
+      "aliases": [
+        "rm"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#remove",
+      "is_alias": false,
+      "name": "remove",
+      "resolved": "cargo remove",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.remove"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "remove",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#rm",
+      "is_alias": true,
+      "name": "rm",
+      "resolved": "cargo remove",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.rm"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#rq",
+      "is_alias": true,
+      "name": "rq",
+      "resolved": "cargo run --quiet",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.rq"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --release",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#rr",
+      "is_alias": true,
+      "name": "rr",
+      "resolved": "cargo run --release",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.rr"
+    },
+    {
+      "aliases": [
+        "r"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#run",
+      "is_alias": false,
+      "name": "run",
+      "resolved": "cargo run",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.run"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --bin runner",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#runner",
+      "is_alias": true,
+      "name": "runner",
+      "resolved": "cargo run --quiet --bin runner",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.runner"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "run --quiet --features schema -- schema",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#schema",
+      "is_alias": true,
+      "name": "schema",
+      "resolved": "cargo run --quiet --features schema -- schema",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.schema"
+    },
+    {
+      "aliases": [],
+      "cwd": "/path/to/project",
+      "definition": "test",
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#t",
+      "is_alias": true,
+      "name": "t",
+      "resolved": "cargo test",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.t"
+    },
+    {
+      "aliases": [
+        "t"
+      ],
+      "cwd": "/path/to/project",
+      "definition": null,
+      "dependencies": [],
+      "description": null,
+      "fqn": "root:cargo-alias#test",
+      "is_alias": false,
+      "name": "test",
+      "resolved": "cargo test",
+      "self_executable": false,
+      "source": "/path/to/project/.cargo/config.toml",
+      "source_pointer": "alias.test"
+    }
+  ],
+  "tools": [
+    {
+      "id": "tool:runtime:node",
+      "kind": "runtime",
+      "name": "node",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/node",
+        "version": "24.0.0"
+      },
+      "required": true
+    },
+    {
+      "id": "tool:package-manager:bun",
+      "kind": "package-manager",
+      "name": "bun",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/bun",
+        "version": "1.1.0"
+      },
+      "required": true
+    },
+    {
+      "id": "tool:package-manager:cargo",
+      "kind": "package-manager",
+      "name": "cargo",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/cargo",
+        "version": "1.83.0"
+      },
+      "required": true
+    },
+    {
+      "id": "tool:task-runner:just",
+      "kind": "task-runner",
+      "name": "just",
+      "probe": {
+        "status": "found",
+        "path": "/usr/bin/just",
+        "version": "1.36.0"
+      },
+      "required": true
+    }
+  ],
+  "conflicts": [
+    {
+      "kind": "duplicate-task-name",
+      "reason": "2 sources define `runner`; lowest (source_priority=2, source_depth=0, display_order=2, alias-last) key wins",
+      "selected": "root:just#runner",
+      "selector": "runner",
+      "severity": "info",
+      "shadowed": [
+        "root:cargo-alias#runner"
+      ]
+    }
+  ],
+  "diagnostics": [],
+  "resolution": {
+    "fqn_policy": "exact-only",
+    "precedence": [
+      "source-priority",
+      "source-depth",
+      "display-order",
+      "alias-last"
+    ],
+    "short_name_policy": "deterministic-precedence"
+  }
+}

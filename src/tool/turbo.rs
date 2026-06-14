@@ -87,47 +87,18 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// `turbo <name>`, optionally followed by flag tokens (e.g. `--filter web`,
 /// `--concurrency=4`).
 ///
-/// The tail after the target name must consist solely of flag tokens
-/// (`-x`, `--long`, `--key=value`), values immediately following a
-/// non-`=` flag, or — after a bare `--` end-of-options separator —
-/// args forwarded to the underlying task. The `--` separator itself
-/// is recognized as a marker (POSIX/getopt convention), not as a
-/// flag; turbo's own argument-forwarding pattern is `turbo run <task>
-/// -- <args...>`. Any of these reject the match — they mean the
-/// script does more than just dispatch to turbo:
-/// - shell control operators: `&&`, `||`, `;`, `;;`, `;&`, `;;&`,
-///   `|`, `|&`, `&`, `!`, `{`, `}`, `(`, `)`
-/// - redirect operators: bare `>`/`<`/`>>`/`<<`/`<<<`, combined-fd
-///   `&>`/`&>>`/`>&`, fd-prefixed `2>`, `1>`, composite `2>&1`,
-///   `1>&2`, `2>/dev/null`, `&>file.log`
-/// - shell expansion tokens (anything containing `$` or backtick):
-///   parameter expansion (`$X`, `${X}`, `${X:-def}`, `${X//a/b}`,
-///   `${!X}`, `${#X}`, `${X[@]}`), special vars (`$@`, `$*`, `$#`,
-///   `$?`), command substitution (`$(cmd)`, `` `cmd` ``), arithmetic
-///   (`$((expr))`), and quoted forms with embedded expansion
-///   (`"${X}"`)
-/// - any other bare positional that isn't consuming a flag's value
+/// The tail after the target name must be flag tokens (`-x`, `--long`,
+/// `--key=value`), values following a non-`=` flag, or args after a
+/// bare `--` end-of-options separator (turbo's `turbo run <task> --
+/// <args...>` forwarding pattern). Any shell control operator, redirect,
+/// or expansion token (`$`/backtick) rejects the match — they mean the
+/// script does more than dispatch to turbo.
 ///
-/// This is purely a textual heuristic on the script body. Indirect
-/// invocations (`npx turbo run build`, `pnpm exec turbo run build`) are
-/// intentionally not matched: a wrapper that goes through a package-manager
-/// shim is a step removed from the canonical Turborepo pattern, and matching
-/// it would risk false positives for unrelated `npx`/`pnpm exec` scripts.
-///
-/// Known limitations (deferred — rare in turbo dispatch scripts and
-/// stricter detection would over-reject legitimate patterns):
-/// - unquoted globs (`*`, `?`) following a flag are accepted because
-///   `*` is legitimate in turbo filters like `@scope/*`;
-/// - tilde expansion (`~/cache`) following a flag is accepted because
-///   `~` is legitimate in path values like `--cache-dir`;
-/// - brace expansion (`{a,b,c}`) following a flag is accepted because
-///   distinguishing it from quoted JSON values is fragile;
-/// - quoted multi-word arguments (`--filter "my app"`) are split
-///   incorrectly by `split_whitespace` and reject via the positional
-///   rule — false negative, safe direction (script stays visible);
-/// - single-quoted literals containing `$` or backtick (e.g. `'$X'`)
-///   are rejected even though shell-literal — extremely rare in turbo
-///   scripts, false negative, safe direction.
+/// Purely a textual heuristic on the script body. Indirect invocations
+/// (`npx turbo run build`, `pnpm exec …`) are deliberately not matched
+/// to avoid false positives on unrelated wrapper scripts. Errs toward
+/// false negatives (leaving a script visible) on ambiguous tails like
+/// quoted multi-word args or unquoted globs.
 pub(crate) fn is_self_passthrough(name: &str, command: &str) -> bool {
     let mut tokens = command.split_whitespace();
     if tokens.next() != Some("turbo") {
@@ -561,8 +532,8 @@ mod tests {
 
     #[test]
     fn is_self_passthrough_rejects_stderr_to_stdout_after_flag() {
-        // The bug CodeRabbit-reviewer #2 caught: `2>&1` was consumed as
-        // `--no-cache`'s value. The redirect-detection pass now rejects.
+        // `2>&1` must not be consumed as `--no-cache`'s value; the
+        // redirect-detection pass rejects it.
         assert!(!is_self_passthrough(
             "build",
             "turbo run build --no-cache 2>&1"

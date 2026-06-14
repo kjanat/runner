@@ -647,6 +647,28 @@ fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
     }
 }
 
+/// `why`-specific version resolution: `why` is at
+/// [`schema::WHY_CURRENT_VERSION`] while list remains at
+/// [`schema::CURRENT_VERSION`], so it validates against its own range
+/// and defaults to its own latest.
+fn why_schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
+    if json {
+        schema::validate_why_schema_version(requested.unwrap_or(schema::WHY_CURRENT_VERSION))
+    } else {
+        Ok(schema::WHY_CURRENT_VERSION)
+    }
+}
+
+/// `doctor`-specific version resolution; see
+/// [`schema::DOCTOR_CURRENT_VERSION`].
+fn doctor_schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
+    if json {
+        schema::validate_doctor_schema_version(requested.unwrap_or(schema::DOCTOR_CURRENT_VERSION))
+    } else {
+        Ok(schema::DOCTOR_CURRENT_VERSION)
+    }
+}
+
 /// Build [`resolver::ResolutionOverrides`] from a parsed CLI + loaded config.
 /// Lifted out of [`dispatch`] so the latter stays under clippy's
 /// `too_many_lines` budget; the chain-failure inputs come from whichever
@@ -831,12 +853,12 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         #[cfg(feature = "schema")]
         Some(cli::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
         Some(cli::Command::Doctor { json }) => {
-            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
+            let schema_version = doctor_schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
         Some(cli::Command::Why { task, json }) => {
-            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
+            let schema_version = why_schema_version_for_json(json, cli.global.schema_version)?;
             cmd::why(&ctx, &overrides, &task, json, schema_version)?;
             Ok(0)
         }

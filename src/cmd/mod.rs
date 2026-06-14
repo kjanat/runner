@@ -60,19 +60,14 @@ fn node_bin_dirs(dir: &Path) -> Vec<PathBuf> {
 
 /// Prepend the project's `node_modules/.bin` dirs to the child's `PATH`.
 ///
-/// `npm run` / `pnpm run` / `bun run` do this for `package.json` scripts,
-/// but tasks runner spawns *directly* — `turbo run <task>` for
-/// `turbo.json` entries, the bare-binary exec fallback — inherited the
-/// shell's `PATH` unchanged, so a devDependency-only binary died with
-/// ENOENT unless it also happened to be installed globally. The OS-level
-/// bare-name lookup honors a `PATH` set on the [`Command`] itself
-/// (documented on [`Command::new`]), so prepending here fixes both the
+/// Node PMs inject this for `package.json` scripts, but runner spawns
+/// tasks directly (`turbo run <task>`, the bare-binary fallback), so a
+/// devDependency-only binary would die with ENOENT. The OS honors a
+/// `PATH` set on the [`Command`] itself, so prepending fixes both the
 /// spawn and anything the task launches in turn.
 ///
-/// Entries already present in the parent `PATH` are not deduplicated:
-/// prepending unconditionally is what gives local bins priority over
-/// global installs, matching the Node PMs (nested `npm run` invocations
-/// stack duplicates the same way).
+/// Entries are not deduplicated against the parent `PATH`: prepending
+/// unconditionally gives local bins priority over global installs.
 fn prepend_node_bin_path(command: &mut Command, dir: &Path) {
     let bins = node_bin_dirs(dir);
     if bins.is_empty() {
@@ -96,17 +91,13 @@ fn prepended_path(bins: &[PathBuf], parent: Option<&OsStr>) -> Option<OsString> 
 /// Re-resolve a bare program name against the project's bin dirs.
 ///
 /// [`crate::tool::program::command`] resolves bare names against the
-/// *parent* `PATH` × `PATHEXT` at build time — before this module gets a
-/// chance to prepend the bin dirs — and the child-`PATH` search the
-/// standard library performs at spawn time only appends `.exe`, so a
-/// `turbo.cmd`/`.ps1` shim that exists only under `node_modules/.bin`
-/// would still fail to spawn. When the (still-bare) name resolves inside
-/// `bins`, rebuild the command around the absolute shim path, preserving
-/// args and env tweaks (e.g. bacon's `COLUMNS`). Absolute/relative
-/// programs and parent-`PATH` hits are left alone — which also means a
-/// global install currently shadows a local one on Windows, the reverse
-/// of the Unix precedence; fixing that would require resolution order to
-/// live inside `tool::program` where the project root isn't known.
+/// parent `PATH`×`PATHEXT` before the bin dirs are prepended, and the
+/// std child-`PATH` search only appends `.exe` at spawn time — so a
+/// `turbo.cmd`/`.ps1` shim living only under `node_modules/.bin` would
+/// fail to spawn. When a bare name resolves inside `bins`, rebuild the
+/// command around the absolute shim path, preserving args and env.
+/// Absolute/relative programs and parent-`PATH` hits are left alone
+/// (so a global install still shadows a local one here, unlike Unix).
 #[cfg(windows)]
 fn resolve_program_in_bins(command: &mut Command, bins: &[PathBuf]) {
     let program = command.get_program().to_os_string();

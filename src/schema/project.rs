@@ -523,13 +523,14 @@ const PATH_PROBE_PMS: [PackageManager; 4] = [
 ];
 
 /// Probe results for the signals section: every PATH hit, plus Volta
-/// shim classification when requested.
-struct ProbeSignals {
-    path_probe: BTreeMap<&'static str, Option<String>>,
-    volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
+/// shim classification when requested. Shared with the v3 doctor
+/// builder ([`super::doctor_v3`]), hence `pub(super)`.
+pub(super) struct ProbeSignals {
+    pub(super) path_probe: BTreeMap<&'static str, Option<String>>,
+    pub(super) volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
 }
 
-fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> ProbeSignals {
+pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> ProbeSignals {
     use std::env;
     use std::thread;
 

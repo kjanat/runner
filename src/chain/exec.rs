@@ -13,16 +13,10 @@ use crate::types::{DetectionWarning, ProjectContext};
 /// Dispatch a chain. Returns the first-observed failing task's exit
 /// code, or 0 if every task succeeded.
 ///
-/// "First-observed" means first in *detection* order, not necessarily
-/// first by wall-clock completion: sequential mode short-circuits on
-/// the first non-zero exit (so detection order == completion order);
-/// parallel mode polls children every 50ms and records the first
-/// non-zero code seen during a poll window. When multiple parallel
-/// siblings finish inside the same 50ms window, the recorded code
-/// follows `remaining` iteration (i.e. spawn) order. True
-/// completion-time ordering would need an OS-level termination
-/// timestamp (waitpid + rusage on Linux) which the std crate doesn't
-/// surface — out of scope for v1.
+/// "First-observed" is detection order, not wall-clock completion:
+/// sequential mode short-circuits on the first non-zero exit; parallel
+/// mode polls children and records the first non-zero code seen, with
+/// ties within a poll window broken by spawn order.
 ///
 /// Per-task resolver warnings are collected into a shared `HashSet`
 /// so the user sees each unique warning once, not N times.
@@ -124,12 +118,9 @@ fn run_parallel_streaming(
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
 
     // Synchronous sink: each reader thread writes lines directly to
-    // stdout/stderr, acquiring the underlying lock per line. The old
-    // design ran a dedicated writer thread that held the stdio locks
-    // across an mpsc drain, which deadlocked against `eprintln!` calls
-    // on the main thread (the `→ <source> <task>` arrow inside
-    // `dispatch_task_piped`). A sink keeps every emit point on the
-    // caller's thread and bounds lock duration to one `writeln!`.
+    // stdout/stderr, taking the lock per line. Bounding lock duration to
+    // one `writeln!` avoids deadlocking against `eprintln!` on the main
+    // thread (the `→ <source> <task>` arrow in `dispatch_task_piped`).
     let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
 
     // Spawn each task with piped stdio and start reader threads.
