@@ -274,10 +274,26 @@ where
         return Ok(0);
     }
 
-    let cli = match parse_run_alias_cli(args) {
+    let cli = match parse_run_alias_cli(args.clone()) {
         Ok(cli) => cli,
-        Err(err) => return render_clap_error(&err),
+        // A `--help`/`--version` *before* any task is this binary's own:
+        // clap's built-ins are disabled and the flag is undefined, so it
+        // can't fill the hyphen-rejecting `task` positional and surfaces as
+        // `UnknownArgument`. (A *trailing* one is swallowed by `args` and
+        // forwarded instead — see `cli::RunAliasCli`.) Covers the bare
+        // `run --help` as well as `run --pm npm --help`, `run --dir … -V`.
+        Err(err) => {
+            return match alias_builtin_request(&err) {
+                Some(AliasBuiltin::Help) => print_run_alias_help(&args),
+                Some(AliasBuiltin::Version) => {
+                    println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+                    Ok(0)
+                }
+                None => render_clap_error(&err),
+            };
+        }
     };
+
     let project_dir = resolve_project_dir(
         configured_project_dir(
             cli.global.project_dir.as_deref(),
@@ -287,6 +303,54 @@ where
         dir,
     )?;
     dispatch_run_alias(cli, &project_dir)
+}
+
+/// This binary's own help/version, requested *before* any task.
+enum AliasBuiltin {
+    Help,
+    Version,
+}
+
+/// Classify a `run`-alias parse failure as a request for this binary's own
+/// help/version, or `None` for an unrelated error to surface verbatim.
+///
+/// With clap's built-in `--help`/`--version` disabled and undefined, a
+/// leading `-h`/`--help`/`-V`/`--version` cannot fill the hyphen-rejecting
+/// `task` positional, so clap reports [`ErrorKind::UnknownArgument`] naming
+/// the offending flag. A *trailing* one never reaches here — it is captured
+/// by `args` and forwarded — so an `UnknownArgument` naming a help/version
+/// flag unambiguously means "before any task", i.e. ours to handle.
+fn alias_builtin_request(err: &clap::Error) -> Option<AliasBuiltin> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+
+    if err.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    match err.get(ContextKind::InvalidArg) {
+        Some(ContextValue::String(arg)) => match arg.as_str() {
+            "--help" | "-h" => Some(AliasBuiltin::Help),
+            "--version" | "-V" => Some(AliasBuiltin::Version),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Render the `run` alias binary's own help to stdout, returning exit 0.
+///
+/// Invoked when `-h`/`--help` precedes any task. A help flag that *follows*
+/// a task is forwarded to that task instead (see [`cli::RunAliasCli`]), so
+/// this path is only reached for `run`'s own help. The bin name is taken
+/// from `argv[0]` so the `Usage:` line reads `run`, matching how clap's
+/// built-in help rendered before it was disabled.
+fn print_run_alias_help(args: &[OsString]) -> Result<i32> {
+    let mut command =
+        configure_cli_command(cli::RunAliasCli::command(), std::io::stdout().is_terminal());
+    if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
+        command = command.name(bin_name.clone()).bin_name(bin_name);
+    }
+    command.print_help()?;
+    Ok(0)
 }
 
 fn parse_run_alias_cli<I, T>(args: I) -> Result<cli::RunAliasCli, clap::Error>
@@ -806,9 +870,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        VERSION, bin_name_from_arg0, configured_project_dir, exit_code_for_error, has_task,
-        parse_cli, parse_run_alias_cli, release_url, requests_version, resolve_project_dir,
-        run_alias_in_dir, run_in_dir, version_line,
+        AliasBuiltin, VERSION, alias_builtin_request, bin_name_from_arg0, configured_project_dir,
+        exit_code_for_error, has_task, parse_cli, parse_run_alias_cli, release_url,
+        requests_version, resolve_project_dir, run_alias_in_dir, run_in_dir, version_line,
     };
     use crate::cli;
     use crate::resolver::ResolveError;
@@ -1077,6 +1141,100 @@ mod tests {
             run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed on empty dir");
 
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn run_alias_forwards_help_and_version_after_task() {
+        // `run <task> --help/--version` must reach the task, not print
+        // run's own help/version. The flag is an undefined hyphen token
+        // after the first positional, so `args` (trailing_var_arg) keeps it.
+        for flag in ["--help", "-h", "--version", "-V"] {
+            let cli = parse_run_alias_cli(["run", "build", flag])
+                .unwrap_or_else(|e| panic!("run build {flag} should parse: {e}"));
+            assert_eq!(cli.task.as_deref(), Some("build"));
+            assert_eq!(cli.args, vec![flag.to_string()]);
+        }
+    }
+
+    #[test]
+    fn run_alias_forwards_interleaved_help_flag() {
+        // A forwarded help flag keeps its position among the task's args.
+        let cli = parse_run_alias_cli(["run", "build", "--foo", "--help", "--bar"])
+            .expect("interleaved --help should parse and forward");
+        assert_eq!(cli.task.as_deref(), Some("build"));
+        assert_eq!(cli.args, vec!["--foo", "--help", "--bar"]);
+    }
+
+    #[test]
+    fn run_alias_double_dash_forwards_help_literally() {
+        // `run <task> -- --help` keeps forwarding the literal flag (the `--`
+        // separator itself is consumed by clap).
+        let cli = parse_run_alias_cli(["run", "build", "--", "--help"])
+            .expect("run build -- --help should parse");
+        assert_eq!(cli.task.as_deref(), Some("build"));
+        assert_eq!(cli.args, vec!["--help"]);
+    }
+
+    #[test]
+    fn run_alias_leading_builtins_classified_as_own_request() {
+        // Before any task, a help/version flag can't fill the
+        // hyphen-rejecting `task` positional (clap built-ins are disabled),
+        // so it surfaces as UnknownArgument and is recognised as ours.
+        for flag in ["--help", "-h"] {
+            let err = parse_run_alias_cli(["run", flag])
+                .expect_err("leading help flag should not parse as a task");
+            assert!(
+                matches!(alias_builtin_request(&err), Some(AliasBuiltin::Help)),
+                "{flag} before a task should be classified as a help request",
+            );
+        }
+        for flag in ["--version", "-V"] {
+            let err = parse_run_alias_cli(["run", flag])
+                .expect_err("leading version flag should not parse as a task");
+            assert!(
+                matches!(alias_builtin_request(&err), Some(AliasBuiltin::Version)),
+                "{flag} before a task should be classified as a version request",
+            );
+        }
+    }
+
+    #[test]
+    fn run_alias_global_flag_before_help_still_classified_as_help() {
+        // `run --pm npm --help`: the value-taking global flag is consumed,
+        // then --help still lands before any task → run's own help.
+        let err = parse_run_alias_cli(["run", "--pm", "npm", "--help"])
+            .expect_err("--pm npm --help should not parse as a task");
+        assert!(matches!(
+            alias_builtin_request(&err),
+            Some(AliasBuiltin::Help)
+        ));
+    }
+
+    #[test]
+    fn run_alias_unknown_flag_is_not_a_builtin_request() {
+        // A genuine unknown flag must surface as an error, never be
+        // mistaken for a help/version request.
+        let err = parse_run_alias_cli(["run", "--bogus"])
+            .expect_err("unknown leading flag should not parse");
+        assert!(alias_builtin_request(&err).is_none());
+    }
+
+    #[test]
+    fn run_alias_own_help_and_version_return_zero() {
+        // End-to-end through dispatch: own help/version exit 0 without
+        // needing a real project. `--pm npm --version` is len > 2 so it
+        // bypasses the `requests_version` fast-path and exercises the
+        // parse-error classification.
+        let dir = TempDir::new("runner-run-builtin");
+        assert_eq!(
+            run_alias_in_dir(["run", "--help"], dir.path()).expect("run --help should succeed"),
+            0,
+        );
+        assert_eq!(
+            run_alias_in_dir(["run", "--pm", "npm", "--version"], dir.path())
+                .expect("run --pm npm --version should succeed"),
+            0,
+        );
     }
 
     #[test]
