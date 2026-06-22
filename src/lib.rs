@@ -46,11 +46,14 @@
 //! ```bash
 //! runner              # show detected project info
 //! runner <task>       # run a task (falls back to package-manager exec)
-//! run <task>          # alias binary: always task/exec, never a built-in
-//! runner run <target> # explicit unified run: task → PM exec fallback
-//! runner install      # install dependencies via detected PM
-//! runner clean        # remove caches and build artifacts
-//! runner list         # list available tasks from all sources
+//! run <task>          # alias binary: a same-named task wins, else the
+//!                     #   built-in default (install/clean/list/info/
+//!                     #   completions), else PM exec
+//! runner run <target> # explicit unified run: task → built-in → PM exec
+//! runner install      # ALWAYS the built-in (deps); a task named `install`
+//!                     #   is reached via `run install`
+//! runner clean        # remove caches and build artifacts (always built-in)
+//! runner list         # list available tasks from all sources (always built-in)
 //! ```
 // Generate docs with `cargo doc --document-private-items --open`.
 
@@ -208,9 +211,12 @@ where
 /// Parse process args as the `run` alias binary, detect the current dir,
 /// dispatch, and return the exit code.
 ///
-/// Always treats positional arguments as a task or command (routed through [`cmd::run`])
-/// — built-in subcommand names are never parsed specially, so
-/// `run clean`, `run install`, etc. run the corresponding task/command.
+/// Always treats positional arguments as a task or command (routed through
+/// [`cmd::run`]) — built-in subcommand names are never parsed specially, so
+/// `run clean`, `run install`, etc. run a same-named project task when one
+/// exists. When no such task exists, a bare run token naming a built-in verb
+/// (`install`/`clean`/`list`/`info`/`completions`) falls back to that
+/// built-in's default form rather than the package-manager exec path.
 ///
 /// When the `COMPLETE` environment variable is set, writes shell completions
 /// to stdout and exits without running the normal command dispatch.
@@ -630,7 +636,58 @@ fn dispatch_run(
             "task name required (drop -s/-p for single-task mode or supply at least one task name)"
         );
     };
+    if args.is_empty()
+        && let Some(code) = run_path_builtin_fallback(ctx, overrides, task)?
+    {
+        return Ok(code);
+    }
     cmd::run(ctx, overrides, task, &args, None)
+}
+
+/// Run-path fallback for builtin verbs.
+///
+/// When a bare, arg-less `run`/`runner run` token names a built-in verb and
+/// no same-named task exists, run that built-in's default (no-flag) form —
+/// the same behavior the explicit `runner <verb>` subcommand provides. A
+/// project task of the same name takes precedence (handled by the early
+/// `has_task` return → falls through to [`cmd::run`]).
+///
+/// Returns `Ok(Some(code))` when the fallback handled the token, `Ok(None)`
+/// to fall through to [`cmd::run`] (task dispatch / PM-exec).
+///
+/// Qualified tokens (`source:verb`) carry the `source:` prefix, so they never
+/// match a bare verb arm and fall through untouched — no qualifier parsing
+/// needed here. `info` maps to a plain `list` (no deprecation warning): the
+/// deprecation is specific to the explicit `runner info` subcommand, and
+/// emitting it on the run path — where the user typed `run info` — would be
+/// misleading and would spuriously fire the GitHub Actions annotation.
+fn run_path_builtin_fallback(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    name: &str,
+) -> Result<Option<i32>> {
+    if has_task(ctx, name) {
+        return Ok(None);
+    }
+    let code = match name {
+        "install" => cmd::install(ctx, overrides, false)?,
+        "clean" => {
+            cmd::clean(ctx, false, false)?;
+            0
+        }
+        // `info` maps to a plain `list`: the deprecation warning is specific
+        // to the explicit `runner info` subcommand, not the run path.
+        "list" | "info" => {
+            cmd::list(ctx, overrides, false, false, None, schema::CURRENT_VERSION)?;
+            0
+        }
+        "completions" => {
+            cmd::completions(None, None)?;
+            0
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(code))
 }
 
 /// Resolve the effective JSON schema version for schema-aware output:
@@ -759,11 +816,6 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
 
     match cli.command {
-        // A project task named `info` always shadows the deprecated
-        // subcommand, regardless of flags.
-        Some(cli::Command::Info { .. }) if has_task(&ctx, "info") => {
-            cmd::run(&ctx, &overrides, "info", &[], None)
-        }
         None => {
             cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
             Ok(0)
@@ -801,21 +853,10 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
             }
         }
-        Some(cli::Command::Install {
-            frozen: false,
-            tasks,
-            ..
-        }) if tasks.is_empty() && has_task(&ctx, "install") => {
-            cmd::run(&ctx, &overrides, "install", &[], None)
-        }
         Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
             dispatch_install_chain(&ctx, &overrides, frozen, &tasks)
         }
         Some(cli::Command::Install { frozen, .. }) => cmd::install(&ctx, &overrides, frozen),
-        Some(cli::Command::Clean {
-            yes: false,
-            include_framework: false,
-        }) if has_task(&ctx, "clean") => cmd::run(&ctx, &overrides, "clean", &[], None),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -823,11 +864,6 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::clean(&ctx, yes, include_framework)?;
             Ok(0)
         }
-        Some(cli::Command::List {
-            raw: false,
-            json: false,
-            source: None,
-        }) if has_task(&ctx, "list") => cmd::run(&ctx, &overrides, "list", &[], None),
         Some(cli::Command::List { raw, json, source }) => {
             let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
             cmd::list(
@@ -840,10 +876,6 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             )?;
             Ok(0)
         }
-        Some(cli::Command::Completions {
-            shell: None,
-            output: None,
-        }) if has_task(&ctx, "completions") => cmd::run(&ctx, &overrides, "completions", &[], None),
         Some(cli::Command::Completions { shell, output }) => {
             cmd::completions(shell, output.as_deref())?;
             Ok(0)
