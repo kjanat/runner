@@ -1,8 +1,9 @@
 //! Integration coverage for the deprecated `info` subcommand.
 //!
 //! `runner info` is a hidden, deprecated alias for `runner list`: it
-//! warns on stderr then renders the task list. A project task named
-//! `info` always shadows it (pass-through, any flags). Bare `runner`
+//! warns on stderr then renders the task list. The explicit subcommand is
+//! ALWAYS the builtin — a project task named `info` no longer shadows it;
+//! the task is reachable via `run info` / `runner run info`. Bare `runner`
 //! (no subcommand) keeps the project dashboard and is unaffected.
 //!
 //! Fixtures use `just`; if it's not on PATH the just-dependent
@@ -14,6 +15,10 @@ use std::process::Command;
 
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
+}
+
+fn run_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_run"))
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -163,52 +168,77 @@ fn info_json_maps_to_list_json_with_tasks_array() {
 }
 
 #[test]
-fn project_task_named_info_always_shadows_the_deprecated_verb() {
+fn runner_info_is_the_deprecated_alias_even_when_a_task_is_named_info() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // Without flags.
+    // The explicit subcommand is always the builtin: a project task named
+    // `info` does NOT shadow it. `runner info` stays the deprecated
+    // alias-for-list even when the fixture defines an `info` recipe.
     let output = Command::new(runner_binary())
         .args(["--dir", fixture("info-shadowed").to_str().unwrap(), "info"])
         .output()
         .expect("runner binary spawns");
 
-    assert!(
-        output.status.success(),
-        "shadowed `runner info` should exit 0"
-    );
+    assert!(output.status.success(), "`runner info` should exit 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stdout.contains("project-info-recipe-ran"),
-        "the project `info` recipe should run. stdout: {stdout}",
+        !stdout.contains("project-info-recipe-ran"),
+        "the project `info` recipe must NOT run for the explicit subcommand. stdout: {stdout}",
     );
     assert!(
-        !stderr.contains("deprecated"),
-        "no deprecation warning when shadowed by a real task. stderr: {stderr}",
+        stderr.contains("deprecated"),
+        "deprecation warning expected — the task no longer shadows. stderr: {stderr}",
     );
+    // List shape: the recipe names are present, the dashboard banner is not.
+    assert!(
+        stdout.contains("info") && stdout.contains("build"),
+        "expected the justfile recipes in list output. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("Package Managers"),
+        "info-as-list must not print the dashboard banner. stdout: {stdout}",
+    );
+}
 
-    // Pass-through must ignore flags too.
-    let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("info-shadowed").to_str().unwrap(),
-            "info",
-            "--json",
-        ])
-        .output()
-        .expect("runner binary spawns");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stdout.contains("project-info-recipe-ran"),
-        "shadow pass-through must ignore --json. stdout: {stdout}",
-    );
-    assert!(
-        !stderr.contains("deprecated"),
-        "no deprecation warning when shadowed, even with --json. stderr: {stderr}",
-    );
+#[test]
+fn run_info_runs_a_same_named_task() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // The run path is where a same-named task is reachable: `run info`
+    // (and `runner run info`) run the project `info` recipe, no deprecation.
+    let dir = fixture("info-shadowed");
+    let dir = dir.to_str().unwrap();
+    let invocations: [(&str, PathBuf, Vec<&str>); 2] = [
+        ("run info", run_binary(), vec!["--dir", dir, "info"]),
+        (
+            "runner run info",
+            runner_binary(),
+            vec!["--dir", dir, "run", "info"],
+        ),
+    ];
+    for (label, binary, args) in invocations {
+        let output = Command::new(binary)
+            .args(&args)
+            .output()
+            .expect("binary spawns");
+
+        assert!(output.status.success(), "`{label}` should exit 0");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("project-info-recipe-ran"),
+            "`{label}` should run the project `info` recipe. stdout: {stdout}",
+        );
+        assert!(
+            !stderr.contains("deprecated"),
+            "`{label}` runs the task, not the deprecated alias. stderr: {stderr}",
+        );
+    }
 }
 
 #[test]

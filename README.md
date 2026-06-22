@@ -300,8 +300,15 @@ run clean
 run install
 ```
 
-runs a task or command named `clean` or `install`, even when those names also
-exist as built-in `runner` subcommands.
+runs a project task named `clean` or `install` when one exists — even though
+those names are also built-in `runner` subcommands. When no such task exists, a
+bare built-in verb (`install`, `clean`, `list`, `info`, `completions`) falls
+back to that built-in's default form (so `run install` installs dependencies)
+rather than the package-manager exec path.
+
+The explicit subcommand is the inverse: `runner install` (and `runner clean`,
+`runner list`, …) is **always** the built-in and never runs a same-named task —
+use `run install` / `runner run install` to reach a task called `install`.
 
 ## Supported Ecosystems
 

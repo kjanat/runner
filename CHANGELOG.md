@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
+- Built-in verb dispatch is split between the two surfaces. The explicit
+  `runner <verb>` subcommand — `install`, `clean`, `list`, `info`,
+  `completions` — is now **always** the built-in and is never shadowed by a
+  same-named project task. The run path (`run <verb>` / `runner run <verb>`)
+  runs a same-named task when one exists, and otherwise falls back to that
+  built-in's default form instead of the package-manager exec path (so
+  `run install` with no `install` task installs dependencies rather than
+  attempting `bunx install`). Previously the precedence was reversed:
+  `runner install` deferred to a task named `install` (e.g. a `Makefile`
+  `install` target), which surprised projects whose `install` means "install
+  the built artifact" rather than "install dependencies". Reach a same-named
+  task with `run install` / `runner run install`; the built-in default for
+  `info` on the run path is a plain task list (no deprecation warning, which
+  remains specific to the explicit `runner info` subcommand).
 - The `run` alias now forwards `--help`/`-h` and `--version`/`-V` to the
   task when they follow a task name: `run <task> --help` reaches the
   task's own help instead of printing `run`'s (previously `run <task> --`
