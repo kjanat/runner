@@ -24,7 +24,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   the built artifact" rather than "install dependencies". Reach a same-named
   task with `run install` / `runner run install`; the built-in default for
   `info` on the run path is a plain task list (no deprecation warning, which
-  remains specific to the explicit `runner info` subcommand).
+  remains specific to the explicit `runner info` subcommand). See
+  https://github.com/kjanat/runner/pull/55
 - The `run` alias now forwards `--help`/`-h` and `--version`/`-V` to the
   task when they follow a task name: `run <task> --help` reaches the
   task's own help instead of printing `run`'s (previously `run <task> --`
