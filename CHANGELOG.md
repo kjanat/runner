@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.14.1] - 2026-06-25
+
 ### Added
 
 - The rendered API docs (rustdoc / docs.rs) now display the project logo
@@ -35,12 +43,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `argv[0]`) are repaired. See https://github.com/kjanat/runner/pull/59
 - mise tasks with a whitespace-only `description` now fall back to the run
   command instead of rendering a blank description.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.14.0] - 2026-06-22
 
@@ -1281,7 +1283,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/kjanat/runner/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/kjanat/runner/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/kjanat/runner/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/kjanat/runner/compare/v0.12.2...v0.13.0
