@@ -73,39 +73,25 @@ fn env_suffix(var: &str) -> String {
     format!("[env: {}]", cyan_str(var))
 }
 
-/// Comma-joined, cyan-styled list of every [`PackageManager`] label, with the
-/// `bundle` alias for `bundler` called out so users discover both spellings.
+/// Comma-joined, cyan-styled list of every [`PackageManager`] label.
 /// Built once at first help-text access via [`LazyLock`]; rebuilding the
 /// list on every `--help` invocation would waste work for a value that is
 /// fully determined by the [`PackageManager::all`] enumeration.
 static PM_HELP: LazyLock<String> = LazyLock::new(|| {
     let joined = PackageManager::all()
         .iter()
-        .map(|pm| {
-            if matches!(pm, PackageManager::Bundler) {
-                format!("{} (alias: bundle)", pm.label())
-            } else {
-                pm.label().to_string()
-            }
-        })
+        .map(|pm| pm.label())
         .collect::<Vec<_>>()
         .join(", ");
     format!("Force PM ({joined}) {}", env_suffix("RUNNER_PM"))
 });
 
-/// Comma-joined, cyan-styled list of every [`TaskRunner`] label, with the
-/// `go-task` alias for `task` called out. Lazy-built for the same reason as
-/// [`PM_HELP`].
+/// Comma-joined, cyan-styled list of every [`TaskRunner`] label.
+/// Lazy-built for the same reason as [`PM_HELP`].
 static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
     let joined = TaskRunner::all()
         .iter()
-        .map(|r| {
-            if matches!(r, TaskRunner::GoTask) {
-                format!("{} (alias: go-task)", r.label())
-            } else {
-                r.label().to_string()
-            }
-        })
+        .map(|r| r.label())
         .collect::<Vec<_>>()
         .join(", ");
     format!(
@@ -117,6 +103,24 @@ static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
 const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
+
+/// Help-text ordering bands. Flattened [`GlobalOpts`] and per-command flag
+/// structs register args in interleaved parse order; without explicit bands
+/// `-k`/`--pm`/`-K`/`--runner` shuffle together in `--help`.
+mod help_order {
+    pub(super) const DIR: usize = 10;
+    pub(super) const COMMAND: usize = 20;
+    pub(super) const CHAIN_MODE: usize = 30;
+    pub(super) const CHAIN_FAILURE: usize = 40;
+    pub(super) const PM: usize = 100;
+    pub(super) const RUNNER: usize = 101;
+    pub(super) const FALLBACK: usize = 102;
+    pub(super) const ON_MISMATCH: usize = 103;
+    pub(super) const EXPLAIN: usize = 200;
+    pub(super) const NO_WARNINGS: usize = 201;
+    pub(super) const QUIET: usize = 202;
+    pub(super) const SCHEMA_VERSION: usize = 203;
+}
 /// Produce [`CompletionCandidate`]s for every detected task in the current
 /// directory. Called lazily by clap's runtime completion engine — only runs
 /// when the shell is actually requesting completions, never during normal
@@ -326,7 +330,8 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{
-        Cli, Command, RunAliasCli, cli_dir_from_argv, resolve_completion_dir, task_candidates_from,
+        ChainFailureFlags, Cli, Command, RunAliasCli, cli_dir_from_argv, resolve_completion_dir,
+        task_candidates_from,
     };
     use crate::types::{Task, TaskSource};
 
@@ -639,18 +644,26 @@ mod tests {
 
     #[test]
     fn run_rejects_keep_going_and_kill_on_fail_together() {
-        let err = Cli::try_parse_from([
-            "runner",
-            "run",
-            "-s",
-            "-k",
-            "--kill-on-fail",
-            "build",
-            "test",
-        ])
-        .expect_err("conflict");
+        let err = Cli::try_parse_from(["runner", "run", "-s", "-k", "-K", "build", "test"])
+            .expect_err("conflict");
         let msg = format!("{err}");
         assert!(msg.contains("--keep-going") || msg.contains("--kill-on-fail"));
+    }
+
+    #[test]
+    fn run_parses_kill_on_fail_short_flag() {
+        let cli =
+            Cli::try_parse_from(["runner", "run", "-p", "-K", "build", "test"]).expect("parses");
+        match cli.command {
+            Some(Command::Run {
+                failure:
+                    ChainFailureFlags {
+                        kill_on_fail: true, ..
+                    },
+                ..
+            }) => {}
+            other => panic!("expected Run with kill_on_fail=true, got {other:?}"),
+        }
     }
 
     #[test]
@@ -755,7 +768,8 @@ pub(crate) struct GlobalOpts {
         env = "RUNNER_DIR",
         value_name = "PATH",
         value_hint = clap::ValueHint::DirPath,
-        value_parser = clap::value_parser!(PathBuf)
+        value_parser = clap::value_parser!(PathBuf),
+        display_order = help_order::DIR,
     )]
     pub project_dir: Option<PathBuf>,
 
@@ -767,6 +781,7 @@ pub(crate) struct GlobalOpts {
         global = true,
         value_name = "NAME",
         help = PM_HELP.as_str(),
+        display_order = help_order::PM,
     )]
     pub pm_override: Option<String>,
 
@@ -779,6 +794,7 @@ pub(crate) struct GlobalOpts {
         global = true,
         value_name = "NAME",
         help = RUNNER_HELP.as_str(),
+        display_order = help_order::RUNNER,
     )]
     pub runner_override: Option<String>,
 
@@ -791,6 +807,7 @@ pub(crate) struct GlobalOpts {
         long = "fallback",
         global = true,
         value_name = "POLICY",
+        display_order = help_order::FALLBACK,
         help = concat!(
             "No detection match: ",
             cyan!("probe"), " (default), ",
@@ -809,6 +826,7 @@ pub(crate) struct GlobalOpts {
         long = "on-mismatch",
         global = true,
         value_name = "POLICY",
+        display_order = help_order::ON_MISMATCH,
         help = concat!(
             "Manifest vs lockfile: ",
             cyan!("warn"), " (default), ",
@@ -826,6 +844,7 @@ pub(crate) struct GlobalOpts {
     #[arg(
         long = "explain",
         global = true,
+        display_order = help_order::EXPLAIN,
         help = concat!(
             "PM resolution trace ",
             "[env: ", cyan!("RUNNER_EXPLAIN"), "]"
@@ -839,6 +858,7 @@ pub(crate) struct GlobalOpts {
     #[arg(
         long = "no-warnings",
         global = true,
+        display_order = help_order::NO_WARNINGS,
         help = concat!(
             "Hide non-fatal warnings ",
             "[env: ", cyan!("RUNNER_NO_WARNINGS"), "]"
@@ -853,6 +873,7 @@ pub(crate) struct GlobalOpts {
         short = 'q',
         long = "quiet",
         global = true,
+        display_order = help_order::QUIET,
         help = concat!(
             "Hide dispatch line + ", cyan!("--explain"), " trace ",
             "[env: ", cyan!("RUNNER_QUIET"), "]"
@@ -874,6 +895,7 @@ pub(crate) struct GlobalOpts {
         global = true,
         value_parser = clap::value_parser!(u32).range(1..=3),
         value_name = "N",
+        display_order = help_order::SCHEMA_VERSION,
         help = concat!(
             "Pin ", cyan!("--json"), " schema (doctor/why ",
             cyan!("1"), "-", cyan!("3"), ", list ",
@@ -887,7 +909,10 @@ pub(crate) struct GlobalOpts {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Run or exec a task; `-s`/`-p` chain multiple
-    #[command(alias = "r")]
+    #[command(
+        alias = "r",
+        about = concat!("Run or exec a task; ", cyan!("-s"), "/", cyan!("-p"), " chain multiple"),
+    )]
     Run {
         /// Task name or command to execute. In chain mode, the first task in the chain.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
@@ -900,16 +925,31 @@ pub(crate) enum Command {
         /// Chain mode flags: `-s` / `-p`.
         #[command(flatten)]
         mode: ChainModeFlags,
-        /// Chain failure-policy flags: `-k` / `--kill-on-fail`.
+        /// Chain failure-policy flags: `-k` / `-K`.
         #[command(flatten)]
         failure: ChainFailureFlags,
+    },
+
+    /// List tasks from detected sources
+    #[command(alias = "ls")]
+    List {
+        /// Print bare task names, one per line (for scripting / completions)
+        #[arg(long, conflicts_with_all = ["json"])]
+        raw: bool,
+        /// Emit JSON instead of human-readable output.
+        #[arg(long, conflicts_with_all = ["raw"])]
+        json: bool,
+        /// Restrict output to a single source (e.g. `package.json`,
+        /// `Makefile`, `justfile`).
+        #[arg(long, value_name = "SOURCE")]
+        source: Option<String>,
     },
 
     /// Install deps; may chain tasks after (always sequential)
     #[command(alias = "i")]
     Install {
         /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
-        #[arg(long)]
+        #[arg(short = 'f', long, display_order = help_order::COMMAND)]
         frozen: bool,
         /// Optional task names to run after install completes. Chain is
         /// always sequential; `-p` is not accepted here. Plain positional
@@ -933,21 +973,6 @@ pub(crate) enum Command {
         include_framework: bool,
     },
 
-    /// List tasks from detected sources
-    #[command(alias = "ls")]
-    List {
-        /// Print bare task names, one per line (for scripting / completions)
-        #[arg(long, conflicts_with_all = ["json"])]
-        raw: bool,
-        /// Emit JSON instead of human-readable output.
-        #[arg(long, conflicts_with_all = ["raw"])]
-        json: bool,
-        /// Restrict output to a single source (e.g. `package.json`,
-        /// `Makefile`, `justfile`).
-        #[arg(long, value_name = "SOURCE")]
-        source: Option<String>,
-    },
-
     /// Deprecated alias for `list` — hidden, prints a warning, then
     /// renders the task list. Bare `runner` still shows the project
     /// dashboard; only the explicit `info` verb is deprecated.
@@ -958,17 +983,17 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Resolver signals for this directory
-    Doctor {
+    /// How a task would dispatch
+    Why {
+        /// Task name to analyze.
+        task: String,
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,
     },
 
-    /// How a task would dispatch
-    Why {
-        /// Task name to analyze.
-        task: String,
+    /// Resolver signals for this directory
+    Doctor {
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,
@@ -1008,8 +1033,9 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Emit JSON Schemas (build: --features schema)
+    /// Emit JSON Schemas. Only compiled in with the `schema` cargo feature.
     #[cfg(feature = "schema")]
+    #[command(about = "Emit JSON Schemas")]
     Schema {
         /// Emit every committed schema into the output directory.
         #[arg(long)]
@@ -1044,8 +1070,11 @@ pub(crate) enum Command {
     // disable note below), so document them here instead of in the options
     // list, and flag the forwarding rule that distinguishes this binary
     // from `runner run`.
-    after_help = "\nUse -h/--help or -V/--version before a task for this binary's own help and version. \
-After a task name they are forwarded to the task instead (use `--` to force forwarding).",
+    after_help = concat!(
+        "\nUse ", cyan!("-h"), "/", cyan!("--help"), " or ", cyan!("-V"), "/", cyan!("--version"),
+        " before a task for this binary's own help and version.\n",
+        "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
+    ),
     styles = HELP_STYLES,
     arg_required_else_help = false,
     // clap's built-in `--help`/`--version` short-circuit parsing wherever
@@ -1082,7 +1111,7 @@ pub(crate) struct RunAliasCli {
     #[command(flatten)]
     pub mode: ChainModeFlags,
 
-    /// Chain failure-policy flags: `-k` / `--kill-on-fail`.
+    /// Chain failure-policy flags: `-k` / `-K`.
     #[command(flatten)]
     pub failure: ChainFailureFlags,
 }
@@ -1093,22 +1122,37 @@ pub(crate) struct RunAliasCli {
 #[derive(Debug, Args, Default, Clone, Copy)]
 pub(crate) struct ChainModeFlags {
     /// Chain tasks in order
-    #[arg(short = 's', long, conflicts_with = "parallel")]
+    #[arg(
+        short = 's',
+        long,
+        conflicts_with = "parallel",
+        display_order = help_order::CHAIN_MODE,
+    )]
     pub sequential: bool,
     /// Chain tasks concurrently
-    #[arg(short = 'p', long)]
+    #[arg(short = 'p', long, display_order = help_order::CHAIN_MODE + 1)]
     pub parallel: bool,
 }
 
 /// Chain failure-policy flags shared across `Cli::Run`, `Cli::Install`,
-/// and `RunAliasCli`. Mutually exclusive (`-k` vs `--kill-on-fail`)
-/// enforced at the clap layer.
+/// and `RunAliasCli`. Mutually exclusive (`-k` vs `-K`) enforced at the
+/// clap layer.
 #[derive(Debug, Args, Default, Clone, Copy)]
 pub(crate) struct ChainFailureFlags {
     /// Finish chain despite failures
-    #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
+    #[arg(
+        short = 'k',
+        long,
+        conflicts_with = "kill_on_fail",
+        display_order = help_order::CHAIN_FAILURE,
+    )]
     pub keep_going: bool,
     /// Parallel: kill siblings on first failure
-    #[arg(long, conflicts_with = "keep_going")]
+    #[arg(
+        short = 'K',
+        long,
+        conflicts_with = "keep_going",
+        display_order = help_order::CHAIN_FAILURE + 1,
+    )]
     pub kill_on_fail: bool,
 }

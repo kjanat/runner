@@ -18,6 +18,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   line on stderr plus the dispatch-time `--explain` trace, for clean output
   when `runner` wraps another command. See
   https://github.com/kjanat/runner/pull/56
+- Short flags `-K` (`--kill-on-fail`) and `-f` (install `--frozen`), plus a
+  stable `--help` flag ordering via display-order bands.
+
+### Changed
+
+- `--help` polish: colorize inline flag tokens instead of rendering literal
+  backticks, hide the `bundle`/`go-task` aliases from the `--pm`/`--runner`
+  lists, terser `help`/`schema`/quiet descriptions, and reorder commands so
+  `list` sits with `run` and `why` precedes `doctor`.
 
 ### Fixed
 
