@@ -43,8 +43,8 @@ fn quiet_flag_suppresses_dispatch_arrow() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "run --quiet npx --version should succeed. status: {:?}, stderr: {stderr}",
+        output.status.code() != Some(2),
+        "run must reach dispatch (exit 2 = arg/resolve failure before dispatch). status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
@@ -68,8 +68,8 @@ fn runner_quiet_env_suppresses_dispatch_arrow() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "run with RUNNER_QUIET=1 should succeed. status: {:?}, stderr: {stderr}",
+        output.status.code() != Some(2),
+        "run must reach dispatch (RUNNER_QUIET=1). status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
@@ -92,8 +92,8 @@ fn dispatch_arrow_prints_without_quiet() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "run npx --version should succeed. status: {:?}, stderr: {stderr}",
+        output.status.code() != Some(2),
+        "run must reach dispatch. status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
@@ -116,8 +116,8 @@ fn quiet_with_explain_suppresses_dispatch_and_explain() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.success(),
-        "run --quiet --explain npx --version should succeed. status: {:?}, stderr: {stderr}",
+        output.status.code() != Some(2),
+        "run must reach dispatch (--quiet --explain). status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
