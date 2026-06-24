@@ -103,6 +103,7 @@ l             -- → clippy --all-targets --all-features -- -D warnings -D clipp
 --on-mismatch     -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
 --explain         -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
 --no-warnings     -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
+-q, --quiet       -- Suppress the dispatch arrow on stderr. Also enabled when RUNNER_QUIET is set to a truthy value.
 --schema-version  -- Pin JSON output schema version (1 or 2). Defaults to latest. Affects --json output of doctor/list/why only.
 --sequential      -- Run the given tasks sequentially. Conflicts with `--parallel`
 --parallel        -- Run the given tasks in parallel. Conflicts with `--sequential`

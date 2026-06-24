@@ -1332,6 +1332,20 @@ mod tests {
     }
 
     #[test]
+    fn quiet_from_env_is_truthy() {
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            quiet: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("structured override should parse");
+
+        assert!(overrides.quiet);
+    }
+
+    #[test]
     fn parse_override_trims_whitespace_in_env_and_cli() {
         // Whitespace in env values is common when shell-export patterns
         // leave trailing newlines or quoted values pad arguments. The

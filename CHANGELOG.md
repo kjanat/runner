@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - The rendered API docs (rustdoc / docs.rs) now display the project logo
   and favicon, set via `#![doc(html_logo_url, html_favicon_url)]` pinned to
   `branding/icon.svg`. See https://github.com/kjanat/runner/pull/59
+- `-q`/`--quiet` (and a truthy `RUNNER_QUIET`) suppress the `→` dispatch
+  line on stderr plus the dispatch-time `--explain` trace, for clean output
+  when `runner` wraps another command. See
+  https://github.com/kjanat/runner/pull/56
 
 ### Fixed
 

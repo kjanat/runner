@@ -311,6 +311,7 @@
         "pm",
         "pm_by_ecosystem",
         "prefer_runners",
+        "quiet",
         "runner"
       ],
       "properties": {
@@ -346,6 +347,9 @@
           "items": {
             "type": "string"
           }
+        },
+        "quiet": {
+          "type": "boolean"
         },
         "runner": {
           "type": [

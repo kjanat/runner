@@ -157,6 +157,7 @@ struct OverridesV3 {
     explain: bool,
     fallback: &'static str,
     no_warnings: bool,
+    quiet: bool,
     on_mismatch: &'static str,
     pm: Option<&'static str>,
     pm_by_ecosystem: BTreeMap<String, Option<&'static str>>,
@@ -500,6 +501,7 @@ fn overrides_v3(overrides: &ResolutionOverrides) -> OverridesV3 {
             FallbackPolicy::Error => "error",
         },
         no_warnings: overrides.no_warnings,
+        quiet: overrides.quiet,
         on_mismatch: match overrides.on_mismatch {
             MismatchPolicy::Warn => "warn",
             MismatchPolicy::Error => "error",
