@@ -208,9 +208,27 @@ where
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
+    command = shorten_help_subcommand(command);
 
     let matches = command.try_get_matches_from(args)?;
     cli::Cli::from_arg_matches(&matches)
+}
+
+/// Replace clap's verbose default `help` subcommand description
+/// (`"Print this message or the help of the given subcommand(s)"`) with a terse
+/// one. clap only injects the implicit `help` subcommand during `Command::build`,
+/// so force the build first; the `Built` flag makes the later parse-time build a
+/// no-op. Guarded with `find_subcommand` because a flat command without
+/// subcommands (the `run` alias) never gets a `help` entry, and `mut_subcommand`
+/// panics on a missing name. Must run after `name`/`bin_name` are set, since
+/// `build` snapshots bin names.
+fn shorten_help_subcommand(mut command: clap::Command) -> clap::Command {
+    command.build();
+    if command.find_subcommand("help").is_some() {
+        command.mut_subcommand("help", |help| help.about("Print help for a subcommand"))
+    } else {
+        command
+    }
 }
 
 /// Parse process args as the `run` alias binary, detect the current dir,

@@ -73,39 +73,25 @@ fn env_suffix(var: &str) -> String {
     format!("[env: {}]", cyan_str(var))
 }
 
-/// Comma-joined, cyan-styled list of every [`PackageManager`] label, with the
-/// `bundle` alias for `bundler` called out so users discover both spellings.
+/// Comma-joined, cyan-styled list of every [`PackageManager`] label.
 /// Built once at first help-text access via [`LazyLock`]; rebuilding the
 /// list on every `--help` invocation would waste work for a value that is
 /// fully determined by the [`PackageManager::all`] enumeration.
 static PM_HELP: LazyLock<String> = LazyLock::new(|| {
     let joined = PackageManager::all()
         .iter()
-        .map(|pm| {
-            if matches!(pm, PackageManager::Bundler) {
-                format!("{} (alias: bundle)", pm.label())
-            } else {
-                pm.label().to_string()
-            }
-        })
+        .map(|pm| pm.label())
         .collect::<Vec<_>>()
         .join(", ");
     format!("Force PM ({joined}) {}", env_suffix("RUNNER_PM"))
 });
 
-/// Comma-joined, cyan-styled list of every [`TaskRunner`] label, with the
-/// `go-task` alias for `task` called out. Lazy-built for the same reason as
-/// [`PM_HELP`].
+/// Comma-joined, cyan-styled list of every [`TaskRunner`] label.
+/// Lazy-built for the same reason as [`PM_HELP`].
 static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
     let joined = TaskRunner::all()
         .iter()
-        .map(|r| {
-            if matches!(r, TaskRunner::GoTask) {
-                format!("{} (alias: go-task)", r.label())
-            } else {
-                r.label().to_string()
-            }
-        })
+        .map(|r| r.label())
         .collect::<Vec<_>>()
         .join(", ");
     format!(
@@ -923,7 +909,10 @@ pub(crate) struct GlobalOpts {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Run or exec a task; `-s`/`-p` chain multiple
-    #[command(alias = "r")]
+    #[command(
+        alias = "r",
+        about = concat!("Run or exec a task; ", cyan!("-s"), "/", cyan!("-p"), " chain multiple"),
+    )]
     Run {
         /// Task name or command to execute. In chain mode, the first task in the chain.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
@@ -939,6 +928,21 @@ pub(crate) enum Command {
         /// Chain failure-policy flags: `-k` / `-K`.
         #[command(flatten)]
         failure: ChainFailureFlags,
+    },
+
+    /// List tasks from detected sources
+    #[command(alias = "ls")]
+    List {
+        /// Print bare task names, one per line (for scripting / completions)
+        #[arg(long, conflicts_with_all = ["json"])]
+        raw: bool,
+        /// Emit JSON instead of human-readable output.
+        #[arg(long, conflicts_with_all = ["raw"])]
+        json: bool,
+        /// Restrict output to a single source (e.g. `package.json`,
+        /// `Makefile`, `justfile`).
+        #[arg(long, value_name = "SOURCE")]
+        source: Option<String>,
     },
 
     /// Install deps; may chain tasks after (always sequential)
@@ -969,21 +973,6 @@ pub(crate) enum Command {
         include_framework: bool,
     },
 
-    /// List tasks from detected sources
-    #[command(alias = "ls")]
-    List {
-        /// Print bare task names, one per line (for scripting / completions)
-        #[arg(long, conflicts_with_all = ["json"])]
-        raw: bool,
-        /// Emit JSON instead of human-readable output.
-        #[arg(long, conflicts_with_all = ["raw"])]
-        json: bool,
-        /// Restrict output to a single source (e.g. `package.json`,
-        /// `Makefile`, `justfile`).
-        #[arg(long, value_name = "SOURCE")]
-        source: Option<String>,
-    },
-
     /// Deprecated alias for `list` — hidden, prints a warning, then
     /// renders the task list. Bare `runner` still shows the project
     /// dashboard; only the explicit `info` verb is deprecated.
@@ -994,17 +983,17 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Resolver signals for this directory
-    Doctor {
+    /// How a task would dispatch
+    Why {
+        /// Task name to analyze.
+        task: String,
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,
     },
 
-    /// How a task would dispatch
-    Why {
-        /// Task name to analyze.
-        task: String,
+    /// Resolver signals for this directory
+    Doctor {
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,
@@ -1044,8 +1033,9 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Emit JSON Schemas (build: --features schema)
+    /// Emit JSON Schemas. Only compiled in with the `schema` cargo feature.
     #[cfg(feature = "schema")]
+    #[command(about = "Emit JSON Schemas")]
     Schema {
         /// Emit every committed schema into the output directory.
         #[arg(long)]
@@ -1080,8 +1070,11 @@ pub(crate) enum Command {
     // disable note below), so document them here instead of in the options
     // list, and flag the forwarding rule that distinguishes this binary
     // from `runner run`.
-    after_help = "\nUse -h/--help or -V/--version before a task for this binary's own help and version. \
-After a task name they are forwarded to the task instead (use `--` to force forwarding).",
+    after_help = concat!(
+        "\nUse ", cyan!("-h"), "/", cyan!("--help"), " or ", cyan!("-V"), "/", cyan!("--version"),
+        " before a task for this binary's own help and version.\n",
+        "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
+    ),
     styles = HELP_STYLES,
     arg_required_else_help = false,
     // clap's built-in `--help`/`--version` short-circuit parsing wherever
