@@ -1,14 +1,66 @@
-//! Integration coverage for `--quiet` / `RUNNER_QUIET`: the dispatch
-//! arrow (`→ <source> <task>`) must stay off stderr when quiet is on.
+//! Integration coverage for `--quiet` / `RUNNER_QUIET`.
+//!
+//! The dispatch arrow (`→ <source> <task>`) and the `--explain` resolution
+//! trace must stay off stderr when quiet is on. Tests dispatch real tasks in
+//! throwaway temp projects so they are deterministic and succeed regardless of
+//! which package managers happen to be installed:
+//!
+//! - the arrow tests use a `Makefile` recipe that runs `true` (`make` is
+//!   ubiquitous on dev/CI machines);
+//! - the explain test uses a `package.json` script pinned to npm via an empty
+//!   lockfile (npm ships with Node on every runner), because `--explain` only
+//!   traces package-manager resolution — a `make` task never emits it.
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+/// Self-cleaning temp directory. Avoids a dev-dependency for the integration
+/// crate; the in-crate `test_support::TempDir` is `pub(crate)` and thus not
+/// reachable from `tests/`.
+struct TempProject {
+    path: PathBuf,
+}
+
+impl TempProject {
+    fn new(tag: &str) -> Self {
+        let mut path = std::env::temp_dir();
+        path.push(format!("runner-quiet-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create temp project dir");
+        Self { path }
+    }
+
+    fn file(self, name: &str, contents: &str) -> Self {
+        std::fs::write(self.path.join(name), contents).expect("write project file");
+        self
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempProject {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 fn run_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_run"))
 }
 
-fn run_command() -> Command {
+fn tool_available(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+/// Run the `run` binary against `dir` with every `RUNNER_*` var scrubbed, then
+/// `extra_env` applied. Globals (`--dir`, `--quiet`, `--explain`) must precede
+/// the task positional, since `trailing_var_arg` consumes everything after it.
+fn run_in(dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
     let mut cmd = Command::new(run_binary());
     for (key, _) in std::env::vars_os() {
         if key
@@ -19,32 +71,41 @@ fn run_command() -> Command {
             cmd.env_remove(&key);
         }
     }
-    cmd
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.arg("--dir")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("run should execute")
 }
 
-fn npx_available() -> bool {
-    Command::new("npx")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
+/// Temp project whose `greet` make recipe just runs `true`.
+fn make_project(tag: &str) -> TempProject {
+    TempProject::new(tag).file("Makefile", "greet:\n\t@true\n")
+}
+
+/// Temp project with a `package.json` `greet` script pinned to npm via an empty
+/// lockfile, so resolution is deterministic and emits an explain trace.
+fn npm_project(tag: &str) -> TempProject {
+    TempProject::new(tag)
+        .file("package.json", "{ \"scripts\": { \"greet\": \"true\" } }\n")
+        .file("package-lock.json", "{}\n")
 }
 
 #[test]
 fn quiet_flag_suppresses_dispatch_arrow() {
-    if !npx_available() {
-        eprintln!("skipping: `npx` not found on PATH");
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
         return;
     }
-
-    let output = run_command()
-        .args(["--quiet", "npx", "--version"])
-        .output()
-        .expect("run should execute");
-
+    let proj = make_project("flag");
+    let output = run_in(proj.path(), &[], &["--quiet", "greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.code() != Some(2),
-        "run must reach dispatch (exit 2 = arg/resolve failure before dispatch). status: {:?}, stderr: {stderr}",
+        output.status.success(),
+        "run --quiet greet should succeed. status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
@@ -55,21 +116,16 @@ fn quiet_flag_suppresses_dispatch_arrow() {
 
 #[test]
 fn runner_quiet_env_suppresses_dispatch_arrow() {
-    if !npx_available() {
-        eprintln!("skipping: `npx` not found on PATH");
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
         return;
     }
-
-    let output = run_command()
-        .env("RUNNER_QUIET", "1")
-        .args(["npx", "--version"])
-        .output()
-        .expect("run should execute");
-
+    let proj = make_project("env");
+    let output = run_in(proj.path(), &[("RUNNER_QUIET", "1")], &["greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.code() != Some(2),
-        "run must reach dispatch (RUNNER_QUIET=1). status: {:?}, stderr: {stderr}",
+        output.status.success(),
+        "run with RUNNER_QUIET=1 should succeed. status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
@@ -80,20 +136,16 @@ fn runner_quiet_env_suppresses_dispatch_arrow() {
 
 #[test]
 fn dispatch_arrow_prints_without_quiet() {
-    if !npx_available() {
-        eprintln!("skipping: `npx` not found on PATH");
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
         return;
     }
-
-    let output = run_command()
-        .args(["npx", "--version"])
-        .output()
-        .expect("run should execute");
-
+    let proj = make_project("plain");
+    let output = run_in(proj.path(), &[], &["greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.status.code() != Some(2),
-        "run must reach dispatch. status: {:?}, stderr: {stderr}",
+        output.status.success(),
+        "run greet should succeed. status: {:?}, stderr: {stderr}",
         output.status,
     );
     assert!(
@@ -103,29 +155,36 @@ fn dispatch_arrow_prints_without_quiet() {
 }
 
 #[test]
-fn quiet_with_explain_suppresses_dispatch_and_explain() {
-    if !npx_available() {
-        eprintln!("skipping: `npx` not found on PATH");
+fn quiet_suppresses_explain_trace() {
+    if !tool_available("npm") {
+        eprintln!("skipping: `npm` not found on PATH");
         return;
     }
-
-    let output = run_command()
-        .args(["--quiet", "--explain", "npx", "--version"])
-        .output()
-        .expect("run should execute");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Positive control: `--explain` alone emits the resolution trace.
+    let shown_proj = npm_project("explain-on");
+    let shown = run_in(shown_proj.path(), &[], &["--explain", "greet"]);
+    let shown_err = String::from_utf8_lossy(&shown.stderr);
     assert!(
-        output.status.code() != Some(2),
-        "run must reach dispatch (--quiet --explain). status: {:?}, stderr: {stderr}",
-        output.status,
+        shown.status.success(),
+        "run --explain greet should succeed. status: {:?}, stderr: {shown_err}",
+        shown.status,
     );
     assert!(
-        !stderr.contains('→'),
-        "dispatch arrow must be suppressed under --quiet. stderr: {stderr}",
+        shown_err.contains("resolved:"),
+        "--explain should emit a resolution trace to suppress. stderr: {shown_err}",
+    );
+
+    // `--quiet` suppresses both the arrow and that trace.
+    let hidden_proj = npm_project("explain-off");
+    let hidden = run_in(hidden_proj.path(), &[], &["--quiet", "--explain", "greet"]);
+    let hidden_err = String::from_utf8_lossy(&hidden.stderr);
+    assert!(
+        hidden.status.success(),
+        "run --quiet --explain greet should succeed. status: {:?}, stderr: {hidden_err}",
+        hidden.status,
     );
     assert!(
-        !stderr.contains("resolved:"),
-        "--explain trace must be suppressed under --quiet. stderr: {stderr}",
+        !hidden_err.contains('→') && !hidden_err.contains("resolved:"),
+        "--quiet must suppress the arrow and the explain trace. stderr: {hidden_err}",
     );
 }
