@@ -1310,12 +1310,21 @@ mod tests {
     }
 
     #[test]
+    fn runner_cli_parses_install_frozen_short_flag() {
+        let cli = parse_cli(["runner", "install", "-f"]).expect("should parse");
+
+        match cli.command {
+            Some(cli::Command::Install { frozen: true, .. }) => {}
+            other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn runner_cli_parses_install_chain_flags_after_task_names() {
         // `runner install build test --kill-on-fail` must parse
         // `--kill-on-fail` as a chain-failure flag, not as a task name.
         // Regression for the `trailing_var_arg` consumption bug.
-        let cli =
-            parse_cli(["runner", "install", "build", "test", "--kill-on-fail"]).expect("parses");
+        let cli = parse_cli(["runner", "install", "build", "test", "-K"]).expect("parses");
         match cli.command {
             Some(cli::Command::Install {
                 tasks,

@@ -65,8 +65,8 @@ pub(crate) struct ResolutionOverrides {
     /// produced the PM decision. Set via `--explain` / `RUNNER_EXPLAIN`.
     pub explain: bool,
     /// Failure policy for `run -s/-p` chains and `runner install <tasks>`.
-    /// Resolved from `-k`/`--kill-on-fail` (CLI) → `RUNNER_KEEP_GOING`/
-    /// `RUNNER_KILL_ON_FAIL` (env) → `[chain]` (config) → `FailFast`.
+    /// Resolved from `-k`/`-K` (CLI) → `RUNNER_KEEP_GOING`/`RUNNER_KILL_ON_FAIL`
+    /// (env) → `[chain]` (config) → `FailFast`.
     pub failure_policy: FailurePolicy,
     /// Broad GitHub Actions grouping switch. Sourced from
     /// `[github].group_output` (default `true`); when false, GitHub Actions
