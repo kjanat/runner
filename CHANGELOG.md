@@ -9,6 +9,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- The rendered API docs (rustdoc / docs.rs) now display the project logo
+  and favicon, set via `#![doc(html_logo_url, html_favicon_url)]` pinned to
+  `branding/icon.svg`. See https://github.com/kjanat/runner/pull/59
+
+### Fixed
+
+- `cargo doc` (and the docs.rs build) no longer fail under the crate's
+  `deny`-level rustdoc lints: broken intra-doc links (`cmd::run`,
+  `argv[0]`) are repaired. See https://github.com/kjanat/runner/pull/59
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
