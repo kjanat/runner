@@ -57,6 +57,11 @@
 //! ```
 // Generate docs with `cargo doc --document-private-items --open`.
 
+#![doc(
+    html_logo_url = "https://raw.githubusercontent.com/kjanat/runner/d876a0b9716806d92e07f5d5560b022b6158ecd5/branding/icon.svg",
+    html_favicon_url = "https://raw.githubusercontent.com/kjanat/runner/d876a0b9716806d92e07f5d5560b022b6158ecd5/branding/icon.svg"
+)]
+
 pub(crate) mod chain;
 mod cli;
 mod cmd;
@@ -212,7 +217,7 @@ where
 /// dispatch, and return the exit code.
 ///
 /// Always treats positional arguments as a task or command (routed through
-/// [`cmd::run`]) — built-in subcommand names are never parsed specially, so
+/// `cmd::run`) — built-in subcommand names are never parsed specially, so
 /// `run clean`, `run install`, etc. run a same-named project task when one
 /// exists. When no such task exists, a bare run token naming a built-in verb
 /// (`install`/`clean`/`list`/`info`/`completions`) falls back to that
@@ -403,7 +408,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     }
 }
 
-/// Extracts the filename portion from an argv[0]-style `OsString`, returning it when non-empty.
+/// Extracts the filename portion from an `argv[0]`-style `OsString`, returning it when non-empty.
 ///
 /// Returns `Some(String)` with the file name if `arg0` has a non-empty file-name segment, `None` otherwise.
 ///
@@ -650,10 +655,10 @@ fn dispatch_run(
 /// no same-named task exists, run that built-in's default (no-flag) form —
 /// the same behavior the explicit `runner <verb>` subcommand provides. A
 /// project task of the same name takes precedence (handled by the early
-/// `has_task` return → falls through to [`cmd::run`]).
+/// `has_task` return → falls through to `cmd::run`).
 ///
 /// Returns `Ok(Some(code))` when the fallback handled the token, `Ok(None)`
-/// to fall through to [`cmd::run`] (task dispatch / PM-exec).
+/// to fall through to `cmd::run` (task dispatch / PM-exec).
 ///
 /// Qualified tokens (`source:verb`) carry the `source:` prefix, so they never
 /// match a bare verb arm and fall through untouched — no qualifier parsing
