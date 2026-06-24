@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `cargo doc` (and the docs.rs build) no longer fail under the crate's
   `deny`-level rustdoc lints: broken intra-doc links (`cmd::run`,
   `argv[0]`) are repaired. See https://github.com/kjanat/runner/pull/59
+- mise tasks with a whitespace-only `description` now fall back to the run
+  command instead of rendering a blank description.
 
 ### Post-release checklist
 
