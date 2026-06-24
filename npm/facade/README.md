@@ -216,6 +216,35 @@ eval "$(runner completions)"
 Both commands must live in the same bin directory for one generated completion
 registration to cover both.
 
+### `Cannot find module '…\node_modules\runner-run\bin\runner.cjs'`
+
+Node is reporting that the launcher file itself is **missing on disk** — not a
+bug in the package (the published tarball always ships `bin/runner.cjs`). The
+same symptom appears for any thin-launcher package (`dprint`, `tombi`, …) in the
+same tree, often all at once.
+
+This is a **corrupt or half-finished install**, not a runner problem. Tell-tale
+signs on Windows: package directories with `1601` (zero-epoch) timestamps,
+"permission denied" when reading a file that exists, or a `node_modules/<pkg>`
+folder present but empty. Common causes:
+
+- an interrupted `bun install` / `npm install` (network blip, `Ctrl-C`, crash)
+- a pruned, moved, or corrupted package-manager content store the install
+  hard-links from (breaks every project pointing at it at once)
+- OneDrive "Files On-Demand" dehydrating files under your projects folder
+- antivirus quarantining `.cjs` / `.node` files mid-extraction
+
+Because the directory exists, a plain reinstall may skip it. Remove the tree and
+reinstall from scratch:
+
+```sh
+rm -rf node_modules            # Windows: cmd /c "rmdir /s /q node_modules"
+<pm> install                   # bun install / npm ci / pnpm install …
+```
+
+If files keep vanishing after a clean reinstall, exclude your projects directory
+(and `~/.bun` / the npm cache) from cloud-sync and antivirus.
+
 ## More Docs
 
 - Full README: <https://github.com/kjanat/runner#readme>

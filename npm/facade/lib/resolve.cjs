@@ -33,8 +33,13 @@ function resolveBinary(name) {
 		let pkgJsonPath;
 		try {
 			pkgJsonPath = require.resolve(`${subPkg}/package.json`);
-		} catch (err) {
-			errors.push(`${subPkg}: ${err instanceof Error ? err.message : String(err)}`);
+		} catch {
+			// Keep this to a single line. Node appends a multi-frame
+			// "Require stack" to every MODULE_NOT_FOUND message; across a
+			// dozen optional deps that buries the one package that matters
+			// (the current platform's) under identical stacks. The failure
+			// is always module-not-found here, so the message adds nothing.
+			errors.push(`${subPkg}: not installed`);
 			continue;
 		}
 		const binPath = join(dirname(pkgJsonPath), "bin", exe);
@@ -49,8 +54,16 @@ function resolveBinary(name) {
 		return binPath;
 	}
 
-	const detail = errors.length > 0
-		? "\n\nDetails of attempted resolutions:\n  - " + errors.join("\n  - ")
+	// Lead with the package that *should* satisfy this host so it isn't lost
+	// among the other-platform candidates; the per-arch names embed
+	// `<platform>-<arch>`, so a substring match picks the relevant ones
+	// (both libc variants on Linux). Fall back to the full list if nothing
+	// matches the naming convention.
+	const wanted = `${platform}-${arch}`;
+	const matching = errors.filter((line) => line.includes(wanted));
+	const shown = matching.length > 0 ? matching : errors;
+	const detail = shown.length > 0
+		? `\n\nExpected a ${wanted} package; attempted resolutions:\n  - ` + shown.join("\n  - ")
 		: "";
 
 	const [indent, blueText, redText, yellowText, reset] = ["  ", "\x1b[36m", "\x1b[31m", "\x1b[33m", "\x1b[0m"];
