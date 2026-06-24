@@ -854,7 +854,7 @@ pub(crate) struct GlobalOpts {
         long = "quiet",
         global = true,
         help = concat!(
-            "Hide → dispatch line ",
+            "Hide dispatch line + ", cyan!("--explain"), " trace ",
             "[env: ", cyan!("RUNNER_QUIET"), "]"
         ),
     )]

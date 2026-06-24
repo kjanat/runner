@@ -43,6 +43,11 @@ fn quiet_flag_suppresses_dispatch_arrow() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
+        output.status.success(),
+        "run --quiet npx --version should succeed. status: {:?}, stderr: {stderr}",
+        output.status,
+    );
+    assert!(
         !stderr.contains('→'),
         "dispatch arrow must be suppressed with --quiet. stderr: {stderr}",
     );
@@ -63,6 +68,11 @@ fn runner_quiet_env_suppresses_dispatch_arrow() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
+        output.status.success(),
+        "run with RUNNER_QUIET=1 should succeed. status: {:?}, stderr: {stderr}",
+        output.status,
+    );
+    assert!(
         !stderr.contains('→'),
         "dispatch arrow must be suppressed with RUNNER_QUIET=1. stderr: {stderr}",
     );
@@ -82,7 +92,40 @@ fn dispatch_arrow_prints_without_quiet() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
+        output.status.success(),
+        "run npx --version should succeed. status: {:?}, stderr: {stderr}",
+        output.status,
+    );
+    assert!(
         stderr.contains('→'),
         "dispatch arrow expected without --quiet. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn quiet_with_explain_suppresses_dispatch_and_explain() {
+    if !npx_available() {
+        eprintln!("skipping: `npx` not found on PATH");
+        return;
+    }
+
+    let output = run_command()
+        .args(["--quiet", "--explain", "npx", "--version"])
+        .output()
+        .expect("run should execute");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "run --quiet --explain npx --version should succeed. status: {:?}, stderr: {stderr}",
+        output.status,
+    );
+    assert!(
+        !stderr.contains('→'),
+        "dispatch arrow must be suppressed under --quiet. stderr: {stderr}",
+    );
+    assert!(
+        !stderr.contains("resolved:"),
+        "--explain trace must be suppressed under --quiet. stderr: {stderr}",
     );
 }
