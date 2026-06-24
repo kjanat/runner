@@ -21,6 +21,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with: { save-if: "${{ github.event_name != 'pull_request' }}" }
+      # Install every tool runner / package manager we claim to support, so tests
+      # exercise the real CLI paths instead of only the file-parse fallbacks.
+      # Rust/CLI tools come as prebuilt binaries via taiki-e/install-action; the
+      # polyglot runtimes via mise. make, node/npm, go, ruby+bundler and
+      # php+composer already ship on the ubuntu-latest image; cargo from the
+      # toolchain above.
+      - uses: taiki-e/install-action@v2
+        with: { tool: "just,uv,bacon" }
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        with:
+          mise_toml: |
+            [tools]
+            node = "lts"
+            bun = "latest"
+            deno = "latest"
+            go = "latest"
+            poetry = "latest"
+            pipenv = "latest"
+            task = "latest"
+            pnpm = "latest"
+            yarn = "latest"
+            "npm:turbo" = "latest"
+            "npm:nx" = "latest"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D clippy::all
       - run: cargo test

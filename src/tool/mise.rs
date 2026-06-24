@@ -200,7 +200,7 @@ struct MiseJsonTask {
 
 impl MiseJsonTask {
     fn description_or_fallback(&self) -> Option<String> {
-        if !self.description.is_empty() {
+        if !self.description.trim().is_empty() {
             return Some(self.description.clone());
         }
         if !self.run.is_empty() {
