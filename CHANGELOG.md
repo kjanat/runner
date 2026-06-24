@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Fixed
+
+- mise tasks with a whitespace-only `description` now fall back to the run
+  command instead of rendering a blank description.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
