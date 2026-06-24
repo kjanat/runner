@@ -25,6 +25,36 @@ use crate::tool;
 use crate::tool::deno_exec::DenoTaskPlan;
 use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
+fn print_dispatch_arrow(
+    overrides: &ResolutionOverrides,
+    label: &str,
+    task_name: &str,
+    args: &[String],
+) {
+    if overrides.quiet {
+        return;
+    }
+    eprintln!(
+        "{} {} {} {}",
+        "→".dimmed(),
+        label.dimmed(),
+        task_name.bold(),
+        args.join(" ").dimmed(),
+    );
+}
+
+fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
+    if !overrides.explain || overrides.quiet {
+        return;
+    }
+    eprintln!(
+        "{} {} resolved: {}",
+        "·".dimmed(),
+        "runner".dimmed(),
+        describe,
+    );
+}
+
 /// Outcome of resolving a task: a spawnable process, or a deno task to
 /// run in-process via the embedded task shell.
 #[derive(Debug)]
@@ -179,14 +209,7 @@ pub(super) fn resolve_dispatch(
                         overrides,
                         sink.as_deref_mut(),
                     );
-                    if overrides.explain {
-                        eprintln!(
-                            "{} {} resolved: {}",
-                            "·".dimmed(),
-                            "runner".dimmed(),
-                            decision.describe(),
-                        );
-                    }
+                    print_pm_explain(overrides, &decision.describe());
                     Some(decision.pm)
                 }
                 Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
@@ -195,13 +218,7 @@ pub(super) fn resolve_dispatch(
 
             // Bun-test special case: `bun test` built-in.
             if should_use_bun_test_fallback(ctx, resolved_pm, task_name) {
-                eprintln!(
-                    "{} {} {} {}",
-                    "→".dimmed(),
-                    "bun".dimmed(),
-                    "test".bold(),
-                    args.join(" ").dimmed(),
-                );
+                print_dispatch_arrow(overrides, "bun", "test", args);
                 let mut cmd = tool::bun::test_cmd(args);
                 crate::cmd::configure_command(&mut cmd, &ctx.root);
                 return Ok(Dispatch::Spawn(cmd));
@@ -209,13 +226,7 @@ pub(super) fn resolve_dispatch(
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.
             let (label, mut cmd) = build_pm_exec_command(ctx, resolved_pm, task_name, args);
-            eprintln!(
-                "{} {} {} {}",
-                "→".dimmed(),
-                label.dimmed(),
-                task_name.bold(),
-                args.join(" ").dimmed(),
-            );
+            print_dispatch_arrow(overrides, label, task_name, args);
             crate::cmd::configure_command(&mut cmd, &ctx.root);
             return Ok(Dispatch::Spawn(cmd));
         }
@@ -236,23 +247,11 @@ pub(super) fn resolve_dispatch(
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
     if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
-        eprintln!(
-            "{} {} {} {}",
-            "→".dimmed(),
-            "deno-shell".dimmed(),
-            task_name.bold(),
-            args.join(" ").dimmed(),
-        );
+        print_dispatch_arrow(overrides, "deno-shell", task_name, args);
         return Ok(Dispatch::DenoSelfExec(self_exec));
     }
 
-    eprintln!(
-        "{} {} {} {}",
-        "→".dimmed(),
-        entry.source.label().dimmed(),
-        task_name.bold(),
-        args.join(" ").dimmed(),
-    );
+    print_dispatch_arrow(overrides, entry.source.label(), task_name, args);
 
     let mut cmd = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(&mut cmd, &ctx.root);
@@ -366,14 +365,7 @@ fn build_run_command(
         TaskSource::PackageJson => {
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
-            if overrides.explain {
-                eprintln!(
-                    "{} {} resolved: {}",
-                    "·".dimmed(),
-                    "runner".dimmed(),
-                    decision.describe(),
-                );
-            }
+            print_pm_explain(overrides, &decision.describe());
             let pm = decision.pm;
             match pm {
                 PackageManager::Npm => tool::npm::run_cmd(&entry.name, args),
@@ -404,14 +396,7 @@ fn build_run_command(
                     entry.name,
                 );
             };
-            if overrides.explain {
-                eprintln!(
-                    "{} {} resolved: {}",
-                    "·".dimmed(),
-                    "runner".dimmed(),
-                    decision.describe(),
-                );
-            }
+            print_pm_explain(overrides, &decision.describe());
             let pm = decision.pm;
             match pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args),

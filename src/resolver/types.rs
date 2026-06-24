@@ -57,6 +57,10 @@ pub(crate) struct ResolutionOverrides {
     /// `--no-warnings` / `RUNNER_NO_WARNINGS`. Errors still surface;
     /// only non-fatal warnings are silenced.
     pub no_warnings: bool,
+    /// When `true`, suppress the dispatch arrow (`→ <source> <task>`) and
+    /// the dispatch-time `--explain` trace on stderr. Set via `--quiet` /
+    /// `RUNNER_QUIET`.
+    pub quiet: bool,
     /// When `true`, emit a one-line trace describing which chain step
     /// produced the PM decision. Set via `--explain` / `RUNNER_EXPLAIN`.
     pub explain: bool,
@@ -256,6 +260,8 @@ pub(crate) struct OverrideSources<'a> {
     pub on_mismatch: SourceValue<'a>,
     /// `--no-warnings` flag presence plus `RUNNER_NO_WARNINGS` env.
     pub no_warnings: ExplainSource<'a>,
+    /// `-q`/`--quiet` flag presence plus `RUNNER_QUIET` env.
+    pub quiet: ExplainSource<'a>,
     /// `--explain` flag presence plus `RUNNER_EXPLAIN` env.
     pub explain: ExplainSource<'a>,
     /// `-k`/`--keep-going` flag presence plus `RUNNER_KEEP_GOING` env.
@@ -277,14 +283,17 @@ pub(crate) struct SourceValue<'a> {
     pub env: Option<&'a str>,
 }
 
-/// CLI-side diagnostic flags (`--no-warnings`, `--explain`) bundled into
-/// a single struct so `ResolutionOverrides::from_cli_and_env` stays
-/// under clippy's argument/bool thresholds.
+/// CLI-side diagnostic flags (`--no-warnings`, `--quiet`, `--explain`)
+/// bundled into a single struct so `ResolutionOverrides::from_cli_and_env`
+/// stays under clippy's argument/bool thresholds.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct DiagnosticFlags {
     /// `--no-warnings` flag presence (CLI side only — env handled inside
     /// `from_cli_and_env`).
     pub no_warnings: bool,
+    /// `-q`/`--quiet` flag presence (CLI side only — env handled inside
+    /// `from_cli_and_env`).
+    pub quiet: bool,
     /// `--explain` flag presence (CLI side only — env handled inside
     /// `from_cli_and_env`).
     pub explain: bool,

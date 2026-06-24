@@ -391,6 +391,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         cli.global.on_mismatch.as_deref(),
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,
+            quiet: cli.global.quiet,
             explain: cli.global.explain,
         },
         cli::ChainFailureFlags {
@@ -753,6 +754,7 @@ fn build_overrides(
         cli.global.on_mismatch.as_deref(),
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,
+            quiet: cli.global.quiet,
             explain: cli.global.explain,
         },
         cli::ChainFailureFlags {
@@ -784,6 +786,7 @@ fn build_overrides_lenient(
         cli.global.on_mismatch.as_deref(),
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,
+            quiet: cli.global.quiet,
             explain: cli.global.explain,
         },
         cli::ChainFailureFlags {

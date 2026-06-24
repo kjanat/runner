@@ -166,6 +166,7 @@ impl ResolutionOverrides {
         let prefer_runners = parse_prefer_runners(sources.config)?;
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
+        let quiet = sources.quiet.cli || sources.quiet.env.is_some_and(is_env_truthy);
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
@@ -216,6 +217,7 @@ impl ResolutionOverrides {
             fallback,
             on_mismatch,
             no_warnings,
+            quiet,
             explain,
             failure_policy,
             group_output,
@@ -341,6 +343,7 @@ struct EnvSnapshot {
     fallback: Option<String>,
     on_mismatch: Option<String>,
     no_warnings: Option<String>,
+    quiet: Option<String>,
     explain: Option<String>,
     keep_going: Option<String>,
     kill_on_fail: Option<String>,
@@ -356,6 +359,7 @@ impl EnvSnapshot {
             fallback: std::env::var("RUNNER_FALLBACK").ok(),
             on_mismatch: std::env::var("RUNNER_ON_MISMATCH").ok(),
             no_warnings: std::env::var("RUNNER_NO_WARNINGS").ok(),
+            quiet: std::env::var("RUNNER_QUIET").ok(),
             explain: std::env::var("RUNNER_EXPLAIN").ok(),
             keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
             kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
@@ -389,6 +393,10 @@ impl EnvSnapshot {
             no_warnings: ExplainSource {
                 cli: cli.diagnostics.no_warnings,
                 env: self.no_warnings.as_deref(),
+            },
+            quiet: ExplainSource {
+                cli: cli.diagnostics.quiet,
+                env: self.quiet.as_deref(),
             },
             explain: ExplainSource {
                 cli: cli.diagnostics.explain,

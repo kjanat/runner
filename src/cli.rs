@@ -68,6 +68,11 @@ fn cyan_str(s: &str) -> String {
     format!("\x1b[36m{s}\x1b[0m")
 }
 
+/// Compact env-var suffix matching clap's `[env: VAR=]` help style.
+fn env_suffix(var: &str) -> String {
+    format!("[env: {}]", cyan_str(var))
+}
+
 /// Comma-joined, cyan-styled list of every [`PackageManager`] label, with the
 /// `bundle` alias for `bundler` called out so users discover both spellings.
 /// Built once at first help-text access via [`LazyLock`]; rebuilding the
@@ -85,10 +90,7 @@ static PM_HELP: LazyLock<String> = LazyLock::new(|| {
         })
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
-        "Override the detected package manager (also reads {} when omitted). Valid: {joined}",
-        cyan_str("RUNNER_PM"),
-    )
+    format!("Force PM ({joined}) {}", env_suffix("RUNNER_PM"))
 });
 
 /// Comma-joined, cyan-styled list of every [`TaskRunner`] label, with the
@@ -107,8 +109,8 @@ static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        "Override the detected task runner (also reads {} when omitted). Valid: {joined}",
-        cyan_str("RUNNER_RUNNER"),
+        "Force task runner ({joined}) {}",
+        env_suffix("RUNNER_RUNNER")
     )
 });
 
@@ -746,7 +748,7 @@ pub(crate) struct Cli {
 /// if they were defined on the parent struct.
 #[derive(Debug, Args)]
 pub(crate) struct GlobalOpts {
-    /// Use this directory instead of the current one.
+    /// Project directory (default: cwd).
     #[arg(
         long = "dir",
         global = true,
@@ -790,11 +792,11 @@ pub(crate) struct GlobalOpts {
         global = true,
         value_name = "POLICY",
         help = concat!(
-            "What to do when no detection signal matches: ",
-            cyan!("probe"), " (default, PATH probe), ",
-            cyan!("npm"), " (legacy silent fallback), ",
-            cyan!("error"), " (refuse). Also reads ",
-            cyan!("RUNNER_FALLBACK"), " when omitted."
+            "No detection match: ",
+            cyan!("probe"), " (default), ",
+            cyan!("npm"), ", ",
+            cyan!("error"), " ",
+            "[env: ", cyan!("RUNNER_FALLBACK"), "]"
         ),
     )]
     pub fallback: Option<String>,
@@ -808,11 +810,11 @@ pub(crate) struct GlobalOpts {
         global = true,
         value_name = "POLICY",
         help = concat!(
-            "What to do when the manifest declaration disagrees with the lockfile: ",
+            "Manifest vs lockfile: ",
             cyan!("warn"), " (default), ",
             cyan!("error"), " (exit 2), ",
-            cyan!("ignore"), " (silent). Also reads ",
-            cyan!("RUNNER_ON_MISMATCH"), " when omitted."
+            cyan!("ignore"), " ",
+            "[env: ", cyan!("RUNNER_ON_MISMATCH"), "]"
         ),
     )]
     pub on_mismatch: Option<String>,
@@ -825,8 +827,8 @@ pub(crate) struct GlobalOpts {
         long = "explain",
         global = true,
         help = concat!(
-            "Print a one-line trace describing how the package manager was resolved. \
-             Also enabled when ", cyan!("RUNNER_EXPLAIN"), " is set to a truthy value."
+            "PM resolution trace ",
+            "[env: ", cyan!("RUNNER_EXPLAIN"), "]"
         ),
     )]
     pub explain: bool,
@@ -838,11 +840,25 @@ pub(crate) struct GlobalOpts {
         long = "no-warnings",
         global = true,
         help = concat!(
-            "Suppress all non-fatal warnings on stderr. Also enabled when ",
-            cyan!("RUNNER_NO_WARNINGS"), " is set to a truthy value."
+            "Hide non-fatal warnings ",
+            "[env: ", cyan!("RUNNER_NO_WARNINGS"), "]"
         ),
     )]
     pub no_warnings: bool,
+
+    /// Suppress the dispatch arrow (`→ <source> <task>`) on stderr. Also
+    /// silences the `--explain` trace at dispatch time. Enabled when
+    /// `$RUNNER_QUIET` is set to a truthy value.
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        global = true,
+        help = concat!(
+            "Hide → dispatch line ",
+            "[env: ", cyan!("RUNNER_QUIET"), "]"
+        ),
+    )]
+    pub quiet: bool,
 
     /// Pin the JSON output schema to a specific version. Defaults to the
     /// latest version the command produces. The chosen version controls
@@ -859,10 +875,9 @@ pub(crate) struct GlobalOpts {
         value_parser = clap::value_parser!(u32).range(1..=3),
         value_name = "N",
         help = concat!(
-            "Pin JSON output schema version (doctor/why: ",
-            cyan!("1"), "-", cyan!("3"), ", list: ",
-            cyan!("1"), "-", cyan!("2"), "). Defaults to latest. Affects ",
-            cyan!("--json"), " output of doctor/list/why only."
+            "Pin ", cyan!("--json"), " schema (doctor/why ",
+            cyan!("1"), "-", cyan!("3"), ", list ",
+            cyan!("1"), "-", cyan!("2"), "; default latest)"
         ),
     )]
     pub schema_version: Option<u32>,
@@ -871,8 +886,7 @@ pub(crate) struct GlobalOpts {
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Run a task, or exec a command through the detected package manager.
-    /// With `-s` or `-p`, runs multiple tasks as a chain.
+    /// Run or exec a task; `-s`/`-p` chain multiple
     #[command(alias = "r")]
     Run {
         /// Task name or command to execute. In chain mode, the first task in the chain.
@@ -891,8 +905,7 @@ pub(crate) enum Command {
         failure: ChainFailureFlags,
     },
 
-    /// Install project dependencies, then optionally chain tasks
-    /// (`runner install build test` → install → build → test, sequential).
+    /// Install deps; may chain tasks after (always sequential)
     #[command(alias = "i")]
     Install {
         /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
@@ -920,7 +933,7 @@ pub(crate) enum Command {
         include_framework: bool,
     },
 
-    /// List available tasks across all detected sources
+    /// List tasks from detected sources
     #[command(alias = "ls")]
     List {
         /// Print bare task names, one per line (for scripting / completions)
@@ -945,14 +958,14 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Diagnostic dump: every signal the resolver considers in this dir
+    /// Resolver signals for this directory
     Doctor {
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,
     },
 
-    /// Explain how a specific task would dispatch (sources + PM trace)
+    /// How a task would dispatch
     Why {
         /// Task name to analyze.
         task: String,
@@ -1025,7 +1038,7 @@ pub(crate) enum Command {
 #[derive(Debug, Parser)]
 #[command(
     name = "run",
-    about = "Run a project task or exec a command through the detected package manager",
+    about = "Run or exec a task via the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     // `-h`/`--help`/`-V`/`--version` are no longer clap args (see the
     // disable note below), so document them here instead of in the options
@@ -1079,10 +1092,10 @@ pub(crate) struct RunAliasCli {
 /// of three.
 #[derive(Debug, Args, Default, Clone, Copy)]
 pub(crate) struct ChainModeFlags {
-    /// Run the given tasks sequentially. Conflicts with `--parallel`.
+    /// Chain tasks in order
     #[arg(short = 's', long, conflicts_with = "parallel")]
     pub sequential: bool,
-    /// Run the given tasks in parallel. Conflicts with `--sequential`.
+    /// Chain tasks concurrently
     #[arg(short = 'p', long)]
     pub parallel: bool,
 }
@@ -1092,12 +1105,10 @@ pub(crate) struct ChainModeFlags {
 /// enforced at the clap layer.
 #[derive(Debug, Args, Default, Clone, Copy)]
 pub(crate) struct ChainFailureFlags {
-    /// Run every task in the chain regardless of failures. Conflicts
-    /// with `--kill-on-fail`.
+    /// Finish chain despite failures
     #[arg(short = 'k', long, conflicts_with = "kill_on_fail")]
     pub keep_going: bool,
-    /// Parallel only: SIGKILL siblings on first failure. Accepted but
-    /// unused in sequential mode.
+    /// Parallel: kill siblings on first failure
     #[arg(long, conflicts_with = "keep_going")]
     pub kill_on_fail: bool,
 }
