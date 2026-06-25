@@ -102,7 +102,8 @@ mod tests {
         let dir = TempDir::new("poetry-backend");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[build-system]\nrequires = [\"poetry-core>=1.8.0\"]\nbuild-backend = \"poetry.core.masonry.api\"\n",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[build-system]\nrequires = \
+             [\"poetry-core>=1.8.0\"]\nbuild-backend = \"poetry.core.masonry.api\"\n",
         )
         .expect("pyproject.toml should be written");
 
@@ -114,7 +115,8 @@ mod tests {
         let dir = TempDir::new("poetry-generic");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[build-system]\nrequires = [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n",
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[build-system]\nrequires = \
+             [\"hatchling\"]\nbuild-backend = \"hatchling.build\"\n",
         )
         .expect("pyproject.toml should be written");
 

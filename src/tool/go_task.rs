@@ -221,7 +221,8 @@ mod tests {
 
         fs::write(
             dir.path().join("Taskfile.yml"),
-            "version: '3'\ntasks:\n  build:\n    desc: Build the project\n    cmds:\n      - cargo build\n  lint:\n    cmds:\n      - cargo clippy\n",
+            "version: '3'\ntasks:\n  build:\n    desc: Build the project\n    cmds:\n      - \
+             cargo build\n  lint:\n    cmds:\n      - cargo clippy\n",
         )
         .expect("Taskfile.yml should be written");
 
@@ -243,7 +244,8 @@ mod tests {
 
         fs::write(
             dir.path().join("Taskfile.yml"),
-            "version: '3'\ntasks:\n build:\n  cmds:\n   - cargo build\n test:\n  cmds:\n   - cargo test\n",
+            "version: '3'\ntasks:\n build:\n  cmds:\n   - cargo build\n test:\n  cmds:\n   - \
+             cargo test\n",
         )
         .expect("Taskfile.yml should be written");
 

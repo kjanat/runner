@@ -152,7 +152,8 @@ mod tests {
         let dir = TempDir::new("make-comments");
         fs::write(
             dir.path().join("Makefile"),
-            "## Build the project\nbuild:\n\t@echo build\n\n## Run the test suite\ntest:\n\t@echo test\n\nclean:\n\t@echo clean\n",
+            "## Build the project\nbuild:\n\t@echo build\n\n## Run the test suite\ntest:\n\t@echo \
+             test\n\nclean:\n\t@echo clean\n",
         )
         .expect("Makefile should be written");
 

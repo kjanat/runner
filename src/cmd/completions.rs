@@ -154,7 +154,8 @@ fn shell_from_path(path: &Path) -> Option<Shell> {
 pub(crate) fn parse_shell_arg(raw: &str) -> Result<Shell, String> {
     shell_from_path(Path::new(raw)).ok_or_else(|| {
         format!(
-            "unsupported shell: {raw:?} (accepted: bash, zsh, fish, elvish, pwsh|powershell — bare name or full path)"
+            "unsupported shell: {raw:?} (accepted: bash, zsh, fish, elvish, pwsh|powershell — \
+             bare name or full path)"
         )
     })
 }

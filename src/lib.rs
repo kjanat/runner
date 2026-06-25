@@ -838,7 +838,15 @@ fn dispatch_overrides(
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let mut ctx = detect::detect(dir);
-    let loaded_config = config::load(dir)?;
+    // A malformed `runner.toml` must not abort the `config` subcommand —
+    // `config validate`/`show` exist to inspect and repair exactly that
+    // file, and they re-load it with their own error handling. Every other
+    // command requires a clean parse here.
+    let loaded_config = match config::load(dir) {
+        Ok(loaded) => loaded,
+        Err(_) if matches!(cli.command, Some(cli::Command::Config { .. })) => None,
+        Err(e) => return Err(e),
+    };
     let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
 
     match cli.command {
@@ -915,6 +923,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::doctor(&ctx, &overrides, json, schema_version)?;
             Ok(0)
         }
+        Some(cli::Command::Config { action }) => cmd::config(dir, action),
         Some(cli::Command::Why { task, json }) => {
             let schema_version = why_schema_version_for_json(json, cli.global.schema_version)?;
             cmd::why(&ctx, &overrides, &task, json, schema_version)?;

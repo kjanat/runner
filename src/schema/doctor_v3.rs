@@ -135,14 +135,16 @@ struct ProjectInfoV3 {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "What anchored root detection. Currently always the root itself (cwd or --dir); a dedicated anchor model is future work."
+            description = "What anchored root detection. Currently always the root itself (cwd or \
+                           --dir); a dedicated anchor model is future work."
         )
     )]
     root_source: String,
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Workspace identity. Always null today: workspace kind/root detection is not yet modeled (the monorepo flag is the coarse signal)."
+            description = "Workspace identity. Always null today: workspace kind/root detection \
+                           is not yet modeled (the monorepo flag is the coarse signal)."
         )
     )]
     workspace: Option<serde_json::Value>,
@@ -176,9 +178,10 @@ struct EcosystemV3 {
     selected_package_manager: Option<&'static str>,
     #[cfg_attr(
         feature = "schema",
-        schemars(
-            description = "Detection evidence. Node carries the full signal set (lockfile/manifest/PATH probe/shim classification, keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
-        )
+        schemars(description = "Detection evidence. Node carries the full signal set \
+                                (lockfile/manifest/PATH probe/shim classification, keyed by \
+                                tool with the shim manager as data); other ecosystems list \
+                                their detected package managers.")
     )]
     signals: serde_json::Value,
 }
@@ -238,7 +241,8 @@ struct SourceV3 {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Key of the container holding tasks inside the file (`scripts`, `tasks`, `alias`, …); null for flat-format files."
+            description = "Key of the container holding tasks inside the file (`scripts`, \
+                           `tasks`, `alias`, …); null for flat-format files."
         )
     )]
     task_pointer: Option<&'static str>,
@@ -256,7 +260,8 @@ struct DoctorTaskV3<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Task dependencies. Always empty today: no extractor records dependency edges yet; the edge shape lands with the first extractor."
+            description = "Task dependencies. Always empty today: no extractor records dependency \
+                           edges yet; the edge shape lands with the first extractor."
         )
     )]
     dependencies: Vec<serde_json::Value>,
@@ -264,23 +269,27 @@ struct DoctorTaskV3<'a> {
     fqn: String,
     #[cfg_attr(
         feature = "schema",
-        schemars(
-            description = "True when this task is an alias for another target; `definition` holds the target it expands to (e.g. cargo `b` → `build`)."
-        )
+        schemars(description = "True when this task is an alias for another target; \
+                                `definition` holds the target it expands to (e.g. cargo `b` → \
+                                `build`).")
     )]
     is_alias: bool,
     name: &'a str,
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Effective command preview. Null when it depends on a PM resolution that failed."
+            description = "Effective command preview. Null when it depends on a PM resolution \
+                           that failed."
         )
     )]
     resolved: Option<String>,
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false."
+            description = "True when runner can run this task without its source's primary tool. \
+                           Only deno tasks runner can execute via the embedded task shell (leaf \
+                           command, no `dependencies`, no `deno` invocation) qualify today; all \
+                           other sources are false."
         )
     )]
     self_executable: bool,
@@ -335,9 +344,9 @@ enum ToolProbeV3 {
         path: String,
         #[cfg_attr(
             feature = "schema",
-            schemars(
-                description = "Resolved version: taken from detection when known, otherwise read by running `<binary> --version`. Null when the binary reports no parseable version."
-            )
+            schemars(description = "Resolved version: taken from detection when known, \
+                                    otherwise read by running `<binary> --version`. Null when \
+                                    the binary reports no parseable version.")
         )]
         version: Option<String>,
     },

@@ -15,6 +15,30 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.14.2] - 2026-06-25
+
+### Added
+
+- `runner config` subcommand to manage `runner.toml`: `init` scaffolds a
+  fully-commented starter file (`--force` to overwrite), `show` prints the
+  effective config (`--json` for machine output), `validate` parses and
+  checks it (exit 2 on error), and `path` prints the resolved file path. The
+  scaffold's line 1 is a `#:schema` directive pointing at the committed JSON
+  Schema, so tombi/taplo give autocompletion in any project with no setup.
+- `runner.toml` is now documented in the README with a `## Configuration`
+  section covering every section and the override precedence chain.
+
+### Changed
+
+- `config validate` rejects a `[chain]` that sets both `keep_going` and
+  `kill_on_fail` true — the resolver already errored on this combination at
+  dispatch time; validation now catches it statically against the file
+  alone.
+- JSON Schema URLs rehosted from `https://kjanat.github.io/schemas/…` to
+  `https://kjanat.github.io/runner/schemas/…`. Changes the `$id` of every
+  committed schema and the `$schema` field emitted by `doctor`/`list`/`why`
+  `--json`. The base is now sourced from `[package.metadata].schema-base`.
+
 ## [0.14.1] - 2026-06-25
 
 ### Added
@@ -1283,7 +1307,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/kjanat/runner/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/kjanat/runner/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/kjanat/runner/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/kjanat/runner/compare/v0.13.0...v0.13.1

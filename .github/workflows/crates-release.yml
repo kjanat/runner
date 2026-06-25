@@ -2,9 +2,7 @@ name: crates-release
 run-name: ${{ format('crates publish {0}', inputs.tag) }}
 
 on:
-  workflow_call:
-    inputs:
-      tag: { required: true, type: string }
+  workflow_call: { inputs: { tag: { required: true, type: string } } }
   workflow_dispatch:
     inputs:
       tag: { description: Release tag to publish (e.g. vX.Y.Z), required: true, type: string }
@@ -20,12 +18,12 @@ jobs:
     name: publish to crates.io
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write }
-    environment: { name: crates-io, url: "${{ format('https://crates.io/crates/runner-run/{0}', steps.verify.outputs.version) }}" }
+    environment: { name: crates-io, url: "${{ steps.verify.outputs.url }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v7
         with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: verify tag matches Cargo.toml version
         id: verify
         run: |
@@ -39,17 +37,17 @@ jobs:
             exit 1
           fi
           echo "ok: tag ${RELEASE_TAG} matches Cargo.toml version ${manifest_version}"
-          echo "version=${manifest_version}" >> "$GITHUB_OUTPUT"
+          echo "url=https://crates.io/crates/runner-run/${manifest_version}" >> "$GITHUB_OUTPUT"
 
       - run: cargo man --output man
-      - run: cargo publish --locked --dry-run --allow-dirty
+      - run: cargo dirtypub --dry-run
 
       - name: mint crates.io token (trusted publishing)
-        uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
+        uses: rust-lang/crates-io-auth-action@v1
         if: env.INPUT_DRY_RUN != 'true'
         id: auth
 
       - name: cargo publish
         if: env.INPUT_DRY_RUN != 'true'
         env: { CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}" }
-        run: cargo publish --locked --allow-dirty
+        run: cargo dirtypub

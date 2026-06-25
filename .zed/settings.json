@@ -57,6 +57,15 @@
 				"cargo": { "allTargets": true, "features": ["man", "schema", "run"] },
 			},
 		},
+		"cargo-tom": {
+			"initialization_options": {
+				"per_page": 25, // Search
+				"feature_display_mode": "UnusedOpt", // What features should be displayed on hover: All | UnusedOpt | Features,
+				"hide_docs_info_message": true,
+				"sort_format": false, // Sort toml on format
+				"stable_version": true, // Use stable versions in completions
+			},
+		},
 	},
 	"file_types": { "SVG": ["*.ico"], "Shell Script": [".runner-dev", "justfile"] },
 	"languages": { "TOML": { "language_servers": ["tombi", "..."] } },

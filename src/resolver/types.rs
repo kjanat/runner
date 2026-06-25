@@ -27,7 +27,8 @@ pub(crate) struct Resolver<'ctx> {
 #[derive(Debug, Clone, Default)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "settings bag of independent CLI/env/config toggles; an enum state machine would obscure them, not clarify"
+    reason = "settings bag of independent CLI/env/config toggles; an enum state machine would \
+              obscure them, not clarify"
 )]
 pub(crate) struct ResolutionOverrides {
     /// Cross-ecosystem PM override from CLI/env. `--pm`/`RUNNER_PM` are not

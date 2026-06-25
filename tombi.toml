@@ -47,3 +47,7 @@ workspace-diagnostic.enabled = true
 [schema]
 enabled = true
 strict  = true
+
+[[schemas]]
+path    = "./schemas/runner.toml.schema.json"
+include = ["runner.toml"]

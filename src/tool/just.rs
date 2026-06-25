@@ -350,7 +350,9 @@ mod tests {
 
         fs::write(
             &path,
-            "set shell := [\"bash\", \"-cu\"]\ninclude \"common.just\"\n[private]\nfoo := \"bar\"\n\n[private]\nsecret:\n  echo nope\n\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\n@quiet name=\"world\":\n  echo hi {{name}}\n",
+            "set shell := [\"bash\", \"-cu\"]\ninclude \"common.just\"\n[private]\nfoo := \
+             \"bar\"\n\n[private]\nsecret:\n  echo nope\n\nbuild:\n  echo build\n\n_secret:\n  \
+             echo nope\n\n@quiet name=\"world\":\n  echo hi {{name}}\n",
         )
         .expect("justfile should be written");
 
@@ -377,7 +379,8 @@ mod tests {
 
         fs::write(
             &path,
-            "1build:\n  echo nope\n\n-build:\n  echo nope\n\néclair:\n  echo nope\n\nβuild:\n  echo nope\n\nbuild:\n  echo yes\n",
+            "1build:\n  echo nope\n\n-build:\n  echo nope\n\néclair:\n  echo nope\n\nβuild:\n  \
+             echo nope\n\nbuild:\n  echo yes\n",
         )
         .expect("justfile should be written");
 
@@ -506,7 +509,8 @@ mod tests {
 
         fs::write(
             &path,
-            "_secret:\n  echo nope\n\n[private]\nhush:\n  echo nope\n\nalias s := _secret\nalias h := hush\n",
+            "_secret:\n  echo nope\n\n[private]\nhush:\n  echo nope\n\nalias s := _secret\nalias \
+             h := hush\n",
         )
         .expect("justfile should be written");
 
@@ -537,7 +541,8 @@ mod tests {
         let path = dir.path().join("justfile");
         fs::write(
             &path,
-            "# Build the project\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\nalias b := build\nalias s := _secret\nalias _hidden := build\n",
+            "# Build the project\nbuild:\n  echo build\n\n_secret:\n  echo nope\n\nalias b := \
+             build\nalias s := _secret\nalias _hidden := build\n",
         )
         .expect("justfile should be written");
 

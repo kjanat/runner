@@ -38,6 +38,9 @@ mod resolve;
 mod types;
 
 pub(crate) use error::{DevEnginesFailReason, ResolveError};
+/// Re-export of the standalone `runner.toml` validator backing
+/// `cmd::config::validate`; see [`overrides::validate_config`].
+pub(crate) use overrides::validate_config;
 /// Re-export of the pure-function probe variant for the `doctor` subcommand.
 /// Lets `cmd::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.

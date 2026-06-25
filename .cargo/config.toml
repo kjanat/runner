@@ -31,6 +31,10 @@ rbin-run    = "bin-run --release"
 rbin-runner = "bin-runner --release"
 runner      = "bin-runner"
 
+# CI
+build-std = "-Z build-std=std,panic_abort build --locked --release --bin runner --bin run"
+dirtypub  = "cargo publish --locked --allow-dirty"
+
 # [target.<triple>]
 # linker = "…"              # linker to use
 # runner = "…"              # wrapper to run executables

@@ -29,16 +29,16 @@ fn validate_v1_token(token: &str) -> Result<()> {
     }
     if token.chars().any(char::is_whitespace) {
         return Err(anyhow!(
-            "per-task arguments are not supported in this version\n\
-             note: positional {token:?} contains whitespace\n\
-             note: quoted-bundle syntax is reserved for a future runner release",
+            "per-task arguments are not supported in this version\nnote: positional {token:?} \
+             contains whitespace\nnote: quoted-bundle syntax is reserved for a future runner \
+             release",
         ));
     }
     if token.starts_with('-') {
         return Err(anyhow!(
-            "in chain mode, all positionals must be task names (got {token:?}). \
-             To forward arguments to a single task, drop `-s`/`-p` and use the \
-             classic `run <task> <args...>` form.",
+            "in chain mode, all positionals must be task names (got {token:?}). To forward \
+             arguments to a single task, drop `-s`/`-p` and use the classic `run <task> \
+             <args...>` form.",
         ));
     }
     Ok(())

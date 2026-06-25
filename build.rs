@@ -1,7 +1,9 @@
-//! Build script: pick the primary entry from `[[package.metadata.authors]]`
-//! in `Cargo.toml` and expose `RUNNER_AUTHOR_NAME` (always) and
-//! `RUNNER_AUTHOR_EMAIL` (when present and non-empty) as compile-time env
-//! vars. Consumers read these via `env!` / `option_env!`.
+//! Build script: read `[package.metadata]` from `Cargo.toml` and expose it
+//! as compile-time env vars (Cargo doesn't surface custom metadata to the
+//! crate otherwise). Emits `RUNNER_AUTHOR_NAME` (always), `RUNNER_AUTHOR_EMAIL`
+//! (when present and non-empty), and `RUNNER_SCHEMA_BASE` (the base URL the
+//! schema `$id`s and the scaffolded `#:schema` directive hang off). Consumers
+//! read these via `env!` / `option_env!`.
 
 use std::{env, fs, path::Path};
 
@@ -20,6 +22,10 @@ struct Package {
 #[derive(Deserialize)]
 struct Metadata {
     authors: Vec<Author>,
+    /// Base URL committed schema `$id`s and the scaffolded `#:schema`
+    /// directive hang off, e.g. `https://kjanat.github.io/runner/schemas`.
+    #[serde(rename = "schema-base")]
+    schema_base: String,
 }
 
 #[derive(Deserialize)]
@@ -53,9 +59,13 @@ fn main() {
     let raw = fs::read_to_string(&manifest_path).expect("read Cargo.toml");
     let manifest: Manifest = toml::from_str(&raw).expect("parse Cargo.toml");
 
-    let primary = manifest
-        .package
-        .metadata
+    let metadata = manifest.package.metadata;
+    println!(
+        "cargo:rustc-env=RUNNER_SCHEMA_BASE={}",
+        metadata.schema_base
+    );
+
+    let primary = metadata
         .authors
         .into_iter()
         .next()

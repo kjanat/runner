@@ -603,7 +603,8 @@ mod tests {
         let dir = TempDir::new("mise-hidden");
         fs::write(
             dir.path().join(".mise.toml"),
-            "[tasks.build]\nrun = \"cargo build\"\n\n[tasks.helper]\nhide = true\nrun = \"echo nope\"\n",
+            "[tasks.build]\nrun = \"cargo build\"\n\n[tasks.helper]\nhide = true\nrun = \"echo \
+             nope\"\n",
         )
         .expect(".mise.toml should be written");
 

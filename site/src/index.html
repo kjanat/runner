@@ -190,7 +190,10 @@ clean      <span class="dim">clean build artefacts</span><span class="cursor"> <
 			<section aria-labelledby="why-tag">
 				<span class="section-tag" id="why-tag">why it's not shit</span>
 				<ol class="why">
-					<li>Auto-detection picks the right tool from your lockfiles. No flags, no config.</li>
+					<li>
+						Auto-detection picks the right tool from your lockfiles. No config required &mdash; drop a <code>runner.toml</code> only when you want to override
+						it.
+					</li>
 					<li>One CLI across npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler, composer.</li>
 					<li>
 						Aggregates tasks from package.json, turbo.json(c), Makefile, justfile, Taskfile, deno.json(c), bacon.toml — qualified syntax (<code>run

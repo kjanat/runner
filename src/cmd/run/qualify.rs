@@ -102,8 +102,8 @@ pub(crate) fn precheck_task(
     if let Some((src, task_part)) = detect_reversed_qualifier(task) {
         let src_label = src.label();
         bail!(
-            "unknown qualifier in {task:?}: source {src_label:?} must come first.\n\
-             hint: did you mean \"{src_label}:{task_part}\"?",
+            "unknown qualifier in {task:?}: source {src_label:?} must come first.\nhint: did you \
+             mean \"{src_label}:{task_part}\"?",
         );
     }
 

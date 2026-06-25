@@ -250,12 +250,8 @@ mod tests {
 
     #[test]
     fn parse_list_jobs_skips_underscore_prefixed_rows() {
-        let raw = "┌─┬─┐\n\
-                   │  job   │command         │\n\
-                   ├─┼─┤\n\
-                   │_helper │true            │\n\
-                   │ check  │cargo check     │\n\
-                   └─┴─┘\n";
+        let raw = "┌─┬─┐\n│  job   │command         │\n├─┼─┤\n│_helper │true            │\n│ \
+                   check  │cargo check     │\n└─┴─┘\n";
 
         let tasks = parse_list_jobs_table(raw.as_bytes()).expect("table should parse");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
@@ -299,7 +295,8 @@ mod tests {
         let dir = TempDir::new("bacon-multi");
         fs::write(
             dir.path().join("bacon.toml"),
-            "[jobs.test]\ncommand = [\"cargo\", \"test\"]\n\n[jobs.check]\ncommand = [\"cargo\", \"check\"]\n\n[jobs.clippy]\ncommand = [\"cargo\", \"clippy\"]\n",
+            "[jobs.test]\ncommand = [\"cargo\", \"test\"]\n\n[jobs.check]\ncommand = [\"cargo\", \
+             \"check\"]\n\n[jobs.clippy]\ncommand = [\"cargo\", \"clippy\"]\n",
         )
         .expect("bacon.toml should be written");
 
@@ -362,7 +359,8 @@ mod tests {
         let dir = TempDir::new("bacon-private");
         fs::write(
             dir.path().join("bacon.toml"),
-            "[jobs._helper]\ncommand = [\"true\"]\n\n[jobs.check]\ncommand = [\"cargo\", \"check\"]\n",
+            "[jobs._helper]\ncommand = [\"true\"]\n\n[jobs.check]\ncommand = [\"cargo\", \
+             \"check\"]\n",
         )
         .expect("bacon.toml should be written");
 

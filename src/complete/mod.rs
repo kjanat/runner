@@ -575,9 +575,8 @@ mod tests {
         let script = String::from_utf8(buf).expect("script must be utf-8");
         assert!(
             script.contains("emulate -L zsh -o NULL_GLOB -o EXTENDED_GLOB"),
-            "completion function must enable both NULL_GLOB (for unmatched \
-             globs) and EXTENDED_GLOB (so `_files`'s `*(#q-/)` qualifier \
-             parses); got:\n{script}"
+            "completion function must enable both NULL_GLOB (for unmatched globs) and \
+             EXTENDED_GLOB (so `_files`'s `*(#q-/)` qualifier parses); got:\n{script}"
         );
     }
 
@@ -594,9 +593,9 @@ mod tests {
         let script = String::from_utf8(buf).expect("script must be utf-8");
         assert!(
             script.contains("noglob _files"),
-            "path-hint delegation must use the `noglob` precommand modifier \
-             on the `_files` call so `*(*)` reaches `_files` literally while \
-             `_path_files`'s internal globbing still runs; got:\n{script}"
+            "path-hint delegation must use the `noglob` precommand modifier on the `_files` call \
+             so `*(*)` reaches `_files` literally while `_path_files`'s internal globbing still \
+             runs; got:\n{script}"
         );
         let offending = script.lines().find(|line| {
             let trimmed = line.trim_start();
@@ -604,10 +603,9 @@ mod tests {
         });
         assert!(
             offending.is_none(),
-            "`setopt noglob` disables globbing function-wide and blocks \
-             `_path_files` from expanding `*(-/)`, causing the literal \
-             pattern to leak as a completion candidate; offending line: \
-             {offending:?}\n\nfull script:\n{script}"
+            "`setopt noglob` disables globbing function-wide and blocks `_path_files` from \
+             expanding `*(-/)`, causing the literal pattern to leak as a completion candidate; \
+             offending line: {offending:?}\n\nfull script:\n{script}"
         );
     }
 }

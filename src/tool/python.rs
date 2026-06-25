@@ -145,7 +145,8 @@ mod tests {
         let dir = TempDir::new("pyproject-scripts");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\n\n[project.scripts]\ngreenpy = \"greenpy.main:main\"\nbodysuit = \"greenpy.bodysuit:main\"\n",
+            "[project]\nname = \"greenpy\"\n\n[project.scripts]\ngreenpy = \
+             \"greenpy.main:main\"\nbodysuit = \"greenpy.bodysuit:main\"\n",
         )
         .expect("pyproject.toml should be written");
 

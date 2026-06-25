@@ -215,9 +215,9 @@ fn looks_like_shell_expansion(token: &str) -> bool {
 #[cfg(test)]
 #[allow(
     clippy::literal_string_with_formatting_args,
-    reason = "test fixtures embed bash parameter-expansion strings like \
-              `${X:-default}` and `${X:+alt}` as input to is_self_passthrough; \
-              the lint mistakes them for Rust format args."
+    reason = "test fixtures embed bash parameter-expansion strings like `${X:-default}` and \
+              `${X:+alt}` as input to is_self_passthrough; the lint mistakes them for Rust format \
+              args."
 )]
 mod tests {
     use std::fs;

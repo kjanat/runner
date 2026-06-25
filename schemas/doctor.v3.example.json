@@ -1,5 +1,5 @@
 {
-  "$schema": "https://kjanat.github.io/schemas/doctor.v3.schema.json",
+  "$schema": "https://kjanat.github.io/runner/schemas/doctor.v3.schema.json",
   "schema_version": 3,
   "kind": "runner.doctor",
   "invocation": {
@@ -23,7 +23,7 @@
   "runner": {
     "binary": "/usr/local/bin/runner",
     "name": "runner",
-    "version": "0.14.1",
+    "version": "0.14.2",
     "schema_versions": {
       "doctor": 3,
       "list": 2,

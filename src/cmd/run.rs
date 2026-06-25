@@ -239,8 +239,8 @@ mod tests {
         assert_eq!(
             found.len(),
             1,
-            "real task named `lint:cargo` must be reachable; \
-             fast-fail only fires when the filter is empty",
+            "real task named `lint:cargo` must be reachable; fast-fail only fires when the filter \
+             is empty",
         );
         assert_eq!(found[0].source, TaskSource::Justfile);
     }

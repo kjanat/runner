@@ -1,6 +1,8 @@
+#:tombi toml-version = "v1.0.0"
+
 [package]
 name          = "runner-run"
-version       = "0.14.1"
+version       = "0.14.2"
 edition       = "2024"
 rust-version  = "1.95"
 description   = "Universal project task runner"
@@ -16,21 +18,11 @@ include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/man"
 default-run   = "runner"
 autobins      = false
 
-[[package.metadata.authors]]
-name  = "Kaj Kowalski"
-email = "info+runner@kajkowalski.nl"
-
-[package.metadata.npm]
-name        = "runner-run"
-subpkgscope = "@runner-run"
-bugs        = { "url" = "https://github.com/kjanat/runner/issues" }
-repository  = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }
-engines     = { "node" = ">=18" }
-
-[package.metadata.binstall]
-pkg-url = "{repo}/releases/download/v{version}/runner-v{version}-{target}{archive-suffix}"
-pkg-fmt = "tgz"
-bin-dir = "{bin}{binary-ext}"
+[package.metadata]
+authors     = [{ name = "Kaj Kowalski", email = "info+runner@kajkowalski.nl" }]
+schema-base = "https://kjanat.github.io/runner/schemas"
+binstall    = { pkg-url = "{repo}/releases/download/v{version}/runner-v{version}-{target}{archive-suffix}", pkg-fmt = "tgz", bin-dir = "{bin}{binary-ext}" }
+npm         = { name = "runner-run", subpkgscope = "@runner-run", bugs = { "url" = "https://github.com/kjanat/runner/issues" }, repository = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }, engines = { "node" = ">=18" } }
 
 [lib]
 name = "runner"
@@ -90,7 +82,7 @@ features = ["io-util", "process", "rt", "signal", "time"]
 [dependencies.toml]
 version          = "1.1"
 default-features = false
-features         = ["parse", "serde"]
+features         = ["display", "parse", "serde"]
 
 [build-dependencies.serde]
 version  = "1"

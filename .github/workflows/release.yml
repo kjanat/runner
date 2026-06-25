@@ -1,12 +1,5 @@
 name: release
-run-name: >-
-  ${{ case(
-      github.event_name == 'pull_request',
-        format('verify PR #{0}', github.event.pull_request.number),
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'),
-        format('release {0}', github.ref_name),
-      format('verify {0}', github.ref_name)
-    ) }}
+run-name: "${{ case(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'), format('release {0}', github.ref_name), github.event_name == 'pull_request', format('verify PR #{0}', github.event.pull_request.number), format('verify {0}', github.ref_name)) }}"
 on: { pull_request: null, push: { branches: [master], tags: [v*] } }
 permissions: { contents: read }
 env: { CARGO_TERM_COLOR: always }
@@ -15,11 +8,13 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-latest
+    env:
+      MISE: '{"tools": {"node": "lts", "bun": "latest", "deno": "latest", "go": "latest", "poetry": "latest", "pipenv": "latest", "task": "latest", "pnpm": "latest", "yarn": "latest", "npm:turbo": "latest", "npm:nx": "latest"}}'
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with: { save-if: "${{ github.event_name != 'pull_request' }}" }
       # Install every tool runner / package manager we claim to support, so tests
       # exercise the real CLI paths instead of only the file-parse fallbacks.
@@ -28,24 +23,12 @@ jobs:
       # php+composer already ship on the ubuntu-latest image; cargo from the
       # toolchain above.
       - uses: taiki-e/install-action@v2
-        with: { tool: "just,uv,bacon" }
-      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
-        with:
-          mise_toml: |
-            [tools]
-            node = "lts"
-            bun = "latest"
-            deno = "latest"
-            go = "latest"
-            poetry = "latest"
-            pipenv = "latest"
-            task = "latest"
-            pnpm = "latest"
-            yarn = "latest"
-            "npm:turbo" = "latest"
-            "npm:nx" = "latest"
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets --all-features -- -D clippy::all
+        with: { tool: "just,uv,bacon,tombi,dprint" }
+      - run: printf 'MISE_TOML<<TOML\n%s\nTOML\n' "$(yq -o toml -p json <<<"$MISE" | dprint fmt --stdin toml)" | tee -a "${GITHUB_ENV}"
+      - uses: jdx/mise-action@v4
+        with: { mise_toml: "${{ env.MISE_TOML }}" }
+      - run: dprint check
+      - run: cargo lint
       - run: cargo test
 
   create-release:
@@ -55,16 +38,12 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: write }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
 
       - name: create github release
-        uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1.11.0
-        with:
-          token: ${{ github.token }}
-          changelog: CHANGELOG.md
-          draft: true
-          branch: master
+        uses: taiki-e/create-gh-release-action@v1
+        with: { token: "${{ github.token }}", changelog: CHANGELOG.md, draft: true, branch: master }
 
       - name: append GitHub auto-generated notes
         # release:published never fires for token-created releases, so we
@@ -91,20 +70,19 @@ jobs:
     permissions: { contents: write }
     env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - run: cargo run --quiet --features man -- man --output man
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo man --output man
       - name: archive and upload to release
         run: |
           set -euo pipefail
           archive="runner-${RELEASE_TAG}-man.tar.gz"
           tar -C man -czf "${archive}" .
           sha256sum "${archive}" >"runner-${RELEASE_TAG}-man.sha256"
-          gh release upload "${RELEASE_TAG}" \
-            "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          gh release upload "${RELEASE_TAG}" "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
+      - uses: actions/upload-artifact@v7
         with: { name: man-pages, path: man/, if-no-files-found: error, retention-days: 14 }
 
   matrix:
@@ -115,11 +93,8 @@ jobs:
     permissions: { contents: read }
     outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          sparse-checkout: npm/targets.json
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
+      - uses: actions/checkout@v7
+        with: { sparse-checkout: npm/targets.json, sparse-checkout-cone-mode: false, persist-credentials: false }
 
       - id: gen
         # `target: .rust` is mandatory — taiki-e and build-packages.ts both
@@ -143,7 +118,7 @@ jobs:
     continue-on-error: ${{ matrix.experimental }}
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
 
       # Toolchain MUST land before setup-cross-toolchain-action (it calls
@@ -151,24 +126,24 @@ jobs:
       # `experimental: true` + `continue-on-error` absorbs regressions.
       - name: install stable rust
         if: matrix.build-tool == 'cargo-cross-toolchain'
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        uses: dtolnay/rust-toolchain@stable
         with: { targets: "${{ matrix.target }}" }
 
       - name: install nightly rust (tier-3 build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        uses: dtolnay/rust-toolchain@5b842231ba77f5c045dba54ac5560fed2db780e2 # nightly
+        uses: dtolnay/rust-toolchain@nightly
         with: { components: rust-src }
 
       # Tier-2 BSD + tier-3: installs the cross C toolchain and exports
       # CARGO_TARGET_*_LINKER so host cargo can link the target.
       - name: setup cross toolchain
         if: contains(fromJSON('["cargo-cross-toolchain", "cargo-build-std"]'), matrix.build-tool)
-        uses: taiki-e/setup-cross-toolchain-action@3d9770ce98eb7dbcf378563182a5e8031165f75b # v1.41.0
+        uses: taiki-e/setup-cross-toolchain-action@v1
         with: { target: "${{ matrix.target }}" }
 
       - name: build and upload binaries (taiki-e)
         if: contains(fromJSON('["cargo", "cross", "cargo-cross-toolchain"]'), matrix.build-tool)
-        uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
+        uses: taiki-e/upload-rust-binary-action@v1
         with:
           token: ${{ github.token }}
           bin: runner,run
@@ -186,12 +161,8 @@ jobs:
       # can't inject `-Z build-std`.
       - name: build (cargo + -Z build-std)
         if: matrix.build-tool == 'cargo-build-std'
-        env: { CARGO_UNSTABLE_BUILD_STD: std, panic_abort }
-        run: |
-          cargo +nightly build \
-            --release --locked \
-            --bin runner --bin run \
-            --target "${{ matrix.target }}"
+        env: { TARGET: "${{ matrix.target }}" }
+        run: cargo +nightly build-std --target "${TARGET}"
 
       - name: package and upload (cargo-build-std)
         if: matrix.build-tool == 'cargo-build-std'
@@ -206,14 +177,13 @@ jobs:
     needs: [upload-assets, man]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    # contents: write — drafts are invisible to read-only tokens.
-    permissions: { contents: write }
+    permissions: { contents: write } # contents: write — drafts are invisible to read-only tokens.
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@v7
         with: { persist-credentials: false }
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      - uses: actions/setup-node@v6
         with: { node-version: latest }
 
       - name: download release archives
@@ -221,7 +191,7 @@ jobs:
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/download-release-archives.sh"
 
       - name: download man pages
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@v8
         with: { name: man-pages, path: man }
 
       - name: verify checksums
@@ -240,7 +210,7 @@ jobs:
         run: "& (gcm runner -CommandType Application).Path --version"
 
       - name: upload npm/dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@v7
         with: { name: npm-dist, path: npm/dist/, retention-days: 14, if-no-files-found: error }
 
   # Flip draft→published once binaries + npm-dist are in place.
@@ -251,7 +221,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions: { contents: write }
     env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
-    steps: [{ run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false' }]
+    steps: [run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false']
 
   call-npm-release:
     name: npm publish

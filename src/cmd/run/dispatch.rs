@@ -120,8 +120,8 @@ fn decide_deno_self_exec(
         // Not self-executable: real deno can still run it; otherwise bail.
         _ if deno => Ok(None),
         _ => bail!(
-            "task {:?} needs deno (it has dependencies or invokes `deno`), \
-             but deno is not installed",
+            "task {:?} needs deno (it has dependencies or invokes `deno`), but deno is not \
+             installed",
             entry.name
         ),
     }
@@ -193,8 +193,8 @@ pub(super) fn resolve_dispatch(
             if let Some((src, task_part)) = detect_reversed_qualifier(task) {
                 let src_label = src.label();
                 bail!(
-                    "unknown qualifier in {task:?}: source {src_label:?} must come first.\n\
-                     hint: did you mean \"{src_label}:{task_part}\"?",
+                    "unknown qualifier in {task:?}: source {src_label:?} must come first.\nhint: \
+                     did you mean \"{src_label}:{task_part}\"?",
                 );
             }
 

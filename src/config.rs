@@ -29,12 +29,55 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::types::{Ecosystem, PackageManager};
 
 /// `runner.toml` filename, expected at the project root.
 pub(crate) const CONFIG_FILENAME: &str = "runner.toml";
+
+/// Starter `runner.toml` scaffolded by `runner config init`. Every knob is
+/// present, set to its built-in default, and commented out — uncommenting a
+/// line is the only edit needed to override it. Keep in sync with the
+/// section structs below; `config init` is the most discoverable docs we
+/// ship, so a missing knob here is effectively an undocumented feature.
+pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner configuration.
+# Docs: https://runner.kjanat.dev
+#
+# Every key below shows its built-in default and is commented out. Uncomment
+# and edit the ones you want to pin. Precedence, highest first:
+#   CLI flags  >  RUNNER_* env vars  >  this file  >  manifest declarations.
+
+# Force the package manager per ecosystem, overriding lockfile detection.
+[pm]
+# node = "pnpm"          # npm | pnpm | yarn | bun | deno
+# python = "uv"          # uv | poetry | pipenv
+
+# Restrict and rank task runners for ambiguous task names. Candidates not in
+# the list are rejected; earlier entries win.
+[task_runner]
+# prefer = ["just", "turbo"]   # turbo, nx, make, just, task, mise, bacon
+
+# Resolver policy knobs.
+[resolution]
+# fallback = "probe"     # probe (PATH probe) | npm (legacy) | error
+# on_mismatch = "warn"   # warn | error (exit 2) | ignore  (manifest vs lockfile)
+
+# Failure policy for `-s`/`-p` task chains and `install <tasks>`.
+# keep_going and kill_on_fail are mutually exclusive — setting both is an error.
+[chain]
+# keep_going = false     # run every task despite failures (same as -k)
+# kill_on_fail = false   # parallel: kill siblings on first failure (same as -K)
+
+# GitHub Actions output grouping. Both keys take effect only under Actions.
+[github]
+# group_output = true    # wrap each task's output in a collapsible ::group::
+# group_parallel = true  # buffer parallel tasks, print each as one block
+
+# Parallel (`-p`) output presentation outside GitHub Actions.
+[parallel]
+# grouped = false        # buffer + print each task as one block on completion
+"#;
 
 /// Parsed `runner.toml` content plus the absolute path it was loaded from.
 #[derive(Debug, Clone)]
@@ -47,7 +90,7 @@ pub(crate) struct LoadedConfig {
 }
 
 /// Top-level schema for `runner.toml`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RunnerConfig {
@@ -78,7 +121,7 @@ pub(crate) struct RunnerConfig {
 /// "user explicitly set false" from "user didn't say": env-overrides-
 /// config layering means `[chain].keep_going = false` plus
 /// `RUNNER_KEEP_GOING=1` resolves to `true`.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(
     feature = "schema",
@@ -95,7 +138,7 @@ pub(crate) struct ChainSection {
     /// Run every task in the chain to completion regardless of failures.
     /// Mutually exclusive with `kill_on_fail`. Equivalent to `-k` /
     /// `RUNNER_KEEP_GOING`.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_going: Option<bool>,
 
     /// Parallel only: terminate sibling tasks immediately on first
@@ -103,7 +146,7 @@ pub(crate) struct ChainSection {
     /// Unix). Mutually exclusive with `keep_going`. Equivalent to
     /// `--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential
     /// contexts.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kill_on_fail: Option<bool>,
 }
 
@@ -111,7 +154,7 @@ pub(crate) struct ChainSection {
 /// effect under GitHub Actions (gated at the call site by
 /// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 /// changes behavior.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GitHubSection {
@@ -155,7 +198,7 @@ const fn default_github_group_parallel() -> bool {
 /// `[parallel]` section — how parallel (`-p`) chains present their output
 /// **outside** GitHub Actions. (Under GitHub Actions, see
 /// [`GitHubSection::group_parallel`].)
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ParallelSection {
@@ -169,12 +212,13 @@ pub(crate) struct ParallelSection {
 }
 
 /// `[pm]` section — per-ecosystem package manager overrides.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PmSection {
     /// Package manager used to dispatch Node `package.json` scripts.
     /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))
@@ -182,6 +226,7 @@ pub(crate) struct PmSection {
     pub node: Option<String>,
     /// Package manager used for Python ecosystems.
     /// Valid values: `uv`, `poetry`, `pipenv`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))
@@ -190,7 +235,7 @@ pub(crate) struct PmSection {
 }
 
 /// `[task_runner]` section — preferred ordering for ambiguous tasks.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TaskRunnerSection {
@@ -203,17 +248,18 @@ pub(crate) struct TaskRunnerSection {
     /// `bacon`. (Not constrained in the JSON Schema — the runtime
     /// parser emits a more helpful error than a schema-validation
     /// failure would.)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
 }
 
 /// `[resolution]` section — resolver policy knobs.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default) — PATH probe in canonical order when no signals
     /// match; `npm` — legacy silent fallback; `error` — refuse to proceed.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("enum" = ["probe", "npm", "error", null]))
@@ -221,6 +267,7 @@ pub(crate) struct ResolutionSection {
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore` — how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("enum" = ["warn", "error", "ignore", null]))

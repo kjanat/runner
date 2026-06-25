@@ -157,12 +157,13 @@ fn pm_decision_for_selected(
     selected: Option<&Task>,
 ) -> Option<PmDecision> {
     match selected.map(|task| task.source) {
-        Some(TaskSource::PackageJson) => {
-            Some(PmDecision::Node(Resolver::new(ctx, overrides).resolve_node_pm()))
-        }
+        Some(TaskSource::PackageJson) => Some(PmDecision::Node(
+            Resolver::new(ctx, overrides).resolve_node_pm(),
+        )),
         Some(TaskSource::PyprojectScripts) => Some(PmDecision::Python(
             resolve_python_pm(ctx, overrides).ok_or_else(|| {
-                "no Python package manager detected to run pyproject scripts; install uv, poetry, or pipenv"
+                "no Python package manager detected to run pyproject scripts; install uv, poetry, \
+                 or pipenv"
                     .to_string()
             }),
         )),
@@ -299,7 +300,9 @@ struct WhyTaskV3<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps a task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is `root` until workspace-member scoping lands."
+            description = "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps \
+                           a task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is \
+                           `root` until workspace-member scoping lands."
         )
     )]
     fqn: String,
@@ -323,7 +326,8 @@ struct WhyTaskV3<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Locator inside the source file: a key path for structured configs (`alias.t`, `scripts.test`), the target/recipe name for flat files."
+            description = "Locator inside the source file: a key path for structured configs \
+                           (`alias.t`, `scripts.test`), the target/recipe name for flat files."
         )
     )]
     source_pointer: Option<String>,
@@ -343,7 +347,8 @@ struct WhyTaskV3<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Effective command preview. Null when it depends on a PM resolution that was not performed for this candidate."
+            description = "Effective command preview. Null when it depends on a PM resolution \
+                           that was not performed for this candidate."
         )
     )]
     resolved: Option<String>,
@@ -351,7 +356,8 @@ struct WhyTaskV3<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Task dependencies. Always empty today: no extractor records dependency edges yet."
+            description = "Task dependencies. Always empty today: no extractor records dependency \
+                           edges yet."
         )
     )]
     dependencies: Vec<String>,
@@ -380,9 +386,8 @@ struct WhyMatchV3<'a> {
 struct WhyDecisionV3 {
     #[cfg_attr(
         feature = "schema",
-        schemars(
-            description = "Selection branch taken: `single-candidate`, `ranked`, `filtered`, or `exec-fallback`."
-        )
+        schemars(description = "Selection branch taken: `single-candidate`, `ranked`, \
+                                `filtered`, or `exec-fallback`.")
     )]
     strategy: &'static str,
     reason: String,
@@ -489,8 +494,8 @@ fn decision_v3(candidates: &[&Task], selected: Option<&Task>) -> WhyDecisionV3 {
     WhyDecisionV3 {
         strategy: "ranked",
         reason: format!(
-            "{} candidates; lowest (source_priority, source_depth, display_order, alias-last) \
-             key wins",
+            "{} candidates; lowest (source_priority, source_depth, display_order, alias-last) key \
+             wins",
             candidates.len()
         ),
     }

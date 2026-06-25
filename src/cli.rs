@@ -999,6 +999,13 @@ pub(crate) enum Command {
         json: bool,
     },
 
+    /// Manage the project `runner.toml`
+    Config {
+        /// Config action: `init`, `show`, `validate`, `path`.
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+
     /// Generate shell completions
     Completions {
         /// Target shell — bare name (`zsh`) or full path (`/usr/bin/zsh`).
@@ -1054,6 +1061,29 @@ pub(crate) enum Command {
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+/// Actions under `runner config`. All are `Copy` so [`crate::lib`] can peek
+/// the variant before the resolver setup (which `config` deliberately
+/// bypasses) without moving out of the parsed [`Cli`].
+#[derive(Debug, Clone, Copy, Subcommand)]
+pub(crate) enum ConfigAction {
+    /// Write a starter runner.toml to the project root
+    Init {
+        /// Overwrite an existing runner.toml instead of refusing.
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Print the effective config and where it loaded from
+    Show {
+        /// Emit JSON instead of TOML.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Parse and validate runner.toml; exit 2 on error
+    Validate,
+    /// Print the resolved runner.toml path
+    Path,
 }
 
 /// CLI used by the `run` alias binary. Behaves as a shortcut for

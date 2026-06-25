@@ -13,3 +13,4 @@ node_modules/
 # serena MCP cache
 /.serena/
 /proposal.md
+/mise.toml

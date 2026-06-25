@@ -421,7 +421,8 @@ mod tests {
             warnings.iter().any(|w| w["detail"]
                 .as_str()
                 .is_some_and(|d| d.contains("declaration wins"))),
-            "expected resolver-produced PM mismatch warning to surface in doctor output, got: {warnings:?}",
+            "expected resolver-produced PM mismatch warning to surface in doctor output, got: \
+             {warnings:?}",
         );
     }
 }

@@ -1,5 +1,5 @@
 {
-  "$id": "https://kjanat.github.io/schemas/doctor.v3.schema.json",
+  "$id": "https://kjanat.github.io/runner/schemas/doctor.v3.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "ConfidenceV3": {

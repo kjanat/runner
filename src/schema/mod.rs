@@ -102,15 +102,29 @@ pub(crate) fn validate_schema_version(requested: u32) -> anyhow::Result<u32> {
 pub(crate) fn validate_doctor_schema_version(requested: u32) -> anyhow::Result<u32> {
     if requested == 0 || requested > DOCTOR_CURRENT_VERSION {
         anyhow::bail!(
-            "unsupported --schema-version {requested}; `runner doctor` speaks 1..={DOCTOR_CURRENT_VERSION}",
+            "unsupported --schema-version {requested}; `runner doctor` speaks \
+             1..={DOCTOR_CURRENT_VERSION}",
         );
     }
     Ok(requested)
 }
 
+/// Base URL committed schemas hang off, from `[package.metadata].schema-base`
+/// in `Cargo.toml` (surfaced by `build.rs`). Any trailing slash is trimmed so
+/// callers append `/<file>` uniformly.
+fn schemas_base_url() -> &'static str {
+    env!("RUNNER_SCHEMA_BASE").trim_end_matches('/')
+}
+
 /// Canonical public URL of a committed output schema.
 pub(crate) fn schema_url(command: &str, version: u32) -> String {
-    format!("https://kjanat.github.io/schemas/{command}.v{version}.schema.json")
+    format!("{}/{command}.v{version}.schema.json", schemas_base_url())
+}
+
+/// Canonical URL of the `runner.toml` config schema — the committed file's
+/// `$id` and the `#:schema` directive the scaffold writes.
+pub(crate) fn config_schema_url() -> String {
+    format!("{}/runner.toml.schema.json", schemas_base_url())
 }
 
 /// Validate that `requested` is a schema version `why` can produce.
@@ -122,7 +136,8 @@ pub(crate) fn schema_url(command: &str, version: u32) -> String {
 pub(crate) fn validate_why_schema_version(requested: u32) -> anyhow::Result<u32> {
     if requested == 0 || requested > WHY_CURRENT_VERSION {
         anyhow::bail!(
-            "unsupported --schema-version {requested}; `runner why` speaks 1..={WHY_CURRENT_VERSION}",
+            "unsupported --schema-version {requested}; `runner why` speaks \
+             1..={WHY_CURRENT_VERSION}",
         );
     }
     Ok(requested)

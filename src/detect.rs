@@ -761,7 +761,9 @@ mod tests {
         fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\nbodysuit = \"greenpy.bodysuit:main\"\ngreenpy = \"greenpy.main:main\"\nnavel-stamper = \"greenpy.navel_stamper:main\"\n",
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\nbodysuit = \
+             \"greenpy.bodysuit:main\"\ngreenpy = \"greenpy.main:main\"\nnavel-stamper = \
+             \"greenpy.navel_stamper:main\"\n",
         )
         .expect("pyproject.toml should be written");
 
@@ -795,7 +797,8 @@ mod tests {
         fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \"greenpy.main:main\"\n",
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \
+             \"greenpy.main:main\"\n",
         )
         .expect("pyproject.toml should be written");
 
@@ -812,7 +815,8 @@ mod tests {
         let dir = TempDir::new("detect-pyproject-scripts-no-pm");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \"greenpy.main:main\"\n",
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \
+             \"greenpy.main:main\"\n",
         )
         .expect("pyproject.toml should be written");
 
@@ -832,7 +836,8 @@ mod tests {
         let dir = TempDir::new("detect-pyproject-scripts-poetry");
         fs::write(
             dir.path().join("pyproject.toml"),
-            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[project.scripts]\ncli = \"demo.cli:main\"\n",
+            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[project.scripts]\ncli = \
+             \"demo.cli:main\"\n",
         )
         .expect("pyproject.toml should be written");
 

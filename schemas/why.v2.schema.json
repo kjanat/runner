@@ -1,5 +1,5 @@
 {
-  "$id": "https://kjanat.github.io/schemas/why.v2.schema.json",
+  "$id": "https://kjanat.github.io/runner/schemas/why.v2.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "PmResolution": {

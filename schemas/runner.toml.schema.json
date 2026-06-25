@@ -1,4 +1,5 @@
 {
+  "$id": "https://kjanat.github.io/runner/schemas/runner.toml.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "ChainSection": {
@@ -7,7 +8,6 @@
       "properties": {
         "keep_going": {
           "description": "Run every task in the chain to completion regardless of failures.\nMutually exclusive with `kill_on_fail`. Equivalent to `-k` /\n`RUNNER_KEEP_GOING`.",
-          "default": null,
           "type": [
             "boolean",
             "null"
@@ -15,7 +15,6 @@
         },
         "kill_on_fail": {
           "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown — uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
-          "default": null,
           "type": [
             "boolean",
             "null"
@@ -141,7 +140,6 @@
       "properties": {
         "prefer": {
           "description": "Ranked preference list. Restricts candidates to runners in the\nlist (in listed order); a same-named task under a runner not in\nthe list is hard-rejected. Parsed into [`crate::types::TaskRunner`]\nat resolver-init time so unknown labels fail fast.\n\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,\n`bacon`. (Not constrained in the JSON Schema — the runtime\nparser emits a more helpful error than a schema-validation\nfailure would.)",
-          "default": [],
           "type": "array",
           "items": {
             "type": "string"
@@ -157,27 +155,38 @@
   "properties": {
     "chain": {
       "$ref": "#/$defs/ChainSection",
-      "description": "`[chain]` — failure policy for multi-task chains."
+      "description": "`[chain]` — failure policy for multi-task chains.",
+      "default": {}
     },
     "github": {
       "$ref": "#/$defs/GitHubSection",
-      "description": "`[github]` — GitHub Actions integration (output grouping)."
+      "description": "`[github]` — GitHub Actions integration (output grouping).",
+      "default": {
+        "group_output": true,
+        "group_parallel": true
+      }
     },
     "parallel": {
       "$ref": "#/$defs/ParallelSection",
-      "description": "`[parallel]` — presentation of parallel (`-p`) chain output."
+      "description": "`[parallel]` — presentation of parallel (`-p`) chain output.",
+      "default": {
+        "grouped": false
+      }
     },
     "pm": {
       "$ref": "#/$defs/PmSection",
-      "description": "`[pm]` — per-ecosystem package-manager overrides."
+      "description": "`[pm]` — per-ecosystem package-manager overrides.",
+      "default": {}
     },
     "resolution": {
       "$ref": "#/$defs/ResolutionSection",
-      "description": "`[resolution]` — resolver-policy knobs."
+      "description": "`[resolution]` — resolver-policy knobs.",
+      "default": {}
     },
     "task_runner": {
       "$ref": "#/$defs/TaskRunnerSection",
-      "description": "`[task_runner]` — task-runner preferences."
+      "description": "`[task_runner]` — task-runner preferences.",
+      "default": {}
     }
   },
   "additionalProperties": false

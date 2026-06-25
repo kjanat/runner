@@ -11,6 +11,7 @@ use crate::types::{DetectionWarning, ProjectContext};
 
 mod clean;
 mod completions;
+mod config;
 mod doctor;
 mod info;
 pub(crate) mod install;
@@ -24,6 +25,7 @@ mod why;
 
 pub(crate) use clean::clean;
 pub(crate) use completions::{completions, parse_shell_arg};
+pub(crate) use config::config;
 pub(crate) use doctor::doctor;
 pub(crate) use info::info;
 pub(crate) use install::install;

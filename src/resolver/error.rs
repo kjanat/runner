@@ -174,9 +174,10 @@ impl fmt::Display for ResolveError {
             }
             Self::ConflictingFailurePolicy { source } => write!(
                 f,
-                "`keep_going` and `kill_on_fail` are mutually exclusive but both were set ({source}). \
-                 Unset one of `--keep-going` / `RUNNER_KEEP_GOING` / `[chain].keep_going` or \
-                 `--kill-on-fail` / `RUNNER_KILL_ON_FAIL` / `[chain].kill_on_fail` to pick a policy.",
+                "`keep_going` and `kill_on_fail` are mutually exclusive but both were set \
+                 ({source}). Unset one of `--keep-going` / `RUNNER_KEEP_GOING` / \
+                 `[chain].keep_going` or `--kill-on-fail` / `RUNNER_KILL_ON_FAIL` / \
+                 `[chain].kill_on_fail` to pick a policy.",
             ),
         }
     }

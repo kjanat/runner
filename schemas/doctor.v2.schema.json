@@ -1,5 +1,5 @@
 {
-  "$id": "https://kjanat.github.io/schemas/doctor.v2.schema.json",
+  "$id": "https://kjanat.github.io/runner/schemas/doctor.v2.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Decisions": {

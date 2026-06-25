@@ -138,7 +138,8 @@ impl ResolutionOverrides {
     /// a PM that does not belong to its target ecosystem.
     #[allow(
         clippy::needless_pass_by_value,
-        reason = "OverrideSources is a single-use builder; taking by value keeps the call sites moveable"
+        reason = "OverrideSources is a single-use builder; taking by value keeps the call sites \
+                  moveable"
     )]
     pub(crate) fn from_sources(sources: OverrideSources<'_>) -> Result<Self> {
         let pm = parse_override(
@@ -225,6 +226,27 @@ impl ResolutionOverrides {
             parallel_grouped,
         })
     }
+}
+
+/// Validate a loaded `runner.toml` in isolation — no CLI or environment
+/// layer — by running it through the real override builder. Every field is
+/// parsed exactly as a live dispatch would parse it (PM names, task-runner
+/// `prefer` list, `fallback` / `on_mismatch` policies), and the in-file
+/// `[chain]` failure-policy conflict (`keep_going` and `kill_on_fail` both
+/// `true`) surfaces here too: with no env var to neutralize a side, the
+/// same [`ResolveError::ConflictingFailurePolicy`] the resolver raises at
+/// dispatch time fires during construction. Delegating keeps `config
+/// validate` honest — it can never accept a file a real run would reject.
+///
+/// # Errors
+///
+/// Returns the first parse or conflict error in the file.
+pub(crate) fn validate_config(loaded: &LoadedConfig) -> Result<()> {
+    ResolutionOverrides::from_sources(OverrideSources {
+        config: Some(loaded),
+        ..OverrideSources::default()
+    })
+    .map(drop)
 }
 
 fn parse_pm_label(raw: &str) -> Result<PackageManager> {
@@ -492,8 +514,8 @@ impl SourceNames {
                 format!("{} {}", self.cli, self.example)
             };
             format!(
-                "\n  hint: the value contains line breaks and looks like captured command \
-                 output; pass a plain name instead, e.g. {example}"
+                "\n  hint: the value contains line breaks and looks like captured command output; \
+                 pass a plain name instead, e.g. {example}"
             )
         } else {
             String::new()

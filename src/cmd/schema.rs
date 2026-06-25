@@ -23,11 +23,21 @@ pub(crate) fn write_schema(all: bool, output: Option<&Path>) -> Result<()> {
         let dir = output.unwrap_or_else(|| Path::new(SCHEMA_DIR));
         write_all_schemas(dir)
     } else {
-        write_json(
-            output,
-            &schema_value(schemars::schema_for!(crate::config::RunnerConfig))?,
-        )
+        write_json(output, &config_schema()?)
     }
+}
+
+/// The `runner.toml` config schema, tagged with its canonical `$id` so the
+/// committed file self-identifies (matching the `#:schema` directive the
+/// scaffold writes).
+fn config_schema() -> Result<Value> {
+    let mut schema = schema_value(schemars::schema_for!(crate::config::RunnerConfig))?;
+    set_object_field(
+        &mut schema,
+        "$id",
+        json!(crate::schema::config_schema_url()),
+    );
+    Ok(schema)
 }
 
 fn write_all_schemas(dir: &Path) -> Result<()> {
@@ -47,7 +57,7 @@ fn schema_documents() -> Result<Vec<SchemaDocument>> {
     Ok(vec![
         SchemaDocument {
             filename: "runner.toml.schema.json",
-            value: schema_value(schemars::schema_for!(crate::config::RunnerConfig))?,
+            value: config_schema()?,
         },
         SchemaDocument {
             filename: "doctor.v1.schema.json",
@@ -263,9 +273,17 @@ fn title(command: &str, version: u32) -> String {
 
 fn description(command: &str, version: u32) -> String {
     match (command, version) {
-        ("doctor", 1) => "JSON schema for the legacy v1 `runner doctor --json` document. v1 uses filename-style task source labels.".to_string(),
-        ("doctor", 2) => "JSON schema for the v2 `runner doctor --json` document. v2 uses tool-name task source labels.".to_string(),
-        ("doctor", _) => "JSON schema for the current v3 `runner doctor --json` document: structured diagnostic inventory with invocation/environment provenance, per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, and diagnostics.".to_string(),
+        ("doctor", 1) => "JSON schema for the legacy v1 `runner doctor --json` document. v1 uses \
+                          filename-style task source labels."
+            .to_string(),
+        ("doctor", 2) => "JSON schema for the v2 `runner doctor --json` document. v2 uses \
+                          tool-name task source labels."
+            .to_string(),
+        ("doctor", _) => "JSON schema for the current v3 `runner doctor --json` document: \
+                          structured diagnostic inventory with invocation/environment provenance, \
+                          per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, \
+                          and diagnostics."
+            .to_string(),
         _ => format!("JSON schema for `{}`.", title(command, version)),
     }
 }

@@ -228,6 +228,7 @@ runner list [--raw] [--json]        # list available tasks
 runner info [--json]                # show detected project info
 runner doctor [--json]              # show every resolver signal
 runner why <task> [--json]          # explain how a task would dispatch
+runner config <init|show|validate|path>  # manage runner.toml
 runner completions [<shell>] [-o <path>]
 ```
 
@@ -310,6 +311,63 @@ rather than the package-manager exec path.
 The explicit subcommand is the inverse: `runner install` (and `runner clean`,
 `runner list`, …) is **always** the built-in and never runs a same-named task —
 use `run install` / `runner run install` to reach a task called `install`.
+
+## Configuration
+
+Auto-detection needs no config. To override it per project, drop a
+`runner.toml` at the repo root. Scaffold one with every knob documented:
+
+```sh
+runner config init          # write a commented runner.toml (--force to overwrite)
+runner config show          # print the effective config (--json for machine output)
+runner config validate      # parse + check it; exit 2 on error
+runner config path          # print the resolved runner.toml path
+```
+
+Settings layer, highest priority first: **CLI flags → `RUNNER_*` env vars →
+`runner.toml` → manifest declarations** (`packageManager`, `devEngines`).
+
+`runner config init` writes a `#:schema` directive on line 1, so editors with a
+TOML language server (tombi, taplo) get autocompletion and validation with no
+extra setup.
+
+```toml
+#:schema https://kjanat.github.io/runner/schemas/runner.toml.schema.json
+
+# Force the package manager per ecosystem, overriding lockfile detection.
+[pm]
+node   = "pnpm"  # npm | pnpm | yarn | bun | deno
+python = "uv"    # uv | poetry | pipenv
+
+# Restrict and rank task runners for ambiguous task names.
+[task_runner]
+prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
+
+# Resolver policy knobs.
+[resolution]
+fallback    = "probe"  # probe (PATH probe) | npm (legacy) | error
+on_mismatch = "warn"   # warn | error (exit 2) | ignore  (manifest vs lockfile)
+
+# Failure policy for `-s`/`-p` chains and `install <tasks>`.
+# keep_going and kill_on_fail are mutually exclusive — setting both is an error.
+[chain]
+keep_going   = false  # run every task despite failures (same as -k)
+kill_on_fail = false  # parallel: kill siblings on first failure (same as -K)
+
+# GitHub Actions output grouping (active only under Actions).
+[github]
+group_output   = true  # wrap each task's output in a collapsible ::group::
+group_parallel = true  # buffer parallel tasks, print each as one block
+
+# Parallel (`-p`) output presentation outside GitHub Actions.
+[parallel]
+grouped = false  # buffer + print each task as one block on completion
+```
+
+Unknown keys are rejected at parse time. Every field is optional; omit a
+section to keep its defaults. A committed JSON Schema lives at
+[`schemas/runner.toml.schema.json`](schemas/runner.toml.schema.json) for
+editor autocompletion.
 
 ## Supported Ecosystems
 
