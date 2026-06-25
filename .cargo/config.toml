@@ -33,7 +33,7 @@ runner      = "bin-runner"
 
 # CI
 build-std = "-Z build-std=std,panic_abort build --locked --release --bin runner --bin run"
-dirtypub  = "cargo publish --locked --allow-dirty"
+dirtypub  = "publish --locked --allow-dirty"
 
 # [target.<triple>]
 # linker = "…"              # linker to use
