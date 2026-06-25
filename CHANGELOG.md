@@ -23,6 +23,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   install to one. A listed-but-undetected PM errors. `--pm`/`RUNNER_PM` still
   takes precedence; `[pm]` continues to scope only script dispatch.
 
+### Changed
+
+- Published `@runner-run/*` platform packages now carry `keywords`, a
+  descriptive `description`, and a full README (instead of a thin stub).
+  These are the binary sub-packages npm selects via `optionalDependencies`;
+  the richer metadata raises their Socket.dev Quality score and explains the
+  facade-resolution mechanism to anyone landing on them directly.
+
 ## [0.14.2] - 2026-06-25
 
 ### Added
