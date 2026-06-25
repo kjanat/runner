@@ -32,6 +32,7 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     };
 
     detect_package_managers(dir, &mut ctx);
+    detect_install_collisions(dir, &mut ctx);
     detect_task_runners(dir, &mut ctx);
     detect_node_version(dir, &mut ctx);
     detect_monorepo(dir, &mut ctx);
@@ -45,6 +46,40 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     });
 
     ctx
+}
+
+// Install-directory collisions
+
+/// Flag detected package managers that would install into the same
+/// directory, so `runner install`/`doctor` can warn before fanning out
+/// redundant installs over a shared tree. Today the one real case is
+/// `node_modules`: any node-ecosystem PM writes it, and Deno joins only
+/// when its `nodeModulesDir` materializes a local tree.
+fn detect_install_collisions(dir: &Path, ctx: &mut ProjectContext) {
+    let mut node_modules_writers: Vec<PackageManager> = ctx
+        .package_managers
+        .iter()
+        .copied()
+        .filter(|pm| {
+            matches!(
+                pm,
+                PackageManager::Npm
+                    | PackageManager::Yarn
+                    | PackageManager::Pnpm
+                    | PackageManager::Bun
+            )
+        })
+        .collect();
+    if ctx.package_managers.contains(&PackageManager::Deno) && tool::deno::writes_node_modules(dir)
+    {
+        node_modules_writers.push(PackageManager::Deno);
+    }
+    if node_modules_writers.len() >= 2 {
+        ctx.warnings.push(DetectionWarning::InstallDirCollision {
+            dir: "node_modules",
+            pms: node_modules_writers,
+        });
+    }
 }
 
 // Package managers
@@ -850,6 +885,46 @@ mod tests {
         assert!(ctx.tasks.iter().any(|t| {
             t.source == crate::types::TaskSource::PyprojectScripts && t.name == "cli"
         }));
+    }
+
+    #[test]
+    fn node_modules_collision_detected_for_bun_plus_deno_node_modules_dir() {
+        use crate::types::{DetectionWarning, PackageManager};
+        let dir = TempDir::new("detect-collision");
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
+        fs::write(
+            dir.path().join("deno.jsonc"),
+            r#"{ "nodeModulesDir": "auto" }"#,
+        )
+        .expect("deno.jsonc");
+
+        let ctx = detect(dir.path());
+        let collision = ctx.warnings.iter().find_map(|w| match w {
+            DetectionWarning::InstallDirCollision { dir, pms } => Some((*dir, pms.clone())),
+            _ => None,
+        });
+        let (cdir, pms) = collision.expect("bun + node_modules-dir deno must collide");
+        assert_eq!(cdir, "node_modules");
+        assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Deno]);
+    }
+
+    #[test]
+    fn no_collision_when_deno_keeps_deps_in_global_cache() {
+        use crate::types::DetectionWarning;
+        let dir = TempDir::new("detect-no-collision");
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
+        // No nodeModulesDir → deno uses its global cache, no node_modules.
+        fs::write(dir.path().join("deno.jsonc"), r#"{ "tasks": {} }"#).expect("deno.jsonc");
+
+        let ctx = detect(dir.path());
+        assert!(
+            !ctx.warnings
+                .iter()
+                .any(|w| matches!(w, DetectionWarning::InstallDirCollision { .. })),
+            "deno without nodeModulesDir must not collide"
+        );
     }
 
     #[test]

@@ -250,6 +250,16 @@ pub(crate) enum DetectionWarning {
         /// Rendered parse error, already source-prefixed.
         message: String,
     },
+    /// Two or more detected package managers install into the same
+    /// directory (e.g. `bun` and a `nodeModulesDir`-enabled `deno` both
+    /// write `node_modules/`). Running both fans out redundant installs
+    /// over a shared tree; restrict the set with `[install].pms`.
+    InstallDirCollision {
+        /// The shared install directory, e.g. `"node_modules"`.
+        dir: &'static str,
+        /// The detected PMs that target it, in detection order.
+        pms: Vec<PackageManager>,
+    },
 }
 
 impl DetectionWarning {
@@ -267,6 +277,7 @@ impl DetectionWarning {
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
+            Self::InstallDirCollision { .. } => "install",
         }
     }
 
@@ -334,6 +345,18 @@ impl DetectionWarning {
             ),
             Self::InvalidEnvOverride { var, message, .. } => {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
+            }
+            Self::InstallDirCollision { dir, pms } => {
+                let pms = pms
+                    .iter()
+                    .map(|pm| pm.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "{pms} all install into {dir}/ — running them together fans out redundant \
+                     installs over a shared tree. Restrict the set with `[install].pms` in \
+                     runner.toml (or `RUNNER_INSTALL_PMS`).",
+                )
             }
         }
     }
