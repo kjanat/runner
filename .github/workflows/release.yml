@@ -16,6 +16,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { save-if: "${{ github.event_name != 'pull_request' }}" }
+      # dprint's rustfmt exec formatter installs a nightly toolchain via its
+      # setupCommand; cold that costs ~4min/run. Cache the toolchain + dprint's
+      # plugin/setup state so it installs once. restore-keys serves a slightly
+      # stale nightly on config change rather than reinstalling from scratch.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup/toolchains
+            ~/.rustup/update-hashes
+            ~/.cache/dprint
+          key: fmt-tools-${{ runner.os }}-${{ hashFiles('.dprint.jsonc', 'rustfmt.toml', '.cargo/config.toml') }}
+          restore-keys: fmt-tools-${{ runner.os }}-
       # Install every tool runner / package manager we claim to support, so tests
       # exercise the real CLI paths instead of only the file-parse fallbacks.
       # Rust/CLI tools come as prebuilt binaries via taiki-e/install-action; the
