@@ -665,10 +665,26 @@ function platformPackageJson(
 	version: string,
 	meta: Record<string, unknown>,
 ): Record<string, unknown> {
+	const keywords = [
+		...new Set([
+			matrix.facade,
+			"prebuilt",
+			"binary",
+			"native",
+			"cli",
+			"task-runner",
+			...target.os,
+			...target.cpu,
+			...(target.libc ? [target.libc] : []),
+		]),
+	];
 	return {
 		name: `${matrix.scope}/${target.pkg}`,
 		version,
-		description: `${target.pkg} prebuilt binaries for ${matrix.facade}`,
+		description: `Prebuilt ${
+			matrix.binaries.join(" + ")
+		} ${target.rust} binaries for ${matrix.facade} — selected automatically by npm; not for direct use.`,
+		keywords,
 		...meta,
 		os: target.os,
 		cpu: target.cpu,
@@ -693,16 +709,38 @@ function platformPackageJson(
 function platformReadme(matrix: Matrix, target: Target): string {
 	const packageName = `${matrix.scope}/${target.pkg}`;
 	const binaries = matrix.binaries.map((name) => `\`${name}\``).join(" and ");
+	const noun = matrix.binaries.length === 1 ? "binary" : "binaries";
+	const platform = [...target.os, ...target.cpu, ...(target.libc ? [target.libc] : [])].join(" · ");
 
 	return `# ${packageName}
 
-Prebuilt ${binaries} binaries for \`${target.pkg}\`.\\
-(rustc target: \`${target.rust}\`).
+Prebuilt ${binaries} ${noun} for **${platform}** (rustc target \`${target.rust}\`) — the
+platform-specific package of [\`${matrix.facade}\`](https://npm.im/${matrix.facade} "View on npm").
 
-This package is an internal implementation detail of [\`${matrix.facade}\`](https://npm.im/${matrix.facade} "View on npm").
+## Do I install this?
 
-Do not depend on it directly.\\
-Install \`${matrix.facade}\` and let npm select the right package for your platform.
+No. Install the main package and npm picks the matching binary for your platform automatically:
+
+\`\`\`sh
+npm install ${matrix.facade}
+\`\`\`
+
+This package is listed in \`${matrix.facade}\`'s \`optionalDependencies\`. npm resolves the one
+whose \`os\`/\`cpu\`${target.libc ? "/`libc`" : ""} matches your machine and skips the rest, so the wrapper
+finds these binaries with no postinstall step. Depending on it directly pins you to a single
+platform — install \`${matrix.facade}\` instead.
+
+## Contents
+
+- ${binaries} — prebuilt native ${noun} under \`bin/\`.
+- No dependencies, no install scripts, no network access.
+
+## More
+
+- Main package: <https://npm.im/${matrix.facade}>
+- Documentation, source, and issue tracker: linked from the main package.
+
+Released under the same license as \`${matrix.facade}\` (see \`LICENSE\`).
 `;
 }
 
