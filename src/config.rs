@@ -58,6 +58,11 @@ pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner 
 [task_runner]
 # prefer = ["just", "turbo"]   # turbo, nx, make, just, task, mise, bacon
 
+# Restrict which detected package managers `runner install` runs. Empty/absent
+# installs every detected PM. Overridden by RUNNER_INSTALL_PMS (comma-separated).
+[install]
+# pms = ["bun"]                # only install with these; each must be detected
+
 # Resolver policy knobs.
 [resolution]
 # fallback = "probe"     # probe (PATH probe) | npm (legacy) | error
@@ -112,6 +117,27 @@ pub(crate) struct RunnerConfig {
     /// `[parallel]` — presentation of parallel (`-p`) chain output.
     #[serde(default)]
     pub parallel: ParallelSection,
+    /// `[install]` — restrict which detected PMs `runner install` runs.
+    #[serde(default)]
+    pub install: InstallSection,
+}
+
+/// `[install]` section — restrict which detected package managers
+/// `runner install` runs with. Absent or empty installs every detected
+/// PM (the default). Overridden by `RUNNER_INSTALL_PMS`.
+///
+/// Unlike `[pm]` (which scopes *script dispatch* per ecosystem), this
+/// scopes the *install fan-out*: in a polyglot repo where both `bun` and
+/// `deno` would write `node_modules`, `pms = ["bun"]` keeps install to bun.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InstallSection {
+    /// Allowlist of package-manager labels to install with, e.g.
+    /// `["bun"]`. Each must be a detected PM or `runner install` errors.
+    /// Empty = install with every detected PM.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pms: Vec<String>,
 }
 
 /// `[chain]` section — failure policy for `run -s/-p` chains and
@@ -418,6 +444,32 @@ mod tests {
     fn parse_python_pm_rejects_node_pm() {
         let err = parse_python_pm("pnpm").expect_err("pnpm should not be Python");
         assert!(format!("{err}").contains("not a Python package manager"));
+    }
+
+    #[test]
+    fn load_parses_install_section() {
+        let dir = TempDir::new("config-install");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[install]\npms = [\"bun\", \"cargo\"]\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert_eq!(loaded.config.install.pms, vec!["bun", "cargo"]);
+    }
+
+    #[test]
+    fn load_rejects_unknown_install_key() {
+        let dir = TempDir::new("config-unknown-install-key");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[install]\nfoo = true\n")
+            .expect("config should be written");
+
+        let err = load(dir.path()).expect_err("unknown [install] key should error");
+        assert!(format!("{err:#}").contains("failed to parse"));
     }
 
     #[test]

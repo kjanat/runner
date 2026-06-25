@@ -83,6 +83,16 @@ pub(crate) enum ResolveError {
         /// What detection actually found, for the error message.
         detected: Vec<PackageManager>,
     },
+    /// `[install].pms` / `RUNNER_INSTALL_PMS` names one or more package
+    /// managers that detection did not find in the project. Like
+    /// [`Self::PmOverrideNotDetected`], the allowlist is a contract: a
+    /// listed-but-absent PM is a misconfiguration, not a silent no-op.
+    InstallPmsNotDetected {
+        /// The listed PMs that detection did not find.
+        missing: Vec<PackageManager>,
+        /// What detection actually found, for the error message.
+        detected: Vec<PackageManager>,
+    },
     /// Both `keep_going` and `kill_on_fail` were set to true at the same
     /// source (or once layered across CLI/env/config). The chain executor
     /// can't honour both, so fail loudly before dispatching anything.
@@ -170,6 +180,26 @@ impl fmt::Display for ResolveError {
                     pm.label(),
                     origin.describe_pm_source(),
                     pm.label(),
+                )
+            }
+            Self::InstallPmsNotDetected { missing, detected } => {
+                let join = |pms: &[PackageManager]| {
+                    if pms.is_empty() {
+                        "none".to_string()
+                    } else {
+                        pms.iter()
+                            .map(|pm| pm.label())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                };
+                write!(
+                    f,
+                    "the install allowlist (`[install].pms` / `RUNNER_INSTALL_PMS`) lists {} but \
+                     detection did not find them in this project (detected: {}). Drop them from \
+                     the allowlist or install them.",
+                    join(missing),
+                    join(detected),
                 )
             }
             Self::ConflictingFailurePolicy { source } => write!(

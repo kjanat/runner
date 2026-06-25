@@ -54,6 +54,20 @@
       },
       "additionalProperties": false
     },
+    "InstallSection": {
+      "description": "`[install]` section — restrict which detected package managers\n`runner install` runs with. Absent or empty installs every detected\nPM (the default). Overridden by `RUNNER_INSTALL_PMS`.\n\nUnlike `[pm]` (which scopes *script dispatch* per ecosystem), this\nscopes the *install fan-out*: in a polyglot repo where both `bun` and\n`deno` would write `node_modules`, `pms = [\"bun\"]` keeps install to bun.",
+      "type": "object",
+      "properties": {
+        "pms": {
+          "description": "Allowlist of package-manager labels to install with, e.g.\n`[\"bun\"]`. Each must be a detected PM or `runner install` errors.\nEmpty = install with every detected PM.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "ParallelSection": {
       "description": "`[parallel]` section — how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n[`GitHubSection::group_parallel`].)",
       "type": "object",
@@ -165,6 +179,11 @@
         "group_output": true,
         "group_parallel": true
       }
+    },
+    "install": {
+      "$ref": "#/$defs/InstallSection",
+      "description": "`[install]` — restrict which detected PMs `runner install` runs.",
+      "default": {}
     },
     "parallel": {
       "$ref": "#/$defs/ParallelSection",

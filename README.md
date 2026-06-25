@@ -343,6 +343,14 @@ python = "uv"    # uv | poetry | pipenv
 [task_runner]
 prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
 
+# Restrict which detected package managers `runner install` runs. Empty/absent
+# installs every detected PM. In a polyglot repo where both bun and deno would
+# write node_modules, this keeps install to one. Overridden by
+# RUNNER_INSTALL_PMS (comma-separated). `[pm]` above only scopes script
+# dispatch, not the install fan-out.
+[install]
+pms = ["bun"]  # only install with these; each must be detected
+
 # Resolver policy knobs.
 [resolution]
 fallback    = "probe"  # probe (PATH probe) | npm (legacy) | error

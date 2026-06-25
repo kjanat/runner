@@ -121,6 +121,17 @@ impl ResolutionOverrides {
             &mut warnings,
             |raw| parse_mismatch_label(raw).map(drop),
         );
+        lenient_env_field(
+            &mut sources.install_pms,
+            "RUNNER_INSTALL_PMS",
+            &mut warnings,
+            |raw| {
+                raw.split([',', ' ', '\t', '\n'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .try_for_each(|label| parse_pm_label(label).map(drop))
+            },
+        );
         let overrides = Self::from_sources(sources)?;
         Ok((overrides, warnings))
     }
@@ -181,6 +192,7 @@ impl ResolutionOverrides {
             .config
             .is_none_or(|c| c.config.github.group_parallel);
         let parallel_grouped = sources.config.is_some_and(|c| c.config.parallel.grouped);
+        let install_pms = parse_install_pms(&sources)?;
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -224,8 +236,43 @@ impl ResolutionOverrides {
             group_output,
             github_group_parallel,
             parallel_grouped,
+            install_pms,
         })
     }
+}
+
+/// Resolve the `runner install` PM allowlist: `RUNNER_INSTALL_PMS` (env,
+/// comma/whitespace-separated) wins over `[install].pms` (config). Each
+/// entry must name a known package manager; detection (whether the PM is
+/// present in *this* project) is checked later in `cmd::install`.
+///
+/// # Errors
+///
+/// Returns an error if any entry is not a recognized package manager.
+fn parse_install_pms(sources: &OverrideSources<'_>) -> Result<Vec<PackageManager>> {
+    if let Some(raw) = sources
+        .install_pms
+        .env
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return raw
+            .split([',', ' ', '\t', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|label| parse_pm_label(label).map_err(|err| anyhow!("RUNNER_INSTALL_PMS: {err}")))
+            .collect();
+    }
+    let Some(loaded) = sources.config else {
+        return Ok(Vec::new());
+    };
+    loaded
+        .config
+        .install
+        .pms
+        .iter()
+        .map(|label| parse_pm_label(label).map_err(|err| anyhow!("[install].pms: {err}")))
+        .collect()
 }
 
 /// Validate a loaded `runner.toml` in isolation — no CLI or environment
@@ -314,6 +361,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn install_pms_env_parses_comma_and_space_list() {
+        let sources = OverrideSources {
+            install_pms: SourceValue {
+                cli: None,
+                env: Some("bun, cargo deno"),
+            },
+            ..OverrideSources::default()
+        };
+        let overrides = ResolutionOverrides::from_sources(sources).expect("env list parses");
+        assert_eq!(
+            overrides.install_pms,
+            vec![
+                PackageManager::Bun,
+                PackageManager::Cargo,
+                PackageManager::Deno
+            ]
+        );
+    }
+
+    #[test]
+    fn install_pms_env_rejects_unknown_pm() {
+        let sources = OverrideSources {
+            install_pms: SourceValue {
+                cli: None,
+                env: Some("bun,notapm"),
+            },
+            ..OverrideSources::default()
+        };
+        let err = ResolutionOverrides::from_sources(sources).expect_err("unknown PM must error");
+        assert!(format!("{err:#}").contains("RUNNER_INSTALL_PMS"));
+    }
+
+    #[test]
     fn lenient_policy_env_garbage_does_not_leak_full_raw_value() {
         let token_prefix = "ghp_";
         let fake_token = format!(
@@ -369,6 +449,7 @@ struct EnvSnapshot {
     explain: Option<String>,
     keep_going: Option<String>,
     kill_on_fail: Option<String>,
+    install_pms: Option<String>,
 }
 
 impl EnvSnapshot {
@@ -385,6 +466,7 @@ impl EnvSnapshot {
             explain: std::env::var("RUNNER_EXPLAIN").ok(),
             keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
             kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
+            install_pms: std::env::var("RUNNER_INSTALL_PMS").ok(),
         }
     }
 
@@ -431,6 +513,10 @@ impl EnvSnapshot {
             kill_on_fail: ExplainSource {
                 cli: cli.failure.kill_on_fail,
                 env: self.kill_on_fail.as_deref(),
+            },
+            install_pms: SourceValue {
+                cli: None,
+                env: self.install_pms.as_deref(),
             },
             config,
         }

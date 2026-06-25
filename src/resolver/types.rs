@@ -86,6 +86,11 @@ pub(crate) struct ResolutionOverrides {
     /// match if desired. Only the delimiter style (`::group::` vs a plain
     /// header) further depends on the environment.
     pub parallel_grouped: bool,
+    /// Allowlist of package managers `runner install` may run, resolved
+    /// from `RUNNER_INSTALL_PMS` (env) → `[install].pms` (config). Empty
+    /// means "no install filter" — install fans out to every detected PM.
+    /// Unlike [`Self::pm`], this never affects script dispatch.
+    pub install_pms: Vec<PackageManager>,
 }
 
 /// What to do when no signal in steps 2–6 matches.
@@ -269,6 +274,9 @@ pub(crate) struct OverrideSources<'a> {
     pub keep_going: ExplainSource<'a>,
     /// `--kill-on-fail` flag presence plus `RUNNER_KILL_ON_FAIL` env.
     pub kill_on_fail: ExplainSource<'a>,
+    /// `RUNNER_INSTALL_PMS` env (comma/space-separated). No CLI flag; the
+    /// config side comes from the loaded `runner.toml` `[install].pms`.
+    pub install_pms: SourceValue<'a>,
     /// Loaded `runner.toml` if any.
     pub config: Option<&'a LoadedConfig>,
 }

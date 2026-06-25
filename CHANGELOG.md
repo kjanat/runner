@@ -15,6 +15,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `[install].pms` config + `RUNNER_INSTALL_PMS` env restrict which detected
+  package managers `runner install` runs. In a polyglot repo where, e.g.,
+  both `bun` and `deno` would write `node_modules`, `pms = ["bun"]` keeps
+  install to one. A listed-but-undetected PM errors. `--pm`/`RUNNER_PM` still
+  takes precedence; `[pm]` continues to scope only script dispatch.
+
 ## [0.14.2] - 2026-06-25
 
 ### Added

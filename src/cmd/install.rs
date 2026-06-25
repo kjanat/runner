@@ -76,28 +76,59 @@ pub(crate) fn install_pms(
     run_installs_parallel(ctx, &pms, frozen)
 }
 
-/// Which PMs this invocation installs with: the cross-ecosystem
-/// `--pm`/`RUNNER_PM` override when present (which must name a detected
-/// PM), else every detected PM.
+/// Which PMs this invocation installs with, in precedence order:
+///
+/// 1. The cross-ecosystem `--pm`/`RUNNER_PM` override (which also affects
+///    script dispatch) — installs with that PM alone; errors if it isn't
+///    detected.
+/// 2. The install-scoped allowlist `RUNNER_INSTALL_PMS` / `[install].pms`
+///    (resolved into `overrides.install_pms`) — installs with the detected
+///    PMs in that list, preserving detection order; errors if a listed PM
+///    isn't detected.
+/// 3. Otherwise every detected PM.
 ///
 /// `pm_by_ecosystem` (runner.toml `[pm].node`/`[pm].python`) is
 /// deliberately NOT consulted: it scopes *script dispatch* to an
-/// ecosystem, and filtering a polyglot install by it is ill-defined —
-/// `[pm].node = "yarn"` saying anything about whether `cargo fetch`
-/// runs would be surprising in both directions.
+/// ecosystem. The `[install]` allowlist is the install-fan-out knob.
 fn select_install_pms(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
 ) -> Result<Vec<PackageManager>, ResolveError> {
-    match &overrides.pm {
-        Some(o) if ctx.package_managers.contains(&o.pm) => Ok(vec![o.pm]),
-        Some(o) => Err(ResolveError::PmOverrideNotDetected {
-            pm: o.pm,
-            origin: o.origin.clone(),
-            detected: ctx.package_managers.clone(),
-        }),
-        None => Ok(ctx.package_managers.clone()),
+    if let Some(o) = &overrides.pm {
+        return if ctx.package_managers.contains(&o.pm) {
+            Ok(vec![o.pm])
+        } else {
+            Err(ResolveError::PmOverrideNotDetected {
+                pm: o.pm,
+                origin: o.origin.clone(),
+                detected: ctx.package_managers.clone(),
+            })
+        };
     }
+
+    if !overrides.install_pms.is_empty() {
+        let missing: Vec<PackageManager> = overrides
+            .install_pms
+            .iter()
+            .copied()
+            .filter(|pm| !ctx.package_managers.contains(pm))
+            .collect();
+        if !missing.is_empty() {
+            return Err(ResolveError::InstallPmsNotDetected {
+                missing,
+                detected: ctx.package_managers.clone(),
+            });
+        }
+        // Keep detection order; the allowlist only filters, never reorders.
+        return Ok(ctx
+            .package_managers
+            .iter()
+            .copied()
+            .filter(|pm| overrides.install_pms.contains(pm))
+            .collect());
+    }
+
+    Ok(ctx.package_managers.clone())
 }
 
 /// Run a single PM's install in the foreground, inheriting stdio.
@@ -308,6 +339,72 @@ mod tests {
 
         let msg = format!("{err}");
         assert!(msg.contains("--pm"), "should name the flag: {msg}");
+    }
+
+    #[test]
+    fn install_pms_allowlist_filters_to_listed_detected_pms() {
+        // The reported case: bun + deno + cargo detected, allowlist = [bun]
+        // → only bun installs (no competing node_modules writer, no cargo).
+        let ctx = context(vec![
+            PackageManager::Bun,
+            PackageManager::Deno,
+            PackageManager::Cargo,
+        ]);
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Bun],
+            ..Default::default()
+        };
+        let pms = select_install_pms(&ctx, &overrides).expect("allowlist should filter");
+        assert_eq!(pms, vec![PackageManager::Bun]);
+    }
+
+    #[test]
+    fn install_pms_allowlist_preserves_detection_order() {
+        let ctx = context(vec![
+            PackageManager::Bun,
+            PackageManager::Cargo,
+            PackageManager::Uv,
+        ]);
+        // Listed out of detection order — output still follows detection.
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Uv, PackageManager::Bun],
+            ..Default::default()
+        };
+        let pms = select_install_pms(&ctx, &overrides).expect("allowlist should filter");
+        assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Uv]);
+    }
+
+    #[test]
+    fn install_pms_undetected_entry_errors() {
+        let ctx = context(vec![PackageManager::Bun]);
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Bun, PackageManager::Pnpm],
+            ..Default::default()
+        };
+        let err = select_install_pms(&ctx, &overrides).expect_err("undetected entry must error");
+        assert!(matches!(err, ResolveError::InstallPmsNotDetected { .. }));
+        let msg = format!("{err}");
+        assert!(msg.contains("pnpm"), "names the missing PM: {msg}");
+        assert!(msg.contains("bun"), "lists detected: {msg}");
+    }
+
+    #[test]
+    fn pm_override_wins_over_install_pms_allowlist() {
+        // --pm/RUNNER_PM is the cross-ecosystem override; it takes
+        // precedence and the install allowlist is not consulted.
+        let ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
+        let mut overrides = override_pm(PackageManager::Deno, OverrideOrigin::EnvVar);
+        overrides.install_pms = vec![PackageManager::Bun];
+        let pms = select_install_pms(&ctx, &overrides).expect("override wins");
+        assert_eq!(pms, vec![PackageManager::Deno]);
+    }
+
+    #[test]
+    fn empty_install_pms_installs_with_every_detected_pm() {
+        let ctx = context(vec![PackageManager::Bun, PackageManager::Cargo]);
+        let pms = select_install_pms(&ctx, &ResolutionOverrides::default())
+            .expect("no allowlist installs all");
+        assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Cargo]);
     }
 
     #[test]
