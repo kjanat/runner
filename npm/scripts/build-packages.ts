@@ -683,7 +683,7 @@ function platformPackageJson(
 		version,
 		description: `Prebuilt ${
 			matrix.binaries.join(" + ")
-		} ${target.rust} binaries for ${matrix.facade} — selected automatically by npm; not for direct use.`,
+		} ${target.rust} binaries for ${matrix.facade}; selected automatically by npm, not for direct use.`,
 		keywords,
 		...meta,
 		os: target.os,
@@ -714,8 +714,8 @@ function platformReadme(matrix: Matrix, target: Target): string {
 
 	return `# ${packageName}
 
-Prebuilt ${binaries} ${noun} for **${platform}** (rustc target \`${target.rust}\`) — the
-platform-specific package of [\`${matrix.facade}\`](https://npm.im/${matrix.facade} "View on npm").
+Prebuilt ${binaries} ${noun} for **${platform}** (rustc target \`${target.rust}\`).
+The platform-specific package of [\`${matrix.facade}\`](https://npm.im/${matrix.facade} "View on npm").
 
 ## Do I install this?
 
@@ -728,11 +728,11 @@ npm install ${matrix.facade}
 This package is listed in \`${matrix.facade}\`'s \`optionalDependencies\`. npm resolves the one
 whose \`os\`/\`cpu\`${target.libc ? "/`libc`" : ""} matches your machine and skips the rest, so the wrapper
 finds these binaries with no postinstall step. Depending on it directly pins you to a single
-platform — install \`${matrix.facade}\` instead.
+platform, so install \`${matrix.facade}\` instead.
 
 ## Contents
 
-- ${binaries} — prebuilt native ${noun} under \`bin/\`.
+- ${binaries}: prebuilt native ${noun} under \`bin/\`.
 - No dependencies, no install scripts, no network access.
 
 ## More
