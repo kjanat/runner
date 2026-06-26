@@ -216,6 +216,34 @@ pub(crate) fn install_cmd() -> Command {
     c
 }
 
+/// Whether this Deno project materializes a local `node_modules/` — its
+/// `nodeModulesDir` resolves to `auto`/`manual` (Deno 2.x) or the legacy
+/// boolean `true`. When it does, `deno install` writes the same directory a
+/// node-ecosystem PM (`npm`/`yarn`/`pnpm`/`bun`) would, so installing with
+/// both is a collision. Unreadable/absent config or any other value
+/// (`none`, unset) means Deno keeps deps in its global cache — no collision.
+pub(crate) fn writes_node_modules(dir: &Path) -> bool {
+    #[derive(Deserialize)]
+    struct Partial {
+        #[serde(rename = "nodeModulesDir")]
+        node_modules_dir: Option<serde_json::Value>,
+    }
+    let Some(path) = find_config_upwards(dir) else {
+        return false;
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(parsed) = json5::from_str::<Partial>(&content) else {
+        return false;
+    };
+    match parsed.node_modules_dir {
+        Some(serde_json::Value::Bool(enabled)) => enabled,
+        Some(serde_json::Value::String(mode)) => matches!(mode.as_str(), "auto" | "manual"),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -237,6 +265,32 @@ mod tests {
             .collect();
 
         assert_eq!(built, ["x", "npm:create-vite", "my-app"]);
+    }
+
+    #[test]
+    fn writes_node_modules_reads_node_modules_dir() {
+        use super::writes_node_modules;
+        let cases = [
+            (r#"{ "nodeModulesDir": "auto" }"#, true),
+            (r#"{ "nodeModulesDir": "manual" }"#, true),
+            (r#"{ "nodeModulesDir": "none" }"#, false),
+            (r#"{ "nodeModulesDir": true }"#, true),
+            (r#"{ "nodeModulesDir": false }"#, false),
+            (r#"{ "tasks": {} }"#, false), // unset
+            (r"{ /* jsonc */ }", false),
+        ];
+        for (i, (body, expected)) in cases.iter().enumerate() {
+            let dir = TempDir::new(&format!("deno-nmd-{i}"));
+            fs::write(dir.path().join("deno.json"), body).expect("write config");
+            assert_eq!(writes_node_modules(dir.path()), *expected, "body: {body}");
+        }
+    }
+
+    #[test]
+    fn writes_node_modules_false_without_config() {
+        use super::writes_node_modules;
+        let dir = TempDir::new("deno-no-config");
+        assert!(!writes_node_modules(dir.path()));
     }
 
     #[test]

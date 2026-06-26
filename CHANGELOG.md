@@ -22,6 +22,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   both `bun` and `deno` would write `node_modules`, `pms = ["bun"]` keeps
   install to one. A listed-but-undetected PM errors. `--pm`/`RUNNER_PM` still
   takes precedence; `[pm]` continues to scope only script dispatch.
+- `runner install` and `doctor` now warn when two detected package managers
+  would install into the same directory — today `node_modules` (a node PM
+  plus a `nodeModulesDir`-enabled Deno). The warning points at `[install].pms`
+  and is suppressed once the allowlist narrows install to a single writer.
 
 ## [0.14.2] - 2026-06-25
 

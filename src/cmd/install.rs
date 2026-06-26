@@ -11,7 +11,7 @@ use colored::Colorize;
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
 use crate::resolver::{ResolutionOverrides, ResolveError};
 use crate::tool;
-use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
+use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskRunner, version_matches};
 
 /// Install dependencies for each detected package manager.
 ///
@@ -51,6 +51,8 @@ pub(crate) fn install_pms(
     // emit an empty `runner: install` group — same rationale as the
     // no-PM bail above.
     let pms = select_install_pms(ctx, overrides)?;
+
+    warn_selected_collisions(ctx, &pms, overrides);
 
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
@@ -129,6 +131,46 @@ fn select_install_pms(
     }
 
     Ok(ctx.package_managers.clone())
+}
+
+/// Warn about an install-dir collision only when the *selected* PM set
+/// still collides. Detection records the collision over every detected PM
+/// (so `doctor` reports it), but `[install].pms` / `RUNNER_INSTALL_PMS` may
+/// already have narrowed install to a single writer — in which case there
+/// is nothing left to warn about.
+fn warn_selected_collisions(
+    ctx: &ProjectContext,
+    pms: &[PackageManager],
+    overrides: &ResolutionOverrides,
+) {
+    if overrides.no_warnings {
+        return;
+    }
+    for warning in &ctx.warnings {
+        if let Some(reduced) = still_colliding(warning, pms) {
+            eprintln!("{} {reduced}", "warn:".yellow().bold());
+        }
+    }
+}
+
+/// If `warning` is an install-dir collision that still has ≥2 writers once
+/// narrowed to the `selected` install set, return the reduced warning to
+/// emit; otherwise `None`. Pure so the narrowing is unit-testable.
+fn still_colliding(
+    warning: &DetectionWarning,
+    selected: &[PackageManager],
+) -> Option<DetectionWarning> {
+    let DetectionWarning::InstallDirCollision { dir, pms: writers } = warning else {
+        return None;
+    };
+    // Copy the `&'static str` out of the by-ref match binding (`&&str`).
+    let &dir = dir;
+    let still: Vec<PackageManager> = writers
+        .iter()
+        .copied()
+        .filter(|pm| selected.contains(pm))
+        .collect();
+    (still.len() >= 2).then_some(DetectionWarning::InstallDirCollision { dir, pms: still })
 }
 
 /// Run a single PM's install in the foreground, inheriting stdio.
@@ -339,6 +381,29 @@ mod tests {
 
         let msg = format!("{err}");
         assert!(msg.contains("--pm"), "should name the flag: {msg}");
+    }
+
+    #[test]
+    fn still_colliding_clears_once_filtered_to_single_writer() {
+        use super::still_colliding;
+        use crate::types::DetectionWarning;
+
+        let warning = DetectionWarning::InstallDirCollision {
+            dir: "node_modules",
+            pms: vec![PackageManager::Bun, PackageManager::Deno],
+        };
+        // Restricting install to bun alone resolves the collision.
+        assert!(still_colliding(&warning, &[PackageManager::Bun]).is_none());
+        // Both still selected → still a collision (reduced set unchanged).
+        let reduced = still_colliding(&warning, &[PackageManager::Bun, PackageManager::Deno])
+            .expect("two writers still collide");
+        match reduced {
+            DetectionWarning::InstallDirCollision { dir, pms } => {
+                assert_eq!(dir, "node_modules");
+                assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Deno]);
+            }
+            other => panic!("expected collision, got {other:?}"),
+        }
     }
 
     #[test]
