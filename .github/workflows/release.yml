@@ -20,7 +20,7 @@ jobs:
       # setupCommand; cold that costs ~4min/run. Cache the toolchain + dprint's
       # plugin/setup state so it installs once. restore-keys serves a slightly
       # stale nightly on config change rather than reinstalling from scratch.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.rustup/toolchains
