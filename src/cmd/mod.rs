@@ -187,6 +187,17 @@ const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
     group_output && under_github_actions
 }
 
+/// Pure core of [`emits_group`]: grouping on, under Actions, and not already
+/// nested. Split out from the env read so the nesting gate is unit-testable
+/// without a live `GITHUB_ACTIONS` environment.
+const fn group_emission(
+    group_output: bool,
+    under_github_actions: bool,
+    parent_group_open: bool,
+) -> bool {
+    should_group(group_output, under_github_actions) && !parent_group_open
+}
+
 /// Whether *this* runner emits a GitHub Actions group around its children:
 /// grouping is on, we're under Actions, and a parent runner hasn't already
 /// opened one ([`ResolutionOverrides::parent_group_open`]). When true, the
@@ -194,8 +205,11 @@ const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
 /// so a nested runner suppresses its own groups. When false, no group is
 /// opened (nested output flows into the parent's group, or grouping is off).
 pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
-    should_group(overrides.group_output, actions_rs::env::is_github_actions())
-        && !overrides.parent_group_open
+    group_emission(
+        overrides.group_output,
+        actions_rs::env::is_github_actions(),
+        overrides.parent_group_open,
+    )
 }
 
 /// Open a collapsible GitHub Actions log group titled `runner: {name}` when
@@ -266,21 +280,28 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::{configure_command, emits_group, node_bin_dirs, prepended_path};
+    use super::{configure_command, group_emission, node_bin_dirs, prepended_path};
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
 
     #[test]
-    fn emits_group_false_when_nested_under_parent_group() {
-        // A parent runner's already-open group (parent_group_open) suppresses
-        // this runner's grouping regardless of the other signals — GHA groups
-        // don't nest, so a nested `::endgroup::` would close the parent's early.
-        let overrides = ResolutionOverrides {
-            group_output: true,
-            parent_group_open: true,
-            ..ResolutionOverrides::default()
-        };
-        assert!(!emits_group(&overrides));
+    fn group_emission_gates_on_nesting() {
+        // Exercise the pure core directly (no live GITHUB_ACTIONS needed): the
+        // nested flag is the load-bearing gate. Holding grouping on + under
+        // Actions, flipping parent_group_open flips the decision — proving the
+        // nesting suppression actually fires (a tautological test that only
+        // checked the env-false path would pass even without the gate).
+        assert!(
+            group_emission(true, true, false),
+            "grouping on + under Actions + not nested → emit"
+        );
+        assert!(
+            !group_emission(true, true, true),
+            "...but a parent's open group suppresses it (GHA groups don't nest)"
+        );
+        // The other two factors still gate independently.
+        assert!(!group_emission(false, true, false), "grouping opted out");
+        assert!(!group_emission(true, false, false), "not under Actions");
     }
 
     #[test]

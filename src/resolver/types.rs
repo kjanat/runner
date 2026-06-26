@@ -285,6 +285,11 @@ pub(crate) struct OverrideSources<'a> {
     /// `RUNNER_INSTALL_PMS` env (comma/space-separated). No CLI flag; the
     /// config side comes from the loaded `runner.toml` `[install].pms`.
     pub install_pms: SourceValue<'a>,
+    /// Internal `RUNNER_GROUP_ACTIVE` nesting marker a parent runner set on
+    /// this process (see `crate::cmd::GROUP_ACTIVE_ENV`). Env-only — no CLI or
+    /// config side — but captured here so `from_sources` stays a pure function
+    /// of its inputs and tests can inject it.
+    pub group_active: Option<&'a str>,
     /// Loaded `runner.toml` if any.
     pub config: Option<&'a LoadedConfig>,
 }
