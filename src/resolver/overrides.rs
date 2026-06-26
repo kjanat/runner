@@ -237,6 +237,16 @@ impl ResolutionOverrides {
             github_group_parallel,
             parallel_grouped,
             install_pms,
+            // Set by a parent runner that already opened a GHA group (see
+            // `crate::cmd::GROUP_ACTIVE_ENV`). Read straight from the env: it's
+            // an internal nesting signal, not part of the CLI/env/config
+            // override layering. Gated through `is_env_truthy` like every other
+            // `RUNNER_*` boolean, so `=0`/`=false`/empty read as not-nested
+            // (the runner itself only ever writes `1`). Absent → false.
+            parent_group_open: std::env::var(crate::cmd::GROUP_ACTIVE_ENV)
+                .ok()
+                .as_deref()
+                .is_some_and(is_env_truthy),
         })
     }
 }

@@ -732,6 +732,28 @@ mod tests {
         assert!(failure.keep_going);
         assert_eq!(tasks, vec!["build".to_string()]);
     }
+
+    #[test]
+    fn install_accepts_parallel_flag() {
+        // `-p` after the task list still parses as a flag (plain positional,
+        // not trailing_var_arg) and selects parallel post-install execution.
+        let cli =
+            Cli::try_parse_from(["runner", "install", "build", "test", "-p"]).expect("parses");
+        let Some(Command::Install { tasks, mode, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(mode.parallel, "-p should set parallel");
+        assert!(!mode.sequential);
+        assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
+    }
+
+    #[test]
+    fn install_rejects_sequential_and_parallel_together() {
+        let err =
+            Cli::try_parse_from(["runner", "install", "-s", "-p", "build"]).expect_err("conflict");
+        let msg = format!("{err}");
+        assert!(msg.contains("--parallel") || msg.contains("--sequential"));
+    }
 }
 
 /// Universal project task runner.
@@ -945,20 +967,27 @@ pub(crate) enum Command {
         source: Option<String>,
     },
 
-    /// Install deps; may chain tasks after (always sequential)
-    #[command(alias = "i")]
+    /// Install deps; may chain tasks after; `-s`/`-p` pick the post-install mode
+    #[command(
+        alias = "i",
+        about = concat!("Install deps; may chain tasks after; ", cyan!("-s"), "/", cyan!("-p"), " pick the post-install mode"),
+    )]
     Install {
         /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
         #[arg(short = 'f', long, display_order = help_order::COMMAND)]
         frozen: bool,
-        /// Optional task names to run after install completes. Chain is
-        /// always sequential; `-p` is not accepted here. Plain positional
-        /// (no `trailing_var_arg`) so chain-failure flags placed after
-        /// the task list still parse as flags, not task names.
+        /// Optional task names to run after install completes. Sequential by
+        /// default; `-p` runs them concurrently once install finishes (install
+        /// itself always runs first, never as a parallel sibling). Plain
+        /// positional (no `trailing_var_arg`) so chain flags placed after the
+        /// task list still parse as flags, not task names.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         tasks: Vec<String>,
-        /// Chain failure-policy flags. `--kill-on-fail` is accepted but
-        /// unused (install is always sequential).
+        /// Chain mode flags `-s`/`-p` — govern the post-install tasks only.
+        #[command(flatten)]
+        mode: ChainModeFlags,
+        /// Chain failure-policy flags `-k`/`-K`. `-K` (kill siblings) only
+        /// bites with `-p`; under `-s` it degrades to fail-fast.
         #[command(flatten)]
         failure: ChainFailureFlags,
     },

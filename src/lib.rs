@@ -620,16 +620,60 @@ fn dispatch_install_chain(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
     frozen: bool,
+    mode: cli::ChainModeFlags,
     tasks: &[String],
 ) -> Result<i32> {
-    let mut items = vec![chain::ChainItem::install(frozen)];
-    items.extend(chain::parse::parse_task_list(tasks)?);
-    let c = chain::Chain {
-        mode: chain::ChainMode::Sequential,
-        items,
-        failure: overrides.failure_policy,
-    };
-    chain::exec::run_chain(ctx, overrides, &c)
+    let items = chain::parse::parse_task_list(tasks)?;
+
+    if !mode.parallel {
+        // Sequential (default): install is the chain head, then tasks run in
+        // order. `run_chain` pre-flights the task tokens *before* install, so
+        // a typo'd task name aborts ahead of the slow install step.
+        let mut all = vec![chain::ChainItem::install(frozen)];
+        all.extend(items);
+        return chain::exec::run_chain(
+            ctx,
+            overrides,
+            &chain::Chain {
+                mode: chain::ChainMode::Sequential,
+                items: all,
+                failure: overrides.failure_policy,
+            },
+        );
+    }
+
+    // Parallel post-install: install must finish first (it's the prerequisite,
+    // and the parallel executor refuses an install item as a sibling). So run
+    // install as the sequential head, then fan the tasks out in parallel.
+    // Pre-flight the task tokens up front to preserve the "typo aborts before
+    // install" guarantee the sequential path gets for free. `run_chain` below
+    // re-prechecks (it can't assume a caller did), but that pass runs after
+    // install — this loop is what gates the slow install. precheck_task is
+    // side-effect-free, so the redundant second pass is harmless.
+    for task in tasks {
+        cmd::run::precheck_task(ctx, overrides, task)?;
+    }
+    let install_code = cmd::install(ctx, overrides, frozen)?;
+    let keep_going = matches!(overrides.failure_policy, chain::FailurePolicy::KeepGoing);
+    if install_code != 0 && !keep_going {
+        return Ok(install_code);
+    }
+    let task_code = chain::exec::run_chain(
+        ctx,
+        overrides,
+        &chain::Chain {
+            mode: chain::ChainMode::Parallel,
+            items,
+            failure: overrides.failure_policy,
+        },
+    )?;
+    // First failure wins, mirroring chain semantics: a failed install is the
+    // first failure even if a later task also fails.
+    Ok(if install_code != 0 {
+        install_code
+    } else {
+        task_code
+    })
 }
 
 fn dispatch_run(
@@ -895,10 +939,29 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
             }
         }
-        Some(cli::Command::Install { frozen, tasks, .. }) if !tasks.is_empty() => {
-            dispatch_install_chain(&ctx, &overrides, frozen, &tasks)
+        Some(cli::Command::Install {
+            frozen,
+            tasks,
+            mode,
+            ..
+        }) if !tasks.is_empty() => dispatch_install_chain(&ctx, &overrides, frozen, mode, &tasks),
+        Some(cli::Command::Install {
+            frozen,
+            mode,
+            failure,
+            ..
+        }) => {
+            // No post-install tasks, so the chain flags govern nothing — say so
+            // rather than silently swallowing a `-p`/`-k` the user expected to
+            // matter.
+            if mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail {
+                eprintln!(
+                    "{} chain flags (-s/-p/-k/-K) have no effect without post-install task names",
+                    "note:".dimmed(),
+                );
+            }
+            cmd::install(&ctx, &overrides, frozen)
         }
-        Some(cli::Command::Install { frozen, .. }) => cmd::install(&ctx, &overrides, frozen),
         Some(cli::Command::Clean {
             yes,
             include_framework,

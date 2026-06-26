@@ -220,14 +220,14 @@ pub(super) fn resolve_dispatch(
             if should_use_bun_test_fallback(ctx, resolved_pm, task_name) {
                 print_dispatch_arrow(overrides, "bun", "test", args);
                 let mut cmd = tool::bun::test_cmd(args);
-                crate::cmd::configure_command(&mut cmd, &ctx.root);
+                crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
                 return Ok(Dispatch::Spawn(cmd));
             }
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.
             let (label, mut cmd) = build_pm_exec_command(ctx, resolved_pm, task_name, args);
             print_dispatch_arrow(overrides, label, task_name, args);
-            crate::cmd::configure_command(&mut cmd, &ctx.root);
+            crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
             return Ok(Dispatch::Spawn(cmd));
         }
 
@@ -254,7 +254,7 @@ pub(super) fn resolve_dispatch(
     print_dispatch_arrow(overrides, entry.source.label(), task_name, args);
 
     let mut cmd = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::cmd::configure_command(&mut cmd, &ctx.root);
+    crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
     Ok(Dispatch::Spawn(cmd))
 }
 

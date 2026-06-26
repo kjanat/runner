@@ -91,6 +91,14 @@ pub(crate) struct ResolutionOverrides {
     /// means "no install filter" — install fans out to every detected PM.
     /// Unlike [`Self::pm`], this never affects script dispatch.
     pub install_pms: Vec<PackageManager>,
+    /// `true` when a parent `runner`/`run` already opened a GitHub Actions
+    /// log group above this process (signalled via the inherited
+    /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest —
+    /// a nested `::endgroup::` closes the parent's group early — so when this
+    /// is set, this runner's own group-opening sites stay silent and output
+    /// flows into the parent's group. Internal/runner-set, never a user
+    /// override.
+    pub parent_group_open: bool,
 }
 
 /// What to do when no signal in steps 2–6 matches.

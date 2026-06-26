@@ -102,10 +102,19 @@ impl BufferSink {
     }
 
     /// Replay buffered records to their original streams.
+    ///
+    /// When `neutralize` is set (grouped replay under GitHub Actions), a child
+    /// line that is exactly a `::group::<title>` or `::endgroup::` workflow
+    /// command at column 0 is rewritten so it can't nest inside — or
+    /// prematurely close — runner's own per-task group: the group title is
+    /// surfaced as plain text and the endgroup is dropped. All other lines,
+    /// including `::warning::`/`::error::`/`::notice::` annotations, replay
+    /// verbatim.
     pub(crate) fn replay_to(
         &self,
         stdout: &mut dyn Write,
         stderr: &mut dyn Write,
+        neutralize: bool,
     ) -> io::Result<()> {
         self.close();
         {
@@ -130,16 +139,35 @@ impl BufferSink {
             let mut bytes = vec![0_u8; len];
             file.read_exact(&mut bytes)?;
 
-            match stream[0] {
-                STREAM_STDOUT => stdout.write_all(&bytes)?,
-                STREAM_STDERR => stderr.write_all(&bytes)?,
+            let out: &mut dyn Write = match stream[0] {
+                STREAM_STDOUT => &mut *stdout,
+                STREAM_STDERR => &mut *stderr,
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         "invalid buffer stream marker",
                     ));
                 }
+            };
+
+            // `bytes` is one line including its trailing `\n`. Workflow
+            // commands are only honoured by Actions at column 0, so an exact
+            // prefix match is what GitHub would interpret.
+            if neutralize {
+                if let Some(title) = bytes.strip_prefix(b"::group::".as_slice()) {
+                    // Surface the group title as plain text; drop a titleless
+                    // `::group::` rather than emit a stray blank line. `title`
+                    // still carries the trailing newline.
+                    if title != b"\n".as_slice() {
+                        out.write_all(title)?;
+                    }
+                    continue;
+                }
+                if bytes.starts_with(b"::endgroup::") {
+                    continue;
+                }
             }
+            out.write_all(&bytes)?;
         }
 
         stdout.flush()?;
@@ -326,11 +354,48 @@ mod tests {
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        sink.replay_to(&mut stdout, &mut stderr)
+        sink.replay_to(&mut stdout, &mut stderr, false)
             .expect("buffer should replay");
 
         assert_eq!(stdout, b"first\n");
         assert_eq!(stderr, b"second\n");
+    }
+
+    #[test]
+    fn replay_neutralizes_child_group_commands_when_enabled() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[i]", false, "::group::Building");
+        sink.emit("[i]", false, "compiling...");
+        sink.emit("[i]", false, "::endgroup::");
+        sink.emit("[i]", false, "::group::"); // titleless → dropped, no blank line
+        sink.emit("[i]", true, "::warning::heads up");
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, true)
+            .expect("buffer should replay");
+
+        // `::group::Building` → plain `Building`; `::endgroup::` and a titleless
+        // `::group::` dropped; a normal line is kept; the `::warning::`
+        // annotation stays verbatim.
+        assert_eq!(stdout, b"Building\ncompiling...\n");
+        assert_eq!(stderr, b"::warning::heads up\n");
+    }
+
+    #[test]
+    fn replay_without_neutralize_keeps_child_group_commands_verbatim() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        sink.emit("[i]", false, "::group::X");
+        sink.emit("[i]", false, "::endgroup::");
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, false)
+            .expect("buffer should replay");
+
+        assert_eq!(stdout, b"::group::X\n::endgroup::\n");
     }
 
     #[test]
