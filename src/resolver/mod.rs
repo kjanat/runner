@@ -769,6 +769,7 @@ mod tests {
     fn loaded_config_with_node(node: &str) -> LoadedConfig {
         LoadedConfig {
             path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
             config: RunnerConfig {
                 pm: PmSection {
                     node: Some(node.to_owned()),
@@ -842,6 +843,7 @@ mod tests {
     fn config_python_pm_keyed_under_python_ecosystem() {
         let loaded = LoadedConfig {
             path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
             config: RunnerConfig {
                 pm: PmSection {
                     node: None,
@@ -1065,6 +1067,7 @@ mod tests {
 
         let loaded = LoadedConfig {
             path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
             config: RunnerConfig {
                 task_runner: TaskRunnerSection {
                     prefer: vec!["just".to_string(), "turbo".to_string()],
@@ -1090,6 +1093,7 @@ mod tests {
 
         let loaded = LoadedConfig {
             path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
             config: RunnerConfig {
                 task_runner: TaskRunnerSection {
                     prefer: vec!["zoot".to_string()],
@@ -1537,6 +1541,7 @@ mod tests {
         use crate::config::ChainSection;
         LoadedConfig {
             path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
             config: RunnerConfig {
                 chain: ChainSection {
                     keep_going,

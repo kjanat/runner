@@ -260,6 +260,17 @@ pub(crate) enum DetectionWarning {
         /// The detected PMs that target it, in detection order.
         pms: Vec<PackageManager>,
     },
+    /// `runner.toml` carries a key this build doesn't recognize — a typo, or
+    /// a section/field added by a newer `runner`. Tolerated for forward
+    /// compatibility: the key is ignored and the rest of the config still
+    /// applies, so a config written by one version never bricks task
+    /// dispatch under another. Surfaced as a warning so genuine typos stay
+    /// visible instead of vanishing silently.
+    UnknownConfigKey {
+        /// Dotted path to the unrecognized key: `"github"` for an unknown
+        /// section, `"chain.fast"` for an unknown field within a known one.
+        path: String,
+    },
 }
 
 impl DetectionWarning {
@@ -278,6 +289,7 @@ impl DetectionWarning {
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
             Self::InstallDirCollision { .. } => "install",
+            Self::UnknownConfigKey { .. } => "runner.toml",
         }
     }
 
@@ -358,6 +370,10 @@ impl DetectionWarning {
                      runner.toml (or `RUNNER_INSTALL_PMS`).",
                 )
             }
+            Self::UnknownConfigKey { path } => format!(
+                "unknown key `{path}` ignored — a typo, or written by a newer runner. This build \
+                 doesn't recognize it; the rest of the config still applies.",
+            ),
         }
     }
 }

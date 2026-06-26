@@ -400,8 +400,11 @@ where
 }
 
 fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
-    let ctx = detect::detect(dir);
+    let mut ctx = detect::detect(dir);
     let loaded_config = config::load(dir)?;
+    if let Some(loaded) = &loaded_config {
+        ctx.warnings.extend(loaded.warnings.iter().cloned());
+    }
     let overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.global.pm_override.as_deref(),
         cli.global.runner_override.as_deref(),
@@ -840,13 +843,18 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let mut ctx = detect::detect(dir);
     // A malformed `runner.toml` must not abort the `config` subcommand —
     // `config validate`/`show` exist to inspect and repair exactly that
-    // file, and they re-load it with their own error handling. Every other
-    // command requires a clean parse here.
+    // file, and they re-load it with their own error handling. Unknown
+    // sections/fields are tolerated everywhere (forward compat) and surface
+    // as warnings; only an unreadable/syntactically-broken file or a
+    // wrong-typed known field still fails the parse here.
     let loaded_config = match config::load(dir) {
         Ok(loaded) => loaded,
         Err(_) if matches!(cli.command, Some(cli::Command::Config { .. })) => None,
         Err(e) => return Err(e),
     };
+    if let Some(loaded) = &loaded_config {
+        ctx.warnings.extend(loaded.warnings.iter().cloned());
+    }
     let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
 
     match cli.command {

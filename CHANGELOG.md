@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.14.3] - 2026-06-26
+
 ### Added
 
 - `[install].pms` config + `RUNNER_INSTALL_PMS` env restrict which detected
@@ -34,6 +36,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   These are the binary sub-packages npm selects via `optionalDependencies`;
   the richer metadata raises their Socket.dev Quality score and explains the
   facade-resolution mechanism to anyone landing on them directly.
+
+### Fixed
+
+- `runner.toml` parsing is now forward-compatible: an unrecognized section or
+  field (a typo, or a key written by a newer `runner`) is ignored with a
+  warning instead of aborting the command. Previously an unknown key was a
+  hard parse error, so a config written by one version could brick task
+  dispatch — including postinstall `run` hooks — under another. Genuine
+  errors (unreadable file, malformed TOML, wrong type on a known field) still
+  fail. The JSON Schema stays strict (`additionalProperties: false`) so
+  editors keep flagging typos inline.
 
 ## [0.14.2] - 2026-06-25
 
@@ -1327,7 +1340,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.14.2...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.14.3...HEAD
+[0.14.3]: https://github.com/kjanat/runner/compare/v0.14.2...v0.14.3
 [0.14.2]: https://github.com/kjanat/runner/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/kjanat/runner/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/kjanat/runner/compare/v0.13.1...v0.14.0
