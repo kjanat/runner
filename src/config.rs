@@ -19,10 +19,17 @@
 //! on_mismatch  = "warn"    # warn|error|ignore
 //! ```
 //!
-//! `#[serde(deny_unknown_fields)]` on every section surfaces typos at
-//! parse time rather than as silent no-ops. Adding a new knob is two
-//! changes: a field on the matching section plus a consumer in
-//! `crate::resolver`.
+//! Parsing is **forward-compatible**: an unknown section or field (a typo,
+//! or a key a newer `runner` added) is ignored rather than fatal, so a
+//! config written by one version never bricks task dispatch under another.
+//! Unknown keys are still surfaced as warnings (see [`collect_unknown_keys`])
+//! so genuine typos stay visible. The JSON Schema keeps
+//! `additionalProperties: false` (via `schemars(deny_unknown_fields)`), so
+//! editors flag typos inline even though the runtime tolerates them.
+//!
+//! Adding a new knob is two changes: a field on the matching section plus a
+//! consumer in `crate::resolver`. Keep [`KNOWN_SCHEMA`] in sync so the new
+//! key isn't mis-reported as unknown.
 
 use std::fs;
 use std::io;
@@ -31,7 +38,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Ecosystem, PackageManager};
+use crate::types::{DetectionWarning, Ecosystem, PackageManager};
 
 /// `runner.toml` filename, expected at the project root.
 pub(crate) const CONFIG_FILENAME: &str = "runner.toml";
@@ -92,12 +99,19 @@ pub(crate) struct LoadedConfig {
     pub path: PathBuf,
     /// Parsed config sections.
     pub config: RunnerConfig,
+    /// Unknown sections/fields the parse tolerated (forward compat). Carried
+    /// so the dispatcher can fold them into `ctx.warnings` and `config
+    /// validate` can report them, instead of silently dropping them.
+    pub warnings: Vec<DetectionWarning>,
 }
 
 /// Top-level schema for `runner.toml`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct RunnerConfig {
     /// `[pm]` — per-ecosystem package-manager overrides.
     #[serde(default)]
@@ -130,8 +144,11 @@ pub(crate) struct RunnerConfig {
 /// scopes the *install fan-out*: in a polyglot repo where both `bun` and
 /// `deno` would write `node_modules`, `pms = ["bun"]` keeps install to bun.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct InstallSection {
     /// Allowlist of package-manager labels to install with, e.g.
     /// `["bun"]`. Each must be a detected PM or `runner install` errors.
@@ -148,7 +165,11 @@ pub(crate) struct InstallSection {
 /// config layering means `[chain].keep_going = false` plus
 /// `RUNNER_KEEP_GOING=1` resolves to `true`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 #[cfg_attr(
     feature = "schema",
     schemars(extend("not" = {
@@ -159,7 +180,6 @@ pub(crate) struct InstallSection {
         }
     }))
 )]
-#[serde(deny_unknown_fields)]
 pub(crate) struct ChainSection {
     /// Run every task in the chain to completion regardless of failures.
     /// Mutually exclusive with `kill_on_fail`. Equivalent to `-k` /
@@ -181,8 +201,11 @@ pub(crate) struct ChainSection {
 /// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 /// changes behavior.
 #[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct GitHubSection {
     /// Wrap task output in `runner: <task>` groups under GitHub Actions.
     /// Defaults to `true`; set `false` to restore the old ungrouped output,
@@ -225,8 +248,11 @@ const fn default_github_group_parallel() -> bool {
 /// **outside** GitHub Actions. (Under GitHub Actions, see
 /// [`GitHubSection::group_parallel`].)
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct ParallelSection {
     /// Buffer each parallel task's output and print it as one contiguous
     /// block the moment that task finishes (completion order — first done,
@@ -239,8 +265,11 @@ pub(crate) struct ParallelSection {
 
 /// `[pm]` section — per-ecosystem package manager overrides.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct PmSection {
     /// Package manager used to dispatch Node `package.json` scripts.
     /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
@@ -262,8 +291,11 @@ pub(crate) struct PmSection {
 
 /// `[task_runner]` section — preferred ordering for ambiguous tasks.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct TaskRunnerSection {
     /// Ranked preference list. Restricts candidates to runners in the
     /// list (in listed order); a same-named task under a runner not in
@@ -280,8 +312,11 @@ pub(crate) struct TaskRunnerSection {
 
 /// `[resolution]` section — resolver policy knobs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default) — PATH probe in canonical order when no signals
     /// match; `npm` — legacy silent fallback; `error` — refuse to proceed.
@@ -301,14 +336,63 @@ pub(crate) struct ResolutionSection {
     pub on_mismatch: Option<String>,
 }
 
+/// Recognized sections and their fields, mirroring the section structs and
+/// [`INIT_TEMPLATE`]. A key absent from this table is reported as an
+/// [`DetectionWarning::UnknownConfigKey`] rather than aborting the load, so a
+/// config written by a newer `runner` never bricks an older binary (and vice
+/// versa). Keep in sync when adding a section or field — the
+/// `known_schema_covers_every_section` test guards section-level drift.
+const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
+    ("pm", &["node", "python"]),
+    ("task_runner", &["prefer"]),
+    ("install", &["pms"]),
+    ("resolution", &["fallback", "on_mismatch"]),
+    ("chain", &["keep_going", "kill_on_fail"]),
+    ("github", &["group_output", "group_parallel"]),
+    ("parallel", &["grouped"]),
+];
+
+/// Collect forward-compat warnings for sections/fields this build doesn't
+/// recognize. Walks the raw parsed table against [`KNOWN_SCHEMA`]; a
+/// non-table where a section is expected is left for the typed deserialize to
+/// reject (a genuine type error, not version skew).
+fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning> {
+    let Some(table) = value.as_table() else {
+        return Vec::new();
+    };
+    let mut warnings = Vec::new();
+    for (section, body) in table {
+        let Some((_, known_fields)) = KNOWN_SCHEMA.iter().find(|(name, _)| name == section) else {
+            warnings.push(DetectionWarning::UnknownConfigKey {
+                path: section.clone(),
+            });
+            continue;
+        };
+        if let Some(body) = body.as_table() {
+            for field in body.keys() {
+                if !known_fields.contains(&field.as_str()) {
+                    warnings.push(DetectionWarning::UnknownConfigKey {
+                        path: format!("{section}.{field}"),
+                    });
+                }
+            }
+        }
+    }
+    warnings
+}
+
 /// Load `dir/runner.toml` if it exists.
 ///
-/// Returns `Ok(None)` when the file is absent; `Ok(Some(_))` with the
-/// parsed content otherwise. Parse errors and read errors propagate up.
+/// Returns `Ok(None)` when the file is absent; `Ok(Some(_))` otherwise. The
+/// parse is forward-compatible: unknown sections/fields are tolerated (and
+/// returned as `warnings`) so version skew never aborts the load. Genuine
+/// failures — unreadable file, malformed TOML, or a wrong-typed *known* field
+/// — still propagate as errors.
 ///
 /// # Errors
 ///
-/// Returns an error if the file exists but cannot be read or parsed.
+/// Returns an error if the file exists but cannot be read, isn't valid TOML,
+/// or assigns the wrong type to a recognized field.
 pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
     let path = dir.join(CONFIG_FILENAME);
     let content = match fs::read_to_string(&path) {
@@ -319,10 +403,21 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
         }
     };
 
-    let config: RunnerConfig =
+    // Parse once into a generic value: it lets us surface unknown keys as
+    // warnings (forward compat) while still letting a wrong-typed known field
+    // fail the typed conversion below.
+    let value: toml::Value =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+    let warnings = collect_unknown_keys(&value);
+    let config: RunnerConfig = value
+        .try_into()
+        .with_context(|| format!("failed to parse {}", path.display()))?;
 
-    Ok(Some(LoadedConfig { path, config }))
+    Ok(Some(LoadedConfig {
+        path,
+        config,
+        warnings,
+    }))
 }
 
 /// Validate `[pm].node` against the set of script-dispatching PMs.
@@ -367,9 +462,24 @@ pub(crate) fn parse_python_pm(raw: &str) -> Result<PackageManager> {
 mod tests {
     use std::fs;
 
-    use super::{CONFIG_FILENAME, load, parse_node_pm, parse_python_pm};
+    use super::{
+        CONFIG_FILENAME, INIT_TEMPLATE, KNOWN_SCHEMA, LoadedConfig, load, parse_node_pm,
+        parse_python_pm,
+    };
     use crate::tool::test_support::TempDir;
-    use crate::types::PackageManager;
+    use crate::types::{DetectionWarning, PackageManager};
+
+    /// Dotted paths of the unknown-key warnings a load produced.
+    fn unknown_paths(loaded: &LoadedConfig) -> Vec<String> {
+        loaded
+            .warnings
+            .iter()
+            .filter_map(|w| match w {
+                DetectionWarning::UnknownConfigKey { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 
     #[test]
     fn load_returns_none_when_file_absent() {
@@ -398,26 +508,111 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_unknown_top_level_key() {
+    fn load_warns_on_unknown_section_without_failing() {
+        // Forward compat: a section this build doesn't know (a typo, or one a
+        // newer runner added) must not abort the load — it warns and the rest
+        // of the config still applies.
         let dir = TempDir::new("config-unknown-key");
-        fs::write(dir.path().join(CONFIG_FILENAME), "[zoot]\nfoo = 1\n")
-            .expect("config should be written");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[pm]\nnode = \"bun\"\n[zoot]\nfoo = 1\n",
+        )
+        .expect("config should be written");
 
-        let err = load(dir.path()).expect_err("unknown key should error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("failed to parse"));
-        assert!(msg.contains("zoot") || msg.contains("unknown"));
+        let loaded = load(dir.path())
+            .expect("unknown section must be tolerated, not fatal")
+            .expect("config should be present");
+
+        assert_eq!(unknown_paths(&loaded), vec!["zoot".to_string()]);
+        // Known config beside the unknown section is still honored.
+        assert_eq!(loaded.config.pm.node.as_deref(), Some("bun"));
     }
 
     #[test]
-    fn load_rejects_unknown_pm_key() {
+    fn load_warns_on_unknown_field_within_known_section() {
         let dir = TempDir::new("config-unknown-pm-key");
         fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nrust = \"cargo\"\n")
             .expect("config should be written");
 
-        let err = load(dir.path()).expect_err("unknown [pm] key should error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("failed to parse"));
+        let loaded = load(dir.path())
+            .expect("unknown field must be tolerated, not fatal")
+            .expect("config should be present");
+
+        assert_eq!(unknown_paths(&loaded), vec!["pm.rust".to_string()]);
+    }
+
+    #[test]
+    fn load_still_rejects_wrong_type_on_known_field() {
+        // Forward compat tolerates *unknown* keys, not garbage in *known*
+        // ones: a wrong-typed known field is a genuine error, still fatal.
+        let dir = TempDir::new("config-wrong-type");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[github]\ngroup_output = \"yes\"\n",
+        )
+        .expect("config should be written");
+
+        let err = load(dir.path()).expect_err("wrong type on a known field must stay fatal");
+        assert!(format!("{err:#}").contains("failed to parse"));
+    }
+
+    #[test]
+    fn known_schema_matches_init_template_sections_and_fields() {
+        // Guard KNOWN_SCHEMA against drift in both directions, at section AND
+        // field granularity. The scaffold ships every knob (commented out), so
+        // its sections/fields are the canonical set; a field missing from
+        // KNOWN_SCHEMA makes `config init` write a file that warns about its
+        // own keys, while a stale KNOWN_SCHEMA entry lists a field nobody can
+        // set. Equality catches either, so adding a struct field forces the
+        // template and KNOWN_SCHEMA to be updated alongside it.
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // Walk the template into section -> {field names it emits}.
+        let mut template: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut section: Option<String> = None;
+        for line in INIT_TEMPLATE.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix('[') {
+                section = Some(rest.trim_end_matches(']').to_string());
+                template
+                    .entry(section.clone().expect("just set"))
+                    .or_default();
+                continue;
+            }
+            // Field lines are `key = ...`, shipped commented-out. Strip one
+            // leading `#`, then keep only a bare-identifier left of `=` — that
+            // shape excludes the prose comments, which carry no `key =`.
+            let body = trimmed.strip_prefix('#').map_or(trimmed, str::trim);
+            let Some((lhs, _)) = body.split_once('=') else {
+                continue;
+            };
+            let key = lhs.trim();
+            if !key.is_empty()
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && let Some(sec) = &section
+            {
+                template
+                    .get_mut(sec)
+                    .expect("section recorded above")
+                    .insert(key.to_string());
+            }
+        }
+
+        let known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
+            .iter()
+            .map(|(name, fields)| {
+                (
+                    (*name).to_string(),
+                    fields.iter().map(|f| (*f).to_string()).collect(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            template, known,
+            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA exactly — keep the section \
+             structs, the scaffold template, and KNOWN_SCHEMA in sync when adding a knob"
+        );
     }
 
     #[test]
@@ -463,13 +658,15 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_unknown_install_key() {
+    fn load_warns_on_unknown_install_key() {
         let dir = TempDir::new("config-unknown-install-key");
         fs::write(dir.path().join(CONFIG_FILENAME), "[install]\nfoo = true\n")
             .expect("config should be written");
 
-        let err = load(dir.path()).expect_err("unknown [install] key should error");
-        assert!(format!("{err:#}").contains("failed to parse"));
+        let loaded = load(dir.path())
+            .expect("unknown [install] key tolerated")
+            .expect("config present");
+        assert_eq!(unknown_paths(&loaded), vec!["install.foo".to_string()]);
     }
 
     #[test]
@@ -490,14 +687,15 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_unknown_chain_key() {
+    fn load_warns_on_unknown_chain_key() {
         let dir = TempDir::new("config-unknown-chain-key");
         fs::write(dir.path().join(CONFIG_FILENAME), "[chain]\nfast = true\n")
             .expect("config should be written");
 
-        let err = load(dir.path()).expect_err("unknown [chain] key should error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("failed to parse"));
+        let loaded = load(dir.path())
+            .expect("unknown [chain] key tolerated")
+            .expect("config present");
+        assert_eq!(unknown_paths(&loaded), vec!["chain.fast".to_string()]);
     }
 
     #[test]
@@ -543,14 +741,15 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_unknown_github_key() {
+    fn load_warns_on_unknown_github_key() {
         let dir = TempDir::new("config-unknown-github-key");
         fs::write(dir.path().join(CONFIG_FILENAME), "[github]\nfoo = true\n")
             .expect("config should be written");
 
-        let err = load(dir.path()).expect_err("unknown [github] key should error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("failed to parse"));
+        let loaded = load(dir.path())
+            .expect("unknown [github] key tolerated")
+            .expect("config present");
+        assert_eq!(unknown_paths(&loaded), vec!["github.foo".to_string()]);
     }
 
     #[test]
@@ -584,14 +783,15 @@ mod tests {
     }
 
     #[test]
-    fn load_rejects_unknown_parallel_key() {
+    fn load_warns_on_unknown_parallel_key() {
         let dir = TempDir::new("config-unknown-parallel-key");
         fs::write(dir.path().join(CONFIG_FILENAME), "[parallel]\nfoo = true\n")
             .expect("config should be written");
 
-        let err = load(dir.path()).expect_err("unknown [parallel] key should error");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("failed to parse"));
+        let loaded = load(dir.path())
+            .expect("unknown [parallel] key tolerated")
+            .expect("config present");
+        assert_eq!(unknown_paths(&loaded), vec!["parallel.foo".to_string()]);
     }
 
     #[test]

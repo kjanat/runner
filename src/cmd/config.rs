@@ -104,6 +104,13 @@ fn validate(dir: &Path) -> i32 {
         }
     };
 
+    // Unknown sections/fields are tolerated (forward compat) but worth
+    // flagging here — a typo, or a key from a newer runner. They don't make
+    // the file invalid, so they warn without changing the exit code.
+    for warning in &loaded.warnings {
+        eprintln!("{} {warning}", "warn:".yellow().bold());
+    }
+
     if let Err(e) = crate::resolver::validate_config(&loaded) {
         eprintln!("{} {:#}", "invalid:".red().bold(), e);
         return 2;
