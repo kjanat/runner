@@ -557,20 +557,62 @@ mod tests {
     }
 
     #[test]
-    fn known_schema_covers_every_init_template_section() {
-        // Guard against KNOWN_SCHEMA drifting from the scaffold: every section
-        // the template emits must be recognized, or `config init` would write
-        // a file that immediately warns about its own keys.
+    fn known_schema_matches_init_template_sections_and_fields() {
+        // Guard KNOWN_SCHEMA against drift in both directions, at section AND
+        // field granularity. The scaffold ships every knob (commented out), so
+        // its sections/fields are the canonical set; a field missing from
+        // KNOWN_SCHEMA makes `config init` write a file that warns about its
+        // own keys, while a stale KNOWN_SCHEMA entry lists a field nobody can
+        // set. Equality catches either, so adding a struct field forces the
+        // template and KNOWN_SCHEMA to be updated alongside it.
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // Walk the template into section -> {field names it emits}.
+        let mut template: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut section: Option<String> = None;
         for line in INIT_TEMPLATE.lines() {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix('[') {
-                let section = rest.trim_end_matches(']');
-                assert!(
-                    KNOWN_SCHEMA.iter().any(|(name, _)| *name == section),
-                    "INIT_TEMPLATE section [{section}] missing from KNOWN_SCHEMA"
-                );
+                section = Some(rest.trim_end_matches(']').to_string());
+                template
+                    .entry(section.clone().expect("just set"))
+                    .or_default();
+                continue;
+            }
+            // Field lines are `key = ...`, shipped commented-out. Strip one
+            // leading `#`, then keep only a bare-identifier left of `=` — that
+            // shape excludes the prose comments, which carry no `key =`.
+            let body = trimmed.strip_prefix('#').map_or(trimmed, str::trim);
+            let Some((lhs, _)) = body.split_once('=') else {
+                continue;
+            };
+            let key = lhs.trim();
+            if !key.is_empty()
+                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && let Some(sec) = &section
+            {
+                template
+                    .get_mut(sec)
+                    .expect("section recorded above")
+                    .insert(key.to_string());
             }
         }
+
+        let known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
+            .iter()
+            .map(|(name, fields)| {
+                (
+                    (*name).to_string(),
+                    fields.iter().map(|f| (*f).to_string()).collect(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            template, known,
+            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA exactly — keep the section \
+             structs, the scaffold template, and KNOWN_SCHEMA in sync when adding a knob"
+        );
     }
 
     #[test]
