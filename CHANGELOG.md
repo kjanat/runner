@@ -27,6 +27,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   plus a `nodeModulesDir`-enabled Deno). The warning points at `[install].pms`
   and is suppressed once the allowlist narrows install to a single writer.
 
+### Changed
+
+- Published `@runner-run/*` platform packages now carry `keywords`, a
+  descriptive `description`, and a full README (instead of a thin stub).
+  These are the binary sub-packages npm selects via `optionalDependencies`;
+  the richer metadata raises their Socket.dev Quality score and explains the
+  facade-resolution mechanism to anyone landing on them directly.
+
 ## [0.14.2] - 2026-06-25
 
 ### Added
