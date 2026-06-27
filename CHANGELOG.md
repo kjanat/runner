@@ -24,7 +24,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `YARN_ENABLE_SCRIPTS=false` for yarn-berry (which dropped the flag); deno
   already denies dependency scripts by default. Package managers with no skip
   mechanism (cargo, go, bundler, uv/poetry/pipenv) print a `warn:` and proceed
-  rather than silently ignoring the request. Configurable via `[install].scripts
+  rather than silently ignoring the request; because that notice is the only
+  signal the deny was dropped, it is a security disclosure that fires whenever a
+  deny is requested and is *not* silenced by `--no-warnings` /
+  `RUNNER_NO_WARNINGS` (unlike the cosmetic collision/version warnings).
+  Configurable via `[install].scripts
   = "deny"` in runner.toml and `RUNNER_INSTALL_SCRIPTS=deny`, with the usual
   precedence: CLI flag over `RUNNER_INSTALL_SCRIPTS` over `[install].scripts`.
   `"allow"` keeps each manager at its default; forcing scripts back on for the

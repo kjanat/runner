@@ -360,21 +360,38 @@ const fn deny_support(pm: PackageManager) -> DenySupport {
 /// Warn once per selected package manager that cannot honor a requested
 /// deny-scripts policy, so a `--no-scripts` (or `[install].scripts = "deny"` /
 /// `RUNNER_INSTALL_SCRIPTS=deny`) that some managers ignore is never silently
-/// dropped. No-op unless the policy is [`ScriptPolicy::Deny`]; respects
-/// `--no-warnings`, matching the sibling collision/version warnings.
+/// dropped. No-op unless the policy is [`ScriptPolicy::Deny`]. Unlike the
+/// cosmetic collision/version warnings, this notice is a security-relevant
+/// disclosure — the unsupported managers (bundler, uv/poetry/pipenv, cargo, go)
+/// execute arbitrary install-time code and have no flag to skip it — so it
+/// fires unconditionally when a deny policy is active and is *not* silenced by
+/// `--no-warnings` / `RUNNER_NO_WARNINGS`.
 fn warn_unsupported_script_policy(pms: &[PackageManager], overrides: &ResolutionOverrides) {
-    if overrides.no_warnings || !deny_scripts(overrides) {
-        return;
+    for pm in unsupported_deny_managers(pms, overrides) {
+        eprintln!(
+            "{} {} cannot skip install scripts; deny policy not applied to it",
+            "warn:".yellow().bold(),
+            pm.label(),
+        );
     }
-    for pm in pms {
-        if deny_support(*pm) == DenySupport::Unsupported {
-            eprintln!(
-                "{} {} cannot skip install scripts; deny policy not applied to it",
-                "warn:".yellow().bold(),
-                pm.label(),
-            );
-        }
+}
+
+/// Selected managers that cannot honor an active deny-scripts policy, in
+/// selection order. Empty unless the policy is [`ScriptPolicy::Deny`]. Drives
+/// [`warn_unsupported_script_policy`]; pulled out so the security disclosure's
+/// firing rule (fires whenever a deny is requested, independent of
+/// `--no-warnings`) is unit-testable without capturing stderr.
+fn unsupported_deny_managers(
+    pms: &[PackageManager],
+    overrides: &ResolutionOverrides,
+) -> Vec<PackageManager> {
+    if !deny_scripts(overrides) {
+        return Vec::new();
     }
+    pms.iter()
+        .copied()
+        .filter(|pm| deny_support(*pm) == DenySupport::Unsupported)
+        .collect()
 }
 
 /// Print a hint about which version manager command to run.
@@ -400,7 +417,7 @@ mod tests {
 
     use super::{
         DenySupport, build_install_command, deny_support, select_install_pms,
-        warn_unsupported_script_policy,
+        unsupported_deny_managers, warn_unsupported_script_policy,
     };
     use crate::resolver::{
         OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError, ScriptPolicy,
@@ -660,16 +677,23 @@ mod tests {
     }
 
     #[test]
-    fn warn_unsupported_is_silent_unless_denying() {
-        // Smoke: no panic, and the no-warnings / non-deny guards short-circuit
-        // before any emission (stderr capture isn't worth a fixture here).
+    fn deny_disclosure_fires_for_unsupported_pms_regardless_of_no_warnings() {
         let pms = [PackageManager::Cargo, PackageManager::Npm];
-        warn_unsupported_script_policy(&pms, &ResolutionOverrides::default());
+        // Non-deny policy: nothing to disclose.
+        assert!(unsupported_deny_managers(&pms, &ResolutionOverrides::default()).is_empty());
+        // Deny + --no-warnings: the unsupported PM (cargo) is still disclosed,
+        // because this is a security notice, not a cosmetic warning. Npm honors
+        // the deny via a flag, so it is not listed.
         let denying = ResolutionOverrides {
             script_policy: ScriptPolicy::Deny,
             no_warnings: true,
             ..ResolutionOverrides::default()
         };
+        assert_eq!(
+            unsupported_deny_managers(&pms, &denying),
+            vec![PackageManager::Cargo]
+        );
+        // Smoke the public entry point with the same inputs: still emits, no panic.
         warn_unsupported_script_policy(&pms, &denying);
     }
 }
