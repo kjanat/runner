@@ -599,7 +599,7 @@ fn configured_project_dir(
 /// word, so forms like `--dir=~/foo` arrive here unexpanded. We mirror the
 /// common shell behaviour for the bare `~` and `~/` cases; any other form
 /// (including `~user`) is returned unchanged.
-fn expand_tilde(path: &Path) -> PathBuf {
+pub(crate) fn expand_tilde(path: &Path) -> PathBuf {
     expand_tilde_with(path, home_dir().as_deref())
 }
 
