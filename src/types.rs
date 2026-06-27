@@ -536,6 +536,26 @@ impl PackageManager {
     pub(crate) const fn can_dispatch_node_scripts(self) -> bool {
         self.is_node() || matches!(self, Self::Deno)
     }
+
+    /// The task source this package manager owns as a *standalone task
+    /// runner*, distinct from any source it merely shares with other PMs.
+    ///
+    /// Deno is the only PM with a dual nature today: it runs `package.json`
+    /// `"scripts"` like the Node PMs, but it is also a task runner in its
+    /// own right (`deno task`, backed by [`TaskSource::DenoJson`]). That
+    /// distinct source is what a forced `--pm deno` / `RUNNER_PM=deno`
+    /// should bias same-name conflict resolution toward, rather than
+    /// running another source's script *through* deno.
+    ///
+    /// Returns `None` for every other PM: npm/yarn/pnpm/bun all share
+    /// [`TaskSource::PackageJson`], which no single one of them owns, so
+    /// none has a source to bias toward.
+    pub(crate) const fn distinct_task_source(self) -> Option<TaskSource> {
+        match self {
+            Self::Deno => Some(TaskSource::DenoJson),
+            _ => None,
+        }
+    }
 }
 
 impl TaskRunner {

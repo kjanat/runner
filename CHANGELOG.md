@@ -25,6 +25,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Forcing Deno with `--pm deno` / `RUNNER_PM=deno` now biases same-name task
+  selection toward Deno's own task source. Previously a name defined in both
+  `package.json` and `deno.json` (e.g. `check`) always resolved to the
+  `package.json` script per the default tier and was then run *through* deno
+  (`deno task check`), which breaks when the script relies on npm lifecycle
+  build artifacts deno cannot honor. Forcing a PM that is also a distinct task
+  source (today only deno) makes that source win the conflict, so
+  `RUNNER_PM=deno run check` picks `deno:check`. Only conflicting same-name
+  candidates are re-ordered; runs with no `--pm`/`RUNNER_PM` are unchanged.
+  See https://github.com/kjanat/runner/issues/70.
 - GitHub Actions log groups no longer nest when one `runner`/`run` invokes
   another (e.g. `runner` → an `npm`/`postinstall` script → `run -p A B C`). A
   parent that opens a group marks its descendants (`RUNNER_GROUP_ACTIVE`), so
