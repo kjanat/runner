@@ -517,8 +517,8 @@ mod tests {
         assert_eq!(
             bare.get_tag().map(ToString::to_string).as_deref(),
             Some("turbo"),
-            "bare label must name the dispatch-winning source (turbo), not the \
-             detection-order first source (package.json)"
+            "bare label must name the dispatch-winning source (turbo), not the detection-order \
+             first source (package.json)"
         );
 
         let values: Vec<String> = candidates
@@ -552,8 +552,8 @@ mod tests {
         assert_eq!(
             bare.get_tag().map(ToString::to_string).as_deref(),
             Some("turbo"),
-            "bare label must name the rank-winning real source, not the suppressed \
-             passthrough source"
+            "bare label must name the rank-winning real source, not the suppressed passthrough \
+             source"
         );
 
         let values: Vec<String> = candidates
