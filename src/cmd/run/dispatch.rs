@@ -155,12 +155,15 @@ pub(super) fn resolve_dispatch(
 ) -> Result<Dispatch> {
     crate::cmd::print_warnings(ctx, overrides, sink.as_deref_mut());
 
-    // Local-file execution short-circuit: an explicit path-like token that
-    // resolves to an existing file is run as that file (executable /
-    // shebang / source-by-runtime) and must never reach the PM-exec
-    // fallback, which would treat a local path as a remote package spec.
-    // Runs before task lookup so a token with a separator (or an explicit
-    // `./`/`/`/`~` prefix) outranks a same-named task.
+    // Local-file execution short-circuit: a token with an explicit
+    // local-path prefix (`./`, `../`, `/`, `\`, `~`, or a Windows drive
+    // root) that resolves to an existing file is run as that file
+    // (executable / shebang / source-by-runtime) and must never reach the
+    // PM-exec fallback, which would treat a local path as a remote package
+    // spec. Runs before task lookup so an explicit path outranks a
+    // same-named task. A separator-bearing but *relative* token (`bin/tool`)
+    // is intentionally left for the after-miss `try_bare_file` fallback so a
+    // matching task (e.g. a `make bin/tool` target) wins first.
     if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
         let mut command = local.command;
         print_dispatch_arrow(overrides, &local.label, task, args);
@@ -237,11 +240,13 @@ pub(super) fn resolve_dispatch(
                 return Ok(Dispatch::Spawn(cmd));
             }
 
-            // Bare local file: a no-separator token that names a runnable
-            // file in the working directory (e.g. `main.ts`, `build.sh`) is
-            // run as that file rather than handed to the PM-exec fallback,
-            // which would resolve it as a remote package. Tasks already
-            // matched above, so this never shadows a same-named task.
+            // Local file without an explicit prefix: a token that names a
+            // runnable file under the working directory — a bare name
+            // (`main.ts`, `build.sh`) or a relative path with a separator
+            // (`bin/tool`) — is run as that file rather than handed to the
+            // PM-exec fallback, which would resolve it as a remote package.
+            // Tasks already matched above, so this never shadows a same-named
+            // task (a `make bin/tool` target wins first).
             if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args) {
                 let mut command = local.command;
                 print_dispatch_arrow(overrides, &local.label, task_name, args);

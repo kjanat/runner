@@ -9,14 +9,18 @@
 //! before task lookup and the PM-exec fallback. It classifies a path-like
 //! token into one of four outcomes:
 //!
-//! 1. **Executable file** → spawned directly (`Command::new(path)`); on Unix
-//!    the kernel honors any `#!` line itself.
+//! 1. **Directly executable file** (a native binary, or a script whose `#!`
+//!    line the kernel can honor) → spawned directly (`Command::new(path)`).
+//!    A recognized *source* file that merely carries the exec bit but has no
+//!    `#!` line is **not** run this way — `execve` cannot run shebang-less
+//!    text (it returns `ENOEXEC`) — it falls to outcome 3 instead.
 //! 2. **Non-executable file with a `#!` shebang** → the interpreter is
 //!    parsed (including `#!/usr/bin/env -S <interp> <args>`) and the file is
 //!    run through it.
 //! 3. **Recognized source extension** → run via the project runtime
 //!    (`.ts`/`.js`/… → bun / `deno run` / node; `.py` → `uv run` / python;
-//!    `.go` → `go run`), *not* package-exec.
+//!    `.go` → `go run`), *not* package-exec. Reached even with the exec bit
+//!    set, since a shebang-less source file is not a native executable.
 //! 4. **Otherwise** → a clear, actionable error.
 
 use std::fs;
@@ -37,16 +41,21 @@ pub(super) struct LocalDispatch {
     pub(super) command: Command,
 }
 
-/// Try to interpret an explicit path-like `token` (one carrying a separator
-/// or a `~`/`./`/`/` prefix) as a local file to run. Used at the *top* of
-/// dispatch, before task lookup, so an explicit path always wins over a
-/// same-named task.
+/// Try to interpret a `token` carrying an explicit local-path prefix
+/// (`./`, `../`, `/`, `\`, `~`, or a Windows drive root) as a local file to
+/// run. Used at the *top* of dispatch, before task lookup, so an explicit
+/// path always wins over a same-named task.
+///
+/// Only an explicit prefix outranks a task here. A separator-bearing but
+/// *relative* token such as `bin/tool` is left for the after-task-miss
+/// [`try_bare_file`] fallback, so a matching task (e.g. a `make bin/tool`
+/// target) wins first and a built artifact on disk cannot silently shadow it.
 ///
 /// Returns:
-/// - `Ok(None)` — `token` is not a path-like local file (a bare name, an
-///   existing directory, or a separator-bearing remote spec like
-///   `@scope/pkg` or `github.com/owner/tool`); the caller continues normal
-///   task / PM-exec resolution.
+/// - `Ok(None)` — `token` has no local prefix (a bare name, a relative
+///   `bin/tool`, an existing directory, or a remote spec like `@scope/pkg`
+///   or `github.com/owner/tool`); the caller continues normal task /
+///   PM-exec resolution.
 /// - `Ok(Some(_))` — `token` resolves to a runnable file; the caller spawns
 ///   the returned command instead of touching any package manager.
 /// - `Err(_)` — `token` is unambiguously a local path that cannot be run
@@ -58,29 +67,33 @@ pub(super) fn try_path_token(
     token: &str,
     args: &[String],
 ) -> Result<Option<LocalDispatch>> {
-    if !is_path_like(token) {
+    if !has_local_prefix(token) {
         return Ok(None);
     }
     let path = resolve_path(token);
     dispatch_for_path(ctx, overrides, token, &path, args)
 }
 
-/// Try to interpret a *bare* `token` (no separator) as a runnable file in the
-/// working directory. Used as a fallback *after* task lookup misses but
-/// before the PM-exec fallback, so a bare name resolves to a task first
-/// (never colliding) yet a local script such as `main.ts` still runs instead
+/// Try to interpret a `token` *without* an explicit local-path prefix — a
+/// bare name (`main.ts`) or a relative path bearing a separator
+/// (`bin/tool`) — as a runnable file under the working directory. Used as a
+/// fallback *after* task lookup misses but before the PM-exec fallback, so a
+/// matching task always wins first (a bare name or a `make bin/tool` target
+/// never collides) yet a local script such as `main.ts` still runs instead
 /// of being mistaken for a remote package.
 ///
-/// Only intercepts when the file is actually runnable (executable bit, `#!`
-/// shebang, or a recognized source extension); a non-script bare token is
-/// left to the PM-exec fallback so existing behavior is unchanged.
+/// Prefix-bearing paths (`./x`, `/x`, `~/x`, `C:\x`) are the pre-task
+/// [`try_path_token`] branch's job and are declined here. Only intercepts
+/// when the file is actually runnable (executable bit, `#!` shebang, or a
+/// recognized source extension); a non-script token is left to the PM-exec
+/// fallback so existing behavior is unchanged.
 pub(super) fn try_bare_file(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     token: &str,
     args: &[String],
 ) -> Option<LocalDispatch> {
-    if is_path_like(token) {
+    if has_local_prefix(token) {
         return None;
     }
     let base = std::env::current_dir().ok()?;
@@ -148,9 +161,21 @@ fn build_command(
     meta: &fs::Metadata,
     args: &[String],
 ) -> Result<(String, Command)> {
-    // 1. Executable file → spawn directly. On Unix the kernel reads any
-    //    `#!` shebang itself; on Windows this covers native `.exe`/`.com`.
-    if is_directly_executable(path, meta) {
+    // Read any `#!` shebang once up front: it is what disambiguates an
+    // exec-bit-carrying *source* file (a `+x` `.ts` with no shebang is still
+    // text that `execve` cannot run) from a genuine self-executable script
+    // or native binary.
+    let shebang = read_shebang(path)?;
+    let runtime = runtime_for_extension(ctx, overrides, path);
+
+    // 1. Directly executable → spawn directly, *unless* it is a recognized
+    //    source file with no `#!` line. On Unix the kernel honors a real
+    //    shebang itself; on Windows this covers native `.exe`/`.com`. A
+    //    shebang-less source file with the exec bit (common on
+    //    vfat/exfat/ntfs-3g mounts that report mode 0777 for every file)
+    //    would otherwise hit `execve`, fail `ENOEXEC`, and never reach
+    //    bun/deno/node/uv/python/go — so route it to the runtime (outcome 3).
+    if is_directly_executable(path, meta) && (shebang.is_some() || runtime.is_none()) {
         let mut command = Command::new(path);
         command.args(args);
         return Ok((String::from("exec"), command));
@@ -158,12 +183,12 @@ fn build_command(
 
     // 2. A `#!` shebang names the interpreter explicitly — honor it even
     //    without the executable bit (and on Windows, which has none).
-    if let Some(shebang) = read_shebang(path)? {
+    if let Some(shebang) = shebang {
         return Ok(shebang_command(&shebang, path, args));
     }
 
     // 3. A recognized source extension runs via the project runtime.
-    if let Some(runtime) = runtime_for_extension(ctx, overrides, path) {
+    if let Some(runtime) = runtime {
         let (label, command) = command_for_runtime(runtime, path, args);
         return Ok((label.to_string(), command));
     }
@@ -175,14 +200,6 @@ fn build_command(
          give it a known extension (.ts/.tsx/.js/.mjs/.cjs/.py/.go).",
         path.display(),
     );
-}
-
-/// Whether `token` looks like a filesystem path rather than a bare task
-/// name. A path separator (`/`, or `\` on Windows-style paths) or a leading
-/// `~` is enough; bare names (`build`, `@scope/pkg` is handled later) never
-/// enter the local-file branch, so they cannot collide with task names.
-fn is_path_like(token: &str) -> bool {
-    token.contains('/') || token.contains('\\') || token.starts_with('~')
 }
 
 /// Whether `token` carries an explicit local-path prefix. Used to decide
@@ -495,9 +512,8 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Runtime, bare_file_in, build_command, dispatch_for_path, has_local_prefix, is_path_like,
-        js_runtime, parse_shebang, py_runtime, runtime_for_extension, try_bare_file,
-        try_path_token,
+        Runtime, bare_file_in, build_command, dispatch_for_path, has_local_prefix, js_runtime,
+        parse_shebang, py_runtime, runtime_for_extension, try_bare_file, try_path_token,
     };
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
@@ -521,20 +537,6 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
-    }
-
-    #[test]
-    fn is_path_like_requires_a_separator_or_tilde() {
-        assert!(is_path_like("bin/recipe.ts"));
-        assert!(is_path_like("./build.sh"));
-        assert!(is_path_like("../tools/x.js"));
-        assert!(is_path_like("/abs/path"));
-        assert!(is_path_like("~/script.ts"));
-        assert!(is_path_like(r"dir\file.ts"));
-        // Bare names (including scoped tasks) are not path-like.
-        assert!(!is_path_like("build"));
-        assert!(!is_path_like("lint:cargo"));
-        assert!(!is_path_like("test"));
     }
 
     #[test]
@@ -775,6 +777,69 @@ mod tests {
         assert_eq!(args_of(&command), [String::from("arg")]);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn build_command_runs_exec_bit_source_without_shebang_via_runtime() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // A `.ts` file that carries the exec bit but has no `#!` shebang is
+        // still text: a raw `execve` would fail `ENOEXEC` (or be retried as a
+        // broken `/bin/sh` parse) and never reach bun. It must dispatch
+        // through the detected runtime instead. This is the real breakage on
+        // vfat/exfat/ntfs-3g mounts that report mode 0777 for every file.
+        let dir = TempDir::new("local-exec-ts");
+        let file = dir.path().join("deploy.ts");
+        std::fs::write(&file, "console.log('hi')\n").expect("file should be written");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod should succeed");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![PackageManager::Bun]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[String::from("--flag")],
+        )
+        .expect("an exec-bit source file should build a runtime command");
+
+        assert_eq!(label, "bun", "a shebang-less +x .ts runs via bun, not exec");
+        assert_eq!(command.get_program().to_string_lossy(), "bun");
+        assert_eq!(
+            args_of(&command),
+            [file.to_string_lossy().into_owned(), String::from("--flag")],
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_execs_exec_bit_source_with_shebang_directly() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // A `.ts` file with BOTH the exec bit and a `#!` line is a genuine
+        // self-executable script: the kernel honors the shebang, so spawn it
+        // directly rather than second-guessing the runtime.
+        let dir = TempDir::new("local-exec-ts-shebang");
+        let file = dir.path().join("deploy.ts");
+        std::fs::write(&file, "#!/usr/bin/env -S deno run -A\nconsole.log('hi')\n")
+            .expect("file should be written");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod should succeed");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![PackageManager::Bun]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect("an exec-bit shebang file should build a command");
+
+        assert_eq!(label, "exec", "a +x file with a shebang spawns directly");
+        assert_eq!(PathBuf::from(command.get_program()), file);
+    }
+
     #[test]
     fn dispatch_for_path_passes_through_directories() {
         let dir = TempDir::new("local-dir");
@@ -879,17 +944,62 @@ mod tests {
     }
 
     #[test]
-    fn try_bare_file_ignores_path_like_tokens() {
-        // Separator-bearing tokens are the path branch's responsibility;
-        // the bare-file fallback must decline them outright.
+    fn try_bare_file_declines_local_prefix_tokens() {
+        // Prefix-bearing paths are the pre-task path branch's responsibility;
+        // the after-miss fallback must decline them outright. A prefix-less
+        // relative path like `bin/tool` is NOT declined here — see
+        // `bare_file_resolves_relative_separator_token`.
+        let ctx = context(vec![PackageManager::Bun]);
+        let defaults = ResolutionOverrides::default();
+        for token in ["./main.ts", "../main.ts", "/abs/main.ts", "~/main.ts"] {
+            assert!(
+                try_bare_file(&ctx, &defaults, token, &[]).is_none(),
+                "{token} carries a local prefix and must be declined here",
+            );
+        }
+    }
+
+    #[test]
+    fn try_path_token_declines_relative_separator_tokens() {
+        // `bin/tool` carries a separator but no explicit local prefix, so the
+        // pre-task path branch must decline it (returning `None` without
+        // touching the filesystem) — a matching `make bin/tool` task wins
+        // first. Only an explicit `./bin/tool` outranks a task.
+        let result = try_path_token(
+            &context(vec![PackageManager::Bun]),
+            &ResolutionOverrides::default(),
+            "bin/tool",
+            &[],
+        )
+        .expect("a relative separator token should not error");
+
         assert!(
-            try_bare_file(
-                &context(vec![PackageManager::Bun]),
-                &ResolutionOverrides::default(),
-                "./main.ts",
-                &[],
-            )
-            .is_none()
+            result.is_none(),
+            "a prefix-less relative path is left to the after-miss fallback",
         );
+    }
+
+    #[test]
+    fn bare_file_resolves_relative_separator_token() {
+        // The after-miss fallback accepts a prefix-less relative path that
+        // carries a separator (`bin/main.ts`), resolving it under the base
+        // directory — so an unmatched make-style target name still runs as a
+        // local file once task lookup has missed.
+        let dir = TempDir::new("bare-file-nested");
+        std::fs::create_dir(dir.path().join("bin")).expect("subdir should be created");
+        std::fs::write(dir.path().join("bin").join("main.ts"), "console.log(1)\n")
+            .expect("file should be written");
+
+        let dispatch = bare_file_in(
+            &context(vec![PackageManager::Deno]),
+            &ResolutionOverrides::default(),
+            dir.path(),
+            "bin/main.ts",
+            &[],
+        )
+        .expect("a runnable relative-separator file should dispatch");
+
+        assert_eq!(dispatch.label, "deno run");
+        assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
     }
 }

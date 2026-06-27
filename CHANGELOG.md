@@ -21,15 +21,22 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   instead of handing it to a package manager's package-exec primitive
   (`bunx`/`npx`/`pnpm dlx`/`deno x`/`uvx`), which used to resolve the local
   path as a remote package and fail with a registry 404 or a `git clone`
-  error. A path-like token (one carrying a separator or a `./`/`/`/`~`
-  prefix) and a bare filename that matches no task are both run as the file:
-  an executable is spawned directly, a `#!` shebang (including the
-  `#!/usr/bin/env -S <interp> <args>` form) is parsed and invoked, and a
-  recognized source file runs via the detected runtime
+  error. A token with an explicit local prefix (`./`, `../`, `/`, `~`, or a
+  Windows drive root), a bare filename, and a prefix-less relative path
+  (`bin/tool`) are each run as the file when they match no task: a recognized
+  source file runs via the detected runtime
   (`.ts`/`.tsx`/`.js`/`.mjs`/`.cjs` via bun, `deno run`, or node; `.py` via
-  `uv run` or python; `.go` via `go run`). No `./` is required, an explicit
-  path outranks a same-named task, and a missing explicit path reports a
-  clear error rather than a 404.
+  `uv run` or python; `.go` via `go run`), a `#!` shebang (including the
+  `#!/usr/bin/env -S <interp> <args>` form) is parsed and invoked, and a
+  native binary or self-executable script is spawned directly. A source file
+  carrying the exec bit but no shebang still runs via its runtime — a raw
+  `execve` on shebang-less text fails `ENOEXEC` — so `chmod +x deploy.ts;
+  run ./deploy.ts` dispatches `bun deploy.ts` rather than erroring (this also
+  fixes whole-tree breakage on vfat/exfat/ntfs-3g mounts that report mode
+  0777 for every file). Only an explicit-prefix path outranks a same-named
+  task; a prefix-less `bin/tool` lets a matching `make bin/tool` target win
+  first and runs as a file only after task lookup misses. A missing explicit
+  path reports a clear error rather than a 404.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
   prerequisite — never as a parallel sibling — then the tasks fan out. A
