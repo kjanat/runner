@@ -123,6 +123,10 @@ impl BufferSink {
         }
         let mut file = File::open(&self.path)?;
 
+        // Tokens from child `::stop-commands::<token>` directives whose paired
+        // `::<token>::` resume should also be dropped (see the neutralize block).
+        let mut stopped_tokens: Vec<Vec<u8>> = Vec::new();
+
         loop {
             let mut stream = [0_u8; 1];
             match file.read_exact(&mut stream) {
@@ -150,20 +154,46 @@ impl BufferSink {
                 }
             };
 
-            // `bytes` is one line including its trailing `\n`. Workflow
-            // commands are only honoured by Actions at column 0, so an exact
-            // prefix match is what GitHub would interpret.
+            // `bytes` is one line including its trailing `\n` (the buffer sink
+            // always appends one). Workflow commands are only honoured by
+            // Actions at column 0, so an exact prefix match on the newline-free
+            // line is what GitHub would actually interpret.
             if neutralize {
-                if let Some(title) = bytes.strip_prefix(b"::group::".as_slice()) {
-                    // Surface the group title as plain text; drop a titleless
-                    // `::group::` rather than emit a stray blank line. `title`
-                    // still carries the trailing newline.
-                    if title != b"\n".as_slice() {
-                        out.write_all(title)?;
+                let line = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+
+                // `::stop-commands::<token>` halts ALL workflow-command
+                // processing until a matching `::<token>::`. Left in, a child
+                // could swallow our own `::endgroup::` (the group would never
+                // close) and every later annotation. Drop the directive and
+                // remember the token so its paired resume is dropped too; an
+                // unpaired resume falls through as a harmless unknown command.
+                if let Some(token) = line.strip_prefix(b"::stop-commands::".as_slice()) {
+                    if !token.is_empty() {
+                        stopped_tokens.push(token.to_vec());
                     }
                     continue;
                 }
-                if bytes.starts_with(b"::endgroup::") {
+                if let Some(pos) = stopped_tokens.iter().position(|t| {
+                    line.strip_prefix(b"::".as_slice())
+                        .and_then(|inner| inner.strip_suffix(b"::".as_slice()))
+                        == Some(t.as_slice())
+                }) {
+                    stopped_tokens.swap_remove(pos);
+                    continue;
+                }
+
+                // Group title → plain text (drop a titleless `::group::` rather
+                // than emit a stray blank line); `::endgroup::` dropped.
+                // `::warning::`/`::error::`/`::notice::` annotations fall
+                // through verbatim.
+                if let Some(title) = line.strip_prefix(b"::group::".as_slice()) {
+                    if !title.is_empty() {
+                        out.write_all(title)?;
+                        out.write_all(b"\n")?;
+                    }
+                    continue;
+                }
+                if line.starts_with(b"::endgroup::") {
                     continue;
                 }
             }
@@ -396,6 +426,28 @@ mod tests {
             .expect("buffer should replay");
 
         assert_eq!(stdout, b"::group::X\n::endgroup::\n");
+    }
+
+    #[test]
+    fn replay_neutralizes_stop_commands_and_paired_resume() {
+        let sink = BufferSink::new().expect("buffer sink should open");
+        // A child trying to disable command processing: the directive AND its
+        // matching resume must be dropped, or the parent's later `::endgroup::`
+        // (and annotations) would be swallowed.
+        sink.emit("[i]", false, "::stop-commands::abc123");
+        sink.emit("[i]", false, "real output");
+        sink.emit("[i]", false, "::abc123::"); // paired resume → dropped
+        sink.emit("[i]", false, "::other::"); // unpaired → harmless, kept
+        sink.emit("[i]", true, "::warning::kept");
+        sink.close();
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        sink.replay_to(&mut stdout, &mut stderr, true)
+            .expect("buffer should replay");
+
+        assert_eq!(stdout, b"real output\n::other::\n");
+        assert_eq!(stderr, b"::warning::kept\n");
     }
 
     #[test]
