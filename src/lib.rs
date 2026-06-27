@@ -406,8 +406,13 @@ where
 ///
 /// The alias is a thin shortcut for `runner run <task>`, so a parsed
 /// [`cli::RunAliasCli`] maps onto [`cli::Cli`] one-to-one:
-/// - a bare invocation (no task and no chain flag) becomes `command:
-///   None`, reproducing the bare-`runner` project dashboard;
+/// - a bare invocation (no task and no `-s`/`-p` mode flag) becomes
+///   `command: None`, reproducing the bare-`runner` project dashboard.
+///   A lone `-k`/`-K` does not defeat this: the chain-failure flags are
+///   inert on the dashboard (which never reads the failure policy) and are
+///   dropped before override building, so — unlike the old eager builder —
+///   a bare `run -k`/`-K` no longer conflicts with an opposite-polarity
+///   `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or `[chain]` config;
 /// - everything else becomes [`cli::Command::Run`] carrying the alias's
 ///   task, forwarded args, and chain flags.
 ///
@@ -1436,6 +1441,28 @@ mod tests {
         let runner = run_in_dir(["runner"], dir.path()).expect("bare runner should succeed");
         assert_eq!(alias, runner, "alias bare dispatch must match bare runner");
         assert_eq!(alias, 0);
+    }
+
+    #[test]
+    fn run_alias_bare_drops_chain_failure_flag() {
+        // A bare `run -k` (chain-failure flag, no task, no `-s`/`-p`) is
+        // classified bare -> `command: None`, so the inert chain-failure
+        // flag is dropped before override building. With an opposite-polarity
+        // `[chain].kill_on_fail = true` in config, the old eager builder kept
+        // the CLI `-k` and resolve_failure_policy hit the cross-source
+        // (keep+kill) conflict, erroring out. Dropping the flag avoids that:
+        // the dashboard never reads the failure policy, so a clean exit 0 is
+        // the correct outcome. Config-driven (not env) to stay parallel-safe.
+        let dir = TempDir::new("runner-run-alias-bare-drop-flag");
+        fs::write(
+            dir.path().join(crate::config::CONFIG_FILENAME),
+            "[chain]\nkill_on_fail = true\n",
+        )
+        .expect("write runner.toml");
+
+        let code = run_alias_in_dir(["run", "-k"], dir.path())
+            .expect("bare `run -k` must not error on an opposite-polarity [chain] config");
+        assert_eq!(code, 0, "bare dashboard ignores the dropped failure flag");
     }
 
     #[test]
