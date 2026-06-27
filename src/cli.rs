@@ -211,7 +211,10 @@ fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> 
 ///
 /// When a task name appears in more than one source, both the bare name *and*
 /// a `source:name` qualified form are emitted for each occurrence, enabling
-/// disambiguation via tab-completion.
+/// disambiguation via tab-completion. The bare candidate's help/label is taken
+/// from the source the runtime selector would pick (default tier; see the
+/// `bare_winner` computation below), not from detection order, so it names the
+/// source `runner <name>` actually dispatches to.
 ///
 /// Exception: a `package.json` script whose body is a literal turbo
 /// passthrough wrapper (`"build": "turbo run build"`, the canonical
@@ -261,9 +264,41 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
         }
     }
 
+    // Pick which source supplies each name's bare candidate by mirroring the
+    // runtime selector's default tier (`Turbo > Package > others`, then
+    // `display_order`, then recipes-before-aliases — see
+    // `cmd::run::select::select_task_entry`). Previously the bare label came
+    // from whichever source appeared first in detection order, which could
+    // name a different source than the one `runner <name>` actually
+    // dispatches to. The selector's `[task_runner].prefer` and nearest-config
+    // (`source_depth`) tiebreaks need config plus a `ProjectContext` the
+    // completion callback doesn't have, so the bare label aligns with the
+    // *default* tier only — still strictly better than detection order, and
+    // the qualified `source:name` forms remain for exact disambiguation.
+    let no_overrides = crate::resolver::ResolutionOverrides::default();
+    let bare_rank = |task: &crate::types::Task| {
+        (
+            crate::cmd::run::source_priority(&no_overrides, task.source),
+            task.source.display_order(),
+            task.alias_of.is_some(),
+        )
+    };
+    let mut bare_winner: HashMap<&str, usize> = HashMap::new();
+    for (idx, task) in tasks.iter().enumerate() {
+        if is_self_passthrough(task) {
+            continue;
+        }
+        let is_better = match bare_winner.get(task.name.as_str()) {
+            Some(&best) => bare_rank(task) < bare_rank(&tasks[best]),
+            None => true,
+        };
+        if is_better {
+            bare_winner.insert(task.name.as_str(), idx);
+        }
+    }
+
     let mut candidates = Vec::new();
-    let mut seen_bare = HashSet::new();
-    for task in tasks {
+    for (idx, task) in tasks.iter().enumerate() {
         if is_self_passthrough(task) {
             continue;
         }
@@ -296,8 +331,9 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
             .unwrap_or(0)
             > 1;
 
-        // Emit bare candidate only once (first source wins for the bare name)
-        if seen_bare.insert(&task.name) {
+        // The rank-winning source supplies the bare candidate (emitted once
+        // per name); its label names the source `runner <name>` dispatches to.
+        if bare_winner.get(task.name.as_str()) == Some(&idx) {
             candidates.push(
                 CompletionCandidate::new(&task.name)
                     .help(Some(help.clone().into()))
@@ -461,6 +497,75 @@ mod tests {
             values.contains(&"turbo:build".to_string()),
             "the turbo.json source must surface its qualified form when a real twin exists"
         );
+    }
+
+    #[test]
+    fn bare_label_follows_dispatch_priority_not_detection_order() {
+        // `package.json` is detected first, but `runner build` dispatches to
+        // turbo (Turbo > Package in the default selector tier). The bare
+        // candidate's label must therefore name turbo, not the detection-order
+        // first source — otherwise the completion menu misreports what runs.
+        let tasks = vec![
+            task("build", TaskSource::PackageJson),
+            task("build", TaskSource::TurboJson),
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let bare = candidates
+            .iter()
+            .find(|c| c.get_value().to_string_lossy() == "build")
+            .expect("bare 'build' candidate must exist");
+        assert_eq!(
+            bare.get_tag().map(ToString::to_string).as_deref(),
+            Some("turbo"),
+            "bare label must name the dispatch-winning source (turbo), not the detection-order \
+             first source (package.json)"
+        );
+
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            values.iter().filter(|v| *v == "build").count(),
+            1,
+            "bare 'build' should appear exactly once"
+        );
+        assert!(values.contains(&"package.json:build".to_string()));
+        assert!(values.contains(&"turbo:build".to_string()));
+    }
+
+    #[test]
+    fn bare_label_skips_suppressed_passthrough_and_ranks_real_sources() {
+        // A suppressed package.json turbo-passthrough plus two real sources.
+        // The passthrough must not supply the bare label, and among the real
+        // sources turbo outranks make, so the bare label names turbo.
+        let tasks = vec![
+            turbo_passthrough("build"),
+            task("build", TaskSource::Makefile),
+            task("build", TaskSource::TurboJson),
+        ];
+        let candidates = task_candidates_from(&tasks);
+        let bare = candidates
+            .iter()
+            .find(|c| c.get_value().to_string_lossy() == "build")
+            .expect("bare 'build' candidate must exist");
+        assert_eq!(
+            bare.get_tag().map(ToString::to_string).as_deref(),
+            Some("turbo"),
+            "bare label must name the rank-winning real source, not the suppressed passthrough \
+             source"
+        );
+
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !values.contains(&"package.json:build".to_string()),
+            "the suppressed passthrough must not surface a qualified form"
+        );
+        assert!(values.contains(&"make:build".to_string()));
+        assert!(values.contains(&"turbo:build".to_string()));
     }
 
     #[test]
