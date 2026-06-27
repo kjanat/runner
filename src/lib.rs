@@ -399,35 +399,50 @@ where
     cli::RunAliasCli::from_arg_matches(&matches)
 }
 
+/// Dispatch a parsed `run`-alias CLI by funnelling it through the same
+/// [`dispatch`] entry point the `runner` binary uses, so both share a
+/// single resolver-override + command-dispatch implementation rather than
+/// keeping a second copy in sync.
+///
+/// The alias is a thin shortcut for `runner run <task>`, so a parsed
+/// [`cli::RunAliasCli`] maps onto [`cli::Cli`] one-to-one:
+/// - a bare invocation (no task and no `-s`/`-p` mode flag) becomes
+///   `command: None`, reproducing the bare-`runner` project dashboard.
+///   A lone `-k`/`-K` does not defeat this: the chain-failure flags are
+///   inert on the dashboard (which never reads the failure policy) and are
+///   dropped before override building, so — unlike the old eager builder —
+///   a bare `run -k`/`-K` no longer conflicts with an opposite-polarity
+///   `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or `[chain]` config;
+/// - everything else becomes [`cli::Command::Run`] carrying the alias's
+///   task, forwarded args, and chain flags.
+///
+/// Building a typed [`cli::Cli`] here — rather than rewriting argv to
+/// `["runner", "run", …]` and re-parsing through clap — keeps the mapping
+/// total and compiler-checked and, crucially, leaves the alias's bespoke
+/// help/version forwarding untouched. That forwarding lives in the parse
+/// layer ([`cli::RunAliasCli`] disables clap's `--help`/`--version` so a
+/// *trailing* one reaches the task); re-parsing through [`cli::Command::Run`],
+/// which inherits the `runner` binary's enabled global help/version, would
+/// short-circuit and print clap help instead of forwarding it.
 fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
-    let mut ctx = detect::detect(dir);
-    let loaded_config = config::load(dir)?;
-    if let Some(loaded) = &loaded_config {
-        ctx.warnings.extend(loaded.warnings.iter().cloned());
-    }
-    let overrides = resolver::ResolutionOverrides::from_cli_and_env(
-        cli.global.pm_override.as_deref(),
-        cli.global.runner_override.as_deref(),
-        cli.global.fallback.as_deref(),
-        cli.global.on_mismatch.as_deref(),
-        resolver::DiagnosticFlags {
-            no_warnings: cli.global.no_warnings,
-            quiet: cli.global.quiet,
-            explain: cli.global.explain,
+    let bare = cli.task.is_none() && !cli.mode.sequential && !cli.mode.parallel;
+    let command = if bare {
+        None
+    } else {
+        Some(cli::Command::Run {
+            task: cli.task,
+            args: cli.args,
+            mode: cli.mode,
+            failure: cli.failure,
+        })
+    };
+    dispatch(
+        cli::Cli {
+            global: cli.global,
+            command,
         },
-        cli::ChainFailureFlags {
-            keep_going: cli.failure.keep_going,
-            kill_on_fail: cli.failure.kill_on_fail,
-        },
-        loaded_config.as_ref(),
-    )?;
-    match cli.task {
-        None if !cli.mode.sequential && !cli.mode.parallel => {
-            cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
-            Ok(0)
-        }
-        task => dispatch_run(&ctx, &overrides, task, cli.args, cli.mode),
-    }
+        dir,
+    )
 }
 
 /// Extracts the filename portion from an `argv[0]`-style `OsString`, returning it when non-empty.
@@ -1399,6 +1414,55 @@ mod tests {
             run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed on empty dir");
 
         assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn run_alias_dispatch_shares_override_building_with_runner() {
+        // The alias now funnels through the same `dispatch` path as the
+        // `runner` binary, so an invalid `--pm` surfaces the resolver's
+        // "unknown package manager" error from the single shared override
+        // builder instead of a second copy that could drift.
+        let dir = TempDir::new("runner-run-alias-bad-pm");
+        let err = run_alias_in_dir(["run", "--pm", "zoot", "build"], dir.path())
+            .expect_err("unknown --pm should error through the shared dispatch path");
+        assert!(
+            format!("{err}").contains("unknown package manager"),
+            "alias must reuse the runner override builder: {err}",
+        );
+    }
+
+    #[test]
+    fn run_alias_bare_matches_bare_runner_dashboard() {
+        // A bare `run` maps to `command: None`, the same project-dashboard
+        // path bare `runner` takes — both succeed identically on an empty
+        // directory.
+        let dir = TempDir::new("runner-run-alias-bare-eq");
+        let alias = run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed");
+        let runner = run_in_dir(["runner"], dir.path()).expect("bare runner should succeed");
+        assert_eq!(alias, runner, "alias bare dispatch must match bare runner");
+        assert_eq!(alias, 0);
+    }
+
+    #[test]
+    fn run_alias_bare_drops_chain_failure_flag() {
+        // A bare `run -k` (chain-failure flag, no task, no `-s`/`-p`) is
+        // classified bare -> `command: None`, so the inert chain-failure
+        // flag is dropped before override building. With an opposite-polarity
+        // `[chain].kill_on_fail = true` in config, the old eager builder kept
+        // the CLI `-k` and resolve_failure_policy hit the cross-source
+        // (keep+kill) conflict, erroring out. Dropping the flag avoids that:
+        // the dashboard never reads the failure policy, so a clean exit 0 is
+        // the correct outcome. Config-driven (not env) to stay parallel-safe.
+        let dir = TempDir::new("runner-run-alias-bare-drop-flag");
+        fs::write(
+            dir.path().join(crate::config::CONFIG_FILENAME),
+            "[chain]\nkill_on_fail = true\n",
+        )
+        .expect("write runner.toml");
+
+        let code = run_alias_in_dir(["run", "-k"], dir.path())
+            .expect("bare `run -k` must not error on an opposite-polarity [chain] config");
+        assert_eq!(code, 0, "bare dashboard ignores the dropped failure flag");
     }
 
     #[test]
