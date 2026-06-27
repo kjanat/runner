@@ -290,7 +290,11 @@ pub(crate) fn format_duration(elapsed: std::time::Duration) -> String {
     // float-to-int cast lints a `(secs_f64 * 10.0).round() as u64` would trip.
     let tenths = (millis + 50) / 100;
     if tenths >= 600 {
-        let secs = tenths / 10;
+        // Round the tenth-of-a-second to the nearest whole second (half-up),
+        // matching the rounding used everywhere else. A bare `tenths / 10`
+        // would floor instead, under-reporting any minute-plus duration by up
+        // to ~0.95s (e.g. 119.94s would print "1m 59s" instead of "2m 00s").
+        let secs = (tenths + 5) / 10;
         return format!("{}m {:02}s", secs / 60, secs % 60);
     }
     format!("{}.{}s", tenths / 10, tenths % 10)
@@ -567,6 +571,22 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(64)), "1m 04s");
         assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
         assert_eq!(format_duration(Duration::from_secs(3661)), "61m 01s");
+    }
+
+    #[test]
+    fn format_duration_rounds_seconds_to_nearest_inside_minute_band() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        // Non-integer seconds inside the minute band must round half-up to the
+        // nearest whole second, not floor. Flooring would under-report by up to
+        // ~0.95s near band edges (the bug these inputs guard against).
+        assert_eq!(format_duration(Duration::from_millis(60_900)), "1m 01s");
+        assert_eq!(format_duration(Duration::from_millis(90_700)), "1m 31s");
+        assert_eq!(format_duration(Duration::from_millis(119_940)), "2m 00s");
+        // Just below the half-second boundary still rounds down.
+        assert_eq!(format_duration(Duration::from_millis(90_449)), "1m 30s");
     }
 
     #[test]

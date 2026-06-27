@@ -24,7 +24,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `::group::` so it stays attached). Durations format compactly (`342ms`,
   `1.2s`, `1m 04s`); the band is chosen from the rounded value, so a duration
   that rounds up to a full minute (e.g. `59.95s`) prints `1m 00s`, never an
-  out-of-band `60.0s`. The synthetic install head of an `install` chain is
+  out-of-band `60.0s`. Minute-band seconds round half-up to the nearest whole
+  second too, so `119.94s` prints `2m 00s` rather than a floored `1m 59s`. The
+  synthetic install head of an `install` chain is
   timed the same way in both `-s` and `-p` modes. Timing is diagnostic
   meta-output, so `--quiet` (`RUNNER_QUIET`) and `--no-warnings`
   (`RUNNER_NO_WARNINGS`) suppress it.
