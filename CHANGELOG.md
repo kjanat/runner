@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Fixed
+
+- A leading `~`/`~/` in `--dir` (or `RUNNER_DIR`) is now expanded to the
+  user's home directory before the project directory is resolved. Shells
+  only expand an unquoted tilde at the start of a word, so `--dir=~/foo`
+  reached `runner` verbatim and was treated as relative — joined onto the
+  cwd to produce a bogus `<cwd>/~/foo` that never exists. Unsupported forms
+  such as `~user` are left untouched, and the path passes through unchanged
+  when no home directory is set.
+
 ## [0.14.3] - 2026-06-26
 
 ### Added
