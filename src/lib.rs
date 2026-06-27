@@ -593,8 +593,41 @@ fn configured_project_dir(
         .or_else(|| env_dir.map(PathBuf::from))
 }
 
+/// Expand a leading `~` (or `~/`) in a path to the user's home directory.
+///
+/// Shells only expand an unquoted tilde when it is the first character of a
+/// word, so forms like `--dir=~/foo` arrive here unexpanded. We mirror the
+/// common shell behaviour for the bare `~` and `~/` cases; any other form
+/// (including `~user`) is returned unchanged.
+fn expand_tilde(path: &Path) -> PathBuf {
+    expand_tilde_with(path, home_dir().as_deref())
+}
+
+fn expand_tilde_with(path: &Path, home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+
+    match path.strip_prefix("~") {
+        // `~` on its own.
+        Ok(rest) if rest.as_os_str().is_empty() => home.to_path_buf(),
+        // `~/rest` (`strip_prefix` consumes the separator).
+        Ok(rest) => home.join(rest),
+        // Not a tilde path, or a form we don't expand (e.g. `~user`).
+        Err(_) => path.to_path_buf(),
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+}
+
 fn resolve_project_dir(project_dir: Option<&Path>, cwd: &Path) -> Result<PathBuf> {
-    let dir = match project_dir {
+    let project_dir = project_dir.map(expand_tilde);
+    let dir = match project_dir.as_deref() {
         Some(path) if path.is_absolute() => path.to_path_buf(),
         Some(path) => cwd.join(path),
         None => cwd.to_path_buf(),
@@ -968,8 +1001,9 @@ mod tests {
 
     use super::{
         AliasBuiltin, VERSION, alias_builtin_request, bin_name_from_arg0, configured_project_dir,
-        exit_code_for_error, has_task, parse_cli, parse_run_alias_cli, release_url,
-        requests_version, resolve_project_dir, run_alias_in_dir, run_in_dir, version_line,
+        exit_code_for_error, expand_tilde_with, has_task, parse_cli, parse_run_alias_cli,
+        release_url, requests_version, resolve_project_dir, run_alias_in_dir, run_in_dir,
+        version_line,
     };
     use crate::cli;
     use crate::resolver::ResolveError;
@@ -1083,6 +1117,67 @@ mod tests {
             .expect_err("missing dir should error");
 
         assert!(err.to_string().contains("project dir does not exist"));
+    }
+
+    #[test]
+    fn expand_tilde_expands_leading_tilde_slash() {
+        let home = Path::new("/home/example");
+        assert_eq!(
+            expand_tilde_with(Path::new("~/projects/recipe"), Some(home)),
+            home.join("projects/recipe"),
+        );
+    }
+
+    #[test]
+    fn expand_tilde_expands_bare_tilde() {
+        let home = Path::new("/home/example");
+        assert_eq!(expand_tilde_with(Path::new("~"), Some(home)), home);
+    }
+
+    #[test]
+    fn expand_tilde_leaves_other_paths_untouched() {
+        let home = Path::new("/home/example");
+        for raw in ["/abs/path", "relative/path", "~user/projects", "./~/foo"] {
+            assert_eq!(
+                expand_tilde_with(Path::new(raw), Some(home)),
+                PathBuf::from(raw),
+                "path {raw} should be unchanged",
+            );
+        }
+    }
+
+    #[test]
+    fn expand_tilde_without_home_is_noop() {
+        assert_eq!(
+            expand_tilde_with(Path::new("~/projects"), None),
+            PathBuf::from("~/projects"),
+        );
+    }
+
+    #[test]
+    fn resolve_project_dir_does_not_join_tilde_onto_cwd() {
+        // Regression: `--dir=~/foo` arrives unexpanded, and previously the
+        // tilde path was treated as relative and joined onto the cwd, yielding
+        // a bogus `<cwd>/~/foo`. The cwd exists but `<cwd>/~/foo` must not, so
+        // a non-expanding implementation would fail with a path containing the
+        // literal tilde segment.
+        let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        if std::env::var_os(home_var).is_none_or(|v| v.is_empty()) {
+            // Without a home directory there is nothing to expand to; the pure
+            // `expand_tilde_with` tests cover the no-home path instead.
+            return;
+        }
+
+        let cwd = TempDir::new("runner-project-dir-tilde");
+        let err = resolve_project_dir(Some(Path::new("~/definitely-missing")), cwd.path())
+            .expect_err("tilde dir should not resolve against cwd");
+
+        let message = err.to_string();
+        assert!(message.contains("project dir does not exist"));
+        assert!(
+            !message.contains(&format!("{}/~", cwd.path().display())),
+            "tilde must not be joined onto cwd: {message}",
+        );
     }
 
     #[test]
