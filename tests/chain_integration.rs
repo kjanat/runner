@@ -62,15 +62,9 @@ fn sequential_chain_runs_in_order() {
         return;
     }
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "build",
-            "test",
-            "lint",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build", "test", "lint"])
         .output()
         .expect("runner binary spawns");
 
@@ -100,9 +94,9 @@ fn sequential_chain_emits_per_task_timing_on_stderr() {
         return;
     }
     let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
         .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
             "run",
             "-s",
             "build",
@@ -144,15 +138,9 @@ fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
     // streaming timing emission. fail-mid exits 7; the default FailFast policy
     // lets the already-spawned siblings finish, so all three report timing.
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-parallel-fail").to_str().unwrap(),
-            "run",
-            "-p",
-            "ok-one",
-            "fail-mid",
-            "ok-two",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-p", "ok-one", "fail-mid", "ok-two"])
         .output()
         .expect("runner binary spawns");
 
@@ -187,7 +175,9 @@ fn parallel_install_chain_times_the_install_step() {
     // not the install step, while `-s` times both.
     let project = isolated_install_project();
     let output = Command::new(runner_binary())
-        .args(["--dir", project.to_str().unwrap(), "install", "-p", "build"])
+        .arg("--dir")
+        .arg(&project)
+        .args(["install", "-p", "build"])
         .env_remove("GITHUB_ACTIONS")
         .output()
         .expect("runner binary spawns");
@@ -232,14 +222,9 @@ fn grouped_parallel_chain_folds_timing_into_block_footer() {
     // Actions, so each task's duration is folded into its block footer on
     // stdout (not a stderr meta-line).
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("parallel-grouped").to_str().unwrap(),
-            "run",
-            "-p",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("parallel-grouped"))
+        .args(["run", "-p", "build", "test"])
         .env_remove("GITHUB_ACTIONS")
         .output()
         .expect("runner binary spawns");
@@ -261,6 +246,76 @@ fn grouped_parallel_chain_folds_timing_into_block_footer() {
 }
 
 #[test]
+fn grouped_parallel_chain_folds_timing_into_group_footer_under_actions() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Companion to `grouped_parallel_chain_folds_timing_into_block_footer`:
+    // under GitHub Actions the same grouped fixture wraps each task in a
+    // `::group::runner: <task>` block and folds its duration into the block's
+    // footer *inside* the group, before `::endgroup::` (see `flush_task_group`'s
+    // `gha_syntax` path in src/chain/exec.rs — the footer is written before the
+    // GroupGuard's Drop emits `::endgroup::`).
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("parallel-grouped"))
+        .args(["run", "-p", "build", "test"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("finished in").count(),
+        2,
+        "expected one folded footer per grouped task on stdout. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("(exit 0)"),
+        "grouped GHA footer should carry the exit code. stdout: {stdout}",
+    );
+
+    // The footer must live *inside* each task's `::group::` block, before its
+    // `::endgroup::`. Groups are flat (GitHub Actions can't nest them) and the
+    // supervisor flushes one block at a time, so the markers strictly alternate
+    // group/endgroup; pair them up and assert each block carries its timing.
+    let groups: Vec<usize> = stdout
+        .match_indices("::group::runner: ")
+        .map(|(i, _)| i)
+        .collect();
+    let ends: Vec<usize> = stdout
+        .match_indices("::endgroup::")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        groups.len(),
+        2,
+        "expected exactly two groups. stdout: {stdout}"
+    );
+    assert_eq!(
+        ends.len(),
+        2,
+        "expected exactly two endgroups. stdout: {stdout}",
+    );
+    for (start, end) in groups.iter().zip(ends.iter()) {
+        assert!(
+            start < end,
+            "each group must open before it closes. stdout: {stdout}",
+        );
+        let block = &stdout[*start..*end];
+        assert!(
+            block.contains("finished in") && block.contains("(exit 0)"),
+            "timing footer must sit inside the group block, before ::endgroup::. block: {block}",
+        );
+    }
+}
+
+#[test]
 fn quiet_suppresses_chain_timing() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
@@ -268,14 +323,9 @@ fn quiet_suppresses_chain_timing() {
     }
     // `RUNNER_QUIET` mutes diagnostic meta-output (dispatch arrow, timing).
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build", "test"])
         .env("RUNNER_QUIET", "1")
         .env_remove("GITHUB_ACTIONS")
         .output()
@@ -306,15 +356,9 @@ fn parallel_chain_exit_code_reflects_first_failure() {
         return;
     }
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-parallel-fail").to_str().unwrap(),
-            "run",
-            "-p",
-            "ok-one",
-            "fail-mid",
-            "ok-two",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-p", "ok-one", "fail-mid", "ok-two"])
         .output()
         .expect("runner binary spawns");
 
@@ -343,14 +387,9 @@ fn parallel_chain_exit_code_reflects_first_failure() {
 #[test]
 fn chain_rejects_mutually_exclusive_mode_flags() {
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "-p",
-            "build",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "-p", "build"])
         .output()
         .expect("runner binary spawns");
 
@@ -371,13 +410,9 @@ fn chain_rejects_whitespace_positional_in_v1() {
     // positional before any task is dispatched, so the test runs
     // regardless of whether `just` is on PATH.
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "build --release",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build --release"])
         .output()
         .expect("runner binary spawns");
 
@@ -402,14 +437,9 @@ fn install_completion_includes_tasks_and_options() {
     let output = Command::new(runner_binary())
         .env("COMPLETE", "zsh")
         .env("_CLAP_COMPLETE_INDEX", "4")
-        .args([
-            "--",
-            "runner",
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "install",
-            "",
-        ])
+        .args(["--", "runner", "--dir"])
+        .arg(fixture("chain-sequential"))
+        .args(["install", ""])
         .output()
         .expect("runner binary spawns");
 
@@ -448,15 +478,9 @@ fn chain_prevalidates_all_tokens_before_running_any_task() {
         return;
     }
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "build",
-            "test",
-            "lint:cargo",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build", "test", "lint:cargo"])
         .output()
         .expect("runner binary spawns");
 
@@ -491,14 +515,9 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
         return;
     }
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build", "test"])
         .env("GITHUB_ACTIONS", "true")
         .output()
         .expect("runner binary spawns");
@@ -551,12 +570,9 @@ fn single_task_is_grouped_under_github_actions() {
     // A bare single task (no `-s`) still gets one group under GitHub Actions
     // — grouping covers every task run, not just multi-step chains.
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "build",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "build"])
         .env("GITHUB_ACTIONS", "true")
         .output()
         .expect("runner binary spawns");
@@ -586,14 +602,9 @@ fn no_groups_emitted_outside_github_actions() {
     // Scrub GITHUB_ACTIONS so this is deterministic even when the test host
     // itself runs under GitHub Actions (mirrors info_deprecation.rs).
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-s",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build", "test"])
         .env_remove("GITHUB_ACTIONS")
         .output()
         .expect("runner binary spawns");
@@ -623,12 +634,9 @@ fn config_opt_out_disables_grouping_under_github_actions() {
     // `[github] group_output = false`, so even under GitHub Actions no
     // groups are emitted.
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("github-no-group").to_str().unwrap(),
-            "run",
-            "build",
-        ])
+        .arg("--dir")
+        .arg(fixture("github-no-group"))
+        .args(["run", "build"])
         .env("GITHUB_ACTIONS", "true")
         .output()
         .expect("runner binary spawns");
@@ -651,14 +659,9 @@ fn github_group_output_false_restores_live_parallel_muxer() {
         return;
     }
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("github-no-group").to_str().unwrap(),
-            "run",
-            "-p",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("github-no-group"))
+        .args(["run", "-p", "build", "test"])
         .env("GITHUB_ACTIONS", "true")
         .output()
         .expect("runner binary spawns");
@@ -687,14 +690,9 @@ fn parallel_chain_grouped_under_github_actions() {
     // Default `[github].group_parallel` buffers each task and emits it as its
     // own ::group:: block under GitHub Actions — no live `[task]` prefixes.
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("chain-sequential").to_str().unwrap(),
-            "run",
-            "-p",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-p", "build", "test"])
         .env("GITHUB_ACTIONS", "true")
         .output()
         .expect("runner binary spawns");
@@ -746,14 +744,9 @@ fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
     // Grouping is not GitHub-specific: outside Actions each block gets a plain
     // `runner: <task>` header and no ::group:: workflow-command bloat.
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("parallel-grouped").to_str().unwrap(),
-            "run",
-            "-p",
-            "build",
-            "test",
-        ])
+        .arg("--dir")
+        .arg(fixture("parallel-grouped"))
+        .args(["run", "-p", "build", "test"])
         .env_remove("GITHUB_ACTIONS")
         .output()
         .expect("runner binary spawns");
@@ -796,14 +789,9 @@ fn parallel_grouped_preserves_child_stderr_stream() {
         return;
     }
     let output = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("parallel-grouped").to_str().unwrap(),
-            "run",
-            "-p",
-            "build",
-            "err",
-        ])
+        .arg("--dir")
+        .arg(fixture("parallel-grouped"))
+        .args(["run", "-p", "build", "err"])
         .env_remove("GITHUB_ACTIONS")
         .output()
         .expect("runner binary spawns");
@@ -831,14 +819,9 @@ fn parallel_grouped_does_not_wait_forever_on_inherited_stdout() {
         return;
     }
     let mut child = Command::new(runner_binary())
-        .args([
-            "--dir",
-            fixture("parallel-grouped").to_str().unwrap(),
-            "run",
-            "-p",
-            "hold-open",
-            "build",
-        ])
+        .arg("--dir")
+        .arg(fixture("parallel-grouped"))
+        .args(["run", "-p", "hold-open", "build"])
         .env_remove("GITHUB_ACTIONS")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
