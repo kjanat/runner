@@ -1174,8 +1174,11 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("project dir does not exist"));
+        // Use `join` rather than a hardcoded `/` so the guard is
+        // path-separator agnostic (e.g. `\` on Windows).
+        let joined_tilde = cwd.path().join("~");
         assert!(
-            !message.contains(&format!("{}/~", cwd.path().display())),
+            !message.contains(&joined_tilde.display().to_string()),
             "tilde must not be joined onto cwd: {message}",
         );
     }
