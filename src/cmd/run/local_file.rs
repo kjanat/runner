@@ -89,14 +89,24 @@ pub(super) fn try_path_token(
 /// when the file is actually runnable (executable bit, `#!` shebang, or a
 /// recognized source extension); a non-script token is left to the PM-exec
 /// fallback so existing behavior is unchanged.
+///
+/// Returns:
+/// - `Ok(None)` — `token` carries a local prefix, names nothing on disk,
+///   resolves to a non-file, or is an existing file of *unrecognized* type;
+///   the caller continues to the PM-exec fallback.
+/// - `Ok(Some(_))` — `token` resolves to a runnable file; the caller spawns it.
+/// - `Err(_)` — `token` resolves to an existing file of a *recognized* source
+///   type that the chosen runtime cannot run (e.g. a `.tsx` in a node-only
+///   project). Surfaces the same clear error the explicit `./` form raises,
+///   never a swallowed `None` that mis-routes into `pnpm exec`/`npx` (#69).
 pub(super) fn try_bare_file(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     token: &str,
     args: &[String],
-) -> Option<LocalDispatch> {
+) -> Result<Option<LocalDispatch>> {
     if has_local_prefix(token) {
-        return None;
+        return Ok(None);
     }
     bare_file_in(ctx, overrides, &ctx.root, token, args)
 }
@@ -110,15 +120,28 @@ fn bare_file_in(
     base: &Path,
     token: &str,
     args: &[String],
-) -> Option<LocalDispatch> {
+) -> Result<Option<LocalDispatch>> {
     let path = base.join(token);
-    let meta = fs::metadata(&path).ok()?;
+    let Ok(meta) = fs::metadata(&path) else {
+        return Ok(None);
+    };
     if !meta.is_file() {
-        return None;
+        return Ok(None);
     }
-    build_command(ctx, overrides, &path, &meta, args)
-        .ok()
-        .map(|(label, command)| LocalDispatch { label, command })
+    // Mirror the explicit `./` path (`dispatch_for_path` -> `build_command?`):
+    // a classification error for a *recognized* source extension (e.g. a
+    // `.tsx` that resolves to Node, which cannot run it) must propagate so the
+    // caller surfaces the same `node cannot run …` message — never swallow it
+    // into a `None` that falls through to `pnpm exec`/`npx <file>` (#69). Only
+    // a genuinely *unrecognized* existing file (e.g. `data.bin`) falls through
+    // to the PM-exec fallback, preserving prior behavior.
+    match build_command(ctx, overrides, &path, &meta, args) {
+        Ok((label, command)) => Ok(Some(LocalDispatch { label, command })),
+        Err(e) => match routing_for_extension(ctx, overrides, &path) {
+            SourceRouting::Unrecognized => Ok(None),
+            _ => Err(e),
+        },
+    }
 }
 
 /// Resolve an already-path-like `token` (canonicalized to `path`) into a
@@ -1142,6 +1165,7 @@ mod tests {
             "main.ts",
             &[],
         )
+        .expect("a runnable bare file should not error")
         .expect("a runnable bare file should dispatch");
 
         assert_eq!(dispatch.label, "deno run");
@@ -1157,9 +1181,44 @@ mod tests {
         let defaults = ResolutionOverrides::default();
 
         // A bare token with no matching file falls through to PM-exec.
-        assert!(bare_file_in(&ctx, &defaults, dir.path(), "biome", &[]).is_none());
-        // A file we don't know how to run is left to PM-exec too.
-        assert!(bare_file_in(&ctx, &defaults, dir.path(), "data.bin", &[]).is_none());
+        assert!(
+            bare_file_in(&ctx, &defaults, dir.path(), "biome", &[])
+                .expect("a missing token should not error")
+                .is_none(),
+        );
+        // A file we don't know how to run is left to PM-exec too (unrecognized
+        // extension → `Ok(None)`, not an error).
+        assert!(
+            bare_file_in(&ctx, &defaults, dir.path(), "data.bin", &[])
+                .expect("an unrecognized file should not error")
+                .is_none(),
+        );
+    }
+
+    #[test]
+    fn bare_file_errors_on_jsx_in_node_project() {
+        // Regression for #69: a bare (no `./` prefix) `app.tsx` that exists on
+        // disk in a node-only project must surface the same `node cannot run`
+        // error the explicit `./app.tsx` form raises — never let `build_command`'s
+        // error be swallowed into a `None` that falls through to `pnpm exec
+        // app.tsx` / `npx app.tsx` and a registry 404.
+        let dir = TempDir::new("bare-tsx-node");
+        std::fs::write(
+            dir.path().join("app.tsx"),
+            "export const App = () => <div/>;\n",
+        )
+        .expect("file should be written");
+
+        let err = bare_file_in(
+            &context(vec![PackageManager::Pnpm]),
+            &ResolutionOverrides::default(),
+            dir.path(),
+            "app.tsx",
+            &[],
+        )
+        .expect_err("a bare .tsx in a node project must error, not build a pnpm/npx command");
+
+        assert!(format!("{err:#}").contains("node cannot run"));
     }
 
     #[test]
@@ -1172,7 +1231,9 @@ mod tests {
         let defaults = ResolutionOverrides::default();
         for token in ["./main.ts", "../main.ts", "/abs/main.ts", "~/main.ts"] {
             assert!(
-                try_bare_file(&ctx, &defaults, token, &[]).is_none(),
+                try_bare_file(&ctx, &defaults, token, &[])
+                    .expect("a local-prefix token should not error")
+                    .is_none(),
                 "{token} carries a local prefix and must be declined here",
             );
         }
@@ -1216,6 +1277,7 @@ mod tests {
             "bin/main.ts",
             &[],
         )
+        .expect("a runnable relative-separator file should not error")
         .expect("a runnable relative-separator file should dispatch");
 
         assert_eq!(dispatch.label, "deno run");
@@ -1235,6 +1297,7 @@ mod tests {
 
         let ctx = context_rooted(vec![PackageManager::Deno], dir.path().to_path_buf());
         let dispatch = try_bare_file(&ctx, &ResolutionOverrides::default(), "main.ts", &[])
+            .expect("a runnable bare file under ctx.root should not error")
             .expect("a runnable bare file under ctx.root should dispatch");
 
         assert_eq!(dispatch.label, "deno run");

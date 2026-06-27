@@ -247,7 +247,8 @@ pub(super) fn resolve_dispatch(
             // PM-exec fallback, which would resolve it as a remote package.
             // Tasks already matched above, so this never shadows a same-named
             // task (a `make bin/tool` target wins first).
-            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args) {
+            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
+            {
                 let mut command = local.command;
                 print_dispatch_arrow(overrides, &local.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.root, overrides);
