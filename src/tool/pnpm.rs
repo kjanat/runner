@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use super::ScriptDirective;
+
 /// Detected via `pnpm-lock.yaml`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("pnpm-lock.yaml").exists()
@@ -20,16 +22,19 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 
 /// `pnpm install [--frozen-lockfile] [--ignore-scripts]`
 ///
-/// `--ignore-scripts` is appended when `deny_scripts`; it force-skips
+/// [`ScriptDirective::Deny`] appends `--ignore-scripts`; it force-skips
 /// dependency build scripts even on pnpm 10+, which otherwise consults the
-/// `onlyBuiltDependencies` manifest allowlist.
-pub(crate) fn install_cmd(frozen: bool, deny_scripts: bool) -> Command {
+/// `onlyBuiltDependencies` manifest allowlist. [`ScriptDirective::ForceOn`]
+/// adds nothing: pnpm 10+ denies dependency build scripts by default and only
+/// the `onlyBuiltDependencies` manifest allowlist re-enables them, which runner
+/// won't write — `cmd::install` warns instead of emitting a misleading flag.
+pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("pnpm");
     c.arg("install");
     if frozen {
         c.arg("--frozen-lockfile");
     }
-    if deny_scripts {
+    if scripts == ScriptDirective::Deny {
         c.arg("--ignore-scripts");
     }
     c
@@ -44,35 +49,46 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::install_cmd;
+    use super::{ScriptDirective, install_cmd};
+
+    fn args_of(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
 
     #[test]
     fn plain_install_has_no_extra_flags() {
-        let args: Vec<_> = install_cmd(false, false)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(args, ["install"]);
+        assert_eq!(
+            args_of(&install_cmd(false, ScriptDirective::Default)),
+            ["install"]
+        );
     }
 
     #[test]
     fn deny_scripts_appends_ignore_scripts() {
-        let args: Vec<_> = install_cmd(false, true)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        assert_eq!(
+            args_of(&install_cmd(false, ScriptDirective::Deny)),
+            ["install", "--ignore-scripts"]
+        );
+    }
 
-        assert_eq!(args, ["install", "--ignore-scripts"]);
+    #[test]
+    fn force_on_adds_no_flag() {
+        // pnpm 10+ gates dependency build scripts behind the
+        // `onlyBuiltDependencies` allowlist runner won't write, so force-on is
+        // not flag-expressible — `cmd::install` warns about it instead.
+        assert_eq!(
+            args_of(&install_cmd(false, ScriptDirective::ForceOn)),
+            ["install"]
+        );
     }
 
     #[test]
     fn frozen_and_deny_scripts_combine() {
-        let args: Vec<_> = install_cmd(true, true)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(args, ["install", "--frozen-lockfile", "--ignore-scripts"]);
+        assert_eq!(
+            args_of(&install_cmd(true, ScriptDirective::Deny)),
+            ["install", "--frozen-lockfile", "--ignore-scripts"]
+        );
     }
 }

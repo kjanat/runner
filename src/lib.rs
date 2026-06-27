@@ -861,22 +861,30 @@ fn build_overrides(
         },
         loaded_config,
     )?;
-    apply_no_scripts_flag(cli, &mut overrides);
+    apply_script_policy_flags(cli, &mut overrides);
     Ok(overrides)
 }
 
-/// Layer the install-only `--no-scripts` CLI flag onto the resolved
-/// [`resolver::ScriptPolicy`]. The flag is the top precedence level (CLI >
-/// env > config) and can only request [`resolver::ScriptPolicy::Deny`], so a
-/// present flag forces deny while an absent flag leaves the env/config
-/// resolution untouched. Threading it here (rather than as another
-/// `from_cli_and_env` argument) keeps that constructor's signature stable.
-const fn apply_no_scripts_flag(cli: &cli::Cli, overrides: &mut resolver::ResolutionOverrides) {
+/// Layer the install-only `--no-scripts` / `--scripts` CLI flags onto the
+/// resolved [`resolver::ScriptPolicy`]. These flags are the top precedence
+/// level (CLI > env > config): `--no-scripts` forces
+/// [`resolver::ScriptPolicy::Deny`] and `--scripts` forces
+/// [`resolver::ScriptPolicy::Allow`], while neither leaves the env/config
+/// resolution untouched. clap marks the two mutually exclusive, so at most one
+/// is set. Threading them here (rather than as more `from_cli_and_env`
+/// arguments) keeps that constructor's signature stable.
+const fn apply_script_policy_flags(cli: &cli::Cli, overrides: &mut resolver::ResolutionOverrides) {
     if let Some(cli::Command::Install {
-        no_scripts: true, ..
+        no_scripts,
+        scripts,
+        ..
     }) = cli.command.as_ref()
     {
-        overrides.script_policy = resolver::ScriptPolicy::Deny;
+        if *no_scripts {
+            overrides.script_policy = resolver::ScriptPolicy::Deny;
+        } else if *scripts {
+            overrides.script_policy = resolver::ScriptPolicy::Allow;
+        }
     }
 }
 

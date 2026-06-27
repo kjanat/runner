@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use super::ScriptDirective;
+
 /// Detected via `bun.lockb` (binary) or `bun.lock` (text).
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("bun.lockb").exists() || dir.join("bun.lock").exists()
@@ -25,15 +27,18 @@ pub(crate) fn test_cmd(args: &[String]) -> Command {
 /// `bun install [--frozen-lockfile] [--ignore-scripts]`
 ///
 /// Bun denies dependency lifecycle scripts by default (only `trustedDependencies`
-/// run); `--ignore-scripts` (appended when `deny_scripts`) additionally skips
-/// the trusted ones.
-pub(crate) fn install_cmd(frozen: bool, deny_scripts: bool) -> Command {
+/// run). [`ScriptDirective::Deny`] appends `--ignore-scripts`, additionally
+/// skipping the trusted ones. [`ScriptDirective::ForceOn`] adds nothing: bun
+/// re-enables dependency scripts only through the `trustedDependencies` manifest
+/// allowlist runner won't write — `cmd::install` warns instead of emitting a
+/// misleading flag.
+pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("bun");
     c.arg("install");
     if frozen {
         c.arg("--frozen-lockfile");
     }
-    if deny_scripts {
+    if scripts == ScriptDirective::Deny {
         c.arg("--ignore-scripts");
     }
     c
@@ -48,26 +53,38 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_cmd, run_cmd, test_cmd};
+    use super::{ScriptDirective, install_cmd, run_cmd, test_cmd};
+
+    fn args_of(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
 
     #[test]
     fn install_plain_has_no_extra_flags() {
-        let args: Vec<_> = install_cmd(false, false)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(args, ["install"]);
+        assert_eq!(
+            args_of(&install_cmd(false, ScriptDirective::Default)),
+            ["install"]
+        );
     }
 
     #[test]
     fn install_deny_scripts_appends_ignore_scripts() {
-        let args: Vec<_> = install_cmd(false, true)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        assert_eq!(
+            args_of(&install_cmd(false, ScriptDirective::Deny)),
+            ["install", "--ignore-scripts"]
+        );
+    }
 
-        assert_eq!(args, ["install", "--ignore-scripts"]);
+    #[test]
+    fn install_force_on_adds_no_flag() {
+        // bun re-enables dependency scripts only via the `trustedDependencies`
+        // allowlist runner won't write, so force-on is not flag-expressible.
+        assert_eq!(
+            args_of(&install_cmd(false, ScriptDirective::ForceOn)),
+            ["install"]
+        );
     }
 
     #[test]

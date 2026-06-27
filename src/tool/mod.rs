@@ -72,3 +72,27 @@ pub(crate) mod yarn;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+/// What an install command should do with lifecycle scripts.
+///
+/// Lowered from `crate::resolver::ScriptPolicy` at the install dispatch
+/// boundary so the per-tool `install_cmd` builders stay decoupled from the
+/// resolver. Each manager translates this into its own flag/env (or no-ops
+/// where it cannot express the request — `cmd::install` warns about those).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ScriptDirective {
+    /// Leave the package manager at its built-in default — add nothing.
+    #[default]
+    Default,
+    /// Skip lifecycle scripts where the manager exposes a skip mechanism
+    /// (npm/yarn-classic/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,
+    /// yarn-berry `YARN_ENABLE_SCRIPTS=false`).
+    Deny,
+    /// Force lifecycle scripts on where the manager exposes a mechanism
+    /// (npm `--no-ignore-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=true`,
+    /// deno `--allow-scripts`). Managers that already run scripts by default
+    /// (composer, cargo, go, bundler, the Python backends, yarn-classic) need
+    /// nothing; pnpm/bun gate dependency build scripts behind a manifest
+    /// allowlist runner won't write, so the flag cannot express it.
+    ForceOn,
+}

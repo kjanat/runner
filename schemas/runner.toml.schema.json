@@ -66,7 +66,7 @@
           }
         },
         "scripts": {
-          "description": "Lifecycle-script policy for the install: `\"deny\"` skips lifecycle\nscripts wherever the package manager exposes a skip mechanism\n(npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,\nyarn-berry `YARN_ENABLE_SCRIPTS=false`; deno already denies by\ndefault), warning for the managers that cannot. `\"allow\"` keeps each\nmanager at its default. Absent leaves every manager at its default.\nOverridden by `RUNNER_INSTALL_SCRIPTS`, then the `--no-scripts` flag.",
+          "description": "Lifecycle-script policy for the install. `\"deny\"` skips lifecycle\nscripts wherever the package manager exposes a skip mechanism\n(npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,\nyarn-berry `YARN_ENABLE_SCRIPTS=false`; deno already denies by\ndefault), warning for the managers that cannot. `\"allow\"` forces\nscripts on wherever a manager can express it (npm `--no-ignore-scripts`,\nyarn-berry `YARN_ENABLE_SCRIPTS=true`, deno `--allow-scripts`); managers\nthat already run scripts by default are satisfied without a flag, while\nbun and pnpm (>=10) warn because re-enabling their dependency build\nscripts needs a manifest allowlist (`trustedDependencies` /\n`onlyBuiltDependencies`) runner won't write. Absent leaves every manager\nat its default. Overridden by `RUNNER_INSTALL_SCRIPTS`, then the\n`--no-scripts` / `--scripts` flags.",
           "type": [
             "null",
             "string"

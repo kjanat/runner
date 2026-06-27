@@ -292,10 +292,10 @@ fn parse_install_pms(sources: &OverrideSources<'_>) -> Result<Vec<PackageManager
 }
 
 /// Resolve the `runner install` lifecycle-script policy: `RUNNER_INSTALL_SCRIPTS`
-/// (env) wins over `[install].scripts` (config). The CLI `--no-scripts` flag is
-/// layered on top later, at the dispatch boundary, so it is not consulted here.
-/// Unset on both sides yields [`ScriptPolicy::Default`] — each package manager
-/// keeps its own default.
+/// (env) wins over `[install].scripts` (config). The CLI `--no-scripts` /
+/// `--scripts` flags are layered on top later, at the dispatch boundary, so they
+/// are not consulted here. Unset on both sides yields [`ScriptPolicy::Default`] —
+/// each package manager keeps its own default.
 ///
 /// # Errors
 ///

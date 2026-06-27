@@ -17,22 +17,32 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- `runner install --no-scripts` skips install-time lifecycle scripts, the
-  primary supply-chain attack surface during dependency installs. It maps to
-  each package manager's native skip mechanism: `--ignore-scripts` for
-  npm/yarn-classic/pnpm/bun, `--no-scripts` for composer, and
-  `YARN_ENABLE_SCRIPTS=false` for yarn-berry (which dropped the flag); deno
-  already denies dependency scripts by default. Package managers with no skip
-  mechanism (cargo, go, bundler, uv/poetry/pipenv) print a `warn:` and proceed
-  rather than silently ignoring the request; because that notice is the only
-  signal the deny was dropped, it is a security disclosure that fires whenever a
-  deny is requested and is *not* silenced by `--no-warnings` /
-  `RUNNER_NO_WARNINGS` (unlike the cosmetic collision/version warnings).
-  Configurable via `[install].scripts
-  = "deny"` in runner.toml and `RUNNER_INSTALL_SCRIPTS=deny`, with the usual
-  precedence: CLI flag over `RUNNER_INSTALL_SCRIPTS` over `[install].scripts`.
-  `"allow"` keeps each manager at its default; forcing scripts back on for the
-  deny-by-default managers (a per-package allowlist) is deferred to a follow-up.
+- `runner install` gained a two-way install-time lifecycle-script control —
+  lifecycle/build scripts are the primary supply-chain attack surface during
+  dependency installs, and several package managers (npm, pnpm, …) are moving to
+  scripts-off-by-default in upcoming majors, so projects need to deny *and*
+  force-on.
+  - `--no-scripts` skips them, mapping to each manager's native skip mechanism:
+    `--ignore-scripts` for npm/yarn-classic/pnpm/bun, `--no-scripts` for
+    composer, `YARN_ENABLE_SCRIPTS=false` for yarn-berry (which dropped the
+    flag); deno already denies by default. Managers with no skip mechanism
+    (cargo, go, bundler, uv/poetry/pipenv) print a `warn:` and proceed.
+  - `--scripts` forces them on where a manager can express it:
+    `--no-ignore-scripts` for npm, `YARN_ENABLE_SCRIPTS=true` for yarn-berry,
+    and a bare `--allow-scripts` (allow all) for deno. Managers that already run
+    scripts by default (composer, cargo, go, bundler, uv/poetry/pipenv,
+    yarn-classic) are satisfied without a flag. bun and pnpm (>=10) can't be
+    forced on by a flag — their dependency build scripts are gated by a manifest
+    allowlist (`trustedDependencies` / `onlyBuiltDependencies`) that runner won't
+    write — so they `warn:` instead of silently no-op'ing.
+  - The two flags are mutually exclusive. Both the dropped-deny and the
+    unforceable notices fire whenever their policy is active and are *not*
+    silenced by `--no-warnings` / `RUNNER_NO_WARNINGS` (unlike the cosmetic
+    collision/version warnings), because each is the only signal the request
+    couldn't be honored.
+  - Configurable via `[install].scripts = "deny" | "allow"` in runner.toml and
+    `RUNNER_INSTALL_SCRIPTS=deny|allow`, with the usual precedence: CLI flag over
+    `RUNNER_INSTALL_SCRIPTS` over `[install].scripts`.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
   prerequisite — never as a parallel sibling — then the tasks fan out. A

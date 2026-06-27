@@ -7,6 +7,7 @@ use std::process::Command;
 use anyhow::Context as _;
 use serde::Deserialize;
 
+use super::ScriptDirective;
 use crate::tool::files;
 use crate::tool::node;
 
@@ -209,10 +210,19 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
-/// `deno install`
-pub(crate) fn install_cmd() -> Command {
+/// `deno install [--allow-scripts]`
+///
+/// Deno denies all npm lifecycle scripts by default, so
+/// [`ScriptDirective::Deny`]/[`ScriptDirective::Default`] add nothing.
+/// [`ScriptDirective::ForceOn`] appends a bare `--allow-scripts`, which Deno
+/// reads as "allow every package" (its flag takes `0..` values; bare = all),
+/// running all npm lifecycle scripts.
+pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("deno");
     c.arg("install");
+    if scripts == ScriptDirective::ForceOn {
+        c.arg("--allow-scripts");
+    }
     c
 }
 
@@ -249,8 +259,35 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{detect, exec_cmd, extract_tasks, find_config_upwards, workspace_pattern_matches};
+    use super::{
+        ScriptDirective, detect, exec_cmd, extract_tasks, find_config_upwards, install_cmd,
+        workspace_pattern_matches,
+    };
     use crate::tool::test_support::TempDir;
+
+    fn install_args(scripts: ScriptDirective) -> Vec<String> {
+        install_cmd(scripts)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn install_denies_by_default_without_flag() {
+        // Deno denies all npm lifecycle scripts by default, so deny/default
+        // need no flag.
+        assert_eq!(install_args(ScriptDirective::Default), ["install"]);
+        assert_eq!(install_args(ScriptDirective::Deny), ["install"]);
+    }
+
+    #[test]
+    fn install_force_on_allows_all_scripts() {
+        // Bare `--allow-scripts` allows every package's lifecycle scripts.
+        assert_eq!(
+            install_args(ScriptDirective::ForceOn),
+            ["install", "--allow-scripts"]
+        );
+    }
 
     #[test]
     fn exec_uses_deno_x_passthrough() {

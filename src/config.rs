@@ -68,8 +68,11 @@ pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner 
 # Restrict which detected package managers `runner install` runs. Empty/absent
 # installs every detected PM. Overridden by RUNNER_INSTALL_PMS (comma-separated).
 # `scripts` controls install-time lifecycle scripts: "deny" skips them where the
-# PM allows it (npm/yarn/pnpm/bun/composer; deno already denies), warning for the
-# rest. Overridden by RUNNER_INSTALL_SCRIPTS, then the --no-scripts flag.
+# PM allows it (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces
+# them on where the PM can express it (npm/yarn-berry/deno). bun and pnpm (>=10)
+# warn either way — their dependency build scripts are gated by a manifest
+# allowlist runner won't touch. Overridden by RUNNER_INSTALL_SCRIPTS, then the
+# --no-scripts / --scripts flags.
 [install]
 # pms = ["bun"]                # only install with these; each must be detected
 # scripts = "deny"             # deny | allow  (absent = each PM's own default)
@@ -160,13 +163,19 @@ pub(crate) struct InstallSection {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pms: Vec<String>,
 
-    /// Lifecycle-script policy for the install: `"deny"` skips lifecycle
+    /// Lifecycle-script policy for the install. `"deny"` skips lifecycle
     /// scripts wherever the package manager exposes a skip mechanism
     /// (npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,
     /// yarn-berry `YARN_ENABLE_SCRIPTS=false`; deno already denies by
-    /// default), warning for the managers that cannot. `"allow"` keeps each
-    /// manager at its default. Absent leaves every manager at its default.
-    /// Overridden by `RUNNER_INSTALL_SCRIPTS`, then the `--no-scripts` flag.
+    /// default), warning for the managers that cannot. `"allow"` forces
+    /// scripts on wherever a manager can express it (npm `--no-ignore-scripts`,
+    /// yarn-berry `YARN_ENABLE_SCRIPTS=true`, deno `--allow-scripts`); managers
+    /// that already run scripts by default are satisfied without a flag, while
+    /// bun and pnpm (>=10) warn because re-enabling their dependency build
+    /// scripts needs a manifest allowlist (`trustedDependencies` /
+    /// `onlyBuiltDependencies`) runner won't write. Absent leaves every manager
+    /// at its default. Overridden by `RUNNER_INSTALL_SCRIPTS`, then the
+    /// `--no-scripts` / `--scripts` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
