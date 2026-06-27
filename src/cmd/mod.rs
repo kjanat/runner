@@ -278,16 +278,22 @@ pub(crate) fn emit_collected_warnings(
 /// sub-minute values as seconds with one decimal (`1.2s`), and anything
 /// longer as minutes plus zero-padded seconds (`1m 04s`).
 pub(crate) fn format_duration(elapsed: std::time::Duration) -> String {
-    let total_secs = elapsed.as_secs();
-    if total_secs >= 60 {
-        let minutes = total_secs / 60;
-        let seconds = total_secs % 60;
-        return format!("{minutes}m {seconds:02}s");
+    let millis = elapsed.as_millis();
+    if millis < 1000 {
+        return format!("{millis}ms");
     }
-    if elapsed.as_millis() >= 1000 {
-        return format!("{:.1}s", elapsed.as_secs_f64());
+    // Pick the band from the same rounded tenth-of-a-second that we actually
+    // print. Deciding on the truncated whole-second value while rendering a
+    // rounded one lets a duration in [59.95s, 60.0s) stay in the seconds band
+    // yet round up to a bogus "60.0s"; rounding here promotes it to "1m 00s".
+    // Half-up rounding via integer math also keeps this free of the
+    // float-to-int cast lints a `(secs_f64 * 10.0).round() as u64` would trip.
+    let tenths = (millis + 50) / 100;
+    if tenths >= 600 {
+        let secs = tenths / 10;
+        return format!("{}m {:02}s", secs / 60, secs % 60);
     }
-    format!("{}ms", elapsed.as_millis())
+    format!("{}.{}s", tenths / 10, tenths % 10)
 }
 
 /// One-line completion summary shared by every chain output mode, e.g.
@@ -561,6 +567,24 @@ mod tests {
         assert_eq!(format_duration(Duration::from_secs(64)), "1m 04s");
         assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
         assert_eq!(format_duration(Duration::from_secs(3661)), "61m 01s");
+    }
+
+    #[test]
+    fn format_duration_rounds_into_minute_band_near_sixty_seconds() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        // Durations in [59.95s, 60.0s) have as_secs() == 59 but round up to
+        // 60.0s. The band must be chosen on the rounded value, so these promote
+        // into the minute band instead of printing a contract-violating "60.0s".
+        for millis in [59_950, 59_990, 59_999] {
+            let rendered = format_duration(Duration::from_millis(millis));
+            assert_eq!(rendered, "1m 00s", "{millis}ms should round into minutes");
+            assert_ne!(rendered, "60.0s", "{millis}ms must never print as 60.0s");
+        }
+        // The tenth just below the rounding boundary stays in the seconds band.
+        assert_eq!(format_duration(Duration::from_millis(59_940)), "59.9s");
     }
 
     #[test]
