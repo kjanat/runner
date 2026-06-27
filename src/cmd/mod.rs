@@ -290,11 +290,15 @@ pub(crate) fn format_duration(elapsed: std::time::Duration) -> String {
     // float-to-int cast lints a `(secs_f64 * 10.0).round() as u64` would trip.
     let tenths = (millis + 50) / 100;
     if tenths >= 600 {
-        // Round the tenth-of-a-second to the nearest whole second (half-up),
-        // matching the rounding used everywhere else. A bare `tenths / 10`
-        // would floor instead, under-reporting any minute-plus duration by up
-        // to ~0.95s (e.g. 119.94s would print "1m 59s" instead of "2m 00s").
-        let secs = (tenths + 5) / 10;
+        // Round straight from millis to whole seconds (half-up) in one step.
+        // The band decision stays on the rounded tenth so a duration in
+        // [59.95s, 60.0s) still promotes to "1m 00s"; for any millis in this
+        // band `(millis + 500) / 1000 >= 60`, so no "0m"/"60s" can leak.
+        // Rounding the already-rounded `tenths` again (`(tenths + 5) / 10`)
+        // would cascade two half-ups and shift the seconds boundary from 0.50
+        // to 0.45, over-reporting any [0.45s, 0.50s) fraction by a whole
+        // second (e.g. 60_450ms would print "1m 01s" instead of "1m 00s").
+        let secs = (millis + 500) / 1000;
         return format!("{}m {:02}s", secs / 60, secs % 60);
     }
     format!("{}.{}s", tenths / 10, tenths % 10)
@@ -585,8 +589,18 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(60_900)), "1m 01s");
         assert_eq!(format_duration(Duration::from_millis(90_700)), "1m 31s");
         assert_eq!(format_duration(Duration::from_millis(119_940)), "2m 00s");
-        // Just below the half-second boundary still rounds down.
+        // Well below the half-second boundary (0.449s) rounds down.
         assert_eq!(format_duration(Duration::from_millis(90_449)), "1m 30s");
+        // Just inside [0.45s, 0.50s): rounding must stay half-up (boundary at
+        // 0.50, not 0.45). A cascaded double-rounding would bump these up a
+        // whole second (0.45 -> 0.5 tenth -> 1 second), so guard the window.
+        assert_eq!(format_duration(Duration::from_millis(60_450)), "1m 00s");
+        assert_eq!(format_duration(Duration::from_millis(60_499)), "1m 00s");
+        assert_eq!(format_duration(Duration::from_millis(90_450)), "1m 30s");
+        // The double-round bug visibly flipped the minute here (1m 59s -> 2m 00s).
+        assert_eq!(format_duration(Duration::from_millis(119_450)), "1m 59s");
+        // The true half-second boundary rounds up.
+        assert_eq!(format_duration(Duration::from_millis(60_500)), "1m 01s");
     }
 
     #[test]
