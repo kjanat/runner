@@ -28,7 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::resolver::ResolutionOverrides;
 use crate::tool;
@@ -165,9 +165,11 @@ fn build_command(
     // Read any `#!` shebang once up front: it is what disambiguates an
     // exec-bit-carrying *source* file (a `+x` `.ts` with no shebang is still
     // text that `execve` cannot run) from a genuine self-executable script
-    // or native binary.
-    let shebang = read_shebang(path)?;
-    let runtime = runtime_for_extension(ctx, overrides, path);
+    // or native binary. An execute-only file (mode 0111) cannot be opened for
+    // read, so the probe simply yields `None` (no shebang to honor) rather
+    // than aborting — the kernel can still `execve` such a binary.
+    let shebang = read_shebang(path);
+    let routing = routing_for_extension(ctx, overrides, path);
 
     // 1. Directly executable → spawn directly, *unless* it is a recognized
     //    source file with no `#!` line. On Unix the kernel honors a real
@@ -176,7 +178,9 @@ fn build_command(
     //    vfat/exfat/ntfs-3g mounts that report mode 0777 for every file)
     //    would otherwise hit `execve`, fail `ENOEXEC`, and never reach
     //    bun/deno/node/uv/python/go — so route it to the runtime (outcome 3).
-    if is_directly_executable(path, meta) && (shebang.is_some() || runtime.is_none()) {
+    if is_directly_executable(path, meta)
+        && (shebang.is_some() || matches!(routing, SourceRouting::Unrecognized))
+    {
         let mut command = Command::new(path);
         command.args(args);
         return Ok((String::from("exec"), command));
@@ -188,10 +192,22 @@ fn build_command(
         return Ok(shebang_command(&shebang, path, args));
     }
 
-    // 3. A recognized source extension runs via the project runtime.
-    if let Some(runtime) = runtime {
-        let (label, command) = command_for_runtime(runtime, path, args);
-        return Ok((label.to_string(), command));
+    // 3. A recognized source extension runs via the project runtime — except
+    //    a `.jsx`/`.tsx` file resolved to Node, which Node cannot execute
+    //    (no JSX transform; type-stripping covers only `.ts`/`.mts`/`.cts`).
+    //    Erroring is honest; `node app.tsx` would be guaranteed-broken.
+    match routing {
+        SourceRouting::Runtime(runtime) => {
+            let (label, command) = command_for_runtime(runtime, path, args);
+            return Ok((label.to_string(), command));
+        }
+        SourceRouting::NodeCannotRunJsx => bail!(
+            "node cannot run {}: Node has no JSX/TSX transform (it type-strips only \
+             .ts/.mts/.cts).\nhint: run it with bun or deno (a Bun/Deno project, or pass `--pm \
+             bun`/`--pm deno`).",
+            path.display(),
+        ),
+        SourceRouting::Unrecognized => {}
     }
 
     // 4. Out of options: a clear, actionable error (never a 404).
@@ -289,27 +305,35 @@ struct Shebang {
 ///
 /// Reads a bounded prefix (a shebang line is short) so a binary file never
 /// pulls a large read; a non-UTF-8 shebang line is treated as no shebang.
-fn read_shebang(path: &Path) -> Result<Option<Shebang>> {
+///
+/// I/O failure is non-fatal and yields `None`: by the time this runs the path
+/// is already a regular file (`fs::metadata` succeeded), so a failed
+/// `open`/`read` means an execute-only file (Unix mode 0111 — a legitimate
+/// mode for compiled binaries) that the kernel can `execve` but cannot be
+/// opened `O_RDONLY` (EACCES). "No shebang we can honor" → defer to the exec
+/// bit / extension rather than hard-failing the whole dispatch.
+fn read_shebang(path: &Path) -> Option<Shebang> {
     use std::io::Read as _;
 
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("opening {} to read its shebang", path.display()))?;
+    let Ok(mut file) = fs::File::open(path) else {
+        return None;
+    };
     let mut buf = [0u8; 256];
-    let read = file
-        .read(&mut buf)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let Ok(read) = file.read(&mut buf) else {
+        return None;
+    };
     let head = &buf[..read];
     if !head.starts_with(b"#!") {
-        return Ok(None);
+        return None;
     }
     let line_end = head
         .iter()
         .position(|&byte| byte == b'\n')
         .unwrap_or(head.len());
     let Ok(line) = std::str::from_utf8(&head[..line_end]) else {
-        return Ok(None);
+        return None;
     };
-    Ok(parse_shebang(line))
+    parse_shebang(line)
 }
 
 /// Parse a `#!` line into the interpreter program and its arguments.
@@ -389,22 +413,46 @@ enum Runtime {
     WindowsScript,
 }
 
-/// Map a file's extension to the runtime that should execute it, given the
-/// detected project and any `--pm` override.
-fn runtime_for_extension(
+/// How a local file's extension routes for execution.
+#[derive(Debug, PartialEq, Eq)]
+enum SourceRouting {
+    /// Run the file through this language runtime (outcome 3).
+    Runtime(Runtime),
+    /// A `.jsx`/`.tsx` file resolved to the Node runtime, which cannot
+    /// execute JSX/TSX: Node has no JSX transform and type-strips only
+    /// `.ts`/`.mts`/`.cts`. A clear error, never a broken `node app.tsx`.
+    NodeCannotRunJsx,
+    /// Not a recognized source extension — defer to the exec bit / shebang
+    /// (a native binary) or, failing that, outcome 4's error.
+    Unrecognized,
+}
+
+/// Map a file's extension to how it should be executed, given the detected
+/// project and any `--pm` override.
+fn routing_for_extension(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     path: &Path,
-) -> Option<Runtime> {
-    match ext_lower(path)?.as_str() {
-        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => {
-            Some(js_runtime(ctx, overrides))
+) -> SourceRouting {
+    let Some(ext) = ext_lower(path) else {
+        return SourceRouting::Unrecognized;
+    };
+    match ext.as_str() {
+        "ts" | "mts" | "cts" | "js" | "mjs" | "cjs" => {
+            SourceRouting::Runtime(js_runtime(ctx, overrides))
         }
-        "py" => Some(py_runtime(ctx, overrides)),
-        "go" => Some(Runtime::Go),
+        // `.jsx`/`.tsx` need a JSX-aware runtime. Bun and Deno run them
+        // directly; Node cannot (no JSX transform), so route those to a clear
+        // error instead of building an unrunnable `node app.tsx`.
+        "jsx" | "tsx" => match js_runtime(ctx, overrides) {
+            runtime @ (Runtime::Bun | Runtime::Deno) => SourceRouting::Runtime(runtime),
+            _ => SourceRouting::NodeCannotRunJsx,
+        },
+        "py" => SourceRouting::Runtime(py_runtime(ctx, overrides)),
+        "go" => SourceRouting::Runtime(Runtime::Go),
         #[cfg(windows)]
-        "ps1" | "bat" | "cmd" => Some(Runtime::WindowsScript),
-        _ => None,
+        "ps1" | "bat" | "cmd" => SourceRouting::Runtime(Runtime::WindowsScript),
+        _ => SourceRouting::Unrecognized,
     }
 }
 
@@ -521,8 +569,9 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        Runtime, bare_file_in, build_command, dispatch_for_path, has_local_prefix, js_runtime,
-        parse_shebang, py_runtime, runtime_for_extension, try_bare_file, try_path_token,
+        Runtime, SourceRouting, bare_file_in, build_command, dispatch_for_path, has_local_prefix,
+        js_runtime, parse_shebang, py_runtime, routing_for_extension, try_bare_file,
+        try_path_token,
     };
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
@@ -644,25 +693,74 @@ mod tests {
     }
 
     #[test]
-    fn runtime_for_extension_maps_known_sources() {
+    fn routing_for_extension_maps_known_sources() {
         let ctx = context(vec![PackageManager::Bun]);
         let defaults = ResolutionOverrides::default();
         assert_eq!(
-            runtime_for_extension(&ctx, &defaults, Path::new("a.ts")),
-            Some(Runtime::Bun),
+            routing_for_extension(&ctx, &defaults, Path::new("a.ts")),
+            SourceRouting::Runtime(Runtime::Bun),
         );
         assert_eq!(
-            runtime_for_extension(&ctx, &defaults, Path::new("a.go")),
-            Some(Runtime::Go),
+            routing_for_extension(&ctx, &defaults, Path::new("a.go")),
+            SourceRouting::Runtime(Runtime::Go),
         );
         assert_eq!(
-            runtime_for_extension(&ctx, &defaults, Path::new("a.py")),
-            Some(Runtime::Python),
+            routing_for_extension(&ctx, &defaults, Path::new("a.py")),
+            SourceRouting::Runtime(Runtime::Python),
         );
         assert_eq!(
-            runtime_for_extension(&ctx, &defaults, Path::new("a.txt")),
-            None,
+            routing_for_extension(&ctx, &defaults, Path::new("a.txt")),
+            SourceRouting::Unrecognized,
         );
+    }
+
+    #[test]
+    fn routing_for_extension_routes_jsx_tsx_to_bun_or_deno() {
+        let defaults = ResolutionOverrides::default();
+        for ext in ["a.jsx", "a.tsx"] {
+            assert_eq!(
+                routing_for_extension(
+                    &context(vec![PackageManager::Bun]),
+                    &defaults,
+                    Path::new(ext),
+                ),
+                SourceRouting::Runtime(Runtime::Bun),
+                "{ext} should run via bun in a bun project",
+            );
+            assert_eq!(
+                routing_for_extension(
+                    &context(vec![PackageManager::Deno]),
+                    &defaults,
+                    Path::new(ext),
+                ),
+                SourceRouting::Runtime(Runtime::Deno),
+                "{ext} should run via deno in a deno project",
+            );
+        }
+    }
+
+    #[test]
+    fn routing_for_extension_rejects_jsx_tsx_on_node() {
+        // Node has no JSX transform: `node app.jsx`/`node app.tsx` are
+        // categorically unrunnable, so a node-only (or no-PM) project routes
+        // them to a clear error rather than an unrunnable `node` command.
+        let defaults = ResolutionOverrides::default();
+        for ext in ["a.jsx", "a.tsx"] {
+            assert_eq!(
+                routing_for_extension(
+                    &context(vec![PackageManager::Pnpm]),
+                    &defaults,
+                    Path::new(ext),
+                ),
+                SourceRouting::NodeCannotRunJsx,
+                "{ext} must not route to bare node",
+            );
+            assert_eq!(
+                routing_for_extension(&context(vec![]), &defaults, Path::new(ext)),
+                SourceRouting::NodeCannotRunJsx,
+                "{ext} must not route to bare node in a no-PM project",
+            );
+        }
     }
 
     #[test]
@@ -761,6 +859,111 @@ mod tests {
         .expect_err("a non-runnable file should error");
 
         assert!(format!("{err:#}").contains("don't know how to run"));
+    }
+
+    #[test]
+    fn build_command_errors_on_jsx_in_node_project() {
+        // A node-only project building `node app.tsx` would be guaranteed
+        // broken (Node has no JSX transform). It must surface a clear error
+        // rather than an unrunnable command.
+        let dir = TempDir::new("local-tsx-node");
+        let file = dir.path().join("app.tsx");
+        std::fs::write(&file, "export const App = () => <div/>;\n")
+            .expect("file should be written");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let err = build_command(
+            &context(vec![PackageManager::Pnpm]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect_err("a .tsx in a node project should error, not build `node app.tsx`");
+
+        assert!(format!("{err:#}").contains("node cannot run"));
+    }
+
+    #[test]
+    fn build_command_runs_tsx_via_bun_when_detected() {
+        // A bun project can run `.tsx` directly, so it dispatches via bun.
+        let dir = TempDir::new("local-tsx-bun");
+        let file = dir.path().join("app.tsx");
+        std::fs::write(&file, "export const App = () => <div/>;\n")
+            .expect("file should be written");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![PackageManager::Bun]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect("a .tsx in a bun project should build a bun command");
+
+        assert_eq!(label, "bun");
+        assert_eq!(command.get_program().to_string_lossy(), "bun");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_spawns_execute_only_binary_directly() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // A native binary at mode 0111 (execute-only — a legitimate mode):
+        // the kernel can `execve` it, but `open(O_RDONLY)` returns EACCES so
+        // the shebang probe cannot read it. It must still spawn directly
+        // (outcome 1) rather than hard-fail on the unreadable shebang read.
+        let dir = TempDir::new("local-exec-only");
+        let file = dir.path().join("tool");
+        std::fs::write(&file, [0u8, 1, 2, 3]).expect("file should be written");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o111))
+            .expect("chmod should succeed");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[String::from("arg")],
+        )
+        .expect("an execute-only binary should spawn directly, not fail the shebang read");
+
+        assert_eq!(label, "exec");
+        assert_eq!(PathBuf::from(command.get_program()), file);
+        assert_eq!(args_of(&command), [String::from("arg")]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_routes_execute_only_source_to_runtime_not_pm_exec() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // A recognized source file at mode 0111 (execute-only). The shebang
+        // probe hits EACCES, but that must NOT propagate as an error (which
+        // `bare_file_in`'s `.ok()` would swallow into a `bunx main.ts` 404).
+        // It routes through the detected runtime instead, upholding the
+        // no-bunx-on-a-local-file invariant.
+        let dir = TempDir::new("local-exec-only-ts");
+        let file = dir.path().join("main.ts");
+        std::fs::write(&file, "console.log(1)\n").expect("file should be written");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o111))
+            .expect("chmod should succeed");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![PackageManager::Bun]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect("an execute-only source file should route to its runtime");
+
+        assert_eq!(label, "bun", "a 0111 .ts routes to bun, never bunx");
+        assert_eq!(command.get_program().to_string_lossy(), "bun");
     }
 
     #[cfg(unix)]

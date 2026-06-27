@@ -25,10 +25,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   Windows drive root), a bare filename, and a prefix-less relative path
   (`bin/tool`) are each run as the file when they match no task: a recognized
   source file runs via the detected runtime
-  (`.ts`/`.tsx`/`.js`/`.mjs`/`.cjs` via bun, `deno run`, or node; `.py` via
-  `uv run` or python; `.go` via `go run`), a `#!` shebang (including the
-  `#!/usr/bin/env -S <interp> <args>` form) is parsed and invoked, and a
-  native binary or self-executable script is spawned directly. A source file
+  (`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs` via bun, `deno run`, or node, while
+  `.jsx`/`.tsx` run only via bun or deno — Node has no JSX transform, so a
+  node-only project reports a clear `node cannot run` error instead of
+  building an unrunnable `node app.tsx`; `.py` via `uv run` or python; `.go`
+  via `go run`), a `#!` shebang (including the `#!/usr/bin/env -S <interp>
+  <args>` form) is parsed and invoked, and a native binary or self-executable
+  script is spawned directly — including an execute-only binary (Unix mode
+  0111), whose unreadable shebang probe is treated as "no shebang" so the
+  binary still spawns directly rather than hard-failing the run. A source file
   carrying the exec bit but no shebang still runs via its runtime — a raw
   `execve` on shebang-less text fails `ENOEXEC` — so `chmod +x deploy.ts;
   run ./deploy.ts` dispatches `bun deploy.ts` rather than erroring (this also
