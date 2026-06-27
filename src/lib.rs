@@ -845,7 +845,7 @@ fn build_overrides(
         }
         _ => (false, false),
     };
-    resolver::ResolutionOverrides::from_cli_and_env(
+    let mut overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.global.pm_override.as_deref(),
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
@@ -860,7 +860,24 @@ fn build_overrides(
             kill_on_fail: cli_kill_on_fail,
         },
         loaded_config,
-    )
+    )?;
+    apply_no_scripts_flag(cli, &mut overrides);
+    Ok(overrides)
+}
+
+/// Layer the install-only `--no-scripts` CLI flag onto the resolved
+/// [`resolver::ScriptPolicy`]. The flag is the top precedence level (CLI >
+/// env > config) and can only request [`resolver::ScriptPolicy::Deny`], so a
+/// present flag forces deny while an absent flag leaves the env/config
+/// resolution untouched. Threading it here (rather than as another
+/// `from_cli_and_env` argument) keeps that constructor's signature stable.
+const fn apply_no_scripts_flag(cli: &cli::Cli, overrides: &mut resolver::ResolutionOverrides) {
+    if let Some(cli::Command::Install {
+        no_scripts: true, ..
+    }) = cli.command.as_ref()
+    {
+        overrides.script_policy = resolver::ScriptPolicy::Deny;
+    }
 }
 
 /// Lenient sibling of [`build_overrides`] used when strict parsing

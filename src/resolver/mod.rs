@@ -52,7 +52,7 @@ pub(crate) use probe::probe_in as probe_path_for_doctor;
 pub(crate) use types::PmOverride;
 pub(crate) use types::{
     DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides,
-    ResolutionStep, ResolvedPm, Resolver,
+    ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
 };
 
 /// Join an iterator of `&'static str` labels with `", "`. Used by the

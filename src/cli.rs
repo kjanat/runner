@@ -829,6 +829,24 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_no_scripts_flag() {
+        let cli = Cli::try_parse_from(["runner", "install", "--no-scripts"]).expect("parses");
+        let Some(Command::Install { no_scripts, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(no_scripts, "--no-scripts should set the flag");
+    }
+
+    #[test]
+    fn install_defaults_no_scripts_to_false() {
+        let cli = Cli::try_parse_from(["runner", "install"]).expect("parses");
+        let Some(Command::Install { no_scripts, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(!no_scripts, "--no-scripts should default off");
+    }
+
+    #[test]
     fn install_accepts_keep_going_flag() {
         let cli = Cli::try_parse_from(["runner", "install", "-k", "build"]).expect("parses");
         let Some(Command::Install { tasks, failure, .. }) = cli.command else {
@@ -1081,6 +1099,10 @@ pub(crate) enum Command {
         /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
         #[arg(short = 'f', long, display_order = help_order::COMMAND)]
         frozen: bool,
+        /// Skip install lifecycle scripts where the PM supports it
+        /// (npm/yarn/pnpm/bun/composer; deno already denies)
+        #[arg(long = "no-scripts", display_order = help_order::COMMAND + 1)]
+        no_scripts: bool,
         /// Optional task names to run after install completes. Sequential by
         /// default; `-p` runs them concurrently once install finishes (install
         /// itself always runs first, never as a parallel sibling). Plain

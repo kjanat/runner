@@ -22,12 +22,19 @@ pub(crate) fn test_cmd(args: &[String]) -> Command {
     c
 }
 
-/// `bun install [--frozen-lockfile]`
-pub(crate) fn install_cmd(frozen: bool) -> Command {
+/// `bun install [--frozen-lockfile] [--ignore-scripts]`
+///
+/// Bun denies dependency lifecycle scripts by default (only `trustedDependencies`
+/// run); `--ignore-scripts` (appended when `deny_scripts`) additionally skips
+/// the trusted ones.
+pub(crate) fn install_cmd(frozen: bool, deny_scripts: bool) -> Command {
     let mut c = super::program::command("bun");
     c.arg("install");
     if frozen {
         c.arg("--frozen-lockfile");
+    }
+    if deny_scripts {
+        c.arg("--ignore-scripts");
     }
     c
 }
@@ -41,7 +48,27 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_cmd, test_cmd};
+    use super::{install_cmd, run_cmd, test_cmd};
+
+    #[test]
+    fn install_plain_has_no_extra_flags() {
+        let args: Vec<_> = install_cmd(false, false)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, ["install"]);
+    }
+
+    #[test]
+    fn install_deny_scripts_appends_ignore_scripts() {
+        let args: Vec<_> = install_cmd(false, true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, ["install", "--ignore-scripts"]);
+    }
 
     #[test]
     fn run_cmd_uses_bun_run() {
