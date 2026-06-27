@@ -237,6 +237,14 @@ impl ResolutionOverrides {
             github_group_parallel,
             parallel_grouped,
             install_pms,
+            // Set by a parent runner that already opened a GHA group (see
+            // `crate::cmd::GROUP_ACTIVE_ENV`), captured into `sources` so this
+            // stays a pure function of its inputs. An internal nesting signal,
+            // not part of the CLI/env/config override layering. Gated through
+            // `is_env_truthy` like every other `RUNNER_*` boolean, so
+            // `=0`/`=false`/empty read as not-nested (the runner only ever
+            // writes `1`). Absent → false.
+            parent_group_open: sources.group_active.is_some_and(is_env_truthy),
         })
     }
 }
@@ -394,6 +402,32 @@ mod tests {
     }
 
     #[test]
+    fn group_active_marker_sets_parent_group_open_truthily() {
+        // Threaded through captured sources (no process-env read), so this is
+        // testable and `from_sources` stays pure. `1` → nested.
+        let nested = ResolutionOverrides::from_sources(OverrideSources {
+            group_active: Some("1"),
+            ..OverrideSources::default()
+        })
+        .expect("builds");
+        assert!(nested.parent_group_open);
+
+        // `0`/empty read as not-nested, matching the other `RUNNER_*` flags.
+        for falsy in ["0", "", "false"] {
+            let o = ResolutionOverrides::from_sources(OverrideSources {
+                group_active: Some(falsy),
+                ..OverrideSources::default()
+            })
+            .expect("builds");
+            assert!(!o.parent_group_open, "{falsy:?} should read as not nested");
+        }
+
+        // Absent → not nested.
+        let absent = ResolutionOverrides::from_sources(OverrideSources::default()).expect("builds");
+        assert!(!absent.parent_group_open);
+    }
+
+    #[test]
     fn lenient_policy_env_garbage_does_not_leak_full_raw_value() {
         let token_prefix = "ghp_";
         let fake_token = format!(
@@ -450,6 +484,7 @@ struct EnvSnapshot {
     keep_going: Option<String>,
     kill_on_fail: Option<String>,
     install_pms: Option<String>,
+    group_active: Option<String>,
 }
 
 impl EnvSnapshot {
@@ -467,6 +502,7 @@ impl EnvSnapshot {
             keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
             kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
             install_pms: std::env::var("RUNNER_INSTALL_PMS").ok(),
+            group_active: std::env::var(crate::cmd::GROUP_ACTIVE_ENV).ok(),
         }
     }
 
@@ -518,6 +554,7 @@ impl EnvSnapshot {
                 cli: None,
                 env: self.install_pms.as_deref(),
             },
+            group_active: self.group_active.as_deref(),
             config,
         }
     }

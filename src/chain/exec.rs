@@ -88,7 +88,10 @@ fn run_parallel(
     // the parallel grouping feature while grouping is enabled.
     let in_gha = actions_rs::env::is_github_actions();
     let grouped = if in_gha {
-        overrides.group_output && overrides.github_group_parallel
+        // Suppress per-task groups when a parent runner already opened one:
+        // GHA groups don't nest, so fall back to the live prefix muxer (which
+        // also renders any child group markers inert via the line prefix).
+        overrides.group_output && overrides.github_group_parallel && !overrides.parent_group_open
     } else {
         overrides.parallel_grouped
     };
@@ -368,7 +371,9 @@ fn flush_task_group(
         let _group = actions_rs::log::group_guard(format!("runner: {name}"));
         let mut stdout = std::io::stdout();
         let mut stderr = std::io::stderr();
-        let _ = sink.replay_to(&mut stdout, &mut stderr);
+        // Neutralize child group/endgroup commands so they can't nest in or
+        // close our `runner: <name>` group early.
+        let _ = sink.replay_to(&mut stdout, &mut stderr, true);
     } else {
         let header = format!("runner: {name}");
         let header = if colorize {
@@ -387,7 +392,9 @@ fn flush_task_group(
         }
         let mut stdout = std::io::stdout();
         let mut stderr = std::io::stderr();
-        let _ = sink.replay_to(&mut stdout, &mut stderr);
+        // Plain-header (non-Actions) replay: no `::group::` interpretation
+        // happens here, so leave the child's bytes untouched.
+        let _ = sink.replay_to(&mut stdout, &mut stderr, false);
     }
 }
 

@@ -39,13 +39,20 @@ pub(crate) use why::why;
 
 /// Shared setup for every spawned task: project-local `node_modules/.bin`
 /// dirs on the child `PATH`, working directory, inherited stdio.
-fn configure_command(command: &mut Command, dir: &Path) {
+fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
     prepend_node_bin_path(command, dir);
     command
         .current_dir(dir)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    // Mark children (and, by env inheritance, all descendants) when this
+    // runner opens a GHA group around them, so a nested `runner`/`run`
+    // suppresses its own group — GHA groups don't nest. When we're already
+    // nested the marker is in our inherited env, so children get it for free.
+    if emits_group(overrides) {
+        command.env(GROUP_ACTIVE_ENV, "1");
+    }
 }
 
 /// Every existing `node_modules/.bin` from `dir` up to the filesystem
@@ -157,11 +164,52 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     status.code().unwrap_or(1)
 }
 
+/// Env marker a runner sets on its children when it is in GitHub Actions
+/// grouping mode ([`emits_group`]), so a nested `runner`/`run` (e.g. invoked
+/// through an `npm` script) detects it and stays silent instead of emitting a
+/// second `::group::` that would corrupt the parent's fold. Inherited
+/// transitively through intermediate processes; read into
+/// [`ResolutionOverrides::parent_group_open`].
+///
+/// The contract is "a parent is *collecting* your output — don't open your own
+/// group", which is slightly broader than "a literal `::group::` is open right
+/// now": it is also set in parallel-*streaming* mode, where the parent muxes
+/// child output behind a `[task] ` prefix instead of a group. Suppressing
+/// nested grouping is correct in every case — a nested group would otherwise
+/// either nest-and-corrupt (grouped) or render as inert prefixed text
+/// (streaming).
+pub(crate) const GROUP_ACTIVE_ENV: &str = "RUNNER_GROUP_ACTIVE";
+
 /// Whether to wrap a run in a GitHub Actions log group: only when the user
 /// hasn't opted out (`[github].group_output`) *and* we're under GitHub
 /// Actions, so `::group::` markers never leak into a normal terminal.
 const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
     group_output && under_github_actions
+}
+
+/// Pure core of [`emits_group`]: grouping on, under Actions, and not already
+/// nested. Split out from the env read so the nesting gate is unit-testable
+/// without a live `GITHUB_ACTIONS` environment.
+const fn group_emission(
+    group_output: bool,
+    under_github_actions: bool,
+    parent_group_open: bool,
+) -> bool {
+    should_group(group_output, under_github_actions) && !parent_group_open
+}
+
+/// Whether *this* runner emits a GitHub Actions group around its children:
+/// grouping is on, we're under Actions, and a parent runner hasn't already
+/// opened one ([`ResolutionOverrides::parent_group_open`]). When true, the
+/// group-opening sites fire AND children are marked with [`GROUP_ACTIVE_ENV`]
+/// so a nested runner suppresses its own groups. When false, no group is
+/// opened (nested output flows into the parent's group, or grouping is off).
+pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
+    group_emission(
+        overrides.group_output,
+        actions_rs::env::is_github_actions(),
+        overrides.parent_group_open,
+    )
 }
 
 /// Open a collapsible GitHub Actions log group titled `runner: {name}` when
@@ -172,8 +220,7 @@ const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
 /// just bind it for the duration of the run. Returns `None` (emitting
 /// nothing) when grouping is off, which lets callers hold it unconditionally.
 fn task_group(overrides: &ResolutionOverrides, name: &str) -> Option<actions_rs::log::GroupGuard> {
-    should_group(overrides.group_output, actions_rs::env::is_github_actions())
-        .then(|| actions_rs::log::group_guard(format!("runner: {name}")))
+    emits_group(overrides).then(|| actions_rs::log::group_guard(format!("runner: {name}")))
 }
 
 /// Optional warning collector. `None` means "emit warnings to stderr
@@ -233,15 +280,36 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::{configure_command, node_bin_dirs, prepended_path};
+    use super::{configure_command, group_emission, node_bin_dirs, prepended_path};
+    use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn group_emission_gates_on_nesting() {
+        // Exercise the pure core directly (no live GITHUB_ACTIONS needed): the
+        // nested flag is the load-bearing gate. Holding grouping on + under
+        // Actions, flipping parent_group_open flips the decision — proving the
+        // nesting suppression actually fires (a tautological test that only
+        // checked the env-false path would pass even without the gate).
+        assert!(
+            group_emission(true, true, false),
+            "grouping on + under Actions + not nested → emit"
+        );
+        assert!(
+            !group_emission(true, true, true),
+            "...but a parent's open group suppresses it (GHA groups don't nest)"
+        );
+        // The other two factors still gate independently.
+        assert!(!group_emission(false, true, false), "grouping opted out");
+        assert!(!group_emission(true, false, false), "not under Actions");
+    }
 
     #[test]
     fn configure_command_sets_current_dir() {
         let dir = std::env::temp_dir();
         let mut command = Command::new("runner-test-command");
 
-        configure_command(&mut command, dir.as_path());
+        configure_command(&mut command, dir.as_path(), &ResolutionOverrides::default());
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
     }
@@ -331,7 +399,7 @@ mod tests {
             .expect("shim should be marked executable");
 
         let mut command = Command::new("runner-test-shim");
-        configure_command(&mut command, dir.path());
+        configure_command(&mut command, dir.path(), &ResolutionOverrides::default());
 
         let status = command
             .status()
@@ -356,7 +424,7 @@ mod tests {
 
         let mut command = Command::new("runner-test-shim");
         command.arg("run").env("RUNNER_TEST_MARKER", "1");
-        configure_command(&mut command, dir.path());
+        configure_command(&mut command, dir.path(), &ResolutionOverrides::default());
 
         assert_eq!(PathBuf::from(command.get_program()), shim);
         let args: Vec<_> = command.get_args().collect();

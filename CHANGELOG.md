@@ -15,8 +15,27 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
+  (`-s` stays the default sequential). Install always runs first as the
+  prerequisite — never as a parallel sibling — then the tasks fan out. A
+  failed install still aborts the tasks unless `-k`; `-K` (kill siblings) now
+  bites for the parallel post-install phase.
+
 ### Fixed
 
+- GitHub Actions log groups no longer nest when one `runner`/`run` invokes
+  another (e.g. `runner` → an `npm`/`postinstall` script → `run -p A B C`). A
+  parent that opens a group marks its descendants (`RUNNER_GROUP_ACTIVE`), so
+  a nested runner detects the open group and stays silent instead of emitting
+  a second `::group::` that would close the parent's fold early. Inherited
+  through intermediate processes, so the whole chain collapses to one group.
+- Under GitHub Actions, a child command that emits its own `::group::` /
+  `::endgroup::` workflow commands (e.g. some test runners) no longer corrupts
+  runner's grouped (`-p`) output: during grouped replay the group title is
+  surfaced as plain text and the stray `::endgroup::` is dropped, while
+  `::warning::`/`::error::`/`::notice::` annotations pass through untouched.
 - A leading `~`/`~/` in `--dir` (or `RUNNER_DIR`) is now expanded to the
   user's home directory before the project directory is resolved. Shells
   only expand an unquoted tilde at the start of a word, so `--dir=~/foo`

@@ -72,10 +72,10 @@ pub(crate) fn install_pms(
     }
 
     if let [pm] = pms.as_slice() {
-        return install_single(ctx, *pm, frozen);
+        return install_single(ctx, *pm, frozen, overrides);
     }
 
-    run_installs_parallel(ctx, &pms, frozen)
+    run_installs_parallel(ctx, &pms, frozen, overrides)
 }
 
 /// Which PMs this invocation installs with, in precedence order:
@@ -174,10 +174,15 @@ fn still_colliding(
 }
 
 /// Run a single PM's install in the foreground, inheriting stdio.
-fn install_single(ctx: &ProjectContext, pm: PackageManager, frozen: bool) -> Result<i32> {
+fn install_single(
+    ctx: &ProjectContext,
+    pm: PackageManager,
+    frozen: bool,
+    overrides: &ResolutionOverrides,
+) -> Result<i32> {
     eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
     let mut cmd = build_install_command(ctx, pm, frozen);
-    super::configure_command(&mut cmd, &ctx.root);
+    super::configure_command(&mut cmd, &ctx.root, overrides);
     let status = cmd.status()?;
     Ok(if status.success() {
         0
@@ -200,6 +205,7 @@ fn run_installs_parallel(
     ctx: &ProjectContext,
     pms: &[PackageManager],
     frozen: bool,
+    overrides: &ResolutionOverrides,
 ) -> Result<i32> {
     use std::process::Child;
 
@@ -215,7 +221,7 @@ fn run_installs_parallel(
         for pm in pms {
             eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
             let mut cmd = build_install_command(ctx, *pm, frozen);
-            super::configure_command(&mut cmd, &ctx.root);
+            super::configure_command(&mut cmd, &ctx.root, overrides);
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
