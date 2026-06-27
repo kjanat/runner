@@ -70,6 +70,164 @@ fn sequential_chain_runs_in_order() {
 }
 
 #[test]
+fn sequential_chain_emits_per_task_timing_on_stderr() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-s",
+            "build",
+            "test",
+        ])
+        // Scrub GITHUB_ACTIONS so the timing line shape is deterministic
+        // regardless of the host CI environment.
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected success.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    // One timing line per task, on stderr (sequential meta-output lives on
+    // stderr like the dispatch arrow). Assert presence/count, never values.
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        2,
+        "expected one timing line per sequential task. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("(exit 0)"),
+        "expected exit code in timing line. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `chain-parallel-fail`'s runner.toml forces the live (streaming) muxer on
+    // both the CI and non-CI paths, so this deterministically exercises the
+    // streaming timing emission. fail-mid exits 7; the default FailFast policy
+    // lets the already-spawned siblings finish, so all three report timing.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-parallel-fail").to_str().unwrap(),
+            "run",
+            "-p",
+            "ok-one",
+            "fail-mid",
+            "ok-two",
+        ])
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "expected exit 7 from fail-mid.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        3,
+        "expected one timing line per streaming task. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("(exit 7)"),
+        "fail-mid's non-zero exit should surface in its timing line. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn grouped_parallel_chain_folds_timing_into_block_footer() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `parallel-grouped`'s runner.toml opts into grouped output outside GitHub
+    // Actions, so each task's duration is folded into its block footer on
+    // stdout (not a stderr meta-line).
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("parallel-grouped").to_str().unwrap(),
+            "run",
+            "-p",
+            "build",
+            "test",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("finished in").count(),
+        2,
+        "expected one footer per grouped task on stdout. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("(exit 0)"),
+        "grouped footer should carry the exit code. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn quiet_suppresses_chain_timing() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `RUNNER_QUIET` mutes diagnostic meta-output (dispatch arrow, timing).
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-s",
+            "build",
+            "test",
+        ])
+        .env("RUNNER_QUIET", "1")
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected success.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        0,
+        "--quiet must suppress timing lines. stderr: {stderr}",
+    );
+    // The tasks still ran — quiet hides meta-output, not task output.
+    assert!(
+        stdout.contains("build-ran") && stdout.contains("test-ran"),
+        "tasks should still run under --quiet. stdout: {stdout}",
+    );
+}
+
+#[test]
 fn parallel_chain_exit_code_reflects_first_failure() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");

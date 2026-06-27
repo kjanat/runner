@@ -273,6 +273,61 @@ pub(crate) fn emit_collected_warnings(
     }
 }
 
+/// Render a [`std::time::Duration`] as a compact, human-readable string for
+/// per-task chain timing: sub-second values as whole milliseconds (`342ms`),
+/// sub-minute values as seconds with one decimal (`1.2s`), and anything
+/// longer as minutes plus zero-padded seconds (`1m 04s`).
+pub(crate) fn format_duration(elapsed: std::time::Duration) -> String {
+    let total_secs = elapsed.as_secs();
+    if total_secs >= 60 {
+        let minutes = total_secs / 60;
+        let seconds = total_secs % 60;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    if elapsed.as_millis() >= 1000 {
+        return format!("{:.1}s", elapsed.as_secs_f64());
+    }
+    format!("{}ms", elapsed.as_millis())
+}
+
+/// One-line completion summary shared by every chain output mode, e.g.
+/// `finished in 1.2s (exit 0)`. Sequential and live (streaming) parallel
+/// output prepend the task name via [`emit_task_timing`]; grouped parallel
+/// output folds this summary into each task's block footer.
+pub(crate) fn task_timing_summary(elapsed: std::time::Duration, code: i32) -> String {
+    format!("finished in {} (exit {code})", format_duration(elapsed))
+}
+
+/// Whether per-task chain timing is shown. Timing is diagnostic meta-output,
+/// so it follows the same mute switches as the dispatch arrow and warnings:
+/// `--quiet` / `RUNNER_QUIET` and `--no-warnings` / `RUNNER_NO_WARNINGS` each
+/// suppress it.
+pub(crate) const fn timing_enabled(overrides: &ResolutionOverrides) -> bool {
+    !overrides.quiet && !overrides.no_warnings
+}
+
+/// Print a per-task timing line to stderr for the sequential and live
+/// (streaming) parallel paths, e.g. `· build finished in 1.2s (exit 0)`.
+/// Mirrors the dimmed `·` meta-line style used by the `--explain` trace and
+/// is suppressed by [`timing_enabled`]. Grouped parallel output instead folds
+/// the summary into each task's block footer (see the chain executor).
+pub(crate) fn emit_task_timing(
+    overrides: &ResolutionOverrides,
+    name: &str,
+    elapsed: std::time::Duration,
+    code: i32,
+) {
+    if !timing_enabled(overrides) {
+        return;
+    }
+    eprintln!(
+        "{} {} {}",
+        "·".dimmed(),
+        name.bold(),
+        task_timing_summary(elapsed, code).dimmed(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
@@ -467,6 +522,77 @@ mod tests {
 
         assert_eq!(exit_code(std::process::ExitStatus::from_raw(5 << 8)), 5);
         assert_eq!(exit_code(std::process::ExitStatus::from_raw(2)), 130);
+    }
+
+    #[test]
+    fn format_duration_uses_millis_below_one_second() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        assert_eq!(format_duration(Duration::from_millis(0)), "0ms");
+        assert_eq!(format_duration(Duration::from_millis(5)), "5ms");
+        assert_eq!(format_duration(Duration::from_millis(342)), "342ms");
+        // 999ms stays in the millisecond band; 1000ms crosses into seconds.
+        assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_duration_uses_seconds_with_one_decimal_under_a_minute() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        assert_eq!(format_duration(Duration::from_secs(1)), "1.0s");
+        assert_eq!(format_duration(Duration::from_millis(1234)), "1.2s");
+        assert_eq!(format_duration(Duration::from_millis(4200)), "4.2s");
+        assert_eq!(format_duration(Duration::from_millis(59_400)), "59.4s");
+    }
+
+    #[test]
+    fn format_duration_uses_minutes_and_padded_seconds_at_a_minute() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        // 60s is the boundary into the minute band; sub-minute seconds are
+        // zero-padded to two digits so columns stay aligned.
+        assert_eq!(format_duration(Duration::from_mins(1)), "1m 00s");
+        assert_eq!(format_duration(Duration::from_secs(64)), "1m 04s");
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "61m 01s");
+    }
+
+    #[test]
+    fn task_timing_summary_includes_duration_and_exit_code() {
+        use std::time::Duration;
+
+        use super::task_timing_summary;
+
+        assert_eq!(
+            task_timing_summary(Duration::from_millis(1500), 0),
+            "finished in 1.5s (exit 0)"
+        );
+        assert_eq!(
+            task_timing_summary(Duration::from_millis(200), 7),
+            "finished in 200ms (exit 7)"
+        );
+    }
+
+    #[test]
+    fn timing_enabled_respects_quiet_and_no_warnings() {
+        use super::timing_enabled;
+        use crate::resolver::ResolutionOverrides;
+
+        assert!(timing_enabled(&ResolutionOverrides::default()));
+        assert!(!timing_enabled(&ResolutionOverrides {
+            quiet: true,
+            ..ResolutionOverrides::default()
+        }));
+        assert!(!timing_enabled(&ResolutionOverrides {
+            no_warnings: true,
+            ..ResolutionOverrides::default()
+        }));
     }
 
     #[test]
