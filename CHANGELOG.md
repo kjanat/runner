@@ -36,7 +36,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   0777 for every file). Only an explicit-prefix path outranks a same-named
   task; a prefix-less `bin/tool` lets a matching `make bin/tool` target win
   first and runs as a file only after task lookup misses. A missing explicit
-  path reports a clear error rather than a 404.
+  path reports a clear error rather than a 404. Path lookup is anchored on the
+  resolved project directory (the `--dir`/`RUNNER_DIR` target, else the cwd) —
+  the same directory task detection scans and the spawned child runs in — so a
+  relative or bare token under `--dir` resolves there instead of silently
+  missing and mis-routing back into the package-exec 404 path.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
   prerequisite — never as a parallel sibling — then the tasks fan out. A

@@ -5,9 +5,10 @@
 //! `pnpm dlx`/`deno x`/`uvx`), which would resolve a local path as a remote
 //! package spec and fail with a registry 404 or a `git clone` error.
 //!
-//! [`try_build`] runs at the top of [`super::dispatch::resolve_dispatch`],
-//! before task lookup and the PM-exec fallback. It classifies a path-like
-//! token into one of four outcomes:
+//! [`try_path_token`] runs at the top of [`super::dispatch::resolve_dispatch`]
+//! (an explicit-prefix path, before task lookup), and [`try_bare_file`] runs
+//! after a task miss but before the PM-exec fallback (a bare or relative
+//! token). Each classifies a path-like token into one of four outcomes:
 //!
 //! 1. **Directly executable file** (a native binary, or a script whose `#!`
 //!    line the kernel can honor) → spawned directly (`Command::new(path)`).
@@ -70,13 +71,14 @@ pub(super) fn try_path_token(
     if !has_local_prefix(token) {
         return Ok(None);
     }
-    let path = resolve_path(token);
+    let path = resolve_path(&ctx.root, token);
     dispatch_for_path(ctx, overrides, token, &path, args)
 }
 
 /// Try to interpret a `token` *without* an explicit local-path prefix — a
 /// bare name (`main.ts`) or a relative path bearing a separator
-/// (`bin/tool`) — as a runnable file under the working directory. Used as a
+/// (`bin/tool`) — as a runnable file under the project root (`ctx.root`).
+/// Used as a
 /// fallback *after* task lookup misses but before the PM-exec fallback, so a
 /// matching task always wins first (a bare name or a `make bin/tool` target
 /// never collides) yet a local script such as `main.ts` still runs instead
@@ -96,8 +98,7 @@ pub(super) fn try_bare_file(
     if has_local_prefix(token) {
         return None;
     }
-    let base = std::env::current_dir().ok()?;
-    bare_file_in(ctx, overrides, &base, token, args)
+    bare_file_in(ctx, overrides, &ctx.root, token, args)
 }
 
 /// Resolve a bare `token` against an explicit `base` directory. Split from
@@ -205,7 +206,13 @@ fn build_command(
 /// Whether `token` carries an explicit local-path prefix. Used to decide
 /// whether a *missing* path-like token is a typo'd local file (→ a clear
 /// error) or a remote spec like `@scope/pkg` (→ fall through to PM-exec).
-fn has_local_prefix(token: &str) -> bool {
+///
+/// Exposed to the rest of `cmd::run` so [`super::qualify::precheck_task`]
+/// can mirror [`try_path_token`]'s precedence: an explicit-prefix path
+/// outranks task/runner resolution, so precheck must wave it through
+/// rather than fail it against an active `--runner`/`[task_runner].prefer`
+/// constraint (which dispatch never applies to a local-file token).
+pub(super) fn has_local_prefix(token: &str) -> bool {
     token.starts_with("./")
         || token.starts_with("../")
         || token.starts_with(".\\")
@@ -226,18 +233,20 @@ fn is_windows_drive_abs(token: &str) -> bool {
 }
 
 /// Resolve `token` to an absolute path: expand a leading `~`, then anchor a
-/// relative path on the process working directory (where the user typed the
-/// command). An absolute path is passed to the spawned command verbatim so
-/// the child's working directory cannot reinterpret it.
-fn resolve_path(token: &str) -> PathBuf {
+/// relative path on `base` — the detected project root (`ctx.root`), which
+/// also becomes the spawned child's working directory and is what task
+/// detection runs against. Anchoring here (rather than on the live process
+/// cwd) keeps local-file lookup consistent with every other dispatch step,
+/// so `--dir`/`RUNNER_DIR` points the path lookup at the same directory the
+/// child will run in. An absolute path (or a `~`-expanded one) is passed to
+/// the spawned command verbatim so the child's working directory cannot
+/// reinterpret it.
+fn resolve_path(base: &Path, token: &str) -> PathBuf {
     let expanded = crate::expand_tilde(Path::new(token));
     if expanded.is_absolute() {
         return expanded;
     }
-    match std::env::current_dir() {
-        Ok(cwd) => cwd.join(expanded),
-        Err(_) => expanded,
-    }
+    base.join(expanded)
 }
 
 /// Whether the OS can execute `path` directly without an explicit
@@ -529,6 +538,13 @@ mod tests {
             current_node: None,
             is_monorepo: false,
             warnings: Vec::new(),
+        }
+    }
+
+    fn context_rooted(pms: Vec<PackageManager>, root: PathBuf) -> ProjectContext {
+        ProjectContext {
+            root,
+            ..context(pms)
         }
     }
 
@@ -1001,5 +1017,42 @@ mod tests {
 
         assert_eq!(dispatch.label, "deno run");
         assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
+    }
+
+    #[test]
+    fn try_bare_file_resolves_against_ctx_root() {
+        // The bare-file fallback anchors on `ctx.root` (the detected project
+        // dir / `--dir` target), not the live process cwd — a `main.ts` under
+        // the project root runs even when the shell cwd is elsewhere. This is
+        // what stops a `--dir`-set run from missing the file and mis-routing
+        // into the `bunx main.ts` 404 fallback (issue #69).
+        let dir = TempDir::new("bare-root");
+        std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")
+            .expect("file should be written");
+
+        let ctx = context_rooted(vec![PackageManager::Deno], dir.path().to_path_buf());
+        let dispatch = try_bare_file(&ctx, &ResolutionOverrides::default(), "main.ts", &[])
+            .expect("a runnable bare file under ctx.root should dispatch");
+
+        assert_eq!(dispatch.label, "deno run");
+        assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
+    }
+
+    #[test]
+    fn try_path_token_resolves_relative_prefix_against_ctx_root() {
+        // An explicit `./main.ts` is joined onto `ctx.root`, so it resolves the
+        // project-root file regardless of the process cwd — consistent with
+        // task detection and the spawned child's working directory.
+        let dir = TempDir::new("path-root");
+        std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")
+            .expect("file should be written");
+
+        let ctx = context_rooted(vec![PackageManager::Bun], dir.path().to_path_buf());
+        let dispatch = try_path_token(&ctx, &ResolutionOverrides::default(), "./main.ts", &[])
+            .expect("an explicit relative path should not error")
+            .expect("a runnable ./main.ts under ctx.root should dispatch");
+
+        assert_eq!(dispatch.label, "bun");
+        assert_eq!(dispatch.command.get_program().to_string_lossy(), "bun");
     }
 }

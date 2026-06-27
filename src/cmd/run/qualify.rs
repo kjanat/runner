@@ -54,6 +54,8 @@ pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str
 /// `t` to completion before surfacing the typo at item 3.
 ///
 /// Returns `Ok(())` on:
+/// - an explicit-prefix local path (`./gen.sh`, `~/x`) — dispatch runs it
+///   as a file before any runner-constraint check, so precheck must too,
 /// - matched task (qualified or unqualified),
 /// - unmatched task whose dispatch would fall back to bun-test or
 ///   PM-exec — those paths require resolver state we deliberately
@@ -68,6 +70,17 @@ pub(crate) fn precheck_task(
     overrides: &ResolutionOverrides,
     task: &str,
 ) -> Result<()> {
+    // An explicit-prefix local path (`./gen.sh`, `~/x`, `/abs/x`) is dispatched
+    // by `try_path_token` at the very top of `resolve_dispatch`, *before* the
+    // runner-constraint check — so an explicit path outranks task/runner
+    // resolution. Mirror that precedence here: without this escape hatch, an
+    // active `--runner` / `[task_runner].prefer` constraint would make precheck
+    // compute `found = []` and bail with a runner-constraint error, aborting a
+    // whole chain (or install --parallel) over a token that single-run executes.
+    if super::local_file::has_local_prefix(task) {
+        return Ok(());
+    }
+
     let (qualifier, task_name) = parse_qualified_task(task);
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
@@ -197,4 +210,61 @@ pub(crate) fn runner_constraint_error(
         });
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::precheck_task;
+    use crate::resolver::ResolutionOverrides;
+    use crate::types::{ProjectContext, TaskRunner};
+
+    fn context() -> ProjectContext {
+        ProjectContext {
+            root: PathBuf::from("."),
+            package_managers: Vec::new(),
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn precheck_passes_explicit_local_path_under_runner_constraint() {
+        // An explicit-prefix local path is dispatched as a file by
+        // `try_path_token` *before* the runner-constraint check, so precheck
+        // must wave it through too — otherwise a chain / install --parallel
+        // under an active `[task_runner].prefer` aborts on a token that a
+        // single `run ./gen.sh` executes fine.
+        let overrides = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+        for token in ["./gen.sh", "../gen.sh", "/abs/gen.sh", "~/gen.sh"] {
+            precheck_task(&context(), &overrides, token).unwrap_or_else(|e| {
+                panic!("explicit local path {token} should precheck Ok: {e:#}")
+            });
+        }
+    }
+
+    #[test]
+    fn precheck_rejects_prefixless_miss_under_runner_constraint() {
+        // Only the explicit-prefix escape hatch is exempt: a prefix-less bare
+        // name that matches no task still fails precheck under an active
+        // constraint, mirroring dispatch's runner-constraint error.
+        let overrides = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+        let err = precheck_task(&context(), &overrides, "gen")
+            .expect_err("a prefix-less miss under a constraint should fail precheck");
+        assert!(
+            format!("{err:#}").contains("[task_runner].prefer matched no candidate"),
+            "expected a runner-constraint error, got: {err:#}",
+        );
+    }
 }
