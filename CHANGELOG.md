@@ -161,6 +161,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   such as `~user` are left untouched, and the path passes through unchanged
   when no home directory is set.
 
+### Changed
+
+- Internal: the `run` alias binary now dispatches through the same
+  `dispatch` entry point as `runner`, building a typed `Cli` from the parsed
+  alias rather than keeping a second resolver-override and command-dispatch
+  copy in `dispatch_run_alias`. No behavior change; the alias keeps its
+  bespoke help/version forwarding, flat completions, and `run` man page. See
+  https://github.com/kjanat/runner/issues/52.
+
 ## [0.14.3] - 2026-06-26
 
 ### Added
