@@ -321,14 +321,16 @@ fn parse_install_scripts(sources: &OverrideSources<'_>) -> Result<ScriptPolicy> 
     Ok(ScriptPolicy::Default)
 }
 
-/// Parse a single `deny`/`allow` script-policy label (ASCII case-insensitive).
+/// Parse a single `deny`/`allow` script-policy label (case-sensitive,
+/// lowercase-only — matching the sibling enum-label parsers and the
+/// committed JSON Schema enum).
 ///
 /// # Errors
 ///
 /// Returns an error naming the (sanitized) value when it is neither `deny`
 /// nor `allow`.
 fn parse_script_policy_label(raw: &str) -> Result<ScriptPolicy> {
-    match raw.trim().to_ascii_lowercase().as_str() {
+    match raw.trim() {
         "deny" => Ok(ScriptPolicy::Deny),
         "allow" => Ok(ScriptPolicy::Allow),
         _ => Err(anyhow!(
@@ -468,8 +470,8 @@ mod tests {
     fn script_policy_env_parses_deny_and_allow() {
         for (raw, expected) in [
             ("deny", ScriptPolicy::Deny),
-            ("ALLOW", ScriptPolicy::Allow),
-            (" Deny ", ScriptPolicy::Deny),
+            ("allow", ScriptPolicy::Allow),
+            (" deny ", ScriptPolicy::Deny),
         ] {
             let sources = OverrideSources {
                 install_scripts: SourceValue {
@@ -546,6 +548,27 @@ mod tests {
             "names the source: {msg}"
         );
         assert!(msg.contains("deny"), "lists valid values: {msg}");
+    }
+
+    #[test]
+    fn script_policy_env_rejects_case_variants() {
+        // Lowercase-only, matching the sibling enum-label parsers and the
+        // committed JSON Schema enum (`["deny", "allow", null]`).
+        for raw in ["Deny", "ALLOW", "Allow", "DENY"] {
+            let sources = OverrideSources {
+                install_scripts: SourceValue {
+                    cli: None,
+                    env: Some(raw),
+                },
+                ..OverrideSources::default()
+            };
+            let err = ResolutionOverrides::from_sources(sources)
+                .expect_err("case variants must be rejected");
+            assert!(
+                format!("{err:#}").contains("unknown script policy"),
+                "rejects {raw:?}",
+            );
+        }
     }
 
     #[test]
