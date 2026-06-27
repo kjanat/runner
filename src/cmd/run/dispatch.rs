@@ -155,6 +155,19 @@ pub(super) fn resolve_dispatch(
 ) -> Result<Dispatch> {
     crate::cmd::print_warnings(ctx, overrides, sink.as_deref_mut());
 
+    // Local-file execution short-circuit: an explicit path-like token that
+    // resolves to an existing file is run as that file (executable /
+    // shebang / source-by-runtime) and must never reach the PM-exec
+    // fallback, which would treat a local path as a remote package spec.
+    // Runs before task lookup so a token with a separator (or an explicit
+    // `./`/`/`/`~` prefix) outranks a same-named task.
+    if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
+        let mut command = local.command;
+        print_dispatch_arrow(overrides, &local.label, task, args);
+        crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+        return Ok(Dispatch::Spawn(command));
+    }
+
     let (qualifier, task_name) = parse_qualified_task(task);
 
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
@@ -222,6 +235,18 @@ pub(super) fn resolve_dispatch(
                 let mut cmd = tool::bun::test_cmd(args);
                 crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
                 return Ok(Dispatch::Spawn(cmd));
+            }
+
+            // Bare local file: a no-separator token that names a runnable
+            // file in the working directory (e.g. `main.ts`, `build.sh`) is
+            // run as that file rather than handed to the PM-exec fallback,
+            // which would resolve it as a remote package. Tasks already
+            // matched above, so this never shadows a same-named task.
+            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args) {
+                let mut command = local.command;
+                print_dispatch_arrow(overrides, &local.label, task_name, args);
+                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                return Ok(Dispatch::Spawn(command));
             }
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.

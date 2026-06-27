@@ -2,9 +2,25 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context as _;
 use serde::Deserialize;
+
+/// Bare interpreter name for running a `.py` file directly when no uv
+/// project is detected. Windows ships `python`; most other hosts expose
+/// the interpreter as `python3` (and reserve bare `python` for legacy
+/// Python 2 or leave it unset).
+pub(crate) const PYTHON_BIN: &str = if cfg!(windows) { "python" } else { "python3" };
+
+/// `<python> <file> [args...]` — execute a local Python script with the
+/// system interpreter. The uv path (`uv run <file>`) is preferred when a
+/// uv project is detected; this is the plain fallback.
+pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
+    let mut c = super::program::command(PYTHON_BIN);
+    c.arg(file).args(args);
+    c
+}
 
 /// Common Python artifact and cache directories.
 pub(crate) const CLEAN_DIRS: &[&str] = &[
@@ -137,8 +153,22 @@ fn has_python_pyproject(dir: &Path) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{clean_dirs, detect, extract_pyproject_scripts};
+    use super::{PYTHON_BIN, clean_dirs, detect, extract_pyproject_scripts, run_file_cmd};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn run_file_cmd_uses_interpreter_with_file() {
+        use std::path::Path;
+
+        let cmd = run_file_cmd(Path::new("/abs/tool.py"), &[String::from("--check")]);
+        let built: Vec<_> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(cmd.get_program().to_string_lossy(), PYTHON_BIN);
+        assert_eq!(built, ["/abs/tool.py", "--check"]);
+    }
 
     #[test]
     fn extract_scripts_returns_names_with_entry_point_targets_sorted() {
