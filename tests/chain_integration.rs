@@ -31,6 +31,30 @@ fn just_available() -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// Build an isolated temp project *outside* the repo tree (so detection can't
+/// ascend into the parent crate and pull in its package manager) where Cargo
+/// is the sole detected PM. `runner install` then resolves to an offline
+/// `cargo fetch` for this zero-dependency crate, plus a `just` task to fan out
+/// after install. The caller removes the returned dir when done.
+fn isolated_install_project() -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir =
+        std::env::temp_dir().join(format!("runner-install-it-{}-{unique}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src")).expect("create temp project dir");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"runner-install-it-fixture\"\nversion = \"0.0.0\"\nedition = \
+         \"2021\"\npublish = false\n\n[dependencies]\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(dir.join("src/lib.rs"), "").expect("write lib.rs");
+    std::fs::write(dir.join("justfile"), "build:\n\t@echo build-ran\n").expect("write justfile");
+    dir
+}
+
 #[test]
 fn sequential_chain_runs_in_order() {
     if !just_available() {
@@ -67,6 +91,212 @@ fn sequential_chain_runs_in_order() {
         .find("lint-ran")
         .unwrap_or_else(|| panic!("lint-ran missing.\nstdout: {stdout}"));
     assert!(b < t && t < l, "order should match -s arg order: {stdout}");
+}
+
+#[test]
+fn sequential_chain_emits_per_task_timing_on_stderr() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-s",
+            "build",
+            "test",
+        ])
+        // Scrub GITHUB_ACTIONS so the timing line shape is deterministic
+        // regardless of the host CI environment.
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected success.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    // One timing line per task, on stderr (sequential meta-output lives on
+    // stderr like the dispatch arrow). Assert presence/count, never values.
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        2,
+        "expected one timing line per sequential task. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("(exit 0)"),
+        "expected exit code in timing line. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `chain-parallel-fail`'s runner.toml forces the live (streaming) muxer on
+    // both the CI and non-CI paths, so this deterministically exercises the
+    // streaming timing emission. fail-mid exits 7; the default FailFast policy
+    // lets the already-spawned siblings finish, so all three report timing.
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-parallel-fail").to_str().unwrap(),
+            "run",
+            "-p",
+            "ok-one",
+            "fail-mid",
+            "ok-two",
+        ])
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "expected exit 7 from fail-mid.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        3,
+        "expected one timing line per streaming task. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("(exit 7)"),
+        "fail-mid's non-zero exit should surface in its timing line. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn parallel_install_chain_times_the_install_step() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Parity guard for install-chain timing: the parallel (`-p`) install path
+    // runs install imperatively before fanning the tasks out, so it must wrap
+    // that install in the same timing the sequential path's synthetic install
+    // head gets — otherwise `runner install -p ...` would time the tasks but
+    // not the install step, while `-s` times both.
+    let project = isolated_install_project();
+    let output = Command::new(runner_binary())
+        .args(["--dir", project.to_str().unwrap(), "install", "-p", "build"])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Remove the temp project up front so a failing assertion can't leak it.
+    let _ = std::fs::remove_dir_all(&project);
+
+    assert!(
+        output.status.success(),
+        "expected success.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    // Only the install timing line carries both "install" and "finished in":
+    // "installing with cargo" lacks the latter, and the fanned-out task's line
+    // names "build". Its presence is exactly what the imperative path dropped.
+    assert!(
+        stderr
+            .lines()
+            .any(|line| line.contains("install") && line.contains("finished in")),
+        "parallel install step must emit its own timing line. stderr: {stderr}",
+    );
+    // The post-install task still runs and gets its own timing line, so both
+    // the install head and the task are accounted for.
+    assert!(
+        stdout.contains("build-ran"),
+        "post-install task should run. stdout: {stdout}",
+    );
+    assert!(
+        stderr.matches("finished in").count() >= 2,
+        "expected timing for both the install step and the task. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn grouped_parallel_chain_folds_timing_into_block_footer() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `parallel-grouped`'s runner.toml opts into grouped output outside GitHub
+    // Actions, so each task's duration is folded into its block footer on
+    // stdout (not a stderr meta-line).
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("parallel-grouped").to_str().unwrap(),
+            "run",
+            "-p",
+            "build",
+            "test",
+        ])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "expected success. stdout: {stdout}"
+    );
+    assert_eq!(
+        stdout.matches("finished in").count(),
+        2,
+        "expected one footer per grouped task on stdout. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("(exit 0)"),
+        "grouped footer should carry the exit code. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn quiet_suppresses_chain_timing() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `RUNNER_QUIET` mutes diagnostic meta-output (dispatch arrow, timing).
+    let output = Command::new(runner_binary())
+        .args([
+            "--dir",
+            fixture("chain-sequential").to_str().unwrap(),
+            "run",
+            "-s",
+            "build",
+            "test",
+        ])
+        .env("RUNNER_QUIET", "1")
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected success.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        0,
+        "--quiet must suppress timing lines. stderr: {stderr}",
+    );
+    // The tasks still ran — quiet hides meta-output, not task output.
+    assert!(
+        stdout.contains("build-ran") && stdout.contains("test-ran"),
+        "tasks should still run under --quiet. stdout: {stdout}",
+    );
 }
 
 #[test]

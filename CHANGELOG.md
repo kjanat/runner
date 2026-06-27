@@ -17,6 +17,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Chain mode now reports per-task wall-clock duration on completion. Sequential
+  and live (`-p`) parallel runs print a concise `· <task> finished in 1.2s
+  (exit 0)` line to stderr after each task; grouped parallel output folds the
+  same summary into each task's block footer (inside the GitHub Actions
+  `::group::` so it stays attached). Durations format compactly (`342ms`,
+  `1.2s`, `1m 04s`); the band is chosen from the rounded value, so a duration
+  that rounds up to a full minute (e.g. `59.95s`) prints `1m 00s`, never an
+  out-of-band `60.0s`. The synthetic install head of an `install` chain is
+  timed the same way in both `-s` and `-p` modes. Timing is diagnostic
+  meta-output, so `--quiet` (`RUNNER_QUIET`) and `--no-warnings`
+  (`RUNNER_NO_WARNINGS`) suppress it.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
   prerequisite — never as a parallel sibling — then the tasks fan out. A
