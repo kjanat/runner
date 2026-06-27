@@ -64,6 +64,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "scripts": {
+          "description": "Lifecycle-script policy for the install: `\"deny\"` skips lifecycle\nscripts wherever the package manager exposes a skip mechanism\n(npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,\nyarn-berry `YARN_ENABLE_SCRIPTS=false`; deno already denies by\ndefault), warning for the managers that cannot. `\"allow\"` keeps each\nmanager at its default. Absent leaves every manager at its default.\nOverridden by `RUNNER_INSTALL_SCRIPTS`, then the `--no-scripts` flag.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "deny",
+            "allow",
+            null
+          ]
         }
       },
       "additionalProperties": false

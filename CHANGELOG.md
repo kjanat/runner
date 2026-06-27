@@ -17,6 +17,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- `runner install --no-scripts` skips install-time lifecycle scripts, the
+  primary supply-chain attack surface during dependency installs. It maps to
+  each package manager's native skip mechanism: `--ignore-scripts` for
+  npm/yarn-classic/pnpm/bun, `--no-scripts` for composer, and
+  `YARN_ENABLE_SCRIPTS=false` for yarn-berry (which dropped the flag); deno
+  already denies dependency scripts by default. Package managers with no skip
+  mechanism (cargo, go, bundler, uv/poetry/pipenv) print a `warn:` and proceed
+  rather than silently ignoring the request. Configurable via `[install].scripts
+  = "deny"` in runner.toml and `RUNNER_INSTALL_SCRIPTS=deny`, with the usual
+  precedence: CLI flag over `RUNNER_INSTALL_SCRIPTS` over `[install].scripts`.
+  `"allow"` keeps each manager at its default; forcing scripts back on for the
+  deny-by-default managers (a per-package allowlist) is deferred to a follow-up.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
   prerequisite — never as a parallel sibling — then the tasks fan out. A

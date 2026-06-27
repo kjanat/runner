@@ -15,28 +15,42 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
-/// `yarn install [--frozen-lockfile]`
+/// `yarn install [--frozen-lockfile] [--ignore-scripts]`
 ///
-/// Uses `--immutable` for Yarn 2+ and falls back to the classic flag when the
-/// installed major version is 1 or cannot be detected.
-pub(crate) fn install_cmd(dir: &Path, frozen: bool) -> Command {
-    let yarn_major = if frozen {
+/// Both the frozen and the deny-scripts mechanism are version-dependent, so
+/// the installed major version is probed whenever either is requested. Yarn 2+
+/// uses `--immutable` for frozen and the `YARN_ENABLE_SCRIPTS=false` env for
+/// deny (Berry dropped `--ignore-scripts`); Yarn 1 / undetected falls back to
+/// the classic `--frozen-lockfile` and `--ignore-scripts` flags.
+pub(crate) fn install_cmd(dir: &Path, frozen: bool, deny_scripts: bool) -> Command {
+    let yarn_major = if frozen || deny_scripts {
         detect_major_version(dir)
     } else {
         None
     };
-    install_cmd_with_major(frozen, yarn_major)
+    install_cmd_with_major(frozen, deny_scripts, yarn_major)
 }
 
-fn install_cmd_with_major(frozen: bool, yarn_major: Option<u32>) -> Command {
+fn install_cmd_with_major(frozen: bool, deny_scripts: bool, yarn_major: Option<u32>) -> Command {
+    let is_berry = matches!(yarn_major, Some(major) if major >= 2);
     let mut c = super::program::command("yarn");
     c.arg("install");
     if frozen {
-        let frozen_flag = match yarn_major {
-            Some(major) if major >= 2 => "--immutable",
-            _ => "--frozen-lockfile",
-        };
-        c.arg(frozen_flag);
+        c.arg(if is_berry {
+            "--immutable"
+        } else {
+            "--frozen-lockfile"
+        });
+    }
+    if deny_scripts {
+        // Berry (v2+) has no `--ignore-scripts` flag; `enableScripts` is the
+        // config knob, settable per-invocation via its env var. Classic (v1)
+        // and the undetected fallback take the CLI flag.
+        if is_berry {
+            c.env("YARN_ENABLE_SCRIPTS", "false");
+        } else {
+            c.arg("--ignore-scripts");
+        }
     }
     c
 }
@@ -91,34 +105,77 @@ fn exec_cmd_with_major(yarn_major: Option<u32>, args: &[String]) -> Command {
 mod tests {
     use super::{exec_cmd_with_major, install_cmd_with_major, parse_major_version};
 
+    fn args_of(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn has_env(cmd: &std::process::Command, key: &str, value: &str) -> bool {
+        cmd.get_envs()
+            .any(|(k, v)| k == std::ffi::OsStr::new(key) && v == Some(std::ffi::OsStr::new(value)))
+    }
+
     #[test]
     fn frozen_install_uses_classic_flag_for_yarn_one() {
-        let args: Vec<_> = install_cmd_with_major(true, Some(1))
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(args, ["install", "--frozen-lockfile"]);
+        assert_eq!(
+            args_of(&install_cmd_with_major(true, false, Some(1))),
+            ["install", "--frozen-lockfile"]
+        );
     }
 
     #[test]
     fn frozen_install_uses_immutable_for_yarn_two_plus() {
-        let args: Vec<_> = install_cmd_with_major(true, Some(4))
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(args, ["install", "--immutable"]);
+        assert_eq!(
+            args_of(&install_cmd_with_major(true, false, Some(4))),
+            ["install", "--immutable"]
+        );
     }
 
     #[test]
     fn frozen_install_falls_back_when_version_missing() {
-        let args: Vec<_> = install_cmd_with_major(true, None)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        assert_eq!(
+            args_of(&install_cmd_with_major(true, false, None)),
+            ["install", "--frozen-lockfile"]
+        );
+    }
 
-        assert_eq!(args, ["install", "--frozen-lockfile"]);
+    #[test]
+    fn deny_scripts_uses_ignore_scripts_flag_on_classic() {
+        // Yarn 1 keeps the CLI flag.
+        assert_eq!(
+            args_of(&install_cmd_with_major(false, true, Some(1))),
+            ["install", "--ignore-scripts"]
+        );
+    }
+
+    #[test]
+    fn deny_scripts_uses_env_not_flag_on_berry() {
+        // Berry (v2+) dropped `--ignore-scripts`; the deny is expressed as the
+        // `YARN_ENABLE_SCRIPTS=false` env, leaving the argv at a bare install.
+        let cmd = install_cmd_with_major(false, true, Some(4));
+        assert!(
+            has_env(&cmd, "YARN_ENABLE_SCRIPTS", "false"),
+            "Berry deny must set YARN_ENABLE_SCRIPTS=false",
+        );
+        assert_eq!(args_of(&cmd), ["install"]);
+    }
+
+    #[test]
+    fn deny_scripts_falls_back_to_flag_when_version_missing() {
+        // Undetected version defaults to the Classic-compatible flag, matching
+        // the frozen fallback.
+        assert_eq!(
+            args_of(&install_cmd_with_major(false, true, None)),
+            ["install", "--ignore-scripts"]
+        );
+    }
+
+    #[test]
+    fn frozen_and_deny_scripts_combine_on_berry() {
+        let cmd = install_cmd_with_major(true, true, Some(4));
+        assert!(has_env(&cmd, "YARN_ENABLE_SCRIPTS", "false"));
+        assert_eq!(args_of(&cmd), ["install", "--immutable"]);
     }
 
     #[test]

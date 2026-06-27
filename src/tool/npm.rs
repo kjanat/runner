@@ -18,10 +18,14 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
-/// `npm install` or `npm ci` when `frozen`.
-pub(crate) fn install_cmd(frozen: bool) -> Command {
+/// `npm install` or `npm ci` when `frozen`, with `--ignore-scripts` appended
+/// when `deny_scripts` (skips both root and dependency lifecycle scripts).
+pub(crate) fn install_cmd(frozen: bool, deny_scripts: bool) -> Command {
     let mut c = super::program::command("npm");
     c.arg(if frozen { "ci" } else { "install" });
+    if deny_scripts {
+        c.arg("--ignore-scripts");
+    }
     c
 }
 
@@ -41,7 +45,7 @@ mod tests {
 
     #[test]
     fn frozen_install_uses_ci() {
-        let args: Vec<_> = install_cmd(true)
+        let args: Vec<_> = install_cmd(true, false)
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -51,12 +55,32 @@ mod tests {
 
     #[test]
     fn non_frozen_install_uses_install() {
-        let args: Vec<_> = install_cmd(false)
+        let args: Vec<_> = install_cmd(false, false)
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
         assert_eq!(args, ["install"]);
+    }
+
+    #[test]
+    fn deny_scripts_appends_ignore_scripts() {
+        let args: Vec<_> = install_cmd(false, true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, ["install", "--ignore-scripts"]);
+    }
+
+    #[test]
+    fn frozen_and_deny_scripts_combine() {
+        let args: Vec<_> = install_cmd(true, true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, ["ci", "--ignore-scripts"]);
     }
 
     #[test]

@@ -67,8 +67,12 @@ pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner 
 
 # Restrict which detected package managers `runner install` runs. Empty/absent
 # installs every detected PM. Overridden by RUNNER_INSTALL_PMS (comma-separated).
+# `scripts` controls install-time lifecycle scripts: "deny" skips them where the
+# PM allows it (npm/yarn/pnpm/bun/composer; deno already denies), warning for the
+# rest. Overridden by RUNNER_INSTALL_SCRIPTS, then the --no-scripts flag.
 [install]
 # pms = ["bun"]                # only install with these; each must be detected
+# scripts = "deny"             # deny | allow  (absent = each PM's own default)
 
 # Resolver policy knobs.
 [resolution]
@@ -155,6 +159,20 @@ pub(crate) struct InstallSection {
     /// Empty = install with every detected PM.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pms: Vec<String>,
+
+    /// Lifecycle-script policy for the install: `"deny"` skips lifecycle
+    /// scripts wherever the package manager exposes a skip mechanism
+    /// (npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,
+    /// yarn-berry `YARN_ENABLE_SCRIPTS=false`; deno already denies by
+    /// default), warning for the managers that cannot. `"allow"` keeps each
+    /// manager at its default. Absent leaves every manager at its default.
+    /// Overridden by `RUNNER_INSTALL_SCRIPTS`, then the `--no-scripts` flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["deny", "allow", null]))
+    )]
+    pub scripts: Option<String>,
 }
 
 /// `[chain]` section — failure policy for `run -s/-p` chains and
@@ -345,7 +363,7 @@ pub(crate) struct ResolutionSection {
 const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("pm", &["node", "python"]),
     ("task_runner", &["prefer"]),
-    ("install", &["pms"]),
+    ("install", &["pms", "scripts"]),
     ("resolution", &["fallback", "on_mismatch"]),
     ("chain", &["keep_going", "kill_on_fail"]),
     ("github", &["group_output", "group_parallel"]),
@@ -655,6 +673,22 @@ mod tests {
             .expect("config should be present");
 
         assert_eq!(loaded.config.install.pms, vec!["bun", "cargo"]);
+    }
+
+    #[test]
+    fn load_parses_install_scripts() {
+        let dir = TempDir::new("config-install-scripts");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[install]\nscripts = \"deny\"\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert_eq!(loaded.config.install.scripts.as_deref(), Some("deny"));
     }
 
     #[test]
