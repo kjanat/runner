@@ -218,6 +218,26 @@ pub(super) fn resolve_dispatch(
                 return Err(reason.into());
             }
 
+            // Local file without an explicit prefix: a token that names a
+            // runnable file under the project root — a bare name (`main.ts`,
+            // `build.sh`) or a relative path with a separator (`bin/tool`) — runs
+            // as that file. Sits *after* the runner-constraint hard error (an
+            // explicit `--runner` never silently downgrades to a coincidental
+            // file) but *before* PM resolution, so a local file still runs when
+            // node-PM resolution would hard-error for reasons unrelated to it (a
+            // strict devEngines/`packageManager` mismatch, an incompatible
+            // `--pm`) — running `main.ts` via its runtime doesn't need the
+            // package.json PM. Tasks already matched above (`restricted` is empty
+            // here), so this never shadows a same-named task, and `bunx`/`npx`
+            // never sees a local file.
+            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
+            {
+                let mut command = local.command;
+                print_dispatch_arrow(overrides, &local.label, task_name, args);
+                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                return Ok(Dispatch::Spawn(command));
+            }
+
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
                     crate::cmd::print_warning_slice(
@@ -238,21 +258,6 @@ pub(super) fn resolve_dispatch(
                 let mut cmd = tool::bun::test_cmd(args);
                 crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
                 return Ok(Dispatch::Spawn(cmd));
-            }
-
-            // Local file without an explicit prefix: a token that names a
-            // runnable file under the working directory — a bare name
-            // (`main.ts`, `build.sh`) or a relative path with a separator
-            // (`bin/tool`) — is run as that file rather than handed to the
-            // PM-exec fallback, which would resolve it as a remote package.
-            // Tasks already matched above, so this never shadows a same-named
-            // task (a `make bin/tool` target wins first).
-            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
-            {
-                let mut command = local.command;
-                print_dispatch_arrow(overrides, &local.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
-                return Ok(Dispatch::Spawn(command));
             }
 
             // PM-exec fallback: dispatch through detected PM's exec primitive.

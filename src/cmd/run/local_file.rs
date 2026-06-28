@@ -376,15 +376,27 @@ fn parse_shebang(line: &str) -> Option<Shebang> {
     };
 
     if is_env(interpreter) {
-        let command = rest
+        // `env -S` / `--split-string` re-splits its single kernel argument with
+        // env's own quote-aware parser, so quoted args (`-S deno run
+        // --allow-read="a b"`) stay one token; `split_whitespace` would tear
+        // them apart. Plain `env` (no `-S`) keeps the lenient whitespace split,
+        // which tolerates the common `env <interp> -flag` shorthand.
+        let split_form = rest
             .strip_prefix("--split-string=")
             .or_else(|| rest.strip_prefix("--split-string"))
             .or_else(|| rest.strip_prefix("-S"))
-            .unwrap_or(rest)
-            .trim();
-        let mut parts = command.split_whitespace();
-        let program = parts.next()?.to_string();
-        let args = parts.map(ToOwned::to_owned).collect();
+            .map(str::trim);
+        let words = split_form.map_or_else(
+            || {
+                rest.split_whitespace()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            },
+            split_env_string,
+        );
+        let mut parts = words.into_iter();
+        let program = parts.next()?;
+        let args = parts.collect();
         return Some(Shebang { program, args });
     }
 
@@ -393,6 +405,70 @@ fn parse_shebang(line: &str) -> Option<Shebang> {
         program: interpreter.to_string(),
         args,
     })
+}
+
+/// Split an `env -S` / `--split-string` argument the way GNU `env`'s
+/// split-string parser does for the cases shebangs actually use: ASCII
+/// whitespace separates words, while single quotes, double quotes, and a
+/// backslash keep a run — embedded spaces and all — as one word. This
+/// preserves quoted arguments (`--allow-read="a b"`) that `split_whitespace`
+/// would tear in two. The exotic `\t`/`\n`/`\c` escape sequences env also
+/// understands are vanishingly rare in shebangs and intentionally unmodeled.
+fn split_env_string(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_ascii_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            '\'' => {
+                started = true;
+                for quoted in chars.by_ref() {
+                    if quoted == '\'' {
+                        break;
+                    }
+                    current.push(quoted);
+                }
+            }
+            '"' => {
+                started = true;
+                while let Some(quoted) = chars.next() {
+                    match quoted {
+                        '"' => break,
+                        '\\' => match chars.next() {
+                            Some(esc @ ('"' | '\\' | '$' | '`')) => current.push(esc),
+                            Some(other) => {
+                                current.push('\\');
+                                current.push(other);
+                            }
+                            None => current.push('\\'),
+                        },
+                        _ => current.push(quoted),
+                    }
+                }
+            }
+            '\\' => {
+                started = true;
+                if let Some(escaped) = chars.next() {
+                    current.push(escaped);
+                }
+            }
+            _ => {
+                started = true;
+                current.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(current);
+    }
+    words
 }
 
 /// Whether `interpreter` is the `env` launcher (by file name).
@@ -674,6 +750,21 @@ mod tests {
             assert_eq!(parsed.program, "deno", "program from {line:?}");
             assert_eq!(parsed.args, ["run", "-A"], "args from {line:?}");
         }
+    }
+
+    #[test]
+    fn parse_shebang_env_split_string_preserves_quoted_args() {
+        // `env -S` honors quotes; `split_whitespace` would tear
+        // `--allow-read="a b"` into two words. Double and single quotes both
+        // keep the embedded space inside one argument.
+        let double = parse_shebang(r#"#!/usr/bin/env -S deno run --allow-read="a b""#)
+            .expect("double-quoted -S shebang should parse");
+        assert_eq!(double.program, "deno");
+        assert_eq!(double.args, ["run", "--allow-read=a b"]);
+
+        let single = parse_shebang("#!/usr/bin/env -S deno run --allow-read='a b'")
+            .expect("single-quoted -S shebang should parse");
+        assert_eq!(single.args, ["run", "--allow-read=a b"]);
     }
 
     #[test]

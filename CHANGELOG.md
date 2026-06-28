@@ -30,7 +30,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   node-only project reports a clear `node cannot run` error instead of
   building an unrunnable `node app.tsx`; `.py` via `uv run` or python; `.go`
   via `go run`), a `#!` shebang (including the `#!/usr/bin/env -S <interp>
-  <args>` form) is parsed and invoked, and a native binary or self-executable
+  <args>` form, whose quoted arguments are kept intact) is parsed and invoked,
+  and a native binary or self-executable
   script is spawned directly — including an execute-only binary (Unix mode
   0111), whose unreadable shebang probe is treated as "no shebang" so the
   binary still spawns directly rather than hard-failing the run. A source file
