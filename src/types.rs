@@ -537,23 +537,28 @@ impl PackageManager {
         self.is_node() || matches!(self, Self::Deno)
     }
 
-    /// The task source this package manager owns as a *standalone task
-    /// runner*, distinct from any source it merely shares with other PMs.
+    /// The task source(s) this package manager runs natively, most-native
+    /// first. A forced `--pm` / `RUNNER_PM` biases same-name task selection
+    /// toward these, in order, so the chosen task dispatches through the PM
+    /// the user asked for instead of being run *through* it from a foreign
+    /// source (e.g. `RUNNER_PM=deno run check` picks the `deno.json` task
+    /// over a same-named `package.json` script).
     ///
-    /// Deno is the only PM with a dual nature today: it runs `package.json`
-    /// `"scripts"` like the Node PMs, but it is also a task runner in its
-    /// own right (`deno task`, backed by [`TaskSource::DenoJson`]). That
-    /// distinct source is what a forced `--pm deno` / `RUNNER_PM=deno`
-    /// should bias same-name conflict resolution toward, rather than
-    /// running another source's script *through* deno.
-    ///
-    /// Returns `None` for every other PM: npm/yarn/pnpm/bun all share
-    /// [`TaskSource::PackageJson`], which no single one of them owns, so
-    /// none has a source to bias toward.
-    pub(crate) const fn distinct_task_source(self) -> Option<TaskSource> {
+    /// npm/yarn/pnpm/bun all run `package.json` `"scripts"`. Deno is
+    /// dual-natured: it owns `deno.json` tasks (`deno task`) *and* also runs
+    /// `package.json` scripts, so it prefers the former and falls back to
+    /// the latter. Cargo, Go, and the Python PMs own their ecosystem's
+    /// source. Bundler and Composer have no task source modeled yet, so
+    /// they bias nothing. Deno is one member of this rule, not a special
+    /// case — the bias is general across every PM.
+    pub(crate) const fn owned_task_sources(self) -> &'static [TaskSource] {
         match self {
-            Self::Deno => Some(TaskSource::DenoJson),
-            _ => None,
+            Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => &[TaskSource::PackageJson],
+            Self::Deno => &[TaskSource::DenoJson, TaskSource::PackageJson],
+            Self::Cargo => &[TaskSource::CargoAliases],
+            Self::Go => &[TaskSource::GoPackage],
+            Self::Uv | Self::Poetry | Self::Pipenv => &[TaskSource::PyprojectScripts],
+            Self::Bundler | Self::Composer => &[],
         }
     }
 }

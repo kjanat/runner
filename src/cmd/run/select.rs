@@ -8,16 +8,18 @@
 //! same ranking key the resolver uses.
 //!
 //! [`source_priority`] also folds in the forced-PM source bias: a `--pm` /
-//! `RUNNER_PM` override naming a package manager that is itself a distinct
-//! task source (today only `deno`) pulls that source to the front of a
-//! same-name conflict, so `RUNNER_PM=deno run check` picks `deno:check`
-//! instead of running `package.json:check` through deno.
+//! `RUNNER_PM` override pulls the forced PM's own task source(s) to the
+//! front of a same-name conflict, most-native first, so `RUNNER_PM=deno run
+//! check` picks `deno:check` (a `deno task`) instead of running
+//! `package.json:check` *through* deno, and `--pm bun` pulls `package.json`
+//! to the front the same way. Every PM biases toward what it owns — deno is
+//! one member of the rule, not a special case.
 
 use std::path::{Path, PathBuf};
 
 use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{ProjectContext, TaskSource};
+use crate::types::{PackageManager, ProjectContext, TaskSource};
 
 pub(crate) fn select_task_entry<'a>(
     ctx: &ProjectContext,
@@ -43,13 +45,15 @@ pub(crate) fn select_task_entry<'a>(
 /// Ranks sources for the source selector's primary key.
 ///
 /// Layered, highest priority first:
-/// - When the user forces a package manager via `--pm` / `RUNNER_PM` that is *also* a distinct
-///   task source (today only `deno`, via [`crate::types::PackageManager::distinct_task_source`]),
-///   that source wins its own same-name conflicts outright (priority `0`) and every other source
-///   is bumped one tier down. So `RUNNER_PM=deno run check` resolves a `deno:check` /
+/// - When the user forces a package manager via `--pm` / `RUNNER_PM`, that PM's own task
+///   source(s) (via [`crate::types::PackageManager::owned_task_sources`]) win same-name conflicts,
+///   most-native first: the native source takes priority `0`, the next `1`, and every other source
+///   is bumped below them. So `RUNNER_PM=deno run check` resolves a `deno:check` /
 ///   `package.json:check` conflict to the native deno task instead of running the package.json
-///   script *through* deno. This fires only when a PM is forced; with no `--pm` / `RUNNER_PM` the
-///   ranking is unchanged.
+///   script *through* deno; `--pm bun` pulls `package.json` to the front the same way. Every PM
+///   biases toward what it owns — deno is one member of the rule, not a special case. A PM that
+///   owns no modeled task source (Bundler, Composer) re-orders nothing. Fires only when a PM is
+///   forced; with no `--pm` / `RUNNER_PM` the ranking is unchanged.
 /// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in the list win in listed order
 ///   (`r1 = 0`, `r2 = 1`, ...). Sources for unlisted runners fall back to the default tier offset
 ///   by `prefer.len()` so they always lose to listed entries.
@@ -59,16 +63,22 @@ pub(crate) fn select_task_entry<'a>(
 /// Lower is higher priority. Returns `u16` (rather than `u8`) to leave headroom for the offset
 /// arithmetic when prefer-lists grow large without overflow on the default tier.
 pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> u16 {
-    if let Some(forced) = forced_pm_task_source(overrides) {
-        // A forced PM that owns a distinct task source wins its own
-        // conflicts outright; everything else drops one tier so the
-        // forced source's native task beats a same-name script in another
-        // source. Single-candidate lookups are unaffected (only one task
-        // to pick); only genuine conflicts re-order.
-        if forced == source {
-            return 0;
+    if let Some(forced) = forced_pm(overrides) {
+        let owned = forced.owned_task_sources();
+        // The forced PM's owned task source(s) win same-name conflicts,
+        // most-native first; every other source drops below them so the
+        // chosen task dispatches through the PM the user asked for instead
+        // of being run *through* it from a foreign source. Single-candidate
+        // lookups are unaffected (only one task to pick); only genuine
+        // conflicts re-order. A PM owning no source bumps nothing.
+        if let Some(idx) = owned
+            .iter()
+            .position(|owned_source| *owned_source == source)
+        {
+            return u16::try_from(idx).unwrap_or(u16::MAX);
         }
-        return base_source_priority(overrides, source).saturating_add(1);
+        let bump = u16::try_from(owned.len()).unwrap_or(u16::MAX);
+        return base_source_priority(overrides, source).saturating_add(bump);
     }
     base_source_priority(overrides, source)
 }
@@ -98,16 +108,13 @@ fn base_source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> 
     u16::try_from(overrides.prefer_runners.len()).unwrap_or(u16::MAX) + default_tier
 }
 
-/// The task source a forced `--pm` / `RUNNER_PM` package manager owns, if
-/// any. Only the cross-ecosystem CLI/env override (`overrides.pm`) counts —
-/// `runner.toml` PM overrides live in `pm_by_ecosystem` and never bias
-/// source selection. Today this resolves to [`TaskSource::DenoJson`] for
-/// `deno` and `None` for every other PM.
-fn forced_pm_task_source(overrides: &ResolutionOverrides) -> Option<TaskSource> {
-    overrides
-        .pm
-        .as_ref()
-        .and_then(|forced| forced.pm.distinct_task_source())
+/// The package manager forced via `--pm` / `RUNNER_PM`, if any. Only this
+/// cross-ecosystem CLI/env override (`overrides.pm`) biases source
+/// selection — `runner.toml` PM overrides live in `pm_by_ecosystem` and
+/// never do. The caller reads its [`PackageManager::owned_task_sources`] to
+/// rank the forced PM's own source(s) first.
+fn forced_pm(overrides: &ResolutionOverrides) -> Option<PackageManager> {
+    overrides.pm.as_ref().map(|forced| forced.pm)
 }
 
 /// Distance from `ctx.root` to the directory holding `source`'s config
@@ -262,10 +269,11 @@ mod tests {
     }
 
     #[test]
-    fn forced_node_pm_without_distinct_source_does_not_reorder() {
-        // Bun shares `package.json` with the other Node PMs, so it has no
-        // distinct task source to bias toward: `--pm bun` leaves the
-        // default ordering (package.json over deno) intact.
+    fn forced_bun_biases_toward_its_own_package_json() {
+        // Generalization past deno: bun owns `package.json`, so `--pm bun`
+        // pulls it to the front. Here package.json already led deno, so the
+        // winner is unchanged — but now it wins *because* bun biases toward
+        // it, not by default tier (see the turbo case for a winner flip).
         let ctx = context(vec![
             task("check", TaskSource::PackageJson),
             task("check", TaskSource::DenoJson),
@@ -278,6 +286,55 @@ mod tests {
     }
 
     #[test]
+    fn forced_bun_beats_turbo_in_conflict() {
+        // The bias is general, not deno-only: forcing a Node PM pulls its
+        // `package.json` ahead of TurboJson (default tier 0) too, flipping
+        // the winner from the unforced default.
+        let ctx = context(vec![
+            task("check", TaskSource::TurboJson),
+            task("check", TaskSource::PackageJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = pm_override(PackageManager::Bun, OverrideOrigin::CliFlag);
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
+    }
+
+    #[test]
+    fn forced_deno_falls_back_to_package_json_when_no_deno_task() {
+        // Deno owns `[deno.json, package.json]`: with no `deno.json` task to
+        // pick, the same-named `package.json` script is still selected (and
+        // dispatched through deno) rather than excluded.
+        let ctx = context(vec![task("check", TaskSource::PackageJson)]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = pm_override(PackageManager::Deno, OverrideOrigin::EnvVar);
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
+    }
+
+    #[test]
+    fn forced_pm_without_owned_source_does_not_reorder() {
+        // A PM that owns no modeled task source (Composer) biases nothing:
+        // the package.json/deno conflict keeps its default ordering, and the
+        // rendered priority is identical to the unforced path.
+        let ctx = context(vec![
+            task("check", TaskSource::PackageJson),
+            task("check", TaskSource::DenoJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = pm_override(PackageManager::Composer, OverrideOrigin::CliFlag);
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
+        assert_eq!(
+            source_priority(&overrides, TaskSource::PackageJson),
+            source_priority(&ResolutionOverrides::default(), TaskSource::PackageJson),
+        );
+    }
+
+    #[test]
     fn forced_deno_priority_promotes_deno_source_to_zero() {
         // The bias is folded into `source_priority` itself so `why` and
         // `doctor`, which render that number, stay truthful: deno drops to
@@ -287,6 +344,18 @@ mod tests {
         assert!(
             source_priority(&overrides, TaskSource::PackageJson)
                 > source_priority(&overrides, TaskSource::DenoJson)
+        );
+    }
+
+    #[test]
+    fn forced_bun_priority_promotes_package_json_to_zero() {
+        // The general rule renders truthfully for any PM: `--pm bun` drops
+        // `package.json` to 0 and bumps the shadowed deno source below it.
+        let overrides = pm_override(PackageManager::Bun, OverrideOrigin::CliFlag);
+        assert_eq!(source_priority(&overrides, TaskSource::PackageJson), 0);
+        assert!(
+            source_priority(&overrides, TaskSource::DenoJson)
+                > source_priority(&overrides, TaskSource::PackageJson)
         );
     }
 
