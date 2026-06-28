@@ -599,7 +599,7 @@ fn configured_project_dir(
 /// word, so forms like `--dir=~/foo` arrive here unexpanded. We mirror the
 /// common shell behaviour for the bare `~` and `~/` cases; any other form
 /// (including `~user`) is returned unchanged.
-fn expand_tilde(path: &Path) -> PathBuf {
+pub(crate) fn expand_tilde(path: &Path) -> PathBuf {
     expand_tilde_with(path, home_dir().as_deref())
 }
 
@@ -686,7 +686,15 @@ fn dispatch_install_chain(
     for task in tasks {
         cmd::run::precheck_task(ctx, overrides, task)?;
     }
+    // Time the install step the same way the sequential path's synthetic
+    // install head is (run_chain -> emit_task_timing). Without this the
+    // imperative parallel pre-install bypasses the timing path, so
+    // `runner install -p ...` would print per-task timing but none for install
+    // while `-s` does. "install" matches ChainItem::install(..).display_name();
+    // emit_task_timing self-gates via timing_enabled (--quiet/--no-warnings).
+    let started = std::time::Instant::now();
     let install_code = cmd::install(ctx, overrides, frozen)?;
+    cmd::emit_task_timing(overrides, "install", started.elapsed(), install_code);
     let keep_going = matches!(overrides.failure_policy, chain::FailurePolicy::KeepGoing);
     if install_code != 0 && !keep_going {
         return Ok(install_code);

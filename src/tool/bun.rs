@@ -51,9 +51,20 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
+/// `bun <file> [args...]` — execute a local script file with the Bun
+/// runtime. Distinct from [`exec_cmd`] (`bunx`), which fetches and runs a
+/// remote package; this runs an on-disk path the caller already resolved.
+pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
+    let mut c = super::program::command("bun");
+    c.arg(file).args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ScriptDirective, install_cmd, run_cmd, test_cmd};
+    use std::path::Path;
+
+    use super::{ScriptDirective, install_cmd, run_cmd, run_file_cmd, test_cmd};
 
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -106,5 +117,18 @@ mod tests {
             .collect();
 
         assert_eq!(built, ["test", "--watch"]);
+    }
+
+    #[test]
+    fn run_file_cmd_runs_the_path_directly() {
+        let args = [String::from("--flag")];
+        let cmd = run_file_cmd(Path::new("/abs/script.ts"), &args);
+        let built: Vec<_> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(cmd.get_program().to_string_lossy(), "bun");
+        assert_eq!(built, ["/abs/script.ts", "--flag"]);
     }
 }

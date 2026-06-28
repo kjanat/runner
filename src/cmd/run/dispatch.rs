@@ -155,6 +155,22 @@ pub(super) fn resolve_dispatch(
 ) -> Result<Dispatch> {
     crate::cmd::print_warnings(ctx, overrides, sink.as_deref_mut());
 
+    // Local-file execution short-circuit: a token with an explicit
+    // local-path prefix (`./`, `../`, `/`, `\`, `~`, or a Windows drive
+    // root) that resolves to an existing file is run as that file
+    // (executable / shebang / source-by-runtime) and must never reach the
+    // PM-exec fallback, which would treat a local path as a remote package
+    // spec. Runs before task lookup so an explicit path outranks a
+    // same-named task. A separator-bearing but *relative* token (`bin/tool`)
+    // is intentionally left for the after-miss `try_bare_file` fallback so a
+    // matching task (e.g. a `make bin/tool` target) wins first.
+    if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
+        let mut command = local.command;
+        print_dispatch_arrow(overrides, &local.label, task, args);
+        crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+        return Ok(Dispatch::Spawn(command));
+    }
+
     let (qualifier, task_name) = parse_qualified_task(task);
 
     let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
@@ -200,6 +216,26 @@ pub(super) fn resolve_dispatch(
 
             if let Some(reason) = runner_constraint_error(overrides, &found) {
                 return Err(reason.into());
+            }
+
+            // Local file without an explicit prefix: a token that names a
+            // runnable file under the project root — a bare name (`main.ts`,
+            // `build.sh`) or a relative path with a separator (`bin/tool`) — runs
+            // as that file. Sits *after* the runner-constraint hard error (an
+            // explicit `--runner` never silently downgrades to a coincidental
+            // file) but *before* PM resolution, so a local file still runs when
+            // node-PM resolution would hard-error for reasons unrelated to it (a
+            // strict devEngines/`packageManager` mismatch, an incompatible
+            // `--pm`) — running `main.ts` via its runtime doesn't need the
+            // package.json PM. Tasks already matched above (`restricted` is empty
+            // here), so this never shadows a same-named task, and `bunx`/`npx`
+            // never sees a local file.
+            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
+            {
+                let mut command = local.command;
+                print_dispatch_arrow(overrides, &local.label, task_name, args);
+                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                return Ok(Dispatch::Spawn(command));
             }
 
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
