@@ -70,9 +70,9 @@ pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner 
 # `scripts` controls install-time lifecycle scripts: "deny" skips them where the
 # PM allows it (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces
 # them on where the PM can express it (npm/yarn-berry/deno). bun and pnpm (>=10)
-# warn either way — their dependency build scripts are gated by a manifest
-# allowlist runner won't touch. Overridden by RUNNER_INSTALL_SCRIPTS, then the
-# --no-scripts / --scripts flags.
+# deny fine but can't force scripts on: their dependency build scripts are gated
+# by a manifest allowlist runner won't touch, so only "allow" warns there.
+# Overridden by RUNNER_INSTALL_SCRIPTS, then the --no-scripts / --scripts flags.
 [install]
 # pms = ["bun"]                # only install with these; each must be detected
 # scripts = "deny"             # deny | allow  (absent = each PM's own default)

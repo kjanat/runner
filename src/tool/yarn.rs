@@ -52,16 +52,27 @@ fn install_cmd_with_major(
         });
     }
     match scripts {
-        ScriptDirective::Deny => {
-            // Berry (v2+) has no `--ignore-scripts` flag; `enableScripts` is the
-            // config knob, settable per-invocation via its env var. Classic (v1)
-            // and the undetected fallback take the CLI flag.
-            if is_berry {
+        ScriptDirective::Deny => match yarn_major {
+            // Berry (v2+) dropped `--ignore-scripts`; `enableScripts` is the
+            // config knob, set per-invocation via its env var.
+            Some(major) if major >= 2 => {
                 c.env("YARN_ENABLE_SCRIPTS", "false");
-            } else {
+            }
+            // Classic (v1) takes the CLI flag.
+            Some(_) => {
                 c.arg("--ignore-scripts");
             }
-        }
+            // Version undetected (a failed `yarn --version`). Deny is
+            // security-sensitive, so cover both mechanisms rather than silently
+            // assume Classic: the flag denies on Classic (which ignores the
+            // env), and the env denies on Berry (which would otherwise reject
+            // the flag — or, worse, accept-and-ignore it and run scripts). Belt
+            // and suspenders so a misdetected version can never fail open.
+            None => {
+                c.arg("--ignore-scripts");
+                c.env("YARN_ENABLE_SCRIPTS", "false");
+            }
+        },
         ScriptDirective::ForceOn => {
             // Berry's `enableScripts` is a global toggle (no per-dependency
             // allowlist), so forcing on is just the env set to `true`. Classic
@@ -200,12 +211,16 @@ mod tests {
     }
 
     #[test]
-    fn deny_scripts_falls_back_to_flag_when_version_missing() {
-        // Undetected version defaults to the Classic-compatible flag, matching
-        // the frozen fallback.
-        assert_eq!(
-            args_of(&install_cmd_with_major(false, ScriptDirective::Deny, None)),
-            ["install", "--ignore-scripts"]
+    fn deny_scripts_covers_both_mechanisms_when_version_missing() {
+        // Undetected version is security-sensitive on the deny path, so cover
+        // both: the `--ignore-scripts` flag denies on Classic, and the
+        // `YARN_ENABLE_SCRIPTS=false` env denies on Berry — neither silently
+        // fails open if the version was misdetected.
+        let cmd = install_cmd_with_major(false, ScriptDirective::Deny, None);
+        assert_eq!(args_of(&cmd), ["install", "--ignore-scripts"]);
+        assert!(
+            has_env(&cmd, "YARN_ENABLE_SCRIPTS", "false"),
+            "undetected deny must also set the Berry env so it can't fail open",
         );
     }
 
