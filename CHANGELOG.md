@@ -47,6 +47,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   the same directory task detection scans and the spawned child runs in — so a
   relative or bare token under `--dir` resolves there instead of silently
   missing and mis-routing back into the package-exec 404 path.
+- Chain mode now reports per-task wall-clock duration on completion. Sequential
+  and live (`-p`) parallel runs print a concise `· <task> finished in 1.2s
+  (exit 0)` line to stderr after each task; grouped parallel output folds the
+  same summary into each task's block footer (inside the GitHub Actions
+  `::group::` so it stays attached). Durations format compactly (`342ms`,
+  `1.2s`, `1m 04s`); the band is chosen from the rounded value, so a duration
+  that rounds up to a full minute (e.g. `59.95s`) prints `1m 00s`, never an
+  out-of-band `60.0s`. Minute-band seconds round half-up to the nearest whole
+  second too, so `119.94s` prints `2m 00s` rather than a floored `1m 59s`. The
+  synthetic install head of an `install` chain is
+  timed the same way in both `-s` and `-p` modes. Timing is diagnostic
+  meta-output, so `--quiet` (`RUNNER_QUIET`) and `--no-warnings`
+  (`RUNNER_NO_WARNINGS`) suppress it.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
   prerequisite — never as a parallel sibling — then the tasks fan out. A
@@ -55,6 +68,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Forcing a package manager with `--pm` / `RUNNER_PM` now biases same-name task
+  selection toward that PM's own task source. Previously a name defined in both
+  `package.json` and `deno.json` (e.g. `check`) always resolved to the
+  `package.json` script per the default tier and was then run *through* the
+  forced PM (`RUNNER_PM=deno run check` → `deno task check`), which breaks when
+  the script relies on npm lifecycle build artifacts deno cannot honor. Now the
+  forced PM's own source wins the conflict, most-native first: `RUNNER_PM=deno`
+  picks `deno:check`, `--pm bun` picks `package.json:check`. The rule is general
+  across every PM — deno is one member, not a special case — and a PM that owns
+  no task source (Bundler, Composer) re-orders nothing. Only conflicting
+  same-name candidates are re-ordered; runs with no `--pm`/`RUNNER_PM` are
+  unchanged. See https://github.com/kjanat/runner/issues/70.
 - GitHub Actions log groups no longer nest when one `runner`/`run` invokes
   another (e.g. `runner` → an `npm`/`postinstall` script → `run -p A B C`). A
   parent that opens a group marks its descendants (`RUNNER_GROUP_ACTIVE`), so
