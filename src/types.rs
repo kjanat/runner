@@ -536,6 +536,31 @@ impl PackageManager {
     pub(crate) const fn can_dispatch_node_scripts(self) -> bool {
         self.is_node() || matches!(self, Self::Deno)
     }
+
+    /// The task source(s) this package manager runs natively, most-native
+    /// first. A forced `--pm` / `RUNNER_PM` biases same-name task selection
+    /// toward these, in order, so the chosen task dispatches through the PM
+    /// the user asked for instead of being run *through* it from a foreign
+    /// source (e.g. `RUNNER_PM=deno run check` picks the `deno.json` task
+    /// over a same-named `package.json` script).
+    ///
+    /// npm/yarn/pnpm/bun all run `package.json` `"scripts"`. Deno is
+    /// dual-natured: it owns `deno.json` tasks (`deno task`) *and* also runs
+    /// `package.json` scripts, so it prefers the former and falls back to
+    /// the latter. Cargo, Go, and the Python PMs own their ecosystem's
+    /// source. Bundler and Composer have no task source modeled yet, so
+    /// they bias nothing. Deno is one member of this rule, not a special
+    /// case — the bias is general across every PM.
+    pub(crate) const fn owned_task_sources(self) -> &'static [TaskSource] {
+        match self {
+            Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => &[TaskSource::PackageJson],
+            Self::Deno => &[TaskSource::DenoJson, TaskSource::PackageJson],
+            Self::Cargo => &[TaskSource::CargoAliases],
+            Self::Go => &[TaskSource::GoPackage],
+            Self::Uv | Self::Poetry | Self::Pipenv => &[TaskSource::PyprojectScripts],
+            Self::Bundler | Self::Composer => &[],
+        }
+    }
 }
 
 impl TaskRunner {
