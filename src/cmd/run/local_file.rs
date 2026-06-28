@@ -85,20 +85,22 @@ pub(super) fn try_path_token(
 /// of being mistaken for a remote package.
 ///
 /// Prefix-bearing paths (`./x`, `/x`, `~/x`, `C:\x`) are the pre-task
-/// [`try_path_token`] branch's job and are declined here. Only intercepts
-/// when the file is actually runnable (executable bit, `#!` shebang, or a
-/// recognized source extension); a non-script token is left to the PM-exec
-/// fallback so existing behavior is unchanged.
+/// [`try_path_token`] branch's job and are declined here. Once the token
+/// names an existing regular file it is treated as a local file: a runnable
+/// one is spawned, and an unrunnable one surfaces a clear error rather than
+/// leaking into PM-exec. Only a token that names *nothing* on disk (or a
+/// directory) is left to the PM-exec fallback (a real package spec).
 ///
 /// Returns:
-/// - `Ok(None)` — `token` carries a local prefix, names nothing on disk,
-///   resolves to a non-file, or is an existing file of *unrecognized* type;
-///   the caller continues to the PM-exec fallback.
+/// - `Ok(None)` — `token` carries a local prefix, names nothing on disk, or
+///   resolves to a non-file (a directory like `./cmd/foo`); the caller
+///   continues to the PM-exec fallback.
 /// - `Ok(Some(_))` — `token` resolves to a runnable file; the caller spawns it.
-/// - `Err(_)` — `token` resolves to an existing file of a *recognized* source
-///   type that the chosen runtime cannot run (e.g. a `.tsx` in a node-only
-///   project). Surfaces the same clear error the explicit `./` form raises,
-///   never a swallowed `None` that mis-routes into `pnpm exec`/`npx` (#69).
+/// - `Err(_)` — `token` resolves to an existing regular file the chosen runtime
+///   can't run (an unsupported type, no shebang and not executable, or a `.tsx`
+///   in a node-only project). Surfaces the same clear error the explicit `./`
+///   form raises, never a swallowed `None` that mis-routes an existing file
+///   into `pnpm exec`/`npx` and a registry 404 (#69).
 pub(super) fn try_bare_file(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -128,20 +130,15 @@ fn bare_file_in(
     if !meta.is_file() {
         return Ok(None);
     }
-    // Mirror the explicit `./` path (`dispatch_for_path` -> `build_command?`):
-    // a classification error for a *recognized* source extension (e.g. a
-    // `.tsx` that resolves to Node, which cannot run it) must propagate so the
-    // caller surfaces the same `node cannot run …` message — never swallow it
-    // into a `None` that falls through to `pnpm exec`/`npx <file>` (#69). Only
-    // a genuinely *unrecognized* existing file (e.g. `data.bin`) falls through
-    // to the PM-exec fallback, preserving prior behavior.
-    match build_command(ctx, overrides, &path, &meta, args) {
-        Ok((label, command)) => Ok(Some(LocalDispatch { label, command })),
-        Err(e) => match routing_for_extension(ctx, overrides, &path) {
-            SourceRouting::Unrecognized => Ok(None),
-            _ => Err(e),
-        },
-    }
+    // The token names an existing regular file, so it is a local file: run it,
+    // and if it can't be run (unsupported type, no shebang and not executable,
+    // or a `.tsx` resolved to Node) surface that as the clear local-file error —
+    // exactly what the explicit `./file` form does (`dispatch_for_path` ->
+    // `build_command?`). Never swallow it into a `None` that falls through to
+    // `pnpm exec`/`npx <file>` and a registry 404 (#69). Missing tokens and
+    // directories (returned `Ok(None)` above) still fall through to PM-exec.
+    let (label, command) = build_command(ctx, overrides, &path, &meta, args)?;
+    Ok(Some(LocalDispatch { label, command }))
 }
 
 /// Resolve an already-path-like `token` (canonicalized to `path`) into a
@@ -361,10 +358,13 @@ fn read_shebang(path: &Path) -> Option<Shebang> {
 
 /// Parse a `#!` line into the interpreter program and its arguments.
 ///
-/// Handles the `/usr/bin/env [-S|--split-string[=]] <interp> [args...]`
-/// form: the kernel passes everything after `env ` as a single argument, so
-/// a `-S` flag re-splits it. We have already split on whitespace, so we only
-/// need to drop the flag and treat the next token as the real interpreter.
+/// The kernel hands the interpreter exactly one argument: everything after the
+/// first whitespace, internal spaces intact — it does *not* whitespace-split.
+/// So a direct interpreter and a plain `env` both keep the remainder as a
+/// single argument. Only `env -S` / `--split-string` re-splits that argument,
+/// using env's own quote-aware parser ([`split_env_string`]) — never a naive
+/// `split_whitespace`, which would tear `--allow-read="a b"` in two and invent
+/// argv for `#!/usr/bin/env python3 -O`.
 fn parse_shebang(line: &str) -> Option<Shebang> {
     let body = line.strip_prefix("#!")?.trim();
     if body.is_empty() {
@@ -378,33 +378,40 @@ fn parse_shebang(line: &str) -> Option<Shebang> {
     if is_env(interpreter) {
         // `env -S` / `--split-string` re-splits its single kernel argument with
         // env's own quote-aware parser, so quoted args (`-S deno run
-        // --allow-read="a b"`) stay one token; `split_whitespace` would tear
-        // them apart. Plain `env` (no `-S`) keeps the lenient whitespace split,
-        // which tolerates the common `env <interp> -flag` shorthand.
+        // --allow-read="a b"`) stay one token. Plain `env` (no `-S`) does NOT
+        // split: the kernel's single argument is the program name, so
+        // `#!/usr/bin/env python3 -O` resolves to the (bogus) program
+        // `"python3 -O"` exactly as the kernel would run it — `-S` is what adds
+        // the splitting.
         let split_form = rest
             .strip_prefix("--split-string=")
             .or_else(|| rest.strip_prefix("--split-string"))
             .or_else(|| rest.strip_prefix("-S"))
             .map(str::trim);
-        let words = split_form.map_or_else(
-            || {
-                rest.split_whitespace()
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            },
-            split_env_string,
-        );
+        let words = split_form.map_or_else(|| single_arg(rest), split_env_string);
         let mut parts = words.into_iter();
         let program = parts.next()?;
         let args = parts.collect();
         return Some(Shebang { program, args });
     }
 
-    let args = rest.split_whitespace().map(ToOwned::to_owned).collect();
+    // Direct interpreter: the kernel passes the whole remainder as one argument.
     Some(Shebang {
         program: interpreter.to_string(),
-        args,
+        args: single_arg(rest),
     })
+}
+
+/// The interpreter's single argument as the kernel passes it: the entire
+/// remainder kept intact (internal spaces and all), or no argument at all when
+/// the remainder is empty. Used by plain `env` and direct-interpreter shebangs,
+/// neither of which the kernel whitespace-splits.
+fn single_arg(rest: &str) -> Vec<String> {
+    if rest.is_empty() {
+        Vec::new()
+    } else {
+        vec![rest.to_owned()]
+    }
 }
 
 /// Split an `env -S` / `--split-string` argument the way GNU `env`'s
@@ -765,6 +772,31 @@ mod tests {
         let single = parse_shebang("#!/usr/bin/env -S deno run --allow-read='a b'")
             .expect("single-quoted -S shebang should parse");
         assert_eq!(single.args, ["run", "--allow-read=a b"]);
+    }
+
+    #[test]
+    fn parse_shebang_plain_env_keeps_tail_as_single_argument() {
+        // Plain `env` (no `-S`) gets ONE argument from the kernel — the whole
+        // remainder — and treats it as the program name. It does not split on
+        // whitespace (that's what `-S` is for), so `env python3 -O` resolves to
+        // the program `"python3 -O"`, matching how the kernel runs the file.
+        let parsed = parse_shebang("#!/usr/bin/env python3 -O").expect("should parse");
+        assert_eq!(parsed.program, "python3 -O");
+        assert!(parsed.args.is_empty());
+
+        // Single-word plain env is unchanged: the remainder is the interpreter.
+        let one = parse_shebang("#!/usr/bin/env python3").expect("should parse");
+        assert_eq!(one.program, "python3");
+        assert!(one.args.is_empty());
+    }
+
+    #[test]
+    fn parse_shebang_direct_interpreter_keeps_tail_as_single_argument() {
+        // A direct interpreter also receives a single kernel argument: the
+        // whole remainder, internal spaces intact — never re-split.
+        let parsed = parse_shebang("#!/bin/awk -f -v").expect("should parse");
+        assert_eq!(parsed.program, "/bin/awk");
+        assert_eq!(parsed.args, ["-f -v"]);
     }
 
     #[test]
@@ -1264,26 +1296,37 @@ mod tests {
     }
 
     #[test]
-    fn bare_file_ignores_missing_and_non_script_tokens() {
+    fn bare_file_missing_token_falls_through_to_pm_exec() {
+        // A bare token with no matching file on disk is a real package-spec
+        // candidate (`runner biome` → `bunx biome`), so it keeps falling
+        // through to the PM-exec fallback rather than erroring.
         let dir = TempDir::new("bare-file-miss");
-        std::fs::write(dir.path().join("data.bin"), [0u8, 1, 2]).expect("file should be written");
-
         let ctx = context(vec![PackageManager::Bun]);
         let defaults = ResolutionOverrides::default();
 
-        // A bare token with no matching file falls through to PM-exec.
         assert!(
             bare_file_in(&ctx, &defaults, dir.path(), "biome", &[])
                 .expect("a missing token should not error")
                 .is_none(),
+            "a non-existent token must fall through to PM-exec",
         );
-        // A file we don't know how to run is left to PM-exec too (unrecognized
-        // extension → `Ok(None)`, not an error).
-        assert!(
-            bare_file_in(&ctx, &defaults, dir.path(), "data.bin", &[])
-                .expect("an unrecognized file should not error")
-                .is_none(),
-        );
+    }
+
+    #[test]
+    fn bare_file_existing_unsupported_file_errors() {
+        // Once the token names an existing regular file it is a local file: an
+        // unsupported one (`data.bin` — no extension we run, no shebang, not
+        // executable) surfaces the clear local-file error instead of falling
+        // through to `bunx data.bin` and a registry 404, matching the explicit
+        // `./data.bin` form (#69).
+        let dir = TempDir::new("bare-file-unsupported");
+        std::fs::write(dir.path().join("data.bin"), [0u8, 1, 2]).expect("file should be written");
+        let ctx = context(vec![PackageManager::Bun]);
+        let defaults = ResolutionOverrides::default();
+
+        let err = bare_file_in(&ctx, &defaults, dir.path(), "data.bin", &[])
+            .expect_err("an existing unsupported file must error, not fall through to PM-exec");
+        assert!(format!("{err:#}").contains("don't know how to run"));
     }
 
     #[test]
