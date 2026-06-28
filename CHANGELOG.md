@@ -17,6 +17,36 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- `run <path>` / `runner run <path>` now executes a local file directly
+  instead of handing it to a package manager's package-exec primitive
+  (`bunx`/`npx`/`pnpm dlx`/`deno x`/`uvx`), which used to resolve the local
+  path as a remote package and fail with a registry 404 or a `git clone`
+  error. A token with an explicit local prefix (`./`, `../`, `/`, `~`, or a
+  Windows drive root), a bare filename, and a prefix-less relative path
+  (`bin/tool`) are each run as the file when they match no task: a recognized
+  source file runs via the detected runtime
+  (`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs` via bun, `deno run`, or node, while
+  `.jsx`/`.tsx` run only via bun or deno — Node has no JSX transform, so a
+  node-only project reports a clear `node cannot run` error instead of
+  building an unrunnable `node app.tsx`; `.py` via `uv run` or python; `.go`
+  via `go run`), a `#!` shebang (including the `#!/usr/bin/env -S <interp>
+  <args>` form, whose quoted arguments are kept intact) is parsed and invoked,
+  and a native binary or self-executable
+  script is spawned directly — including an execute-only binary (Unix mode
+  0111), whose unreadable shebang probe is treated as "no shebang" so the
+  binary still spawns directly rather than hard-failing the run. A source file
+  carrying the exec bit but no shebang still runs via its runtime — a raw
+  `execve` on shebang-less text fails `ENOEXEC` — so `chmod +x deploy.ts;
+  run ./deploy.ts` dispatches `bun deploy.ts` rather than erroring (this also
+  fixes whole-tree breakage on vfat/exfat/ntfs-3g mounts that report mode
+  0777 for every file). Only an explicit-prefix path outranks a same-named
+  task; a prefix-less `bin/tool` lets a matching `make bin/tool` target win
+  first and runs as a file only after task lookup misses. A missing explicit
+  path reports a clear error rather than a 404. Path lookup is anchored on the
+  resolved project directory (the `--dir`/`RUNNER_DIR` target, else the cwd) —
+  the same directory task detection scans and the spawned child runs in — so a
+  relative or bare token under `--dir` resolves there instead of silently
+  missing and mis-routing back into the package-exec 404 path.
 - Chain mode now reports per-task wall-clock duration on completion. Sequential
   and live (`-p`) parallel runs print a concise `· <task> finished in 1.2s
   (exit 0)` line to stderr after each task; grouped parallel output folds the

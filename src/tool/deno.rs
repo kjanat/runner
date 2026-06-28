@@ -216,6 +216,17 @@ pub(crate) fn install_cmd() -> Command {
     c
 }
 
+/// `deno run <file> [args...]` — execute a local source file with the
+/// Deno runtime. Distinct from [`exec_cmd`] (`deno x`), which resolves a
+/// remote `npm:`/`jsr:` package; this runs an on-disk path. No extra
+/// permission flags are added — a script that needs them should carry a
+/// `#!/usr/bin/env -S deno run -A`-style shebang.
+pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
+    let mut c = super::program::command("deno");
+    c.arg("run").arg(file).args(args);
+    c
+}
+
 /// Whether this Deno project materializes a local `node_modules/` — its
 /// `nodeModulesDir` resolves to `auto`/`manual` (Deno 2.x) or the legacy
 /// boolean `true`. When it does, `deno install` writes the same directory a
@@ -249,8 +260,26 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{detect, exec_cmd, extract_tasks, find_config_upwards, workspace_pattern_matches};
+    use super::{
+        detect, exec_cmd, extract_tasks, find_config_upwards, run_file_cmd,
+        workspace_pattern_matches,
+    };
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn run_file_cmd_uses_deno_run_with_file() {
+        // A local `.ts`/`.js` source file dispatches as `deno run <file>`,
+        // never `deno x <file>` (the registry-package path).
+        let args = [String::from("--port"), String::from("8080")];
+        let cmd = run_file_cmd(Path::new("/abs/server.ts"), &args);
+        let built: Vec<_> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(cmd.get_program().to_string_lossy(), "deno");
+        assert_eq!(built, ["run", "/abs/server.ts", "--port", "8080"]);
+    }
 
     #[test]
     fn exec_uses_deno_x_passthrough() {

@@ -25,6 +25,7 @@
 use anyhow::Result;
 
 mod dispatch;
+mod local_file;
 mod qualify;
 mod select;
 

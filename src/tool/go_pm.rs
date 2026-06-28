@@ -158,12 +158,35 @@ pub(crate) fn run_cmd(target: &str, args: &[String]) -> Command {
     c
 }
 
+/// `go run <file> [args...]` — execute a single-file Go program by path.
+/// Generalizes the slash-containing-token Go special case in the PM-exec
+/// fallback to the local-file dispatch path.
+pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
+    let mut c = super::program::command("go");
+    c.arg("run").arg(file).args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::{ExtractedTask, exec_cmd, extract_tasks, run_cmd};
+    use super::{ExtractedTask, exec_cmd, extract_tasks, run_cmd, run_file_cmd};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn run_file_cmd_uses_go_run_with_path() {
+        use std::path::Path;
+
+        let cmd = run_file_cmd(Path::new("/abs/main.go"), &[String::from("serve")]);
+        let built: Vec<_> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(cmd.get_program().to_string_lossy(), "go");
+        assert_eq!(built, ["run", "/abs/main.go", "serve"]);
+    }
 
     fn task(name: &str, run_target: &str) -> ExtractedTask {
         ExtractedTask {
