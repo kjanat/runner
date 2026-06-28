@@ -64,7 +64,9 @@ fn run_sequential(
     let mut first_failure: Option<i32> = None;
 
     for item in &chain.items {
+        let started = std::time::Instant::now();
         let code = dispatch_item(ctx, overrides, item, warnings)?;
+        crate::cmd::emit_task_timing(overrides, item.display_name(), started.elapsed(), code);
         if code != 0 {
             first_failure.get_or_insert(code);
             if !keep_going {
@@ -113,6 +115,7 @@ fn run_parallel_streaming(
 ) -> Result<i32> {
     use std::process::Child;
     use std::sync::Arc;
+    use std::time::Instant;
 
     use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
 
@@ -126,8 +129,10 @@ fn run_parallel_streaming(
     // thread (the `→ <source> <task>` arrow in `dispatch_task_piped`).
     let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
 
-    // Spawn each task with piped stdio and start reader threads.
-    let mut children: Vec<(String, Child)> = Vec::with_capacity(chain.items.len());
+    // Spawn each task with piped stdio and start reader threads. The
+    // `Instant` recorded at spawn anchors the per-task wall-clock duration
+    // reported when the child is reaped.
+    let mut children: Vec<(String, Instant, Child)> = Vec::with_capacity(chain.items.len());
     let mut reader_handles = Vec::new();
 
     // Spawn loop. On any per-item failure (resolver error or the Install
@@ -139,6 +144,7 @@ fn run_parallel_streaming(
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
             let prefix = render_prefix(item.display_name(), width, colorize);
+            let started = Instant::now();
             let mut child = match &item.kind {
                 ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
                     ctx,
@@ -165,12 +171,12 @@ fn run_parallel_streaming(
                 ],
                 &sink,
             ));
-            children.push((item.display_name().to_string(), child));
+            children.push((item.display_name().to_string(), started, child));
         }
         Ok(())
     })();
     if let Err(e) = spawn_outcome {
-        for (_, mut c) in children {
+        for (_, _, mut c) in children {
             let _ = c.kill();
             let _ = c.wait();
         }
@@ -182,16 +188,17 @@ fn run_parallel_streaming(
 
     // Poll children. On first failure with KillOnFail, kill remaining
     // siblings; otherwise let them finish naturally.
-    let mut remaining: Vec<(String, Child)> = children;
+    let mut remaining: Vec<(String, Instant, Child)> = children;
     let mut first_failure: Option<i32> = None;
     let kill_on_fail = matches!(chain.failure, FailurePolicy::KillOnFail);
 
     while !remaining.is_empty() {
-        let mut next: Vec<(String, Child)> = Vec::with_capacity(remaining.len());
-        for (name, mut child) in std::mem::take(&mut remaining) {
+        let mut next: Vec<(String, Instant, Child)> = Vec::with_capacity(remaining.len());
+        for (name, started, mut child) in std::mem::take(&mut remaining) {
             match child.try_wait()? {
                 Some(status) => {
                     let code = crate::cmd::exit_code(status);
+                    crate::cmd::emit_task_timing(overrides, &name, started.elapsed(), code);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
@@ -199,10 +206,18 @@ fn run_parallel_streaming(
                 None => {
                     if kill_on_fail && first_failure.is_some() {
                         let _ = child.kill();
-                        // Wait so stdio drains fully.
-                        let _ = child.wait();
+                        // Wait so stdio drains fully; a killed sibling still
+                        // reports timing for the work it managed before SIGKILL.
+                        if let Ok(status) = child.wait() {
+                            crate::cmd::emit_task_timing(
+                                overrides,
+                                &name,
+                                started.elapsed(),
+                                crate::cmd::exit_code(status),
+                            );
+                        }
                     } else {
-                        next.push((name, child));
+                        next.push((name, started, child));
                     }
                 }
             }
@@ -223,9 +238,11 @@ fn run_parallel_streaming(
 }
 
 /// Per-task state for grouped parallel execution: the child, the
-/// sink its reader threads append into, and those reader handles.
+/// sink its reader threads append into, those reader handles, and the
+/// spawn `Instant` anchoring the duration folded into the block footer.
 struct GroupedTask {
     name: String,
+    started: std::time::Instant,
     child: std::process::Child,
     sink: std::sync::Arc<crate::chain::mux::BufferSink>,
     readers: Vec<std::thread::JoinHandle<()>>,
@@ -254,6 +271,7 @@ fn run_parallel_grouped(
     let mut tasks: Vec<GroupedTask> = Vec::with_capacity(chain.items.len());
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
+            let started = std::time::Instant::now();
             let (name, mut child, sink) = match &item.kind {
                 ChainItemKind::Task(task_name) => {
                     let sink = Arc::new(BufferSink::new()?);
@@ -289,6 +307,7 @@ fn run_parallel_grouped(
             );
             tasks.push(GroupedTask {
                 name,
+                started,
                 child,
                 sink,
                 readers,
@@ -326,13 +345,19 @@ fn run_parallel_grouped(
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
-                    flush_task_group(&t.name, gha_syntax, colorize, &t.sink, t.readers);
+                    let footer = timing_footer(overrides, t.started.elapsed(), code);
+                    flush_grouped_task(t, gha_syntax, colorize, footer.as_deref());
                 }
                 None => {
                     if kill_on_fail && first_failure.is_some() {
                         let _ = t.child.kill();
-                        let _ = t.child.wait();
-                        flush_task_group(&t.name, gha_syntax, colorize, &t.sink, t.readers);
+                        // A killed sibling still reports timing for the work it
+                        // completed before SIGKILL.
+                        let elapsed = t.started.elapsed();
+                        let footer = t.child.wait().ok().and_then(|status| {
+                            timing_footer(overrides, elapsed, crate::cmd::exit_code(status))
+                        });
+                        flush_grouped_task(t, gha_syntax, colorize, footer.as_deref());
                     } else {
                         next.push(t);
                     }
@@ -348,6 +373,21 @@ fn run_parallel_grouped(
     Ok(first_failure.unwrap_or(0))
 }
 
+/// Flush a completed grouped task's block, moving its reader handles into
+/// [`flush_task_group`]. Thin wrapper that keeps the supervisor poll loop
+/// under the per-function line budget by hiding the field-destructuring at
+/// the two completion sites (normal exit and SIGKILL).
+fn flush_grouped_task(task: GroupedTask, gha_syntax: bool, colorize: bool, footer: Option<&str>) {
+    flush_task_group(
+        &task.name,
+        gha_syntax,
+        colorize,
+        &task.sink,
+        task.readers,
+        footer,
+    );
+}
+
 /// Give a finished task's reader threads a bounded chance to drain, then
 /// print its spooled output as one contiguous `runner: <name>` block. The
 /// bounded drain prevents descendants that inherit stdio from blocking the
@@ -358,6 +398,7 @@ fn flush_task_group(
     colorize: bool,
     sink: &crate::chain::mux::BufferSink,
     mut readers: Vec<std::thread::JoinHandle<()>>,
+    timing_footer: Option<&str>,
 ) {
     use std::io::Write as _;
 
@@ -374,6 +415,9 @@ fn flush_task_group(
         // Neutralize child group/endgroup commands so they can't nest in or
         // close our `runner: <name>` group early.
         let _ = sink.replay_to(&mut stdout, &mut stderr, true);
+        // Footer goes inside the group, before the guard's Drop emits
+        // `::endgroup::`, so the duration stays attached to the block.
+        write_timing_footer(timing_footer, colorize);
     } else {
         let header = format!("runner: {name}");
         let header = if colorize {
@@ -395,7 +439,38 @@ fn flush_task_group(
         // Plain-header (non-Actions) replay: no `::group::` interpretation
         // happens here, so leave the child's bytes untouched.
         let _ = sink.replay_to(&mut stdout, &mut stderr, false);
+        // Footer closes the plain `runner: <name>` block with its duration.
+        write_timing_footer(timing_footer, colorize);
     }
+}
+
+/// Compute the grouped-mode block footer (`finished in 1.2s (exit 0)`) when
+/// per-task timing is enabled, or `None` when muted via `--quiet` /
+/// `--no-warnings`. Shared by both grouped completion paths so the gating
+/// stays in one place.
+fn timing_footer(
+    overrides: &ResolutionOverrides,
+    elapsed: std::time::Duration,
+    code: i32,
+) -> Option<String> {
+    crate::cmd::timing_enabled(overrides).then(|| crate::cmd::task_timing_summary(elapsed, code))
+}
+
+/// Write a grouped-task block footer to stdout, dimmed when colorizing.
+/// `None` is a no-op so callers can pass the gated footer through unchanged.
+fn write_timing_footer(footer: Option<&str>, colorize: bool) {
+    use std::io::Write as _;
+
+    let Some(footer) = footer else { return };
+    let line = if colorize {
+        use colored::Colorize as _;
+        footer.dimmed().to_string()
+    } else {
+        footer.to_string()
+    };
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
 }
 
 fn wait_for_readers(readers: &mut Vec<std::thread::JoinHandle<()>>, grace: std::time::Duration) {
