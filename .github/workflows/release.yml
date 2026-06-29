@@ -184,6 +184,13 @@ jobs:
           BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
 
+      # A leg can report success while uploading nothing (observed: taiki-e
+      # action no-ops on windows-11-arm). Fail loudly here so the empty leg
+      # goes red at the source instead of ENOENT-ing later in build-dist.
+      - name: verify asset uploaded
+        env: { GH_TOKEN: "${{ github.token }}", TARGET: "${{ matrix.target }}" }
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/verify-asset-uploaded.sh"
+
   build-dist:
     name: build dist
     needs: [upload-assets, man]
