@@ -228,9 +228,10 @@ pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
 
 /// `deno run <file> [args...]` — execute a local source file with the
 /// Deno runtime. Distinct from [`exec_cmd`] (`deno x`), which resolves a
-/// remote `npm:`/`jsr:` package; this runs an on-disk path. No extra
-/// permission flags are added — a script that needs them should carry a
-/// `#!/usr/bin/env -S deno run -A`-style shebang.
+/// remote `npm:`/`jsr:` package; this runs an on-disk path. No permission
+/// flags are added, so the file runs under Deno's default deny-all sandbox;
+/// `deno run <file>` does not honor the file's shebang, so any required
+/// `--allow-*` / `--deny-*` must be supplied by the caller.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("deno");
     c.arg("run").arg(file).args(args);
