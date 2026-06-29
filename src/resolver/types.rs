@@ -91,6 +91,13 @@ pub(crate) struct ResolutionOverrides {
     /// means "no install filter" — install fans out to every detected PM.
     /// Unlike [`Self::pm`], this never affects script dispatch.
     pub install_pms: Vec<PackageManager>,
+    /// Install-time lifecycle-script policy, resolved from
+    /// `RUNNER_INSTALL_SCRIPTS` (env) → `[install].scripts` (config). The CLI
+    /// `--no-scripts` ([`ScriptPolicy::Deny`]) / `--scripts`
+    /// ([`ScriptPolicy::Allow`]) flags are layered on top at the dispatch
+    /// boundary; [`ScriptPolicy::Default`] leaves each package manager at its
+    /// own built-in default.
+    pub script_policy: ScriptPolicy,
     /// `true` when a parent `runner`/`run` already opened a GitHub Actions
     /// log group above this process (signalled via the inherited
     /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest —
@@ -116,6 +123,42 @@ pub(crate) enum FallbackPolicy {
     /// Refuse to proceed when no signal matches; error out with a list of
     /// sources that were checked.
     Error,
+}
+
+/// Install-time lifecycle-script execution policy for `runner install`.
+///
+/// Lifecycle/build scripts (`postinstall`, native-extension compilation,
+/// …) are the primary supply-chain attack surface during dependency
+/// installs. This knob lets a project deny them across the package managers
+/// that expose a skip mechanism, or force them on across the managers that
+/// can express it — the latter matters because several package managers
+/// (npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.
+///
+/// Set via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,
+/// `RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest
+/// first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum ScriptPolicy {
+    /// Leave each package manager at its own built-in default: npm,
+    /// yarn-classic, pnpm (<10) and composer run dependency scripts, while
+    /// bun, pnpm (>=10) and deno already deny them.
+    #[default]
+    Default,
+    /// Skip lifecycle scripts wherever the package manager exposes a skip
+    /// mechanism (npm/yarn/pnpm/bun `--ignore-scripts`, composer
+    /// `--no-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=false`); deno already
+    /// denies by default. Managers without one (cargo, go, bundler, and the
+    /// Python backends uv/poetry/pipenv) warn and proceed unchanged.
+    Deny,
+    /// Force lifecycle scripts on wherever the package manager can express it:
+    /// npm `--no-ignore-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=true`, deno
+    /// `--allow-scripts` (allow all). Managers that already run scripts by
+    /// default (composer, cargo, go, bundler, the Python backends, yarn-classic)
+    /// are satisfied without a flag. bun and pnpm (>=10) deny dependency build
+    /// scripts by default and re-enable them only through a manifest allowlist
+    /// (`trustedDependencies` / `onlyBuiltDependencies`) that runner must not
+    /// write, so they warn that force-on is not flag-expressible.
+    Allow,
 }
 
 /// How to react when manifest declaration (step 5) and lockfile (step 6)
@@ -285,6 +328,10 @@ pub(crate) struct OverrideSources<'a> {
     /// `RUNNER_INSTALL_PMS` env (comma/space-separated). No CLI flag; the
     /// config side comes from the loaded `runner.toml` `[install].pms`.
     pub install_pms: SourceValue<'a>,
+    /// `RUNNER_INSTALL_SCRIPTS` env (`deny`|`allow`). The `cli` side stays
+    /// unused here — the `--no-scripts`/`--scripts` flags are layered on at the
+    /// dispatch boundary; the config side comes from `[install].scripts`.
+    pub install_scripts: SourceValue<'a>,
     /// Internal `RUNNER_GROUP_ACTIVE` nesting marker a parent runner set on
     /// this process (see `crate::cmd::GROUP_ACTIVE_ENV`). Env-only — no CLI or
     /// config side — but captured here so `from_sources` stays a pure function

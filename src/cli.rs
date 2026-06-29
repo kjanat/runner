@@ -829,6 +829,61 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_no_scripts_flag() {
+        let cli = Cli::try_parse_from(["runner", "install", "--no-scripts"]).expect("parses");
+        let Some(Command::Install {
+            no_scripts,
+            scripts,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Install subcommand");
+        };
+        assert!(no_scripts, "--no-scripts should set the flag");
+        assert!(!scripts, "--scripts stays off when only --no-scripts given");
+    }
+
+    #[test]
+    fn install_accepts_scripts_flag() {
+        let cli = Cli::try_parse_from(["runner", "install", "--scripts"]).expect("parses");
+        let Some(Command::Install {
+            no_scripts,
+            scripts,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Install subcommand");
+        };
+        assert!(scripts, "--scripts should set the flag");
+        assert!(
+            !no_scripts,
+            "--no-scripts stays off when only --scripts given"
+        );
+    }
+
+    #[test]
+    fn install_scripts_and_no_scripts_are_mutually_exclusive() {
+        let err = Cli::try_parse_from(["runner", "install", "--scripts", "--no-scripts"])
+            .expect_err("--scripts and --no-scripts must conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn install_defaults_both_script_flags_to_false() {
+        let cli = Cli::try_parse_from(["runner", "install"]).expect("parses");
+        let Some(Command::Install {
+            no_scripts,
+            scripts,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Install subcommand");
+        };
+        assert!(!no_scripts, "--no-scripts should default off");
+        assert!(!scripts, "--scripts should default off");
+    }
+
+    #[test]
     fn install_accepts_keep_going_flag() {
         let cli = Cli::try_parse_from(["runner", "install", "-k", "build"]).expect("parses");
         let Some(Command::Install { tasks, failure, .. }) = cli.command else {
@@ -1081,6 +1136,18 @@ pub(crate) enum Command {
         /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
         #[arg(short = 'f', long, display_order = help_order::COMMAND)]
         frozen: bool,
+        /// Skip install lifecycle scripts where the PM supports it
+        /// (npm/yarn/pnpm/bun/composer; deno already denies)
+        #[arg(long = "no-scripts", display_order = help_order::COMMAND + 1)]
+        no_scripts: bool,
+        /// Force install lifecycle scripts on where the PM can express it
+        /// (npm/yarn-berry/deno; bun/pnpm need a manifest allowlist)
+        #[arg(
+            long = "scripts",
+            conflicts_with = "no_scripts",
+            display_order = help_order::COMMAND + 2
+        )]
+        scripts: bool,
         /// Optional task names to run after install completes. Sequential by
         /// default; `-p` runs them concurrently once install finishes (install
         /// itself always runs first, never as a parallel sibling). Plain

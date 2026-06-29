@@ -853,7 +853,7 @@ fn build_overrides(
         }
         _ => (false, false),
     };
-    resolver::ResolutionOverrides::from_cli_and_env(
+    let mut overrides = resolver::ResolutionOverrides::from_cli_and_env(
         cli.global.pm_override.as_deref(),
         cli.global.runner_override.as_deref(),
         cli.global.fallback.as_deref(),
@@ -868,7 +868,32 @@ fn build_overrides(
             kill_on_fail: cli_kill_on_fail,
         },
         loaded_config,
-    )
+    )?;
+    apply_script_policy_flags(cli, &mut overrides);
+    Ok(overrides)
+}
+
+/// Layer the install-only `--no-scripts` / `--scripts` CLI flags onto the
+/// resolved [`resolver::ScriptPolicy`]. These flags are the top precedence
+/// level (CLI > env > config): `--no-scripts` forces
+/// [`resolver::ScriptPolicy::Deny`] and `--scripts` forces
+/// [`resolver::ScriptPolicy::Allow`], while neither leaves the env/config
+/// resolution untouched. clap marks the two mutually exclusive, so at most one
+/// is set. Threading them here (rather than as more `from_cli_and_env`
+/// arguments) keeps that constructor's signature stable.
+const fn apply_script_policy_flags(cli: &cli::Cli, overrides: &mut resolver::ResolutionOverrides) {
+    if let Some(cli::Command::Install {
+        no_scripts,
+        scripts,
+        ..
+    }) = cli.command.as_ref()
+    {
+        if *no_scripts {
+            overrides.script_policy = resolver::ScriptPolicy::Deny;
+        } else if *scripts {
+            overrides.script_policy = resolver::ScriptPolicy::Allow;
+        }
+    }
 }
 
 /// Lenient sibling of [`build_overrides`] used when strict parsing

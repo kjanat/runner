@@ -13,7 +13,7 @@ use super::policies::{
 };
 use super::types::{
     DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
-    ResolutionOverrides, RunnerOverride, SourceValue,
+    ResolutionOverrides, RunnerOverride, ScriptPolicy, SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, TaskRunner};
@@ -132,6 +132,12 @@ impl ResolutionOverrides {
                     .try_for_each(|label| parse_pm_label(label).map(drop))
             },
         );
+        lenient_env_field(
+            &mut sources.install_scripts,
+            "RUNNER_INSTALL_SCRIPTS",
+            &mut warnings,
+            |raw| parse_script_policy_label(raw).map(drop),
+        );
         let overrides = Self::from_sources(sources)?;
         Ok((overrides, warnings))
     }
@@ -193,6 +199,7 @@ impl ResolutionOverrides {
             .is_none_or(|c| c.config.github.group_parallel);
         let parallel_grouped = sources.config.is_some_and(|c| c.config.parallel.grouped);
         let install_pms = parse_install_pms(&sources)?;
+        let script_policy = parse_install_scripts(&sources)?;
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -237,6 +244,7 @@ impl ResolutionOverrides {
             github_group_parallel,
             parallel_grouped,
             install_pms,
+            script_policy,
             // Set by a parent runner that already opened a GHA group (see
             // `crate::cmd::GROUP_ACTIVE_ENV`), captured into `sources` so this
             // stays a pure function of its inputs. An internal nesting signal,
@@ -281,6 +289,55 @@ fn parse_install_pms(sources: &OverrideSources<'_>) -> Result<Vec<PackageManager
         .iter()
         .map(|label| parse_pm_label(label).map_err(|err| anyhow!("[install].pms: {err}")))
         .collect()
+}
+
+/// Resolve the `runner install` lifecycle-script policy: `RUNNER_INSTALL_SCRIPTS`
+/// (env) wins over `[install].scripts` (config). The CLI `--no-scripts` /
+/// `--scripts` flags are layered on top later, at the dispatch boundary, so they
+/// are not consulted here. Unset on both sides yields [`ScriptPolicy::Default`] —
+/// each package manager keeps its own default.
+///
+/// # Errors
+///
+/// Returns an error if either source holds a value that is not `deny` or `allow`.
+fn parse_install_scripts(sources: &OverrideSources<'_>) -> Result<ScriptPolicy> {
+    if let Some(raw) = sources
+        .install_scripts
+        .env
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return parse_script_policy_label(raw)
+            .map_err(|err| anyhow!("RUNNER_INSTALL_SCRIPTS: {err}"));
+    }
+    if let Some(raw) = sources
+        .config
+        .and_then(|loaded| loaded.config.install.scripts.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return parse_script_policy_label(raw).map_err(|err| anyhow!("[install].scripts: {err}"));
+    }
+    Ok(ScriptPolicy::Default)
+}
+
+/// Parse a single `deny`/`allow` script-policy label (case-sensitive,
+/// lowercase-only — matching the sibling enum-label parsers and the
+/// committed JSON Schema enum).
+///
+/// # Errors
+///
+/// Returns an error naming the (sanitized) value when it is neither `deny`
+/// nor `allow`.
+fn parse_script_policy_label(raw: &str) -> Result<ScriptPolicy> {
+    match raw.trim() {
+        "deny" => Ok(ScriptPolicy::Deny),
+        "allow" => Ok(ScriptPolicy::Allow),
+        _ => Err(anyhow!(
+            "unknown script policy \"{}\"; expected \"deny\" or \"allow\"",
+            sanitize_raw_label(raw),
+        )),
+    }
 }
 
 /// Validate a loaded `runner.toml` in isolation — no CLI or environment
@@ -367,6 +424,7 @@ fn sanitize_raw_label(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{InstallSection, RunnerConfig};
 
     #[test]
     fn install_pms_env_parses_comma_and_space_list() {
@@ -399,6 +457,132 @@ mod tests {
         };
         let err = ResolutionOverrides::from_sources(sources).expect_err("unknown PM must error");
         assert!(format!("{err:#}").contains("RUNNER_INSTALL_PMS"));
+    }
+
+    #[test]
+    fn script_policy_defaults_when_unset() {
+        let overrides =
+            ResolutionOverrides::from_sources(OverrideSources::default()).expect("builds");
+        assert_eq!(overrides.script_policy, ScriptPolicy::Default);
+    }
+
+    #[test]
+    fn script_policy_env_parses_deny_and_allow() {
+        for (raw, expected) in [
+            ("deny", ScriptPolicy::Deny),
+            ("allow", ScriptPolicy::Allow),
+            (" deny ", ScriptPolicy::Deny),
+        ] {
+            let sources = OverrideSources {
+                install_scripts: SourceValue {
+                    cli: None,
+                    env: Some(raw),
+                },
+                ..OverrideSources::default()
+            };
+            let overrides =
+                ResolutionOverrides::from_sources(sources).expect("script policy parses");
+            assert_eq!(overrides.script_policy, expected, "raw: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn script_policy_env_overrides_config() {
+        let loaded = LoadedConfig {
+            path: std::path::PathBuf::from("/tmp/runner.toml"),
+            config: RunnerConfig {
+                install: InstallSection {
+                    scripts: Some("allow".to_string()),
+                    ..InstallSection::default()
+                },
+                ..RunnerConfig::default()
+            },
+            warnings: Vec::new(),
+        };
+        let sources = OverrideSources {
+            install_scripts: SourceValue {
+                cli: None,
+                env: Some("deny"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        };
+        let overrides = ResolutionOverrides::from_sources(sources).expect("env wins over config");
+        assert_eq!(overrides.script_policy, ScriptPolicy::Deny);
+    }
+
+    #[test]
+    fn script_policy_config_applies_when_env_absent() {
+        let loaded = LoadedConfig {
+            path: std::path::PathBuf::from("/tmp/runner.toml"),
+            config: RunnerConfig {
+                install: InstallSection {
+                    scripts: Some("deny".to_string()),
+                    ..InstallSection::default()
+                },
+                ..RunnerConfig::default()
+            },
+            warnings: Vec::new(),
+        };
+        let sources = OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        };
+        let overrides = ResolutionOverrides::from_sources(sources).expect("config applies");
+        assert_eq!(overrides.script_policy, ScriptPolicy::Deny);
+    }
+
+    #[test]
+    fn script_policy_env_rejects_unknown_value() {
+        let sources = OverrideSources {
+            install_scripts: SourceValue {
+                cli: None,
+                env: Some("skip"),
+            },
+            ..OverrideSources::default()
+        };
+        let err = ResolutionOverrides::from_sources(sources).expect_err("unknown value errors");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("RUNNER_INSTALL_SCRIPTS"),
+            "names the source: {msg}"
+        );
+        assert!(msg.contains("deny"), "lists valid values: {msg}");
+    }
+
+    #[test]
+    fn script_policy_env_rejects_case_variants() {
+        // Lowercase-only, matching the sibling enum-label parsers and the
+        // committed JSON Schema enum (`["deny", "allow", null]`).
+        for raw in ["Deny", "ALLOW", "Allow", "DENY"] {
+            let sources = OverrideSources {
+                install_scripts: SourceValue {
+                    cli: None,
+                    env: Some(raw),
+                },
+                ..OverrideSources::default()
+            };
+            let err = ResolutionOverrides::from_sources(sources)
+                .expect_err("case variants must be rejected");
+            assert!(
+                format!("{err:#}").contains("unknown script policy"),
+                "rejects {raw:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn script_policy_lenient_env_garbage_degrades_to_warning() {
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            install_scripts: SourceValue {
+                cli: None,
+                env: Some("nonsense"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("lenient pass absorbs script-policy env garbage");
+        assert_eq!(overrides.script_policy, ScriptPolicy::Default);
+        assert_eq!(warnings.len(), 1);
     }
 
     #[test]
@@ -484,6 +668,7 @@ struct EnvSnapshot {
     keep_going: Option<String>,
     kill_on_fail: Option<String>,
     install_pms: Option<String>,
+    install_scripts: Option<String>,
     group_active: Option<String>,
 }
 
@@ -502,6 +687,7 @@ impl EnvSnapshot {
             keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
             kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
             install_pms: std::env::var("RUNNER_INSTALL_PMS").ok(),
+            install_scripts: std::env::var("RUNNER_INSTALL_SCRIPTS").ok(),
             group_active: std::env::var(crate::cmd::GROUP_ACTIVE_ENV).ok(),
         }
     }
@@ -553,6 +739,10 @@ impl EnvSnapshot {
             install_pms: SourceValue {
                 cli: None,
                 env: self.install_pms.as_deref(),
+            },
+            install_scripts: SourceValue {
+                cli: None,
+                env: self.install_scripts.as_deref(),
             },
             group_active: self.group_active.as_deref(),
             config,

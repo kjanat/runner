@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
-use crate::resolver::{ResolutionOverrides, ResolveError};
+use crate::resolver::{ResolutionOverrides, ResolveError, ScriptPolicy};
 use crate::tool;
 use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskRunner, version_matches};
 
@@ -53,6 +53,7 @@ pub(crate) fn install_pms(
     let pms = select_install_pms(ctx, overrides)?;
 
     warn_selected_collisions(ctx, &pms, overrides);
+    warn_unsupported_script_policy(&pms, overrides);
 
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
@@ -181,7 +182,7 @@ fn install_single(
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
     eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
-    let mut cmd = build_install_command(ctx, pm, frozen);
+    let mut cmd = build_install_command(ctx, pm, frozen, script_directive(overrides));
     super::configure_command(&mut cmd, &ctx.root, overrides);
     let status = cmd.status()?;
     Ok(if status.success() {
@@ -213,6 +214,7 @@ fn run_installs_parallel(
     let width = prefix_width(&names);
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
     let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
+    let directive = script_directive(overrides);
 
     let mut children: Vec<(PackageManager, Child)> = Vec::with_capacity(pms.len());
     let mut reader_handles = Vec::new();
@@ -220,7 +222,7 @@ fn run_installs_parallel(
     let spawn_outcome: Result<()> = (|| {
         for pm in pms {
             eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
-            let mut cmd = build_install_command(ctx, *pm, frozen);
+            let mut cmd = build_install_command(ctx, *pm, frozen, directive);
             super::configure_command(&mut cmd, &ctx.root, overrides);
             cmd.stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -287,21 +289,206 @@ fn panic_payload(payload: &(dyn Any + Send)) -> String {
 }
 
 /// Map a [`PackageManager`] to its install [`Command`].
-fn build_install_command(ctx: &ProjectContext, pm: PackageManager, frozen: bool) -> Command {
+///
+/// `scripts` carries the resolved lifecycle-script policy. It is honored only
+/// by managers that expose a mechanism: deny via npm/yarn/pnpm/bun
+/// `--ignore-scripts`, composer `--no-scripts`, yarn-berry
+/// `YARN_ENABLE_SCRIPTS=false`; force-on via npm `--no-ignore-scripts`,
+/// yarn-berry `YARN_ENABLE_SCRIPTS=true`, deno `--allow-scripts`. Managers that
+/// cannot honor a direction (deno deny / cargo·go·bundler·python deny;
+/// bun·pnpm force-on) are warned about by the callers
+/// ([`warn_unsupported_script_policy`]) before reaching here.
+fn build_install_command(
+    ctx: &ProjectContext,
+    pm: PackageManager,
+    frozen: bool,
+    scripts: tool::ScriptDirective,
+) -> Command {
     match pm {
-        PackageManager::Npm => tool::npm::install_cmd(frozen),
-        PackageManager::Yarn => tool::yarn::install_cmd(&ctx.root, frozen),
-        PackageManager::Pnpm => tool::pnpm::install_cmd(frozen),
-        PackageManager::Bun => tool::bun::install_cmd(frozen),
+        PackageManager::Npm => tool::npm::install_cmd(frozen, scripts),
+        PackageManager::Yarn => tool::yarn::install_cmd(&ctx.root, frozen, scripts),
+        PackageManager::Pnpm => tool::pnpm::install_cmd(frozen, scripts),
+        PackageManager::Bun => tool::bun::install_cmd(frozen, scripts),
         PackageManager::Cargo => tool::cargo_pm::install_cmd(frozen),
-        PackageManager::Deno => tool::deno::install_cmd(),
+        PackageManager::Deno => tool::deno::install_cmd(scripts),
         PackageManager::Uv => tool::uv::install_cmd(frozen),
         PackageManager::Poetry => tool::poetry::install_cmd(),
         PackageManager::Pipenv => tool::pipenv::install_cmd(frozen),
         PackageManager::Go => tool::go_pm::install_cmd(),
         PackageManager::Bundler => tool::bundler::install_cmd(),
-        PackageManager::Composer => tool::composer::install_cmd(),
+        PackageManager::Composer => tool::composer::install_cmd(scripts),
     }
+}
+
+/// Lower the resolved [`ScriptPolicy`] to the per-tool [`tool::ScriptDirective`]
+/// that [`build_install_command`] threads into each manager's `install_cmd`.
+const fn script_directive(overrides: &ResolutionOverrides) -> tool::ScriptDirective {
+    match overrides.script_policy {
+        ScriptPolicy::Default => tool::ScriptDirective::Default,
+        ScriptPolicy::Deny => tool::ScriptDirective::Deny,
+        ScriptPolicy::Allow => tool::ScriptDirective::ForceOn,
+    }
+}
+
+/// Whether the resolved [`ScriptPolicy`] asks to skip install scripts.
+const fn deny_scripts(overrides: &ResolutionOverrides) -> bool {
+    matches!(overrides.script_policy, ScriptPolicy::Deny)
+}
+
+/// Whether the resolved [`ScriptPolicy`] asks to force install scripts on.
+const fn force_scripts(overrides: &ResolutionOverrides) -> bool {
+    matches!(overrides.script_policy, ScriptPolicy::Allow)
+}
+
+/// How a package manager can honor an install-script *deny* policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DenySupport {
+    /// Skips scripts via a flag/env that [`build_install_command`] applies
+    /// (npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,
+    /// yarn-berry `YARN_ENABLE_SCRIPTS=false`).
+    ViaFlag,
+    /// Already blocks dependency scripts by default (deno), so a deny
+    /// request is satisfied without changing the command.
+    DefaultDeny,
+    /// No mechanism to skip install/build scripts (cargo `build.rs`, go,
+    /// bundler native extensions, the Python build backends uv/poetry/pipenv).
+    /// A deny request is reported and the install proceeds unchanged.
+    Unsupported,
+}
+
+/// Classify how each package manager honors a deny-scripts policy. Exhaustive
+/// over [`PackageManager`] so a newly added PM is a compile error to triage.
+const fn deny_support(pm: PackageManager) -> DenySupport {
+    match pm {
+        PackageManager::Npm
+        | PackageManager::Yarn
+        | PackageManager::Pnpm
+        | PackageManager::Bun
+        | PackageManager::Composer => DenySupport::ViaFlag,
+        PackageManager::Deno => DenySupport::DefaultDeny,
+        PackageManager::Cargo
+        | PackageManager::Uv
+        | PackageManager::Poetry
+        | PackageManager::Pipenv
+        | PackageManager::Go
+        | PackageManager::Bundler => DenySupport::Unsupported,
+    }
+}
+
+/// How a package manager can honor a force-scripts-on policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForceSupport {
+    /// Forces scripts on via a flag/env that [`build_install_command`] applies
+    /// (npm `--no-ignore-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=true`, deno
+    /// `--allow-scripts`).
+    ViaFlag,
+    /// Already runs install/build scripts by default, so force-on is satisfied
+    /// without changing the command (composer, cargo, go, bundler, the Python
+    /// backends uv/poetry/pipenv, and yarn-classic).
+    AlreadyRuns,
+    /// Denies dependency build scripts by default and re-enables them only
+    /// through a manifest allowlist runner must not write (bun
+    /// `trustedDependencies`, pnpm >=10 `onlyBuiltDependencies`) — so force-on
+    /// cannot be expressed by a flag. A force-on request is reported and the
+    /// install proceeds at the manager's default.
+    NotExpressible,
+}
+
+/// Classify how each package manager honors a force-scripts-on policy.
+/// Exhaustive over [`PackageManager`] so a newly added PM is a compile error to
+/// triage.
+///
+/// Yarn is [`ForceSupport::ViaFlag`]: Berry expresses force-on via
+/// `YARN_ENABLE_SCRIPTS=true` while Classic runs scripts by default (a no-op);
+/// the version split is resolved inside [`tool::yarn`], and neither path warns.
+const fn force_support(pm: PackageManager) -> ForceSupport {
+    match pm {
+        PackageManager::Npm | PackageManager::Deno | PackageManager::Yarn => ForceSupport::ViaFlag,
+        PackageManager::Bun | PackageManager::Pnpm => ForceSupport::NotExpressible,
+        PackageManager::Composer
+        | PackageManager::Cargo
+        | PackageManager::Uv
+        | PackageManager::Poetry
+        | PackageManager::Pipenv
+        | PackageManager::Go
+        | PackageManager::Bundler => ForceSupport::AlreadyRuns,
+    }
+}
+
+/// Warn once per selected package manager whose script policy cannot be
+/// honored, so a `--no-scripts`/`--scripts` (or the `[install].scripts` /
+/// `RUNNER_INSTALL_SCRIPTS` equivalents) that some managers ignore is never
+/// silently dropped. No-op under [`ScriptPolicy::Default`]; otherwise emits one
+/// line per affected manager.
+///
+/// Unlike the cosmetic collision/version warnings, both notices fire
+/// unconditionally when their policy is active and are *not* silenced by
+/// `--no-warnings` / `RUNNER_NO_WARNINGS`:
+/// - **deny** is a security-relevant disclosure — the unsupported managers
+///   (bundler, uv/poetry/pipenv, cargo, go) execute arbitrary install-time
+///   code and have no flag to skip it, so a dropped deny must never hide.
+/// - **force-on** is a request-fidelity disclosure — bun and pnpm (>=10) deny
+///   dependency build scripts by default and only a manifest allowlist runner
+///   won't write re-enables them, so the user learns their `--scripts` couldn't
+///   be applied rather than assuming it was.
+fn warn_unsupported_script_policy(pms: &[PackageManager], overrides: &ResolutionOverrides) {
+    for pm in unsupported_deny_managers(pms, overrides) {
+        eprintln!(
+            "{} {} cannot skip install scripts; deny policy not applied to it",
+            "warn:".yellow().bold(),
+            pm.label(),
+        );
+    }
+    for pm in unforceable_managers(pms, overrides) {
+        let allowlist = match pm {
+            PackageManager::Pnpm => "pnpm.onlyBuiltDependencies",
+            PackageManager::Bun => "trustedDependencies",
+            _ => "a manifest allowlist",
+        };
+        eprintln!(
+            "{} {} cannot force install scripts on; it denies dependency build scripts by default \
+             and only the {} allowlist (which runner won't write) re-enables them",
+            "warn:".yellow().bold(),
+            pm.label(),
+            allowlist,
+        );
+    }
+}
+
+/// Selected managers that cannot honor an active deny-scripts policy, in
+/// selection order. Empty unless the policy is [`ScriptPolicy::Deny`]. Drives
+/// [`warn_unsupported_script_policy`]; pulled out so the security disclosure's
+/// firing rule (fires whenever a deny is requested, independent of
+/// `--no-warnings`) is unit-testable without capturing stderr.
+fn unsupported_deny_managers(
+    pms: &[PackageManager],
+    overrides: &ResolutionOverrides,
+) -> Vec<PackageManager> {
+    if !deny_scripts(overrides) {
+        return Vec::new();
+    }
+    pms.iter()
+        .copied()
+        .filter(|pm| deny_support(*pm) == DenySupport::Unsupported)
+        .collect()
+}
+
+/// Selected managers whose force-scripts-on request cannot be expressed by a
+/// flag, in selection order. Empty unless the policy is [`ScriptPolicy::Allow`].
+/// Drives [`warn_unsupported_script_policy`]; pulled out so the firing rule
+/// (fires whenever a force-on is requested, independent of `--no-warnings`) is
+/// unit-testable without capturing stderr.
+fn unforceable_managers(
+    pms: &[PackageManager],
+    overrides: &ResolutionOverrides,
+) -> Vec<PackageManager> {
+    if !force_scripts(overrides) {
+        return Vec::new();
+    }
+    pms.iter()
+        .copied()
+        .filter(|pm| force_support(*pm) == ForceSupport::NotExpressible)
+        .collect()
 }
 
 /// Print a hint about which version manager command to run.
@@ -325,8 +512,15 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    use super::select_install_pms;
-    use crate::resolver::{OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError};
+    use super::{
+        DenySupport, ForceSupport, build_install_command, deny_support, force_support,
+        script_directive, select_install_pms, unforceable_managers, unsupported_deny_managers,
+        warn_unsupported_script_policy,
+    };
+    use crate::resolver::{
+        OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError, ScriptPolicy,
+    };
+    use crate::tool::ScriptDirective;
     use crate::types::{Ecosystem, PackageManager, ProjectContext};
 
     fn context(pms: Vec<PackageManager>) -> ProjectContext {
@@ -500,5 +694,231 @@ mod tests {
 
         let pms = select_install_pms(&ctx, &overrides).expect("config must not filter installs");
         assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Cargo]);
+    }
+
+    /// argv produced by `build_install_command` for `pm`, ignoring the
+    /// subprocess-probing managers (yarn) whose flag logic is unit-tested in
+    /// their own module.
+    fn install_argv(pm: PackageManager, scripts: ScriptDirective) -> Vec<String> {
+        let ctx = context(vec![pm]);
+        build_install_command(&ctx, pm, false, scripts)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn deny_support_classifies_every_pm() {
+        for pm in [
+            PackageManager::Npm,
+            PackageManager::Yarn,
+            PackageManager::Pnpm,
+            PackageManager::Bun,
+            PackageManager::Composer,
+        ] {
+            assert_eq!(
+                deny_support(pm),
+                DenySupport::ViaFlag,
+                "{} via flag",
+                pm.label()
+            );
+        }
+        assert_eq!(deny_support(PackageManager::Deno), DenySupport::DefaultDeny);
+        for pm in [
+            PackageManager::Cargo,
+            PackageManager::Uv,
+            PackageManager::Poetry,
+            PackageManager::Pipenv,
+            PackageManager::Go,
+            PackageManager::Bundler,
+        ] {
+            assert_eq!(
+                deny_support(pm),
+                DenySupport::Unsupported,
+                "{} unsupported",
+                pm.label(),
+            );
+        }
+    }
+
+    #[test]
+    fn force_support_classifies_every_pm() {
+        for pm in [
+            PackageManager::Npm,
+            PackageManager::Deno,
+            PackageManager::Yarn,
+        ] {
+            assert_eq!(
+                force_support(pm),
+                ForceSupport::ViaFlag,
+                "{} via flag",
+                pm.label(),
+            );
+        }
+        for pm in [PackageManager::Bun, PackageManager::Pnpm] {
+            assert_eq!(
+                force_support(pm),
+                ForceSupport::NotExpressible,
+                "{} not expressible",
+                pm.label(),
+            );
+        }
+        for pm in [
+            PackageManager::Composer,
+            PackageManager::Cargo,
+            PackageManager::Uv,
+            PackageManager::Poetry,
+            PackageManager::Pipenv,
+            PackageManager::Go,
+            PackageManager::Bundler,
+        ] {
+            assert_eq!(
+                force_support(pm),
+                ForceSupport::AlreadyRuns,
+                "{} already runs",
+                pm.label(),
+            );
+        }
+    }
+
+    #[test]
+    fn script_directive_lowers_every_policy() {
+        let directive = |policy| {
+            script_directive(&ResolutionOverrides {
+                script_policy: policy,
+                ..ResolutionOverrides::default()
+            })
+        };
+        assert_eq!(directive(ScriptPolicy::Default), ScriptDirective::Default);
+        assert_eq!(directive(ScriptPolicy::Deny), ScriptDirective::Deny);
+        assert_eq!(directive(ScriptPolicy::Allow), ScriptDirective::ForceOn);
+    }
+
+    #[test]
+    fn deny_appends_skip_flag_for_flag_managers() {
+        assert_eq!(
+            install_argv(PackageManager::Npm, ScriptDirective::Deny),
+            ["install", "--ignore-scripts"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Pnpm, ScriptDirective::Deny),
+            ["install", "--ignore-scripts"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Bun, ScriptDirective::Deny),
+            ["install", "--ignore-scripts"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Composer, ScriptDirective::Deny),
+            ["install", "--no-scripts"]
+        );
+    }
+
+    #[test]
+    fn deny_is_noop_for_default_deny_and_unsupported_managers() {
+        // deno already denies by default — no flag added.
+        assert_eq!(
+            install_argv(PackageManager::Deno, ScriptDirective::Deny),
+            ["install"]
+        );
+        // cargo has no toggle — the deny is reported elsewhere, command unchanged.
+        assert_eq!(
+            install_argv(PackageManager::Cargo, ScriptDirective::Deny),
+            ["fetch"]
+        );
+    }
+
+    #[test]
+    fn force_on_appends_flag_for_flag_managers() {
+        // npm negates ignore-scripts; deno allows all via bare --allow-scripts.
+        assert_eq!(
+            install_argv(PackageManager::Npm, ScriptDirective::ForceOn),
+            ["install", "--no-ignore-scripts"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Deno, ScriptDirective::ForceOn),
+            ["install", "--allow-scripts"]
+        );
+    }
+
+    #[test]
+    fn force_on_is_noop_for_already_runs_and_unforceable_managers() {
+        // composer/cargo run scripts by default — force-on changes nothing.
+        assert_eq!(
+            install_argv(PackageManager::Composer, ScriptDirective::ForceOn),
+            ["install"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Cargo, ScriptDirective::ForceOn),
+            ["fetch"]
+        );
+        // bun/pnpm gate dependency builds behind a manifest allowlist — no flag;
+        // the request is disclosed by warn_unsupported_script_policy instead.
+        assert_eq!(
+            install_argv(PackageManager::Bun, ScriptDirective::ForceOn),
+            ["install"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Pnpm, ScriptDirective::ForceOn),
+            ["install"]
+        );
+    }
+
+    #[test]
+    fn default_adds_no_skip_flag() {
+        assert_eq!(
+            install_argv(PackageManager::Npm, ScriptDirective::Default),
+            ["install"]
+        );
+        assert_eq!(
+            install_argv(PackageManager::Composer, ScriptDirective::Default),
+            ["install"]
+        );
+    }
+
+    #[test]
+    fn deny_disclosure_fires_for_unsupported_pms_regardless_of_no_warnings() {
+        let pms = [PackageManager::Cargo, PackageManager::Npm];
+        // Non-deny policy: nothing to disclose.
+        assert!(unsupported_deny_managers(&pms, &ResolutionOverrides::default()).is_empty());
+        // Deny + --no-warnings: the unsupported PM (cargo) is still disclosed,
+        // because this is a security notice, not a cosmetic warning. Npm honors
+        // the deny via a flag, so it is not listed.
+        let denying = ResolutionOverrides {
+            script_policy: ScriptPolicy::Deny,
+            no_warnings: true,
+            ..ResolutionOverrides::default()
+        };
+        assert_eq!(
+            unsupported_deny_managers(&pms, &denying),
+            vec![PackageManager::Cargo]
+        );
+        // Smoke the public entry point with the same inputs: still emits, no panic.
+        warn_unsupported_script_policy(&pms, &denying);
+    }
+
+    #[test]
+    fn force_disclosure_fires_for_unforceable_pms_regardless_of_no_warnings() {
+        let pms = [
+            PackageManager::Pnpm,
+            PackageManager::Npm,
+            PackageManager::Bun,
+        ];
+        // Non-force policy: nothing to disclose.
+        assert!(unforceable_managers(&pms, &ResolutionOverrides::default()).is_empty());
+        // Force-on + --no-warnings: pnpm and bun (manifest-allowlist managers)
+        // are still disclosed, in selection order. npm expresses force-on via a
+        // flag, so it is not listed.
+        let forcing = ResolutionOverrides {
+            script_policy: ScriptPolicy::Allow,
+            no_warnings: true,
+            ..ResolutionOverrides::default()
+        };
+        assert_eq!(
+            unforceable_managers(&pms, &forcing),
+            vec![PackageManager::Pnpm, PackageManager::Bun]
+        );
+        // Smoke the public entry point with the same inputs: still emits, no panic.
+        warn_unsupported_script_policy(&pms, &forcing);
     }
 }

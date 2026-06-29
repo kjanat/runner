@@ -222,7 +222,7 @@ runner <task> [-- <args...>]        # run a task
 runner run <target> [-- <args...>]  # run a task or command
 run <target> [-- <args...>]         # alias for `runner run`
 
-runner install [--frozen]           # install dependencies
+runner install [--frozen] [--no-scripts|--scripts]  # install dependencies
 runner clean [-y] [--include-framework]
 runner list [--raw] [--json]        # list available tasks
 runner info [--json]                # show detected project info
@@ -348,8 +348,18 @@ prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
 # write node_modules, this keeps install to one. Overridden by
 # RUNNER_INSTALL_PMS (comma-separated). `[pm]` above only scopes script
 # dispatch, not the install fan-out.
+# `scripts` controls install-time lifecycle scripts (the main supply-chain
+# attack surface): "deny" skips them where the PM allows it
+# (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces them on
+# where the PM can express it (npm --no-ignore-scripts, yarn-berry
+# YARN_ENABLE_SCRIPTS=true, deno --allow-scripts) — useful now that npm/pnpm are
+# moving to scripts-off-by-default. bun and pnpm (>=10) can't be forced on by a
+# flag (their dependency build scripts need a trustedDependencies /
+# onlyBuiltDependencies manifest allowlist runner won't write), so they warn.
+# Precedence: CLI --no-scripts/--scripts > RUNNER_INSTALL_SCRIPTS > [install].scripts.
 [install]
-pms = ["bun"]  # only install with these; each must be detected
+pms     = ["bun"]  # only install with these; each must be detected
+scripts = "deny"   # deny | allow  (absent = each PM's own default)
 
 # Resolver policy knobs.
 [resolution]
