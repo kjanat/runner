@@ -105,7 +105,7 @@ features         = ["parse", "serde"]
 default            = ["run"]
 # Editor language server (`runner lsp`): hover, completion, and diagnostics for
 # runner.toml. Pulls in `schema` to reuse field docs as the single source of truth.
-lsp                = ["schema", "dep:lsp-server", "dep:lsp-types"]
+lsp                = ["dep:lsp-server", "dep:lsp-types", "schema"]
 man                = ["dep:clap_mangen"]
 run                = []
 schema             = ["dep:json-schema-sort", "dep:schemars"]

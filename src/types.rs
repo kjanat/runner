@@ -399,8 +399,8 @@ impl DetectionWarning {
                     )
                 } else {
                     format!(
-                        "`{path}` is deprecated; migrate to `{replacement}` (rank-only, and accepts \
-                         package managers). It still applies for now.",
+                        "`{path}` is deprecated; migrate to `{replacement}` (rank-only, and \
+                         accepts package managers). It still applies for now.",
                     )
                 }
             }
