@@ -186,6 +186,12 @@ where
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err),
     };
+    // The language server parses each editor buffer itself and needs neither a
+    // resolved project dir nor detection — handle it before either can bail.
+    #[cfg(feature = "lsp")]
+    if matches!(cli.command, Some(cli::Command::Lsp)) {
+        return cmd::lsp::run();
+    }
     let project_dir = resolve_project_dir(
         configured_project_dir(
             cli.global.project_dir.as_deref(),
@@ -968,10 +974,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
 
     match cli.command {
-        None => {
-            cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
-            Ok(0)
-        }
+        None => cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION).map(|()| 0),
         // `info` is a deprecated alias for `list`. Bare `runner` (the
         // `None` arm above) keeps the dashboard; only the explicit verb
         // is deprecated.
@@ -1055,6 +1058,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
         #[cfg(feature = "schema")]
         Some(cli::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
+        #[cfg(feature = "lsp")]
+        Some(cli::Command::Lsp) => cmd::lsp::run(), // intercepted pre-detection
         Some(cli::Command::Doctor { json }) => {
             let schema_version = doctor_schema_version_for_json(json, cli.global.schema_version)?;
             cmd::doctor(&ctx, &overrides, json, schema_version)?;

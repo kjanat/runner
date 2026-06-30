@@ -398,6 +398,38 @@ section to keep its defaults. A committed JSON Schema lives at
 [`schemas/runner.toml.schema.json`](schemas/runner.toml.schema.json) for
 editor autocompletion.
 
+### Editor support (language server)
+
+A build with the `lsp` feature ships a language server for `runner.toml`:
+
+```sh
+cargo install runner-run --features lsp   # or build locally: cargo build --features lsp
+runner lsp                                 # speaks LSP over stdio
+```
+
+It provides, reusing the same logic the CLI uses:
+
+- **diagnostics** — the exact `runner config validate` checks (syntax, unknown
+  keys, bad package-manager / runner / source labels, conflicting policies) plus
+  deprecation hints, live as you type;
+- **hover** — section and field documentation, sourced from the JSON Schema;
+- **completion** — section names, field names, and value sets (package managers,
+  the `[tasks]` runner/PM/source labels, policy enums, booleans).
+
+Point your editor's generic LSP client at `runner lsp` for files named
+`runner.toml`. Example (Neovim):
+
+```lua
+vim.lsp.start({
+  name = "runner",
+  cmd = { "runner", "lsp" },
+  root_dir = vim.fs.dirname(vim.fs.find({ "runner.toml" }, { upward = true })[1]),
+})
+```
+
+For schema-only autocompletion without the server, the `#:schema` directive that
+`runner config init` writes is enough for editors with a TOML language server.
+
 ## Supported Ecosystems
 
 runner detects and works with:

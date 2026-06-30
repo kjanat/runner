@@ -435,7 +435,7 @@ const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
 /// recognize. Walks the raw parsed table against [`KNOWN_SCHEMA`]; a
 /// non-table where a section is expected is left for the typed deserialize to
 /// reject (a genuine type error, not version skew).
-fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning> {
+pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning> {
     let Some(table) = value.as_table() else {
         return Vec::new();
     };
@@ -491,24 +491,32 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
     let config: RunnerConfig = value
         .try_into()
         .with_context(|| format!("failed to parse {}", path.display()))?;
-
-    // `[task_runner].prefer` is superseded by `[tasks]`. Surface a migration
-    // nudge whenever the legacy key carries a value; flag whether `[tasks]`
-    // overrides it this run so the message tells the truth either way.
-    if !config.task_runner.prefer.is_empty() {
-        let superseded = !config.tasks.prefer.is_empty() || !config.tasks.overrides.is_empty();
-        warnings.push(DetectionWarning::DeprecatedConfigKey {
-            path: "task_runner.prefer".to_string(),
-            replacement: "tasks.prefer",
-            superseded,
-        });
-    }
+    warnings.extend(deprecation_warnings(&config));
 
     Ok(Some(LoadedConfig {
         path,
         config,
         warnings,
     }))
+}
+
+/// Migration warnings for config keys that still work but have a supported
+/// successor. Shared by [`load`] and the editor language server so both surface
+/// the same nudge.
+///
+/// `[task_runner].prefer` is superseded by `[tasks]`: the warning flags whether
+/// `[tasks]` overrides it this run so the message tells the truth either way.
+pub(crate) fn deprecation_warnings(config: &RunnerConfig) -> Vec<DetectionWarning> {
+    let mut out = Vec::new();
+    if !config.task_runner.prefer.is_empty() {
+        let superseded = !config.tasks.prefer.is_empty() || !config.tasks.overrides.is_empty();
+        out.push(DetectionWarning::DeprecatedConfigKey {
+            path: "task_runner.prefer".to_string(),
+            replacement: "tasks.prefer",
+            superseded,
+        });
+    }
+    out
 }
 
 /// Validate `[pm].node` against the set of script-dispatching PMs.

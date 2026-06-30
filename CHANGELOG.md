@@ -17,6 +17,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Editor language server (`runner lsp`, built with `--features lsp`): a stdio LSP
+  for `runner.toml` providing live **diagnostics** (the same checks as
+  `runner config validate`, plus deprecation hints), **hover** docs sourced from
+  the JSON Schema, and **completion** of section names, field names, and value
+  sets (package managers, the `[tasks]` runner/PM/source labels, policy enums,
+  booleans). The validation, schema docs, and label vocabulary are reused from
+  the CLI, so editor feedback never drifts from `runner` itself.
 - `[tasks]` section in `runner.toml` for a persistent, declarative preference
   over which source runs an ambiguous task name (one that exists under more than
   one source — e.g. a `package.json` script *and* a `turbo` task). Previously

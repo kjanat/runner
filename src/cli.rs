@@ -1259,6 +1259,12 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Run the editor language server for runner.toml over stdio.
+    /// Only compiled in with the `lsp` cargo feature.
+    #[cfg(feature = "lsp")]
+    #[command(about = "Run the runner.toml language server (LSP) over stdio")]
+    Lsp,
+
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),

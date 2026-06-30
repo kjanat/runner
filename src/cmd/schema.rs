@@ -30,7 +30,7 @@ pub(crate) fn write_schema(all: bool, output: Option<&Path>) -> Result<()> {
 /// The `runner.toml` config schema, tagged with its canonical `$id` so the
 /// committed file self-identifies (matching the `#:schema` directive the
 /// scaffold writes).
-fn config_schema() -> Result<Value> {
+pub(crate) fn config_schema() -> Result<Value> {
     let mut schema = schema_value(schemars::schema_for!(crate::config::RunnerConfig))?;
     set_object_field(
         &mut schema,
