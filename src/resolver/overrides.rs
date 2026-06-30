@@ -9,7 +9,8 @@ use anyhow::{Result, anyhow};
 use super::join_labels;
 use super::policies::{
     is_env_truthy, parse_fallback_label, parse_mismatch_label, parse_prefer_runners,
-    resolve_failure_policy, resolve_fallback_policy, resolve_mismatch_policy,
+    parse_tasks_overrides, parse_tasks_prefer, resolve_failure_policy, resolve_fallback_policy,
+    resolve_mismatch_policy,
 };
 use super::types::{
     DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
@@ -181,7 +182,17 @@ impl ResolutionOverrides {
             sources.on_mismatch.env,
             sources.config,
         )?;
-        let prefer_runners = parse_prefer_runners(sources.config)?;
+        // `[tasks]` (rank-only, PM-aware) supersedes the deprecated
+        // `[task_runner].prefer` (restrictive, runners-only). When the new
+        // section carries anything, the legacy list is ignored entirely — the
+        // config loader has already emitted the deprecation warning.
+        let prefer_sources = parse_tasks_prefer(sources.config)?;
+        let task_source_overrides = parse_tasks_overrides(sources.config)?;
+        let prefer_runners = if prefer_sources.is_empty() && task_source_overrides.is_empty() {
+            parse_prefer_runners(sources.config)?
+        } else {
+            Vec::new()
+        };
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
         let quiet = sources.quiet.cli || sources.quiet.env.is_some_and(is_env_truthy);
@@ -234,6 +245,8 @@ impl ResolutionOverrides {
             pm_by_ecosystem,
             runner,
             prefer_runners,
+            prefer_sources,
+            task_source_overrides,
             fallback,
             on_mismatch,
             no_warnings,

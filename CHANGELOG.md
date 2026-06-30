@@ -15,6 +15,31 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `[tasks]` section in `runner.toml` for a persistent, declarative preference
+  over which source runs an ambiguous task name (one that exists under more than
+  one source — e.g. a `package.json` script *and* a `turbo` task). Previously
+  this could only be expressed per-invocation (`package.json:build`,
+  `--pm bun`, `--runner turbo`).
+  - `[tasks].prefer` — a rank-only global order. Labels may be task runners
+    (`turbo`, `make`, …), package managers (`bun`, `npm`, … map to
+    `package.json`; `deno` → `deno.json` then `package.json`), or source names
+    (`package.json`). Unlike the old `[task_runner].prefer`, it never
+    hard-rejects an unlisted source — it only reorders ties.
+  - `[tasks.overrides]` — per-task pins, e.g. `build = "turbo"`, `dev = "bun"`,
+    that beat the global order for those names.
+  - An explicit `source:task` qualifier, `--runner`, or `--pm`/`RUNNER_PM` still
+    outranks these file settings.
+
+### Deprecated
+
+- `[task_runner].prefer` is deprecated in favor of `[tasks].prefer`. Existing
+  configs keep working with their original restrictive behavior and now emit a
+  migration warning; when both sections are set, `[tasks]` takes over. The key
+  is flagged `deprecated` in the committed JSON Schema, and `runner config init`
+  no longer scaffolds it.
+
 ## [0.15.0] - 2026-06-29
 
 ### Added

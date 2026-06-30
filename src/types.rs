@@ -271,6 +271,19 @@ pub(crate) enum DetectionWarning {
         /// section, `"chain.fast"` for an unknown field within a known one.
         path: String,
     },
+    /// `runner.toml` sets a key that still works but has a supported
+    /// successor. The deprecated key keeps functioning (unless `superseded`,
+    /// in which case the successor it conflicts with takes over) so configs
+    /// never break on upgrade; the warning nudges migration.
+    DeprecatedConfigKey {
+        /// Dotted path to the deprecated key, e.g. `"task_runner.prefer"`.
+        path: String,
+        /// Dotted path to the replacement, e.g. `"tasks.prefer"`.
+        replacement: &'static str,
+        /// `true` when the replacement is also set, so the deprecated key is
+        /// ignored this run; `false` when the deprecated key is still in effect.
+        superseded: bool,
+    },
 }
 
 impl DetectionWarning {
@@ -289,7 +302,7 @@ impl DetectionWarning {
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
             Self::InstallDirCollision { .. } => "install",
-            Self::UnknownConfigKey { .. } => "runner.toml",
+            Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
         }
     }
 
@@ -374,6 +387,23 @@ impl DetectionWarning {
                 "unknown key `{path}` ignored — a typo, or written by a newer runner. This build \
                  doesn't recognize it; the rest of the config still applies.",
             ),
+            Self::DeprecatedConfigKey {
+                path,
+                replacement,
+                superseded,
+            } => {
+                if *superseded {
+                    format!(
+                        "`{path}` is deprecated and ignored here because `{replacement}` is also \
+                         set; remove `{path}`.",
+                    )
+                } else {
+                    format!(
+                        "`{path}` is deprecated; migrate to `{replacement}` (rank-only, and accepts \
+                         package managers). It still applies for now.",
+                    )
+                }
+            }
         }
     }
 }

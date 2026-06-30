@@ -4,13 +4,15 @@
 //! resolver passes around. `impl Resolver` lives in [`super::resolve`];
 //! `impl ResolutionOverrides` lives in [`super::overrides`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
 use crate::tool::node::OnFail;
-use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
+use crate::types::{
+    DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner, TaskSource,
+};
 
 /// Resolves package managers and task sources from a [`ProjectContext`]
 /// plus a bundle of [`ResolutionOverrides`].
@@ -44,11 +46,23 @@ pub(crate) struct ResolutionOverrides {
     /// [`TaskRunner::task_source`]; an empty restriction list bails with
     /// [`super::ResolveError::InvalidOverride`].
     pub runner: Option<RunnerOverride>,
-    /// Ranked preference list from `[task_runner].prefer`. Empty when no
-    /// config is loaded or the section is empty. When non-empty, the
-    /// source selector restricts candidates to runners in the list (in
-    /// listed order); a miss bails with [`super::ResolveError::InvalidOverride`].
+    /// Ranked preference list from the **deprecated** `[task_runner].prefer`.
+    /// Empty when no config is loaded, the section is empty, or `[tasks]`
+    /// supersedes it. When non-empty, the source selector restricts candidates
+    /// to runners in the list (in listed order); a miss bails with
+    /// [`super::ResolveError::InvalidOverride`].
     pub prefer_runners: Vec<TaskRunner>,
+    /// Global rank-only task-source order from `[tasks].prefer`. Empty when
+    /// unset. Each entry is a [`TaskSource`] (resolved from a runner, package
+    /// manager, or source label); a same-name conflict prefers earlier
+    /// entries, and any source not listed still resolves (it just ranks
+    /// below listed ones). Never restricts.
+    pub prefer_sources: Vec<TaskSource>,
+    /// Per-task source pins from `[tasks].overrides`: task name → preferred
+    /// [`TaskSource`]s, most-native first. When a pinned task has a candidate
+    /// under one of these sources, that candidate wins; otherwise the normal
+    /// ranking applies (no hard error).
+    pub task_source_overrides: BTreeMap<String, Vec<TaskSource>>,
     /// What to do when no signal in steps 2–6 matches.
     pub fallback: FallbackPolicy,
     /// What to do when the manifest declaration (step 5) disagrees with

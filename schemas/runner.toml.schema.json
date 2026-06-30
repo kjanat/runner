@@ -161,11 +161,34 @@
       "additionalProperties": false
     },
     "TaskRunnerSection": {
-      "description": "`[task_runner]` section — preferred ordering for ambiguous tasks.",
+      "description": "`[task_runner]` section — **deprecated**. Use [`TasksSection`] (`[tasks]`)\ninstead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor — rank-only and able to name package managers, not just\ntask runners.",
+      "deprecated": true,
       "type": "object",
       "properties": {
         "prefer": {
-          "description": "Ranked preference list. Restricts candidates to runners in the\nlist (in listed order); a same-named task under a runner not in\nthe list is hard-rejected. Parsed into [`crate::types::TaskRunner`]\nat resolver-init time so unknown labels fail fast.\n\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,\n`bacon`. (Not constrained in the JSON Schema — the runtime\nparser emits a more helpful error than a schema-validation\nfailure would.)",
+          "description": "**Deprecated — use `[tasks].prefer` instead** (rank-only, and accepts\npackage managers like `bun`, not just task runners). Migration:\n`[task_runner].prefer = [\"turbo\"]` → `[tasks].prefer = [\"turbo\"]`.\n\nLegacy behavior, still honored: a ranked preference list that\n*restricts* candidates to runners in the list (in listed order); a\nsame-named task under a runner not in the list is hard-rejected.\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.",
+          "deprecated": true,
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "TasksSection": {
+      "description": "`[tasks]` section — persistent task-source preference for ambiguous task\nnames (a name that exists under more than one source, e.g. a `package.json`\nscript *and* a `turbo` task).\n\nBoth knobs speak the same label vocabulary: a label is a task runner\n(`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,\n`deno`, …), or a source name (`package.json`, `deno`, …). Package-manager\nlabels map to the script source they run (`bun` → `package.json`).\nSelection here is **rank-only**: it never hard-rejects an unlisted source,\nit only reorders. An explicit CLI qualifier (`package.json:test`),\n`--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.",
+      "type": "object",
+      "properties": {
+        "overrides": {
+          "description": "Per-task pins that override [`Self::prefer`] for specific names:\n`overrides = { dev = \"bun\", build = \"turbo\" }`. A pin to a source the\ntask doesn't have falls through to the normal ranking (no hard error).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "prefer": {
+          "description": "Global tie-break order for ambiguous task names, highest priority\nfirst. Listed sources win over unlisted ones (which still run as\nlower-priority fallbacks). E.g. `prefer = [\"turbo\", \"bun\"]` makes a\n`turbo` task win, then a `package.json` script, then everything else.",
           "type": "array",
           "items": {
             "type": "string"
@@ -216,7 +239,12 @@
     },
     "task_runner": {
       "$ref": "#/$defs/TaskRunnerSection",
-      "description": "`[task_runner]` — task-runner preferences.",
+      "description": "`[task_runner]` — task-runner preferences. Deprecated; superseded\nby [`Self::tasks`].",
+      "default": {}
+    },
+    "tasks": {
+      "$ref": "#/$defs/TasksSection",
+      "description": "`[tasks]` — persistent task-source preference (global order + per-task pins).",
       "default": {}
     }
   },

@@ -339,9 +339,20 @@ extra setup.
 node   = "pnpm"  # npm | pnpm | yarn | bun | deno
 python = "uv"    # uv | poetry | pipenv
 
-# Restrict and rank task runners for ambiguous task names.
-[task_runner]
-prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
+# Prefer which source runs an ambiguous task name (one that exists under more
+# than one source — e.g. a package.json script AND a turbo task). Labels are
+# task runners, package managers (bun, npm, ... map to package.json), or source
+# names (package.json). Rank-only: unlisted sources still run. An explicit
+# qualifier (package.json:test), --runner, or --pm still outranks these.
+[tasks]
+prefer    = ["turbo", "bun"]                  # global order: turbo, then package.json
+overrides = { dev = "bun", build = "turbo" }  # per-task pins beat the order
+
+# Deprecated — superseded by [tasks] above. Legacy ranked allow-list of task
+# runners that also *restricts* candidates (a same-named task under an unlisted
+# runner is rejected). Still honored for existing configs, with a warning.
+# [task_runner]
+# prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
 
 # Restrict which detected package managers `runner install` runs. Empty/absent
 # installs every detected PM. In a polyglot repo where both bun and deno would

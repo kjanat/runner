@@ -31,6 +31,7 @@
 //! consumer in `crate::resolver`. Keep [`KNOWN_SCHEMA`] in sync so the new
 //! key isn't mis-reported as unknown.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -60,8 +61,17 @@ pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner 
 # node = "pnpm"          # npm | pnpm | yarn | bun | deno
 # python = "uv"          # uv | poetry | pipenv
 
-# Restrict and rank task runners for ambiguous task names. Candidates not in
-# the list are rejected; earlier entries win.
+# Persistent preference for which source runs an ambiguous task name (a name
+# that exists under more than one source — e.g. a package.json script AND a
+# turbo task). Labels are runner names, package-manager names (bun, npm, ...),
+# or source names (package.json). Rank-only: unlisted sources still run.
+[tasks]
+# prefer = ["turbo", "bun"]                      # global order: turbo, then package.json (bun)
+# overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order
+
+# Deprecated — use [tasks] above. Legacy ranked allow-list of task runners that
+# also *restricts* candidates (a same-named task under an unlisted runner is
+# rejected). Still honored for existing configs; prints a deprecation warning.
 [task_runner]
 # prefer = ["just", "turbo"]   # turbo, nx, make, just, task, mise, bacon
 
@@ -123,9 +133,13 @@ pub(crate) struct RunnerConfig {
     /// `[pm]` — per-ecosystem package-manager overrides.
     #[serde(default)]
     pub pm: PmSection,
-    /// `[task_runner]` — task-runner preferences.
+    /// `[task_runner]` — task-runner preferences. Deprecated; superseded
+    /// by [`Self::tasks`].
     #[serde(default, rename = "task_runner")]
     pub task_runner: TaskRunnerSection,
+    /// `[tasks]` — persistent task-source preference (global order + per-task pins).
+    #[serde(default)]
+    pub tasks: TasksSection,
     /// `[resolution]` — resolver-policy knobs.
     #[serde(default)]
     pub resolution: ResolutionSection,
@@ -316,25 +330,62 @@ pub(crate) struct PmSection {
     pub python: Option<String>,
 }
 
-/// `[task_runner]` section — preferred ordering for ambiguous tasks.
+/// `[task_runner]` section — **deprecated**. Use [`TasksSection`] (`[tasks]`)
+/// instead.
+///
+/// Kept for backward compatibility: existing `[task_runner].prefer` files
+/// keep working (and emit a deprecation warning), but `[tasks].prefer` is the
+/// supported successor — rank-only and able to name package managers, not just
+/// task runners.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields, extend("deprecated" = true))
+)]
+pub(crate) struct TaskRunnerSection {
+    /// **Deprecated — use `[tasks].prefer` instead** (rank-only, and accepts
+    /// package managers like `bun`, not just task runners). Migration:
+    /// `[task_runner].prefer = ["turbo"]` → `[tasks].prefer = ["turbo"]`.
+    ///
+    /// Legacy behavior, still honored: a ranked preference list that
+    /// *restricts* candidates to runners in the list (in listed order); a
+    /// same-named task under a runner not in the list is hard-rejected.
+    /// Valid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "schema", schemars(extend("deprecated" = true)))]
+    pub prefer: Vec<String>,
+}
+
+/// `[tasks]` section — persistent task-source preference for ambiguous task
+/// names (a name that exists under more than one source, e.g. a `package.json`
+/// script *and* a `turbo` task).
+///
+/// Both knobs speak the same label vocabulary: a label is a task runner
+/// (`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,
+/// `deno`, …), or a source name (`package.json`, `deno`, …). Package-manager
+/// labels map to the script source they run (`bun` → `package.json`).
+/// Selection here is **rank-only**: it never hard-rejects an unlisted source,
+/// it only reorders. An explicit CLI qualifier (`package.json:test`),
+/// `--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(
     feature = "schema",
     derive(schemars::JsonSchema),
     schemars(deny_unknown_fields)
 )]
-pub(crate) struct TaskRunnerSection {
-    /// Ranked preference list. Restricts candidates to runners in the
-    /// list (in listed order); a same-named task under a runner not in
-    /// the list is hard-rejected. Parsed into [`crate::types::TaskRunner`]
-    /// at resolver-init time so unknown labels fail fast.
-    ///
-    /// Valid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`,
-    /// `bacon`. (Not constrained in the JSON Schema — the runtime
-    /// parser emits a more helpful error than a schema-validation
-    /// failure would.)
+pub(crate) struct TasksSection {
+    /// Global tie-break order for ambiguous task names, highest priority
+    /// first. Listed sources win over unlisted ones (which still run as
+    /// lower-priority fallbacks). E.g. `prefer = ["turbo", "bun"]` makes a
+    /// `turbo` task win, then a `package.json` script, then everything else.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
+    /// Per-task pins that override [`Self::prefer`] for specific names:
+    /// `overrides = { dev = "bun", build = "turbo" }`. A pin to a source the
+    /// task doesn't have falls through to the normal ranking (no hard error).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overrides: BTreeMap<String, String>,
 }
 
 /// `[resolution]` section — resolver policy knobs.
@@ -372,6 +423,7 @@ pub(crate) struct ResolutionSection {
 const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("pm", &["node", "python"]),
     ("task_runner", &["prefer"]),
+    ("tasks", &["prefer", "overrides"]),
     ("install", &["pms", "scripts"]),
     ("resolution", &["fallback", "on_mismatch"]),
     ("chain", &["keep_going", "kill_on_fail"]),
@@ -435,10 +487,22 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
     // fail the typed conversion below.
     let value: toml::Value =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
-    let warnings = collect_unknown_keys(&value);
+    let mut warnings = collect_unknown_keys(&value);
     let config: RunnerConfig = value
         .try_into()
         .with_context(|| format!("failed to parse {}", path.display()))?;
+
+    // `[task_runner].prefer` is superseded by `[tasks]`. Surface a migration
+    // nudge whenever the legacy key carries a value; flag whether `[tasks]`
+    // overrides it this run so the message tells the truth either way.
+    if !config.task_runner.prefer.is_empty() {
+        let superseded = !config.tasks.prefer.is_empty() || !config.tasks.overrides.is_empty();
+        warnings.push(DetectionWarning::DeprecatedConfigKey {
+            path: "task_runner.prefer".to_string(),
+            replacement: "tasks.prefer",
+            superseded,
+        });
+    }
 
     Ok(Some(LoadedConfig {
         path,
@@ -514,6 +578,75 @@ mod tests {
         let result = load(dir.path()).expect("absent file should be Ok(None)");
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn legacy_task_runner_prefer_warns_deprecated() {
+        let dir = TempDir::new("config-deprecated-task-runner");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[task_runner]\nprefer = [\"turbo\"]\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                DetectionWarning::DeprecatedConfigKey {
+                    superseded: false,
+                    ..
+                }
+            )),
+            "expected a non-superseded deprecation warning, got: {:?}",
+            loaded.warnings,
+        );
+    }
+
+    #[test]
+    fn tasks_section_marks_legacy_prefer_superseded() {
+        let dir = TempDir::new("config-deprecated-superseded");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[task_runner]\nprefer = [\"turbo\"]\n\n[tasks]\nprefer = [\"bun\"]\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                DetectionWarning::DeprecatedConfigKey {
+                    superseded: true,
+                    ..
+                }
+            )),
+            "expected a superseded deprecation warning, got: {:?}",
+            loaded.warnings,
+        );
+    }
+
+    #[test]
+    fn tasks_section_validates() {
+        // `[tasks]` with a PM label and a per-task pin is a valid config —
+        // the same check `runner config validate` runs.
+        let dir = TempDir::new("config-tasks-valid");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[tasks]\nprefer = [\"turbo\", \"bun\"]\n\n[tasks.overrides]\nbuild = \"turbo\"\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+        crate::resolver::validate_config(&loaded).expect("a well-formed [tasks] section validates");
     }
 
     #[test]
