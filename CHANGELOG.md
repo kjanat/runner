@@ -15,6 +15,22 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Changed
+
+- Internal: the `run` alias binary now dispatches through the same
+  `dispatch` entry point as `runner`, building a typed `Cli` from the parsed
+  alias rather than keeping a second resolver-override and command-dispatch
+  copy in `dispatch_run_alias`. The alias keeps its bespoke help/version
+  forwarding, flat completions, and `run` man page. One behavior delta: a
+  bare `run -k`/`-K` (a chain-failure flag with no task and no `-s`/`-p`)
+  now maps to the project dashboard (`command: None`) and drops the inert
+  chain-failure flag before resolving overrides, so it no longer errors when
+  the opposite polarity is supplied out-of-band via
+  `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or a `[chain]` config. The old
+  eager builder kept the flag and hit the cross-source conflict; the
+  dashboard never consults the failure policy, so dropping it is correct. See
+  https://github.com/kjanat/runner/issues/52.
+
 ## [0.16.0] - 2026-07-01
 
 ### Added
