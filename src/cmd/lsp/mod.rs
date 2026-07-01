@@ -29,7 +29,7 @@ use lsp_types::request::{Completion, HoverRequest, Request as _};
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, HoverParams, HoverProviderCapability,
     PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind,
-    Url,
+    Uri,
 };
 use serde_json::Value;
 
@@ -79,7 +79,7 @@ fn server_capabilities() -> ServerCapabilities {
 /// Open-document store plus the cached schema documentation.
 struct Server {
     /// Text of every open document, keyed by URI (full-sync, so always current).
-    documents: HashMap<Url, String>,
+    documents: HashMap<Uri, String>,
     /// Section/field documentation, built once at startup.
     schema: SchemaIndex,
 }
@@ -166,7 +166,7 @@ impl Server {
     }
 
     /// Compute and send diagnostics for a document (no-op for non-runner.toml).
-    fn publish_diagnostics(&self, connection: &Connection, uri: &Url) {
+    fn publish_diagnostics(&self, connection: &Connection, uri: &Uri) {
         let diagnostics = self
             .documents
             .get(uri)
@@ -196,7 +196,7 @@ impl Server {
 }
 
 /// Send a `publishDiagnostics` notification for `uri`.
-fn send_diagnostics(connection: &Connection, uri: Url, diagnostics: Vec<lsp_types::Diagnostic>) {
+fn send_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<lsp_types::Diagnostic>) {
     let params = PublishDiagnosticsParams {
         uri,
         diagnostics,
@@ -212,8 +212,9 @@ fn send_diagnostics(connection: &Connection, uri: Url, diagnostics: Vec<lsp_type
 
 /// Whether a URI points at a file named `runner.toml` (the only file this
 /// server understands). Keeps it inert if an editor over-eagerly attaches it.
-fn is_runner_toml(uri: &Url) -> bool {
+fn is_runner_toml(uri: &Uri) -> bool {
     uri.path()
+        .as_str()
         .rsplit('/')
         .next()
         .is_some_and(|name| name == "runner.toml")

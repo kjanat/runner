@@ -68,11 +68,11 @@ default-features = false
 optional         = true
 
 [dependencies.lsp-server]
-version  = "0.7"
+version  = "0.8"
 optional = true
 
 [dependencies.lsp-types]
-version  = "0.94"
+version  = "0.97"
 optional = true
 
 [dependencies.schemars]
