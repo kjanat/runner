@@ -102,7 +102,7 @@ default-features = false
 features         = ["parse", "serde"]
 
 [features]
-default            = ["run"]
+default            = ["lsp", "run"]
 # Editor language server (`runner lsp`): hover, completion, and diagnostics for
 # runner.toml. Pulls in `schema` to reuse field docs as the single source of truth.
 lsp                = ["dep:lsp-server", "dep:lsp-types", "schema"]
