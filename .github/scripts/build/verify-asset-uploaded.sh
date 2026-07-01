@@ -39,7 +39,13 @@ checksum="${archive_basename}.sha256"
 # uploaded. Re-fetch each attempt so a slow-to-appear asset still resolves.
 missing=()
 for attempt in 1 2 3; do
-	mapfile -t assets < <(
+	# Read line-by-line rather than `mapfile`: macOS runners ship bash 3.2,
+	# which predates the `mapfile`/`readarray` builtin (bash 4+) — using it
+	# there aborts the leg with `command not found` under `set -e`.
+	assets=()
+	while IFS= read -r asset; do
+		assets+=("${asset}")
+	done < <(
 		gh release view "${RELEASE_TAG}" \
 			--repo "${GITHUB_REPOSITORY}" \
 			--json assets \

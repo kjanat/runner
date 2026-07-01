@@ -187,7 +187,12 @@ jobs:
       # A leg can report success while uploading nothing (observed: taiki-e
       # action no-ops on windows-11-arm). Fail loudly here so the empty leg
       # goes red at the source instead of ENOENT-ing later in build-dist.
+      # `shell: bash` is required: this is the only script step that runs across
+      # the full matrix, and Windows legs default to pwsh, where `${GITHUB_WORKSPACE}`
+      # is not an env expansion — the path collapsed and bash ENOENT'd (exit 1).
+      # Under git-bash it expands, matching how the other legs invoke scripts.
       - name: verify asset uploaded
+        shell: bash
         env: { GH_TOKEN: "${{ github.token }}", TARGET: "${{ matrix.target }}" }
         run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/verify-asset-uploaded.sh"
 
