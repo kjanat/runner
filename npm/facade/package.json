@@ -35,7 +35,8 @@
 	},
 	"bin": {
 		"run": "bin/run.cjs",
-		"runner": "bin/runner.cjs"
+		"runner": "bin/runner.cjs",
+		"runner-run": "bin/runner.cjs"
 	},
 	"directories": {
 		"lib": "./lib",

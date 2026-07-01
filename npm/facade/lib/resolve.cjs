@@ -63,6 +63,7 @@ This usually means your package manager skipped ${blueText}optionalDependencies$
 
 Workarounds:
 ${indent}- reinstall without: ${blueText}--no-optional${reset} / ${blueText}--omit=optional${reset}
+${indent}- bun + ${blueText}minimumReleaseAge${reset}: add the ${blueText}@runner-run/*${reset} platform packages (not just ${blueText}${pkgName}${reset}) to ${blueText}minimumReleaseAgeExcludes${reset} — a fresh release is otherwise age-gated
 ${indent}- install from source: ${blueText}cargo install --git=${repo}/ runner${reset}
 ${indent}- file an issue if your platform is unsupported: ${osc8(`${repo}/issues`)}${detail}
 `;
