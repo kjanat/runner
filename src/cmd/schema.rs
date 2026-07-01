@@ -30,14 +30,49 @@ pub(crate) fn write_schema(all: bool, output: Option<&Path>) -> Result<()> {
 /// The `runner.toml` config schema, tagged with its canonical `$id` so the
 /// committed file self-identifies (matching the `#:schema` directive the
 /// scaffold writes).
-fn config_schema() -> Result<Value> {
+pub(crate) fn config_schema() -> Result<Value> {
     let mut schema = schema_value(schemars::schema_for!(crate::config::RunnerConfig))?;
     set_object_field(
         &mut schema,
         "$id",
         json!(crate::schema::config_schema_url()),
     );
+    patch_tasks_label_vocab(&mut schema);
     Ok(schema)
+}
+
+/// Constrain `[tasks].prefer` and `[tasks.overrides]` values to the closed
+/// label vocabulary the resolver actually accepts (task runners, package
+/// managers, source names — see `resolver::policies::resolve_source_label`),
+/// instead of leaving them as unconstrained strings. Derived from
+/// [`crate::types::task_source_labels`] so the schema can't drift from the
+/// resolver's own vocabulary.
+fn patch_tasks_label_vocab(schema: &mut Value) {
+    let Some(defs) = schema.get_mut("$defs").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(tasks) = defs
+        .get_mut("TasksSection")
+        .and_then(|def| def.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let labels = json!(crate::types::task_source_labels());
+    if let Some(prefer_items) = tasks
+        .get_mut("prefer")
+        .and_then(|f| f.get_mut("items"))
+        .and_then(Value::as_object_mut)
+    {
+        prefer_items.insert("enum".to_string(), labels.clone());
+    }
+    if let Some(overrides_values) = tasks
+        .get_mut("overrides")
+        .and_then(|f| f.get_mut("additionalProperties"))
+        .and_then(Value::as_object_mut)
+    {
+        overrides_values.insert("enum".to_string(), labels);
+    }
 }
 
 fn write_all_schemas(dir: &Path) -> Result<()> {
@@ -105,6 +140,7 @@ fn output_schema<T: JsonSchema>(command: &'static str, version: u32) -> Result<V
     );
     patch_schema_version_const(&mut schema, version);
     patch_source_schema(&mut schema, version);
+    patch_schema_compat(&mut schema, command, version);
     Ok(schema)
 }
 
@@ -164,6 +200,27 @@ fn patch_source_schema(schema: &mut Value, version: u32) {
     patch_why_candidate_source(defs);
     patch_why_task_v3(defs);
     patch_def_field(defs, "SourceV3", "kind", "TaskSourceLabel");
+}
+
+fn patch_schema_compat(schema: &mut Value, command: &str, version: u32) {
+    if command == "doctor" && version == 3 {
+        // v3 existed before `quiet`; keep additive fields optional so the
+        // current public schema still validates older v3 payloads.
+        remove_required_def_field(schema, "OverridesV3", "quiet");
+    }
+}
+
+fn remove_required_def_field(schema: &mut Value, def_name: &'static str, field: &'static str) {
+    let Some(required) = schema
+        .get_mut("$defs")
+        .and_then(Value::as_object_mut)
+        .and_then(|defs| defs.get_mut(def_name))
+        .and_then(|definition| definition.get_mut("required"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    required.retain(|name| name.as_str() != Some(field));
 }
 
 fn patch_task_info_source(defs: &mut Map<String, Value>) {
@@ -285,5 +342,65 @@ fn description(command: &str, version: u32) -> String {
                           and diagnostics."
             .to_string(),
         _ => format!("JSON schema for `{}`.", title(command, version)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::output_schema;
+
+    fn overrides_v3(schema: &Value) -> &Value {
+        schema
+            .get("$defs")
+            .and_then(Value::as_object)
+            .and_then(|defs| defs.get("OverridesV3"))
+            .expect("schema should define OverridesV3")
+    }
+
+    fn quiet_is_optional(schema: &Value) -> bool {
+        overrides_v3(schema)
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(|required| !required.iter().any(|name| name.as_str() == Some("quiet")))
+    }
+
+    fn quiet_type(schema: &Value) -> Option<&str> {
+        overrides_v3(schema)
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("quiet"))
+            .and_then(|quiet| quiet.get("type"))
+            .and_then(Value::as_str)
+    }
+
+    #[test]
+    fn doctor_v3_schema_keeps_quiet_optional_for_compat() {
+        let schema =
+            output_schema::<crate::schema::doctor_v3::DoctorReportV3<'static>>("doctor", 3)
+                .expect("doctor v3 schema should render");
+
+        assert!(quiet_is_optional(&schema));
+        assert_eq!(quiet_type(&schema), Some("boolean"));
+    }
+
+    #[test]
+    fn committed_doctor_v3_schema_keeps_quiet_optional_for_compat() {
+        let raw = std::fs::read_to_string("schemas/doctor.v3.schema.json")
+            .expect("committed doctor v3 schema should be readable");
+        let schema: Value = serde_json::from_str(&raw).expect("schema should parse as JSON");
+
+        assert!(quiet_is_optional(&schema));
+        assert_eq!(quiet_type(&schema), Some("boolean"));
+    }
+
+    #[test]
+    fn committed_doctor_v3_example_includes_quiet_override() {
+        let raw = std::fs::read_to_string("schemas/doctor.v3.example.json")
+            .expect("committed doctor v3 example should be readable");
+        let example: Value = serde_json::from_str(&raw).expect("example should parse as JSON");
+
+        assert_eq!(example["overrides"]["quiet"], serde_json::json!(false));
     }
 }

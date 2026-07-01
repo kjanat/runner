@@ -5,13 +5,15 @@
 //! Pure string→enum/bool logic; no side effects. Consumed by
 //! [`super::overrides::ResolutionOverrides::from_sources`].
 
+use std::collections::BTreeMap;
+
 use anyhow::{Result, anyhow};
 
 use super::types::{ExplainSource, FallbackPolicy, MismatchPolicy};
 use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
-use crate::types::TaskRunner;
+use crate::types::{PackageManager, TaskRunner, TaskSource};
 
 /// Treat any env-var value as truthy unless it's empty, `"0"`, or a
 /// case-insensitive variant of `false` / `no` / `off`.
@@ -98,6 +100,96 @@ pub(super) fn parse_prefer_runners(config: Option<&LoadedConfig>) -> Result<Vec<
             )
         })?;
         out.push(runner);
+    }
+    Ok(out)
+}
+
+/// Resolve a `[tasks]` label to the [`TaskSource`]s it names, most-native
+/// first. The label vocabulary is unified across the three kinds a user might
+/// reach for, tried in order of richest mapping:
+///
+/// 1. a **package manager** (`bun`, `npm`, `pnpm`, `yarn`, `deno`, `cargo`,
+///    `uv`, …) → its [`PackageManager::owned_task_sources`] (`bun` →
+///    `package.json`; `deno` → `deno.json` then `package.json`),
+/// 2. a **task runner** (`turbo`, `make`, `just`, `task`, `mise`, `bacon`) →
+///    its [`TaskRunner::task_source`] (`nx` resolves to nothing — it has no
+///    extractable source — which is recognized but contributes no source),
+/// 3. a **source name** (`package.json`, `pyproject.toml`, …) via
+///    [`TaskSource::from_label`].
+///
+/// Returns `Ok(vec)` for a recognized label (possibly empty, e.g. `nx`) and
+/// `Err` for an unknown one. PM is tried first so a dual-natured tool like
+/// `deno` expands to both its sources rather than just `deno.json`.
+fn resolve_source_label(raw: &str) -> Result<Vec<TaskSource>> {
+    let label = raw.trim();
+    if let Some(pm) = PackageManager::from_label(label) {
+        return Ok(pm.owned_task_sources().to_vec());
+    }
+    if let Some(runner) = TaskRunner::from_label(label) {
+        return Ok(runner.task_source().into_iter().collect());
+    }
+    if let Some(source) = TaskSource::from_label(label) {
+        return Ok(vec![source]);
+    }
+    Err(anyhow!(
+        "unknown source {label:?}; expected a task runner ({}), a package manager ({}), or a \
+         source name like package.json",
+        join_labels(TaskRunner::all().iter().map(|r| r.label())),
+        join_labels(
+            PackageManager::all()
+                .iter()
+                .copied()
+                .map(PackageManager::label)
+        ),
+    ))
+}
+
+/// Parse `[tasks].prefer` into a deduped, ranked list of [`TaskSource`]s.
+/// Empty/missing → empty `Vec`. Rank-only: the list never restricts; it only
+/// reorders same-name conflicts (see `cmd::run::select`).
+///
+/// Unknown labels are a hard error (like the legacy prefer-list) so a typo
+/// surfaces at startup rather than silently changing selection.
+pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<TaskSource>> {
+    let Some(loaded) = config else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<TaskSource> = Vec::new();
+    for entry in &loaded.config.tasks.prefer {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let sources = resolve_source_label(trimmed).map_err(|e| anyhow!("[tasks].prefer: {e}"))?;
+        for source in sources {
+            if !out.contains(&source) {
+                out.push(source);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Parse `[tasks].overrides` into per-task source pins (task name → preferred
+/// [`TaskSource`]s, most-native first). Empty/missing → empty map. A label that
+/// names no task source (e.g. `nx`) is rejected here — a pin must be
+/// actionable, unlike a `prefer` entry which may legitimately rank nothing.
+pub(super) fn parse_tasks_overrides(
+    config: Option<&LoadedConfig>,
+) -> Result<BTreeMap<String, Vec<TaskSource>>> {
+    let Some(loaded) = config else {
+        return Ok(BTreeMap::new());
+    };
+    let mut out = BTreeMap::new();
+    for (task, label) in &loaded.config.tasks.overrides {
+        let sources =
+            resolve_source_label(label).map_err(|e| anyhow!("[tasks.overrides] {task:?}: {e}"))?;
+        if sources.is_empty() {
+            return Err(anyhow!(
+                "[tasks.overrides] {task:?}: {label:?} names no task source to pin to",
+            ));
+        }
+        out.insert(task.clone(), sources);
     }
     Ok(out)
 }

@@ -9,7 +9,7 @@ on:
       tag: { description: Release tag to publish (e.g. v0.5.0), required: true, type: string }
       run-id:
         description: |-
-          release.yml run ID that produced the npm-dist artifact for this tag.
+          release.yml run ID that produced the dist artifact for this tag.
           Find it via `gh run list --workflow=release.yml --branch=<tag> --status=success`.
         required: true
         type: string
@@ -80,9 +80,9 @@ jobs:
           fi
           echo "run-id=${run_id}" >> "${GITHUB_OUTPUT}"
 
-      - name: download npm-dist artifact
+      - name: download dist artifact
         uses: actions/download-artifact@v8
-        with: { name: npm-dist, path: npm/dist/, run-id: "${{ steps.resolve.outputs.run-id }}", github-token: "${{ github.token }}" }
+        with: { name: dist, path: npm/dist/, run-id: "${{ steps.resolve.outputs.run-id }}", github-token: "${{ github.token }}" }
 
       - name: derive dist-tag and dry-run
         id: derive

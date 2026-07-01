@@ -73,6 +73,20 @@ fn env_suffix(var: &str) -> String {
     format!("[env: {}]", cyan_str(var))
 }
 
+/// Cyan-styled env-var suffix for `--dir`. Kept alongside [`PM_HELP`] /
+/// [`RUNNER_HELP`] rather than as a plain `format!` inline in the doc
+/// comment so the `--dir` flag renders identically to every other flag's
+/// `[env: VAR]` suffix — clap's own `env = "..."` attribute would style
+/// it differently and also print the variable's *current* value (e.g.
+/// `[env: RUNNER_DIR=]` when set-but-empty), which the other flags never
+/// do since their env fallback lives at the call site, not in clap.
+static DIR_HELP: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "Project directory (default: cwd) {}",
+        env_suffix("RUNNER_DIR")
+    )
+});
+
 /// Comma-joined, cyan-styled list of every [`PackageManager`] label.
 /// Built once at first help-text access via [`LazyLock`]; rebuilding the
 /// list on every `--help` invocation would waste work for a value that is
@@ -943,14 +957,16 @@ pub(crate) struct Cli {
 /// if they were defined on the parent struct.
 #[derive(Debug, Args)]
 pub(crate) struct GlobalOpts {
-    /// Project directory (default: cwd).
+    /// Project directory (default: cwd). `$RUNNER_DIR` is also consulted
+    /// independently when this flag is omitted (env reads live at the
+    /// dispatch call site via `configured_project_dir`, not clap).
     #[arg(
         long = "dir",
         global = true,
-        env = "RUNNER_DIR",
         value_name = "PATH",
         value_hint = clap::ValueHint::DirPath,
         value_parser = clap::value_parser!(PathBuf),
+        help = DIR_HELP.as_str(),
         display_order = help_order::DIR,
     )]
     pub project_dir: Option<PathBuf>,
@@ -1259,6 +1275,12 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
+    /// Run the editor language server for runner.toml over stdio.
+    /// Only compiled in with the `lsp` cargo feature.
+    #[cfg(feature = "lsp")]
+    #[command(about = "Run the runner.toml language server (LSP) over stdio")]
+    Lsp,
+
     /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -1370,20 +1392,32 @@ pub(crate) struct ChainModeFlags {
 /// clap layer.
 #[derive(Debug, Args, Default, Clone, Copy)]
 pub(crate) struct ChainFailureFlags {
-    /// Finish chain despite failures
+    /// Finish chain despite failures. The resolver also consults
+    /// `$RUNNER_KEEP_GOING` independently when this flag is omitted (env
+    /// reads live in `crate::resolver`, not clap).
     #[arg(
         short = 'k',
         long,
         conflicts_with = "kill_on_fail",
         display_order = help_order::CHAIN_FAILURE,
+        help = concat!(
+            "Finish chain despite failures ",
+            "[env: ", cyan!("RUNNER_KEEP_GOING"), "]"
+        ),
     )]
     pub keep_going: bool,
-    /// Parallel: kill siblings on first failure
+    /// Parallel: kill siblings on first failure. The resolver also
+    /// consults `$RUNNER_KILL_ON_FAIL` independently when this flag is
+    /// omitted (env reads live in `crate::resolver`, not clap).
     #[arg(
         short = 'K',
         long,
         conflicts_with = "keep_going",
         display_order = help_order::CHAIN_FAILURE + 1,
+        help = concat!(
+            "Parallel: kill siblings on first failure ",
+            "[env: ", cyan!("RUNNER_KILL_ON_FAIL"), "]"
+        ),
     )]
     pub kill_on_fail: bool,
 }

@@ -26,6 +26,27 @@ pub(crate) fn select_task_entry<'a>(
     overrides: &ResolutionOverrides,
     found: &[&'a crate::types::Task],
 ) -> &'a crate::types::Task {
+    // A `[tasks.overrides]` pin wins a same-name conflict — but only when the
+    // user hasn't forced a PM/runner on the CLI/env, which outrank the config
+    // file. The pin lists sources most-native first; the first candidate under
+    // one of them wins (real recipe before a same-named alias).
+    if overrides.pm.is_none()
+        && overrides.runner.is_none()
+        && let Some(name) = found.first().map(|t| t.name.as_str())
+        && let Some(pinned) = overrides.task_source_overrides.get(name)
+    {
+        for source in pinned {
+            if let Some(task) = found
+                .iter()
+                .copied()
+                .filter(|t| t.source == *source)
+                .min_by_key(|t| t.alias_of.is_some())
+            {
+                return task;
+            }
+        }
+    }
+
     // Aliases rank last within any source tier so `runner <name>` dispatches
     // to the real recipe when a same-named alias exists alongside it.
     found
@@ -93,6 +114,18 @@ fn base_source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> 
         TaskSource::PackageJson => 1,
         _ => 2,
     };
+    // `[tasks].prefer` (rank-only, PM-aware) is the supported preference.
+    // Listed sources win in listed order; unlisted ones keep the default tier,
+    // bumped below every listed entry so a listed source always wins. Never
+    // restricts. Mutually exclusive with `prefer_runners` (the parser drops
+    // the deprecated list when `[tasks]` is set), so the two never collide.
+    if !overrides.prefer_sources.is_empty() {
+        if let Some(idx) = overrides.prefer_sources.iter().position(|s| *s == source) {
+            return u16::try_from(idx).unwrap_or(u16::MAX);
+        }
+        return u16::try_from(overrides.prefer_sources.len()).unwrap_or(u16::MAX) + default_tier;
+    }
+    // Deprecated `[task_runner].prefer`: restrictive elsewhere, ranked here.
     if overrides.prefer_runners.is_empty() {
         return default_tier;
     }
@@ -183,6 +216,7 @@ fn source_dir(source: TaskSource, root: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     use super::{select_task_entry, source_priority};
@@ -367,5 +401,122 @@ mod tests {
         assert_eq!(source_priority(&overrides, TaskSource::TurboJson), 0);
         assert_eq!(source_priority(&overrides, TaskSource::PackageJson), 1);
         assert_eq!(source_priority(&overrides, TaskSource::DenoJson), 2);
+    }
+
+    fn tasks_prefer(sources: Vec<TaskSource>) -> ResolutionOverrides {
+        ResolutionOverrides {
+            prefer_sources: sources,
+            ..ResolutionOverrides::default()
+        }
+    }
+
+    #[test]
+    fn tasks_prefer_flips_package_json_ahead_of_turbo() {
+        // The headline real-world case: `[tasks].prefer = ["bun", "turbo"]`
+        // (bun → package.json) makes the package.json script win the conflict
+        // that the default tier would award to turbo.
+        let ctx = context(vec![
+            task("build", TaskSource::TurboJson),
+            task("build", TaskSource::PackageJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = tasks_prefer(vec![TaskSource::PackageJson, TaskSource::TurboJson]);
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
+    }
+
+    #[test]
+    fn tasks_prefer_turbo_first_keeps_turbo() {
+        // The inverse order leaves turbo winning — confirms it's the listed
+        // order driving the choice, not a fixed bias.
+        let ctx = context(vec![
+            task("build", TaskSource::TurboJson),
+            task("build", TaskSource::PackageJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = tasks_prefer(vec![TaskSource::TurboJson, TaskSource::PackageJson]);
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::TurboJson);
+    }
+
+    #[test]
+    fn tasks_prefer_is_rank_only_unlisted_sources_still_win_when_alone() {
+        // Rank-only: a task that exists *only* under an unlisted source is
+        // still selected (no hard-reject, unlike the deprecated restrictive
+        // `[task_runner].prefer`).
+        let ctx = context(vec![task("build", TaskSource::Makefile)]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = tasks_prefer(vec![TaskSource::TurboJson]);
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::Makefile);
+    }
+
+    #[test]
+    fn tasks_override_pins_a_specific_name() {
+        // A per-task pin beats the global default for just that name.
+        let ctx = context(vec![
+            task("build", TaskSource::TurboJson),
+            task("build", TaskSource::PackageJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = ResolutionOverrides {
+            task_source_overrides: BTreeMap::from([(
+                "build".to_string(),
+                vec![TaskSource::PackageJson],
+            )]),
+            ..ResolutionOverrides::default()
+        };
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
+    }
+
+    #[test]
+    fn tasks_override_only_affects_the_named_task() {
+        // A pin for `dev` must not move the winner for `build`.
+        let ctx = context(vec![
+            task("build", TaskSource::TurboJson),
+            task("build", TaskSource::PackageJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = ResolutionOverrides {
+            task_source_overrides: BTreeMap::from([(
+                "dev".to_string(),
+                vec![TaskSource::PackageJson],
+            )]),
+            ..ResolutionOverrides::default()
+        };
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::TurboJson);
+    }
+
+    #[test]
+    fn cli_pm_override_outranks_a_per_task_pin() {
+        // Precedence: a forced `--pm`/`RUNNER_PM` (CLI/env) beats a config
+        // `[tasks.overrides]` pin. Here the pin says turbo, but `--pm bun`
+        // pulls package.json to the front.
+        let ctx = context(vec![
+            task("build", TaskSource::TurboJson),
+            task("build", TaskSource::PackageJson),
+        ]);
+        let found: Vec<_> = ctx.tasks.iter().collect();
+        let overrides = ResolutionOverrides {
+            pm: Some(PmOverride {
+                pm: PackageManager::Bun,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            task_source_overrides: BTreeMap::from([(
+                "build".to_string(),
+                vec![TaskSource::TurboJson],
+            )]),
+            ..ResolutionOverrides::default()
+        };
+        let entry = select_task_entry(&ctx, &overrides, &found);
+
+        assert_eq!(entry.source, TaskSource::PackageJson);
     }
 }

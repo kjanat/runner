@@ -9,7 +9,8 @@ use anyhow::{Result, anyhow};
 use super::join_labels;
 use super::policies::{
     is_env_truthy, parse_fallback_label, parse_mismatch_label, parse_prefer_runners,
-    resolve_failure_policy, resolve_fallback_policy, resolve_mismatch_policy,
+    parse_tasks_overrides, parse_tasks_prefer, resolve_failure_policy, resolve_fallback_policy,
+    resolve_mismatch_policy,
 };
 use super::types::{
     DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
@@ -181,7 +182,27 @@ impl ResolutionOverrides {
             sources.on_mismatch.env,
             sources.config,
         )?;
-        let prefer_runners = parse_prefer_runners(sources.config)?;
+        // `[tasks]` (rank-only, PM-aware) supersedes the deprecated
+        // `[task_runner].prefer` (restrictive, runners-only). When the new
+        // section carries anything, the legacy list is ignored entirely — the
+        // config loader has already emitted the deprecation warning.
+        //
+        // "Carries anything" is judged on the *raw* config fields, not the
+        // parsed result: a `[tasks].prefer` entry like `"nx"` is recognized
+        // but resolves to no `TaskSource` (see `resolve_source_label`), so
+        // checking `prefer_sources.is_empty()` would wrongly treat an
+        // explicit-but-source-less `prefer` list as absent and fall through
+        // to the legacy, more restrictive list.
+        let tasks_section_set = sources.config.is_some_and(|c| {
+            !c.config.tasks.prefer.is_empty() || !c.config.tasks.overrides.is_empty()
+        });
+        let prefer_sources = parse_tasks_prefer(sources.config)?;
+        let task_source_overrides = parse_tasks_overrides(sources.config)?;
+        let prefer_runners = if tasks_section_set {
+            Vec::new()
+        } else {
+            parse_prefer_runners(sources.config)?
+        };
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
         let quiet = sources.quiet.cli || sources.quiet.env.is_some_and(is_env_truthy);
@@ -234,6 +255,8 @@ impl ResolutionOverrides {
             pm_by_ecosystem,
             runner,
             prefer_runners,
+            prefer_sources,
+            task_source_overrides,
             fallback,
             on_mismatch,
             no_warnings,

@@ -271,6 +271,19 @@ pub(crate) enum DetectionWarning {
         /// section, `"chain.fast"` for an unknown field within a known one.
         path: String,
     },
+    /// `runner.toml` sets a key that still works but has a supported
+    /// successor. The deprecated key keeps functioning (unless `superseded`,
+    /// in which case the successor it conflicts with takes over) so configs
+    /// never break on upgrade; the warning nudges migration.
+    DeprecatedConfigKey {
+        /// Dotted path to the deprecated key, e.g. `"task_runner.prefer"`.
+        path: String,
+        /// Dotted path to the replacement, e.g. `"tasks.prefer"`.
+        replacement: &'static str,
+        /// `true` when the replacement is also set, so the deprecated key is
+        /// ignored this run; `false` when the deprecated key is still in effect.
+        superseded: bool,
+    },
 }
 
 impl DetectionWarning {
@@ -289,7 +302,7 @@ impl DetectionWarning {
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
             Self::InstallDirCollision { .. } => "install",
-            Self::UnknownConfigKey { .. } => "runner.toml",
+            Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
         }
     }
 
@@ -374,6 +387,23 @@ impl DetectionWarning {
                 "unknown key `{path}` ignored — a typo, or written by a newer runner. This build \
                  doesn't recognize it; the rest of the config still applies.",
             ),
+            Self::DeprecatedConfigKey {
+                path,
+                replacement,
+                superseded,
+            } => {
+                if *superseded {
+                    format!(
+                        "`{path}` is deprecated and ignored here because `{replacement}` is also \
+                         set; remove `{path}`.",
+                    )
+                } else {
+                    format!(
+                        "`{path}` is deprecated; migrate to `{replacement}` (rank-only, and \
+                         accepts package managers). It still applies for now.",
+                    )
+                }
+            }
         }
     }
 }
@@ -723,6 +753,30 @@ impl TaskSource {
             Self::PyprojectScripts => 10,
         }
     }
+}
+
+/// The unified label vocabulary `[tasks].prefer` and `[tasks.overrides]`
+/// accept: task runner labels, then package manager labels, then source
+/// names, deduped. Single source of truth for both the resolver
+/// (`resolver::policies::resolve_source_label`) and anything that needs to
+/// advertise the same closed set (editor completion, the JSON Schema).
+pub(crate) fn task_source_labels() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    let mut push = |label: &'static str| {
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    };
+    for runner in TaskRunner::all() {
+        push(runner.label());
+    }
+    for pm in PackageManager::all() {
+        push(pm.label());
+    }
+    for source in TaskSource::all() {
+        push(source.label());
+    }
+    out
 }
 
 /// Does `current` satisfy the `expected` version constraint?

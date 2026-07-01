@@ -339,9 +339,20 @@ extra setup.
 node   = "pnpm"  # npm | pnpm | yarn | bun | deno
 python = "uv"    # uv | poetry | pipenv
 
-# Restrict and rank task runners for ambiguous task names.
-[task_runner]
-prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
+# Prefer which source runs an ambiguous task name (one that exists under more
+# than one source — e.g. a package.json script AND a turbo task). Labels are
+# task runners, package managers (bun, npm, ... map to package.json), or source
+# names (package.json). Rank-only: unlisted sources still run. An explicit
+# qualifier (package.json:test), --runner, or --pm still outranks these.
+[tasks]
+prefer    = ["turbo", "bun"]                  # global order: turbo, then package.json
+overrides = { dev = "bun", build = "turbo" }  # per-task pins beat the order
+
+# Deprecated — superseded by [tasks] above. Legacy ranked allow-list of task
+# runners that also *restricts* candidates (a same-named task under an unlisted
+# runner is rejected). Still honored for existing configs, with a warning.
+# [task_runner]
+# prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
 
 # Restrict which detected package managers `runner install` runs. Empty/absent
 # installs every detected PM. In a polyglot repo where both bun and deno would
@@ -386,6 +397,38 @@ Unknown keys are rejected at parse time. Every field is optional; omit a
 section to keep its defaults. A committed JSON Schema lives at
 [`schemas/runner.toml.schema.json`](schemas/runner.toml.schema.json) for
 editor autocompletion.
+
+### Editor support (language server)
+
+`runner` ships a language server for `runner.toml`:
+
+```sh
+cargo install runner-run   # or build locally: cargo build
+runner lsp                  # speaks LSP over stdio
+```
+
+It provides, reusing the same logic the CLI uses:
+
+- **diagnostics** — the exact `runner config validate` checks (syntax, unknown
+  keys, bad package-manager / runner / source labels, conflicting policies) plus
+  deprecation hints, live as you type;
+- **hover** — section and field documentation, sourced from the JSON Schema;
+- **completion** — section names, field names, and value sets (package managers,
+  the `[tasks]` runner/PM/source labels, policy enums, booleans).
+
+Point your editor's generic LSP client at `runner lsp` for files named
+`runner.toml`. Example (Neovim):
+
+```lua
+vim.lsp.start({
+  name = "runner",
+  cmd = { "runner", "lsp" },
+  root_dir = vim.fs.dirname(vim.fs.find({ "runner.toml" }, { upward = true })[1]),
+})
+```
+
+For schema-only autocompletion without the server, the `#:schema` directive that
+`runner config init` writes is enough for editors with a TOML language server.
 
 ## Supported Ecosystems
 

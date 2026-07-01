@@ -15,6 +15,40 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.16.0] - 2026-07-01
+
+### Added
+
+- Editor language server (`runner lsp`, built with `--features lsp`): a stdio LSP
+  for `runner.toml` providing live **diagnostics** (the same checks as
+  `runner config validate`, plus deprecation hints), **hover** docs sourced from
+  the JSON Schema, and **completion** of section names, field names, and value
+  sets (package managers, the `[tasks]` runner/PM/source labels, policy enums,
+  booleans). The validation, schema docs, and label vocabulary are reused from
+  the CLI, so editor feedback never drifts from `runner` itself.
+- `[tasks]` section in `runner.toml` for a persistent, declarative preference
+  over which source runs an ambiguous task name (one that exists under more than
+  one source — e.g. a `package.json` script *and* a `turbo` task). Previously
+  this could only be expressed per-invocation (`package.json:build`,
+  `--pm bun`, `--runner turbo`).
+  - `[tasks].prefer` — a rank-only global order. Labels may be task runners
+    (`turbo`, `make`, …), package managers (`bun`, `npm`, … map to
+    `package.json`; `deno` → `deno.json` then `package.json`), or source names
+    (`package.json`). Unlike the old `[task_runner].prefer`, it never
+    hard-rejects an unlisted source — it only reorders ties.
+  - `[tasks.overrides]` — per-task pins, e.g. `build = "turbo"`, `dev = "bun"`,
+    that beat the global order for those names.
+  - An explicit `source:task` qualifier, `--runner`, or `--pm`/`RUNNER_PM` still
+    outranks these file settings.
+
+### Deprecated
+
+- `[task_runner].prefer` is deprecated in favor of `[tasks].prefer`. Existing
+  configs keep working with their original restrictive behavior and now emit a
+  migration warning; when both sections are set, `[tasks]` takes over. The key
+  is flagged `deprecated` in the committed JSON Schema; `runner config init`
+  keeps a commented migration stub.
+
 ## [0.15.0] - 2026-06-29
 
 ### Added
@@ -762,7 +796,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   fires in parallel with binary builds and no longer waits on the npm
   publish chain to complete first. `release.yml` gains a final
   `publish-release` job that flips the draft GitHub release to
-  published once binaries and the `npm-dist` artifact land — this is
+  published once binaries and the `dist` artifact land — this is
   now the natural pivot of the release lifecycle and drives
   `npm-release.yml` via `release: published`. `npm-release.yml`
   drops its `workflow_run` trigger (and the draft-flip side job that
@@ -1452,7 +1486,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/kjanat/runner/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/kjanat/runner/compare/v0.14.3...v0.15.0
 [0.14.3]: https://github.com/kjanat/runner/compare/v0.14.2...v0.14.3
 [0.14.2]: https://github.com/kjanat/runner/compare/v0.14.1...v0.14.2

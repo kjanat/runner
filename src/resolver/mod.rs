@@ -1112,6 +1112,196 @@ mod tests {
         assert!(msg.contains("zoot"), "got: {msg}");
     }
 
+    fn config_with_tasks(tasks: crate::config::TasksSection) -> LoadedConfig {
+        LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
+            config: RunnerConfig {
+                tasks,
+                ..RunnerConfig::default()
+            },
+        }
+    }
+
+    #[test]
+    fn tasks_prefer_parses_pm_and_runner_labels() {
+        use crate::config::TasksSection;
+        use crate::types::TaskSource;
+
+        let loaded = config_with_tasks(TasksSection {
+            prefer: vec!["bun".to_string(), "turbo".to_string()],
+            ..TasksSection::default()
+        });
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("tasks.prefer of known labels should parse");
+
+        // `bun` (a package manager) maps to its package.json source; `turbo`
+        // (a runner) to turbo.json — proving the unified label vocabulary.
+        assert_eq!(
+            overrides.prefer_sources,
+            vec![TaskSource::PackageJson, TaskSource::TurboJson],
+        );
+        // The deprecated list is left empty when `[tasks]` drives selection.
+        assert!(overrides.prefer_runners.is_empty());
+    }
+
+    #[test]
+    fn tasks_prefer_expands_deno_to_both_its_sources() {
+        use crate::config::TasksSection;
+        use crate::types::TaskSource;
+
+        let loaded = config_with_tasks(TasksSection {
+            prefer: vec!["deno".to_string()],
+            ..TasksSection::default()
+        });
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("deno should parse");
+
+        assert_eq!(
+            overrides.prefer_sources,
+            vec![TaskSource::DenoJson, TaskSource::PackageJson],
+        );
+    }
+
+    #[test]
+    fn tasks_prefer_rejects_unknown_label() {
+        use crate::config::TasksSection;
+
+        let loaded = config_with_tasks(TasksSection {
+            prefer: vec!["zoot".to_string()],
+            ..TasksSection::default()
+        });
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect_err("unknown source label must error at parse time");
+
+        let msg = format!("{err}");
+        assert!(msg.contains("[tasks].prefer"), "got: {msg}");
+        assert!(msg.contains("unknown source"), "got: {msg}");
+        assert!(msg.contains("zoot"), "got: {msg}");
+    }
+
+    #[test]
+    fn tasks_section_supersedes_deprecated_task_runner_prefer() {
+        use crate::config::{TaskRunnerSection, TasksSection};
+        use crate::types::TaskSource;
+
+        let loaded = LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
+            config: RunnerConfig {
+                task_runner: TaskRunnerSection {
+                    prefer: vec!["just".to_string()],
+                },
+                tasks: TasksSection {
+                    prefer: vec!["turbo".to_string()],
+                    ..TasksSection::default()
+                },
+                ..RunnerConfig::default()
+            },
+        };
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("config should parse");
+
+        // `[tasks]` wins; the legacy restrictive list is dropped entirely.
+        assert_eq!(overrides.prefer_sources, vec![TaskSource::TurboJson]);
+        assert!(overrides.prefer_runners.is_empty());
+    }
+
+    #[test]
+    fn tasks_prefer_of_a_sourceless_label_still_supersedes_legacy_prefer() {
+        use crate::config::{TaskRunnerSection, TasksSection};
+
+        // `nx` is a recognized runner label that resolves to no `TaskSource`
+        // (it has nothing extractable), so `[tasks].prefer` parses to an
+        // empty `Vec`. That must not be mistaken for "`[tasks]` unset" and
+        // fall back to the deprecated, more restrictive `[task_runner]`.
+        let loaded = LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
+            config: RunnerConfig {
+                task_runner: TaskRunnerSection {
+                    prefer: vec!["just".to_string()],
+                },
+                tasks: TasksSection {
+                    prefer: vec!["nx".to_string()],
+                    ..TasksSection::default()
+                },
+                ..RunnerConfig::default()
+            },
+        };
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("config should parse");
+
+        assert!(overrides.prefer_sources.is_empty());
+        assert!(overrides.prefer_runners.is_empty());
+    }
+
+    #[test]
+    fn tasks_overrides_parse_into_per_task_pins() {
+        use std::collections::BTreeMap;
+
+        use crate::config::TasksSection;
+        use crate::types::TaskSource;
+
+        let loaded = config_with_tasks(TasksSection {
+            prefer: Vec::new(),
+            overrides: BTreeMap::from([
+                ("build".to_string(), "turbo".to_string()),
+                ("dev".to_string(), "bun".to_string()),
+            ]),
+        });
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("overrides should parse");
+
+        assert_eq!(
+            overrides.task_source_overrides.get("build"),
+            Some(&vec![TaskSource::TurboJson]),
+        );
+        assert_eq!(
+            overrides.task_source_overrides.get("dev"),
+            Some(&vec![TaskSource::PackageJson]),
+        );
+    }
+
+    #[test]
+    fn tasks_overrides_reject_a_label_with_no_task_source() {
+        use std::collections::BTreeMap;
+
+        use crate::config::TasksSection;
+
+        // `nx` is a known runner but has no extractable task source, so it
+        // can't be pinned to.
+        let loaded = config_with_tasks(TasksSection {
+            prefer: Vec::new(),
+            overrides: BTreeMap::from([("build".to_string(), "nx".to_string())]),
+        });
+        let err = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect_err("a pin to a sourceless runner must error");
+
+        assert!(format!("{err}").contains("no task source"), "got: {err}");
+    }
+
     #[test]
     fn on_mismatch_label_parses_three_values() {
         use super::MismatchPolicy;

@@ -1164,6 +1164,7 @@ mod tests {
 
         assert_eq!(json["kind"], "runner.doctor");
         assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["overrides"]["quiet"], serde_json::json!(false));
         assert!(
             json["$schema"]
                 .as_str()

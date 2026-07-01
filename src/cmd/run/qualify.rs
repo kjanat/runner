@@ -218,7 +218,7 @@ mod tests {
 
     use super::precheck_task;
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{ProjectContext, TaskRunner};
+    use crate::types::{ProjectContext, TaskRunner, TaskSource};
 
     fn context() -> ProjectContext {
         ProjectContext {
@@ -266,5 +266,18 @@ mod tests {
             format!("{err:#}").contains("[task_runner].prefer matched no candidate"),
             "expected a runner-constraint error, got: {err:#}",
         );
+    }
+
+    #[test]
+    fn precheck_does_not_restrict_under_tasks_prefer() {
+        // `[tasks].prefer` is rank-only: unlike the deprecated restrictive
+        // `[task_runner].prefer`, a prefix-less miss under it must NOT fail
+        // precheck — nothing is hard-rejected, it only reorders.
+        let overrides = ResolutionOverrides {
+            prefer_sources: vec![TaskSource::TurboJson],
+            ..ResolutionOverrides::default()
+        };
+        precheck_task(&context(), &overrides, "gen")
+            .expect("[tasks].prefer must not restrict candidates");
     }
 }

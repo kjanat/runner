@@ -2,7 +2,7 @@
 
 [package]
 name          = "runner-run"
-version       = "0.15.0"
+version       = "0.16.0"
 edition       = "2024"
 rust-version  = "1.95"
 description   = "Universal project task runner"
@@ -67,6 +67,14 @@ version          = "0.1"
 default-features = false
 optional         = true
 
+[dependencies.lsp-server]
+version  = "0.8"
+optional = true
+
+[dependencies.lsp-types]
+version  = "0.97"
+optional = true
+
 [dependencies.schemars]
 version  = "1.2"
 optional = true
@@ -94,7 +102,10 @@ default-features = false
 features         = ["parse", "serde"]
 
 [features]
-default            = ["run"]
+default            = ["lsp", "run"]
+# Editor language server (`runner lsp`): hover, completion, and diagnostics for
+# runner.toml. Pulls in `schema` to reuse field docs as the single source of truth.
+lsp                = ["dep:lsp-server", "dep:lsp-types", "schema"]
 man                = ["dep:clap_mangen"]
 run                = []
 schema             = ["dep:json-schema-sort", "dep:schemars"]

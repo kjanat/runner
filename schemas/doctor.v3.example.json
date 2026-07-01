@@ -23,7 +23,7 @@
   "runner": {
     "binary": "/usr/local/bin/runner",
     "name": "runner",
-    "version": "0.15.0",
+    "version": "0.16.0",
     "schema_versions": {
       "doctor": 3,
       "list": 2,
@@ -44,6 +44,7 @@
     "pm": null,
     "pm_by_ecosystem": {},
     "prefer_runners": [],
+    "quiet": false,
     "runner": null
   },
   "ecosystems": [
