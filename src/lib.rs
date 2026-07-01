@@ -189,7 +189,7 @@ where
     // The language server parses each editor buffer itself and needs neither a
     // resolved project dir nor detection — handle it before either can bail.
     #[cfg(feature = "lsp")]
-    if matches!(cli.command, Some(cli::Command::Lsp)) {
+    if matches!(cli.command.as_ref(), Some(cli::Command::Lsp)) {
         return cmd::lsp::run();
     }
     let project_dir = resolve_project_dir(
