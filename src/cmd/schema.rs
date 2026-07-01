@@ -140,6 +140,7 @@ fn output_schema<T: JsonSchema>(command: &'static str, version: u32) -> Result<V
     );
     patch_schema_version_const(&mut schema, version);
     patch_source_schema(&mut schema, version);
+    patch_schema_compat(&mut schema, command, version);
     Ok(schema)
 }
 
@@ -199,6 +200,27 @@ fn patch_source_schema(schema: &mut Value, version: u32) {
     patch_why_candidate_source(defs);
     patch_why_task_v3(defs);
     patch_def_field(defs, "SourceV3", "kind", "TaskSourceLabel");
+}
+
+fn patch_schema_compat(schema: &mut Value, command: &str, version: u32) {
+    if command == "doctor" && version == 3 {
+        // v3 existed before `quiet`; keep additive fields optional so the
+        // current public schema still validates older v3 payloads.
+        remove_required_def_field(schema, "OverridesV3", "quiet");
+    }
+}
+
+fn remove_required_def_field(schema: &mut Value, def_name: &'static str, field: &'static str) {
+    let Some(required) = schema
+        .get_mut("$defs")
+        .and_then(Value::as_object_mut)
+        .and_then(|defs| defs.get_mut(def_name))
+        .and_then(|definition| definition.get_mut("required"))
+        .and_then(Value::as_array_mut)
+    else {
+        return;
+    };
+    required.retain(|name| name.as_str() != Some(field));
 }
 
 fn patch_task_info_source(defs: &mut Map<String, Value>) {
@@ -320,5 +342,65 @@ fn description(command: &str, version: u32) -> String {
                           and diagnostics."
             .to_string(),
         _ => format!("JSON schema for `{}`.", title(command, version)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::output_schema;
+
+    fn overrides_v3(schema: &Value) -> &Value {
+        schema
+            .get("$defs")
+            .and_then(Value::as_object)
+            .and_then(|defs| defs.get("OverridesV3"))
+            .expect("schema should define OverridesV3")
+    }
+
+    fn quiet_is_optional(schema: &Value) -> bool {
+        overrides_v3(schema)
+            .get("required")
+            .and_then(Value::as_array)
+            .is_some_and(|required| !required.iter().any(|name| name.as_str() == Some("quiet")))
+    }
+
+    fn quiet_type(schema: &Value) -> Option<&str> {
+        overrides_v3(schema)
+            .get("properties")
+            .and_then(Value::as_object)
+            .and_then(|properties| properties.get("quiet"))
+            .and_then(|quiet| quiet.get("type"))
+            .and_then(Value::as_str)
+    }
+
+    #[test]
+    fn doctor_v3_schema_keeps_quiet_optional_for_compat() {
+        let schema =
+            output_schema::<crate::schema::doctor_v3::DoctorReportV3<'static>>("doctor", 3)
+                .expect("doctor v3 schema should render");
+
+        assert!(quiet_is_optional(&schema));
+        assert_eq!(quiet_type(&schema), Some("boolean"));
+    }
+
+    #[test]
+    fn committed_doctor_v3_schema_keeps_quiet_optional_for_compat() {
+        let raw = std::fs::read_to_string("schemas/doctor.v3.schema.json")
+            .expect("committed doctor v3 schema should be readable");
+        let schema: Value = serde_json::from_str(&raw).expect("schema should parse as JSON");
+
+        assert!(quiet_is_optional(&schema));
+        assert_eq!(quiet_type(&schema), Some("boolean"));
+    }
+
+    #[test]
+    fn committed_doctor_v3_example_includes_quiet_override() {
+        let raw = std::fs::read_to_string("schemas/doctor.v3.example.json")
+            .expect("committed doctor v3 example should be readable");
+        let example: Value = serde_json::from_str(&raw).expect("example should parse as JSON");
+
+        assert_eq!(example["overrides"]["quiet"], serde_json::json!(false));
     }
 }

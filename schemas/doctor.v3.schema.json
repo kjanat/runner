@@ -311,7 +311,6 @@
         "pm",
         "pm_by_ecosystem",
         "prefer_runners",
-        "quiet",
         "runner"
       ],
       "properties": {

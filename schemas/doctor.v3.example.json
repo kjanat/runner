@@ -44,6 +44,7 @@
     "pm": null,
     "pm_by_ecosystem": {},
     "prefer_runners": [],
+    "quiet": false,
     "runner": null
   },
   "ecosystems": [

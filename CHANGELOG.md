@@ -46,8 +46,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `[task_runner].prefer` is deprecated in favor of `[tasks].prefer`. Existing
   configs keep working with their original restrictive behavior and now emit a
   migration warning; when both sections are set, `[tasks]` takes over. The key
-  is flagged `deprecated` in the committed JSON Schema, and `runner config init`
-  no longer scaffolds it.
+  is flagged `deprecated` in the committed JSON Schema; `runner config init`
+  keeps a commented migration stub.
 
 ## [0.15.0] - 2026-06-29
 
