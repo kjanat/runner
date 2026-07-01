@@ -6,7 +6,12 @@
  * - every per-platform package listed in `npm/targets.json`
  *
  * Native binary tarballs are read from `npm/downloads/` by default. CI usually
- * populates that directory with `gh release download`.
+ * populates that directory with `gh release download`. Outside CI (no
+ * `GITHUB_ACTIONS=true`), a dev machine only ever has native binaries for its
+ * own host, so a bare local run: builds the host's own tarball with
+ * `cargo bbr` if it's missing, and treats every other target's missing
+ * tarball as skippable (same as `--skip-missing`) instead of failing — a
+ * plain `build-packages` "just works" for whatever platform you're on.
  *
  * Usage:
  *
@@ -16,7 +21,7 @@
  *   node npm/scripts/build-packages.ts --downloads=/tmp/artifacts
  */
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix, resolve } from "node:path";
 import { argv, env, exit, stderr, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
@@ -348,6 +353,16 @@ interface BuildOptions {
 	downloadsDir: string;
 	/** Dir of `*.1` man pages to ship in the facade; `null` to skip. */
 	manDir: string | null;
+	/**
+	 * `true` outside CI: a missing tarball for a *non-host* target is treated
+	 * as skippable (a dev machine can't produce it without cross-compiling),
+	 * and a missing tarball for the *host* target is built on demand instead
+	 * of failing. `false` in CI, where every target's tarball is expected to
+	 * already exist via `gh release download` and a miss is a real problem.
+	 */
+	local: boolean;
+	/** This machine's Rust target triple (`rustc --print host-tuple`), or `null` if `rustc` isn't on `PATH`. */
+	hostTriple: string | null;
 }
 
 interface TarEntry {
@@ -382,8 +397,19 @@ function errorCode(error: unknown): string | undefined {
 }
 
 /**
- * Run `fn` inside a GitHub Actions log group when executing under Actions
- * (`GITHUB_ACTIONS=true`); otherwise just run `fn` with no extra output.
+ * Whether this run is executing under GitHub Actions (`GITHUB_ACTIONS=true`).
+ * CI is the only environment where every platform's tarball is expected to
+ * already exist (via `gh release download`), so it's also the flag used to
+ * decide whether a missing tarball is a hard failure or something a local
+ * dev run can build or skip.
+ */
+function isCi(): boolean {
+	return env.GITHUB_ACTIONS === "true";
+}
+
+/**
+ * Run `fn` inside a GitHub Actions log group when executing under Actions;
+ * otherwise just run `fn` with no extra output.
  *
  * Emits `::group::<title>` before and `::endgroup::` after, even on throw,
  * so each per-package build collapses cleanly in the workflow log without
@@ -394,7 +420,7 @@ function errorCode(error: unknown): string | undefined {
  * @returns Whatever `fn` resolves to
  */
 async function withLogGroup<T>(title: string, fn: () => Promise<T>): Promise<T> {
-	const inActions = env.GITHUB_ACTIONS === "true";
+	const inActions = isCi();
 	if (inActions) stdout.write(`::group::${title}\n`);
 	try {
 		return await fn();
@@ -432,7 +458,21 @@ function readOptions(defaultVersion: string): BuildOptions {
 		skipMissing: values["skip-missing"] ?? false,
 		downloadsDir: values.downloads ? resolve(values.downloads) : join(npmDir, "downloads"),
 		manDir: values["man-dir"] ? resolve(values["man-dir"]) : null,
+		local: !isCi(),
+		hostTriple: hostRustTriple(),
 	};
+}
+
+/**
+ * The current machine's Rust target triple, via `rustc --print host-tuple`.
+ * Used to tell which `npm/targets.json` entry is buildable locally without
+ * cross-compiling.
+ *
+ * @returns The host triple, or `null` if `rustc` isn't on `PATH` or fails.
+ */
+function hostRustTriple(): string | null {
+	const result = spawnSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" });
+	return result.status === 0 ? result.stdout.trim() : null;
 }
 
 /**
@@ -552,6 +592,49 @@ async function stageManPages(dest: string, manDir: string | null): Promise<strin
 }
 
 /**
+ * Build the host's own release binaries with `cargo bbr` and pack them into
+ * the tarball `buildPlatformPackage` expects, so a bare local `build-packages`
+ * run works without a prior `gh release download` or `just test-release`.
+ *
+ * @param matrix - Build matrix; `matrix.binaries` names the expected binaries
+ * @param target - The host-matching target to build a tarball for
+ * @param version - Release version, used to name the produced tarball
+ * @param downloadsDir - Directory the tarball is written into
+ * @throws If `cargo bbr` fails, an expected release binary is missing afterward, or `tar` fails
+ */
+async function buildHostTarball(
+	matrix: Matrix,
+	target: Target,
+	version: string,
+	downloadsDir: string,
+): Promise<void> {
+	console.log(`→ no tarball for host target ${target.rust}; building it with \`cargo bbr\``);
+
+	const build = spawnSync("cargo", ["bbr"], { cwd: repoDir, stdio: "inherit" });
+	if (build.status !== 0) {
+		throw new Error(`cargo bbr failed while building the host tarball for ${target.rust}`);
+	}
+
+	const releaseDir = join(repoDir, "target", "release");
+	const fileNames = matrix.binaries.map((name) => (target.os.includes("win32") ? `${name}.exe` : name));
+	for (const fileName of fileNames) {
+		const path = join(releaseDir, fileName);
+		await access(path).catch(() => {
+			throw new Error(`expected ${path} to exist after cargo bbr`);
+		});
+	}
+
+	await mkdir(downloadsDir, { recursive: true });
+	const tarball = tarballPath(downloadsDir, version, target);
+	const packed = spawnSync("tar", ["czf", tarball, "-C", releaseDir, ...fileNames]);
+	if (packed.status !== 0) {
+		throw new Error(
+			`tar failed while packing the host tarball for ${target.rust}: ${(packed.stderr ?? "").toString().trim()}`,
+		);
+	}
+}
+
+/**
  * Builds a platform-specific npm package directory by extracting required
  * binaries and writing package files.
  *
@@ -562,10 +645,10 @@ async function stageManPages(dest: string, manDir: string | null): Promise<strin
  *
  * @param matrix - Build matrix describing the facade and the list of binary names to include
  * @param target - Platform target definition used to name the package and determine file names and metadata
- * @param opts - Runtime build options (version, downloads directory, skipMissing behavior)
+ * @param opts - Runtime build options (version, downloads directory, skipMissing behavior, host auto-build)
  * @param meta - Partial npm metadata derived from the Cargo manifest to be merged into the package.json
  * @returns The provided `target` when the package was built successfully, or
- *   `null` when the target was skipped due to a missing tarball or binaries (honoring `opts.skipMissing` or tier 3 targets)
+ *   `null` when the target was skipped due to a missing tarball or binaries (honoring `opts.skipMissing`, tier 3 targets, or a local non-host run)
  */
 async function buildPlatformPackage(
 	matrix: Matrix,
@@ -576,7 +659,8 @@ async function buildPlatformPackage(
 	const packageName = `${matrix.scope}/${target.pkg}`;
 	const dest = join(distDir, target.pkg);
 	const tarball = tarballPath(opts.downloadsDir, opts.version, target);
-	const maySkip = opts.skipMissing || target.tier === 3;
+	const maySkip = opts.skipMissing || target.tier === 3 || opts.local;
+	const isHost = opts.local && opts.hostTriple === target.rust;
 
 	await mkdir(join(dest, "bin"), { recursive: true });
 
@@ -585,13 +669,16 @@ async function buildPlatformPackage(
 	try {
 		binaries = await extractBinariesFromTarball(tarball, matrix.binaries);
 	} catch (error) {
-		if (maySkip) {
+		if (isHost && errorCode(error) === "ENOENT") {
+			await buildHostTarball(matrix, target, opts.version, opts.downloadsDir);
+			binaries = await extractBinariesFromTarball(tarball, matrix.binaries);
+		} else if (maySkip) {
 			console.warn(`skipping ${packageName}: ${errorCode(error) ?? errorMessage(error)}`);
 			await removePartialPackage(dest);
 			return null;
+		} else {
+			throw new Error(`failed to read ${tarball}: ${errorMessage(error)}`);
 		}
-
-		throw new Error(`failed to read ${tarball}: ${errorMessage(error)}`);
 	}
 
 	const missing = await writePlatformBinaries(dest, matrix.binaries, target, binaries);

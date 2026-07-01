@@ -796,7 +796,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   fires in parallel with binary builds and no longer waits on the npm
   publish chain to complete first. `release.yml` gains a final
   `publish-release` job that flips the draft GitHub release to
-  published once binaries and the `npm-dist` artifact land — this is
+  published once binaries and the `dist` artifact land — this is
   now the natural pivot of the release lifecycle and drives
   `npm-release.yml` via `release: published`. `npm-release.yml`
   drops its `workflow_run` trigger (and the draft-flip side job that
