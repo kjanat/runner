@@ -41,8 +41,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{DetectionWarning, Ecosystem, PackageManager};
 
-/// `runner.toml` filename, expected at the project root.
+/// Canonical config filename, written by `runner config init`. Its dotfile form
+/// (`.` + this) is the hidden variant; both are accepted during discovery.
 pub(crate) const CONFIG_FILENAME: &str = "runner.toml";
+
+/// Directories searched for a config, relative to the loaded directory, highest
+/// precedence first: the directory itself (`""`) and its `.config/` subdir.
+pub(crate) const CONFIG_DIRS: [&str; 2] = ["", ".config"];
 
 /// Starter `runner.toml` scaffolded by `runner config init`. Every knob is
 /// present, set to its built-in default, and commented out — uncommenting a
@@ -460,26 +465,23 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
     warnings
 }
 
-/// Load `dir/runner.toml` if it exists.
+/// Load the project config, searching [`CONFIG_DIRS`] × plain/dotted
+/// [`CONFIG_FILENAME`] in precedence order.
 ///
-/// Returns `Ok(None)` when the file is absent; `Ok(Some(_))` otherwise. The
-/// parse is forward-compatible: unknown sections/fields are tolerated (and
-/// returned as `warnings`) so version skew never aborts the load. Genuine
-/// failures — unreadable file, malformed TOML, or a wrong-typed *known* field
-/// — still propagate as errors.
+/// Returns `Ok(None)` when no candidate exists; `Ok(Some(_))` otherwise, with
+/// `LoadedConfig::path` set to the file actually loaded. The parse is
+/// forward-compatible: unknown sections/fields are tolerated (and returned as
+/// `warnings`) so version skew never aborts the load. Genuine failures —
+/// unreadable file, malformed TOML, or a wrong-typed *known* field — still
+/// propagate as errors.
 ///
 /// # Errors
 ///
-/// Returns an error if the file exists but cannot be read, isn't valid TOML,
-/// or assigns the wrong type to a recognized field.
+/// Returns an error if a candidate file exists but cannot be read, isn't valid
+/// TOML, or assigns the wrong type to a recognized field.
 pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
-    let path = dir.join(CONFIG_FILENAME);
-    let content = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", path.display()));
-        }
+    let Some((path, content)) = read_first_candidate(dir)? else {
+        return Ok(None);
     };
 
     // Parse once into a generic value: it lets us surface unknown keys as
@@ -498,6 +500,38 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
         config,
         warnings,
     }))
+}
+
+/// Read the first config file that exists, searching each [`CONFIG_DIRS`]
+/// directory for the plain then dotted [`CONFIG_FILENAME`]. Directory precedence
+/// is outer, so a config in the directory itself beats one in its `.config/`.
+/// Returns the path and contents; `Ok(None)` when none exist.
+///
+/// # Errors
+///
+/// Propagates any read error other than "not found" (e.g. a permission error),
+/// so a present-but-unreadable config never masquerades as absent.
+fn read_first_candidate(dir: &Path) -> Result<Option<(PathBuf, String)>> {
+    let dotted = format!(".{CONFIG_FILENAME}");
+    let filenames = [CONFIG_FILENAME, dotted.as_str()];
+    for subdir in CONFIG_DIRS {
+        let base = if subdir.is_empty() {
+            dir.to_path_buf()
+        } else {
+            dir.join(subdir)
+        };
+        for filename in filenames {
+            let path = base.join(filename);
+            match fs::read_to_string(&path) {
+                Ok(content) => return Ok(Some((path, content))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| format!("failed to read {}", path.display()));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Migration warnings for config keys that still work but have a supported
@@ -594,6 +628,72 @@ mod tests {
         let result = load(dir.path()).expect("absent file should be Ok(None)");
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn load_discovers_hidden_dotfile() {
+        let dir = TempDir::new("config-hidden");
+        fs::write(dir.path().join(".runner.toml"), "[pm]\nnode = \"npm\"\n")
+            .expect("seed hidden config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect(".runner.toml should be discovered");
+
+        assert!(loaded.path.ends_with(".runner.toml"));
+    }
+
+    #[test]
+    fn load_discovers_config_dir_variant() {
+        let dir = TempDir::new("config-dot-config-dir");
+        fs::create_dir_all(dir.path().join(".config")).expect("mk .config");
+        fs::write(
+            dir.path().join(".config/runner.toml"),
+            "[pm]\nnode = \"npm\"\n",
+        )
+        .expect("seed .config config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect(".config/runner.toml should be discovered");
+
+        assert!(loaded.path.ends_with("runner.toml"));
+        assert!(loaded.path.to_string_lossy().contains(".config"));
+    }
+
+    #[test]
+    fn load_prefers_canonical_over_fallbacks() {
+        let dir = TempDir::new("config-precedence");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n")
+            .expect("seed canonical");
+        fs::write(dir.path().join(".runner.toml"), "[pm]\nnode = \"bun\"\n").expect("seed hidden");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(loaded.path.ends_with(CONFIG_FILENAME));
+        assert_eq!(loaded.config.pm.node.as_deref(), Some("npm"));
+    }
+
+    #[test]
+    fn load_prefers_root_over_config_dir() {
+        let dir = TempDir::new("config-dir-precedence");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n")
+            .expect("seed root config");
+        fs::create_dir_all(dir.path().join(".config")).expect("mk .config");
+        fs::write(
+            dir.path().join(".config/runner.toml"),
+            "[pm]\nnode = \"bun\"\n",
+        )
+        .expect("seed .config config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(!loaded.path.to_string_lossy().contains(".config"));
+        assert_eq!(loaded.config.pm.node.as_deref(), Some("npm"));
     }
 
     #[test]

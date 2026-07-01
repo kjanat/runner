@@ -33,6 +33,8 @@ use lsp_types::{
 };
 use serde_json::Value;
 
+use crate::config::CONFIG_FILENAME;
+
 use self::schema_index::SchemaIndex;
 use self::text::LineIndex;
 
@@ -165,7 +167,6 @@ impl Server {
         Ok(())
     }
 
-    /// Compute and send diagnostics for a document (no-op for non-runner.toml).
     fn publish_diagnostics(&self, connection: &Connection, uri: &Uri) {
         let diagnostics = self
             .documents
@@ -176,7 +177,6 @@ impl Server {
         send_diagnostics(connection, uri.clone(), diagnostics);
     }
 
-    /// Hover handler.
     fn hover(&self, params: &HoverParams) -> Option<lsp_types::Hover> {
         let pos = params.text_document_position_params.position;
         let uri = &params.text_document_position_params.text_document.uri;
@@ -184,7 +184,6 @@ impl Server {
         analysis::hover(&LineIndex::new(text), &self.schema, text, pos)
     }
 
-    /// Completion handler.
     fn completion(&self, params: &CompletionParams) -> Vec<lsp_types::CompletionItem> {
         let pos = params.text_document_position.position;
         let uri = &params.text_document_position.text_document.uri;
@@ -193,6 +192,14 @@ impl Server {
         };
         analysis::completion(&LineIndex::new(text), &self.schema, text, pos)
     }
+}
+
+/// Whether `uri`'s basename is `runner.toml` or its dotfile form, at any depth —
+/// each directory can hold its own config.
+fn is_runner_toml(uri: &Uri) -> bool {
+    uri.path().as_str().rsplit('/').next().is_some_and(|name| {
+        name == CONFIG_FILENAME || name.strip_prefix('.') == Some(CONFIG_FILENAME)
+    })
 }
 
 /// Send a `publishDiagnostics` notification for `uri`.
@@ -208,14 +215,4 @@ fn send_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<lsp_type
             params,
         }));
     }
-}
-
-/// Whether a URI points at a file named `runner.toml` (the only file this
-/// server understands). Keeps it inert if an editor over-eagerly attaches it.
-fn is_runner_toml(uri: &Uri) -> bool {
-    uri.path()
-        .as_str()
-        .rsplit('/')
-        .next()
-        .is_some_and(|name| name == "runner.toml")
 }
