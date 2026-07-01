@@ -1220,6 +1220,38 @@ mod tests {
     }
 
     #[test]
+    fn tasks_prefer_of_a_sourceless_label_still_supersedes_legacy_prefer() {
+        use crate::config::{TaskRunnerSection, TasksSection};
+
+        // `nx` is a recognized runner label that resolves to no `TaskSource`
+        // (it has nothing extractable), so `[tasks].prefer` parses to an
+        // empty `Vec`. That must not be mistaken for "`[tasks]` unset" and
+        // fall back to the deprecated, more restrictive `[task_runner]`.
+        let loaded = LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
+            config: RunnerConfig {
+                task_runner: TaskRunnerSection {
+                    prefer: vec!["just".to_string()],
+                },
+                tasks: TasksSection {
+                    prefer: vec!["nx".to_string()],
+                    ..TasksSection::default()
+                },
+                ..RunnerConfig::default()
+            },
+        };
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("config should parse");
+
+        assert!(overrides.prefer_sources.is_empty());
+        assert!(overrides.prefer_runners.is_empty());
+    }
+
+    #[test]
     fn tasks_overrides_parse_into_per_task_pins() {
         use std::collections::BTreeMap;
 

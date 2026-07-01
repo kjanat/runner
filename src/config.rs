@@ -509,11 +509,19 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
 pub(crate) fn deprecation_warnings(config: &RunnerConfig) -> Vec<DetectionWarning> {
     let mut out = Vec::new();
     if !config.task_runner.prefer.is_empty() {
-        let superseded = !config.tasks.prefer.is_empty() || !config.tasks.overrides.is_empty();
+        let prefer_set = !config.tasks.prefer.is_empty();
+        let overrides_set = !config.tasks.overrides.is_empty();
+        // Name whichever `[tasks]` knob actually superseded this run, so the
+        // message never claims `tasks.prefer` is set when only `overrides` is.
+        let replacement = if overrides_set && !prefer_set {
+            "tasks.overrides"
+        } else {
+            "tasks.prefer"
+        };
         out.push(DetectionWarning::DeprecatedConfigKey {
             path: "task_runner.prefer".to_string(),
-            replacement: "tasks.prefer",
-            superseded,
+            replacement,
+            superseded: prefer_set || overrides_set,
         });
     }
     out
@@ -636,6 +644,33 @@ mod tests {
                 }
             )),
             "expected a superseded deprecation warning, got: {:?}",
+            loaded.warnings,
+        );
+    }
+
+    #[test]
+    fn tasks_overrides_alone_names_itself_as_the_replacement() {
+        let dir = TempDir::new("config-deprecated-overrides-only");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[task_runner]\nprefer = [\"turbo\"]\n\n[tasks.overrides]\nbuild = \"bun\"\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                DetectionWarning::DeprecatedConfigKey {
+                    superseded: true,
+                    replacement: "tasks.overrides",
+                    ..
+                }
+            )),
+            "expected the warning to name tasks.overrides, got: {:?}",
             loaded.warnings,
         );
     }

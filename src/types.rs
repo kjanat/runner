@@ -755,6 +755,30 @@ impl TaskSource {
     }
 }
 
+/// The unified label vocabulary `[tasks].prefer` and `[tasks.overrides]`
+/// accept: task runner labels, then package manager labels, then source
+/// names, deduped. Single source of truth for both the resolver
+/// (`resolver::policies::resolve_source_label`) and anything that needs to
+/// advertise the same closed set (editor completion, the JSON Schema).
+pub(crate) fn task_source_labels() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    let mut push = |label: &'static str| {
+        if !out.contains(&label) {
+            out.push(label);
+        }
+    };
+    for runner in TaskRunner::all() {
+        push(runner.label());
+    }
+    for pm in PackageManager::all() {
+        push(pm.label());
+    }
+    for source in TaskSource::all() {
+        push(source.label());
+    }
+    out
+}
+
 /// Does `current` satisfy the `expected` version constraint?
 ///
 /// `expected` accepts the node-semver range grammar found in `.nvmrc`,

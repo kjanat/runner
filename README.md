@@ -400,11 +400,11 @@ editor autocompletion.
 
 ### Editor support (language server)
 
-A build with the `lsp` feature ships a language server for `runner.toml`:
+`runner` ships a language server for `runner.toml`:
 
 ```sh
-cargo install runner-run --features lsp   # or build locally: cargo build --features lsp
-runner lsp                                 # speaks LSP over stdio
+cargo install runner-run   # or build locally: cargo build
+runner lsp                  # speaks LSP over stdio
 ```
 
 It provides, reusing the same logic the CLI uses:

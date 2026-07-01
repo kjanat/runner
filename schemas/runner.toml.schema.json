@@ -184,14 +184,60 @@
           "description": "Per-task pins that override [`Self::prefer`] for specific names:\n`overrides = { dev = \"bun\", build = \"turbo\" }`. A pin to a source the\ntask doesn't have falls through to the normal ranking (no hard error).",
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "turbo",
+              "nx",
+              "make",
+              "just",
+              "task",
+              "mise",
+              "bacon",
+              "npm",
+              "yarn",
+              "pnpm",
+              "bun",
+              "cargo",
+              "deno",
+              "uv",
+              "poetry",
+              "pipenv",
+              "go",
+              "bundler",
+              "composer",
+              "package.json",
+              "pyproject.toml"
+            ]
           }
         },
         "prefer": {
           "description": "Global tie-break order for ambiguous task names, highest priority\nfirst. Listed sources win over unlisted ones (which still run as\nlower-priority fallbacks). E.g. `prefer = [\"turbo\", \"bun\"]` makes a\n`turbo` task win, then a `package.json` script, then everything else.",
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "turbo",
+              "nx",
+              "make",
+              "just",
+              "task",
+              "mise",
+              "bacon",
+              "npm",
+              "yarn",
+              "pnpm",
+              "bun",
+              "cargo",
+              "deno",
+              "uv",
+              "poetry",
+              "pipenv",
+              "go",
+              "bundler",
+              "composer",
+              "package.json",
+              "pyproject.toml"
+            ]
           }
         }
       },

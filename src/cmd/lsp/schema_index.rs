@@ -25,6 +25,9 @@ pub(super) struct FieldDoc {
     pub enum_values: Vec<String>,
     /// Whether the schema flags the field as deprecated.
     pub deprecated: bool,
+    /// Whether the schema types this field as an object (a nested table
+    /// writable as its own `[section.field]` header, e.g. `[tasks.overrides]`).
+    pub is_table: bool,
 }
 
 /// Section docs keyed by TOML section name (`pm`, `tasks`, …).
@@ -68,9 +71,21 @@ impl SchemaIndex {
         self.sections.get(name)
     }
 
-    /// Every section name, sorted, for top-level completion.
-    pub(super) fn section_names(&self) -> impl Iterator<Item = &str> {
-        self.sections.keys().map(String::as_str)
+    /// Every header path a `[...]` line can name: top-level section names plus
+    /// `section.field` for each object-typed field (a nested table, e.g.
+    /// `tasks.overrides`), sorted.
+    pub(super) fn header_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        for (name, doc) in &self.sections {
+            paths.push(name.clone());
+            for (field, field_doc) in &doc.fields {
+                if field_doc.is_table {
+                    paths.push(format!("{name}.{field}"));
+                }
+            }
+        }
+        paths.sort();
+        paths
     }
 }
 
@@ -98,10 +113,21 @@ fn field_docs(def: &Value) -> BTreeMap<String, FieldDoc> {
                     description: string_field(schema, "description"),
                     enum_values,
                     deprecated: schema.get("deprecated").and_then(Value::as_bool) == Some(true),
+                    is_table: is_object_type(schema),
                 },
             )
         })
         .collect()
+}
+
+/// Whether a field schema declares (possibly among other types, for an
+/// `Option<T>`) the JSON `"object"` type.
+fn is_object_type(schema: &Value) -> bool {
+    match schema.get("type") {
+        Some(Value::String(s)) => s == "object",
+        Some(Value::Array(types)) => types.iter().any(|t| t.as_str() == Some("object")),
+        _ => false,
+    }
 }
 
 /// Read a string field from a JSON object, if present.

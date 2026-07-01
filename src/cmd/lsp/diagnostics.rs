@@ -116,11 +116,25 @@ fn range_for_path(text: &str, index: &LineIndex, path: &str) -> Option<Range> {
 
 /// Best-effort anchor for a resolver error: most messages begin with a
 /// `[section].field` or `[section]` reference, e.g. `[tasks].prefer: …` or
-/// `[pm].node: …`. Parse that leading reference and map it to a range.
+/// `[pm].node: …`. `[tasks.overrides]` entries instead read `[tasks.overrides]
+/// "task": …` (the entry key is user-chosen, not a schema field), so that form
+/// is checked first. Parse whichever leading reference is present and map it
+/// to a range.
 fn anchor_from_message(text: &str, index: &LineIndex, message: &str) -> Option<Range> {
     let rest = message.strip_prefix('[')?;
     let (section, rest) = rest.split_once(']')?;
     let section = section.trim();
+
+    if let Some(key) = rest
+        .trim_start()
+        .strip_prefix('"')
+        .and_then(|tail| tail.split_once('"'))
+        .map(|(key, _)| key)
+        && let Some(range) = find_key_range(index, text, Some(section), key)
+    {
+        return Some(range);
+    }
+
     let field = rest
         .strip_prefix('.')
         .map(|tail| {
@@ -190,5 +204,16 @@ mod tests {
                 .iter()
                 .any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         );
+    }
+
+    #[test]
+    fn tasks_overrides_error_anchors_to_the_offending_entry() {
+        let text = "[tasks.overrides]\nbuild = \"zoot\"\n";
+        let found = diagnostics(text);
+        let diag = found
+            .iter()
+            .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .expect("expected an error diagnostic");
+        assert_eq!(diag.range.start.line, 1, "{diag:?}");
     }
 }

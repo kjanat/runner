@@ -77,8 +77,9 @@ impl LineIndex {
         }
     }
 
-    /// The [`Range`] covering line `line` (its content, excluding the newline).
-    /// An out-of-bounds line yields a zero-width range at the document end.
+    /// The [`Range`] covering line `line` (its content, excluding the newline,
+    /// and a preceding `\r` on CRLF buffers). An out-of-bounds line yields a
+    /// zero-width range at the document end.
     pub(super) fn line_range(&self, text: &str, line: usize) -> Range {
         let Some(&start) = self.line_starts.get(line) else {
             let end = self.position(text, self.len);
@@ -88,6 +89,11 @@ impl LineIndex {
             .line_starts
             .get(line + 1)
             .map_or(self.len, |&next| next.saturating_sub(1));
+        let end = if end > start && text.as_bytes()[end - 1] == b'\r' {
+            end - 1
+        } else {
+            end
+        };
         self.range(text, start, end)
     }
 }
@@ -175,5 +181,17 @@ mod tests {
         assert!(find_key_range(&index, text, Some("pm"), "node").is_some());
         // Same key, wrong section → no match.
         assert!(find_key_range(&index, text, Some("tasks"), "node").is_none());
+    }
+
+    #[test]
+    fn line_range_excludes_trailing_carriage_return() {
+        let text = "[pm]\r\nnode = \"bun\"\r\n";
+        let index = LineIndex::new(text);
+        let range = index.line_range(text, 0);
+        assert_eq!(
+            (range.start.character, range.end.character),
+            (0, 4),
+            "{range:?}"
+        );
     }
 }

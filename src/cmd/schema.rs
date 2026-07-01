@@ -37,7 +37,42 @@ pub(crate) fn config_schema() -> Result<Value> {
         "$id",
         json!(crate::schema::config_schema_url()),
     );
+    patch_tasks_label_vocab(&mut schema);
     Ok(schema)
+}
+
+/// Constrain `[tasks].prefer` and `[tasks.overrides]` values to the closed
+/// label vocabulary the resolver actually accepts (task runners, package
+/// managers, source names — see `resolver::policies::resolve_source_label`),
+/// instead of leaving them as unconstrained strings. Derived from
+/// [`crate::types::task_source_labels`] so the schema can't drift from the
+/// resolver's own vocabulary.
+fn patch_tasks_label_vocab(schema: &mut Value) {
+    let Some(defs) = schema.get_mut("$defs").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(tasks) = defs
+        .get_mut("TasksSection")
+        .and_then(|def| def.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    let labels = json!(crate::types::task_source_labels());
+    if let Some(prefer_items) = tasks
+        .get_mut("prefer")
+        .and_then(|f| f.get_mut("items"))
+        .and_then(Value::as_object_mut)
+    {
+        prefer_items.insert("enum".to_string(), labels.clone());
+    }
+    if let Some(overrides_values) = tasks
+        .get_mut("overrides")
+        .and_then(|f| f.get_mut("additionalProperties"))
+        .and_then(Value::as_object_mut)
+    {
+        overrides_values.insert("enum".to_string(), labels);
+    }
 }
 
 fn write_all_schemas(dir: &Path) -> Result<()> {

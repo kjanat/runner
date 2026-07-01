@@ -186,12 +186,22 @@ impl ResolutionOverrides {
         // `[task_runner].prefer` (restrictive, runners-only). When the new
         // section carries anything, the legacy list is ignored entirely — the
         // config loader has already emitted the deprecation warning.
+        //
+        // "Carries anything" is judged on the *raw* config fields, not the
+        // parsed result: a `[tasks].prefer` entry like `"nx"` is recognized
+        // but resolves to no `TaskSource` (see `resolve_source_label`), so
+        // checking `prefer_sources.is_empty()` would wrongly treat an
+        // explicit-but-source-less `prefer` list as absent and fall through
+        // to the legacy, more restrictive list.
+        let tasks_section_set = sources.config.is_some_and(|c| {
+            !c.config.tasks.prefer.is_empty() || !c.config.tasks.overrides.is_empty()
+        });
         let prefer_sources = parse_tasks_prefer(sources.config)?;
         let task_source_overrides = parse_tasks_overrides(sources.config)?;
-        let prefer_runners = if prefer_sources.is_empty() && task_source_overrides.is_empty() {
-            parse_prefer_runners(sources.config)?
-        } else {
+        let prefer_runners = if tasks_section_set {
             Vec::new()
+        } else {
+            parse_prefer_runners(sources.config)?
         };
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);

@@ -172,19 +172,20 @@ pub(super) fn completion(
 /// empty line); otherwise just the name (the `[` is already typed).
 fn section_items(schema: &SchemaIndex, bracketed: bool) -> Vec<CompletionItem> {
     schema
-        .section_names()
+        .header_paths()
+        .into_iter()
         .map(|name| {
             let insert = if bracketed {
                 format!("[{name}]")
             } else {
-                name.to_string()
+                name.clone()
             };
-            let doc = schema
-                .section(name)
-                .and_then(|s| s.description.clone())
+            let doc = describe_section(schema, &name)
+                .map(|(_, body)| body)
+                .filter(|body| !body.is_empty())
                 .map(doc_markup);
             CompletionItem {
-                label: name.to_string(),
+                label: name,
                 kind: Some(CompletionItemKind::MODULE),
                 insert_text: Some(insert),
                 documentation: doc,
@@ -222,12 +223,12 @@ fn value_items(schema: &SchemaIndex, section: Option<&str>, key: &str) -> Vec<Co
         return field
             .enum_values
             .iter()
-            .map(|v| value_item(v, "value"))
+            .map(|v| value_item(v, "value", true))
             .collect();
     }
     code_values(section, key)
         .into_iter()
-        .map(|(value, detail)| value_item(&value, detail))
+        .map(|(value, detail)| value_item(&value, detail, detail != "bool"))
         .collect()
 }
 
@@ -271,13 +272,20 @@ fn code_values(section: &str, key: &str) -> Vec<(String, &'static str)> {
     }
 }
 
-/// A single value completion item.
-fn value_item(value: &str, detail: &str) -> CompletionItem {
+/// A single value completion item. `quote` wraps `insert_text` in `"..."` for
+/// string-typed values, so string fields (`pm.node`, `tasks.prefer`, …) insert
+/// valid TOML rather than a bare, unquoted word; the label stays unquoted.
+fn value_item(value: &str, detail: &str, quote: bool) -> CompletionItem {
+    let insert_text = if quote {
+        format!("\"{value}\"")
+    } else {
+        value.to_string()
+    };
     CompletionItem {
         label: value.to_string(),
         kind: Some(CompletionItemKind::VALUE),
         detail: Some(detail.to_string()),
-        insert_text: Some(value.to_string()),
+        insert_text: Some(insert_text),
         ..CompletionItem::default()
     }
 }
@@ -362,5 +370,34 @@ mod tests {
         let names = labels(&items);
         assert!(names.contains(&"bun"), "{names:?}");
         assert!(names.contains(&"pnpm"), "{names:?}");
+    }
+
+    #[test]
+    fn completion_offers_nested_section_for_tasks_overrides() {
+        let schema = SchemaIndex::build();
+        let text = "[\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 1));
+        let names = labels(&items);
+        assert!(names.contains(&"tasks.overrides"), "{names:?}");
+    }
+
+    #[test]
+    fn string_value_completions_insert_quoted_text() {
+        let schema = SchemaIndex::build();
+        let text = "[pm]\nnode = \n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let bun = items.iter().find(|i| i.label == "bun").expect("bun item");
+        assert_eq!(bun.insert_text.as_deref(), Some("\"bun\""));
+    }
+
+    #[test]
+    fn bool_value_completions_stay_unquoted() {
+        let schema = SchemaIndex::build();
+        let text = "[chain]\nkeep_going = \n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 13));
+        let names = labels(&items);
+        assert!(names.contains(&"true"), "{names:?}");
+        let item = items.iter().find(|i| i.label == "true").expect("true item");
+        assert_eq!(item.insert_text.as_deref(), Some("true"));
     }
 }
