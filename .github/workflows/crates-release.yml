@@ -2,10 +2,11 @@ name: crates-release
 run-name: ${{ format('crates publish {0}', inputs.tag) }}
 
 on:
-  workflow_call: { inputs: { tag: { required: true, type: string } } }
+  workflow_call: { inputs: { tag: { required: true, type: string }, run-id: { required: false, type: string, default: "" } } }
   workflow_dispatch:
     inputs:
       tag: { description: Release tag to publish (e.g. vX.Y.Z), required: true, type: string }
+      run-id: { description: release.yml run ID with a man-pages artifact; empty rebuilds them, required: false, default: "", type: string }
       dry-run: { description: Dry run only (no upload to crates.io), required: false, default: false, type: boolean }
 
 env:
@@ -17,7 +18,7 @@ jobs:
   publish:
     name: publish to crates.io
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write }
+    permissions: { contents: read, id-token: write, actions: read }
     environment: { name: crates-io, url: "${{ steps.verify.outputs.url }}" }
     steps:
       - uses: actions/checkout@v7
@@ -39,7 +40,15 @@ jobs:
           echo "ok: tag ${RELEASE_TAG} matches Cargo.toml version ${manifest_version}"
           echo "url=https://crates.io/crates/runner-run/${manifest_version}" >> "$GITHUB_OUTPUT"
 
-      - run: cargo man --output man
+      - name: download man pages
+        if: inputs.run-id != ''
+        uses: actions/download-artifact@v8
+        with: { name: man-pages, path: man, run-id: "${{ inputs.run-id }}", github-token: "${{ github.token }}" }
+
+      - name: build man pages
+        if: inputs.run-id == ''
+        run: cargo man --output man
+
       - run: cargo dirtypub --dry-run
 
       - name: mint crates.io token (trusted publishing)

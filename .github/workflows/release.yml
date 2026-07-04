@@ -272,6 +272,6 @@ jobs:
     name: crates publish
     needs: [publish-release]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions: { contents: read, id-token: write }
+    permissions: { contents: read, id-token: write, actions: read }
     uses: ./.github/workflows/crates-release.yml
-    with: { tag: "${{ github.ref_name }}" }
+    with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
