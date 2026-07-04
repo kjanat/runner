@@ -15,6 +15,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.16.1] - 2026-07-04
+
+### Fixed
+
+- `npx runner-run` now resolves to the full CLI. Added a `runner-run` bin
+  alias; previously npx failed with `could not determine executable to run`
+  because neither shipped bin (`run`, `runner`) matched the package name.
+  (Reaches users only on this published release; `npx runner-run@0.16.0`
+  stays broken.)
+- The no-prebuilt-binary error now names the bun `minimumReleaseAge` pitfall:
+  its age gate also filters the `@runner-run/*` platform packages, which must
+  be excluded by exact name (no scope/glob), not just the `runner-run` facade.
+
 ### Changed
 
 - Internal: the `run` alias binary now dispatches through the same
@@ -1502,7 +1515,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/kjanat/runner/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/kjanat/runner/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/kjanat/runner/compare/v0.14.3...v0.15.0
 [0.14.3]: https://github.com/kjanat/runner/compare/v0.14.2...v0.14.3
