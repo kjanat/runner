@@ -1,10 +1,11 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { EOL } from "node:os";
-import { join } from "node:path";
-import { env, exit, platform, stdout } from "node:process";
+import { dirname, join } from "node:path";
+import { arch, env, exit, platform, stdout } from "node:process";
+import { fileURLToPath } from "node:url";
 
 /**
  * @param {"GITHUB_PATH" | "GITHUB_OUTPUT"} name
@@ -127,6 +128,52 @@ function installPrefix() {
 }
 
 /**
+ * Resolve the `@runner-run/<pkg>` platform package matching this runner,
+ * so install can skip the facade's optionalDependencies resolution
+ * (13 extra registry metadata fetches for packages that'll never be used).
+ * Returns null on anything unexpected — unmapped platform, unreadable
+ * manifest, undetectable libc — so the caller falls back to the facade,
+ * which covers every platform npm's own optionalDependencies resolution
+ * covers.
+ * @returns {{ scope: string, pkg: string } | null}
+ */
+function resolvePlatformTarget() {
+	/** @type {{ scope: string, targets: { pkg: string, os: string[], cpu: string[], libc?: string[] | null }[] }} */
+	let manifest;
+	try {
+		const here = dirname(fileURLToPath(import.meta.url));
+		manifest = JSON.parse(readFileSync(join(here, "npm", "targets.json"), "utf8"));
+	} catch (err) {
+		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)}) — using facade`);
+		return null;
+	}
+
+	/** @type {"glibc" | "musl" | undefined} */
+	let libc;
+	if (platform === "linux") {
+		try {
+			// Node's own signal for glibc vs musl — the same mechanism npm's
+			// optionalDependencies resolution relies on for the `libc` field.
+			const report = /** @type {{ header?: { glibcVersionRuntime?: string } }} */ (process.report?.getReport?.());
+			libc = report?.header?.glibcVersionRuntime ? "glibc" : "musl";
+		} catch {
+			libc = undefined;
+		}
+	}
+
+	const match = manifest.targets.find((t) =>
+		t.os.includes(platform)
+		&& t.cpu.includes(arch)
+		&& (t.libc == null || (libc !== undefined && t.libc.includes(libc)))
+	);
+	if (!match) {
+		debug(`no npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""} — using facade`);
+		return null;
+	}
+	return { scope: manifest.scope, pkg: match.pkg };
+}
+
+/**
  * @param {string} spec
  * @returns {boolean}
  */
@@ -148,18 +195,19 @@ function verifyVersion(binDir) {
 	return m[1];
 }
 
-try {
-	const spec = resolveSpec();
-	const prefix = installPrefix();
-	const binDir = platform === "win32" ? prefix : join(prefix, "bin");
-
-	startGroup(`npm install --global --ignore-scripts --prefix ${prefix} runner-run@${spec}`);
+/**
+ * @param {string} pkgName
+ * @param {string} spec
+ * @param {string} prefix
+ */
+function installPackage(pkgName, spec, prefix) {
+	startGroup(`npm install --global --ignore-scripts --prefix ${prefix} ${pkgName}@${spec}`);
 	try {
 		withRetry(
 			() =>
 				run(
 					"npm",
-					["install", "--global", "--ignore-scripts", "--prefix", prefix, `runner-run@${spec}`],
+					["install", "--global", "--ignore-scripts", "--prefix", prefix, `${pkgName}@${spec}`],
 					"inherit",
 					platform === "win32",
 				),
@@ -168,10 +216,38 @@ try {
 	} finally {
 		endGroup();
 	}
+}
+
+try {
+	const spec = resolveSpec();
+	const prefix = installPrefix();
+	const binDir = platform === "win32" ? prefix : join(prefix, "bin");
+	const facade = "runner-run";
+
+	// Installing the platform package directly skips the facade's
+	// optionalDependencies resolution (a registry metadata fetch per
+	// sibling platform package that will never be used). Any failure —
+	// including a genuinely unpublished experimental-platform version —
+	// falls back to the facade, which is what every platform used before.
+	let installedPkg = facade;
+	const target = resolvePlatformTarget();
+	if (target) {
+		const fastPkg = `${target.scope}/${target.pkg}`;
+		try {
+			installPackage(fastPkg, spec, prefix);
+			installedPkg = fastPkg;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			warn(`fast install of ${fastPkg}@${spec} failed (${msg}) — falling back to ${facade}`);
+			installPackage(facade, spec, prefix);
+		}
+	} else {
+		installPackage(facade, spec, prefix);
+	}
 
 	const version = verifyVersion(binDir);
 	if (isExactPin(spec) && version !== spec) {
-		throw new Error(`requested runner-run@${spec} but runner --version reported ${version}`);
+		throw new Error(`requested ${installedPkg}@${spec} but runner --version reported ${version}`);
 	}
 
 	addPath(binDir);
