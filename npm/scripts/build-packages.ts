@@ -40,15 +40,9 @@ const BLOCK_SIZE = 512;
 
 const FACADE_BIN_FILES = ["runner.cjs", "run.cjs"] as const;
 const FACADE_LIB_FILES = ["resolve.cjs", "launch.cjs"] as const;
-/**
- * Package-relative launcher shipped inside every platform package so each
- * `@runner-run/*` package is a functional CLI on its own (`npx
- * @runner-run/<platform> …`). Exactly ONE bin entry on purpose: npx can
- * auto-select a package's sole bin regardless of its name, whereas two
- * entries would force users to always name the command (the 0.16.1 "could
- * not determine executable" failure shape).
- */
-const PLATFORM_SHIM = "runner.cjs";
+// Copied to `<binary>.cjs` per binary in each platform package; each copy
+// spawns the package-relative binary matching its own filename.
+const PLATFORM_LAUNCHER = "launcher.cjs";
 
 // npm allows multiple shapes for several `package.json` fields. Cargo's
 // `package.metadata` is user-defined freeform JSON — the user could put any
@@ -702,7 +696,9 @@ async function buildPlatformPackage(
 		throw new Error(`missing ${missing} in ${tarball}`);
 	}
 
-	await cp(join(npmDir, "platform", PLATFORM_SHIM), join(dest, PLATFORM_SHIM));
+	for (const name of matrix.binaries) {
+		await cp(join(npmDir, "platform", PLATFORM_LAUNCHER), join(dest, `${name}.cjs`));
+	}
 
 	const pkg = platformPackageJson(matrix, target, opts.version, meta);
 	await writeJson(join(dest, "package.json"), pkg);
@@ -787,13 +783,11 @@ function platformPackageJson(
 		os: target.os,
 		cpu: target.cpu,
 		...(target.libc ? { libc: target.libc } : {}),
-		// A single bin entry keeps `npx ${matrix.scope}/<pkg> …` working via
-		// npx's only-bin auto-selection; see PLATFORM_SHIM. Named after the
-		// primary binary, which is also the one the shim spawns.
-		bin: { [matrix.binaries[0]]: PLATFORM_SHIM },
+		// Real binary names; colliding with the facade's bins is benign (same bytes).
+		bin: Object.fromEntries(matrix.binaries.map((name) => [name, `${name}.cjs`])),
 		exports: { "./package.json": "./package.json" },
 		directories: { bin: "./bin" },
-		files: ["bin/", PLATFORM_SHIM],
+		files: ["bin/", ...matrix.binaries.map((name) => `${name}.cjs`)],
 	};
 }
 
@@ -815,6 +809,12 @@ function platformReadme(matrix: Matrix, target: Target): string {
 	const platform = [...target.os, ...target.cpu, ...(target.libc ? [target.libc] : [])].join(" · ");
 
 	const primary = matrix.binaries[0];
+	const launchers = matrix.binaries.map((name) => `\`${name}.cjs\``).join(" and ");
+	const examples = [
+		`npx --package=${packageName} ${primary} install -f build test`,
+		`npx --package=${packageName} ${primary} list`,
+		...matrix.binaries.slice(1).map((name) => `npx --package=${packageName} ${name} <task>`),
+	].join("\n");
 
 	return `# ${packageName}
 
@@ -836,13 +836,11 @@ platform, so prefer \`${matrix.facade}\` for anything portable.
 
 ## Standalone use
 
-The package is a working CLI in its own right — it ships a \`${primary}\` bin that launches
-the bundled binary, so on a matching machine it runs without the facade:
+The package is a working CLI in its own right — it ships ${binaries} bins that launch
+the bundled binaries, so on a matching machine it runs without the facade:
 
 \`\`\`sh
-npx ${packageName} list
-npx ${packageName} install -f build test
-npx --package=${packageName} ${primary} run lint
+${examples}
 \`\`\`
 
 Useful when you want a platform-pinned install (e.g. a locked-down CI image) without
@@ -851,7 +849,7 @@ pulling the facade and its sibling platform packages into the resolution.
 ## Contents
 
 - ${binaries}: prebuilt native ${noun} under \`bin/\`.
-- \`${PLATFORM_SHIM}\`: package-relative launcher backing the \`${primary}\` bin.
+- ${launchers}: package-relative launchers backing the bins.
 - No dependencies, no install scripts, no network access.
 
 ## More
