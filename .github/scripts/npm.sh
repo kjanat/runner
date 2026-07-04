@@ -328,7 +328,7 @@ publish_allowed() {
 	# Tolerate the TOCTOU race between the npm view check above and
 	# this publish: if another actor publishes the same version in
 	# the gap, npm exits with EPUBLISHCONFLICT and we treat that as a
-	# no-op (mirrors npm/scripts/publish.ts).
+	# no-op.
 	#
 	# The `|| status=$?` form is required: under `set -e`,
 	# `output=$(cmd); status=$?` would exit on a failing cmd before
