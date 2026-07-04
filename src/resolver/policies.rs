@@ -236,9 +236,13 @@ pub(super) fn resolve_mismatch_policy(
 /// presence beats env (explicit either polarity) beats `[chain]` config
 /// beats `false`. The env layer is presence-authoritative: an explicit
 /// `RUNNER_KEEP_GOING=0` overrides `[chain].keep_going = true` in config.
-/// The two layers are combined into a `FailurePolicy` and validated for
-/// mutual exclusion: both true at any source or after layering returns
-/// `ResolveError::ConflictingFailurePolicy`.
+///
+/// Mutual exclusion is checked per layer (both knobs true at one source
+/// is a `ResolveError::ConflictingFailurePolicy`), but *across* layers
+/// the stronger source wins the whole policy: `-k` on the command line
+/// beats a `[chain] kill_on_fail = true` in config rather than
+/// colliding with it — otherwise a config-pinned polarity would be
+/// uncancellable from the CLI, contradicting CLI > env > config.
 pub(super) fn resolve_failure_policy(
     keep_going: ExplainSource<'_>,
     kill_on_fail: ExplainSource<'_>,
@@ -255,25 +259,56 @@ pub(super) fn resolve_failure_policy(
         return Err(ResolveError::ConflictingFailurePolicy { source }.into());
     }
 
-    let keep = resolve_chain_bool(
+    let keep = chain_bool_layer(
         keep_going.cli,
         keep_env,
         config.and_then(|c| c.config.chain.keep_going),
     );
-    let kill = resolve_chain_bool(
+    let kill = chain_bool_layer(
         kill_on_fail.cli,
         kill_env,
         config.and_then(|c| c.config.chain.kill_on_fail),
     );
 
     match (keep, kill) {
-        (false, false) => Ok(FailurePolicy::FailFast),
-        (true, false) => Ok(FailurePolicy::KeepGoing),
-        (false, true) => Ok(FailurePolicy::KillOnFail),
-        (true, true) => Err(ResolveError::ConflictingFailurePolicy {
-            source: "cross-source",
-        }
-        .into()),
+        (None, None) => Ok(FailurePolicy::FailFast),
+        (Some(_), None) => Ok(FailurePolicy::KeepGoing),
+        (None, Some(_)) => Ok(FailurePolicy::KillOnFail),
+        (Some(keep_layer), Some(kill_layer)) => match keep_layer.cmp(&kill_layer) {
+            std::cmp::Ordering::Greater => Ok(FailurePolicy::KeepGoing),
+            std::cmp::Ordering::Less => Ok(FailurePolicy::KillOnFail),
+            // Same layer with both true is caught by
+            // `single_source_conflict` above; keep the error as a
+            // defensive backstop rather than an unreachable panic.
+            std::cmp::Ordering::Equal => Err(ResolveError::ConflictingFailurePolicy {
+                source: "cross-source",
+            }
+            .into()),
+        },
+    }
+}
+
+/// Precedence rank of the layers a chain bool can be set on. Order is
+/// the override chain: CLI > env > config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ChainBoolLayer {
+    Config,
+    Env,
+    Cli,
+}
+
+/// The highest-precedence layer that turns a chain knob ON, or `None`
+/// when no layer does. An explicit env falsy (`RUNNER_*=0`) shadows a
+/// config `true` below it — presence-authoritative, matching
+/// [`parse_env_bool`].
+fn chain_bool_layer(cli: bool, env: Option<bool>, config: Option<bool>) -> Option<ChainBoolLayer> {
+    if cli {
+        return Some(ChainBoolLayer::Cli);
+    }
+    match env {
+        Some(true) => Some(ChainBoolLayer::Env),
+        Some(false) => None,
+        None => (config == Some(true)).then_some(ChainBoolLayer::Config),
     }
 }
 
@@ -286,19 +321,6 @@ pub(super) fn resolve_failure_policy(
 fn parse_env_bool(env: Option<&str>) -> Option<bool> {
     let raw = env.map(str::trim).filter(|s| !s.is_empty())?;
     Some(is_env_truthy(raw))
-}
-
-/// Layered bool resolution: CLI flag > env (explicit either polarity) >
-/// config explicit > false. Env's authority is by *presence*, not just
-/// truthiness — `Some(false)` from env overrides config.
-fn resolve_chain_bool(cli: bool, env: Option<bool>, config: Option<bool>) -> bool {
-    if cli {
-        return true;
-    }
-    if let Some(value) = env {
-        return value;
-    }
-    config.unwrap_or(false)
 }
 
 /// If `keep_going` and `kill_on_fail` are both set true *within the same

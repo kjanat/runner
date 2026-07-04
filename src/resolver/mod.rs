@@ -603,6 +603,61 @@ mod tests {
     }
 
     #[test]
+    fn lenient_env_bool_typo_warns_and_is_ignored() {
+        // `RUNNER_KEEP_GOING=flase` (typo'd "false") used to read as
+        // truthy — the opposite of the user's intent. It must warn and
+        // stay unset instead.
+        use crate::chain::FailurePolicy;
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("flase"),
+            },
+            quiet: ExplainSource {
+                cli: false,
+                env: Some("disabled"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("lenient pass must absorb boolean env garbage");
+
+        assert_eq!(overrides.failure_policy, FailurePolicy::FailFast);
+        assert!(
+            !overrides.quiet,
+            "typo'd RUNNER_QUIET must not enable quiet"
+        );
+        let vars: Vec<&str> = warnings
+            .iter()
+            .map(|w| match w {
+                DetectionWarning::InvalidEnvOverride { var, .. } => *var,
+                other => panic!("expected InvalidEnvOverride, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(vars, ["RUNNER_QUIET", "RUNNER_KEEP_GOING"]);
+    }
+
+    #[test]
+    fn lenient_env_bool_recognized_tokens_pass_clean() {
+        use crate::chain::FailurePolicy;
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
+            keep_going: ExplainSource {
+                cli: false,
+                env: Some("YES"),
+            },
+            explain: ExplainSource {
+                cli: false,
+                env: Some("off"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("recognized boolean tokens should parse");
+
+        assert!(warnings.is_empty());
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+        assert!(!overrides.explain);
+    }
+
+    #[test]
     fn lenient_cli_garbage_still_errors() {
         ResolutionOverrides::from_sources_lenient(OverrideSources {
             pm: SourceValue {
@@ -1794,6 +1849,60 @@ mod tests {
             ),
             "expected ConflictingFailurePolicy, got: {err:#}",
         );
+    }
+
+    #[test]
+    fn from_sources_cli_flag_beats_opposite_config_polarity() {
+        // `-k` must override `[chain] kill_on_fail = true`, not collide
+        // with it — the config polarity has no CLI negation flag, so a
+        // cross-source conflict error would make it uncancellable from
+        // the command line.
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(None, Some(true));
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("CLI -k must win over config kill_on_fail");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
+    }
+
+    #[test]
+    fn from_sources_env_truthy_beats_opposite_config_polarity() {
+        use crate::chain::FailurePolicy;
+        let loaded = test_loaded_config_with_chain(Some(true), None);
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            kill_on_fail: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("env kill_on_fail must win over config keep_going");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KillOnFail);
+    }
+
+    #[test]
+    fn from_sources_cli_flag_beats_opposite_env_polarity() {
+        use crate::chain::FailurePolicy;
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            keep_going: ExplainSource {
+                cli: true,
+                env: None,
+            },
+            kill_on_fail: ExplainSource {
+                cli: false,
+                env: Some("1"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("CLI -k must win over RUNNER_KILL_ON_FAIL=1");
+        assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
     }
 
     #[test]

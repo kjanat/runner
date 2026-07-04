@@ -139,6 +139,15 @@ impl ResolutionOverrides {
             &mut warnings,
             |raw| parse_script_policy_label(raw).map(drop),
         );
+        for (field, var) in [
+            (&mut sources.no_warnings, "RUNNER_NO_WARNINGS"),
+            (&mut sources.quiet, "RUNNER_QUIET"),
+            (&mut sources.explain, "RUNNER_EXPLAIN"),
+            (&mut sources.keep_going, "RUNNER_KEEP_GOING"),
+            (&mut sources.kill_on_fail, "RUNNER_KILL_ON_FAIL"),
+        ] {
+            lenient_env_bool(field, var, &mut warnings);
+        }
         let overrides = Self::from_sources(sources)?;
         Ok((overrides, warnings))
     }
@@ -798,6 +807,40 @@ fn lenient_env_field(
             var,
             raw: sanitized.clone(),
             message: sanitize_error_message(raw, &sanitized, &format!("{err}")),
+        });
+        field.env = None;
+    }
+}
+
+/// Boolean counterpart of [`lenient_env_field`]: a `RUNNER_*` toggle
+/// whose value is not a recognized boolean token warns and is ignored
+/// instead of silently reading as truthy. Without this, a typo like
+/// `RUNNER_KEEP_GOING=flase` turned the knob ON — the opposite of the
+/// user's clear intent. Recognized (case-insensitive): `1`, `true`,
+/// `yes`, `on` / `0`, `false`, `no`, `off`; blank stays "unset" per the
+/// resolver-wide convention. A set CLI flag shadows the env value, so it
+/// isn't validated (or warned about) then — mirroring
+/// [`lenient_env_field`].
+fn lenient_env_bool(
+    field: &mut ExplainSource<'_>,
+    var: &'static str,
+    warnings: &mut Vec<DetectionWarning>,
+) {
+    if field.cli {
+        return;
+    }
+    let Some(raw) = field.env.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let recognized = matches!(raw, "1" | "0")
+        || ["true", "false", "yes", "no", "on", "off"]
+            .iter()
+            .any(|token| raw.eq_ignore_ascii_case(token));
+    if !recognized {
+        warnings.push(DetectionWarning::InvalidEnvOverride {
+            var,
+            raw: sanitize_raw_label(raw),
+            message: "expected a boolean: 1|true|yes|on or 0|false|no|off".to_string(),
         });
         field.env = None;
     }
