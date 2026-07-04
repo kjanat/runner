@@ -29,7 +29,9 @@ mod local_file;
 mod qualify;
 mod select;
 
-pub(crate) use qualify::{allowed_runner_sources, precheck_task, runner_constraint_error};
+pub(crate) use qualify::{
+    TokenLookup, allowed_runner_sources, lookup_token, precheck_task, runner_constraint_error,
+};
 pub(crate) use select::{select_task_entry, source_depth, source_priority};
 
 pub(crate) use dispatch::{ResolvedPythonPm, resolve_python_pm};

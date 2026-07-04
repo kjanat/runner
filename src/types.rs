@@ -728,7 +728,10 @@ impl TaskSource {
             "task" | "Taskfile" | "go-task" => Some(Self::Taskfile),
             "turbo" | "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
             "deno" | "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
-            "cargo" => Some(Self::CargoAliases),
+            // `cargo-alias` is the schema-v3 `kind` label that `doctor
+            // --json` / `why --json` embed in task FQNs; accepting it
+            // here keeps every printed FQN runnable.
+            "cargo" | "cargo-alias" => Some(Self::CargoAliases),
             "go" | "go.mod" => Some(Self::GoPackage),
             "bacon" | "bacon.toml" => Some(Self::BaconToml),
             "mise" | "mise.toml" | ".mise.toml" => Some(Self::MiseToml),

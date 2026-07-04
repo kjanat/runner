@@ -16,8 +16,8 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use super::qualify::{
-    allowed_runner_sources, detect_reversed_qualifier, parse_qualified_task,
-    runner_constraint_error,
+    TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
+    qualified_miss_error, reversed_qualifier_error, runner_constraint_error,
 };
 use super::select::select_task_entry;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
@@ -171,9 +171,11 @@ pub(super) fn resolve_dispatch(
         return Ok(Dispatch::Spawn(command));
     }
 
-    let (qualifier, task_name) = parse_qualified_task(task);
-
-    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
+    let (lookup, found) = lookup_token(ctx, task);
+    let TokenLookup {
+        qualifier,
+        task_name,
+    } = lookup;
 
     // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
     // candidate that isn't under one of the allowed sources is treated
@@ -200,18 +202,14 @@ pub(super) fn resolve_dispatch(
         // `--runner` / `[task_runner].prefer`, so report the qualified
         // miss directly instead of surfacing a runner-constraint error
         // the user can't act on.
-        if qualifier.is_none() {
+        let Some(missed_source) = qualifier else {
             // Fast-fail on the reversed qualifier shape (`task:source`).
             // Without this guard, `lint:cargo` slips through as an
             // unqualified bare name, hits the PM-exec fallback below,
             // and surfaces a cryptic `ENOENT` from the OS spawning a
             // binary literally named `lint:cargo`.
             if let Some((src, task_part)) = detect_reversed_qualifier(task) {
-                let src_label = src.label();
-                bail!(
-                    "unknown qualifier in {task:?}: source {src_label:?} must come first.\nhint: \
-                     did you mean \"{src_label}:{task_part}\"?",
-                );
+                return Err(reversed_qualifier_error(ctx, task, src, task_part));
             }
 
             if let Some(reason) = runner_constraint_error(overrides, &found) {
@@ -265,9 +263,13 @@ pub(super) fn resolve_dispatch(
             print_dispatch_arrow(overrides, label, task_name, args);
             crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
             return Ok(Dispatch::Spawn(cmd));
-        }
+        };
 
-        bail!("task {task:?} not found. Run `runner list` to see available tasks.");
+        // Qualified miss (colon or FQN syntax): the qualifier is explicit
+        // task-lookup intent, so error here — never fall through to
+        // PM-exec, which would hand the token to bunx/npx as a package
+        // spec and resolve it off the network.
+        return Err(qualified_miss_error(ctx, missed_source, task_name));
     }
 
     let entry = if let Some(source) = qualifier {
@@ -275,7 +277,7 @@ pub(super) fn resolve_dispatch(
             .iter()
             .find(|t| t.source == source)
             .copied()
-            .ok_or_else(|| anyhow::anyhow!("task {task_name:?} not found in {}", source.label()))?
+            .ok_or_else(|| qualified_miss_error(ctx, source, task_name))?
     } else {
         select_task_entry(ctx, overrides, &restricted)
     };
@@ -513,6 +515,135 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn justfile_task(name: &str) -> Task {
+        Task {
+            name: name.to_string(),
+            source: TaskSource::Justfile,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+        }
+    }
+
+    #[test]
+    fn resolve_dispatch_reaches_colon_named_task_shadowed_by_source_label() {
+        // ts-x509 bug: `run deno:importsmap` parsed `deno` as a source
+        // qualifier and never found the task literally named
+        // `deno:importsmap`, falling through to PM-exec instead.
+        let mut ctx = context();
+        ctx.tasks.push(justfile_task("deno:importsmap"));
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "deno:importsmap",
+                &[],
+                None,
+                true,
+            )
+            .expect("colon-named task should dispatch"),
+        );
+
+        assert_eq!(command.get_program().to_string_lossy(), "just");
+        assert!(command_args(&command).contains(&"deno:importsmap".to_string()));
+    }
+
+    #[test]
+    fn resolve_dispatch_accepts_doctor_fqn_syntax() {
+        // `doctor --json` / `why --json` print `root:<source>#<name>` as a
+        // task's identity; running that string must dispatch the task.
+        let mut ctx = context();
+        ctx.tasks.push(justfile_task("fmt"));
+
+        for token in ["root:just#fmt", "just#fmt"] {
+            let command = expect_command(
+                resolve_dispatch(
+                    &ctx,
+                    &ResolutionOverrides::default(),
+                    token,
+                    &[],
+                    None,
+                    true,
+                )
+                .unwrap_or_else(|e| panic!("FQN {token} should dispatch: {e:#}")),
+            );
+            assert_eq!(command.get_program().to_string_lossy(), "just");
+            assert!(command_args(&command).contains(&"fmt".to_string()));
+        }
+    }
+
+    #[test]
+    fn resolve_dispatch_accepts_v3_cargo_alias_fqn() {
+        // Schema v3 labels cargo alias tasks `cargo-alias`, so doctor/why
+        // print `root:cargo-alias#<name>` — that exact string must run.
+        let mut ctx = context();
+        ctx.tasks.push(Task {
+            name: "b".to_string(),
+            source: TaskSource::CargoAliases,
+            run_target: None,
+            description: None,
+            alias_of: Some("build".to_string()),
+            passthrough_to: None,
+        });
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "root:cargo-alias#b",
+                &[],
+                None,
+                true,
+            )
+            .expect("v3 cargo-alias FQN should dispatch"),
+        );
+
+        assert_eq!(command.get_program().to_string_lossy(), "cargo");
+    }
+
+    #[test]
+    fn resolve_dispatch_fqn_miss_errors_instead_of_pm_exec() {
+        // Previously `run root:package.json#nope` fell through to
+        // PM-exec and bunx tried to resolve it as a GitHub package spec
+        // off the network. A `#` FQN miss must be a hard error.
+        let err = resolve_dispatch(
+            &context(),
+            &ResolutionOverrides::default(),
+            "root:package.json#nope",
+            &[],
+            None,
+            true,
+        )
+        .expect_err("FQN miss must not reach PM-exec");
+
+        assert!(format!("{err:#}").contains("not found in package.json"));
+    }
+
+    #[test]
+    fn resolve_dispatch_github_spec_still_reaches_pm_exec() {
+        // `user/repo#ref` is a legit bunx/npx package spec — its prefix
+        // is not a source label, so it must keep flowing to PM-exec.
+        let dispatch = resolve_dispatch(
+            &context(),
+            &ResolutionOverrides::default(),
+            "user/repo#ref",
+            &[],
+            None,
+            true,
+        )
+        .expect("package spec should fall through to PM-exec");
+
+        let command = expect_command(dispatch);
+        let token = "user/repo#ref".to_string();
+        assert!(
+            command.get_program().to_string_lossy() == token
+                || command_args(&command).contains(&token),
+            "PM-exec should carry the spec verbatim",
+        );
     }
 
     #[test]

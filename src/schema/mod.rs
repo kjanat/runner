@@ -152,6 +152,26 @@ mod tests {
     use crate::types::TaskSource;
 
     #[test]
+    fn every_schema_label_round_trips_through_from_label() {
+        // `doctor --json` / `why --json` print FQNs built from these
+        // labels, and `run` parses FQN input back through
+        // `TaskSource::from_label`. Every label of every schema version
+        // must round-trip, or the printed identity is unrunnable and the
+        // token leaks to the PM-exec fallback (bunx resolving it off the
+        // network) — the v3 `cargo-alias` label shipped exactly that bug.
+        for version in 1..=CURRENT_VERSION {
+            for &source in TaskSource::all() {
+                let label = source_label_for(source, version);
+                assert_eq!(
+                    TaskSource::from_label(label),
+                    Some(source),
+                    "schema v{version} label {label:?} must parse back to {source:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn source_label_for_returns_legacy_strings_under_v1() {
         // v1 contract: filename-style labels. Frozen.
         assert_eq!(source_label_for(TaskSource::Justfile, 1), "justfile");

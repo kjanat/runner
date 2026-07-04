@@ -7,11 +7,12 @@
 //! item *before* any sibling dispatches.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow};
 
 use crate::resolver::{ResolutionOverrides, ResolveError};
-use crate::types::{ProjectContext, TaskSource};
+use crate::types::{DetectionWarning, ProjectContext, Task, TaskSource};
 
 /// Parse `"source:task"` syntax. Returns `(Some(source), task_name)` if the
 /// prefix before the first `:` is a known source label, or `(None, original)`
@@ -24,6 +25,129 @@ pub(super) fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
         }
     }
     (None, input)
+}
+
+/// Parse the `#`-separated FQN form that `doctor --json` / `why --json`
+/// print as a task's identity: `root:<source>#<name>` (the `root:` scope
+/// prefix is optional on input). Returns `None` for anything whose part
+/// before the `#` doesn't name a source — `user/repo#ref` package specs
+/// keep flowing to the PM-exec fallback untouched.
+pub(super) fn parse_fqn_task(input: &str) -> Option<(TaskSource, &str)> {
+    let (prefix, name) = input.split_once('#')?;
+    let kind = prefix.strip_prefix("root:").unwrap_or(prefix);
+    let source = TaskSource::from_label(kind)?;
+    Some((source, name))
+}
+
+/// How a task token was interpreted by [`lookup_token`].
+///
+/// A `Some` qualifier — whether from colon or FQN syntax — pins the
+/// lookup to that source; the caller errors on a miss instead of
+/// falling through to PM-exec. That property is what keeps an FQN typo
+/// (`root:package.json#nope`) from being handed to bunx/npx as a
+/// package spec and resolved off the network.
+pub(crate) struct TokenLookup<'a> {
+    /// Pinned source from `source:task` or FQN (`root:source#task`) syntax.
+    pub qualifier: Option<TaskSource>,
+    /// Task name after stripping any qualifier.
+    pub task_name: &'a str,
+}
+
+/// Interpret a task token and collect its name-matched candidates.
+///
+/// Single source of truth for dispatch and precheck so both agree on:
+/// - FQN (`root:package.json#deno:importsmap`) → qualified lookup,
+/// - colon-qualified (`deno:lint`) → qualified lookup,
+/// - qualified *miss* whose raw token exactly names an existing task
+///   (a `package.json` script literally called `deno:importsmap` is
+///   otherwise shadowed by the `deno` source label) → bare exact match.
+pub(crate) fn lookup_token<'a>(
+    ctx: &'a ProjectContext,
+    token: &'a str,
+) -> (TokenLookup<'a>, Vec<&'a Task>) {
+    let (qualifier, task_name, fqn) = if let Some((source, name)) = parse_fqn_task(token) {
+        (Some(source), name, true)
+    } else {
+        let (q, n) = parse_qualified_task(token);
+        (q, n, false)
+    };
+    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
+
+    // Colon-form only: FQN syntax is explicit enough that a miss should
+    // stay a miss rather than match a pathological `#`-bearing name.
+    if !fqn
+        && let Some(source) = qualifier
+        && !found.iter().any(|t| t.source == source)
+    {
+        let exact: Vec<_> = ctx.tasks.iter().filter(|t| t.name == token).collect();
+        if !exact.is_empty() {
+            return (
+                TokenLookup {
+                    qualifier: None,
+                    task_name: token,
+                },
+                exact,
+            );
+        }
+    }
+
+    (
+        TokenLookup {
+            qualifier,
+            task_name,
+        },
+        found,
+    )
+}
+
+/// The one spelling of a qualified miss, shared by dispatch and precheck
+/// so `run deno:x` and `run -p deno:x` fail identically. Appends a note
+/// when a source's task list failed to load — a miss caused by a broken
+/// `package.json` should say so instead of leaving the user chasing the
+/// task name.
+pub(super) fn qualified_miss_error(
+    ctx: &ProjectContext,
+    source: TaskSource,
+    task_name: &str,
+) -> anyhow::Error {
+    let mut msg = format!(
+        "task {task_name:?} not found in {}. Run `runner list` to see available tasks.",
+        source.label(),
+    );
+    append_unreadable_note(ctx, &mut msg);
+    anyhow!(msg)
+}
+
+/// The one spelling of the reversed-qualifier error (`lint:deno` instead
+/// of `deno:lint`), shared by dispatch and precheck. Carries the same
+/// unreadable-source note as [`qualified_miss_error`]: the ts-x509 shape
+/// of this failure was a valid task name missing *because* package.json
+/// didn't parse, where the `did you mean` hint alone is a red herring.
+pub(super) fn reversed_qualifier_error(
+    ctx: &ProjectContext,
+    task: &str,
+    source: TaskSource,
+    task_part: &str,
+) -> anyhow::Error {
+    let src_label = source.label();
+    let mut msg = format!(
+        "unknown qualifier in {task:?}: source {src_label:?} must come first.\nhint: did you mean \
+         \"{src_label}:{task_part}\"?",
+    );
+    append_unreadable_note(ctx, &mut msg);
+    anyhow!(msg)
+}
+
+/// Append one `note:` line per source whose task list failed to load.
+fn append_unreadable_note(ctx: &ProjectContext, msg: &mut String) {
+    for warning in &ctx.warnings {
+        if let DetectionWarning::TaskListUnreadable { source, .. } = warning {
+            let _ = write!(
+                msg,
+                "\nnote: {source} failed to read, so its tasks are invisible to this lookup",
+            );
+        }
+    }
 }
 
 /// Catch the inverted qualifier syntax (`task:source` instead of the
@@ -81,8 +205,11 @@ pub(crate) fn precheck_task(
         return Ok(());
     }
 
-    let (qualifier, task_name) = parse_qualified_task(task);
-    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
+    let (lookup, found) = lookup_token(ctx, task);
+    let TokenLookup {
+        qualifier,
+        task_name,
+    } = lookup;
 
     let restricted: Vec<_> = if qualifier.is_some() {
         found.clone()
@@ -103,21 +230,17 @@ pub(crate) fn precheck_task(
         if let Some(source) = qualifier
             && !restricted.iter().any(|t| t.source == source)
         {
-            bail!("task {task_name:?} not found in {}", source.label());
+            return Err(qualified_miss_error(ctx, source, task_name));
         }
         return Ok(());
     }
 
     if let Some(source) = qualifier {
-        bail!("task {task_name:?} not found in {}", source.label());
+        return Err(qualified_miss_error(ctx, source, task_name));
     }
 
     if let Some((src, task_part)) = detect_reversed_qualifier(task) {
-        let src_label = src.label();
-        bail!(
-            "unknown qualifier in {task:?}: source {src_label:?} must come first.\nhint: did you \
-             mean \"{src_label}:{task_part}\"?",
-        );
+        return Err(reversed_qualifier_error(ctx, task, src, task_part));
     }
 
     if let Some(reason) = runner_constraint_error(overrides, &found) {
@@ -172,7 +295,7 @@ pub(crate) fn allowed_runner_sources(
 ///   absent from the list → analogous shape for the prefer-list.
 pub(crate) fn runner_constraint_error(
     overrides: &ResolutionOverrides,
-    found: &[&crate::types::Task],
+    found: &[&Task],
 ) -> Option<ResolveError> {
     if let Some(ovr) = overrides.runner.as_ref() {
         let label = ovr.runner.label();
@@ -216,9 +339,9 @@ pub(crate) fn runner_constraint_error(
 mod tests {
     use std::path::PathBuf;
 
-    use super::precheck_task;
+    use super::{lookup_token, parse_fqn_task, precheck_task};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{ProjectContext, TaskRunner, TaskSource};
+    use crate::types::{DetectionWarning, ProjectContext, Task, TaskRunner, TaskSource};
 
     fn context() -> ProjectContext {
         ProjectContext {
@@ -231,6 +354,122 @@ mod tests {
             is_monorepo: false,
             warnings: Vec::new(),
         }
+    }
+
+    fn task(name: &str, source: TaskSource) -> Task {
+        Task {
+            name: name.to_string(),
+            source,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+        }
+    }
+
+    #[test]
+    fn parse_fqn_task_accepts_doctor_fqn_forms() {
+        // The exact string doctor/why print as a task's identity.
+        assert_eq!(
+            parse_fqn_task("root:package.json#deno:importsmap"),
+            Some((TaskSource::PackageJson, "deno:importsmap")),
+        );
+        // Scope prefix optional on input.
+        assert_eq!(
+            parse_fqn_task("package.json#deno:importsmap"),
+            Some((TaskSource::PackageJson, "deno:importsmap")),
+        );
+        assert_eq!(
+            parse_fqn_task("just#fmt"),
+            Some((TaskSource::Justfile, "fmt"))
+        );
+    }
+
+    #[test]
+    fn parse_fqn_task_leaves_package_specs_alone() {
+        // bunx/npx GitHub specs share the `#` separator; anything whose
+        // prefix isn't a source label must keep flowing to PM-exec.
+        assert_eq!(parse_fqn_task("user/repo#ref"), None);
+        assert_eq!(parse_fqn_task("root:unknown#x"), None);
+        assert_eq!(parse_fqn_task("no-hash"), None);
+    }
+
+    #[test]
+    fn lookup_token_exact_name_wins_on_qualified_miss() {
+        // A script literally named `deno:importsmap` was unreachable:
+        // `deno` parses as a source label, the lookup missed, dispatch
+        // fell to PM-exec (ts-x509 transcript). Exact full-name match
+        // must win when the qualified lookup has no candidate.
+        let mut ctx = context();
+        ctx.tasks
+            .push(task("deno:importsmap", TaskSource::Justfile));
+
+        let (lookup, found) = lookup_token(&ctx, "deno:importsmap");
+        assert_eq!(lookup.qualifier, None);
+        assert_eq!(lookup.task_name, "deno:importsmap");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn lookup_token_qualified_hit_outranks_exact_name() {
+        // When deno.json really has `importsmap`, the qualified reading
+        // stays authoritative even if a colon-named twin exists.
+        let mut ctx = context();
+        ctx.tasks.push(task("importsmap", TaskSource::DenoJson));
+        ctx.tasks
+            .push(task("deno:importsmap", TaskSource::PackageJson));
+
+        let (lookup, found) = lookup_token(&ctx, "deno:importsmap");
+        assert_eq!(lookup.qualifier, Some(TaskSource::DenoJson));
+        assert_eq!(lookup.task_name, "importsmap");
+        assert!(found.iter().any(|t| t.source == TaskSource::DenoJson));
+    }
+
+    #[test]
+    fn precheck_passes_shadowed_colon_named_task() {
+        // Chain mode (`run -p deno:importsmap …`) failed precheck with
+        // `task "importsmap" not found in deno` for the same shadowing.
+        let mut ctx = context();
+        ctx.tasks
+            .push(task("deno:importsmap", TaskSource::Justfile));
+
+        precheck_task(&ctx, &ResolutionOverrides::default(), "deno:importsmap")
+            .expect("colon-named task must pass precheck");
+    }
+
+    #[test]
+    fn precheck_fqn_miss_errors_instead_of_falling_through() {
+        let err = precheck_task(
+            &context(),
+            &ResolutionOverrides::default(),
+            "root:just#nope",
+        )
+        .expect_err("FQN miss must fail precheck");
+        assert!(format!("{err:#}").contains("not found in just"));
+    }
+
+    #[test]
+    fn qualified_miss_error_notes_unreadable_source() {
+        // ts-x509 shape: package.json is mid-edit invalid JSON, so its
+        // tasks vanish and every miss error is a red herring unless it
+        // mentions the unreadable source.
+        let mut ctx = context();
+        ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: "package.json",
+            error: "invalid JSON".to_string(),
+        });
+
+        let err = precheck_task(&ctx, &ResolutionOverrides::default(), "deno:lint")
+            .expect_err("qualified miss");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("not found in deno"));
+        assert!(msg.contains("package.json failed to read"));
+
+        let err = precheck_task(&ctx, &ResolutionOverrides::default(), "lint:deno")
+            .expect_err("reversed qualifier");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("deno:lint"));
+        assert!(msg.contains("package.json failed to read"));
     }
 
     #[test]

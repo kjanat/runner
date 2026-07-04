@@ -13,8 +13,8 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::cmd::run::{
-    ResolvedPythonPm, allowed_runner_sources, resolve_python_pm, runner_constraint_error,
-    select_task_entry, source_depth, source_priority,
+    ResolvedPythonPm, TokenLookup, allowed_runner_sources, lookup_token, resolve_python_pm,
+    runner_constraint_error, select_task_entry, source_depth, source_priority,
 };
 use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::types::{ProjectContext, Task, TaskSource};
@@ -33,19 +33,39 @@ pub(crate) fn why(
     json: bool,
     schema_version: u32,
 ) -> Result<()> {
-    let candidates: Vec<&Task> = ctx.tasks.iter().filter(|t| t.name == task).collect();
-    let restricted: Vec<&Task> = allowed_runner_sources(overrides).map_or_else(
-        || candidates.clone(),
-        |allowed| {
+    // Interpret the token exactly like `run` does — qualified syntax
+    // (`deno:lint`), FQN (`root:package.json#name`), and the exact-name
+    // fallback for colon-named scripts all resolve here, so `why` can
+    // explain the very dispatch `run` would perform for the same token.
+    let (lookup, candidates) = lookup_token(ctx, task);
+    let TokenLookup { qualifier, .. } = lookup;
+
+    // A qualifier pins the source and outranks the runner constraint,
+    // mirroring `resolve_dispatch`.
+    let restricted: Vec<&Task> = qualifier.map_or_else(
+        || {
+            allowed_runner_sources(overrides).map_or_else(
+                || candidates.clone(),
+                |allowed| {
+                    candidates
+                        .iter()
+                        .copied()
+                        .filter(|t| allowed.contains(&t.source))
+                        .collect()
+                },
+            )
+        },
+        |source| {
             candidates
                 .iter()
                 .copied()
-                .filter(|t| allowed.contains(&t.source))
+                .filter(|t| t.source == source)
                 .collect()
         },
     );
 
     if restricted.is_empty()
+        && qualifier.is_none()
         && let Some(reason) = runner_constraint_error(overrides, &candidates)
     {
         return Err(reason.into());
