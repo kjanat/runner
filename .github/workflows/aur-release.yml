@@ -31,7 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           version="${RELEASE_TAG#v}"
-          bash "${GITHUB_WORKSPACE}/.github/scripts/publish/aur-prepare.sh" "${PKG}" "${version}"
+          bash "${GITHUB_WORKSPACE}/.github/scripts/aur.sh" prepare "${PKG}" "${version}"
 
       - name: publish to AUR
         if: env.DRY_RUN != 'true'

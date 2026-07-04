@@ -1,3 +1,19 @@
+# Tag-push (v*) pipeline. Scripts: .github/scripts/<workflow>.sh <subcommand>.
+#
+#   verify (also PRs/master) ── dprint, cargo lint, cargo test
+#     ├─ create-release ─────── draft GH release + notes
+#     │    ├─ man ───────────── release assets + artifact `man-pages`
+#     │    └─ upload-assets ─── per-target build matrix (needs: matrix);
+#     │                         release.sh package-asset|verify-asset
+#     └─ matrix ─────────────── build matrix from npm/targets.json
+#   build-dist (needs: upload-assets, man)
+#     └─ release.sh download-archives → verify-checksums → build-npm-packages;
+#        smoke; artifact `dist` (tarred: keeps exec bits)
+#   publish-release (needs: build-dist) ── draft → published
+#     ├─ call-npm-release ──→ npm-release.yml: setup (npm.sh smoke|derive)
+#     │                        → per-package publish matrix → facade (npm.sh publish)
+#     ├─ call-aur-release ──→ aur-release.yml: aur.sh prepare → AUR push
+#     └─ call-crates-release → crates-release.yml: `man-pages` artifact → cargo publish
 name: release
 run-name: "${{ case(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'), format('release {0}', github.ref_name), github.event_name == 'pull_request', format('verify PR #{0}', github.event.pull_request.number), format('verify {0}', github.ref_name)) }}"
 on: { pull_request: null, push: { branches: [master], tags: [v*] } }
@@ -182,7 +198,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
           BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/package-release-asset.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" package-asset
 
       # A leg can report success while uploading nothing (observed: taiki-e
       # action no-ops on windows-11-arm). Fail loudly here so the empty leg
@@ -194,7 +210,7 @@ jobs:
       - name: verify asset uploaded
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}", TARGET: "${{ matrix.target }}" }
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/verify-asset-uploaded.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" verify-asset
 
   build-dist:
     name: build dist
@@ -212,7 +228,7 @@ jobs:
 
       - name: download release archives
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/download-release-archives.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" download-archives
 
       - name: download man pages
         uses: actions/download-artifact@v8
@@ -220,10 +236,10 @@ jobs:
 
       - name: verify checksums
         working-directory: npm/downloads
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/verify-checksum.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" verify-checksums
 
       - name: build npm packages
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/build-npm-packages.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" build-npm-packages
 
       - name: add bin dir to path
         run: echo "${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin" >> "${GITHUB_PATH}"

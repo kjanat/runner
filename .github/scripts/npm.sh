@@ -1,23 +1,121 @@
 #!/usr/bin/env bash
+# Subcommands for npm-release.yml. One script per workflow; dispatch at the bottom.
 
 set -euo pipefail
 shopt -s nullglob
 
-# Required env vars supplied by the workflow. Declaring them as
-# self-assignments with ${VAR:?} both fails fast on missing values
-# and resolves shellcheck's "referenced but not assigned" warnings.
-RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required}"
-DIST_TAG="${DIST_TAG:?DIST_TAG required}"
-DRY_RUN="${DRY_RUN:?DRY_RUN required}"
-REGISTRY="${REGISTRY:?REGISTRY required}"
-# Single-package mode for matrix jobs; empty publishes everything.
-ONLY_PACKAGE="${ONLY_PACKAGE-}"
-# Optional: set by GHA, absent for local runs.
-GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
+# Derive the npm dist-tag and dry-run flag from trigger metadata.
+# Required env: RELEASE_TAG, EVENT_NAME, GITHUB_OUTPUT. Optional: INPUT_DIST_TAG, INPUT_DRY_RUN.
+cmd_derive() {
+	: "${RELEASE_TAG:?RELEASE_TAG required}"
+	: "${EVENT_NAME:?EVENT_NAME required}"
+	: "${GITHUB_OUTPUT:?GITHUB_OUTPUT required}"
+	local input_dist_tag="${INPUT_DIST_TAG-}"
+	local input_dry_run="${INPUT_DRY_RUN-false}"
+
+	local dist_tag dry_run
+	if [[ -n "${input_dist_tag}" ]]; then
+		# Manual override always wins. Validate shape so a malformed input
+		# can't slip flag-like or whitespace values into `npm publish --tag`.
+		if [[ ! "${input_dist_tag}" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]]; then
+			echo "error: INPUT_DIST_TAG '${input_dist_tag}' is not a valid npm dist-tag (^[A-Za-z][A-Za-z0-9._-]*$)" >&2
+			exit 1
+		fi
+		dist_tag="${input_dist_tag}"
+	else
+		# Infer from the tag: prerelease (e.g. v1.0.0-rc.1) → next, else latest.
+		case "${RELEASE_TAG}" in
+			*-*) dist_tag=next ;;
+			*) dist_tag=latest ;;
+		esac
+	fi
+
+	if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+		# Normalize to strict true/false so downstream string compares
+		# aren't fooled by "True"/"1"/"yes" silently meaning false.
+		case "${input_dry_run,,}" in
+			true) dry_run=true ;;
+			false | "") dry_run=false ;;
+			*)
+				echo "error: INPUT_DRY_RUN '${input_dry_run}' must be 'true' or 'false'" >&2
+				exit 1
+				;;
+		esac
+	else
+		dry_run=false
+	fi
+
+	{
+		echo "dist-tag=${dist_tag}"
+		echo "dry-run=${dry_run}"
+	} | tee -a "${GITHUB_OUTPUT}"
+}
+
+# Install the packed tarballs into a scratch project and execute every
+# bin — runs on the exact bytes `npm publish` ships.
+# Required env: RELEASE_TAG.
+cmd_smoke() {
+	: "${RELEASE_TAG:?RELEASE_TAG required}"
+	local expected_version="${RELEASE_TAG#v}"
+	local targets_json="${GITHUB_WORKSPACE:-.}/npm/targets.json"
+	local facade scope
+	facade=$(jq -r '.facade' "${targets_json}")
+	scope=$(jq -r '.scope' "${targets_json}")
+	local host_pkg=linux-x64-gnu # ubuntu-latest; matches release.yml build-dist
+
+	local scratch
+	scratch=$(mktemp -d)
+	trap 'rm -rf "${scratch}"' EXIT
+
+	(cd "npm/dist/${host_pkg}" && npm pack --pack-destination "${scratch}" >/dev/null)
+	(cd "npm/dist/${facade}" && npm pack --pack-destination "${scratch}" >/dev/null)
+
+	mkdir "${scratch}/app"
+	(cd "${scratch}/app" && npm install --no-audit --no-fund --ignore-scripts "${scratch}"/*.tgz)
+
+	assert_version() {
+		local label="$1" out
+		shift
+		out=$("$@")
+		if [[ "${out}" != *"${expected_version}"* ]]; then
+			echo "error: ${label}: expected ${expected_version}, got: ${out}" >&2
+			exit 1
+		fi
+		echo "ok ${label}: ${out}"
+	}
+
+	local platform_dir="${scratch}/app/node_modules/${scope}/${host_pkg}"
+
+	# Raw binaries — the files whose exec bits the artifact handoff used to drop.
+	local raw_bins=("${platform_dir}/bin/"*) raw
+	if [[ "${#raw_bins[@]}" -eq 0 ]]; then
+		echo "error: no binaries under ${platform_dir}/bin/" >&2
+		exit 1
+	fi
+	for raw in "${raw_bins[@]}"; do
+		assert_version "raw $(basename "${raw}")" "${raw}" --version
+	done
+
+	# Every bin target, whatever the bin field's shape.
+	local target
+	while IFS= read -r target; do
+		assert_version "bin ${target}" "${platform_dir}/${target}" --version
+	done < <(jq -r '.bin | if type == "string" then [.] else [.[]] end | .[]' "${platform_dir}/package.json")
+
+	# Linked bins (facade shims + platform bins).
+	local linked=("${scratch}/app/node_modules/.bin/"*) bin
+	if [[ "${#linked[@]}" -eq 0 ]]; then
+		echo "error: no bins linked in scratch install" >&2
+		exit 1
+	fi
+	for bin in "${linked[@]}"; do
+		assert_version "$(basename "${bin}")" "${bin}" --version
+	done
+}
 
 # The artifact is built by release.yml's `build-dist` job (tag-push
-# context) and downloaded here via cross-workflow `download-artifact`.
-# We still treat it as untrusted: defense-in-depth against a tampered
+# context) and downloaded via cross-workflow `download-artifact`. We
+# still treat it as untrusted: defense-in-depth against a tampered
 # artifact at the cross-workflow handoff or a malicious tag committer.
 # Three defenses run before npm is invoked:
 #   1. Hardcoded allowlist of expected directory names — a tampered
@@ -33,33 +131,77 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 # runs; for manual workflow_dispatch backfills we relax this so missing
 # required packages are skipped instead of aborting. The façade itself
 # remains mandatory either way.
-TARGETS_JSON="${GITHUB_WORKSPACE:-.}/npm/targets.json"
-FACADE=$(jq -r '.facade' "${TARGETS_JSON}")
-SCOPE=$(jq -r '.scope' "${TARGETS_JSON}")
-mapfile -t REQUIRED_PLATFORMS < <(jq -r '.targets[] | select((.experimental // false) | not) | .pkg' "${TARGETS_JSON}")
-mapfile -t OPTIONAL_PLATFORMS < <(jq -r '.targets[] | select(.experimental // false) | .pkg' "${TARGETS_JSON}")
-EXPECTED_VERSION="${RELEASE_TAG#v}"
+#
+# Required env: RELEASE_TAG, DIST_TAG, DRY_RUN, REGISTRY.
+# Optional env: ONLY_PACKAGE (single-package mode for matrix jobs), GITHUB_OUTPUT.
+cmd_publish() {
+	: "${RELEASE_TAG:?RELEASE_TAG required}"
+	DIST_TAG="${DIST_TAG:?DIST_TAG required}"
+	DRY_RUN="${DRY_RUN:?DRY_RUN required}"
+	REGISTRY="${REGISTRY:?REGISTRY required}"
+	ONLY_PACKAGE="${ONLY_PACKAGE-}"
+	GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 
-# Refuse to proceed if the artifact contains anything outside the
-# allowlist — that's either a misconfiguration or an attack.
-allowed_set=" ${FACADE} ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
-for dir in npm/dist/*/; do
-	base=$(basename "${dir%/}")
-	if [[ "${allowed_set}" != *" ${base} "* ]]; then
-		echo "error: artifact contains unexpected directory '${base}' (not in allowlist)" >&2
-		exit 1
-	fi
-done
+	TARGETS_JSON="${GITHUB_WORKSPACE:-.}/npm/targets.json"
+	FACADE=$(jq -r '.facade' "${TARGETS_JSON}")
+	SCOPE=$(jq -r '.scope' "${TARGETS_JSON}")
+	mapfile -t REQUIRED_PLATFORMS < <(jq -r '.targets[] | select((.experimental // false) | not) | .pkg' "${TARGETS_JSON}")
+	mapfile -t OPTIONAL_PLATFORMS < <(jq -r '.targets[] | select(.experimental // false) | .pkg' "${TARGETS_JSON}")
+	EXPECTED_VERSION="${RELEASE_TAG#v}"
 
-# 0644 binaries EACCES at spawn — fail loud before publishing.
-for platform in "${REQUIRED_PLATFORMS[@]}" "${OPTIONAL_PLATFORMS[@]}"; do
-	for bin in "npm/dist/${platform}/bin/"*; do
-		if [[ ! -x "${bin}" ]]; then
-			echo "error: ${bin} lost its executable bit in the artifact handoff" >&2
+	# Refuse to proceed if the artifact contains anything outside the
+	# allowlist — that's either a misconfiguration or an attack.
+	local allowed_set=" ${FACADE} ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
+	local dir base
+	for dir in npm/dist/*/; do
+		base=$(basename "${dir%/}")
+		if [[ "${allowed_set}" != *" ${base} "* ]]; then
+			echo "error: artifact contains unexpected directory '${base}' (not in allowlist)" >&2
 			exit 1
 		fi
 	done
-done
+
+	# 0644 binaries EACCES at spawn — fail loud before publishing.
+	local platform bin
+	for platform in "${REQUIRED_PLATFORMS[@]}" "${OPTIONAL_PLATFORMS[@]}"; do
+		for bin in "npm/dist/${platform}/bin/"*; do
+			if [[ ! -x "${bin}" ]]; then
+				echo "error: ${bin} lost its executable bit in the artifact handoff" >&2
+				exit 1
+			fi
+		done
+	done
+
+	if [[ -n "${ONLY_PACKAGE}" ]]; then
+		if [[ "${ONLY_PACKAGE}" == "${FACADE}" ]]; then
+			publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
+		elif [[ " ${REQUIRED_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
+			publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" true
+		elif [[ " ${OPTIONAL_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
+			publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" false
+		else
+			echo "error: ONLY_PACKAGE '${ONLY_PACKAGE}' is not the facade or a known platform" >&2
+			exit 1
+		fi
+		return 0
+	fi
+
+	# Tier-1/2 are always required: the artifact is built by release.yml's
+	# build-dist (where missing tier-1/2 tarballs already fail loud),
+	# so a missing dir here means the artifact was tampered with or the
+	# build silently dropped a target — either case warrants a hard fail.
+	# Sub-packages first so the façade's optionalDependencies resolve on install.
+	for platform in "${REQUIRED_PLATFORMS[@]}"; do
+		publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" true
+	done
+	for platform in "${OPTIONAL_PLATFORMS[@]}"; do
+		publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" false
+	done
+
+	# Façade is mandatory either way — no point publishing a half-empty
+	# set of platform packages with no entry point.
+	publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
+}
 
 # publish_allowed publishes a single package from a built artifact directory
 # when it exists and its package.json matches the expected name and version,
@@ -148,8 +290,8 @@ publish_allowed() {
 	fi
 
 	# Surface the package URL to the workflow. Repeated writes to the
-	# same key resolve last-wins in GITHUB_OUTPUT, so the façade (which
-	# publishes last) ends up as the canonical value.
+	# same key resolve last-wins in GITHUB_OUTPUT; in single-package
+	# (matrix) mode each job writes exactly one.
 	if [[ -n "${GITHUB_OUTPUT}" ]]; then
 		echo "package-url=https://npm.im/package/${actual_name}/v/${version}" >>"${GITHUB_OUTPUT}"
 	fi
@@ -202,32 +344,12 @@ publish_allowed() {
 	printf '%s\n' "${output}"
 }
 
-if [[ -n "${ONLY_PACKAGE}" ]]; then
-	if [[ "${ONLY_PACKAGE}" == "${FACADE}" ]]; then
-		publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
-	elif [[ " ${REQUIRED_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
-		publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" true
-	elif [[ " ${OPTIONAL_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
-		publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" false
-	else
-		echo "error: ONLY_PACKAGE '${ONLY_PACKAGE}' is not the facade or a known platform" >&2
-		exit 1
-	fi
-	exit 0
-fi
-
-# Tier-1/2 are always required: the artifact is built by release.yml's
-# build-dist (where missing tier-1/2 tarballs already fail loud),
-# so a missing dir here means the artifact was tampered with or the
-# build silently dropped a target — either case warrants a hard fail.
-# Sub-packages first so the façade's optionalDependencies resolve on install.
-for platform in "${REQUIRED_PLATFORMS[@]}"; do
-	publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" true
-done
-for platform in "${OPTIONAL_PLATFORMS[@]}"; do
-	publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" false
-done
-
-# Façade is mandatory either way — no point publishing a half-empty
-# set of platform packages with no entry point.
-publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
+case "${1-}" in
+	derive) cmd_derive ;;
+	smoke) cmd_smoke ;;
+	publish) cmd_publish ;;
+	*)
+		echo "usage: ${0##*/} <derive|smoke|publish>" >&2
+		exit 2
+		;;
+esac

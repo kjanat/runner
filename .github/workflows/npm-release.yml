@@ -50,7 +50,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: ".github/scripts\nnpm/targets.json"
+          sparse-checkout: ".github/scripts\n.github/actions\nnpm/targets.json"
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-node@v6
@@ -85,20 +85,17 @@ jobs:
           echo "run-id=${run_id}" >> "${GITHUB_OUTPUT}"
 
       - name: download dist artifact
-        uses: actions/download-artifact@v8
-        with: { name: dist, path: npm/, run-id: "${{ steps.resolve.outputs.run-id }}", github-token: "${{ github.token }}" }
-
-      - name: extract dist
-        run: tar -xf npm/dist.tar -C npm && rm npm/dist.tar
+        uses: ./.github/actions/dist-artifact
+        with: { run-id: "${{ steps.resolve.outputs.run-id }}", token: "${{ github.token }}" }
 
       # Execute what will be published; build-dist's smoke test runs
       # before the artifact handoff and can't see what it breaks.
       - name: smoke-test dist artifact
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/smoke-npm-artifact.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" smoke
 
       - name: derive dist-tag and dry-run
         id: derive
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/build/derive-dist-dry.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" derive
 
       - name: generate publish matrix
         id: matrix
@@ -122,18 +119,15 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: ".github/scripts\nnpm/targets.json"
+          sparse-checkout: ".github/scripts\n.github/actions\nnpm/targets.json"
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-node@v6
         with: { registry-url: "${{ env.REGISTRY }}" }
 
       - name: download dist artifact
-        uses: actions/download-artifact@v8
-        with: { name: dist, path: npm/, run-id: "${{ needs.setup.outputs.run-id }}", github-token: "${{ github.token }}" }
-
-      - name: extract dist
-        run: tar -xf npm/dist.tar -C npm && rm npm/dist.tar
+        uses: ./.github/actions/dist-artifact
+        with: { run-id: "${{ needs.setup.outputs.run-id }}", token: "${{ github.token }}" }
 
       - name: publish to npm
         id: publish
@@ -141,7 +135,7 @@ jobs:
           DIST_TAG: ${{ needs.setup.outputs.dist-tag }}
           DRY_RUN: ${{ needs.setup.outputs.dry-run }}
           ONLY_PACKAGE: ${{ matrix.pkg }}
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/npm.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" publish
 
   # Facade last so its optionalDependencies resolve on install.
   publish-facade:
@@ -155,18 +149,15 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: ".github/scripts\nnpm/targets.json"
+          sparse-checkout: ".github/scripts\n.github/actions\nnpm/targets.json"
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-node@v6
         with: { registry-url: "${{ env.REGISTRY }}" }
 
       - name: download dist artifact
-        uses: actions/download-artifact@v8
-        with: { name: dist, path: npm/, run-id: "${{ needs.setup.outputs.run-id }}", github-token: "${{ github.token }}" }
-
-      - name: extract dist
-        run: tar -xf npm/dist.tar -C npm && rm npm/dist.tar
+        uses: ./.github/actions/dist-artifact
+        with: { run-id: "${{ needs.setup.outputs.run-id }}", token: "${{ github.token }}" }
 
       - name: publish to npm
         id: publish
@@ -174,4 +165,4 @@ jobs:
           DIST_TAG: ${{ needs.setup.outputs.dist-tag }}
           DRY_RUN: ${{ needs.setup.outputs.dry-run }}
           ONLY_PACKAGE: ${{ needs.setup.outputs.facade }}
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/npm.sh"
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" publish
