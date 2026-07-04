@@ -45,9 +45,9 @@ for raw in "${raw_bins[@]}"; do
 	assert_version "raw $(basename "${raw}")" "${raw}" --version
 done
 
-# Platform package's own launcher(s), whatever the bin field's shape.
-while IFS= read -r shim; do
-	assert_version "shim ${shim}" node "${platform_dir}/${shim}" --version
+# Every bin target, whatever the bin field's shape.
+while IFS= read -r target; do
+	assert_version "bin ${target}" "${platform_dir}/${target}" --version
 done < <(jq -r '.bin | if type == "string" then [.] else [.[]] end | .[]' "${platform_dir}/package.json")
 
 # Linked bins (facade shims + platform bin).

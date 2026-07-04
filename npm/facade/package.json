@@ -39,8 +39,7 @@
 		"runner-run": "bin/runner.cjs"
 	},
 	"directories": {
-		"lib": "./lib",
-		"bin": "./bin"
+		"lib": "./lib"
 	},
 	"files": [
 		"bin/",

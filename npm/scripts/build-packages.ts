@@ -40,9 +40,6 @@ const BLOCK_SIZE = 512;
 
 const FACADE_BIN_FILES = ["runner.cjs", "run.cjs"] as const;
 const FACADE_LIB_FILES = ["resolve.cjs", "launch.cjs"] as const;
-// Copied to `<binary>.cjs` per binary in each platform package; each copy
-// spawns the package-relative binary matching its own filename.
-const PLATFORM_LAUNCHER = "launcher.cjs";
 
 // npm allows multiple shapes for several `package.json` fields. Cargo's
 // `package.metadata` is user-defined freeform JSON — the user could put any
@@ -696,10 +693,6 @@ async function buildPlatformPackage(
 		throw new Error(`missing ${missing} in ${tarball}`);
 	}
 
-	for (const name of matrix.binaries) {
-		await cp(join(npmDir, "platform", PLATFORM_LAUNCHER), join(dest, `${name}.cjs`));
-	}
-
 	const pkg = platformPackageJson(matrix, target, opts.version, meta);
 	await writeJson(join(dest, "package.json"), pkg);
 	console.debug(pkg);
@@ -751,7 +744,7 @@ async function writePlatformBinaries(
  * @param version - Version string to set on the package
  * @param meta - Additional npm fields (derived from Cargo metadata) to merge into the package.json
  * @returns The package.json object containing `name`, `version`, `description`,
- * merged `meta`, platform `os`/`cpu` (and optional `libc`), restricted `exports`, `directories.bin`, and `files`
+ * merged `meta`, platform `os`/`cpu` (and optional `libc`), `bin`, restricted `exports`, and `files`
  */
 function platformPackageJson(
 	matrix: Matrix,
@@ -783,11 +776,12 @@ function platformPackageJson(
 		os: target.os,
 		cpu: target.cpu,
 		...(target.libc ? { libc: target.libc } : {}),
-		// Real binary names; colliding with the facade's bins is benign (same bytes).
-		bin: Object.fromEntries(matrix.binaries.map((name) => [name, `${name}.cjs`])),
+		// npm chmods bin targets at link time; a `directories.bin` alongside `bin` is an error.
+		bin: Object.fromEntries(
+			matrix.binaries.map((name) => [name, `bin/${name}${target.os.includes("win32") ? ".exe" : ""}`]),
+		),
 		exports: { "./package.json": "./package.json" },
-		directories: { bin: "./bin" },
-		files: ["bin/", ...matrix.binaries.map((name) => `${name}.cjs`)],
+		files: ["bin/"],
 	};
 }
 
@@ -809,7 +803,6 @@ function platformReadme(matrix: Matrix, target: Target): string {
 	const platform = [...target.os, ...target.cpu, ...(target.libc ? [target.libc] : [])].join(" · ");
 
 	const primary = matrix.binaries[0];
-	const launchers = matrix.binaries.map((name) => `\`${name}.cjs\``).join(" and ");
 	const examples = [
 		`npx --package=${packageName} ${primary} install -f build test`,
 		`npx --package=${packageName} ${primary} list`,
@@ -836,8 +829,8 @@ platform, so prefer \`${matrix.facade}\` for anything portable.
 
 ## Standalone use
 
-The package is a working CLI in its own right — it ships ${binaries} bins that launch
-the bundled binaries, so on a matching machine it runs without the facade:
+The package is a working CLI in its own right — its bins point straight at the bundled
+${binaries} binaries, so on a matching machine it runs without the facade:
 
 \`\`\`sh
 ${examples}
@@ -849,7 +842,6 @@ pulling the facade and its sibling platform packages into the resolution.
 ## Contents
 
 - ${binaries}: prebuilt native ${noun} under \`bin/\`.
-- ${launchers}: package-relative launchers backing the bins.
 - No dependencies, no install scripts, no network access.
 
 ## More
