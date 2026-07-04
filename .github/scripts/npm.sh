@@ -97,10 +97,11 @@ cmd_smoke() {
 	done
 
 	# Every bin target, whatever the bin field's shape.
-	local target
+	local bin_targets target
+	bin_targets=$(jq -r '.bin | if type == "string" then [.] else [.[]] end | .[]' "${platform_dir}/package.json")
 	while IFS= read -r target; do
 		assert_version "bin ${target}" "${platform_dir}/${target}" --version
-	done < <(jq -r '.bin | if type == "string" then [.] else [.[]] end | .[]' "${platform_dir}/package.json")
+	done <<<"${bin_targets}"
 
 	# Linked bins (facade shims + platform bins).
 	local linked=("${scratch}/app/node_modules/.bin/"*) bin
@@ -145,8 +146,15 @@ cmd_publish() {
 	TARGETS_JSON="${GITHUB_WORKSPACE:-.}/npm/targets.json"
 	FACADE=$(jq -r '.facade' "${TARGETS_JSON}")
 	SCOPE=$(jq -r '.scope' "${TARGETS_JSON}")
-	mapfile -t REQUIRED_PLATFORMS < <(jq -r '.targets[] | select((.experimental // false) | not) | .pkg' "${TARGETS_JSON}")
-	mapfile -t OPTIONAL_PLATFORMS < <(jq -r '.targets[] | select(.experimental // false) | .pkg' "${TARGETS_JSON}")
+	# Assign before mapfile so a jq failure aborts under `set -e`; guard
+	# empty output, which `<<<` would turn into a phantom "" element.
+	local required_list optional_list
+	required_list=$(jq -r '.targets[] | select((.experimental // false) | not) | .pkg' "${TARGETS_JSON}")
+	optional_list=$(jq -r '.targets[] | select(.experimental // false) | .pkg' "${TARGETS_JSON}")
+	REQUIRED_PLATFORMS=()
+	OPTIONAL_PLATFORMS=()
+	[[ -n "${required_list}" ]] && mapfile -t REQUIRED_PLATFORMS <<<"${required_list}"
+	[[ -n "${optional_list}" ]] && mapfile -t OPTIONAL_PLATFORMS <<<"${optional_list}"
 	EXPECTED_VERSION="${RELEASE_TAG#v}"
 
 	# Refuse to proceed if the artifact contains anything outside the
@@ -257,7 +265,8 @@ publish_allowed() {
 	# none — a tampered platform package could otherwise smuggle attacker-
 	# controlled deps that npm would happily install transitively.
 	if [[ "${expected_name}" == "${FACADE}" ]]; then
-		local dep_name dep_version platform expected_dep_set=" ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
+		local dep_name dep_version platform dep_entries expected_dep_set=" ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
+		dep_entries=$(jq -r '(.optionalDependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' "${dir}/package.json")
 		while IFS=$'\t' read -r dep_name dep_version; do
 			[[ -z "${dep_name}" ]] && continue
 			if [[ "${dep_name}" != "${SCOPE}/"* ]]; then
@@ -273,7 +282,7 @@ publish_allowed() {
 				echo "error: facade optionalDependencies['${dep_name}'] = '${dep_version}', expected '${EXPECTED_VERSION}'" >&2
 				exit 1
 			fi
-		done < <(jq -r '(.optionalDependencies // {}) | to_entries[] | "\(.key)\t\(.value)"' "${dir}/package.json")
+		done <<<"${dep_entries}"
 
 		# Required platforms must all be referenced.
 		for platform in "${REQUIRED_PLATFORMS[@]}"; do

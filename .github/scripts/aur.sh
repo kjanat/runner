@@ -16,6 +16,7 @@ set -euo pipefail
 # Usage: aur.sh prepare <pkgname> <version-without-leading-v>
 # Requires: GH_TOKEN, GITHUB_REPOSITORY (provided by Actions).
 cmd_prepare() {
+	: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 	local pkgname="${1:?usage: aur.sh prepare <pkgname> <version>}"
 	local version="${2:?usage: aur.sh prepare <pkgname> <version>}"
 	local pkgbuild="aur/${pkgname}/PKGBUILD"
@@ -49,7 +50,7 @@ cmd_prepare() {
 		)
 		local carch asset sum
 		for carch in "${!triples[@]}"; do
-			asset="runner-v${version}-${triples[$carch]}.sha256"
+			asset="runner-v${version}-${triples[${carch}]}.sha256"
 			# `.sha256` asset is "<hash>  <filename>"; field 1 is the digest.
 			sum="$(gh release download "v${version}" \
 				--repo "${GITHUB_REPOSITORY}" \

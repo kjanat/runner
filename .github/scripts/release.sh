@@ -82,10 +82,12 @@ cmd_verify_asset() {
 		while IFS= read -r asset; do
 			assets+=("${asset}")
 		done < <(
+			# `|| true`: a failed listing leaves `assets` empty, which the
+			# retry loop treats as missing and re-fetches.
 			gh release view "${RELEASE_TAG}" \
 				--repo "${GITHUB_REPOSITORY}" \
 				--json assets \
-				--jq '.assets[].name'
+				--jq '.assets[].name' || true
 		)
 
 		missing=()
