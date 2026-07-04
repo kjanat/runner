@@ -1,3 +1,4 @@
+---
 name: npm-release
 run-name: ${{ format('npm publish {0}', case(github.event_name == 'release', github.event.release.tag_name, inputs.tag)) }}
 

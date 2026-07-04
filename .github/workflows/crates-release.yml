@@ -1,3 +1,4 @@
+---
 name: crates-release
 run-name: ${{ format('crates publish {0}', inputs.tag) }}
 
