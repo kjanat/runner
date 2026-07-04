@@ -31,9 +31,9 @@ cmd_package_asset() {
 	# verify-checksums enforces (`expected="${t%.tar.gz}.sha256"`).
 	local checksum="${archive_basename}.sha256"
 
-	local staging
+	# Not `local`: the EXIT trap runs at top level, after locals are gone.
 	staging=$(mktemp -d)
-	trap 'rm -rf "${staging}"' EXIT
+	trap 'rm -rf "${staging-}"' EXIT
 
 	# Lay out the contents the way upload-rust-binary-action does with
 	# `leading_dir: false` and `include: README.md,LICENSE`: every file at

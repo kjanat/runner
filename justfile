@@ -1,10 +1,7 @@
 # https://just.systems
 set unstable
 
-cargo-version := `cargo read-manifest | jq -r .version`
-triple := `rustc --print host-tuple`
-npm-pkg-name := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.name'`
-npm-pkg-scope := `cargo metadata --format-version 1 --no-deps | jq -r --arg id "$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_default_members[0]')" '.packages[] | select(.id == $id).metadata.npm.subpkgscope'`
+# Version/triple live in recipe parameter defaults (evaluated per invocation), not globals — just evaluates globals on every run.
 build-pkgscript := "npm" / "scripts" / "build-packages.ts"
 downloads-dir := "npm" / "downloads"
 
@@ -35,7 +32,7 @@ gen-schema:
     @cargo schema --all --output {{ schema-dir }}
 
 [group('npm')]
-build-packages only="" skip="false" version=cargo-version:
+build-packages only="" skip="false" version=`cargo read-manifest | jq -r .version`:
     #!/usr/bin/env bash
     set -euo pipefail
     args=("--version" "{{ version }}")
@@ -45,9 +42,9 @@ build-packages only="" skip="false" version=cargo-version:
     node {{ build-pkgscript }} "${args[@]}"
     echo "✓ built packages for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
 
-# Build release bin and verify the facade shims spawn the native binary.
+# Build release bin, pack the npm artifacts, and smoke-test them like CI.
 [group('npm')]
-test-release version=cargo-version host-triple=triple:
+test-release version=`cargo read-manifest | jq -r .version` host-triple=`rustc --print host-tuple`:
     #!/usr/bin/env bash
     set -euo pipefail
     pkg="$(jq -r --arg t '{{ host-triple }}' '.targets[] | select(.rust == $t) | .pkg' npm/targets.json)"
@@ -73,18 +70,6 @@ test-release version=cargo-version host-triple=triple:
         -C target/release "${files[@]}"
     just build-packages "${pkg}" "true" "{{ version }}"
 
-    # Wire optional sub-package so resolve.cjs's require.resolve walks
-    # node_modules and finds it. In a real install, npm does this.
-    subpkgdir="npm/dist/{{ npm-pkg-name }}/node_modules/{{ npm-pkg-scope }}"
-    mkdir -p "${subpkgdir}"
-    ln -sfn "../../../${pkg}" "${subpkgdir}/${pkg}"
-
-    for bin in runner run; do
-        output="$(node "npm/dist/{{ npm-pkg-name }}/bin/${bin}.cjs" --version)"
-        echo "→ {{ BLUE }}${bin} --version{{ NORMAL }}	output: {{ GREEN }}${output}{{ NORMAL }}"
-        if [[ "${output}" != *"{{ version }}"* ]]; then
-            echo "✗ ${bin}.cjs did not output version {{ version }}"
-            exit 1
-        fi
-    done
-    echo "✓ facade resolved native bin for {{ MAGENTA }}${pkg}{{ NORMAL }}"
+    # Same pack-install-execute smoke CI runs before npm publish.
+    RELEASE_TAG="v{{ version }}" HOST_PKG="${pkg}" bash .github/scripts/npm.sh smoke
+    echo "✓ smoke passed for {{ MAGENTA }}${pkg}{{ NORMAL }}"

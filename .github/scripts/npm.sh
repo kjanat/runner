@@ -61,11 +61,12 @@ cmd_smoke() {
 	local facade scope
 	facade=$(jq -r '.facade' "${targets_json}")
 	scope=$(jq -r '.scope' "${targets_json}")
-	local host_pkg=linux-x64-gnu # ubuntu-latest; matches release.yml build-dist
+	# ubuntu-latest in CI; HOST_PKG overrides for local non-linux-x64 runs.
+	local host_pkg="${HOST_PKG:-linux-x64-gnu}"
 
-	local scratch
+	# Not `local`: the EXIT trap runs at top level, after locals are gone.
 	scratch=$(mktemp -d)
-	trap 'rm -rf "${scratch}"' EXIT
+	trap 'rm -rf "${scratch-}"' EXIT
 
 	(cd "npm/dist/${host_pkg}" && npm pack --pack-destination "${scratch}" >/dev/null)
 	(cd "npm/dist/${facade}" && npm pack --pack-destination "${scratch}" >/dev/null)
