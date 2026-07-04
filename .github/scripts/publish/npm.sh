@@ -10,6 +10,8 @@ RELEASE_TAG="${RELEASE_TAG:?RELEASE_TAG required}"
 DIST_TAG="${DIST_TAG:?DIST_TAG required}"
 DRY_RUN="${DRY_RUN:?DRY_RUN required}"
 REGISTRY="${REGISTRY:?REGISTRY required}"
+# Single-package mode for matrix jobs; empty publishes everything.
+ONLY_PACKAGE="${ONLY_PACKAGE-}"
 # Optional: set by GHA, absent for local runs.
 GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 
@@ -199,6 +201,20 @@ publish_allowed() {
 	fi
 	printf '%s\n' "${output}"
 }
+
+if [[ -n "${ONLY_PACKAGE}" ]]; then
+	if [[ "${ONLY_PACKAGE}" == "${FACADE}" ]]; then
+		publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
+	elif [[ " ${REQUIRED_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
+		publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" true
+	elif [[ " ${OPTIONAL_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
+		publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" false
+	else
+		echo "error: ONLY_PACKAGE '${ONLY_PACKAGE}' is not the facade or a known platform" >&2
+		exit 1
+	fi
+	exit 0
+fi
 
 # Tier-1/2 are always required: the artifact is built by release.yml's
 # build-dist (where missing tier-1/2 tarballs already fail loud),
