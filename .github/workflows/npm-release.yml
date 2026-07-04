@@ -92,11 +92,11 @@ jobs:
       # Execute what will be published; build-dist's smoke test runs
       # before the artifact handoff and can't see what it breaks.
       - name: smoke-test dist artifact
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" smoke
+        run: bash .github/scripts/npm.sh smoke
 
       - name: derive dist-tag and dry-run
         id: derive
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" derive
+        run: bash .github/scripts/npm.sh derive
 
       - name: generate publish matrix
         id: matrix
@@ -136,7 +136,7 @@ jobs:
           DIST_TAG: ${{ needs.setup.outputs.dist-tag }}
           DRY_RUN: ${{ needs.setup.outputs.dry-run }}
           ONLY_PACKAGE: ${{ matrix.pkg }}
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" publish
+        run: bash .github/scripts/npm.sh publish
 
   # Facade last so its optionalDependencies resolve on install.
   publish-facade:
@@ -166,4 +166,4 @@ jobs:
           DIST_TAG: ${{ needs.setup.outputs.dist-tag }}
           DRY_RUN: ${{ needs.setup.outputs.dry-run }}
           ONLY_PACKAGE: ${{ needs.setup.outputs.facade }}
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/npm.sh" publish
+        run: bash .github/scripts/npm.sh publish

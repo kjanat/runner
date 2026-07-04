@@ -141,11 +141,12 @@ cmd_download_archives() {
 	ls -la npm/downloads
 }
 
-# Verify every downloaded tarball against its .sha256 (run in npm/downloads).
+# Verify every downloaded tarball against its .sha256 in npm/downloads.
 # Required env: RELEASE_TAG.
 cmd_verify_checksums() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
 	shopt -s nullglob
+	cd npm/downloads
 
 	local tarballs=(*.tar.gz)
 	local sums=(*.sha256)

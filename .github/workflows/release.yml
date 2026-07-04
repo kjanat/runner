@@ -199,19 +199,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
           BIN_DIR: ${{ github.workspace }}/target/${{ matrix.target }}/release
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" package-asset
+        run: bash .github/scripts/release.sh package-asset
 
       # A leg can report success while uploading nothing (observed: taiki-e
       # action no-ops on windows-11-arm). Fail loudly here so the empty leg
       # goes red at the source instead of ENOENT-ing later in build-dist.
-      # `shell: bash` is required: this is the only script step that runs across
-      # the full matrix, and Windows legs default to pwsh, where `${GITHUB_WORKSPACE}`
-      # is not an env expansion — the path collapsed and bash ENOENT'd (exit 1).
-      # Under git-bash it expands, matching how the other legs invoke scripts.
+      # `shell: bash` is required: Windows legs default to pwsh otherwise.
       - name: verify asset uploaded
         shell: bash
         env: { GH_TOKEN: "${{ github.token }}", TARGET: "${{ matrix.target }}" }
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" verify-asset
+        run: bash .github/scripts/release.sh verify-asset
 
   build-dist:
     name: build dist
@@ -229,18 +226,17 @@ jobs:
 
       - name: download release archives
         env: { GH_TOKEN: "${{ github.token }}" }
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" download-archives
+        run: bash .github/scripts/release.sh download-archives
 
       - name: download man pages
         uses: actions/download-artifact@v8
         with: { name: man-pages, path: man }
 
       - name: verify checksums
-        working-directory: npm/downloads
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" verify-checksums
+        run: bash .github/scripts/release.sh verify-checksums
 
       - name: build npm packages
-        run: bash "${GITHUB_WORKSPACE}/.github/scripts/release.sh" build-npm-packages
+        run: bash .github/scripts/release.sh build-npm-packages
 
       - name: add bin dir to path
         run: echo "${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin" >> "${GITHUB_PATH}"
