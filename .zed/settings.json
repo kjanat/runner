@@ -67,6 +67,6 @@
 			},
 		},
 	},
-	"file_types": { "SVG": ["*.ico"], "Shell Script": [".runner-dev", "justfile"] },
+	"file_types": { "SVG": ["*.ico"], "Shell Script": [".runner-dev"] },
 	"languages": { "TOML": { "language_servers": ["tombi", "..."] } },
 }
