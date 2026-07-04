@@ -851,7 +851,7 @@ pulling the facade and its sibling platform packages into the resolution.
 ## Contents
 
 - ${binaries}: prebuilt native ${noun} under \`bin/\`.
-- \`${primary}.cjs\`: package-relative launcher backing the \`${primary}\` bin.
+- \`${PLATFORM_SHIM}\`: package-relative launcher backing the \`${primary}\` bin.
 - No dependencies, no install scripts, no network access.
 
 ## More

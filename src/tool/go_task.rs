@@ -97,17 +97,24 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
         .with_context(|| format!("failed to read {}", path.display()))?;
     let docs = yaml_rust2::YamlLoader::load_from_str(&content)
         .with_context(|| format!("{} is not valid YAML", path.display()))?;
-    let Some(tasks) = docs
+    let tasks_value = docs
         .first()
         .and_then(yaml_rust2::Yaml::as_hash)
         .and_then(|root| {
             root.iter()
                 .find_map(|(key, value)| (key.as_str() == Some("tasks")).then_some(value))
-        })
-        .and_then(yaml_rust2::Yaml::as_hash)
-    else {
+        });
+    let Some(tasks_value) = tasks_value else {
         // No `tasks:` table — legal for pure-include/vars Taskfiles.
         return Ok(vec![]);
+    };
+    // Present but not a mapping (`tasks: []`, `tasks: "x"`) is a broken
+    // Taskfile, not an empty one — error so detection warns.
+    let Some(tasks) = tasks_value.as_hash() else {
+        anyhow::bail!(
+            "{} has a `tasks` key, but its value is not a mapping",
+            path.display(),
+        );
     };
     Ok(tasks
         .iter()
@@ -185,6 +192,20 @@ mod tests {
 
         let err = extract_tasks_from_source(dir.path()).expect_err("invalid YAML should error");
         assert!(format!("{err:#}").contains("not valid YAML"));
+    }
+
+    #[test]
+    fn source_fallback_errors_when_tasks_is_not_a_mapping() {
+        // `tasks: []` is YAML-valid but broken as a Taskfile — distinct
+        // from having no `tasks:` key at all, it must error, not yield
+        // zero tasks silently.
+        let dir = TempDir::new("go-task-tasks-not-mapping");
+        fs::write(dir.path().join("Taskfile.yml"), "version: '3'\ntasks: []\n")
+            .expect("Taskfile should be written");
+
+        let err = extract_tasks_from_source(dir.path())
+            .expect_err("non-mapping tasks value should error");
+        assert!(format!("{err:#}").contains("not a mapping"));
     }
 
     #[test]

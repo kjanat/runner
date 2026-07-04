@@ -221,6 +221,24 @@ fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> 
     found
 }
 
+/// The `--long`/`-s` spellings of every root-level (flattened
+/// [`GlobalOpts`]) flag that consumes a following value, read from the
+/// actual clap definition. Used by [`chain_flag_precedes_first_task`] to
+/// skip flag values while scanning for the first task word.
+fn global_value_flags() -> Vec<String> {
+    use clap::CommandFactory as _;
+    Cli::command()
+        .get_arguments()
+        .filter(|arg| !arg.is_positional() && arg.get_action().takes_values())
+        .flat_map(|arg| {
+            arg.get_long()
+                .map(|long| format!("--{long}"))
+                .into_iter()
+                .chain(arg.get_short().map(|short| format!("-{short}")))
+        })
+        .collect()
+}
+
 /// Candidates for the trailing `args` positional of `run`. In chain mode
 /// (`-s`/`-p` typed before the first task) the trailing words are extra
 /// task names, so complete tasks; otherwise they are arguments forwarded
@@ -243,16 +261,11 @@ fn chain_args_candidates() -> Vec<CompletionCandidate> {
 /// Value-carrying global flags are skipped with their values so
 /// `--dir /some/path -s build` still detects the chain flag.
 fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
-    /// Global flags whose value arrives as the *next* word (the `=` form
-    /// needs no special casing — it stays one word).
-    const VALUE_FLAGS: &[&str] = &[
-        "--dir",
-        "--pm",
-        "--runner",
-        "--fallback",
-        "--on-mismatch",
-        "--schema-version",
-    ];
+    // Flags whose value arrives as the *next* word (the `=` form needs no
+    // special casing — it stays one word). Derived from the real clap
+    // definition so a new value-taking global can't silently drift out of
+    // sync with this scanner and get its value mistaken for the task.
+    let value_flags = global_value_flags();
 
     // Skip past clap_complete's `--` separator, then past the binary
     // name itself (`runner` or the `run` alias).
@@ -270,7 +283,7 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
             // it — a task literally named `run` still terminates the
             // scan below on any later occurrence.
             "run" | "r" if !subcommand_seen => subcommand_seen = true,
-            _ if VALUE_FLAGS.contains(&word) => {
+            _ if value_flags.iter().any(|flag| flag == word) => {
                 iter.next();
             }
             // Short cluster (`-sk`, `-pK`): clap accepts combined
@@ -454,6 +467,25 @@ mod tests {
 
     fn osv(words: &[&str]) -> Vec<OsString> {
         words.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn global_value_flags_reflect_clap_definition() {
+        // The chain-flag scanner skips these flags' values; the list is
+        // derived from clap metadata precisely so it can't drift. Pin the
+        // known members so a regression in the derivation itself (e.g. a
+        // filter change dropping everything) is caught.
+        let flags = super::global_value_flags();
+        for expected in ["--dir", "--pm", "--runner", "--fallback", "--on-mismatch"] {
+            assert!(
+                flags.iter().any(|f| f == expected),
+                "expected {expected} in derived value flags: {flags:?}",
+            );
+        }
+        assert!(
+            !flags.iter().any(|f| f == "--quiet"),
+            "boolean flags take no value and must not be skipped-with-value: {flags:?}",
+        );
     }
 
     #[test]

@@ -26,11 +26,17 @@ use crate::types::{PackageManager, TaskRunner, TaskSource};
 pub(super) fn is_env_truthy(raw: &str) -> bool {
     let v = raw.trim();
     !v.is_empty()
-        && v != "0"
-        && !v.eq_ignore_ascii_case("false")
-        && !v.eq_ignore_ascii_case("no")
-        && !v.eq_ignore_ascii_case("off")
+        && !ENV_BOOL_FALSY
+            .iter()
+            .any(|token| v.eq_ignore_ascii_case(token))
 }
+
+/// The boolean env-var token vocabulary, shared by [`is_env_truthy`]
+/// (falsy check) and the lenient validator in `overrides.rs`
+/// (recognized = falsy ∪ truthy) so the two can't drift: a token one
+/// side treats as boolean but the other warns about would be a bug.
+pub(super) const ENV_BOOL_FALSY: &[&str] = &["0", "false", "no", "off"];
+pub(super) const ENV_BOOL_TRUTHY: &[&str] = &["1", "true", "yes", "on"];
 
 pub(super) fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
     match raw {

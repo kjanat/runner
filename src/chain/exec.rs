@@ -177,9 +177,10 @@ fn run_parallel_streaming(
     })();
     if let Err(e) = spawn_outcome {
         kill_and_reap(children);
-        for h in reader_handles {
-            let _ = h.join();
-        }
+        // Bounded drain, same as the poll paths: an already-spawned task
+        // may have left a descendant holding the pipe open, and an
+        // unbounded join would block this error return on it.
+        wait_for_readers(&mut reader_handles, READER_DRAIN_GRACE);
         return Err(e);
     }
 

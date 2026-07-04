@@ -199,6 +199,37 @@ fn streaming_parallel_chain_returns_despite_stdio_holding_descendant() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn streaming_parallel_spawn_failure_returns_despite_stdio_holding_descendant() {
+    // Spawn-phase sibling failure variant of the drain guard: `daemon`
+    // spawns and leaves its 30s sleeper holding the pipe, then the second
+    // token fails to spawn (no such binary, PM-exec direct spawn ENOENT).
+    // The error cleanup must drain readers with the bounded grace, not
+    // block on the sleeper.
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let started = Instant::now();
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-p", "daemon", "definitely-not-a-binary-xyz"])
+        .output()
+        .expect("runner binary spawns");
+    let elapsed = started.elapsed();
+
+    assert!(
+        !output.status.success(),
+        "second token cannot spawn; the chain must fail",
+    );
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "spawn-failure cleanup must not block on a descendant holding stdio; took {elapsed:?}",
+    );
+}
+
 #[test]
 fn parallel_install_chain_times_the_install_step() {
     if !just_available() {

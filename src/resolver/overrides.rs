@@ -832,10 +832,10 @@ fn lenient_env_bool(
     let Some(raw) = field.env.map(str::trim).filter(|s| !s.is_empty()) else {
         return;
     };
-    let recognized = matches!(raw, "1" | "0")
-        || ["true", "false", "yes", "no", "on", "off"]
-            .iter()
-            .any(|token| raw.eq_ignore_ascii_case(token));
+    let recognized = super::policies::ENV_BOOL_TRUTHY
+        .iter()
+        .chain(super::policies::ENV_BOOL_FALSY)
+        .any(|token| raw.eq_ignore_ascii_case(token));
     if !recognized {
         warnings.push(DetectionWarning::InvalidEnvOverride {
             var,
