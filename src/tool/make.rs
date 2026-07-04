@@ -32,19 +32,26 @@ pub(crate) fn detect(dir: &Path) -> bool {
     FILENAMES.iter().any(|n| dir.join(n).exists())
 }
 
-/// Parse Makefile targets, capturing `## Doc comment` lines preceding targets.
+/// Parse Makefile targets, capturing `## Doc comment` descriptions.
 ///
 /// Extracts lines matching `target:` while skipping recipe lines (tab-
 /// indented), special targets (`.PHONY` etc.), variable assignments (`:=`,
-/// `:::=`), and pattern rules (`%`). A `## comment` immediately before a
-/// target is returned as its description.
+/// `:::=`), and pattern rules (`%`). Both self-documenting idioms are
+/// supported: a `## comment` line immediately before a target, and the
+/// inline `target: deps ## comment` form (the one `grep -E '.*?## '`
+/// help targets are built on); the preceding-line form wins when both
+/// are present. A target header appearing twice (legal in make) yields
+/// one row; a later duplicate can still contribute the description if
+/// the first occurrence had none.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let Some(path) = files::find_first(dir, FILENAMES) else {
         return Ok(vec![]);
     };
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let mut targets = Vec::new();
+    let mut targets: Vec<(String, Option<String>)> = Vec::new();
+    let mut index_by_name: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut last_doc: Option<String> = None;
     for line in content.lines() {
         if let Some(comment) = line.strip_prefix("##") {
@@ -74,9 +81,20 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<St
             .filter(|name| !name.is_empty() && !name.contains('$') && !name.contains('%'))
             .collect();
         if !names.is_empty() {
-            let doc = last_doc.take().filter(|d| !d.is_empty());
+            let inline_doc = after
+                .find("##")
+                .map(|at| after[at + 2..].trim().to_string())
+                .filter(|doc| !doc.is_empty());
+            let doc = last_doc.take().filter(|d| !d.is_empty()).or(inline_doc);
             for name in names {
-                targets.push((name.to_string(), doc.clone()));
+                if let Some(&at) = index_by_name.get(name) {
+                    if targets[at].1.is_none() {
+                        targets[at].1.clone_from(&doc);
+                    }
+                } else {
+                    index_by_name.insert(name.to_string(), targets.len());
+                    targets.push((name.to_string(), doc.clone()));
+                }
             }
         }
         last_doc = None;
@@ -145,6 +163,51 @@ mod tests {
         let tasks = extract_tasks(dir.path()).expect("Makefile targets should parse");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, [".dev"]);
+    }
+
+    #[test]
+    fn extract_tasks_captures_inline_double_hash_comments() {
+        // The dominant self-documenting idiom puts the doc on the target
+        // line itself: `build: ## Build the project`. Preceding-line form
+        // wins when both are present.
+        let dir = TempDir::new("make-inline-comments");
+        fs::write(
+            dir.path().join("Makefile"),
+            "build: deps ## Build the project\n\t@echo build\n## Preceding wins\ntest: ## Inline \
+             loses\n\t@echo test\nclean:\n\t@echo clean\n",
+        )
+        .expect("Makefile should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("Makefile targets should parse");
+
+        assert_eq!(
+            tasks,
+            [
+                ("build".to_string(), Some("Build the project".to_string())),
+                ("test".to_string(), Some("Preceding wins".to_string())),
+                ("clean".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_tasks_dedups_repeated_target_headers() {
+        // A target header may legally appear twice (e.g. conditional
+        // includes appending recipes); list it once, and let a later
+        // documented occurrence fill in a missing description.
+        let dir = TempDir::new("make-duplicate-targets");
+        fs::write(
+            dir.path().join("Makefile"),
+            "build:\n\t@echo one\nbuild: ## Build the project\n\t@echo two\n",
+        )
+        .expect("Makefile should be written");
+
+        let tasks = extract_tasks(dir.path()).expect("Makefile targets should parse");
+
+        assert_eq!(
+            tasks,
+            [("build".to_string(), Some("Build the project".to_string()))]
+        );
     }
 
     #[test]
