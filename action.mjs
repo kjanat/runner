@@ -3,9 +3,8 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { EOL } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { arch, env, exit, platform, stdout } from "node:process";
-import { fileURLToPath } from "node:url";
 
 /**
  * @param {"GITHUB_PATH" | "GITHUB_OUTPUT"} name
@@ -141,8 +140,7 @@ function resolvePlatformTarget() {
 	/** @type {{ scope: string, targets: { pkg: string, os: string[], cpu: string[], libc?: string[] | null }[] }} */
 	let manifest;
 	try {
-		const here = dirname(fileURLToPath(import.meta.url));
-		manifest = JSON.parse(readFileSync(join(here, "npm", "targets.json"), "utf8"));
+		manifest = JSON.parse(readFileSync(join(import.meta.dirname, "npm", "targets.json"), "utf8"));
 	} catch (err) {
 		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)}) — using facade`);
 		return null;
