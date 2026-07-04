@@ -221,6 +221,74 @@ fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> 
     found
 }
 
+/// Candidates for the trailing `args` positional of `run`. In chain mode
+/// (`-s`/`-p` typed before the first task) the trailing words are extra
+/// task names, so complete tasks; otherwise they are arguments forwarded
+/// verbatim to the task, where suggesting task names would be noise —
+/// complete nothing.
+fn chain_args_candidates() -> Vec<CompletionCandidate> {
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if !chain_flag_precedes_first_task(&argv) {
+        return vec![];
+    }
+    task_candidates()
+}
+
+/// Scan the in-flight completion argv for a chain-mode flag (`-s`/`-p`,
+/// long forms, or a short cluster like `-sk`) *before* the first task
+/// word — mirroring dispatch, where `trailing_var_arg` means chain flags
+/// must precede task names and a later `-s`/`-p` is forwarded to the
+/// task instead. Same argv shape as [`cli_dir_from_argv`]: user words
+/// follow the first `--`, and the word after that is the binary name.
+/// Value-carrying global flags are skipped with their values so
+/// `--dir /some/path -s build` still detects the chain flag.
+fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
+    /// Global flags whose value arrives as the *next* word (the `=` form
+    /// needs no special casing — it stays one word).
+    const VALUE_FLAGS: &[&str] = &[
+        "--dir",
+        "--pm",
+        "--runner",
+        "--fallback",
+        "--on-mismatch",
+        "--schema-version",
+    ];
+
+    // Skip past clap_complete's `--` separator, then past the binary
+    // name itself (`runner` or the `run` alias).
+    let start = argv.iter().position(|a| a == "--").map_or(1, |idx| idx + 1);
+    let mut iter = argv.get(start + 1..).unwrap_or(&[]).iter();
+    let mut subcommand_seen = false;
+    while let Some(arg) = iter.next() {
+        let Some(word) = arg.to_str() else {
+            continue;
+        };
+        match word {
+            "-s" | "--sequential" | "-p" | "--parallel" => return true,
+            // The `run` subcommand token (`runner run …`); the alias
+            // binary has no subcommand. Only the first bare word can be
+            // it — a task literally named `run` still terminates the
+            // scan below on any later occurrence.
+            "run" | "r" if !subcommand_seen => subcommand_seen = true,
+            _ if VALUE_FLAGS.contains(&word) => {
+                iter.next();
+            }
+            // Short cluster (`-sk`, `-pK`): clap accepts combined
+            // shorts, so a chain flag can hide inside one.
+            _ if word.starts_with('-') && !word.starts_with("--") => {
+                if word.chars().skip(1).any(|c| c == 's' || c == 'p') {
+                    return true;
+                }
+            }
+            _ if word.starts_with('-') => {}
+            // First bare word is the task; anything after it belongs to
+            // the task, not the chain.
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Build [`CompletionCandidate`]s from a task list.
 ///
 /// When a task name appears in more than one source, both the bare name *and*
@@ -380,9 +448,89 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{
-        ChainFailureFlags, Cli, Command, RunAliasCli, cli_dir_from_argv, resolve_completion_dir,
-        task_candidates_from,
+        ChainFailureFlags, Cli, Command, RunAliasCli, chain_flag_precedes_first_task,
+        cli_dir_from_argv, resolve_completion_dir, task_candidates_from,
     };
+
+    fn osv(words: &[&str]) -> Vec<OsString> {
+        words.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn chain_flag_detected_before_first_task() {
+        // `runner run -s build <TAB>` — chain mode, trailing words are tasks.
+        assert!(chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "runner",
+            "run",
+            "-s",
+            "build",
+            ""
+        ])));
+        // Long form + value-carrying global flag before it.
+        assert!(chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "runner",
+            "--dir",
+            "/repo",
+            "run",
+            "--parallel",
+            "build",
+            ""
+        ])));
+        // `run` alias binary, no subcommand token.
+        assert!(chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "run",
+            "-p",
+            "build",
+            ""
+        ])));
+        // Chain flag hidden in a short cluster.
+        assert!(chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "run",
+            "-sk",
+            "build",
+            ""
+        ])));
+    }
+
+    #[test]
+    fn chain_flag_after_first_task_is_forwarded_not_chain() {
+        // `run build -p 3000 <TAB>` — `-p` lands after the task, so
+        // trailing_var_arg forwards it to the task; not chain mode.
+        assert!(!chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "run",
+            "build",
+            "-p",
+            "3000",
+            ""
+        ])));
+        // Plain single-task run.
+        assert!(!chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "runner",
+            "run",
+            "build",
+            ""
+        ])));
+        // No chain flag at all.
+        assert!(!chain_flag_precedes_first_task(&osv(&[
+            "completer",
+            "--",
+            "runner",
+            "run",
+            ""
+        ])));
+    }
     use crate::types::{Task, TaskSource};
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -1118,7 +1266,11 @@ pub(crate) enum Command {
         /// Arguments forwarded to the task, or extra task names in chain mode.
         // In chain mode, chain-failure flags (`-k`) must precede task names —
         // `trailing_var_arg` consumes everything after the first positional.
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            add = ArgValueCandidates::new(chain_args_candidates),
+        )]
         args: Vec<String>,
         /// Chain mode flags: `-s` / `-p`.
         #[command(flatten)]
@@ -1357,7 +1509,11 @@ pub(crate) struct RunAliasCli {
     // `trailing_var_arg` consumes everything after the first positional.
     // That same rule forwards a *trailing* `--help`/`--version` to the task
     // rather than treating it as this binary's own.
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        add = ArgValueCandidates::new(chain_args_candidates),
+    )]
     pub args: Vec<String>,
 
     /// Chain mode flags: `-s` / `-p`.

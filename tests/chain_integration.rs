@@ -498,6 +498,53 @@ fn install_completion_includes_tasks_and_options() {
 }
 
 #[test]
+fn chain_mode_completion_offers_tasks_after_first_task() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+
+    // `run -s build <TAB>` — the trailing words are extra task names in
+    // chain mode, so the second position must offer task candidates.
+    let output = Command::new(runner_binary())
+        .env("COMPLETE", "zsh")
+        .env("_CLAP_COMPLETE_INDEX", "6")
+        .args(["--", "runner", "--dir"])
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build", ""])
+        .output()
+        .expect("runner binary spawns");
+
+    assert!(
+        output.status.success(),
+        "completion should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("just\x1ftest"),
+        "chain-mode completion should offer task candidates. stdout: {stdout}",
+    );
+
+    // Without a chain flag the trailing words are the task's own args —
+    // task names would be noise there.
+    let output = Command::new(runner_binary())
+        .env("COMPLETE", "zsh")
+        .env("_CLAP_COMPLETE_INDEX", "5")
+        .args(["--", "runner", "--dir"])
+        .arg(fixture("chain-sequential"))
+        .args(["run", "build", ""])
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("just\x1ftest"),
+        "non-chain trailing position must not offer task candidates. stdout: {stdout}",
+    );
+}
+
+#[test]
 fn chain_prevalidates_all_tokens_before_running_any_task() {
     // A chain with a clearly-broken third token (`lint:cargo` — the
     // reversed qualifier we error on) must NOT run `build` and `test`

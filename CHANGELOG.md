@@ -15,6 +15,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Fixed
+
+- Tab completion offers task candidates for the second and later chain
+  positions: `run -s build <TAB>` / `run -p build <TAB>` completed nothing,
+  because the trailing positional had no completion source. Chain-aware: the
+  trailing words only complete as tasks when `-s`/`-p` precedes the first
+  task on the line (mirroring dispatch, where a later `-s`/`-p` is forwarded
+  to the task); plain `run build <TAB>` still completes flags only.
+
 ## [0.17.0] - 2026-07-04
 
 ### Added
