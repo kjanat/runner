@@ -7,3 +7,6 @@ fail-mid:
 
 ok-two:
     @echo "ok-two-ran"
+
+daemon:
+    @sh -c 'sleep 30 & exit 0'

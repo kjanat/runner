@@ -162,6 +162,43 @@ fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn streaming_parallel_chain_returns_despite_stdio_holding_descendant() {
+    // `daemon` backgrounds a 30s sleeper that inherits the piped stdout
+    // and exits immediately. Pipe readers only see EOF once every write
+    // end closes, so an unbounded reader join would block on the sleeper
+    // for the full 30s after both direct children are reaped. The
+    // streaming supervisor must instead drain with the bounded grace and
+    // return promptly. Unix-only: the recipe needs `sh`.
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let started = Instant::now();
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-p", "ok-one", "daemon"])
+        .output()
+        .expect("runner binary spawns");
+    let elapsed = started.elapsed();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "both tasks exit 0.\nstdout: {stdout}\nstderr: {stderr}",
+    );
+    // Generous CI margin: anything under the sleeper's 30s proves the
+    // supervisor didn't wait for the abandoned reader; a healthy run is
+    // ~0.5s (spawn + 500ms drain grace).
+    assert!(
+        elapsed < Duration::from_secs(15),
+        "streaming `-p` must not block on a descendant holding stdio; took {elapsed:?}",
+    );
+}
+
 #[test]
 fn parallel_install_chain_times_the_install_step() {
     if !just_available() {

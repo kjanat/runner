@@ -176,10 +176,7 @@ fn run_parallel_streaming(
         Ok(())
     })();
     if let Err(e) = spawn_outcome {
-        for (_, _, mut c) in children {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
+        kill_and_reap(children);
         for h in reader_handles {
             let _ = h.join();
         }
@@ -194,16 +191,21 @@ fn run_parallel_streaming(
 
     while !remaining.is_empty() {
         let mut next: Vec<(String, Instant, Child)> = Vec::with_capacity(remaining.len());
-        for (name, started, mut child) in std::mem::take(&mut remaining) {
-            match child.try_wait()? {
-                Some(status) => {
+        // A `try_wait` error must not orphan the siblings: `Child::drop`
+        // does not kill, so bail out through the same kill + reap cleanup
+        // the spawn phase uses instead of `?`-ing mid-iteration.
+        let mut poll_error: Option<anyhow::Error> = None;
+        let mut pending = std::mem::take(&mut remaining).into_iter();
+        for (name, started, mut child) in pending.by_ref() {
+            match child.try_wait() {
+                Ok(Some(status)) => {
                     let code = crate::cmd::exit_code(status);
                     crate::cmd::emit_task_timing(overrides, &name, started.elapsed(), code);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
                 }
-                None => {
+                Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
                         let _ = child.kill();
                         // Wait so stdio drains fully; a killed sibling still
@@ -220,7 +222,18 @@ fn run_parallel_streaming(
                         next.push((name, started, child));
                     }
                 }
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    poll_error = Some(e.into());
+                    break;
+                }
             }
+        }
+        if let Some(e) = poll_error {
+            kill_and_reap(next.into_iter().chain(pending));
+            wait_for_readers(&mut reader_handles, READER_DRAIN_GRACE);
+            return Err(e);
         }
         remaining = next;
         if !remaining.is_empty() {
@@ -228,11 +241,13 @@ fn run_parallel_streaming(
         }
     }
 
-    // Readers exit when child stdio closes; join so any in-flight
-    // `sink.emit` finishes before we return.
-    for h in reader_handles {
-        let _ = h.join();
-    }
+    // Bounded drain, not an unbounded join: a reader only EOFs once every
+    // write end of its pipe closes, and a task can leave a backgrounded
+    // descendant holding the inherited fd open after the direct child is
+    // reaped. The grouped path already guards this (see
+    // `flush_task_group`); without the bound, `run -p` hangs forever on
+    // such a task. Unfinished readers are abandoned after the grace.
+    wait_for_readers(&mut reader_handles, READER_DRAIN_GRACE);
 
     Ok(first_failure.unwrap_or(0))
 }
@@ -316,11 +331,8 @@ fn run_parallel_grouped(
         Ok(())
     })();
     if let Err(e) = spawn_outcome {
-        for mut t in tasks {
-            let _ = t.child.kill();
-            let _ = t.child.wait();
-            t.sink.close();
-            wait_for_readers(&mut t.readers, READER_DRAIN_GRACE);
+        for t in tasks {
+            cleanup_grouped_task(t);
         }
         return Err(e);
     }
@@ -338,9 +350,14 @@ fn run_parallel_grouped(
 
     while !remaining.is_empty() {
         let mut next: Vec<GroupedTask> = Vec::with_capacity(remaining.len());
-        for mut t in std::mem::take(&mut remaining) {
-            match t.child.try_wait()? {
-                Some(status) => {
+        // A `try_wait` error must not orphan the siblings: `Child::drop`
+        // does not kill, so bail out through the same kill + reap + drain
+        // cleanup the spawn phase uses instead of `?`-ing mid-iteration.
+        let mut poll_error: Option<anyhow::Error> = None;
+        let mut pending = std::mem::take(&mut remaining).into_iter();
+        for mut t in pending.by_ref() {
+            match t.child.try_wait() {
+                Ok(Some(status)) => {
                     let code = crate::cmd::exit_code(status);
                     if code != 0 {
                         first_failure.get_or_insert(code);
@@ -348,7 +365,7 @@ fn run_parallel_grouped(
                     let footer = timing_footer(overrides, t.started.elapsed(), code);
                     flush_grouped_task(t, gha_syntax, colorize, footer.as_deref());
                 }
-                None => {
+                Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
                         let _ = t.child.kill();
                         // A killed sibling still reports timing for the work it
@@ -362,7 +379,18 @@ fn run_parallel_grouped(
                         next.push(t);
                     }
                 }
+                Err(e) => {
+                    cleanup_grouped_task(t);
+                    poll_error = Some(e.into());
+                    break;
+                }
             }
+        }
+        if let Some(e) = poll_error {
+            for t in next.into_iter().chain(pending) {
+                cleanup_grouped_task(t);
+            }
+            return Err(e);
         }
         remaining = next;
         if !remaining.is_empty() {
@@ -471,6 +499,27 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
+}
+
+/// Kill + reap streaming-chain children that must not outlive an error
+/// return — `Child::drop` does not kill, so every early exit routes
+/// through here.
+fn kill_and_reap<I: IntoIterator<Item = (String, std::time::Instant, std::process::Child)>>(
+    children: I,
+) {
+    for (_, _, mut c) in children {
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
+/// Kill + reap a grouped task and drain its readers with the bounded
+/// grace — the cleanup every grouped-chain error path shares.
+fn cleanup_grouped_task(mut t: GroupedTask) {
+    let _ = t.child.kill();
+    let _ = t.child.wait();
+    t.sink.close();
+    wait_for_readers(&mut t.readers, READER_DRAIN_GRACE);
 }
 
 fn wait_for_readers(readers: &mut Vec<std::thread::JoinHandle<()>>, grace: std::time::Duration) {
