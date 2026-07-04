@@ -82,7 +82,15 @@ jobs:
 
       - name: download dist artifact
         uses: actions/download-artifact@v8
-        with: { name: dist, path: npm/dist/, run-id: "${{ steps.resolve.outputs.run-id }}", github-token: "${{ github.token }}" }
+        with: { name: dist, path: npm/, run-id: "${{ steps.resolve.outputs.run-id }}", github-token: "${{ github.token }}" }
+
+      - name: extract dist
+        run: tar -xf npm/dist.tar -C npm && rm npm/dist.tar
+
+      # Execute what will be published; build-dist's smoke test runs
+      # before the artifact handoff and can't see what it breaks.
+      - name: smoke-test dist artifact
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/publish/smoke-npm-artifact.sh"
 
       - name: derive dist-tag and dry-run
         id: derive

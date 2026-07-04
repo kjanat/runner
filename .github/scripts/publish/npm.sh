@@ -49,6 +49,16 @@ for dir in npm/dist/*/; do
 	fi
 done
 
+# 0644 binaries EACCES at spawn — fail loud before publishing.
+for platform in "${REQUIRED_PLATFORMS[@]}" "${OPTIONAL_PLATFORMS[@]}"; do
+	for bin in "npm/dist/${platform}/bin/"*; do
+		if [[ ! -x "${bin}" ]]; then
+			echo "error: ${bin} lost its executable bit in the artifact handoff" >&2
+			exit 1
+		fi
+	done
+done
+
 # publish_allowed publishes a single package from a built artifact directory
 # when it exists and its package.json matches the expected name and version,
 # skips optional or already-published packages, and exits on integrity or policy
