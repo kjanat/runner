@@ -470,9 +470,28 @@ pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String,
 struct PackageJson {
     #[serde(rename = "packageManager")]
     package_manager: Option<String>,
-    #[serde(rename = "devEngines", default)]
+    #[serde(
+        rename = "devEngines",
+        default,
+        deserialize_with = "lenient_dev_engines"
+    )]
     dev_engines: Option<DevEngines>,
     scripts: Option<HashMap<String, String>>,
+}
+
+/// Deserialize `devEngines` without letting a malformed value poison the
+/// whole manifest. The field rides in the same struct as `scripts`, so a
+/// strict parse of e.g. `"devEngines": "pnpm@9"` (spec requires an
+/// object) used to abort the entire deserialize — dropping every script
+/// and the `packageManager` signal, and mislabeling valid JSON as "not
+/// valid JSON". A shape we don't recognize degrades to `None` (same
+/// outcome as an absent key) instead.
+fn lenient_dev_engines<'de, D>(deserializer: D) -> Result<Option<DevEngines>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<Option<DevEngines>>(value).unwrap_or_default())
 }
 
 #[derive(Deserialize)]
@@ -625,6 +644,31 @@ mod tests {
         )
         .expect("package.json5 should be written");
 
+        assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Pnpm));
+    }
+
+    #[test]
+    fn malformed_dev_engines_does_not_poison_scripts_or_pm() {
+        // `devEngines` written as a Corepack-style string instead of the
+        // spec'd object is valid JSON with valid scripts — a strict parse
+        // used to abort the whole manifest (zero tasks + a false "not
+        // valid JSON" warning) and lose the `packageManager` signal.
+        let dir = TempDir::new("node-malformed-devengines");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{
+                "packageManager": "pnpm@9.0.0",
+                "devEngines": { "packageManager": "pnpm@9.0.0" },
+                "scripts": { "build": "vite build" }
+            }"#,
+        )
+        .expect("package.json should be written");
+
+        let scripts = extract_scripts(dir.path()).expect("scripts should survive");
+        assert_eq!(
+            scripts,
+            vec![("build".to_string(), "vite build".to_string())]
+        );
         assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Pnpm));
     }
 
