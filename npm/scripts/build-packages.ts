@@ -40,6 +40,15 @@ const BLOCK_SIZE = 512;
 
 const FACADE_BIN_FILES = ["runner.cjs", "run.cjs"] as const;
 const FACADE_LIB_FILES = ["resolve.cjs", "launch.cjs"] as const;
+/**
+ * Package-relative launcher shipped inside every platform package so each
+ * `@runner-run/*` package is a functional CLI on its own (`npx
+ * @runner-run/<platform> …`). Exactly ONE bin entry on purpose: npx can
+ * auto-select a package's sole bin regardless of its name, whereas two
+ * entries would force users to always name the command (the 0.16.1 "could
+ * not determine executable" failure shape).
+ */
+const PLATFORM_SHIM = "runner.cjs";
 
 // npm allows multiple shapes for several `package.json` fields. Cargo's
 // `package.metadata` is user-defined freeform JSON — the user could put any
@@ -693,6 +702,8 @@ async function buildPlatformPackage(
 		throw new Error(`missing ${missing} in ${tarball}`);
 	}
 
+	await cp(join(npmDir, "platform", PLATFORM_SHIM), join(dest, PLATFORM_SHIM));
+
 	const pkg = platformPackageJson(matrix, target, opts.version, meta);
 	await writeJson(join(dest, "package.json"), pkg);
 	console.debug(pkg);
@@ -762,7 +773,7 @@ function platformPackageJson(
 			"task-runner",
 			...target.os,
 			...target.cpu,
-			...(target.libc ? [target.libc] : []),
+			...(target.libc ?? []),
 		]),
 	];
 	return {
@@ -770,15 +781,19 @@ function platformPackageJson(
 		version,
 		description: `Prebuilt ${
 			matrix.binaries.join(" + ")
-		} ${target.rust} binaries for ${matrix.facade}; selected automatically by npm, not for direct use.`,
+		} ${target.rust} binaries for ${matrix.facade}; selected automatically by npm, also runnable standalone via npx.`,
 		keywords,
 		...meta,
 		os: target.os,
 		cpu: target.cpu,
 		...(target.libc ? { libc: target.libc } : {}),
+		// A single bin entry keeps `npx ${matrix.scope}/<pkg> …` working via
+		// npx's only-bin auto-selection; see PLATFORM_SHIM. Named after the
+		// primary binary, which is also the one the shim spawns.
+		bin: { [matrix.binaries[0]]: PLATFORM_SHIM },
 		exports: { "./package.json": "./package.json" },
 		directories: { bin: "./bin" },
-		files: ["bin/"],
+		files: ["bin/", PLATFORM_SHIM],
 	};
 }
 
@@ -799,6 +814,8 @@ function platformReadme(matrix: Matrix, target: Target): string {
 	const noun = matrix.binaries.length === 1 ? "binary" : "binaries";
 	const platform = [...target.os, ...target.cpu, ...(target.libc ? [target.libc] : [])].join(" · ");
 
+	const primary = matrix.binaries[0];
+
 	return `# ${packageName}
 
 Prebuilt ${binaries} ${noun} for **${platform}** (rustc target \`${target.rust}\`).
@@ -806,7 +823,7 @@ The platform-specific package of [\`${matrix.facade}\`](https://npm.im/${matrix.
 
 ## Do I install this?
 
-No. Install the main package and npm picks the matching binary for your platform automatically:
+Usually not. Install the main package and npm picks the matching binary for your platform automatically:
 
 \`\`\`sh
 npm install ${matrix.facade}
@@ -815,11 +832,26 @@ npm install ${matrix.facade}
 This package is listed in \`${matrix.facade}\`'s \`optionalDependencies\`. npm resolves the one
 whose \`os\`/\`cpu\`${target.libc ? "/`libc`" : ""} matches your machine and skips the rest, so the wrapper
 finds these binaries with no postinstall step. Depending on it directly pins you to a single
-platform, so install \`${matrix.facade}\` instead.
+platform, so prefer \`${matrix.facade}\` for anything portable.
+
+## Standalone use
+
+The package is a working CLI in its own right — it ships a \`${primary}\` bin that launches
+the bundled binary, so on a matching machine it runs without the facade:
+
+\`\`\`sh
+npx ${packageName} list
+npx ${packageName} install -f build test
+npx --package=${packageName} ${primary} run lint
+\`\`\`
+
+Useful when you want a platform-pinned install (e.g. a locked-down CI image) without
+pulling the facade and its sibling platform packages into the resolution.
 
 ## Contents
 
 - ${binaries}: prebuilt native ${noun} under \`bin/\`.
+- \`${primary}.cjs\`: package-relative launcher backing the \`${primary}\` bin.
 - No dependencies, no install scripts, no network access.
 
 ## More

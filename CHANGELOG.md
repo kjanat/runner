@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- The `@runner-run/*` npm platform packages are runnable standalone: each
+  ships a package-relative launcher exposed as a single `runner` bin, so
+  `npx @runner-run/<platform> install -f task1 task2` and
+  `npx --package=@runner-run/<platform> runner list` work without the
+  `runner-run` facade — useful for platform-pinned installs (locked-down CI
+  images) that don't want the facade's sibling platform packages in the
+  resolution. One bin entry on purpose: npx auto-selects a package's sole
+  bin; a second entry would force always naming the command.
+
 ### Fixed
 
 - Tab completion offers task candidates for the second and later chain
@@ -23,6 +34,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   trailing words only complete as tasks when `-s`/`-p` precedes the first
   task on the line (mirroring dispatch, where a later `-s`/`-p` is forwarded
   to the task); plain `run build <TAB>` still completes flags only.
+- The generated platform-package `keywords` no longer nest the libc value as
+  an array-in-array (`[["glibc"]]`).
 
 ## [0.17.0] - 2026-07-04
 
