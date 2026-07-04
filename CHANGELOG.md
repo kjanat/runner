@@ -15,6 +15,24 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.18.1] - 2026-07-04
+
+### Fixed
+
+- The v0.18.0 npm packages spawn-failed with `EACCES`: the platform
+  packages' new explicit `bin` field disabled `directories.bin` linking, so
+  npm no longer marked the native binaries executable at install — breaking
+  both `npx @runner-run/<platform> …` and the `runner-run` facade. Platform
+  `bin` entries now point directly at the native binaries and expose both
+  commands (`npx --package=@runner-run/<platform> runner …` and `… run …`);
+  the launcher shim and the erroneous `bin` + `directories.bin` combination
+  are gone. Versions up to 0.17.0 were unaffected; 0.18.0 is deprecated on
+  npm.
+- The npm dist artifact now crosses the build→publish handoff as a tarball
+  so unix file modes survive the zip-based artifact store; the publish job
+  refuses non-executable binaries and smoke-tests the packed tarballs
+  (install + execute every bin) before publishing.
+
 ## [0.18.0] - 2026-07-04
 
 ### Added
@@ -1612,7 +1630,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/kjanat/runner/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/kjanat/runner/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/kjanat/runner/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/kjanat/runner/compare/v0.16.0...v0.16.1
