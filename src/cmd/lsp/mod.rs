@@ -43,11 +43,12 @@ use self::text::LineIndex;
 pub(crate) fn run() -> Result<i32> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = serde_json::to_value(server_capabilities())?;
-    let _initialize_params = connection.initialize(capabilities)?;
+    let initialize_params = connection.initialize(capabilities)?;
 
     let mut server = Server {
         documents: HashMap::new(),
         schema: SchemaIndex::build(),
+        snippets: client_supports_snippets(initialize_params),
     };
     server.serve(&connection)?;
 
@@ -84,6 +85,19 @@ struct Server {
     documents: HashMap<Uri, String>,
     /// Section/field documentation, built once at startup.
     schema: SchemaIndex,
+    /// Whether the client declared completion snippet support at initialize.
+    snippets: bool,
+}
+
+/// Whether the client's initialize params declare completion snippet support.
+fn client_supports_snippets(initialize_params: Value) -> bool {
+    serde_json::from_value::<lsp_types::InitializeParams>(initialize_params)
+        .ok()
+        .and_then(|params| params.capabilities.text_document)
+        .and_then(|text_document| text_document.completion)
+        .and_then(|completion| completion.completion_item)
+        .and_then(|item| item.snippet_support)
+        .unwrap_or(false)
 }
 
 impl Server {
@@ -196,6 +210,7 @@ impl Server {
             text,
             pos,
             document_dir(uri).as_deref(),
+            self.snippets,
         )
     }
 }

@@ -25,6 +25,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   (e.g. `build:web`) insert quoted. Dotted `overrides.<task> =` values
   now complete the source-label vocabulary like their
   `[tasks.overrides]` equivalents.
+- `runner lsp` key completions scaffold the value shape the field's
+  schema type calls for, when the client supports snippets: array fields
+  insert `pms = ["|"]`, string fields `node = "|"`, others a bare tab
+  stop; table fields continue the dotted key path (`overrides.`), which
+  re-triggers completion. Clients without snippet support keep the plain
+  `name =` insert.
 
 ### Fixed
 
@@ -35,6 +41,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   token, so a completion accepted from a stale list (e.g. left open
   across a backspace) substitutes the token instead of pasting after it
   (`group_outputgroup_output =`).
+- `runner lsp` value completions inside an open string literal
+  (`prefer = ["ba`) insert the bare word instead of a quoted one — the
+  quotes are already typed (and auto-paired), so accepting previously
+  produced `""bacon""`.
 
 ## [0.19.0] - 2026-07-05
 
