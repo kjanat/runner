@@ -339,6 +339,7 @@
         "pm_by_ecosystem",
         "prefer_runners",
         "prefer_sources",
+        "quiet",
         "runner",
         "script_policy",
         "task_source_pins"
