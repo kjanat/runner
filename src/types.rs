@@ -8,25 +8,58 @@ use std::path::PathBuf;
 /// in `runner.toml` applies only when resolving for [`Ecosystem::Node`].
 /// Deno is its own ecosystem even though its package manager can also
 /// dispatch `package.json` scripts.
+///
+/// Variants use `//`, not `///`: a per-variant doc comment defeats
+/// `BTreeMap`'s closed-key-set schema optimization for `Overrides.pm_by_ecosystem`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum Ecosystem {
-    /// Node.js (npm, yarn, pnpm, bun).
+    // Node.js (npm, yarn, pnpm, bun).
     Node,
-    /// Deno.
+    // Deno.
     Deno,
-    /// Python (uv, poetry, pipenv).
+    // Python (uv, poetry, pipenv).
     Python,
-    /// Rust (cargo).
+    // Rust (cargo).
     Rust,
-    /// Go.
+    // Go.
     Go,
-    /// Ruby (bundler).
+    // Ruby (bundler).
     Ruby,
-    /// PHP (composer).
+    // PHP (composer).
     Php,
 }
 
+/// Ordered by [`Self::label`] so `BTreeMap<Ecosystem, _>` keys serialize
+/// alphabetically, matching the `String`-keyed flat `info`/`list` surface.
+impl Ord for Ecosystem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.label().cmp(other.label())
+    }
+}
+
+impl PartialOrd for Ecosystem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Ecosystem {
+    /// Every variant, for tests that need the closed set (schema
+    /// assertions, serialization drift tests).
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Node,
+        Self::Deno,
+        Self::Python,
+        Self::Rust,
+        Self::Go,
+        Self::Ruby,
+        Self::Php,
+    ];
+
     /// Lower-case label used in human messages, JSON output, and
     /// override origins. Single source of truth so `doctor --json` and
     /// resolver warnings agree on the spelling.
@@ -44,7 +77,9 @@ impl Ecosystem {
 }
 
 /// A dependency manager detected via lockfile or config presence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum PackageManager {
     /// npm — detected via `package-lock.json`.
     Npm,
@@ -73,7 +108,9 @@ pub(crate) enum PackageManager {
 }
 
 /// A task runner detected via config file presence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum TaskRunner {
     /// Turborepo — detected via `turbo.json` / `turbo.jsonc`.
     Turbo,
@@ -83,7 +120,11 @@ pub(crate) enum TaskRunner {
     Make,
     /// just — detected via case-insensitive `justfile` / `.justfile`.
     Just,
-    /// go-task — detected via `Taskfile.yml` and variants.
+    /// go-task — detected via `Taskfile.yml` and variants. Serializes as
+    /// `"task"` (matching [`Self::label`]) — `kebab-case` alone would
+    /// produce `"go-task"`, the accepted parse *alias*, not the canonical
+    /// label.
+    #[serde(rename = "task")]
     GoTask,
     /// mise — detected via `mise.toml` / `.mise.toml`.
     Mise,
@@ -955,6 +996,46 @@ fn parse_current_version(current: &str) -> Option<semver::Version> {
 mod tests {
     use super::version_matches;
     use super::{DetectionWarning, PackageManager};
+
+    /// The serde `kebab-case` renames and the hand-written `label()`
+    /// methods are parallel sources of the same strings; this pins them
+    /// together so a new variant can't silently split the two surfaces
+    /// (the way `TaskRunner::GoTask` would without its explicit rename).
+    #[test]
+    fn serialized_labels_match_label_methods() {
+        use super::{Ecosystem, TaskRunner};
+        use crate::resolver::{FallbackPolicy, MismatchPolicy, ScriptPolicy};
+
+        fn json_str<T: serde::Serialize>(value: T) -> String {
+            serde_json::to_value(value)
+                .expect("enum should serialize")
+                .as_str()
+                .expect("enum should serialize as a string")
+                .to_string()
+        }
+
+        for eco in Ecosystem::ALL {
+            assert_eq!(json_str(eco), eco.label());
+        }
+        for &pm in PackageManager::all() {
+            assert_eq!(json_str(pm), pm.label());
+        }
+        for &runner in TaskRunner::all() {
+            assert_eq!(json_str(runner), runner.label());
+        }
+        for fallback in FallbackPolicy::ALL {
+            assert_eq!(json_str(fallback), fallback.label());
+        }
+        for mismatch in MismatchPolicy::ALL {
+            assert_eq!(json_str(mismatch), mismatch.label());
+        }
+        for script in ScriptPolicy::SETTABLE {
+            assert_eq!(Some(json_str(script).as_str()), script.label());
+        }
+        // Default has no user-settable label; the report surface still
+        // needs a stable spelling.
+        assert_eq!(json_str(ScriptPolicy::Default), "default");
+    }
 
     #[test]
     fn dotted_versions_match_segment_boundaries_only() {

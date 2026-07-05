@@ -72,7 +72,9 @@ pub(crate) enum ChainItemKind {
 /// Failure policy for a chain. `FailFast` is the default and matches
 /// `make -j` semantics in parallel mode (let running siblings finish,
 /// don't start new ones).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum FailurePolicy {
     /// Stop the chain on the first failing task. In parallel mode,
     /// already-running siblings complete naturally.

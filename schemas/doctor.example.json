@@ -25,9 +25,9 @@
     "name": "runner",
     "version": "0.18.1",
     "schema_versions": {
-      "doctor": 3,
-      "list": 2,
-      "why": 3
+      "doctor": 1,
+      "list": 1,
+      "why": 1
     }
   },
   "project": {
@@ -38,14 +38,24 @@
   },
   "overrides": {
     "explain": false,
+    "failure_policy": "fail-fast",
     "fallback": "probe",
+    "install_pms": [],
     "no_warnings": false,
     "on_mismatch": "warn",
+    "output_grouping": {
+      "github_group_parallel": true,
+      "group_output": true,
+      "parallel_grouped": false
+    },
     "pm": null,
     "pm_by_ecosystem": {},
     "prefer_runners": [],
+    "prefer_sources": [],
     "quiet": false,
-    "runner": null
+    "runner": null,
+    "script_policy": "default",
+    "task_source_pins": {}
   },
   "ecosystems": [
     {

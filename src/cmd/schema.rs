@@ -532,7 +532,6 @@ fn output_schema<T: JsonSchema>(command: &'static str) -> Result<Value> {
     set_object_field(&mut schema, "description", json!(description(command)));
     patch_schema_version_const(&mut schema);
     patch_source_schema(&mut schema, command);
-    patch_schema_compat(&mut schema, command);
     Ok(schema)
 }
 
@@ -591,28 +590,21 @@ fn patch_source_schema(schema: &mut Value, command: &str) {
     patch_task_info_source(defs);
     patch_why_task(defs);
     patch_def_field(defs, "SourceEntry", "kind", "TaskSourceLabel");
+    patch_overrides_source_labels(defs);
 }
 
-fn patch_schema_compat(schema: &mut Value, command: &str) {
-    if command == "doctor" {
-        // The structured doctor report existed before `quiet`; keep
-        // additive fields optional so the committed schema still
-        // validates payloads emitted before that field landed.
-        remove_required_def_field(schema, "Overrides", "quiet");
-    }
-}
-
-fn remove_required_def_field(schema: &mut Value, def_name: &'static str, field: &'static str) {
-    let Some(required) = schema
-        .get_mut("$defs")
-        .and_then(Value::as_object_mut)
-        .and_then(|defs| defs.get_mut(def_name))
-        .and_then(|definition| definition.get_mut("required"))
-        .and_then(Value::as_array_mut)
-    else {
+/// `Overrides.prefer_sources`/`task_source_pins` hold the same structured
+/// source labels as `SourceEntry.kind`, command-dependent like it — reuse
+/// `TaskSourceLabel` instead of leaving them generic strings. (Every other
+/// `Overrides` label field is backed by a real enum and gets its schema
+/// constraint straight from `#[derive(schemars::JsonSchema)]` on that enum
+/// — no hand-built schema needed there.)
+fn patch_overrides_source_labels(defs: &mut Map<String, Value>) {
+    if !defs.contains_key("Overrides") {
         return;
-    };
-    required.retain(|name| name.as_str() != Some(field));
+    }
+    patch_def_array_items(defs, "Overrides", "prefer_sources", "TaskSourceLabel");
+    patch_def_map_array_items(defs, "Overrides", "task_source_pins", "TaskSourceLabel");
 }
 
 fn patch_task_info_source(defs: &mut Map<String, Value>) {
@@ -634,21 +626,63 @@ fn patch_why_task(defs: &mut Map<String, Value>) {
     patch_def_field(defs, "WhyTask", "provider", "ProviderLabel");
 }
 
+/// Mutable handle on `$defs.<def_name>.properties.<field>`, the shared
+/// navigation prefix of every schema patch below.
+fn field_schema_mut<'a>(
+    defs: &'a mut Map<String, Value>,
+    def_name: &str,
+    field: &str,
+) -> Option<&'a mut Value> {
+    defs.get_mut(def_name)
+        .and_then(|definition| definition.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut(field))
+}
+
+fn def_ref(target_def: &str) -> Value {
+    json!({ "$ref": format!("#/$defs/{target_def}") })
+}
+
 fn patch_def_field(
     defs: &mut Map<String, Value>,
     def_name: &'static str,
     field: &'static str,
     target_def: &'static str,
 ) {
-    let Some(field_schema) = defs
-        .get_mut(def_name)
-        .and_then(|definition| definition.get_mut("properties"))
-        .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut(field))
-    else {
-        return;
-    };
-    *field_schema = json!({ "$ref": format!("#/$defs/{target_def}") });
+    if let Some(field_schema) = field_schema_mut(defs, def_name, field) {
+        *field_schema = def_ref(target_def);
+    }
+}
+
+/// Like [`patch_def_field`], but for an array-typed field — constrains its
+/// `items` schema instead of the field itself.
+fn patch_def_array_items(
+    defs: &mut Map<String, Value>,
+    def_name: &'static str,
+    field: &'static str,
+    target_def: &'static str,
+) {
+    if let Some(items) = field_schema_mut(defs, def_name, field)
+        .and_then(|field_schema| field_schema.get_mut("items"))
+    {
+        *items = def_ref(target_def);
+    }
+}
+
+/// Like [`patch_def_array_items`], but for a map-of-array field — constrains
+/// the array items nested under `additionalProperties`.
+fn patch_def_map_array_items(
+    defs: &mut Map<String, Value>,
+    def_name: &'static str,
+    field: &'static str,
+    target_def: &'static str,
+) {
+    if let Some(items) = field_schema_mut(defs, def_name, field)
+        .and_then(|field_schema| field_schema.get_mut("additionalProperties"))
+        .and_then(|additional| additional.get_mut("items"))
+    {
+        *items = def_ref(target_def);
+    }
 }
 
 fn task_source_label_schema(command: &str) -> Value {
@@ -715,51 +749,6 @@ fn description(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
-
-    use super::output_schema;
-
-    fn overrides_def(schema: &Value) -> &Value {
-        schema
-            .get("$defs")
-            .and_then(Value::as_object)
-            .and_then(|defs| defs.get("Overrides"))
-            .expect("schema should define Overrides")
-    }
-
-    fn quiet_is_optional(schema: &Value) -> bool {
-        overrides_def(schema)
-            .get("required")
-            .and_then(Value::as_array)
-            .is_some_and(|required| !required.iter().any(|name| name.as_str() == Some("quiet")))
-    }
-
-    fn quiet_type(schema: &Value) -> Option<&str> {
-        overrides_def(schema)
-            .get("properties")
-            .and_then(Value::as_object)
-            .and_then(|properties| properties.get("quiet"))
-            .and_then(|quiet| quiet.get("type"))
-            .and_then(Value::as_str)
-    }
-
-    #[test]
-    fn doctor_schema_keeps_quiet_optional_for_compat() {
-        let schema = output_schema::<crate::schema::doctor::DoctorReport<'static>>("doctor")
-            .expect("doctor schema should render");
-
-        assert!(quiet_is_optional(&schema));
-        assert_eq!(quiet_type(&schema), Some("boolean"));
-    }
-
-    #[test]
-    fn committed_doctor_schema_keeps_quiet_optional_for_compat() {
-        let raw = std::fs::read_to_string("schemas/doctor.schema.json")
-            .expect("committed doctor schema should be readable");
-        let schema: Value = serde_json::from_str(&raw).expect("schema should parse as JSON");
-
-        assert!(quiet_is_optional(&schema));
-        assert_eq!(quiet_type(&schema), Some("boolean"));
-    }
 
     #[test]
     fn committed_doctor_example_includes_quiet_override() {

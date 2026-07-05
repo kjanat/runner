@@ -125,7 +125,9 @@ pub(crate) struct ResolutionOverrides {
 /// What to do when no signal in steps 2–6 matches.
 ///
 /// Set via `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum FallbackPolicy {
     /// Walk `$PATH` in canonical order and pick the first installed PM.
     /// Errors if nothing matches.
@@ -168,7 +170,9 @@ impl FallbackPolicy {
 /// Set via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,
 /// `RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest
 /// first.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum ScriptPolicy {
     /// Leave each package manager at its own built-in default: npm,
     /// yarn-classic, pnpm (<10) and composer run dependency scripts, while
@@ -219,7 +223,9 @@ impl ScriptPolicy {
 /// the *declared* PM can actually run; this one governs whether the
 /// resolver tolerates the declaration disagreeing with the install
 /// state at all.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum MismatchPolicy {
     /// Emit a `package.json` warning, prefer the declaration (Corepack
     /// semantics — the lockfile is most likely stale).

@@ -275,6 +275,46 @@
       },
       "additionalProperties": false
     },
+    "FailurePolicy": {
+      "description": "Failure policy for a chain. `FailFast` is the default and matches\n`make -j` semantics in parallel mode (let running siblings finish,\ndon't start new ones).",
+      "oneOf": [
+        {
+          "description": "Stop the chain on the first failing task. In parallel mode,\nalready-running siblings complete naturally.",
+          "type": "string",
+          "const": "fail-fast"
+        },
+        {
+          "description": "Run every task to completion regardless of failures. Final exit\ncode reflects the first failure.",
+          "type": "string",
+          "const": "keep-going"
+        },
+        {
+          "description": "Parallel only: SIGKILL siblings on first failure (`std::process::Child::kill`).\nSequential callers accept this silently (no-op). Catch-able SIGTERM\nsemantics would need a libc/nix dep — deferred to a follow-up.",
+          "type": "string",
+          "const": "kill-on-fail"
+        }
+      ]
+    },
+    "FallbackPolicy": {
+      "description": "What to do when no signal in steps 2–6 matches.\n\nSet via `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback`.",
+      "oneOf": [
+        {
+          "description": "Walk `$PATH` in canonical order and pick the first installed PM.\nErrors if nothing matches.",
+          "type": "string",
+          "const": "probe"
+        },
+        {
+          "description": "Legacy: silently default to `npm` so dispatch is attempted even\nwhen nothing is detected. Useful for backwards compatibility.",
+          "type": "string",
+          "const": "npm"
+        },
+        {
+          "description": "Refuse to proceed when no signal matches; error out with a list of\nsources that were checked.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
     "Invocation": {
       "description": "How this report came to be: the exact process invocation.",
       "type": "object",
@@ -300,64 +340,236 @@
       },
       "additionalProperties": false
     },
+    "MismatchPolicy": {
+      "description": "How to react when manifest declaration (step 5) and lockfile (step 6)\ndisagree about which package manager the project uses.\n\nSet via `--on-mismatch` / `RUNNER_ON_MISMATCH` /\n`[resolution].on_mismatch`. Independent from\n`devEngines.packageManager` `onFail` — that policy governs whether\nthe *declared* PM can actually run; this one governs whether the\nresolver tolerates the declaration disagreeing with the install\nstate at all.",
+      "oneOf": [
+        {
+          "description": "Emit a `package.json` warning, prefer the declaration (Corepack\nsemantics — the lockfile is most likely stale).",
+          "type": "string",
+          "const": "warn"
+        },
+        {
+          "description": "Stay silent; prefer the declaration.",
+          "type": "string",
+          "const": "ignore"
+        },
+        {
+          "description": "Bail with [`super::ResolveError::MismatchPolicyError`]. Intended for\nCI guardrails where a mismatch should block the run.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "OutputGrouping": {
+      "description": "The three grouping toggles bundled so [`Overrides`] doesn't tip\nclippy's bool-count lint; each mirrors a same-named field on\n[`ResolutionOverrides`].",
+      "type": "object",
+      "required": [
+        "github_group_parallel",
+        "group_output",
+        "parallel_grouped"
+      ],
+      "properties": {
+        "github_group_parallel": {
+          "description": "Group parallel output under GitHub Actions\n(`[github].group_parallel`).",
+          "type": "boolean"
+        },
+        "group_output": {
+          "description": "Broad GitHub Actions grouping switch (`[github].group_output`).",
+          "type": "boolean"
+        },
+        "parallel_grouped": {
+          "description": "Group parallel output outside GitHub Actions\n(`[parallel].grouped`).",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Overrides": {
-      "description": "Effective override stack, labels only. Provenance (cli/env/config)\nstays on the flat `list`/`info` surface.",
+      "description": "Effective override stack, labels only. Provenance (cli/env/config) stays on the flat `list`/`info` surface.\n\nCovers every field on [`ResolutionOverrides`] except `parent_group_open`, which is internal\nrunner-to-runner plumbing (an inherited env marker, never a user override) and has nothing\nmeaningful to report — see the drift guard test at the bottom of this file, which enforces that\na future field can't land on `ResolutionOverrides` and silently miss both this struct and its\nexclusion list.",
       "type": "object",
       "required": [
         "explain",
+        "failure_policy",
         "fallback",
+        "install_pms",
         "no_warnings",
         "on_mismatch",
+        "output_grouping",
         "pm",
         "pm_by_ecosystem",
         "prefer_runners",
-        "runner"
+        "prefer_sources",
+        "quiet",
+        "runner",
+        "script_policy",
+        "task_source_pins"
       ],
       "properties": {
         "explain": {
           "type": "boolean"
         },
+        "failure_policy": {
+          "$ref": "#/$defs/FailurePolicy"
+        },
         "fallback": {
-          "type": "string"
+          "$ref": "#/$defs/FallbackPolicy"
+        },
+        "install_pms": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PackageManager"
+          }
         },
         "no_warnings": {
           "type": "boolean"
         },
         "on_mismatch": {
-          "type": "string"
+          "$ref": "#/$defs/MismatchPolicy"
+        },
+        "output_grouping": {
+          "$ref": "#/$defs/OutputGrouping"
         },
         "pm": {
-          "type": [
-            "null",
-            "string"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackageManager"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "pm_by_ecosystem": {
           "type": "object",
-          "additionalProperties": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
+          "properties": {
+            "deno": {
+              "$ref": "#/$defs/PackageManager"
+            },
+            "go": {
+              "$ref": "#/$defs/PackageManager"
+            },
+            "node": {
+              "$ref": "#/$defs/PackageManager"
+            },
+            "php": {
+              "$ref": "#/$defs/PackageManager"
+            },
+            "python": {
+              "$ref": "#/$defs/PackageManager"
+            },
+            "ruby": {
+              "$ref": "#/$defs/PackageManager"
+            },
+            "rust": {
+              "$ref": "#/$defs/PackageManager"
+            }
+          },
+          "additionalProperties": false
         },
         "prefer_runners": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/TaskRunner"
+          }
+        },
+        "prefer_sources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TaskSourceLabel"
           }
         },
         "quiet": {
           "type": "boolean"
         },
         "runner": {
-          "type": [
-            "null",
-            "string"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskRunner"
+            },
+            {
+              "type": "null"
+            }
           ]
+        },
+        "script_policy": {
+          "$ref": "#/$defs/ScriptPolicy"
+        },
+        "task_source_pins": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/TaskSourceLabel"
+            }
+          }
         }
       },
       "additionalProperties": false
+    },
+    "PackageManager": {
+      "description": "A dependency manager detected via lockfile or config presence.",
+      "oneOf": [
+        {
+          "description": "npm — detected via `package-lock.json`.",
+          "type": "string",
+          "const": "npm"
+        },
+        {
+          "description": "Yarn — detected via `yarn.lock`.",
+          "type": "string",
+          "const": "yarn"
+        },
+        {
+          "description": "pnpm — detected via `pnpm-lock.yaml`.",
+          "type": "string",
+          "const": "pnpm"
+        },
+        {
+          "description": "Bun — detected via `bun.lockb` or `bun.lock`.",
+          "type": "string",
+          "const": "bun"
+        },
+        {
+          "description": "Cargo (Rust) — detected via `Cargo.toml`.",
+          "type": "string",
+          "const": "cargo"
+        },
+        {
+          "description": "Deno — detected via `deno.json` / `deno.jsonc`.",
+          "type": "string",
+          "const": "deno"
+        },
+        {
+          "description": "uv (Python) — detected via `uv.lock`.",
+          "type": "string",
+          "const": "uv"
+        },
+        {
+          "description": "Poetry (Python) — detected via `poetry.lock` or Poetry `pyproject.toml` markers.",
+          "type": "string",
+          "const": "poetry"
+        },
+        {
+          "description": "Pipenv (Python) — detected via `Pipfile` / `Pipfile.lock`.",
+          "type": "string",
+          "const": "pipenv"
+        },
+        {
+          "description": "Go modules — detected via `go.mod`.",
+          "type": "string",
+          "const": "go"
+        },
+        {
+          "description": "Bundler (Ruby) — detected via `Gemfile`.",
+          "type": "string",
+          "const": "bundler"
+        },
+        {
+          "description": "Composer (PHP) — detected via `composer.json`.",
+          "type": "string",
+          "const": "composer"
+        }
+      ]
     },
     "ProjectInfo": {
       "description": "Project anchoring facts.",
@@ -461,6 +673,26 @@
       },
       "additionalProperties": false
     },
+    "ScriptPolicy": {
+      "description": "Install-time lifecycle-script execution policy for `runner install`.\n\nLifecycle/build scripts (`postinstall`, native-extension compilation,\n…) are the primary supply-chain attack surface during dependency\ninstalls. This knob lets a project deny them across the package managers\nthat expose a skip mechanism, or force them on across the managers that\ncan express it — the latter matters because several package managers\n(npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.\n\nSet via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,\n`RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest\nfirst.",
+      "oneOf": [
+        {
+          "description": "Leave each package manager at its own built-in default: npm,\nyarn-classic, pnpm (<10) and composer run dependency scripts, while\nbun, pnpm (>=10) and deno already deny them.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Skip lifecycle scripts wherever the package manager exposes a skip\nmechanism (npm/yarn/pnpm/bun `--ignore-scripts`, composer\n`--no-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=false`); deno already\ndenies by default. Managers without one (cargo, go, bundler, and the\nPython backends uv/poetry/pipenv) warn and proceed unchanged.",
+          "type": "string",
+          "const": "deny"
+        },
+        {
+          "description": "Force lifecycle scripts on wherever the package manager can express it:\nnpm `--no-ignore-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=true`, deno\n`--allow-scripts` (allow all). Managers that already run scripts by\ndefault (composer, cargo, go, bundler, the Python backends, yarn-classic)\nare satisfied without a flag. bun and pnpm (>=10) deny dependency build\nscripts by default and re-enable them only through a manifest allowlist\n(`trustedDependencies` / `onlyBuiltDependencies`) that runner must not\nwrite, so they warn that force-on is not flag-expressible.",
+          "type": "string",
+          "const": "allow"
+        }
+      ]
+    },
     "Severity": {
       "description": "Severity of a conflict or diagnostic. The draft's `debug`/`error`\nlevels join when something emits them.",
       "type": "string",
@@ -515,6 +747,46 @@
         }
       },
       "additionalProperties": false
+    },
+    "TaskRunner": {
+      "description": "A task runner detected via config file presence.",
+      "oneOf": [
+        {
+          "description": "Turborepo — detected via `turbo.json` / `turbo.jsonc`.",
+          "type": "string",
+          "const": "turbo"
+        },
+        {
+          "description": "Nx — detected via `nx.json`.",
+          "type": "string",
+          "const": "nx"
+        },
+        {
+          "description": "GNU Make — detected via `Makefile` / `GNUmakefile` / `makefile`.",
+          "type": "string",
+          "const": "make"
+        },
+        {
+          "description": "just — detected via case-insensitive `justfile` / `.justfile`.",
+          "type": "string",
+          "const": "just"
+        },
+        {
+          "description": "go-task — detected via `Taskfile.yml` and variants. Serializes as\n`\"task\"` (matching [`Self::label`]) — `kebab-case` alone would\nproduce `\"go-task\"`, the accepted parse *alias*, not the canonical\nlabel.",
+          "type": "string",
+          "const": "task"
+        },
+        {
+          "description": "mise — detected via `mise.toml` / `.mise.toml`.",
+          "type": "string",
+          "const": "mise"
+        },
+        {
+          "description": "bacon — detected via `bacon.toml`.",
+          "type": "string",
+          "const": "bacon"
+        }
+      ]
     },
     "TaskSourceLabel": {
       "type": "string",

@@ -15,6 +15,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `doctor --json` `overrides` now reports every resolver override state
+  except `parent_group_open` (internal runner-to-runner plumbing, never a
+  user override): `failure_policy`, `install_pms`, `output_grouping`
+  (`group_output`/`github_group_parallel`/`parallel_grouped`),
+  `prefer_sources`, `script_policy`, and `task_source_pins`. Previously
+  only `pm`/`pm_by_ecosystem`/`runner`/`prefer_runners`/`fallback`/
+  `on_mismatch`/`explain`/`no_warnings`/`quiet` were surfaced, so `-k`/`-K`,
+  `[tasks].prefer`, `[tasks.overrides]`, `[install]`, and `[github]`/
+  `[parallel]` config could be set without `doctor` ever showing it.
+
 ### Changed
 
 - **Breaking:** `doctor --json` and `why --json` now always emit the
@@ -44,12 +56,28 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
   superseded schema/example files are deleted.
 
+- `doctor --json` `overrides.fallback`, `on_mismatch`, `pm`,
+  `pm_by_ecosystem`, `runner`, and `prefer_runners` are now closed enums in
+  `doctor.schema.json` (with the accepted values documented per variant),
+  not generic strings — editors and validators can now catch a typo'd
+  override value against the committed schema instead of silently
+  accepting anything. `pm_by_ecosystem`'s keys are constrained the same
+  way: the schema now lists the seven ecosystem names explicitly instead
+  of allowing any string key, and its values are plain (non-nullable)
+  package-manager labels — the report never emits a `null` there.
+  `failure_policy`, `script_policy`, and `install_pms` (new fields, see
+  Added above) get the same closed-enum treatment from the start.
+
 ### Fixed
 
 - `runner schema --all` no longer surfaces a raw Rust panic if the
   init-template generator ever drifts from `RunnerConfig` in a released
   binary (the drift-guard test should already catch this before merge);
   it now reports a clean CLI error instead.
+- `doctor --json` `overrides.quiet` is now listed as required in
+  `doctor.schema.json`, like every other boolean override — it was kept
+  optional for compatibility with the pre-collapse `doctor` v3 schema,
+  which this same release already removed.
 
 ## [0.18.1] - 2026-07-04
 
