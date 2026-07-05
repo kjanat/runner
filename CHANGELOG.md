@@ -15,6 +15,40 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `runner lsp` completes `[tasks.overrides]` entry keys with the
+  project's own task names (discovered from the document's directory,
+  same detection as the CLI), each carrying its source and description.
+  Works both under the `[tasks.overrides]` header and as a dotted
+  `overrides.<task>` key in `[tasks]`; names that aren't bare TOML keys
+  (e.g. `build:web`) insert quoted. Dotted `overrides.<task> =` values
+  now complete the source-label vocabulary like their
+  `[tasks.overrides]` equivalents.
+- `runner lsp` key completions scaffold the value shape the field's
+  schema type calls for, when the client supports snippets: array fields
+  insert `pms = ["|"]`, string fields `node = "|"`, others a bare tab
+  stop; table fields continue the dotted key path (`overrides.`), which
+  re-triggers completion. Clients without snippet support keep the plain
+  `name =` insert.
+
+### Fixed
+
+- `runner lsp` no longer offers field completions after a dotted key
+  (`group_output.` suggested the section's whole field list; TOML reads
+  the dot as a key path, and no section has enumerable sub-keys). Key
+  completions also now carry an explicit text edit replacing the typed
+  token, so a completion accepted from a stale list (e.g. left open
+  across a backspace) substitutes the token instead of pasting after it
+  (`group_outputgroup_output =`).
+- `runner lsp` value completions inside an open string literal
+  (`prefer = ["ba`) insert the bare word instead of a quoted one — the
+  quotes are already typed (and auto-paired), so accepting previously
+  produced `""bacon""`.
+- `runner lsp` is now comment-aware: no completions or hover at or after
+  a `#` (whole-line or trailing); a `#` inside a string literal still
+  isn't treated as a comment.
+
 ## [0.19.0] - 2026-07-05
 
 ### Added

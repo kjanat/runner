@@ -27,12 +27,22 @@ pub(super) struct FieldDoc {
     pub enum_values: Vec<String>,
     /// Whether the schema flags the field as deprecated.
     pub deprecated: bool,
-    /// Whether the schema types this field as an object (a nested table
-    /// writable as its own `[section.field]` header, e.g. `[tasks.overrides]`).
-    pub is_table: bool,
-    /// Whether the schema types this field as an array (a TOML sequence,
-    /// e.g. `prefer = [...]`).
-    pub is_array: bool,
+    /// The value shape the schema declares.
+    pub field_type: FieldType,
+}
+
+/// The (single) JSON type shape a field schema declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FieldType {
+    /// An object — a nested table writable as its own `[section.field]`
+    /// header, e.g. `[tasks.overrides]`.
+    Table,
+    /// An array (a TOML sequence, e.g. `prefer = [...]`).
+    Array,
+    /// A string, including closed string enums.
+    String,
+    /// Anything else (booleans, numbers).
+    Other,
 }
 
 /// Section docs keyed by TOML section name (`pm`, `tasks`, …).
@@ -90,7 +100,7 @@ impl SchemaIndex {
         for (name, doc) in &self.sections {
             paths.push(name.clone());
             for (field, field_doc) in &doc.fields {
-                if field_doc.is_table {
+                if field_doc.field_type == FieldType::Table {
                     paths.push(format!("{name}.{field}"));
                 }
             }
@@ -108,7 +118,7 @@ fn field_docs(def: &Value) -> BTreeMap<String, FieldDoc> {
     props
         .iter()
         .map(|(field, schema)| {
-            let enum_values = schema
+            let enum_values: Vec<String> = schema
                 .get("enum")
                 .and_then(Value::as_array)
                 .map(|values| {
@@ -118,14 +128,22 @@ fn field_docs(def: &Value) -> BTreeMap<String, FieldDoc> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let field_type = if has_type(schema, "object") {
+                FieldType::Table
+            } else if has_type(schema, "array") {
+                FieldType::Array
+            } else if has_type(schema, "string") || !enum_values.is_empty() {
+                FieldType::String
+            } else {
+                FieldType::Other
+            };
             (
                 field.clone(),
                 FieldDoc {
                     description: string_field(schema, "description"),
                     enum_values,
                     deprecated: is_deprecated(schema),
-                    is_table: has_type(schema, "object"),
-                    is_array: has_type(schema, "array"),
+                    field_type,
                 },
             )
         })

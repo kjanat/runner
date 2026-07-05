@@ -43,11 +43,12 @@ use self::text::LineIndex;
 pub(crate) fn run() -> Result<i32> {
     let (connection, io_threads) = Connection::stdio();
     let capabilities = serde_json::to_value(server_capabilities())?;
-    let _initialize_params = connection.initialize(capabilities)?;
+    let initialize_params = connection.initialize(capabilities)?;
 
     let mut server = Server {
         documents: HashMap::new(),
         schema: SchemaIndex::build(),
+        snippets: client_supports_snippets(initialize_params),
     };
     server.serve(&connection)?;
 
@@ -84,6 +85,19 @@ struct Server {
     documents: HashMap<Uri, String>,
     /// Section/field documentation, built once at startup.
     schema: SchemaIndex,
+    /// Whether the client declared completion snippet support at initialize.
+    snippets: bool,
+}
+
+/// Whether the client's initialize params declare completion snippet support.
+fn client_supports_snippets(initialize_params: Value) -> bool {
+    serde_json::from_value::<lsp_types::InitializeParams>(initialize_params)
+        .ok()
+        .and_then(|params| params.capabilities.text_document)
+        .and_then(|text_document| text_document.completion)
+        .and_then(|completion| completion.completion_item)
+        .and_then(|item| item.snippet_support)
+        .unwrap_or(false)
 }
 
 impl Server {
@@ -190,8 +204,43 @@ impl Server {
         let Some(text) = self.documents.get(uri).filter(|_| is_runner_toml(uri)) else {
             return Vec::new();
         };
-        analysis::completion(&LineIndex::new(text), &self.schema, text, pos)
+        analysis::completion(
+            &LineIndex::new(text),
+            &self.schema,
+            text,
+            pos,
+            document_dir(uri).as_deref(),
+            self.snippets,
+        )
     }
+}
+
+/// The document's directory for a `file:` URI, anchoring project-task
+/// discovery. Non-file URIs (or a rootless path) yield `None`.
+fn document_dir(uri: &Uri) -> Option<std::path::PathBuf> {
+    if uri.scheme().is_some_and(|s| s.as_str() != "file") {
+        return None;
+    }
+    // Percent-decode: clients encode spaces and non-ASCII in file URIs.
+    let decoded = uri
+        .path()
+        .as_estr()
+        .decode()
+        .into_string_lossy()
+        .into_owned();
+    // `file:///C:/x` decodes to `/C:/x`; strip the slash so the drive form
+    // reads absolute on Windows (on unix it then fails is_absolute → None).
+    let path = decoded
+        .strip_prefix('/')
+        .filter(|rest| {
+            rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && rest.as_bytes().get(1) == Some(&b':')
+        })
+        .unwrap_or(&decoded);
+    let path = std::path::Path::new(path);
+    path.parent()
+        .filter(|parent| parent.is_absolute())
+        .map(std::path::Path::to_path_buf)
 }
 
 /// Whether `uri`'s basename is `runner.toml` or its dotfile form, at any depth —
@@ -214,5 +263,100 @@ fn send_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<lsp_type
             method: lsp_types::notification::PublishDiagnostics::METHOD.to_string(),
             params,
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use lsp_types::Uri;
+
+    use super::document_dir;
+
+    #[test]
+    fn document_dir_takes_the_file_uri_parent() {
+        let uri = Uri::from_str("file:///home/user/proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/proj"))
+        );
+    }
+
+    #[test]
+    fn document_dir_percent_decodes_the_path() {
+        let uri = Uri::from_str("file:///home/user/my%20proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/my proj"))
+        );
+    }
+
+    #[test]
+    fn document_dir_decodes_non_ascii_segments() {
+        // `ø` percent-encoded as UTF-8 (%C3%B8).
+        let uri = Uri::from_str("file:///home/user/pr%C3%B8j/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/prøj"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn document_dir_normalizes_a_windows_drive_uri() {
+        let uri = Uri::from_str("file:///C:/Users/user/proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("C:/Users/user/proj"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn document_dir_rejects_a_windows_drive_uri_off_windows() {
+        // The stripped drive form (`C:/...`) is not absolute on unix.
+        let uri = Uri::from_str("file:///C:/Users/user/proj/runner.toml").expect("uri");
+        assert_eq!(document_dir(&uri), None);
+    }
+
+    #[test]
+    fn document_dir_rejects_non_file_schemes() {
+        let uri = Uri::from_str("untitled:Untitled-1").expect("uri");
+        assert_eq!(document_dir(&uri), None);
+    }
+
+    #[test]
+    fn snippet_support_reads_the_nested_capability() {
+        let params = serde_json::json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": { "completionItem": { "snippetSupport": true } }
+                }
+            }
+        });
+        assert!(super::client_supports_snippets(params));
+    }
+
+    #[test]
+    fn snippet_support_defaults_to_false_when_absent() {
+        let params = serde_json::json!({ "capabilities": {} });
+        assert!(!super::client_supports_snippets(params));
+        let explicit_false = serde_json::json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": { "completionItem": { "snippetSupport": false } }
+                }
+            }
+        });
+        assert!(!super::client_supports_snippets(explicit_false));
+    }
+
+    #[test]
+    fn snippet_support_tolerates_malformed_params() {
+        assert!(!super::client_supports_snippets(serde_json::json!(
+            "not initialize params"
+        )));
+        assert!(!super::client_supports_snippets(serde_json::Value::Null));
     }
 }
