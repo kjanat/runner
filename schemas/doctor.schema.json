@@ -393,7 +393,7 @@
         "prefer_sources": {
           "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/TaskSourceLabel"
           }
         },
         "quiet": {
@@ -413,7 +413,7 @@
           "additionalProperties": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/$defs/TaskSourceLabel"
             }
           }
         }

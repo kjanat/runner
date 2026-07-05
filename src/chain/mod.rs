@@ -87,6 +87,17 @@ pub(crate) enum FailurePolicy {
     KillOnFail,
 }
 
+impl FailurePolicy {
+    /// The user-facing label — same convention as [`crate::resolver::FallbackPolicy::label`].
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::FailFast => "fail-fast",
+            Self::KeepGoing => "keep-going",
+            Self::KillOnFail => "kill-on-fail",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

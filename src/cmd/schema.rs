@@ -590,6 +590,18 @@ fn patch_source_schema(schema: &mut Value, command: &str) {
     patch_task_info_source(defs);
     patch_why_task(defs);
     patch_def_field(defs, "SourceEntry", "kind", "TaskSourceLabel");
+    patch_overrides_source_labels(defs);
+}
+
+/// `Overrides.prefer_sources`/`task_source_pins` hold the same structured
+/// source labels as `SourceEntry.kind` — constrain them to `TaskSourceLabel`
+/// too instead of leaving them generic strings.
+fn patch_overrides_source_labels(defs: &mut Map<String, Value>) {
+    if !defs.contains_key("Overrides") {
+        return;
+    }
+    patch_def_array_items(defs, "Overrides", "prefer_sources", "TaskSourceLabel");
+    patch_def_map_array_items(defs, "Overrides", "task_source_pins", "TaskSourceLabel");
 }
 
 fn patch_task_info_source(defs: &mut Map<String, Value>) {
@@ -626,6 +638,47 @@ fn patch_def_field(
         return;
     };
     *field_schema = json!({ "$ref": format!("#/$defs/{target_def}") });
+}
+
+/// Like [`patch_def_field`], but for an array-typed field — constrains its
+/// `items` schema instead of the field itself.
+fn patch_def_array_items(
+    defs: &mut Map<String, Value>,
+    def_name: &'static str,
+    field: &'static str,
+    target_def: &'static str,
+) {
+    let Some(items) = defs
+        .get_mut(def_name)
+        .and_then(|definition| definition.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut(field))
+        .and_then(|field_schema| field_schema.get_mut("items"))
+    else {
+        return;
+    };
+    *items = json!({ "$ref": format!("#/$defs/{target_def}") });
+}
+
+/// Like [`patch_def_array_items`], but for a map-of-array field — constrains
+/// the array items nested under `additionalProperties`.
+fn patch_def_map_array_items(
+    defs: &mut Map<String, Value>,
+    def_name: &'static str,
+    field: &'static str,
+    target_def: &'static str,
+) {
+    let Some(items) = defs
+        .get_mut(def_name)
+        .and_then(|definition| definition.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut(field))
+        .and_then(|field_schema| field_schema.get_mut("additionalProperties"))
+        .and_then(|additional| additional.get_mut("items"))
+    else {
+        return;
+    };
+    *items = json!({ "$ref": format!("#/$defs/{target_def}") });
 }
 
 fn task_source_label_schema(command: &str) -> Value {

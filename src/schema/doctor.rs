@@ -32,9 +32,8 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::labels::structured_source_label;
-use crate::chain::FailurePolicy;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
-use crate::resolver::{ResolutionOverrides, ResolutionStep, Resolver, ScriptPolicy};
+use crate::resolver::{ResolutionOverrides, ResolutionStep, Resolver};
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
@@ -526,11 +525,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     Overrides {
         explain: overrides.explain,
         fallback: overrides.fallback.label(),
-        failure_policy: match overrides.failure_policy {
-            FailurePolicy::FailFast => "fail-fast",
-            FailurePolicy::KeepGoing => "keep-going",
-            FailurePolicy::KillOnFail => "kill-on-fail",
-        },
+        failure_policy: overrides.failure_policy.label(),
         install_pms: overrides.install_pms.iter().map(|pm| pm.label()).collect(),
         no_warnings: overrides.no_warnings,
         output_grouping: OutputGrouping {
@@ -553,11 +548,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             .map(|&source| structured_source_label(source))
             .collect(),
         runner: overrides.runner.as_ref().map(|o| o.runner.label()),
-        script_policy: match overrides.script_policy {
-            ScriptPolicy::Default => "default",
-            ScriptPolicy::Deny => "deny",
-            ScriptPolicy::Allow => "allow",
-        },
+        script_policy: overrides.script_policy.report_label(),
         task_source_pins: overrides
             .task_source_overrides
             .iter()

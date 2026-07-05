@@ -208,6 +208,18 @@ impl ScriptPolicy {
             Self::Allow => Some("allow"),
         }
     }
+
+    /// The label for every variant, including [`Self::Default`] — for
+    /// reporting the *effective* state (e.g. `doctor --json`), where
+    /// "default" is a real value to describe, unlike [`Self::label`]'s
+    /// settable-input vocabulary.
+    pub(crate) const fn report_label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Deny => "deny",
+            Self::Allow => "allow",
+        }
+    }
 }
 
 /// How to react when manifest declaration (step 5) and lockfile (step 6)
