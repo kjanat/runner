@@ -41,6 +41,9 @@ pub(crate) use error::{DevEnginesFailReason, ResolveError};
 /// Re-export of the standalone `runner.toml` validator backing
 /// `cmd::config::validate`; see [`overrides::validate_config`].
 pub(crate) use overrides::validate_config;
+/// Re-export of the canonical Node PATH-probe order so the doctor's
+/// schema layer doesn't carry its own copy.
+pub(crate) use probe::NODE_PROBE_ORDER;
 /// Re-export of the pure-function probe variant for the `doctor` subcommand.
 /// Lets `cmd::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.

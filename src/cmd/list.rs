@@ -269,20 +269,7 @@ fn render_tasks_grouped_rich(
     terminal_width: Option<usize>,
 ) -> String {
     let mut out = String::new();
-    let sources = [
-        TaskSource::PackageJson,
-        TaskSource::TurboJson,
-        TaskSource::Makefile,
-        TaskSource::Justfile,
-        TaskSource::Taskfile,
-        TaskSource::DenoJson,
-        TaskSource::CargoAliases,
-        TaskSource::GoPackage,
-        TaskSource::BaconToml,
-        TaskSource::MiseToml,
-        TaskSource::PyprojectScripts,
-    ];
-    for source in sources {
+    for &source in TaskSource::all() {
         let source_tasks = tasks_for_source(tasks, source);
         if source_tasks.is_empty() {
             continue;
@@ -457,20 +444,7 @@ fn wrap_long_segment(value: &str, width: usize) -> Vec<String> {
 
 fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> String {
     let mut out = String::new();
-    let sources = [
-        TaskSource::PackageJson,
-        TaskSource::TurboJson,
-        TaskSource::Makefile,
-        TaskSource::Justfile,
-        TaskSource::Taskfile,
-        TaskSource::DenoJson,
-        TaskSource::CargoAliases,
-        TaskSource::GoPackage,
-        TaskSource::BaconToml,
-        TaskSource::MiseToml,
-        TaskSource::PyprojectScripts,
-    ];
-    for source in sources {
+    for &source in TaskSource::all() {
         let source_tasks = tasks_for_source(tasks, source);
         if source_tasks.is_empty() {
             continue;

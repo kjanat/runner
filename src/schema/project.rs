@@ -506,22 +506,6 @@ const fn mismatch_label(policy: MismatchPolicy) -> &'static str {
     }
 }
 
-/// Probe each Node PM in canonical order and report (binary, path) pairs.
-/// Used by the doctor signals section; intentionally calls the real probe
-/// so the output reflects what the resolver would see.
-///
-/// Probes run in parallel via [`std::thread::scope`]: each `probe_path_for_doctor`
-/// call walks the entire `PATH` searching for one binary, which is O(N
-/// entries) of independent `stat` syscalls. Doctor isn't on the hot
-/// path, but four-way fan-out is essentially free and keeps the
-/// rendering snappy on `PATH`s that contain network-mounted directories.
-const PATH_PROBE_PMS: [PackageManager; 4] = [
-    PackageManager::Bun,
-    PackageManager::Pnpm,
-    PackageManager::Yarn,
-    PackageManager::Npm,
-];
-
 /// Probe results for the signals section: every PATH hit, plus Volta
 /// shim classification when requested. Shared with the v3 doctor
 /// builder ([`super::doctor_v3`]), hence `pub(super)`.
@@ -530,6 +514,15 @@ pub(super) struct ProbeSignals {
     pub(super) volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
 }
 
+/// Probe each Node PM in [`crate::resolver::NODE_PROBE_ORDER`] and report
+/// (binary, path) pairs. Used by the doctor signals section; intentionally
+/// calls the real probe so the output reflects what the resolver would see.
+///
+/// Probes run in parallel via [`std::thread::scope`]: each `probe_path_for_doctor`
+/// call walks the entire `PATH` searching for one binary, which is O(N
+/// entries) of independent `stat` syscalls. Doctor isn't on the hot
+/// path, but four-way fan-out is essentially free and keeps the
+/// rendering snappy on `PATH`s that contain network-mounted directories.
 pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> ProbeSignals {
     use std::env;
     use std::thread;
@@ -554,8 +547,8 @@ pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> Prob
         // without the eager push would serialize — `Iterator::map` is
         // lazy, so the next `spawn` wouldn't fire until the previous
         // join returned.
-        let mut handles = Vec::with_capacity(PATH_PROBE_PMS.len());
-        for pm in &PATH_PROBE_PMS {
+        let mut handles = Vec::with_capacity(crate::resolver::NODE_PROBE_ORDER.len());
+        for pm in crate::resolver::NODE_PROBE_ORDER {
             let path = &path;
             let volta = volta.as_ref();
             handles.push(s.spawn(move || {

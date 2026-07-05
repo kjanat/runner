@@ -440,7 +440,7 @@ impl<'a> DoctorReportV3<'a> {
             ecosystems: ecosystems_v3(ctx, overrides, &node_pm, resolve_shims),
             sources: sources_v3(ctx, schema_version),
             tasks: tasks_v3(ctx, &node_pm, overrides, schema_version),
-            tools: tools_v3(ctx, &node_pm),
+            tools: tools_v3(ctx, overrides, &node_pm),
             conflicts: conflicts_v3(ctx, overrides, schema_version),
             diagnostics,
             resolution: ResolutionPolicyV3 {
@@ -551,6 +551,12 @@ fn ecosystems_v3(
     if has_node_context(ctx, node_pm) && !seen.contains(&Ecosystem::Node) {
         seen.push(Ecosystem::Node);
     }
+    // Same reasoning as the Node patch-in above: a `[project.scripts]`
+    // task can resolve via `--pm`/`[pm].python`/detected PM without a
+    // lockfile-detected PM in `package_managers`.
+    if has_python_context(ctx, overrides) && !seen.contains(&Ecosystem::Python) {
+        seen.push(Ecosystem::Python);
+    }
 
     seen.into_iter()
         .map(|eco| match eco {
@@ -580,6 +586,23 @@ fn has_node_context(
             .tasks
             .iter()
             .any(|t| matches!(t.source, TaskSource::PackageJson))
+}
+
+/// Whether the project carries Python context, considering resolver and
+/// task signals — not just lockfile-detected `package_managers`. Mirrors
+/// [`has_node_context`]; gates Python inclusion in both [`ecosystems_v3`]
+/// and [`tools_v3`] so neither surface disagrees with what `tasks_v3`
+/// resolves.
+fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
+    resolve_python_pm(ctx, overrides).is_some()
+        || ctx
+            .package_managers
+            .iter()
+            .any(|pm| pm.ecosystem() == Ecosystem::Python)
+        || ctx
+            .tasks
+            .iter()
+            .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
 }
 
 fn node_ecosystem_v3(
@@ -898,6 +921,7 @@ fn anchor_file(source: TaskSource, root: &Path) -> Option<PathBuf> {
 
 fn tools_v3(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
 ) -> Vec<ToolV3> {
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -913,6 +937,21 @@ fn tools_v3(
             ctx.current_node
                 .as_deref()
                 .map(|v| v.trim_start_matches('v').to_string()),
+            true,
+            &path,
+            pathext_ref,
+        ));
+    }
+    // Same reasoning as the node runtime probe above: a resolved
+    // `uv run <task>` must never reference an interpreter the tools
+    // surface claims absent.
+    if has_python_context(ctx, overrides) {
+        use crate::tool::python::PYTHON_BIN;
+
+        tools.push(probe_tool(
+            PYTHON_BIN,
+            DependencyKindV3::Runtime,
+            None,
             true,
             &path,
             pathext_ref,
@@ -1254,6 +1293,36 @@ mod tests {
         assert!(
             tools.iter().any(|t| t["name"] == "node"),
             "node runtime tool must be probed when package.json tasks exist"
+        );
+    }
+
+    #[test]
+    fn v3_report_keeps_python_when_only_pyproject_scripts_tasks_present() {
+        // Mirrors v3_report_keeps_node_when_only_package_json_tasks_present:
+        // a bare pyproject.toml with [project.scripts] but no uv.lock/poetry
+        // markers still resolves tasks via the detected/overridden Python
+        // PM, so ecosystems/tools must surface Python too.
+        use crate::tool::python::PYTHON_BIN;
+
+        let ctx = context(vec![task("build", TaskSource::PyprojectScripts)]);
+        assert!(
+            !ctx.package_managers
+                .iter()
+                .any(|pm| pm.ecosystem() == Ecosystem::Python),
+            "precondition: no Python PM detected"
+        );
+        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        let ecosystems = json["ecosystems"].as_array().expect("ecosystems array");
+        assert!(
+            ecosystems.iter().any(|e| e["name"] == "python"),
+            "python ecosystem must be present when pyproject.toml tasks exist"
+        );
+        let tools = json["tools"].as_array().expect("tools array");
+        assert!(
+            tools.iter().any(|t| t["name"] == PYTHON_BIN),
+            "python runtime tool must be probed when pyproject.toml tasks exist"
         );
     }
 
