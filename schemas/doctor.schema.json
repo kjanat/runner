@@ -441,16 +441,79 @@
         },
         "pm_by_ecosystem": {
           "type": "object",
-          "additionalProperties": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/PackageManager"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
+          "properties": {
+            "deno": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "go": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "node": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "php": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "python": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "ruby": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "rust": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PackageManager"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
         },
         "prefer_runners": {
           "type": "array",

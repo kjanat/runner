@@ -168,7 +168,7 @@ struct Overrides {
     quiet: bool,
     on_mismatch: MismatchPolicy,
     pm: Option<PackageManager>,
-    pm_by_ecosystem: BTreeMap<String, Option<PackageManager>>,
+    pm_by_ecosystem: BTreeMap<Ecosystem, Option<PackageManager>>,
     prefer_runners: Vec<TaskRunner>,
     prefer_sources: Vec<&'static str>,
     runner: Option<TaskRunner>,
@@ -544,7 +544,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         pm_by_ecosystem: overrides
             .pm_by_ecosystem
             .iter()
-            .map(|(eco, o)| (eco.label().to_string(), Some(o.pm)))
+            .map(|(&eco, o)| (eco, Some(o.pm)))
             .collect(),
         prefer_runners: overrides.prefer_runners.clone(),
         prefer_sources: overrides

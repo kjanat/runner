@@ -8,21 +8,27 @@ use std::path::PathBuf;
 /// in `runner.toml` applies only when resolving for [`Ecosystem::Node`].
 /// Deno is its own ecosystem even though its package manager can also
 /// dispatch `package.json` scripts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Variants use `//`, not `///`: a per-variant doc comment defeats
+/// `BTreeMap`'s closed-key-set schema optimization for `Overrides.pm_by_ecosystem`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum Ecosystem {
-    /// Node.js (npm, yarn, pnpm, bun).
+    // Node.js (npm, yarn, pnpm, bun).
     Node,
-    /// Deno.
+    // Deno.
     Deno,
-    /// Python (uv, poetry, pipenv).
+    // Python (uv, poetry, pipenv).
     Python,
-    /// Rust (cargo).
+    // Rust (cargo).
     Rust,
-    /// Go.
+    // Go.
     Go,
-    /// Ruby (bundler).
+    // Ruby (bundler).
     Ruby,
-    /// PHP (composer).
+    // PHP (composer).
     Php,
 }
 
