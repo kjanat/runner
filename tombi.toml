@@ -51,3 +51,7 @@ strict  = true
 [[schemas]]
 path    = "./schemas/runner.toml.schema.json"
 include = ["runner.toml", "schemas/runner.init.toml"]
+
+[[schemas]]
+path    = "https://gist.githubusercontent.com/kjanat/1172d9d2d6dbe7c6d9983aaabef2eea5/raw/cargo-config.bundle.json"
+include = [".cargo/config.toml", ".config/nightly.toml"]

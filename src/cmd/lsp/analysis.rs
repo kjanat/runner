@@ -6,8 +6,8 @@
 //! completion candidate sets without a full document parse.
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, Documentation, Hover, HoverContents, MarkupContent,
-    MarkupKind, Position,
+    CompletionItem, CompletionItemKind, CompletionItemTag, Documentation, Hover, HoverContents,
+    MarkupContent, MarkupKind, Position,
 };
 
 use super::schema_index::SchemaIndex;
@@ -20,8 +20,13 @@ enum LineShape {
     Header(String),
     /// The key side of an assignment (or a bare word being typed as a key).
     Key,
-    /// The value side, right of `=`; the string is the key on the left.
-    Value(String),
+    /// The value side, right of `=`.
+    Value {
+        /// The key on the left of the `=`.
+        key: String,
+        /// Whether the cursor sits inside an unclosed `[` array literal.
+        in_array: bool,
+    },
     /// Blank / whitespace-only line.
     Empty,
 }
@@ -74,7 +79,14 @@ fn analyze(index: &LineIndex, text: &str, pos: Position) -> Cursor {
             let line_start = index.offset(text, Position::new(pos.line, 0));
             let within = index.offset(text, pos).saturating_sub(line_start);
             if within > eq {
-                LineShape::Value(line_text[..eq].trim().to_string())
+                let before_cursor = line_text
+                    .get(eq + 1..within.min(line_text.len()))
+                    .unwrap_or("");
+                LineShape::Value {
+                    key: line_text[..eq].trim().to_string(),
+                    in_array: before_cursor.matches('[').count()
+                        > before_cursor.matches(']').count(),
+                }
             } else {
                 LineShape::Key
             }
@@ -94,9 +106,9 @@ pub(super) fn hover(
     let cursor = analyze(index, text, pos);
     let (title, body) = match cursor.shape {
         LineShape::Header(path) => describe_section(schema, &path)?,
-        LineShape::Key | LineShape::Value(_) => {
+        LineShape::Key | LineShape::Value { .. } => {
             let key = match &cursor.shape {
-                LineShape::Value(key) => key.clone(),
+                LineShape::Value { key, .. } => key.clone(),
                 _ => current_key(text, pos)?,
             };
             describe_field(schema, cursor.section.as_deref()?, &key)?
@@ -123,11 +135,23 @@ fn describe_section(schema: &SchemaIndex, path: &str) -> Option<(String, String)
         let doc = schema.section(parent)?.fields.get(field)?;
         return Some((
             format!("[{path}]"),
-            doc.description.clone().unwrap_or_default(),
+            deprecation_note(doc.deprecated, doc.description.clone().unwrap_or_default()),
         ));
     }
     let section = schema.section(path)?;
-    Some((format!("[{path}]"), section.description.clone()?))
+    Some((
+        format!("[{path}]"),
+        deprecation_note(section.deprecated, section.description.clone()?),
+    ))
+}
+
+/// Prefix a hover body with a deprecation banner when applicable.
+fn deprecation_note(deprecated: bool, body: String) -> String {
+    if deprecated {
+        format!("**Deprecated.**\n\n{body}")
+    } else {
+        body
+    }
 }
 
 /// Hover/title for a `key` within `section`.
@@ -142,10 +166,7 @@ fn describe_field(schema: &SchemaIndex, section: &str, key: &str) -> Option<(Str
         ));
     }
     let doc = schema.section(section)?.fields.get(key)?;
-    let mut body = doc.description.clone().unwrap_or_default();
-    if doc.deprecated {
-        body = format!("**Deprecated.**\n\n{body}");
-    }
+    let body = deprecation_note(doc.deprecated, doc.description.clone().unwrap_or_default());
     Some((format!("[{section}].{key}"), body))
 }
 
@@ -158,13 +179,25 @@ pub(super) fn completion(
 ) -> Vec<CompletionItem> {
     let cursor = analyze(index, text, pos);
     match cursor.shape {
-        LineShape::Header(_) => section_items(schema, false),
-        LineShape::Value(key) => value_items(schema, cursor.section.as_deref(), &key),
+        LineShape::Header(partial) => header_items(schema, &partial, false),
+        LineShape::Value { key, in_array } => {
+            value_items(schema, cursor.section.as_deref(), &key, in_array)
+        }
         LineShape::Key => field_items(schema, cursor.section.as_deref()),
         LineShape::Empty => cursor.section.as_deref().map_or_else(
-            || section_items(schema, true),
+            || header_items(schema, "", true),
             |section| field_items(schema, Some(section)),
         ),
+    }
+}
+
+/// Header-path completion. A dotted partial (`[tasks.`) completes only the
+/// parent's sub-tables (as their child name); an undotted one completes the
+/// full top-level list.
+fn header_items(schema: &SchemaIndex, partial: &str, bracketed: bool) -> Vec<CompletionItem> {
+    match partial.rsplit_once('.') {
+        Some((parent, _)) => subtable_items(schema, parent),
+        None => section_items(schema, bracketed),
     }
 }
 
@@ -180,19 +213,62 @@ fn section_items(schema: &SchemaIndex, bracketed: bool) -> Vec<CompletionItem> {
             } else {
                 name.clone()
             };
-            let doc = describe_section(schema, &name)
-                .map(|(_, body)| body)
-                .filter(|body| !body.is_empty())
-                .map(doc_markup);
+            let deprecated = name
+                .split('.')
+                .next()
+                .and_then(|s| schema.section(s))
+                .is_some_and(|s| s.deprecated);
             CompletionItem {
-                label: name,
-                kind: Some(CompletionItemKind::MODULE),
                 insert_text: Some(insert),
-                documentation: doc,
-                ..CompletionItem::default()
+                ..section_item(schema, &name, name.clone(), deprecated)
             }
         })
         .collect()
+}
+
+/// Sub-table completion under `parent` (e.g. `overrides` for `[tasks.`).
+/// A parent with no sub-tables completes nothing — the top-level list would
+/// only mint invalid `[parent.section]` paths.
+fn subtable_items(schema: &SchemaIndex, parent: &str) -> Vec<CompletionItem> {
+    let prefix = format!("{parent}.");
+    schema
+        .header_paths()
+        .into_iter()
+        .filter_map(|path| {
+            let child = path.strip_prefix(&prefix)?;
+            (!child.contains('.')).then(|| (path.clone(), child.to_string()))
+        })
+        .map(|(path, child)| {
+            let deprecated = schema
+                .section(&path)
+                .or_else(|| schema.section(parent))
+                .is_some_and(|s| s.deprecated);
+            section_item(schema, &path, child, deprecated)
+        })
+        .collect()
+}
+
+/// A single section/sub-table completion item labeled `label`, documented
+/// from the full `path`.
+fn section_item(
+    schema: &SchemaIndex,
+    path: &str,
+    label: String,
+    deprecated: bool,
+) -> CompletionItem {
+    let doc = describe_section(schema, path)
+        .map(|(_, body)| body)
+        .filter(|body| !body.is_empty())
+        .map(doc_markup);
+    CompletionItem {
+        insert_text: Some(label.clone()),
+        label,
+        kind: Some(CompletionItemKind::MODULE),
+        detail: deprecated.then(|| "deprecated".to_string()),
+        tags: deprecated.then(|| vec![CompletionItemTag::DEPRECATED]),
+        documentation: doc,
+        ..CompletionItem::default()
+    }
 }
 
 /// Field-name completion for a section.
@@ -207,6 +283,9 @@ fn field_items(schema: &SchemaIndex, section: Option<&str>) -> Vec<CompletionIte
             kind: Some(CompletionItemKind::FIELD),
             insert_text: Some(format!("{name} = ")),
             detail: field.deprecated.then(|| "deprecated".to_string()),
+            tags: field
+                .deprecated
+                .then(|| vec![CompletionItemTag::DEPRECATED]),
             documentation: field.description.clone().map(doc_markup),
             ..CompletionItem::default()
         })
@@ -215,20 +294,29 @@ fn field_items(schema: &SchemaIndex, section: Option<&str>) -> Vec<CompletionIte
 
 /// Value completion for `section.key`: the schema's `enum`, or a code-driven set
 /// for the fields the schema can't enumerate (label lists, booleans).
-fn value_items(schema: &SchemaIndex, section: Option<&str>, key: &str) -> Vec<CompletionItem> {
+fn value_items(
+    schema: &SchemaIndex,
+    section: Option<&str>,
+    key: &str,
+    in_array: bool,
+) -> Vec<CompletionItem> {
     let section = section.unwrap_or("");
-    if let Some(field) = schema.section(section).and_then(|s| s.fields.get(key))
+    let field = schema.section(section).and_then(|s| s.fields.get(key));
+    // For a sequence-typed field with no `[` typed yet, wrap the first
+    // element so accepting a completion yields valid TOML.
+    let wrap = !in_array && field.is_some_and(|f| f.is_array);
+    if let Some(field) = field
         && !field.enum_values.is_empty()
     {
         return field
             .enum_values
             .iter()
-            .map(|v| value_item(v, "value", true))
+            .map(|v| value_item(v, "value", true, wrap))
             .collect();
     }
     code_values(section, key)
         .into_iter()
-        .map(|(value, detail)| value_item(&value, detail, detail != "bool"))
+        .map(|(value, detail)| value_item(&value, detail, detail != "bool", wrap))
         .collect()
 }
 
@@ -274,13 +362,17 @@ fn code_values(section: &str, key: &str) -> Vec<(String, &'static str)> {
 
 /// A single value completion item. `quote` wraps `insert_text` in `"..."` for
 /// string-typed values, so string fields (`pm.node`, `tasks.prefer`, …) insert
-/// valid TOML rather than a bare, unquoted word; the label stays unquoted.
-fn value_item(value: &str, detail: &str, quote: bool) -> CompletionItem {
-    let insert_text = if quote {
+/// valid TOML rather than a bare, unquoted word; `wrap` additionally brackets
+/// it as a one-element array for sequence-typed fields. The label stays bare.
+fn value_item(value: &str, detail: &str, quote: bool, wrap: bool) -> CompletionItem {
+    let mut insert_text = if quote {
         format!("\"{value}\"")
     } else {
         value.to_string()
     };
+    if wrap {
+        insert_text = format!("[{insert_text}]");
+    }
     CompletionItem {
         label: value.to_string(),
         kind: Some(CompletionItemKind::VALUE),
@@ -379,6 +471,57 @@ mod tests {
         let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 1));
         let names = labels(&items);
         assert!(names.contains(&"tasks.overrides"), "{names:?}");
+    }
+
+    #[test]
+    fn array_field_value_completion_wraps_the_first_element() {
+        let schema = SchemaIndex::build();
+        let text = "[install]\npms = \n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 6));
+        let bun = items.iter().find(|i| i.label == "bun").expect("bun item");
+        assert_eq!(bun.insert_text.as_deref(), Some("[\"bun\"]"));
+    }
+
+    #[test]
+    fn array_field_value_completion_inside_brackets_stays_bare() {
+        let schema = SchemaIndex::build();
+        let text = "[install]\npms = [\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let bun = items.iter().find(|i| i.label == "bun").expect("bun item");
+        assert_eq!(bun.insert_text.as_deref(), Some("\"bun\""));
+    }
+
+    #[test]
+    fn dotted_header_completion_offers_only_the_parents_subtables() {
+        let schema = SchemaIndex::build();
+        let text = "[tasks.\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 7));
+        assert_eq!(labels(&items), vec!["overrides"], "{items:?}");
+        assert_eq!(items[0].insert_text.as_deref(), Some("overrides"));
+    }
+
+    #[test]
+    fn dotted_header_without_subtables_completes_nothing() {
+        let schema = SchemaIndex::build();
+        let text = "[github.\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 8));
+        assert!(items.is_empty(), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn deprecated_section_completion_is_tagged() {
+        let schema = SchemaIndex::build();
+        let text = "[\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 1));
+        let item = items
+            .iter()
+            .find(|i| i.label == "task_runner")
+            .expect("task_runner item");
+        assert_eq!(
+            item.tags.as_deref(),
+            Some(&[lsp_types::CompletionItemTag::DEPRECATED][..]),
+            "{item:?}"
+        );
     }
 
     #[test]
