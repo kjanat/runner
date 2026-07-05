@@ -221,7 +221,23 @@ fn document_dir(uri: &Uri) -> Option<std::path::PathBuf> {
     if uri.scheme().is_some_and(|s| s.as_str() != "file") {
         return None;
     }
-    let path = std::path::Path::new(uri.path().as_str());
+    // Percent-decode: clients encode spaces and non-ASCII in file URIs.
+    let decoded = uri
+        .path()
+        .as_estr()
+        .decode()
+        .into_string_lossy()
+        .into_owned();
+    // `file:///C:/x` decodes to `/C:/x`; strip the slash so the drive form
+    // reads absolute on Windows (on unix it then fails is_absolute → None).
+    let path = decoded
+        .strip_prefix('/')
+        .filter(|rest| {
+            rest.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && rest.as_bytes().get(1) == Some(&b':')
+        })
+        .unwrap_or(&decoded);
+    let path = std::path::Path::new(path);
     path.parent()
         .filter(|parent| parent.is_absolute())
         .map(std::path::Path::to_path_buf)
@@ -268,8 +284,79 @@ mod tests {
     }
 
     #[test]
+    fn document_dir_percent_decodes_the_path() {
+        let uri = Uri::from_str("file:///home/user/my%20proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/my proj"))
+        );
+    }
+
+    #[test]
+    fn document_dir_decodes_non_ascii_segments() {
+        // `ø` percent-encoded as UTF-8 (%C3%B8).
+        let uri = Uri::from_str("file:///home/user/pr%C3%B8j/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/prøj"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn document_dir_normalizes_a_windows_drive_uri() {
+        let uri = Uri::from_str("file:///C:/Users/user/proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("C:/Users/user/proj"))
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn document_dir_rejects_a_windows_drive_uri_off_windows() {
+        // The stripped drive form (`C:/...`) is not absolute on unix.
+        let uri = Uri::from_str("file:///C:/Users/user/proj/runner.toml").expect("uri");
+        assert_eq!(document_dir(&uri), None);
+    }
+
+    #[test]
     fn document_dir_rejects_non_file_schemes() {
         let uri = Uri::from_str("untitled:Untitled-1").expect("uri");
         assert_eq!(document_dir(&uri), None);
+    }
+
+    #[test]
+    fn snippet_support_reads_the_nested_capability() {
+        let params = serde_json::json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": { "completionItem": { "snippetSupport": true } }
+                }
+            }
+        });
+        assert!(super::client_supports_snippets(params));
+    }
+
+    #[test]
+    fn snippet_support_defaults_to_false_when_absent() {
+        let params = serde_json::json!({ "capabilities": {} });
+        assert!(!super::client_supports_snippets(params));
+        let explicit_false = serde_json::json!({
+            "capabilities": {
+                "textDocument": {
+                    "completion": { "completionItem": { "snippetSupport": false } }
+                }
+            }
+        });
+        assert!(!super::client_supports_snippets(explicit_false));
+    }
+
+    #[test]
+    fn snippet_support_tolerates_malformed_params() {
+        assert!(!super::client_supports_snippets(serde_json::json!(
+            "not initialize params"
+        )));
+        assert!(!super::client_supports_snippets(serde_json::Value::Null));
     }
 }

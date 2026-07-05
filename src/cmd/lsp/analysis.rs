@@ -355,7 +355,9 @@ fn key_token(index: &LineIndex, text: &str, pos: Position) -> Option<(String, ls
         .saturating_sub(line_start)
         .min(line_text.len());
     let before = line_text.get(..within)?;
-    let token_start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    let token_start = before.rfind(char::is_whitespace).map_or(0, |i| {
+        i + before[i..].chars().next().map_or(1, char::len_utf8)
+    });
     let token = &before[token_start..];
     if token.is_empty() {
         return None;
@@ -1030,6 +1032,27 @@ mod tests {
         let pms = items.iter().find(|i| i.label == "pms").expect("pms item");
         assert_eq!(pms.insert_text.as_deref(), Some("pms = "));
         assert_eq!(pms.insert_text_format, None);
+    }
+
+    #[test]
+    fn key_token_survives_multibyte_whitespace() {
+        let schema = SchemaIndex::build();
+        // U+3000 ideographic space (3 bytes) before the key: slicing at
+        // whitespace-index + 1 would split the codepoint and panic.
+        let text = "[github]\n\u{3000}gr\n";
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 3),
+            None,
+            false,
+        );
+        assert!(
+            labels(&items).contains(&"group_output"),
+            "{:?}",
+            labels(&items)
+        );
     }
 
     #[test]
