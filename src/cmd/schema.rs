@@ -212,7 +212,7 @@ fn patch_why_task(defs: &mut Map<String, Value>) {
     }
     defs.insert(
         "ProviderLabel".to_string(),
-        json!({ "type": "string", "enum": PROVIDER_LABELS }),
+        json!({ "type": "string", "enum": provider_labels() }),
     );
     patch_def_field(defs, "WhyTask", "kind", "TaskSourceLabel");
     patch_def_field(defs, "WhyTask", "provider", "ProviderLabel");
@@ -240,10 +240,15 @@ fn task_source_label_schema(command: &str) -> Value {
 }
 
 /// Closed set for the `why` `provider` field — the tool family that
-/// executes the task. Mirrors `cmd::why::provider_label`.
-const PROVIDER_LABELS: &[&str] = &[
-    "node", "make", "just", "task", "turbo", "deno", "cargo", "go", "bacon", "mise", "python",
-];
+/// executes the task. Derived from [`crate::types::TaskSource::all`]
+/// through [`super::why::provider_label`], the same function `why` calls
+/// at runtime, so the committed schema's enum can't drift from it.
+fn provider_labels() -> Vec<&'static str> {
+    crate::types::TaskSource::all()
+        .iter()
+        .map(|&source| super::why::provider_label(source))
+        .collect()
+}
 
 /// Closed label set for `command`'s source labels, derived from
 /// [`crate::types::TaskSource::all`] through the same label functions
@@ -423,5 +428,45 @@ mod tests {
                  function — run `just gen-schema` and commit the result"
             );
         }
+    }
+
+    #[test]
+    fn provider_label_schema_matches_runtime_labels() {
+        // provider_labels() used to be a hand-maintained PROVIDER_LABELS
+        // array, free to drift from cmd::why::provider_label. Now that
+        // it's derived, this test is a tautology against today's
+        // implementation — its job is to catch a future regression back
+        // to a hardcoded list.
+        let enum_values = super::provider_labels();
+        let runtime_values: Vec<&str> = crate::types::TaskSource::all()
+            .iter()
+            .map(|&source| super::super::why::provider_label(source))
+            .collect();
+        assert_eq!(
+            enum_values, runtime_values,
+            "ProviderLabel enum must match cmd::why::provider_label exactly"
+        );
+    }
+
+    #[test]
+    fn committed_why_schema_provider_label_matches_runtime_labels() {
+        // Mirrors committed_schemas_task_source_label_matches_runtime_labels:
+        // proves the committed schemas/why.schema.json wasn't left stale
+        // after a generator fix.
+        let raw = std::fs::read_to_string("schemas/why.schema.json")
+            .expect("committed why schema should be readable");
+        let schema: Value = serde_json::from_str(&raw).expect("schema should parse as JSON");
+        let enum_values: Vec<&str> = schema["$defs"]["ProviderLabel"]["enum"]
+            .as_array()
+            .expect("expected $defs.ProviderLabel.enum array")
+            .iter()
+            .map(|v| v.as_str().expect("enum values should be strings"))
+            .collect();
+        assert_eq!(
+            enum_values,
+            super::provider_labels(),
+            "schemas/why.schema.json: committed ProviderLabel enum has drifted from \
+             cmd::why::provider_label — run `just gen-schema` and commit the result"
+        );
     }
 }

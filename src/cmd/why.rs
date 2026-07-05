@@ -81,6 +81,7 @@ pub(crate) fn why(
             pm_decision.as_ref(),
             overrides,
             ctx,
+            qualifier,
         );
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -327,6 +328,7 @@ fn build_report<'a>(
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &'a ProjectContext,
+    qualifier: Option<TaskSource>,
 ) -> WhyReport<'a> {
     let candidate_report = |task: &'a Task| WhyCandidate {
         task: task_report(task, ctx, pm_decision, selected),
@@ -341,7 +343,7 @@ fn build_report<'a>(
         pm_resolution: pm_decision.map(pm_resolution),
         selected: selected.map(candidate_report),
         candidates: candidates.iter().copied().map(candidate_report).collect(),
-        decision: decision_report(candidates, selected),
+        decision: decision_report(candidates, selected, qualifier),
     }
 }
 
@@ -395,7 +397,11 @@ fn match_report<'a>(
     }
 }
 
-fn decision_report(candidates: &[&Task], selected: Option<&Task>) -> WhyDecision {
+fn decision_report(
+    candidates: &[&Task],
+    selected: Option<&Task>,
+    qualifier: Option<TaskSource>,
+) -> WhyDecision {
     if candidates.is_empty() {
         return WhyDecision {
             strategy: "exec-fallback",
@@ -405,10 +411,27 @@ fn decision_report(candidates: &[&Task], selected: Option<&Task>) -> WhyDecision
         };
     }
     if selected.is_none() {
+        // A --runner/[task_runner].prefer restriction that empties the
+        // eligible set errors out in `why()` before this function is ever
+        // called (`runner_constraint_error`); the only way to reach this
+        // branch with a non-empty `candidates` is a qualifier (`deno:x`)
+        // that doesn't match any candidate's source.
+        let reason = qualifier.map_or_else(
+            || {
+                "every candidate was filtered out by --runner/RUNNER_RUNNER restrictions"
+                    .to_string()
+            },
+            |source| {
+                format!(
+                    "candidates exist for this name, but none are registered under the `{}:` \
+                     qualifier",
+                    source.label()
+                )
+            },
+        );
         return WhyDecision {
             strategy: "filtered",
-            reason: "every candidate was filtered out by --runner/RUNNER_RUNNER restrictions"
-                .to_string(),
+            reason,
         };
     }
     if candidates.len() == 1 {
@@ -429,7 +452,7 @@ fn decision_report(candidates: &[&Task], selected: Option<&Task>) -> WhyDecision
 
 /// Tool family that executes tasks from this source. Distinct from the
 /// structured `kind` label, which names the extraction mechanism.
-const fn provider_label(source: TaskSource) -> &'static str {
+pub(super) const fn provider_label(source: TaskSource) -> &'static str {
     match source {
         TaskSource::PackageJson => "node",
         TaskSource::DenoJson => "deno",
@@ -657,6 +680,7 @@ mod tests {
             None,
             &ResolutionOverrides::default(),
             &ctx,
+            None,
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
@@ -698,12 +722,48 @@ mod tests {
             None,
             &ResolutionOverrides::default(),
             &ctx,
+            None,
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["selected"], serde_json::Value::Null);
         assert_eq!(json["candidates"], serde_json::json!([]));
         assert_eq!(json["decision"]["strategy"], "exec-fallback");
+    }
+
+    #[test]
+    fn report_describes_qualifier_mismatch_as_filtered_not_runner_restricted() {
+        // `why deno:build` when "build" exists elsewhere but not under
+        // deno.json: `candidates` still lists the same-named tasks
+        // (useful diagnostic — `lookup_token` surfaces them precisely so
+        // this case is explainable), but nothing is eligible under the
+        // `deno:` qualifier, so `selected` is None. The "filtered" reason
+        // must name the qualifier, not blame a --runner restriction that
+        // was never set.
+        let ctx = context(vec![
+            task("build", TaskSource::PackageJson),
+            task("build", TaskSource::Justfile),
+        ]);
+        let candidates: Vec<&Task> = ctx.tasks.iter().collect();
+
+        let report = build_report(
+            "deno:build",
+            &candidates,
+            None,
+            None,
+            &ResolutionOverrides::default(),
+            &ctx,
+            Some(TaskSource::DenoJson),
+        );
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(json["selected"], serde_json::Value::Null);
+        assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
+        assert_eq!(json["decision"]["strategy"], "filtered");
+        assert_eq!(
+            json["decision"]["reason"],
+            "candidates exist for this name, but none are registered under the `deno:` qualifier"
+        );
     }
 
     #[test]
@@ -720,6 +780,7 @@ mod tests {
             None,
             &ResolutionOverrides::default(),
             &ctx,
+            None,
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
@@ -750,6 +811,7 @@ mod tests {
             Some(&pm_decision),
             &ResolutionOverrides::default(),
             &ctx,
+            None,
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
@@ -775,6 +837,7 @@ mod tests {
             None,
             &ResolutionOverrides::default(),
             &ctx,
+            None,
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
