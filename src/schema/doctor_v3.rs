@@ -32,7 +32,7 @@
 //!   emitter exists — contracts should describe output, not ambition.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 
@@ -755,7 +755,7 @@ fn sources_v3(ctx: &ProjectContext, schema_version: u32) -> Vec<SourceV3> {
     seen.into_iter()
         .map(|source| {
             let kind = source_label_for(source, schema_version);
-            let anchor = anchor_file(source, &ctx.root);
+            let anchor = super::labels::source_anchor(source, &ctx.root);
             let path = anchor
                 .as_ref()
                 .map_or_else(String::new, |p| p.display().to_string());
@@ -791,7 +791,7 @@ fn tasks_v3<'a>(
         std::collections::HashMap::new();
     for task in &ctx.tasks {
         anchors.entry(task.source).or_insert_with(|| {
-            anchor_file(task.source, &ctx.root).map(|p| p.display().to_string())
+            super::labels::source_anchor(task.source, &ctx.root).map(|p| p.display().to_string())
         });
     }
 
@@ -813,10 +813,10 @@ fn tasks_v3<'a>(
             fqn: super::labels::fqn(task.source, &task.name, schema_version),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
-            resolved: resolved_command_v3(task, node_pm_label, python_pm_label),
+            resolved: super::labels::resolved_command(task, node_pm_label, python_pm_label),
             self_executable: deno_task_self_executable(ctx, task),
             source: anchors.get(&task.source).cloned().flatten(),
-            source_pointer: source_pointer_v3(task),
+            source_pointer: super::labels::source_pointer(task),
         })
         .collect()
 }
@@ -835,55 +835,6 @@ fn deno_task_self_executable(ctx: &ProjectContext, task: &Task) -> bool {
         .is_some_and(|plan| plan.self_executable())
 }
 
-/// Effective command preview. Unlike `why` v3 (which only resolves the
-/// PM for the selected task), doctor resolves PMs project-wide, so
-/// `package.json`/`pyproject.toml` scripts resolve here whenever the
-/// ecosystem resolution succeeded.
-fn resolved_command_v3(
-    task: &Task,
-    node_pm: Option<&'static str>,
-    python_pm: Option<&'static str>,
-) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(task.alias_of.as_deref().map_or_else(
-            || format!("cargo {name}"),
-            |expansion| format!("cargo {expansion}"),
-        )),
-        TaskSource::DenoJson => Some(format!("deno task {name}")),
-        TaskSource::TurboJson => Some(format!("turbo run {name}")),
-        TaskSource::Makefile => Some(format!("make {name}")),
-        TaskSource::Justfile => Some(format!("just {name}")),
-        TaskSource::Taskfile => Some(format!("task {name}")),
-        TaskSource::BaconToml => Some(format!("bacon {name}")),
-        TaskSource::MiseToml => Some(format!("mise run {name}")),
-        TaskSource::GoPackage => Some(format!(
-            "go run {target}",
-            target = task.run_target.as_deref().unwrap_or(name)
-        )),
-        TaskSource::PackageJson => node_pm.map(|pm| format!("{pm} run {name}")),
-        TaskSource::PyprojectScripts => python_pm.map(|pm| format!("{pm} run {name}")),
-    }
-}
-
-/// Key path locating the task inside its source file; mirrors the
-/// `why` v3 convention.
-fn source_pointer_v3(task: &Task) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(format!("alias.{name}")),
-        TaskSource::PackageJson => Some(format!("scripts.{name}")),
-        TaskSource::DenoJson
-        | TaskSource::TurboJson
-        | TaskSource::Taskfile
-        | TaskSource::MiseToml => Some(format!("tasks.{name}")),
-        TaskSource::BaconToml => Some(format!("jobs.{name}")),
-        TaskSource::PyprojectScripts => Some(format!("project.scripts.{name}")),
-        TaskSource::Makefile | TaskSource::Justfile => Some(name.clone()),
-        TaskSource::GoPackage => None,
-    }
-}
-
 /// Container key holding tasks inside the source file.
 const fn task_container_key(source: TaskSource) -> Option<&'static str> {
     match source {
@@ -896,26 +847,6 @@ const fn task_container_key(source: TaskSource) -> Option<&'static str> {
         TaskSource::BaconToml => Some("jobs"),
         TaskSource::PyprojectScripts => Some("project.scripts"),
         TaskSource::Makefile | TaskSource::Justfile | TaskSource::GoPackage => None,
-    }
-}
-
-/// Config file anchoring a task source. Mirrors `cmd::why`'s anchor
-/// walk (file paths, not parent dirs).
-fn anchor_file(source: TaskSource, root: &Path) -> Option<PathBuf> {
-    use crate::tool;
-
-    match source {
-        TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
-        TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::TurboJson => tool::turbo::find_config(root),
-        TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
-        TaskSource::Justfile => tool::just::find_file(root),
-        TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
-        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
-        TaskSource::GoPackage => tool::go_pm::find_file(root),
-        TaskSource::BaconToml => tool::files::find_first(root, tool::bacon::FILENAMES),
-        TaskSource::MiseToml => tool::mise::find_file(root),
-        TaskSource::PyprojectScripts => tool::python::find_pyproject_upwards(root),
     }
 }
 
