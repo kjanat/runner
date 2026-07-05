@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `doctor --json` `overrides` now reports every resolver override state:
+  `failure_policy`, `install_pms`, `output_grouping`
+  (`group_output`/`github_group_parallel`/`parallel_grouped`),
+  `prefer_sources`, `script_policy`, and `task_source_pins`. Previously
+  only `pm`/`runner`/`prefer_runners`/`fallback`/`on_mismatch`/
+  `explain`/`no_warnings`/`quiet` were surfaced, so `-k`/`-K`,
+  `[tasks].prefer`, `[tasks.overrides]`, `[install]`, and `[github]`/
+  `[parallel]` config could be set without `doctor` ever showing it.
+
 ### Changed
 
 - **Breaking:** `doctor --json` and `why --json` now always emit the

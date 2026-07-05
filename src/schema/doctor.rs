@@ -32,9 +32,10 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::labels::structured_source_label;
+use crate::chain::FailurePolicy;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
-    FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
+    FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver, ScriptPolicy,
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
@@ -145,21 +146,49 @@ struct ProjectInfo {
     workspace: Option<serde_json::Value>,
 }
 
-/// Effective override stack, labels only. Provenance (cli/env/config)
-/// stays on the flat `list`/`info` surface.
+/// Effective override stack, labels only. Provenance (cli/env/config) stays on the flat `list`/`info` surface.
+///
+/// Covers every field on [`ResolutionOverrides`] except `parent_group_open`, which is internal
+/// runner-to-runner plumbing (an inherited env marker, never a user override) and has nothing
+/// meaningful to report — see the drift guard test at the bottom of this file, which enforces that
+/// a future field can't land on `ResolutionOverrides` and silently miss both this struct and its
+/// exclusion list.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct Overrides {
     explain: bool,
     fallback: &'static str,
+    failure_policy: &'static str,
+    install_pms: Vec<&'static str>,
     no_warnings: bool,
+    output_grouping: OutputGrouping,
     quiet: bool,
     on_mismatch: &'static str,
     pm: Option<&'static str>,
     pm_by_ecosystem: BTreeMap<String, Option<&'static str>>,
     prefer_runners: Vec<&'static str>,
+    prefer_sources: Vec<&'static str>,
     runner: Option<&'static str>,
+    script_policy: &'static str,
+    task_source_pins: BTreeMap<String, Vec<&'static str>>,
+}
+
+/// The three grouping toggles bundled so [`Overrides`] doesn't tip
+/// clippy's bool-count lint; each mirrors a same-named field on
+/// [`ResolutionOverrides`].
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+struct OutputGrouping {
+    /// Broad GitHub Actions grouping switch (`[github].group_output`).
+    group_output: bool,
+    /// Group parallel output under GitHub Actions
+    /// (`[github].group_parallel`).
+    github_group_parallel: bool,
+    /// Group parallel output outside GitHub Actions
+    /// (`[parallel].grouped`).
+    parallel_grouped: bool,
 }
 
 /// One detected ecosystem and the PM decision made for it.
@@ -503,7 +532,18 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             FallbackPolicy::Npm => "npm",
             FallbackPolicy::Error => "error",
         },
+        failure_policy: match overrides.failure_policy {
+            FailurePolicy::FailFast => "fail-fast",
+            FailurePolicy::KeepGoing => "keep-going",
+            FailurePolicy::KillOnFail => "kill-on-fail",
+        },
+        install_pms: overrides.install_pms.iter().map(|pm| pm.label()).collect(),
         no_warnings: overrides.no_warnings,
+        output_grouping: OutputGrouping {
+            group_output: overrides.group_output,
+            github_group_parallel: overrides.github_group_parallel,
+            parallel_grouped: overrides.parallel_grouped,
+        },
         quiet: overrides.quiet,
         on_mismatch: match overrides.on_mismatch {
             MismatchPolicy::Warn => "warn",
@@ -517,7 +557,30 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             .map(|(eco, o)| (eco.label().to_string(), Some(o.pm.label())))
             .collect(),
         prefer_runners: overrides.prefer_runners.iter().map(|r| r.label()).collect(),
+        prefer_sources: overrides
+            .prefer_sources
+            .iter()
+            .map(|&source| structured_source_label(source))
+            .collect(),
         runner: overrides.runner.as_ref().map(|o| o.runner.label()),
+        script_policy: match overrides.script_policy {
+            ScriptPolicy::Default => "default",
+            ScriptPolicy::Deny => "deny",
+            ScriptPolicy::Allow => "allow",
+        },
+        task_source_pins: overrides
+            .task_source_overrides
+            .iter()
+            .map(|(name, sources)| {
+                (
+                    name.clone(),
+                    sources
+                        .iter()
+                        .map(|&source| structured_source_label(source))
+                        .collect(),
+                )
+            })
+            .collect(),
     }
 }
 
@@ -1258,5 +1321,133 @@ mod tests {
         assert_eq!(tool["id"], "tool:package-manager:cargo");
         let status = tool["probe"]["status"].as_str().expect("probe status");
         assert!(status == "found" || status == "missing");
+    }
+
+    #[test]
+    fn report_surfaces_previously_missing_override_fields() {
+        use std::collections::BTreeMap;
+
+        use crate::chain::FailurePolicy;
+        use crate::resolver::ScriptPolicy;
+        use crate::types::PackageManager;
+
+        let overrides = ResolutionOverrides {
+            failure_policy: FailurePolicy::KeepGoing,
+            group_output: false,
+            github_group_parallel: false,
+            parallel_grouped: true,
+            install_pms: vec![PackageManager::Npm, PackageManager::Pnpm],
+            script_policy: ScriptPolicy::Deny,
+            prefer_sources: vec![TaskSource::Justfile, TaskSource::CargoAliases],
+            task_source_overrides: BTreeMap::from([(
+                "build".to_string(),
+                vec![TaskSource::Justfile],
+            )]),
+            ..ResolutionOverrides::default()
+        };
+
+        let ctx = context(vec![]);
+        let report = DoctorReport::build(&ctx, &overrides, false);
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        let ov = &json["overrides"];
+        assert_eq!(ov["failure_policy"], "keep-going");
+        assert_eq!(ov["output_grouping"]["group_output"], false);
+        assert_eq!(ov["output_grouping"]["github_group_parallel"], false);
+        assert_eq!(ov["output_grouping"]["parallel_grouped"], true);
+        assert_eq!(ov["install_pms"], serde_json::json!(["npm", "pnpm"]));
+        assert_eq!(ov["script_policy"], "deny");
+        assert_eq!(
+            ov["prefer_sources"],
+            serde_json::json!(["just", "cargo-alias"])
+        );
+        assert_eq!(ov["task_source_pins"]["build"], serde_json::json!(["just"]));
+    }
+
+    /// Drift guard: every field on [`ResolutionOverrides`] must appear
+    /// either in the reflected [`Overrides`] schema or in the exclusion
+    /// list below (with a reason). `RESOLUTION_OVERRIDES_FIELDS` is the
+    /// necessarily hand-maintained side — `ResolutionOverrides` has no
+    /// `JsonSchema` derive of its own (it's an internal resolver type,
+    /// not a JSON-facing one) — so it must be kept in sync with
+    /// `src/resolver/types.rs` by hand; this test only catches drift
+    /// against `Overrides`, not against the struct itself.
+    ///
+    /// Two fields are reported under a different name/shape than
+    /// `ResolutionOverrides` uses, both to dodge clippy lints:
+    /// `task_source_overrides` reports as `task_source_pins`
+    /// (`struct_field_names` — it would otherwise end with the struct's
+    /// own name), and `group_output`/`github_group_parallel`/
+    /// `parallel_grouped` nest under `output_grouping`
+    /// (`struct_excessive_bools`). `RENAMED`/the `output_grouping` unnest
+    /// below account for both.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn every_resolution_overrides_field_is_reported_or_excluded() {
+        const RESOLUTION_OVERRIDES_FIELDS: &[&str] = &[
+            "pm",
+            "pm_by_ecosystem",
+            "runner",
+            "prefer_runners",
+            "prefer_sources",
+            "task_source_overrides",
+            "fallback",
+            "on_mismatch",
+            "no_warnings",
+            "quiet",
+            "explain",
+            "failure_policy",
+            "group_output",
+            "github_group_parallel",
+            "parallel_grouped",
+            "install_pms",
+            "script_policy",
+            "parent_group_open",
+        ];
+        // Internal runner-to-runner plumbing (an inherited env marker),
+        // never a user override — nothing meaningful to report.
+        const EXCLUDED: &[&str] = &["parent_group_open"];
+        // resolver field name -> name it's actually reported under.
+        const RENAMED: &[(&str, &str)] = &[("task_source_overrides", "task_source_pins")];
+
+        let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
+            .expect("Overrides schema should serialize");
+        let top_properties = schema["properties"]
+            .as_object()
+            .expect("Overrides schema must have properties");
+        let mut reported: std::collections::BTreeSet<&str> =
+            top_properties.keys().map(String::as_str).collect();
+
+        // Unnest OutputGrouping so its 3 fields match by their
+        // ResolutionOverrides names instead of living behind a
+        // container the resolver struct doesn't have.
+        reported.remove("output_grouping");
+        let grouping_def = top_properties["output_grouping"]["$ref"]
+            .as_str()
+            .and_then(|r| r.strip_prefix("#/$defs/"))
+            .expect("output_grouping field must $ref a $defs entry");
+        let grouping_properties = schema["$defs"][grouping_def]["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{grouping_def}: expected a properties object"));
+        reported.extend(grouping_properties.keys().map(String::as_str));
+
+        for &field in RESOLUTION_OVERRIDES_FIELDS {
+            if EXCLUDED.contains(&field) {
+                assert!(
+                    !reported.contains(field),
+                    "{field}: excluded field must not also appear in Overrides"
+                );
+                continue;
+            }
+            let reported_name = RENAMED
+                .iter()
+                .find_map(|&(from, to)| (from == field).then_some(to))
+                .unwrap_or(field);
+            assert!(
+                reported.contains(reported_name),
+                "{field}: ResolutionOverrides field is neither reported by Overrides (as \
+                 {reported_name:?}) nor on the EXCLUDED allowlist — add it to one"
+            );
+        }
     }
 }
