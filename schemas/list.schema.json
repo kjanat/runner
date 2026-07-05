@@ -1,5 +1,5 @@
 {
-  "$id": "https://kjanat.github.io/runner/schemas/list.v1.schema.json",
+  "$id": "https://kjanat.github.io/runner/schemas/list.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "TaskInfo": {
@@ -44,21 +44,21 @@
       "type": "string",
       "enum": [
         "package.json",
-        "Makefile",
-        "justfile",
-        "Taskfile",
-        "turbo.json",
-        "deno.json",
+        "make",
+        "just",
+        "task",
+        "turbo",
+        "deno",
         "cargo",
         "go",
-        "bacon.toml",
-        "mise.toml",
+        "bacon",
+        "mise",
         "pyproject.toml"
       ]
     }
   },
-  "title": "runner list --json --schema-version 1",
-  "description": "JSON schema for `runner list --json --schema-version 1`.",
+  "title": "runner list --json",
+  "description": "JSON schema for `runner list --json`.",
   "type": "object",
   "required": [
     "root",

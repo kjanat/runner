@@ -32,7 +32,6 @@ pub(crate) fn list(
     raw: bool,
     json: bool,
     source: Option<&str>,
-    schema_version: u32,
 ) -> Result<()> {
     let parsed_source = match source {
         None => None,
@@ -46,12 +45,10 @@ pub(crate) fn list(
     };
 
     if json {
-        let view = Project::build_with_schema(ctx, overrides, schema_version, false)
-            .into_list_view(parsed_source);
+        let view = Project::build_with_schema(ctx, overrides, false).into_list_view(parsed_source);
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
-    let _ = schema_version;
 
     super::print_warnings(ctx, overrides, None);
 
@@ -651,7 +648,6 @@ mod tests {
         source_path,
     };
     use crate::resolver::ResolutionOverrides;
-    use crate::schema::CURRENT_VERSION;
     use crate::tool::test_support::TempDir;
     use crate::types::{ProjectContext, Task, TaskSource};
 
@@ -711,7 +707,6 @@ mod tests {
             false,
             false,
             Some("wat"),
-            CURRENT_VERSION,
         )
         .expect_err("invalid source should error");
 

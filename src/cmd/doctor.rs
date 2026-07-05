@@ -1,15 +1,13 @@
 //! `runner doctor` — dump every signal the resolver considers.
 //!
-//! Surface for users (and bug reports) to inspect what runner sees in the
-//! current project: detected package managers and task runners, the
-//! manifest declaration if any, lockfile presence, override sources in
-//! effect, and the resolved decision. Pairs with `--explain` (one-line
-//! trace at run time) and `runner why <task>` (per-task source pick).
+//! Surface for users (and bug reports) to inspect what runner sees in the current project:
+//! detected package managers and task runners, the manifest declaration if any, lockfile presence,
+//! override sources in effect, and the resolved decision. Pairs with `--explain` (one-line trace at run time)
+//! and `runner why <task>` (per-task source pick).
 //!
 //! Two output formats:
-//! - human (default): colored, grouped, easy to skim.
-//! - `--json`: machine-readable schema-versioned JSON for piping into
-//!   `jq`, scripts, or bug-report templates.
+//! - human (default): colored, grouped, easy to skim. Reads the flat [`Project`] shape internally (same one `list`/`info` serve).
+//! - `--json`: the structured [`crate::schema::doctor::DoctorReport`], machine-readable JSON for piping into `jq`, scripts, or bug-report templates.
 
 use std::fmt::Write as _;
 
@@ -19,55 +17,39 @@ use serde_json::{Map, Value};
 
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
+use crate::schema::doctor::DoctorReport;
 use crate::types::ProjectContext;
-
-/// Flat `Project` schema version the human doctor renderer was written
-/// against. Pinned explicitly so the non-JSON path can't silently drift
-/// if [`crate::schema::CURRENT_VERSION`] bumps for the `list` surface.
-const DOCTOR_HUMAN_PROJECT_SCHEMA_VERSION: u32 = 2;
 
 /// Print a full diagnostic dump of the resolver's view of `ctx`.
 ///
 /// # Errors
 ///
-/// Propagates `Resolver::resolve_node_pm` errors when the configured
-/// fallback policy is `error` and nothing is on `$PATH`. Always succeeds
-/// for the `probe`/`npm` fallback policies on real systems.
+/// A `Resolver::resolve_node_pm` failure (e.g. `--fallback error` with
+/// nothing on `$PATH`) is embedded in the report rather than propagated:
+/// the JSON path serializes `DoctorReport::build`, which keeps the
+/// resolver's `Result` as part of the report, and the human path builds
+/// `Project` the same way. This can only return `Err` when JSON
+/// serialization itself fails, which does not happen for these types in
+/// practice.
 pub(crate) fn doctor(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     json: bool,
-    schema_version: u32,
 ) -> Result<()> {
-    if json && schema_version >= 3 {
-        // v3 restructured the whole document; v1/v2 keep the flat
-        // `Project` shape below.
-        let report = crate::schema::doctor_v3::DoctorReportV3::build(ctx, overrides, true);
+    if json {
+        let report = DoctorReport::build(ctx, overrides, true);
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
 
-    // The human renderer still reads the flat v2 `Project` shape, so a
-    // non-JSON call always builds at the v2 contract regardless of the
-    // requested (or defaulted) version.
-    let build_version = if json {
-        schema_version
-    } else {
-        DOCTOR_HUMAN_PROJECT_SCHEMA_VERSION
-    };
-    let project = Project::build_with_schema(ctx, overrides, build_version, true);
-
-    if json {
-        println!("{}", serde_json::to_string_pretty(&project)?);
-    } else {
-        // The human renderer was written against a `serde_json::Value`
-        // so it can address fields by name without a forest of
-        // `match`es. Serializing the typed report once and traversing
-        // the resulting `Value` keeps that ergonomics while the JSON
-        // contract itself stays typed via `Project`.
-        let report = serde_json::to_value(&project)?;
-        print_human(&report, overrides);
-    }
+    let project = Project::build_with_schema(ctx, overrides, true);
+    // The human renderer was written against a `serde_json::Value` so it
+    // can address fields by name without a forest of `match`es.
+    // Serializing the typed report once and traversing the resulting
+    // `Value` keeps that ergonomics while the JSON contract itself stays
+    // typed via `Project`.
+    let report = serde_json::to_value(&project)?;
+    print_human(&report, overrides);
 
     Ok(())
 }
@@ -329,7 +311,7 @@ mod tests {
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
         // `Project::build` passes `resolve_shims = false`; the additive
-        // field must vanish entirely, keeping the v1/v2 shape untouched.
+        // field must vanish entirely, keeping the flat shape untouched.
         assert!(
             report["signals"]["node"].get("volta_shims").is_none(),
             "volta_shims must be omitted when empty: {}",
@@ -346,7 +328,7 @@ mod tests {
         let ctx = context();
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
-        assert_eq!(report["schema_version"], 2);
+        assert_eq!(report["schema_version"], 1);
     }
 
     #[test]
@@ -378,20 +360,8 @@ mod tests {
         let ctx = context();
         // Ensure both rendering paths are exercised; output goes to stdout
         // which is fine in tests (captured by `cargo test`).
-        doctor(
-            &ctx,
-            &ResolutionOverrides::default(),
-            true,
-            crate::schema::CURRENT_VERSION,
-        )
-        .expect("json render should succeed");
-        doctor(
-            &ctx,
-            &ResolutionOverrides::default(),
-            false,
-            crate::schema::CURRENT_VERSION,
-        )
-        .expect("human render should succeed");
+        doctor(&ctx, &ResolutionOverrides::default(), true).expect("json render should succeed");
+        doctor(&ctx, &ResolutionOverrides::default(), false).expect("human render should succeed");
     }
 
     #[test]

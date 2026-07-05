@@ -1259,26 +1259,16 @@ pub(crate) struct GlobalOpts {
     )]
     pub quiet: bool,
 
-    /// Pin the JSON output schema to a specific version. Defaults to the
-    /// latest version the command produces. The chosen version controls
-    /// the `source` field on tasks/decisions in `doctor`/`list`/`why`
-    /// JSON output. v1 uses filename-style labels (`"justfile"`, `"bacon.toml"`),
-    /// v2 uses tool names (`"just"`, `"bacon"`). v3 restructures the
-    /// reports: `why` gains `{task, match}` candidate pairs plus a
-    /// decision block, `doctor` becomes a structured diagnostic
-    /// inventory; `list` rejects v3 until its contract lands. The
-    /// resolver, human output, and qualified-task parsing are unaffected.
+    /// Pin the `--json` output schema version. Currently always `1` —
+    /// kept for scripts that already pass it explicitly; any other value
+    /// is rejected.
     #[arg(
         long = "schema-version",
         global = true,
-        value_parser = clap::value_parser!(u32).range(1..=3),
+        value_parser = clap::value_parser!(u32).range(1..=1),
         value_name = "N",
         display_order = help_order::SCHEMA_VERSION,
-        help = concat!(
-            "Pin ", cyan!("--json"), " schema (doctor/why ",
-            cyan!("1"), "-", cyan!("3"), ", list ",
-            cyan!("1"), "-", cyan!("2"), "; default latest)"
-        ),
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("1"), ")"),
     )]
     pub schema_version: Option<u32>,
 }

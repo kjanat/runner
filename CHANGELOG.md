@@ -15,6 +15,42 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Changed
+
+- **Breaking:** `doctor --json` and `why --json` now always emit the
+  structured report (previously reachable via `--schema-version 3`); the
+  flat v1/v2 shape is gone from both. `--schema-version` now only accepts
+  `1`; `2`/`3` are rejected.
+- `runner config init`'s scaffold is now generated from `RunnerConfig`'s
+  schemars metadata instead of hand-typed: section headers and their
+  leading comments come straight from the section structs' doc comments,
+  and every enum-valued field's inline hint (`pm.node`, `pm.python`,
+  `resolution.fallback`, `resolution.on_mismatch`, `install.scripts`,
+  `task_runner.prefer`) is generated from the same types the resolver
+  parses those values with, not hand-typed prose. A config field, or an
+  accepted value for one of these, can no longer ship without scaffold
+  coverage — drift-guard tests fail the build instead. A few section
+  descriptions read slightly differently as a result. `FallbackPolicy`,
+  `MismatchPolicy`, and `ScriptPolicy` gained real `label()`/`ALL` (or
+  `SETTABLE`) methods, replacing four separate hardcoded copies of their
+  accepted strings (parse function, two display call sites, and now the
+  scaffold) with one.
+
+### Removed
+
+- The v1/v2/v3 schema split. Not enough external adoption yet to justify
+  carrying three versions per surface — today's shape is the only one,
+  retroactively called v1. Committed schema files dropped their version
+  suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
+  superseded schema/example files are deleted.
+
+### Fixed
+
+- `runner schema --all` no longer surfaces a raw Rust panic if the
+  init-template generator ever drifts from `RunnerConfig` in a released
+  binary (the drift-guard test should already catch this before merge);
+  it now reports a clean CLI error instead.
+
 ## [0.18.1] - 2026-07-04
 
 ### Fixed

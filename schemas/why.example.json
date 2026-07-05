@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "kind": "runner.why",
   "root": "/path/to/project",
   "query": "t",

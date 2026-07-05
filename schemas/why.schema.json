@@ -1,5 +1,5 @@
 {
-  "$id": "https://kjanat.github.io/runner/schemas/why.v3.schema.json",
+  "$id": "https://kjanat.github.io/runner/schemas/why.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "PmResolution": {
@@ -71,7 +71,7 @@
         "pyproject.toml"
       ]
     },
-    "WhyCandidateV3": {
+    "WhyCandidate": {
       "description": "One candidate: the task's identity plus how it matched the query.",
       "type": "object",
       "required": [
@@ -80,15 +80,15 @@
       ],
       "properties": {
         "match": {
-          "$ref": "#/$defs/WhyMatchV3"
+          "$ref": "#/$defs/WhyMatch"
         },
         "task": {
-          "$ref": "#/$defs/WhyTaskV3"
+          "$ref": "#/$defs/WhyTask"
         }
       },
       "additionalProperties": false
     },
-    "WhyDecisionV3": {
+    "WhyDecision": {
       "type": "object",
       "required": [
         "reason",
@@ -105,7 +105,7 @@
       },
       "additionalProperties": false
     },
-    "WhyMatchV3": {
+    "WhyMatch": {
       "type": "object",
       "required": [
         "depth",
@@ -156,7 +156,7 @@
       },
       "additionalProperties": false
     },
-    "WhyTaskV3": {
+    "WhyTask": {
       "type": "object",
       "required": [
         "aliases",
@@ -256,8 +256,8 @@
       }
     }
   },
-  "title": "runner why <task> --json --schema-version 3",
-  "description": "JSON schema for `runner why <task> --json --schema-version 3`.",
+  "title": "runner why <task> --json",
+  "description": "JSON schema for `runner why <task> --json`: candidate `{task, match}` pairs plus the selection decision.",
   "type": "object",
   "required": [
     "candidates",
@@ -277,11 +277,11 @@
     "candidates": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/WhyCandidateV3"
+        "$ref": "#/$defs/WhyCandidate"
       }
     },
     "decision": {
-      "$ref": "#/$defs/WhyDecisionV3"
+      "$ref": "#/$defs/WhyDecision"
     },
     "kind": {
       "description": "Payload discriminator; always \"runner.why\".",
@@ -308,14 +308,14 @@
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",
       "type": "integer",
-      "const": 3,
+      "const": 1,
       "minimum": 0,
       "format": "uint32"
     },
     "selected": {
       "anyOf": [
         {
-          "$ref": "#/$defs/WhyCandidateV3"
+          "$ref": "#/$defs/WhyCandidate"
         },
         {
           "type": "null"

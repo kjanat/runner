@@ -1,31 +1,21 @@
-//! Typed JSON shapes for `--json` output across `doctor`, `info`, `list`, and `why`.
+//! Typed JSON shapes for `--json` output across `info`, `list`, and `doctor`'s human renderer.
 //!
-//! Every subcommand projects from the single source-of-truth [`Project`]
-//! struct so the contract is defined in one place. Doctor emits the full
-//! struct; info/list emit projections (currently the full shape with
-//! empty task tables collapsed away by `#[serde(skip_serializing_if)]`).
-//!
-//! Version negotiation: [`Project::build_with_schema`] takes the requested
-//! schema version and routes per-field label resolution through
-//! [`super::labels::source_label_for`]. Today the *shape* of `Project`
-//! is identical across v1 and v2 — only label *values* differ. If a
-//! future version diverges in shape, split this struct per-version and
-//! keep the builder switch in here.
+//! Every one of those surfaces projects from the single source-of-truth [`Project`] struct so the
+//! contract is defined in one place: `list` emits [`Project::into_list_view`], `info` emits
+//! [`Project::into_info_view`], and `doctor`'s human (non-JSON) output reads this shape internally
+//! even though its `--json` output is the structured [`super::doctor::DoctorReport`] instead.
 
 use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::labels::source_label_for;
-use crate::resolver::{
-    FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides, Resolver,
-};
+use super::labels::flat_source_label;
+use crate::resolver::{OverrideOrigin, ResolutionOverrides, Resolver};
 use crate::tool::node::{ManifestSource, detect_pm_from_manifest};
 use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource};
 
-/// The canonical machine-readable view of a project, used by every
-/// `--json` surface. Field order is preserved by `serde_json` so
-/// consumers can hand-write `jq` queries without sort surprises.
+/// The canonical machine-readable view of a project, used by every `--json` surface. Field order is
+/// preserved by `serde_json` so consumers can hand-write `jq` queries without sort surprises.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Project<'a> {
@@ -36,8 +26,8 @@ pub(crate) struct Project<'a> {
         schemars(description = "URI of the JSON Schema that describes this payload.")
     )]
     pub schema: String,
-    /// Increments on any breaking change to this schema. Consumers
-    /// should reject anything they weren't built for.
+    /// Increments on any breaking change to this schema.
+    /// Consumers should reject anything they weren't built for.
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Schema contract version for this JSON payload.")
@@ -53,48 +43,32 @@ pub(crate) struct Project<'a> {
     pub detected: Detected<'a>,
     /// Effective override stack — CLI, env, and config bundled.
     pub overrides: OverridesView,
-    /// Per-ecosystem detection signals: lockfile pick, manifest
-    /// declaration, PATH probe results.
+    /// Per-ecosystem detection signals: lockfile pick, manifest declaration, PATH probe results.
     pub signals: Signals,
     /// Resolver verdict (or first-class error if the chain bailed).
     pub decisions: Decisions,
-    /// Full task list. Subcommands that don't care omit this via
-    /// projection.
+    /// Full task list. Subcommands that don't care omit this via projection.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskInfo<'a>>,
-    /// Diagnostic warnings from both detection (`ctx.warnings`) and
-    /// the resolver (`ResolvedPm.warnings`), flattened.
+    /// Diagnostic warnings from both detection (`ctx.warnings`) and the resolver (`ResolvedPm.warnings`), flattened.
     pub warnings: Vec<WarningInfo>,
 }
 
 impl<'a> Project<'a> {
-    /// Build the full report at the latest [`super::CURRENT_VERSION`].
-    /// Test-only convenience — production callers go through the
-    /// dispatcher, which validates `--schema-version` and always
-    /// passes a concrete version to [`Self::build_with_schema`].
+    /// Build the full report. Test-only convenience — production callers go through the dispatcher,
+    /// which validates `--schema-version` and calls [`Self::build_with_schema`] directly.
     #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
-        // `resolve_shims = false` keeps unit tests hermetic — no `volta
-        // which` spawns against the test host.
-        Self::build_with_schema(ctx, overrides, super::CURRENT_VERSION, false)
+        // `resolve_shims = false` keeps unit tests hermetic — no `volta which` spawns against the test host.
+        Self::build_with_schema(ctx, overrides, false)
     }
 
-    /// Build the report against a specific schema version. `schema_version`
-    /// must be a value [`super::validate_schema_version`] would accept;
-    /// callers validate before calling so the CLI surfaces a useful error.
-    ///
-    /// Per-field versioning: source labels route through
-    /// [`super::labels::source_label_for`]. PM and `TaskRunner` labels
-    /// are unchanged across versions.
-    ///
-    /// `resolve_shims` controls whether PATH-probe hits are classified
-    /// against a Volta installation (one `volta which` spawn per
-    /// shimmed tool). Diagnostic surfaces (`doctor`, `info --json`)
-    /// pass `true`; `list` passes `false` — it drops signals anyway.
+    /// Build the report. `resolve_shims` controls whether PATH-probe hits are classified against a
+    /// Volta installation (one `volta which` spawn per shimmed tool). Diagnostic surfaces
+    /// (`doctor`, `info --json`) pass `true`; `list` passes `false` — it drops signals anyway.
     pub(crate) fn build_with_schema(
         ctx: &'a ProjectContext,
         overrides: &ResolutionOverrides,
-        schema_version: u32,
         resolve_shims: bool,
     ) -> Self {
         let manifest_decl = detect_pm_from_manifest(&ctx.root);
@@ -122,7 +96,7 @@ impl<'a> Project<'a> {
             .iter()
             .map(|t| TaskInfo {
                 name: &t.name,
-                source: source_label_for(t.source, schema_version),
+                source: flat_source_label(t.source),
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
                 passthrough_to: t.passthrough_to.map(crate::types::TaskRunner::label),
@@ -133,7 +107,7 @@ impl<'a> Project<'a> {
 
         Self {
             schema: String::new(),
-            schema_version,
+            schema_version: super::SCHEMA_VERSION,
             root: ctx.root.display().to_string(),
             ecosystems: ctx
                 .package_managers
@@ -156,25 +130,17 @@ impl<'a> Project<'a> {
         }
     }
 
-    /// Project the full report to an `info`-shaped view: same shape
-    /// minus the per-task detail (which `info` doesn't need; `list` is
-    /// the dedicated task surface).
+    /// Project the full report to an `info`-shaped view: same shape minus the per-task detail
+    /// (which `info` doesn't need; `list` is the dedicated task surface).
     pub(crate) fn into_info_view(mut self) -> Self {
         self.tasks.clear();
         self
     }
 
-    /// Project the full report to a `list`-shaped view: just the
-    /// tasks (filtered by `source` when set) plus the schema version
-    /// and root. Drops resolver state — `list` is purely a directory
-    /// listing for tasks.
+    /// Project the full report to a `list`-shaped view: just the tasks (filtered by `source` when set)
+    /// plus the schema version and root. Drops resolver state — `list` is purely a directory listing for tasks.
     pub(crate) fn into_list_view(self, source: Option<TaskSource>) -> TaskListView<'a> {
-        // The filter compares against whichever label flavor the report
-        // was built with — v1 emits filename-style strings (`"justfile"`),
-        // v2 emits tool names (`"just"`). Using `t.source` (already
-        // version-resolved at build time) keeps the comparison correct
-        // no matter which schema the caller asked for.
-        let target = source.map(|s| source_label_for(s, self.schema_version));
+        let target = source.map(flat_source_label);
         let tasks = self
             .tasks
             .into_iter()
@@ -189,8 +155,7 @@ impl<'a> Project<'a> {
     }
 }
 
-/// `list --json` projection. Same `schema_version` as [`Project`] so
-/// consumers can branch on it.
+/// `list --json` projection. Same `schema_version` as [`Project`] so consumers can branch on it.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct TaskListView<'a> {
@@ -201,8 +166,7 @@ pub(crate) struct TaskListView<'a> {
         schemars(description = "URI of the JSON Schema that describes this payload.")
     )]
     pub schema: String,
-    /// Identical to [`Project::schema_version`]; consumers can assume
-    /// `1` here means a v1-shaped `tasks` array.
+    /// Identical to [`Project::schema_version`]; consumers can assume `1` here means a v1-shaped `tasks` array.
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Schema contract version for this JSON payload.")
@@ -214,8 +178,7 @@ pub(crate) struct TaskListView<'a> {
     pub tasks: Vec<TaskInfo<'a>>,
 }
 
-/// Detection results — what the file scan found, before any resolver
-/// policy was applied.
+/// Detection results — what the file scan found, before any resolver policy was applied.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Detected<'a> {
@@ -302,8 +265,8 @@ impl OverridesView {
                 origin: origin_label(&o.origin),
             }),
             prefer_runners: overrides.prefer_runners.iter().map(|r| r.label()).collect(),
-            fallback: fallback_label(overrides.fallback),
-            on_mismatch: mismatch_label(overrides.on_mismatch),
+            fallback: overrides.fallback.label(),
+            on_mismatch: overrides.on_mismatch.label(),
             explain: overrides.explain,
             no_warnings: overrides.no_warnings,
         }
@@ -334,9 +297,8 @@ pub(crate) struct RunnerOverrideInfo {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Signals {
-    /// Node-ecosystem signals. The schema is intentionally
-    /// node-flat today; other ecosystems get peer fields as their
-    /// resolver paths land.
+    /// Node-ecosystem signals. The schema is intentionally node-flat today; other ecosystems get
+    /// peer fields as their resolver paths land.
     pub node: NodeSignals,
 }
 
@@ -350,9 +312,8 @@ pub(crate) struct NodeSignals {
     pub manifest_pm: Option<ManifestPm>,
     /// `bun`/`pnpm`/`yarn`/`npm` -> absolute path on `$PATH` (or null).
     pub path_probe: BTreeMap<&'static str, Option<String>>,
-    /// PATH-probe hits identified as Volta shims, keyed like
-    /// [`Self::path_probe`]. Additive field (no schema bump): absent on
-    /// hosts without Volta and on surfaces that skip shim resolution.
+    /// PATH-probe hits identified as Volta shims, keyed like [`Self::path_probe`]. Additive field
+    /// (no schema bump): absent on hosts without Volta and on surfaces that skip shim resolution.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
 }
@@ -361,9 +322,8 @@ pub(crate) struct NodeSignals {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct VoltaShimInfo {
-    /// Real provisioned binary behind the shim; `null` when Volta has
-    /// no version of the tool ("not provisioned"). Shims Volta could
-    /// not classify at all are omitted from the map instead of guessed.
+    /// Real provisioned binary behind the shim; `null` when Volta has no version of the tool ("not provisioned").
+    /// Shims Volta could not classify at all are omitted from the map instead of guessed.
     pub resolved: Option<String>,
 }
 
@@ -381,19 +341,17 @@ pub(crate) struct ManifestPm {
     pub on_fail: &'static str,
 }
 
-/// Resolver verdict surface. Mirrors the resolver's `Result` so
-/// consumers can branch on the variant before reading the inner shape.
+/// Resolver verdict surface. Mirrors the resolver's `Result` so consumers can branch on the variant before reading the inner shape.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Decisions {
-    /// Node script-dispatch PM decision, or an error message when the
-    /// resolver bailed.
+    /// Node script-dispatch PM decision, or an error message when the resolver bailed.
     pub node_pm: NodePmDecision,
 }
 
-/// Either a resolved Node PM or the diagnostic string for the failure
-/// that prevented one. Untagged so consumers can probe via "is the
-/// `pm` field present?".
+/// Either a resolved Node PM or the diagnostic string for the failure that prevented one.
+///
+/// Untagged so consumers can probe via "is the `pm` field present?".
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
@@ -418,8 +376,7 @@ pub(crate) enum NodePmDecision {
 pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
-    /// Source label — version-resolved at build time via
-    /// [`super::labels::source_label_for`].
+    /// Source label — resolved at build time via [`super::labels::flat_source_label`].
     pub source: &'static str,
     /// Human-readable description, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -432,10 +389,8 @@ pub(crate) struct TaskInfo<'a> {
     pub passthrough_to: Option<&'static str>,
 }
 
-/// Warning projected into the JSON shape. The `source`/`detail` split
-/// is kept stable from the pre-A4 flat-struct days so existing
-/// consumers (the `doctor` test suite, ad-hoc `jq` queries) keep
-/// working.
+/// Warning projected into the JSON shape. The `source`/`detail` split is kept stable from the
+/// pre-A4 flat-struct days so existing consumers (the `doctor` test suite, ad-hoc `jq` queries) keep working.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct WarningInfo {
@@ -490,25 +445,9 @@ fn origin_label(origin: &OverrideOrigin) -> String {
     }
 }
 
-const fn fallback_label(policy: FallbackPolicy) -> &'static str {
-    match policy {
-        FallbackPolicy::Probe => "probe",
-        FallbackPolicy::Npm => "npm",
-        FallbackPolicy::Error => "error",
-    }
-}
-
-const fn mismatch_label(policy: MismatchPolicy) -> &'static str {
-    match policy {
-        MismatchPolicy::Warn => "warn",
-        MismatchPolicy::Error => "error",
-        MismatchPolicy::Ignore => "ignore",
-    }
-}
-
 /// Probe results for the signals section: every PATH hit, plus Volta
-/// shim classification when requested. Shared with the v3 doctor
-/// builder ([`super::doctor_v3`]), hence `pub(super)`.
+/// shim classification when requested. Shared with the structured doctor
+/// builder ([`super::doctor`]), hence `pub(super)`.
 pub(super) struct ProbeSignals {
     pub(super) path_probe: BTreeMap<&'static str, Option<String>>,
     pub(super) volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
@@ -621,7 +560,7 @@ mod tests {
         let project = Project::build(&ctx, &overrides);
         let value = serde_json::to_value(&project).expect("Project should serialize to JSON");
 
-        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["schema_version"], 1);
         assert_eq!(value["root"], "/tmp/test");
         assert!(
             value["ecosystems"]
@@ -675,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn build_with_schema_serializes_v1_labels_for_tasks() {
+    fn build_with_schema_serializes_flat_labels_for_tasks() {
         let ctx = ProjectContext {
             root: PathBuf::from("/tmp/test"),
             package_managers: Vec::new(),
@@ -694,14 +633,9 @@ mod tests {
             warnings: Vec::new(),
         };
 
-        let v1 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 1, false);
-        let v1_json = serde_json::to_value(&v1).expect("v1 serialization");
-        assert_eq!(v1_json["schema_version"], 1);
-        assert_eq!(v1_json["tasks"][0]["source"], "justfile");
-
-        let v2 = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), 2, false);
-        let v2_json = serde_json::to_value(&v2).expect("v2 serialization");
-        assert_eq!(v2_json["schema_version"], 2);
-        assert_eq!(v2_json["tasks"][0]["source"], "just");
+        let project = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), false);
+        let json = serde_json::to_value(&project).expect("serialization");
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["tasks"][0]["source"], "just");
     }
 }
