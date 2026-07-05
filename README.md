@@ -143,8 +143,13 @@ cargo binstall runner-run
 
 Or on Arch Linux:
 
+<a href="https://repology.org/project/runner-run/versions">
+    <img src="https://repology.org/badge/vertical-allrepos/runner-run.svg" alt="Packaging status" align="right">
+</a>
+
 ```sh
-yay -S runner-run-bin
+paru -S runner-run-bin # or `paru -S runner-run` (builds from source)
+yay  -S runner-run-bin # .. `yay  -S runner-run`
 ```
 
 <details>
@@ -178,7 +183,7 @@ sh install.sh v0.12.2
 
 ## GitHub Actions
 
-Use the action to install runner in CI:
+Use the action to install runner in CI ([view on marketplace](https://github.com/marketplace/actions/setup-runner-cli "I don't know why you would, but ok.")):
 
 ```yaml
 - uses: kjanat/runner@master
