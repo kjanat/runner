@@ -372,6 +372,29 @@ mod tests {
         assert_eq!(example["overrides"]["quiet"], serde_json::json!(false));
     }
 
+    /// Every committed schema file that carries a `TaskSourceLabel` def,
+    /// paired with the schema version its label convention follows.
+    const COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL: &[(&str, u32)] = &[
+        ("schemas/doctor.v1.schema.json", 1),
+        ("schemas/doctor.v2.schema.json", 2),
+        ("schemas/doctor.v3.schema.json", 3),
+        ("schemas/list.v1.schema.json", 1),
+        ("schemas/list.v2.schema.json", 2),
+        ("schemas/why.v1.schema.json", 1),
+        ("schemas/why.v2.schema.json", 2),
+        ("schemas/why.v3.schema.json", 3),
+    ];
+
+    fn runtime_labels(version: u32) -> Vec<&'static str> {
+        use crate::schema::labels::source_label_for;
+        use crate::types::TaskSource;
+
+        TaskSource::all()
+            .iter()
+            .map(|&source| source_label_for(source, version))
+            .collect()
+    }
+
     #[test]
     fn task_source_label_schema_matches_runtime_labels_per_version() {
         // source_labels(version) used to be three hand-maintained arrays,
@@ -379,9 +402,6 @@ mod tests {
         // actually call at runtime. Now that it's derived, this test is a
         // tautology against today's implementation — its job is to catch a
         // future regression back to a hardcoded list.
-        use crate::schema::labels::source_label_for;
-        use crate::types::TaskSource;
-
         for version in 1..=3 {
             let schema = super::task_source_label_schema(version);
             let enum_values: Vec<&str> = schema["enum"]
@@ -390,13 +410,38 @@ mod tests {
                 .iter()
                 .map(|v| v.as_str().expect("enum values should be strings"))
                 .collect();
-            let runtime_labels: Vec<&str> = TaskSource::all()
+            assert_eq!(
+                enum_values,
+                runtime_labels(version),
+                "v{version}: schema TaskSourceLabel enum must match source_label_for exactly"
+            );
+        }
+    }
+
+    #[test]
+    fn committed_schemas_task_source_label_matches_runtime_labels() {
+        // The in-memory generator test above proves the generator is
+        // correct; it says nothing about whether `just gen-schema` was
+        // actually re-run before committing. Read every checked-in schema
+        // that defines TaskSourceLabel directly off disk so a stale
+        // artifact — the generator fixed, the commit forgotten — fails
+        // here instead of shipping silently.
+        for &(path, version) in COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL {
+            let raw = std::fs::read_to_string(path)
+                .unwrap_or_else(|err| panic!("{path}: should be readable: {err}"));
+            let schema: Value = serde_json::from_str(&raw)
+                .unwrap_or_else(|err| panic!("{path}: should parse as JSON: {err}"));
+            let enum_values: Vec<&str> = schema["$defs"]["TaskSourceLabel"]["enum"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path}: expected $defs.TaskSourceLabel.enum array"))
                 .iter()
-                .map(|&source| source_label_for(source, version))
+                .map(|v| v.as_str().expect("enum values should be strings"))
                 .collect();
             assert_eq!(
-                enum_values, runtime_labels,
-                "v{version}: schema TaskSourceLabel enum must match source_label_for exactly"
+                enum_values,
+                runtime_labels(version),
+                "{path}: committed TaskSourceLabel enum has drifted from source_label_for — run \
+                 `just gen-schema` and commit the result"
             );
         }
     }
