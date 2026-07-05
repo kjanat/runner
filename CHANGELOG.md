@@ -45,6 +45,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   (`prefer = ["ba`) insert the bare word instead of a quoted one — the
   quotes are already typed (and auto-paired), so accepting previously
   produced `""bacon""`.
+- `runner lsp` is now comment-aware: no completions or hover at or after
+  a `#` (whole-line or trailing); a `#` inside a string literal still
+  isn't treated as a comment.
 
 ## [0.19.0] - 2026-07-05
 

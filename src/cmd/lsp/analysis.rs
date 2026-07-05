@@ -35,6 +35,8 @@ enum LineShape {
     },
     /// Blank / whitespace-only line.
     Empty,
+    /// The cursor sits at or after a `#` comment start.
+    Comment,
 }
 
 /// The cursor's section context plus what it's on.
@@ -43,6 +45,21 @@ struct Cursor {
     section: Option<String>,
     /// Shape of the cursor's own line.
     shape: LineShape,
+}
+
+/// Byte offset of the `#` that starts a comment on `line`, if any — the
+/// first `#` outside a `"`/`'` string literal.
+fn comment_start(line: &str) -> Option<usize> {
+    let (mut in_basic, mut in_literal) = (false, false);
+    for (offset, c) in line.char_indices() {
+        match c {
+            '"' if !in_literal => in_basic = !in_basic,
+            '\'' if !in_basic => in_literal = !in_literal,
+            '#' if !in_basic && !in_literal => return Some(offset),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Strip a `[section]` header line to its inner path. Tolerates a missing
@@ -59,6 +76,15 @@ fn analyze(index: &LineIndex, text: &str, pos: Position) -> Cursor {
     let line_text = text.lines().nth(line_no).unwrap_or("");
 
     let section = text.lines().take(line_no).filter_map(header_path).last();
+
+    let line_start = index.offset(text, Position::new(pos.line, 0));
+    let within = index.offset(text, pos).saturating_sub(line_start);
+    if comment_start(line_text).is_some_and(|hash| within >= hash) {
+        return Cursor {
+            section,
+            shape: LineShape::Comment,
+        };
+    }
 
     if header_path(line_text).is_some() && line_text.trim_start().starts_with('[') {
         let partial = line_text
@@ -82,8 +108,6 @@ fn analyze(index: &LineIndex, text: &str, pos: Position) -> Cursor {
             }
         },
         |eq| {
-            let line_start = index.offset(text, Position::new(pos.line, 0));
-            let within = index.offset(text, pos).saturating_sub(line_start);
             if within > eq {
                 let before_cursor = line_text
                     .get(eq + 1..within.min(line_text.len()))
@@ -121,7 +145,7 @@ pub(super) fn hover(
             };
             describe_field(schema, cursor.section.as_deref()?, &key)?
         }
-        LineShape::Empty => return None,
+        LineShape::Empty | LineShape::Comment => return None,
     };
     Some(Hover {
         contents: HoverContents::Markup(markdown(&title, &body)),
@@ -211,6 +235,7 @@ pub(super) fn completion(
             Some("tasks.overrides") => task_key_items(project_dir, None, snippets),
             Some(section) => field_items(schema, Some(section), None, snippets),
         },
+        LineShape::Comment => Vec::new(),
     }
 }
 
@@ -1005,6 +1030,70 @@ mod tests {
         let pms = items.iter().find(|i| i.label == "pms").expect("pms item");
         assert_eq!(pms.insert_text.as_deref(), Some("pms = "));
         assert_eq!(pms.insert_text_format, None);
+    }
+
+    #[test]
+    fn comment_line_completes_nothing() {
+        let schema = SchemaIndex::build();
+        let text = "[tasks]\n# prefer = \n";
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 11),
+            None,
+            false,
+        );
+        assert!(items.is_empty(), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn trailing_comment_completes_nothing_but_the_value_before_it_still_does() {
+        let schema = SchemaIndex::build();
+        let text = "[pm]\nnode =  # pick one\n";
+        // After the `#`: nothing.
+        let in_comment = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 10),
+            None,
+            false,
+        );
+        assert!(in_comment.is_empty(), "{:?}", labels(&in_comment));
+        // On the value side, before the `#`: normal value completion.
+        let before = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 7),
+            None,
+            false,
+        );
+        assert!(labels(&before).contains(&"bun"), "{:?}", labels(&before));
+    }
+
+    #[test]
+    fn hash_inside_a_string_is_not_a_comment() {
+        let schema = SchemaIndex::build();
+        let text = "[tasks]\nprefer = [\"#\n";
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 12),
+            None,
+            false,
+        );
+        assert!(labels(&items).contains(&"turbo"), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn hover_in_a_comment_is_silent() {
+        let schema = SchemaIndex::build();
+        let text = "[tasks]\n# prefer\n";
+        let result = hover(&LineIndex::new(text), &schema, text, Position::new(1, 4));
+        assert!(result.is_none(), "{result:?}");
     }
 
     #[test]
