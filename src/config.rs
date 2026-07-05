@@ -604,8 +604,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        CONFIG_FILENAME, INIT_TEMPLATE, KNOWN_SCHEMA, LoadedConfig, load, parse_node_pm,
-        parse_python_pm,
+        CONFIG_FILENAME, INIT_TEMPLATE, KNOWN_SCHEMA, LoadedConfig, RunnerConfig, load,
+        parse_node_pm, parse_python_pm,
     };
     use crate::tool::test_support::TempDir;
     use crate::types::{DetectionWarning, PackageManager};
@@ -915,6 +915,72 @@ mod tests {
             template, known,
             "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA exactly — keep the section \
              structs, the scaffold template, and KNOWN_SCHEMA in sync when adding a knob"
+        );
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn known_schema_matches_generated_runner_config_schema() {
+        // known_schema_matches_init_template_sections_and_fields only
+        // catches INIT_TEMPLATE drifting from KNOWN_SCHEMA — a struct field
+        // added to a section without updating either the scaffold or
+        // KNOWN_SCHEMA passes that guard invisibly (template and KNOWN_SCHEMA
+        // still agree with each other, just not with the real type; the
+        // typed deserializer would accept the field while
+        // `collect_unknown_keys` spuriously flags it as unknown). Compare
+        // KNOWN_SCHEMA directly against the schemars-derived shape of
+        // RunnerConfig, independent of the scaffold.
+        use std::collections::{BTreeMap, BTreeSet};
+
+        let schema = serde_json::to_value(schemars::schema_for!(RunnerConfig))
+            .expect("RunnerConfig schema should serialize");
+
+        let top_properties = schema["properties"]
+            .as_object()
+            .expect("RunnerConfig schema must have top-level properties");
+        let defs = schema["$defs"]
+            .as_object()
+            .expect("RunnerConfig schema must have $defs");
+
+        let generated: BTreeMap<String, BTreeSet<String>> = top_properties
+            .iter()
+            .map(|(section, section_schema)| {
+                let def_name = section_schema["$ref"]
+                    .as_str()
+                    .and_then(|r| r.strip_prefix("#/$defs/"))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{section}: expected a $defs $ref in the generated schema, got \
+                             {section_schema:?}"
+                        )
+                    });
+                let fields = defs[def_name]["properties"]
+                    .as_object()
+                    .unwrap_or_else(|| {
+                        panic!("{def_name}: expected a properties object in the generated schema")
+                    })
+                    .keys()
+                    .cloned()
+                    .collect();
+                (section.clone(), fields)
+            })
+            .collect();
+
+        let known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
+            .iter()
+            .map(|(name, fields)| {
+                (
+                    (*name).to_string(),
+                    fields.iter().map(|f| (*f).to_string()).collect(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            generated, known,
+            "KNOWN_SCHEMA must match RunnerConfig's real (schemars-derived) shape exactly — a \
+             struct field with no KNOWN_SCHEMA entry is silently treated as unknown by \
+             collect_unknown_keys even though the typed deserializer accepts it"
         );
     }
 
