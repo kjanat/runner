@@ -44,7 +44,9 @@ impl Ecosystem {
 }
 
 /// A dependency manager detected via lockfile or config presence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum PackageManager {
     /// npm — detected via `package-lock.json`.
     Npm,
@@ -73,7 +75,9 @@ pub(crate) enum PackageManager {
 }
 
 /// A task runner detected via config file presence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum TaskRunner {
     /// Turborepo — detected via `turbo.json` / `turbo.jsonc`.
     Turbo,
@@ -83,7 +87,11 @@ pub(crate) enum TaskRunner {
     Make,
     /// just — detected via case-insensitive `justfile` / `.justfile`.
     Just,
-    /// go-task — detected via `Taskfile.yml` and variants.
+    /// go-task — detected via `Taskfile.yml` and variants. Serializes as
+    /// `"task"` (matching [`Self::label`]) — `kebab-case` alone would
+    /// produce `"go-task"`, the accepted parse *alias*, not the canonical
+    /// label.
+    #[serde(rename = "task")]
     GoTask,
     /// mise — detected via `mise.toml` / `.mise.toml`.
     Mise,

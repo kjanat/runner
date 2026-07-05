@@ -72,7 +72,9 @@ pub(crate) enum ChainItemKind {
 /// Failure policy for a chain. `FailFast` is the default and matches
 /// `make -j` semantics in parallel mode (let running siblings finish,
 /// don't start new ones).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum FailurePolicy {
     /// Stop the chain on the first failing task. In parallel mode,
     /// already-running siblings complete naturally.
@@ -85,17 +87,6 @@ pub(crate) enum FailurePolicy {
     /// Sequential callers accept this silently (no-op). Catch-able SIGTERM
     /// semantics would need a libc/nix dep — deferred to a follow-up.
     KillOnFail,
-}
-
-impl FailurePolicy {
-    /// The user-facing label — same convention as [`crate::resolver::FallbackPolicy::label`].
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::FailFast => "fail-fast",
-            Self::KeepGoing => "keep-going",
-            Self::KillOnFail => "kill-on-fail",
-        }
-    }
 }
 
 #[cfg(test)]

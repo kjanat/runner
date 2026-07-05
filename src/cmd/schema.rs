@@ -594,8 +594,11 @@ fn patch_source_schema(schema: &mut Value, command: &str) {
 }
 
 /// `Overrides.prefer_sources`/`task_source_pins` hold the same structured
-/// source labels as `SourceEntry.kind` — constrain them to `TaskSourceLabel`
-/// too instead of leaving them generic strings.
+/// source labels as `SourceEntry.kind`, command-dependent like it — reuse
+/// `TaskSourceLabel` instead of leaving them generic strings. (Every other
+/// `Overrides` label field is backed by a real enum and gets its schema
+/// constraint straight from `#[derive(schemars::JsonSchema)]` on that enum
+/// — no hand-built schema needed there.)
 fn patch_overrides_source_labels(defs: &mut Map<String, Value>) {
     if !defs.contains_key("Overrides") {
         return;

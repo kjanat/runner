@@ -32,10 +32,15 @@ use std::path::Path;
 use serde::Serialize;
 
 use super::labels::structured_source_label;
+use crate::chain::FailurePolicy;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
-use crate::resolver::{ResolutionOverrides, ResolutionStep, Resolver};
+use crate::resolver::{
+    FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver, ScriptPolicy,
+};
 use crate::tool::node::detect_pm_from_manifest;
-use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
+use crate::types::{
+    DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+};
 
 /// `runner doctor --json` payload.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -155,19 +160,19 @@ struct ProjectInfo {
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
 struct Overrides {
     explain: bool,
-    fallback: &'static str,
-    failure_policy: &'static str,
-    install_pms: Vec<&'static str>,
+    fallback: FallbackPolicy,
+    failure_policy: FailurePolicy,
+    install_pms: Vec<PackageManager>,
     no_warnings: bool,
     output_grouping: OutputGrouping,
     quiet: bool,
-    on_mismatch: &'static str,
-    pm: Option<&'static str>,
-    pm_by_ecosystem: BTreeMap<String, Option<&'static str>>,
-    prefer_runners: Vec<&'static str>,
+    on_mismatch: MismatchPolicy,
+    pm: Option<PackageManager>,
+    pm_by_ecosystem: BTreeMap<String, Option<PackageManager>>,
+    prefer_runners: Vec<TaskRunner>,
     prefer_sources: Vec<&'static str>,
-    runner: Option<&'static str>,
-    script_policy: &'static str,
+    runner: Option<TaskRunner>,
+    script_policy: ScriptPolicy,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
 
@@ -524,9 +529,9 @@ fn runner_info() -> RunnerInfo {
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     Overrides {
         explain: overrides.explain,
-        fallback: overrides.fallback.label(),
-        failure_policy: overrides.failure_policy.label(),
-        install_pms: overrides.install_pms.iter().map(|pm| pm.label()).collect(),
+        fallback: overrides.fallback,
+        failure_policy: overrides.failure_policy,
+        install_pms: overrides.install_pms.clone(),
         no_warnings: overrides.no_warnings,
         output_grouping: OutputGrouping {
             group_output: overrides.group_output,
@@ -534,21 +539,21 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             parallel_grouped: overrides.parallel_grouped,
         },
         quiet: overrides.quiet,
-        on_mismatch: overrides.on_mismatch.label(),
-        pm: overrides.pm.as_ref().map(|o| o.pm.label()),
+        on_mismatch: overrides.on_mismatch,
+        pm: overrides.pm.as_ref().map(|o| o.pm),
         pm_by_ecosystem: overrides
             .pm_by_ecosystem
             .iter()
-            .map(|(eco, o)| (eco.label().to_string(), Some(o.pm.label())))
+            .map(|(eco, o)| (eco.label().to_string(), Some(o.pm)))
             .collect(),
-        prefer_runners: overrides.prefer_runners.iter().map(|r| r.label()).collect(),
+        prefer_runners: overrides.prefer_runners.clone(),
         prefer_sources: overrides
             .prefer_sources
             .iter()
             .map(|&source| structured_source_label(source))
             .collect(),
-        runner: overrides.runner.as_ref().map(|o| o.runner.label()),
-        script_policy: overrides.script_policy.report_label(),
+        runner: overrides.runner.as_ref().map(|o| o.runner),
+        script_policy: overrides.script_policy,
         task_source_pins: overrides
             .task_source_overrides
             .iter()
