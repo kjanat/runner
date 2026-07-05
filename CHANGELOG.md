@@ -17,12 +17,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- `doctor --json` `overrides` now reports every resolver override state:
-  `failure_policy`, `install_pms`, `output_grouping`
+- `doctor --json` `overrides` now reports every resolver override state
+  except `parent_group_open` (internal runner-to-runner plumbing, never a
+  user override): `failure_policy`, `install_pms`, `output_grouping`
   (`group_output`/`github_group_parallel`/`parallel_grouped`),
   `prefer_sources`, `script_policy`, and `task_source_pins`. Previously
-  only `pm`/`runner`/`prefer_runners`/`fallback`/`on_mismatch`/
-  `explain`/`no_warnings`/`quiet` were surfaced, so `-k`/`-K`,
+  only `pm`/`pm_by_ecosystem`/`runner`/`prefer_runners`/`fallback`/
+  `on_mismatch`/`explain`/`no_warnings`/`quiet` were surfaced, so `-k`/`-K`,
   `[tasks].prefer`, `[tasks.overrides]`, `[install]`, and `[github]`/
   `[parallel]` config could be set without `doctor` ever showing it.
 
