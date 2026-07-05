@@ -626,21 +626,32 @@ fn patch_why_task(defs: &mut Map<String, Value>) {
     patch_def_field(defs, "WhyTask", "provider", "ProviderLabel");
 }
 
+/// Mutable handle on `$defs.<def_name>.properties.<field>`, the shared
+/// navigation prefix of every schema patch below.
+fn field_schema_mut<'a>(
+    defs: &'a mut Map<String, Value>,
+    def_name: &str,
+    field: &str,
+) -> Option<&'a mut Value> {
+    defs.get_mut(def_name)
+        .and_then(|definition| definition.get_mut("properties"))
+        .and_then(Value::as_object_mut)
+        .and_then(|properties| properties.get_mut(field))
+}
+
+fn def_ref(target_def: &str) -> Value {
+    json!({ "$ref": format!("#/$defs/{target_def}") })
+}
+
 fn patch_def_field(
     defs: &mut Map<String, Value>,
     def_name: &'static str,
     field: &'static str,
     target_def: &'static str,
 ) {
-    let Some(field_schema) = defs
-        .get_mut(def_name)
-        .and_then(|definition| definition.get_mut("properties"))
-        .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut(field))
-    else {
-        return;
-    };
-    *field_schema = json!({ "$ref": format!("#/$defs/{target_def}") });
+    if let Some(field_schema) = field_schema_mut(defs, def_name, field) {
+        *field_schema = def_ref(target_def);
+    }
 }
 
 /// Like [`patch_def_field`], but for an array-typed field — constrains its
@@ -651,16 +662,11 @@ fn patch_def_array_items(
     field: &'static str,
     target_def: &'static str,
 ) {
-    let Some(items) = defs
-        .get_mut(def_name)
-        .and_then(|definition| definition.get_mut("properties"))
-        .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut(field))
+    if let Some(items) = field_schema_mut(defs, def_name, field)
         .and_then(|field_schema| field_schema.get_mut("items"))
-    else {
-        return;
-    };
-    *items = json!({ "$ref": format!("#/$defs/{target_def}") });
+    {
+        *items = def_ref(target_def);
+    }
 }
 
 /// Like [`patch_def_array_items`], but for a map-of-array field — constrains
@@ -671,17 +677,12 @@ fn patch_def_map_array_items(
     field: &'static str,
     target_def: &'static str,
 ) {
-    let Some(items) = defs
-        .get_mut(def_name)
-        .and_then(|definition| definition.get_mut("properties"))
-        .and_then(Value::as_object_mut)
-        .and_then(|properties| properties.get_mut(field))
+    if let Some(items) = field_schema_mut(defs, def_name, field)
         .and_then(|field_schema| field_schema.get_mut("additionalProperties"))
         .and_then(|additional| additional.get_mut("items"))
-    else {
-        return;
-    };
-    *items = json!({ "$ref": format!("#/$defs/{target_def}") });
+    {
+        *items = def_ref(target_def);
+    }
 }
 
 fn task_source_label_schema(command: &str) -> Value {

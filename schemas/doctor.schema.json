@@ -443,74 +443,25 @@
           "type": "object",
           "properties": {
             "deno": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             },
             "go": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             },
             "node": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             },
             "php": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             },
             "python": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             },
             "ruby": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             },
             "rust": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/PackageManager"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+              "$ref": "#/$defs/PackageManager"
             }
           },
           "additionalProperties": false

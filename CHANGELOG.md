@@ -63,9 +63,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   override value against the committed schema instead of silently
   accepting anything. `pm_by_ecosystem`'s keys are constrained the same
   way: the schema now lists the seven ecosystem names explicitly instead
-  of allowing any string key. `failure_policy`, `script_policy`, and
-  `install_pms` (new fields, see Added above) get the same closed-enum
-  treatment from the start.
+  of allowing any string key, and its values are plain (non-nullable)
+  package-manager labels — the report never emits a `null` there.
+  `failure_policy`, `script_policy`, and `install_pms` (new fields, see
+  Added above) get the same closed-enum treatment from the start.
 
 ### Fixed
 

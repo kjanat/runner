@@ -11,7 +11,7 @@ use std::path::PathBuf;
 ///
 /// Variants use `//`, not `///`: a per-variant doc comment defeats
 /// `BTreeMap`'s closed-key-set schema optimization for `Overrides.pm_by_ecosystem`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -32,7 +32,34 @@ pub(crate) enum Ecosystem {
     Php,
 }
 
+/// Ordered by [`Self::label`] so `BTreeMap<Ecosystem, _>` keys serialize
+/// alphabetically, matching the `String`-keyed flat `info`/`list` surface.
+impl Ord for Ecosystem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.label().cmp(other.label())
+    }
+}
+
+impl PartialOrd for Ecosystem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl Ecosystem {
+    /// Every variant, for tests that need the closed set (schema
+    /// assertions, serialization drift tests).
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Node,
+        Self::Deno,
+        Self::Python,
+        Self::Rust,
+        Self::Go,
+        Self::Ruby,
+        Self::Php,
+    ];
+
     /// Lower-case label used in human messages, JSON output, and
     /// override origins. Single source of truth so `doctor --json` and
     /// resolver warnings agree on the spelling.
@@ -969,6 +996,46 @@ fn parse_current_version(current: &str) -> Option<semver::Version> {
 mod tests {
     use super::version_matches;
     use super::{DetectionWarning, PackageManager};
+
+    /// The serde `kebab-case` renames and the hand-written `label()`
+    /// methods are parallel sources of the same strings; this pins them
+    /// together so a new variant can't silently split the two surfaces
+    /// (the way `TaskRunner::GoTask` would without its explicit rename).
+    #[test]
+    fn serialized_labels_match_label_methods() {
+        use super::{Ecosystem, TaskRunner};
+        use crate::resolver::{FallbackPolicy, MismatchPolicy, ScriptPolicy};
+
+        fn json_str<T: serde::Serialize>(value: T) -> String {
+            serde_json::to_value(value)
+                .expect("enum should serialize")
+                .as_str()
+                .expect("enum should serialize as a string")
+                .to_string()
+        }
+
+        for eco in Ecosystem::ALL {
+            assert_eq!(json_str(eco), eco.label());
+        }
+        for &pm in PackageManager::all() {
+            assert_eq!(json_str(pm), pm.label());
+        }
+        for &runner in TaskRunner::all() {
+            assert_eq!(json_str(runner), runner.label());
+        }
+        for fallback in FallbackPolicy::ALL {
+            assert_eq!(json_str(fallback), fallback.label());
+        }
+        for mismatch in MismatchPolicy::ALL {
+            assert_eq!(json_str(mismatch), mismatch.label());
+        }
+        for script in ScriptPolicy::SETTABLE {
+            assert_eq!(Some(json_str(script).as_str()), script.label());
+        }
+        // Default has no user-settable label; the report surface still
+        // needs a stable spelling.
+        assert_eq!(json_str(ScriptPolicy::Default), "default");
+    }
 
     #[test]
     fn dotted_versions_match_segment_boundaries_only() {

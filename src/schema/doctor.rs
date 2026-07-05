@@ -168,7 +168,7 @@ struct Overrides {
     quiet: bool,
     on_mismatch: MismatchPolicy,
     pm: Option<PackageManager>,
-    pm_by_ecosystem: BTreeMap<Ecosystem, Option<PackageManager>>,
+    pm_by_ecosystem: BTreeMap<Ecosystem, PackageManager>,
     prefer_runners: Vec<TaskRunner>,
     prefer_sources: Vec<&'static str>,
     runner: Option<TaskRunner>,
@@ -544,7 +544,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         pm_by_ecosystem: overrides
             .pm_by_ecosystem
             .iter()
-            .map(|(&eco, o)| (eco, Some(o.pm)))
+            .map(|(&eco, o)| (eco, o.pm))
             .collect(),
         prefer_runners: overrides.prefer_runners.clone(),
         prefer_sources: overrides
@@ -1352,12 +1352,10 @@ mod tests {
 
     /// Drift guard: every field on [`ResolutionOverrides`] must appear
     /// either in the reflected [`Overrides`] schema or in the exclusion
-    /// list below (with a reason). `RESOLUTION_OVERRIDES_FIELDS` is the
-    /// necessarily hand-maintained side — `ResolutionOverrides` has no
-    /// `JsonSchema` derive of its own (it's an internal resolver type,
-    /// not a JSON-facing one) — so it must be kept in sync with
-    /// `src/resolver/types.rs` by hand; this test only catches drift
-    /// against `Overrides`, not against the struct itself.
+    /// list below (with a reason). The macro's single field list both
+    /// exhaustively destructures the struct (a new field fails to compile
+    /// until listed) and feeds the checked names, so the list can't go
+    /// stale relative to the destructure.
     ///
     /// Two fields are reported under a different name/shape than
     /// `ResolutionOverrides` uses, both to dodge clippy lints:
@@ -1370,55 +1368,41 @@ mod tests {
     #[cfg(feature = "schema")]
     #[test]
     fn every_resolution_overrides_field_is_reported_or_excluded() {
-        const RESOLUTION_OVERRIDES_FIELDS: &[&str] = &[
-            "pm",
-            "pm_by_ecosystem",
-            "runner",
-            "prefer_runners",
-            "prefer_sources",
-            "task_source_overrides",
-            "fallback",
-            "on_mismatch",
-            "no_warnings",
-            "quiet",
-            "explain",
-            "failure_policy",
-            "group_output",
-            "github_group_parallel",
-            "parallel_grouped",
-            "install_pms",
-            "script_policy",
-            "parent_group_open",
-        ];
         // Internal runner-to-runner plumbing (an inherited env marker),
         // never a user override — nothing meaningful to report.
         const EXCLUDED: &[&str] = &["parent_group_open"];
         // resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[("task_source_overrides", "task_source_pins")];
 
-        // Exhaustive destructure (no `..`): if ResolutionOverrides gains a
-        // field, this fails to compile until it's added here too, instead
-        // of RESOLUTION_OVERRIDES_FIELDS above silently staying stale.
-        let ResolutionOverrides {
-            pm: _,
-            pm_by_ecosystem: _,
-            runner: _,
-            prefer_runners: _,
-            prefer_sources: _,
-            task_source_overrides: _,
-            fallback: _,
-            on_mismatch: _,
-            no_warnings: _,
-            quiet: _,
-            explain: _,
-            failure_policy: _,
-            group_output: _,
-            github_group_parallel: _,
-            parallel_grouped: _,
-            install_pms: _,
-            script_policy: _,
-            parent_group_open: _,
-        } = ResolutionOverrides::default();
+        // One list, two jobs: exhaustively destructure ResolutionOverrides
+        // (a new field fails to compile until added here) and name the
+        // fields the assertion loop checks.
+        macro_rules! resolution_overrides_fields {
+            ($($field:ident),* $(,)?) => {{
+                let ResolutionOverrides { $($field: _),* } = ResolutionOverrides::default();
+                [$(stringify!($field)),*]
+            }};
+        }
+        let resolution_overrides_fields = resolution_overrides_fields![
+            pm,
+            pm_by_ecosystem,
+            runner,
+            prefer_runners,
+            prefer_sources,
+            task_source_overrides,
+            fallback,
+            on_mismatch,
+            no_warnings,
+            quiet,
+            explain,
+            failure_policy,
+            group_output,
+            github_group_parallel,
+            parallel_grouped,
+            install_pms,
+            script_policy,
+            parent_group_open,
+        ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
             .expect("Overrides schema should serialize");
@@ -1441,7 +1425,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{grouping_def}: expected a properties object"));
         reported.extend(grouping_properties.keys().map(String::as_str));
 
-        for &field in RESOLUTION_OVERRIDES_FIELDS {
+        for field in resolution_overrides_fields {
             if EXCLUDED.contains(&field) {
                 assert!(
                     !reported.contains(field),
@@ -1459,5 +1443,31 @@ mod tests {
                  {reported_name:?}) nor on the EXCLUDED allowlist — add it to one"
             );
         }
+    }
+
+    /// The closed key set depends on `Ecosystem` variants carrying no doc
+    /// comments (see `src/types.rs`); a `///` there silently reverts the
+    /// map to open `additionalProperties`. This pins the shape.
+    #[cfg(feature = "schema")]
+    #[test]
+    fn pm_by_ecosystem_schema_keys_stay_closed() {
+        let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
+            .expect("Overrides schema should serialize");
+        let map_schema = &schema["properties"]["pm_by_ecosystem"];
+
+        assert_eq!(
+            map_schema["additionalProperties"],
+            serde_json::json!(false),
+            "pm_by_ecosystem must reject unknown keys"
+        );
+        let keys: Vec<&str> = map_schema["properties"]
+            .as_object()
+            .expect("pm_by_ecosystem must enumerate its keys")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut expected: Vec<&str> = Ecosystem::ALL.iter().map(|eco| eco.label()).collect();
+        expected.sort_unstable();
+        assert_eq!(keys, expected);
     }
 }
