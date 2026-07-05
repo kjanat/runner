@@ -6,8 +6,6 @@
 //! and reports what would happen step by step. Pairs with `runner doctor`
 //! (project-wide diagnostic) and `--explain` (one-line trace at run time).
 
-use std::path::PathBuf;
-
 use anyhow::Result;
 use colored::Colorize;
 use serde::Serialize;
@@ -17,6 +15,7 @@ use crate::cmd::run::{
     runner_constraint_error, select_task_entry, source_depth, source_priority,
 };
 use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
+use crate::schema::labels;
 use crate::types::{ProjectContext, Task, TaskSource};
 
 /// Explain how `task` would resolve in the current project.
@@ -252,7 +251,7 @@ fn candidate_json<'a>(
         Some(depth)
     };
     WhyCandidate {
-        source: crate::schema::labels::source_label_for(task.source, schema_version),
+        source: labels::source_label_for(task.source, schema_version),
         source_priority: source_priority(overrides, task.source),
         depth,
         display_order: task.source.display_order(),
@@ -260,7 +259,8 @@ fn candidate_json<'a>(
         alias_of: task.alias_of.as_deref(),
         description: task.description.as_deref(),
         passthrough_to: task.passthrough_to.map(crate::types::TaskRunner::label),
-        source_dir: source_dir_for_task(task, ctx).map(|path| path.display().to_string()),
+        source_dir: labels::source_anchor(task.source, &ctx.root)
+            .map(|path| path.display().to_string()),
     }
 }
 
@@ -446,15 +446,16 @@ fn task_v3<'a>(
     selected: Option<&Task>,
     schema_version: u32,
 ) -> WhyTaskV3<'a> {
-    let kind = crate::schema::labels::source_label_for(task.source, schema_version);
+    let kind = labels::source_label_for(task.source, schema_version);
     let is_selected = selected.is_some_and(|sel| std::ptr::eq(sel, task));
     WhyTaskV3 {
         name: &task.name,
-        fqn: crate::schema::labels::fqn(task.source, &task.name, schema_version),
+        fqn: labels::fqn(task.source, &task.name, schema_version),
         provider: provider_label(task.source),
         kind,
-        source: source_dir_for_task(task, ctx).map(|path| path.display().to_string()),
-        source_pointer: source_pointer(task),
+        source: labels::source_anchor(task.source, &ctx.root)
+            .map(|path| path.display().to_string()),
+        source_pointer: labels::source_pointer(task),
         description: task.description.as_deref(),
         aliases: ctx
             .tasks
@@ -539,77 +540,20 @@ const fn provider_label(source: TaskSource) -> &'static str {
     }
 }
 
-/// Key path (structured configs) or target name (flat files) locating
-/// the task inside its source file.
-fn source_pointer(task: &Task) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(format!("alias.{name}")),
-        TaskSource::PackageJson => Some(format!("scripts.{name}")),
-        TaskSource::DenoJson
-        | TaskSource::TurboJson
-        | TaskSource::Taskfile
-        | TaskSource::MiseToml => Some(format!("tasks.{name}")),
-        TaskSource::BaconToml => Some(format!("jobs.{name}")),
-        TaskSource::PyprojectScripts => Some(format!("project.scripts.{name}")),
-        TaskSource::Makefile | TaskSource::Justfile => Some(name.clone()),
-        TaskSource::GoPackage => None,
-    }
-}
-
-/// Effective command preview for the candidate. Sources with a fixed
-/// executing binary render deterministically; `package.json` and
-/// `pyproject.toml` scripts depend on PM resolution, which `why` only
-/// performs for the selected task — other candidates report null.
+/// Effective command preview for the candidate. `why` only resolves the
+/// PM for the selected task — other candidates report null. Delegates the
+/// per-source dispatch to [`labels::resolved_command`], shared with
+/// `doctor` v3.
 fn resolved_command(task: &Task, pm_decision: Option<&PmDecision>) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(task.alias_of.as_deref().map_or_else(
-            || format!("cargo {name}"),
-            |expansion| format!("cargo {expansion}"),
-        )),
-        TaskSource::DenoJson => Some(format!("deno task {name}")),
-        TaskSource::TurboJson => Some(format!("turbo run {name}")),
-        TaskSource::Makefile => Some(format!("make {name}")),
-        TaskSource::Justfile => Some(format!("just {name}")),
-        TaskSource::Taskfile => Some(format!("task {name}")),
-        TaskSource::BaconToml => Some(format!("bacon {name}")),
-        TaskSource::MiseToml => Some(format!("mise run {name}")),
-        TaskSource::GoPackage => Some(format!(
-            "go run {target}",
-            target = task.run_target.as_deref().unwrap_or(name)
-        )),
-        TaskSource::PackageJson => match pm_decision {
-            Some(PmDecision::Node(Ok(decision))) => {
-                Some(format!("{pm} run {name}", pm = decision.pm.label()))
-            }
-            _ => None,
-        },
-        TaskSource::PyprojectScripts => match pm_decision {
-            Some(PmDecision::Python(Ok(decision))) => {
-                Some(format!("{pm} run {name}", pm = decision.pm.label()))
-            }
-            _ => None,
-        },
-    }
-}
-
-fn source_dir_for_task(task: &Task, ctx: &ProjectContext) -> Option<PathBuf> {
-    use crate::tool;
-
-    match task.source {
-        TaskSource::PackageJson => tool::node::find_manifest_upwards(&ctx.root),
-        TaskSource::DenoJson => tool::deno::find_config_upwards(&ctx.root),
-        TaskSource::TurboJson => tool::turbo::find_config(&ctx.root),
-        TaskSource::Makefile => tool::files::find_first(&ctx.root, tool::make::FILENAMES),
-        TaskSource::Justfile => tool::just::find_file(&ctx.root),
-        TaskSource::Taskfile => tool::files::find_first(&ctx.root, tool::go_task::FILENAMES),
-        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(&ctx.root),
-        TaskSource::GoPackage => tool::go_pm::find_file(&ctx.root),
-        TaskSource::BaconToml => tool::files::find_first(&ctx.root, tool::bacon::FILENAMES),
-        TaskSource::MiseToml => tool::mise::find_file(&ctx.root),
-        TaskSource::PyprojectScripts => tool::python::find_pyproject_upwards(&ctx.root),
-    }
+    let node_pm = match pm_decision {
+        Some(PmDecision::Node(Ok(decision))) => Some(decision.pm.label()),
+        _ => None,
+    };
+    let python_pm = match pm_decision {
+        Some(PmDecision::Python(Ok(decision))) => Some(decision.pm.label()),
+        _ => None,
+    };
+    labels::resolved_command(task, node_pm, python_pm)
 }
 
 fn print_human(

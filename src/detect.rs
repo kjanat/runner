@@ -84,19 +84,38 @@ fn detect_install_collisions(dir: &Path, ctx: &mut ProjectContext) {
 
 // Package managers
 
+/// Filesystem detector for a Node-ecosystem PM, keyed by the same
+/// [`crate::resolver::NODE_PROBE_ORDER`] the resolver's PATH probe and the
+/// doctor's signals section use — one priority list instead of a third
+/// copy encoded as if-else order. Only ever called with a PM drawn from
+/// that array, so the wildcard is unreachable in practice, not a
+/// silently-accepted gap.
+fn node_pm_detector(pm: PackageManager) -> fn(&Path) -> bool {
+    match pm {
+        PackageManager::Bun => tool::bun::detect,
+        PackageManager::Pnpm => tool::pnpm::detect,
+        PackageManager::Yarn => tool::yarn::detect,
+        PackageManager::Npm => tool::npm::detect,
+        _ => |_| false,
+    }
+}
+
+/// Detect a Node-ecosystem PM in `dir` alone (no upward walk), in
+/// [`crate::resolver::NODE_PROBE_ORDER`] priority.
+fn detect_local_node_pm(dir: &Path) -> Option<PackageManager> {
+    crate::resolver::NODE_PROBE_ORDER
+        .iter()
+        .copied()
+        .find(|&pm| node_pm_detector(pm)(dir))
+}
+
 /// Detect package managers by checking for lockfiles and config files.
 ///
 /// Node PM priority: bun > pnpm > yarn > npm > Node `packageManager` field.
 /// Within non-Node ecosystems, multiple PMs can coexist (e.g. Cargo + npm).
 fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
-    let node_pm = if tool::bun::detect(dir) {
-        Some(PackageManager::Bun)
-    } else if tool::pnpm::detect(dir) {
-        Some(PackageManager::Pnpm)
-    } else if tool::yarn::detect(dir) {
-        Some(PackageManager::Yarn)
-    } else if tool::npm::detect(dir) {
-        Some(PackageManager::Npm)
+    let node_pm = if let Some(pm) = detect_local_node_pm(dir) {
+        Some(pm)
     } else if tool::node::has_package_json(dir) {
         // Read the field with diagnostics so a present-but-unparseable
         // value (typo, unsupported PM) doesn't disappear silently —
@@ -157,19 +176,11 @@ fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
         return None;
     }
     tool::files::find_in_ancestors(dir, |ancestor| {
-        if tool::bun::detect(ancestor) {
-            Some(PackageManager::Bun)
-        } else if tool::pnpm::detect(ancestor) {
-            Some(PackageManager::Pnpm)
-        } else if tool::yarn::detect(ancestor) {
-            Some(PackageManager::Yarn)
-        } else if tool::npm::detect(ancestor) {
-            Some(PackageManager::Npm)
-        } else {
+        detect_local_node_pm(ancestor).or_else(|| {
             tool::node::detect_pm_from_manifest(ancestor)
                 .map(|decl| decl.pm)
                 .filter(|pm| pm.is_node())
-        }
+        })
     })
 }
 

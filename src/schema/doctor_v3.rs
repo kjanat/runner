@@ -32,7 +32,7 @@
 //!   emitter exists — contracts should describe output, not ambition.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Serialize;
 
@@ -440,7 +440,7 @@ impl<'a> DoctorReportV3<'a> {
             ecosystems: ecosystems_v3(ctx, overrides, &node_pm, resolve_shims),
             sources: sources_v3(ctx, schema_version),
             tasks: tasks_v3(ctx, &node_pm, overrides, schema_version),
-            tools: tools_v3(ctx, &node_pm),
+            tools: tools_v3(ctx, overrides, &node_pm),
             conflicts: conflicts_v3(ctx, overrides, schema_version),
             diagnostics,
             resolution: ResolutionPolicyV3 {
@@ -551,6 +551,12 @@ fn ecosystems_v3(
     if has_node_context(ctx, node_pm) && !seen.contains(&Ecosystem::Node) {
         seen.push(Ecosystem::Node);
     }
+    // Same reasoning as the Node patch-in above: a `[project.scripts]`
+    // task can resolve via `--pm`/`[pm].python`/detected PM without a
+    // lockfile-detected PM in `package_managers`.
+    if has_python_context(ctx, overrides) && !seen.contains(&Ecosystem::Python) {
+        seen.push(Ecosystem::Python);
+    }
 
     seen.into_iter()
         .map(|eco| match eco {
@@ -580,6 +586,23 @@ fn has_node_context(
             .tasks
             .iter()
             .any(|t| matches!(t.source, TaskSource::PackageJson))
+}
+
+/// Whether the project carries Python context, considering resolver and
+/// task signals — not just lockfile-detected `package_managers`. Mirrors
+/// [`has_node_context`]; gates Python inclusion in both [`ecosystems_v3`]
+/// and [`tools_v3`] so neither surface disagrees with what `tasks_v3`
+/// resolves.
+fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
+    resolve_python_pm(ctx, overrides).is_some()
+        || ctx
+            .package_managers
+            .iter()
+            .any(|pm| pm.ecosystem() == Ecosystem::Python)
+        || ctx
+            .tasks
+            .iter()
+            .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
 }
 
 fn node_ecosystem_v3(
@@ -732,7 +755,7 @@ fn sources_v3(ctx: &ProjectContext, schema_version: u32) -> Vec<SourceV3> {
     seen.into_iter()
         .map(|source| {
             let kind = source_label_for(source, schema_version);
-            let anchor = anchor_file(source, &ctx.root);
+            let anchor = super::labels::source_anchor(source, &ctx.root);
             let path = anchor
                 .as_ref()
                 .map_or_else(String::new, |p| p.display().to_string());
@@ -768,7 +791,7 @@ fn tasks_v3<'a>(
         std::collections::HashMap::new();
     for task in &ctx.tasks {
         anchors.entry(task.source).or_insert_with(|| {
-            anchor_file(task.source, &ctx.root).map(|p| p.display().to_string())
+            super::labels::source_anchor(task.source, &ctx.root).map(|p| p.display().to_string())
         });
     }
 
@@ -790,10 +813,10 @@ fn tasks_v3<'a>(
             fqn: super::labels::fqn(task.source, &task.name, schema_version),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
-            resolved: resolved_command_v3(task, node_pm_label, python_pm_label),
+            resolved: super::labels::resolved_command(task, node_pm_label, python_pm_label),
             self_executable: deno_task_self_executable(ctx, task),
             source: anchors.get(&task.source).cloned().flatten(),
-            source_pointer: source_pointer_v3(task),
+            source_pointer: super::labels::source_pointer(task),
         })
         .collect()
 }
@@ -812,55 +835,6 @@ fn deno_task_self_executable(ctx: &ProjectContext, task: &Task) -> bool {
         .is_some_and(|plan| plan.self_executable())
 }
 
-/// Effective command preview. Unlike `why` v3 (which only resolves the
-/// PM for the selected task), doctor resolves PMs project-wide, so
-/// `package.json`/`pyproject.toml` scripts resolve here whenever the
-/// ecosystem resolution succeeded.
-fn resolved_command_v3(
-    task: &Task,
-    node_pm: Option<&'static str>,
-    python_pm: Option<&'static str>,
-) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(task.alias_of.as_deref().map_or_else(
-            || format!("cargo {name}"),
-            |expansion| format!("cargo {expansion}"),
-        )),
-        TaskSource::DenoJson => Some(format!("deno task {name}")),
-        TaskSource::TurboJson => Some(format!("turbo run {name}")),
-        TaskSource::Makefile => Some(format!("make {name}")),
-        TaskSource::Justfile => Some(format!("just {name}")),
-        TaskSource::Taskfile => Some(format!("task {name}")),
-        TaskSource::BaconToml => Some(format!("bacon {name}")),
-        TaskSource::MiseToml => Some(format!("mise run {name}")),
-        TaskSource::GoPackage => Some(format!(
-            "go run {target}",
-            target = task.run_target.as_deref().unwrap_or(name)
-        )),
-        TaskSource::PackageJson => node_pm.map(|pm| format!("{pm} run {name}")),
-        TaskSource::PyprojectScripts => python_pm.map(|pm| format!("{pm} run {name}")),
-    }
-}
-
-/// Key path locating the task inside its source file; mirrors the
-/// `why` v3 convention.
-fn source_pointer_v3(task: &Task) -> Option<String> {
-    let name = &task.name;
-    match task.source {
-        TaskSource::CargoAliases => Some(format!("alias.{name}")),
-        TaskSource::PackageJson => Some(format!("scripts.{name}")),
-        TaskSource::DenoJson
-        | TaskSource::TurboJson
-        | TaskSource::Taskfile
-        | TaskSource::MiseToml => Some(format!("tasks.{name}")),
-        TaskSource::BaconToml => Some(format!("jobs.{name}")),
-        TaskSource::PyprojectScripts => Some(format!("project.scripts.{name}")),
-        TaskSource::Makefile | TaskSource::Justfile => Some(name.clone()),
-        TaskSource::GoPackage => None,
-    }
-}
-
 /// Container key holding tasks inside the source file.
 const fn task_container_key(source: TaskSource) -> Option<&'static str> {
     match source {
@@ -876,28 +850,9 @@ const fn task_container_key(source: TaskSource) -> Option<&'static str> {
     }
 }
 
-/// Config file anchoring a task source. Mirrors `cmd::why`'s anchor
-/// walk (file paths, not parent dirs).
-fn anchor_file(source: TaskSource, root: &Path) -> Option<PathBuf> {
-    use crate::tool;
-
-    match source {
-        TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
-        TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::TurboJson => tool::turbo::find_config(root),
-        TaskSource::Makefile => tool::files::find_first(root, tool::make::FILENAMES),
-        TaskSource::Justfile => tool::just::find_file(root),
-        TaskSource::Taskfile => tool::files::find_first(root, tool::go_task::FILENAMES),
-        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
-        TaskSource::GoPackage => tool::go_pm::find_file(root),
-        TaskSource::BaconToml => tool::files::find_first(root, tool::bacon::FILENAMES),
-        TaskSource::MiseToml => tool::mise::find_file(root),
-        TaskSource::PyprojectScripts => tool::python::find_pyproject_upwards(root),
-    }
-}
-
 fn tools_v3(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
 ) -> Vec<ToolV3> {
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -913,6 +868,21 @@ fn tools_v3(
             ctx.current_node
                 .as_deref()
                 .map(|v| v.trim_start_matches('v').to_string()),
+            true,
+            &path,
+            pathext_ref,
+        ));
+    }
+    // Same reasoning as the node runtime probe above: a resolved
+    // `uv run <task>` must never reference an interpreter the tools
+    // surface claims absent.
+    if has_python_context(ctx, overrides) {
+        use crate::tool::python::PYTHON_BIN;
+
+        tools.push(probe_tool(
+            PYTHON_BIN,
+            DependencyKindV3::Runtime,
+            None,
             true,
             &path,
             pathext_ref,
@@ -1254,6 +1224,36 @@ mod tests {
         assert!(
             tools.iter().any(|t| t["name"] == "node"),
             "node runtime tool must be probed when package.json tasks exist"
+        );
+    }
+
+    #[test]
+    fn v3_report_keeps_python_when_only_pyproject_scripts_tasks_present() {
+        // Mirrors v3_report_keeps_node_when_only_package_json_tasks_present:
+        // a bare pyproject.toml with [project.scripts] but no uv.lock/poetry
+        // markers still resolves tasks via the detected/overridden Python
+        // PM, so ecosystems/tools must surface Python too.
+        use crate::tool::python::PYTHON_BIN;
+
+        let ctx = context(vec![task("build", TaskSource::PyprojectScripts)]);
+        assert!(
+            !ctx.package_managers
+                .iter()
+                .any(|pm| pm.ecosystem() == Ecosystem::Python),
+            "precondition: no Python PM detected"
+        );
+        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        let ecosystems = json["ecosystems"].as_array().expect("ecosystems array");
+        assert!(
+            ecosystems.iter().any(|e| e["name"] == "python"),
+            "python ecosystem must be present when pyproject.toml tasks exist"
+        );
+        let tools = json["tools"].as_array().expect("tools array");
+        assert!(
+            tools.iter().any(|t| t["name"] == PYTHON_BIN),
+            "python runtime tool must be probed when pyproject.toml tasks exist"
         );
     }
 

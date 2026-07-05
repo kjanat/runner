@@ -598,7 +598,7 @@ fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
 }
 
 fn release_url(version: &str) -> String {
-    format!("{REPOSITORY_URL}releases/tag/v{version}")
+    format!("{REPOSITORY_URL}/releases/tag/v{version}")
 }
 
 fn osc8_link(label: &str, url: &str) -> String {
@@ -1198,7 +1198,7 @@ mod tests {
         let line = version_line(&[OsString::from("runner")], true);
 
         assert!(line.contains(
-            "\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
+            "\u{1b}]8;;https://github.com/kjanat/runner\u{1b}\\runner\u{1b}]8;;\u{1b}\\"
         ));
         assert!(line.contains(&format!(
             "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
