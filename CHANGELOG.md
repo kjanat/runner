@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Fixed
+
+- `runner lsp` no longer offers field completions after a dotted key
+  (`group_output.` suggested the section's whole field list; TOML reads
+  the dot as a key path, and no section has enumerable sub-keys). Key
+  completions also now carry an explicit text edit replacing the typed
+  token, so a completion accepted from a stale list (e.g. left open
+  across a backspace) substitutes the token instead of pasting after it
+  (`group_outputgroup_output =`).
+
 ## [0.19.0] - 2026-07-05
 
 ### Added

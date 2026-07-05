@@ -183,12 +183,55 @@ pub(super) fn completion(
         LineShape::Value { key, in_array } => {
             value_items(schema, cursor.section.as_deref(), &key, in_array)
         }
-        LineShape::Key => field_items(schema, cursor.section.as_deref()),
+        LineShape::Key => key_items(index, schema, cursor.section.as_deref(), text, pos),
         LineShape::Empty => cursor.section.as_deref().map_or_else(
             || header_items(schema, "", true),
-            |section| field_items(schema, Some(section)),
+            |section| field_items(schema, Some(section), None),
         ),
     }
+}
+
+/// Completion on the key side of a line. A dotted key (`group_output.`)
+/// completes nothing — TOML reads it as a key *path*, and no section has
+/// enumerable sub-keys (`[tasks].overrides` entries are user-chosen names).
+/// The typed token is replaced via an explicit text edit so a client can
+/// only ever substitute it, never append to it (a stale list left open
+/// after a backspace would otherwise paste at its old anchor).
+fn key_items(
+    index: &LineIndex,
+    schema: &SchemaIndex,
+    section: Option<&str>,
+    text: &str,
+    pos: Position,
+) -> Vec<CompletionItem> {
+    let Some((token, range)) = key_token(index, text, pos) else {
+        return field_items(schema, section, None);
+    };
+    if token.contains('.') {
+        return Vec::new();
+    }
+    field_items(schema, section, Some(range))
+}
+
+/// The whitespace-delimited token immediately before the cursor and its
+/// range, when non-empty.
+fn key_token(index: &LineIndex, text: &str, pos: Position) -> Option<(String, lsp_types::Range)> {
+    let line_text = text.lines().nth(pos.line as usize)?;
+    let line_start = index.offset(text, Position::new(pos.line, 0));
+    let within = index
+        .offset(text, pos)
+        .saturating_sub(line_start)
+        .min(line_text.len());
+    let before = line_text.get(..within)?;
+    let token_start = before.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+    let token = &before[token_start..];
+    if token.is_empty() {
+        return None;
+    }
+    Some((
+        token.to_string(),
+        index.range(text, line_start + token_start, line_start + within),
+    ))
 }
 
 /// Header-path completion. A dotted partial (`[tasks.`) completes only the
@@ -271,23 +314,37 @@ fn section_item(
     }
 }
 
-/// Field-name completion for a section.
-fn field_items(schema: &SchemaIndex, section: Option<&str>) -> Vec<CompletionItem> {
+/// Field-name completion for a section. With `replace`, each item carries a
+/// text edit substituting the typed token instead of inserting at the cursor.
+fn field_items(
+    schema: &SchemaIndex,
+    section: Option<&str>,
+    replace: Option<lsp_types::Range>,
+) -> Vec<CompletionItem> {
     let Some(doc) = section.and_then(|s| schema.section(s)) else {
         return Vec::new();
     };
     doc.fields
         .iter()
-        .map(|(name, field)| CompletionItem {
-            label: name.clone(),
-            kind: Some(CompletionItemKind::FIELD),
-            insert_text: Some(format!("{name} = ")),
-            detail: field.deprecated.then(|| "deprecated".to_string()),
-            tags: field
-                .deprecated
-                .then(|| vec![CompletionItemTag::DEPRECATED]),
-            documentation: field.description.clone().map(doc_markup),
-            ..CompletionItem::default()
+        .map(|(name, field)| {
+            let new_text = format!("{name} = ");
+            CompletionItem {
+                label: name.clone(),
+                kind: Some(CompletionItemKind::FIELD),
+                text_edit: replace.map(|range| {
+                    lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                        range,
+                        new_text: new_text.clone(),
+                    })
+                }),
+                insert_text: Some(new_text),
+                detail: field.deprecated.then(|| "deprecated".to_string()),
+                tags: field
+                    .deprecated
+                    .then(|| vec![CompletionItemTag::DEPRECATED]),
+                documentation: field.description.clone().map(doc_markup),
+                ..CompletionItem::default()
+            }
         })
         .collect()
 }
@@ -522,6 +579,34 @@ mod tests {
             Some(&[lsp_types::CompletionItemTag::DEPRECATED][..]),
             "{item:?}"
         );
+    }
+
+    #[test]
+    fn dotted_key_completes_nothing() {
+        let schema = SchemaIndex::build();
+        let text = "[github]\ngroup_output.\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 13));
+        assert!(items.is_empty(), "{:?}", labels(&items));
+    }
+
+    #[test]
+    fn key_completion_replaces_the_typed_token() {
+        let schema = SchemaIndex::build();
+        let text = "[github]\ngroup_o\n";
+        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let item = items
+            .iter()
+            .find(|i| i.label == "group_output")
+            .expect("group_output item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = &item.text_edit else {
+            panic!("expected a plain text edit: {item:?}");
+        };
+        assert_eq!(
+            (edit.range.start.character, edit.range.end.character),
+            (0, 7),
+            "{edit:?}"
+        );
+        assert_eq!(edit.new_text, "group_output = ");
     }
 
     #[test]
