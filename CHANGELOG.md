@@ -78,6 +78,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `doctor.schema.json`, like every other boolean override — it was kept
   optional for compatibility with the pre-collapse `doctor` v3 schema,
   which this same release already removed.
+- `runner lsp` diagnostics for a wrong-typed known field (e.g.
+  `pms = "bun"`) now point at the offending value instead of line one.
+- `runner lsp` value completion for sequence-typed fields
+  (`[install].pms`, `[tasks].prefer`, `[task_runner].prefer`) wraps the
+  first element as `["bun"]` when no `[` is typed yet — accepting a
+  completion previously inserted a bare scalar, minting the exact type
+  error above. Inside an open `[` the element stays bare.
+- `runner lsp` header completion after a dotted partial (`[tasks.`) now
+  offers only that parent's sub-tables (`overrides`) instead of the full
+  top-level section list, and offers nothing under a parent with no
+  sub-tables (`[github.`). Deprecated sections and fields
+  (`[task_runner]`) now carry the LSP deprecated tag (strikethrough) in
+  completions and a deprecation banner in hover.
 
 ## [0.18.1] - 2026-07-04
 

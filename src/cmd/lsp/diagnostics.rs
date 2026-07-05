@@ -31,15 +31,13 @@ pub(super) fn compute(text: &str, index: &LineIndex) -> Vec<Diagnostic> {
         out.push(warning_diagnostic(text, index, &warning));
     }
 
-    let config: RunnerConfig = match value.try_into() {
+    // Deserialize from the text, not the parsed `value` — the text-based
+    // deserializer spans a wrong-typed known field, so the diagnostic can
+    // point at the offending value instead of line one.
+    let config: RunnerConfig = match toml::from_str(text) {
         Ok(config) => config,
         Err(error) => {
-            // A wrong-typed known field; Value-based deserialize carries no
-            // span, so anchor it to the first line.
-            out.push(error_diagnostic(
-                index.line_range(text, 0),
-                error.to_string(),
-            ));
+            out.push(parse_error(text, index, &error));
             return out;
         }
     };
@@ -194,6 +192,17 @@ mod tests {
                 .as_ref()
                 .is_some_and(|tags| tags.contains(&DiagnosticTag::DEPRECATED))
         }));
+    }
+
+    #[test]
+    fn type_error_anchors_to_the_offending_value() {
+        let found = diagnostics("[install]\npms = \"bun\"\n");
+        let diag = found
+            .iter()
+            .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .expect("expected an error diagnostic");
+        assert_eq!(diag.range.start.line, 1, "{diag:?}");
+        assert!(diag.message.contains("expected a sequence"), "{diag:?}");
     }
 
     #[test]

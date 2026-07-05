@@ -13,6 +13,8 @@ use serde_json::Value;
 pub(super) struct SectionDoc {
     /// The section's own description (from the field that holds it).
     pub description: Option<String>,
+    /// Whether the schema flags the section as deprecated.
+    pub deprecated: bool,
     /// Per-field documentation, keyed by field name.
     pub fields: BTreeMap<String, FieldDoc>,
 }
@@ -28,6 +30,9 @@ pub(super) struct FieldDoc {
     /// Whether the schema types this field as an object (a nested table
     /// writable as its own `[section.field]` header, e.g. `[tasks.overrides]`).
     pub is_table: bool,
+    /// Whether the schema types this field as an array (a TOML sequence,
+    /// e.g. `prefer = [...]`).
+    pub is_array: bool,
 }
 
 /// Section docs keyed by TOML section name (`pm`, `tasks`, …).
@@ -47,17 +52,23 @@ impl SchemaIndex {
         if let Some(props) = schema.get("properties").and_then(Value::as_object) {
             for (name, section) in props {
                 let description = string_field(section, "description");
-                let fields = section
+                let def = section
                     .get("$ref")
                     .and_then(Value::as_str)
                     .and_then(|r| r.strip_prefix("#/$defs/"))
-                    .and_then(|def_name| defs.and_then(|d| d.get(def_name)))
-                    .map(field_docs)
-                    .unwrap_or_default();
+                    .and_then(|def_name| defs.and_then(|d| d.get(def_name)));
+                let fields = def.map(field_docs).unwrap_or_default();
+                // `deprecated` may sit on the property or (via `extend`) on
+                // the referenced `$defs` entry.
+                let deprecated = [Some(section), def]
+                    .into_iter()
+                    .flatten()
+                    .any(is_deprecated);
                 sections.insert(
                     name.clone(),
                     SectionDoc {
                         description,
+                        deprecated,
                         fields,
                     },
                 );
@@ -112,8 +123,9 @@ fn field_docs(def: &Value) -> BTreeMap<String, FieldDoc> {
                 FieldDoc {
                     description: string_field(schema, "description"),
                     enum_values,
-                    deprecated: schema.get("deprecated").and_then(Value::as_bool) == Some(true),
-                    is_table: is_object_type(schema),
+                    deprecated: is_deprecated(schema),
+                    is_table: has_type(schema, "object"),
+                    is_array: has_type(schema, "array"),
                 },
             )
         })
@@ -121,13 +133,18 @@ fn field_docs(def: &Value) -> BTreeMap<String, FieldDoc> {
 }
 
 /// Whether a field schema declares (possibly among other types, for an
-/// `Option<T>`) the JSON `"object"` type.
-fn is_object_type(schema: &Value) -> bool {
+/// `Option<T>`) the given JSON type.
+fn has_type(schema: &Value, wanted: &str) -> bool {
     match schema.get("type") {
-        Some(Value::String(s)) => s == "object",
-        Some(Value::Array(types)) => types.iter().any(|t| t.as_str() == Some("object")),
+        Some(Value::String(s)) => s == wanted,
+        Some(Value::Array(types)) => types.iter().any(|t| t.as_str() == Some(wanted)),
         _ => false,
     }
+}
+
+/// Whether a schema node carries `"deprecated": true`.
+fn is_deprecated(schema: &Value) -> bool {
+    schema.get("deprecated").and_then(Value::as_bool) == Some(true)
 }
 
 /// Read a string field from a JSON object, if present.
