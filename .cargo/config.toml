@@ -11,6 +11,7 @@ t = "test --all-features --all-targets"
 bb  = "build --bin run --bin runner"
 bbr = "bb --release"
 cl  = "clippy --all-targets --all-features"
+dwn = "--config .cargo/nightly.toml doc --workspace --all-features"  # rustup run nightly cargo dwn
 rq  = "run --quiet"
 rr  = "run --release"
 

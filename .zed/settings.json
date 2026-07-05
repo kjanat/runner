@@ -50,13 +50,13 @@
 				},
 			},
 		},
-		"rust-analyzer": {
-			"initialization_options": {
-				"diagnostics": { "experimental": { "enable": true } },
-				"check": { "allTargets": true, "features": "all", "workspace": true },
-				"cargo": { "allTargets": true, "features": ["all"] },
-			},
-		},
+		// "rust-analyzer": {
+		// 	"initialization_options": {
+		// 		"diagnostics": { "experimental": { "enable": true } },
+		// 		"check": { "allTargets": true, "features": "all", "workspace": true },
+		// 		"cargo": { "allTargets": true, "features": ["all"] },
+		// 	},
+		// },
 		"cargo-tom": {
 			"initialization_options": {
 				"per_page": 25, // Search
@@ -68,5 +68,5 @@
 		},
 	},
 	"file_types": { "SVG": ["*.ico"], "Shell Script": [".runner-dev"] },
-	"languages": { "TOML": { "language_servers": ["tombi", "..."] } },
+	"languages": { "TOML": { "language_servers": ["tombi", "..."] }, "Rust": { "wrap_guides": [100] } },
 }
