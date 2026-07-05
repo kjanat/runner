@@ -805,13 +805,21 @@ mod tests {
     #[test]
     fn known_schema_matches_init_template_sections_and_fields() {
         // Guard KNOWN_SCHEMA against drift in both directions, at section AND
-        // field granularity. The scaffold ships every knob (commented out), so
-        // its sections/fields are the canonical set; a field missing from
-        // KNOWN_SCHEMA makes `config init` write a file that warns about its
-        // own keys, while a stale KNOWN_SCHEMA entry lists a field nobody can
-        // set. Equality catches either, so adding a struct field forces the
-        // template and KNOWN_SCHEMA to be updated alongside it.
+        // field granularity. The scaffold ships every non-deprecated knob
+        // (commented out), so its sections/fields are the canonical set
+        // modulo deprecated sections (see DEPRECATED_SECTIONS below), which
+        // `render_init_template` deliberately omits so new users never get
+        // handed one; a field missing from KNOWN_SCHEMA makes `config init`
+        // write a file that warns about its own keys, while a stale
+        // KNOWN_SCHEMA entry lists a field nobody can set. Equality catches
+        // either, so adding a struct field forces the template and
+        // KNOWN_SCHEMA to be updated alongside it.
         use std::collections::{BTreeMap, BTreeSet};
+
+        // Sections KNOWN_SCHEMA recognizes (for backward-compat parsing) but
+        // that `render_init_template` intentionally leaves out of the
+        // scaffold because they're deprecated.
+        const DEPRECATED_SECTIONS: &[&str] = &["task_runner"];
 
         // Walk the template into section -> {field names it emits}.
         let mut template: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -844,7 +852,7 @@ mod tests {
             }
         }
 
-        let known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
+        let mut known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
             .iter()
             .map(|(name, fields)| {
                 (
@@ -853,11 +861,15 @@ mod tests {
                 )
             })
             .collect();
+        for section in DEPRECATED_SECTIONS {
+            known.remove(*section);
+        }
 
         assert_eq!(
             template, known,
-            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA exactly — keep the section \
-             structs, the scaffold template, and KNOWN_SCHEMA in sync when adding a knob"
+            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA (minus DEPRECATED_SECTIONS) \
+             exactly — keep the section structs, the scaffold template, and KNOWN_SCHEMA in sync \
+             when adding a knob"
         );
     }
 

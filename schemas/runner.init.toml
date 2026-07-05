@@ -1,3 +1,5 @@
+#:schema ./runner.toml.schema.json
+
 # runner.toml — project task-runner configuration.
 # Docs: https://runner.kjanat.dev
 #
@@ -25,15 +27,6 @@
 [tasks]
 # prefer = ["turbo", "bun"]   # global order: turbo, then package.json (bun)
 # overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order
-
-# `[task_runner]` section — **deprecated**. Use `[tasks]` instead.
-#
-# Kept for backward compatibility: existing `[task_runner].prefer` files
-# keep working (and emit a deprecation warning), but `[tasks].prefer` is the
-# supported successor — rank-only and able to name package managers, not just
-# task runners.
-[task_runner]
-# prefer = ["just", "turbo"]   # turbo | nx | make | just | task | mise | bacon
 
 # `[install]` section — restrict which detected package managers
 # `runner install` runs with. Absent or empty installs every detected

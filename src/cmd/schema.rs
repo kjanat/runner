@@ -379,7 +379,9 @@ fn collect_string_leaves(value: &toml::Value, out: &mut Vec<String>) {
     }
 }
 
-const INIT_TEMPLATE_HEADER: &str = r"# runner.toml — project task-runner configuration.
+const INIT_TEMPLATE_HEADER: &str = r"#:schema ./runner.toml.schema.json
+
+# runner.toml — project task-runner configuration.
 # Docs: https://runner.kjanat.dev
 #
 # Every key below is commented out, showing either its built-in default or an
@@ -420,6 +422,27 @@ pub(crate) fn render_init_template() -> String {
             .and_then(|r| r.strip_prefix("#/$defs/"))
             .unwrap_or_else(|| panic!("{section}: expected a $defs $ref in the schema"));
         let def = &defs[def_name];
+        let properties = def["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{def_name}: expected a properties object"));
+
+        if def["deprecated"].as_bool().unwrap_or(false) {
+            // Deprecated sections (e.g. `task_runner`, superseded by `tasks`)
+            // still need their FIELD_TEMPLATE entries validated so drift is
+            // caught, but new users shouldn't be handed a deprecated section
+            // in their starter file — so skip printing it entirely.
+            for field in properties.keys() {
+                let &(entry_section, entry_field, value, hint) = FIELD_TEMPLATE
+                    .iter()
+                    .find(|(s, f, ..)| s == section && f == field)
+                    .unwrap_or_else(|| panic!("{section}.{field}: missing FIELD_TEMPLATE entry"));
+                used.insert((entry_section, entry_field));
+                assert_value_uses_real_labels(section, field, value);
+                let _ = render_hint(section, field, &hint);
+            }
+            continue;
+        }
+
         let description = def["description"].as_str().unwrap_or_default();
 
         out.push('\n');
@@ -434,9 +457,6 @@ pub(crate) fn render_init_template() -> String {
         }
         let _ = writeln!(out, "[{section}]");
 
-        let properties = def["properties"]
-            .as_object()
-            .unwrap_or_else(|| panic!("{def_name}: expected a properties object"));
         for field in properties.keys() {
             let &(entry_section, entry_field, value, hint) = FIELD_TEMPLATE
                 .iter()
