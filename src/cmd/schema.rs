@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use schemars::{JsonSchema, Schema};
 use serde_json::{Map, Value, json};
 
-use crate::schema::{Project, project::TaskListView};
+use crate::schema::project::TaskListView;
 
 const SCHEMA_DIR: &str = "schemas";
 
@@ -95,52 +95,28 @@ fn schema_documents() -> Result<Vec<SchemaDocument>> {
             value: config_schema()?,
         },
         SchemaDocument {
-            filename: "doctor.v1.schema.json",
-            value: output_schema::<Project<'static>>("doctor", 1)?,
+            filename: "doctor.schema.json",
+            value: output_schema::<crate::schema::doctor::DoctorReport<'static>>("doctor")?,
         },
         SchemaDocument {
-            filename: "doctor.v2.schema.json",
-            value: output_schema::<Project<'static>>("doctor", 2)?,
+            filename: "list.schema.json",
+            value: output_schema::<TaskListView<'static>>("list")?,
         },
         SchemaDocument {
-            filename: "doctor.v3.schema.json",
-            value: output_schema::<crate::schema::doctor_v3::DoctorReportV3<'static>>("doctor", 3)?,
-        },
-        SchemaDocument {
-            filename: "list.v1.schema.json",
-            value: output_schema::<TaskListView<'static>>("list", 1)?,
-        },
-        SchemaDocument {
-            filename: "list.v2.schema.json",
-            value: output_schema::<TaskListView<'static>>("list", 2)?,
-        },
-        SchemaDocument {
-            filename: "why.v1.schema.json",
-            value: output_schema::<super::why::WhyReport<'static>>("why", 1)?,
-        },
-        SchemaDocument {
-            filename: "why.v2.schema.json",
-            value: output_schema::<super::why::WhyReport<'static>>("why", 2)?,
-        },
-        SchemaDocument {
-            filename: "why.v3.schema.json",
-            value: output_schema::<super::why::WhyReportV3<'static>>("why", 3)?,
+            filename: "why.schema.json",
+            value: output_schema::<super::why::WhyReport<'static>>("why")?,
         },
     ])
 }
 
-fn output_schema<T: JsonSchema>(command: &'static str, version: u32) -> Result<Value> {
+fn output_schema<T: JsonSchema>(command: &'static str) -> Result<Value> {
     let mut schema = serialize_schema_value::<T>()?;
-    set_object_field(&mut schema, "$id", json!(schema_id(command, version)));
-    set_object_field(&mut schema, "title", json!(title(command, version)));
-    set_object_field(
-        &mut schema,
-        "description",
-        json!(description(command, version)),
-    );
-    patch_schema_version_const(&mut schema, version);
-    patch_source_schema(&mut schema, version);
-    patch_schema_compat(&mut schema, command, version);
+    set_object_field(&mut schema, "$id", json!(schema_id(command)));
+    set_object_field(&mut schema, "title", json!(title(command)));
+    set_object_field(&mut schema, "description", json!(description(command)));
+    patch_schema_version_const(&mut schema);
+    patch_source_schema(&mut schema, command);
+    patch_schema_compat(&mut schema, command);
     Ok(schema)
 }
 
@@ -174,7 +150,7 @@ fn set_object_field(schema: &mut Value, key: &'static str, value: Value) {
     }
 }
 
-fn patch_schema_version_const(schema: &mut Value, version: u32) {
+fn patch_schema_version_const(schema: &mut Value) {
     let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
         return;
     };
@@ -184,29 +160,29 @@ fn patch_schema_version_const(schema: &mut Value, version: u32) {
     else {
         return;
     };
-    version_schema.insert("const".to_string(), json!(version));
+    version_schema.insert("const".to_string(), json!(crate::schema::SCHEMA_VERSION));
 }
 
-fn patch_source_schema(schema: &mut Value, version: u32) {
+fn patch_source_schema(schema: &mut Value, command: &str) {
     let Some(defs) = schema.get_mut("$defs").and_then(Value::as_object_mut) else {
         return;
     };
 
     defs.insert(
         "TaskSourceLabel".to_string(),
-        task_source_label_schema(version),
+        task_source_label_schema(command),
     );
     patch_task_info_source(defs);
-    patch_why_candidate_source(defs);
-    patch_why_task_v3(defs);
-    patch_def_field(defs, "SourceV3", "kind", "TaskSourceLabel");
+    patch_why_task(defs);
+    patch_def_field(defs, "SourceEntry", "kind", "TaskSourceLabel");
 }
 
-fn patch_schema_compat(schema: &mut Value, command: &str, version: u32) {
-    if command == "doctor" && version == 3 {
-        // v3 existed before `quiet`; keep additive fields optional so the
-        // current public schema still validates older v3 payloads.
-        remove_required_def_field(schema, "OverridesV3", "quiet");
+fn patch_schema_compat(schema: &mut Value, command: &str) {
+    if command == "doctor" {
+        // The structured doctor report existed before `quiet`; keep
+        // additive fields optional so the committed schema still
+        // validates payloads emitted before that field landed.
+        remove_required_def_field(schema, "Overrides", "quiet");
     }
 }
 
@@ -227,23 +203,19 @@ fn patch_task_info_source(defs: &mut Map<String, Value>) {
     patch_def_field(defs, "TaskInfo", "source", "TaskSourceLabel");
 }
 
-fn patch_why_candidate_source(defs: &mut Map<String, Value>) {
-    patch_def_field(defs, "WhyCandidate", "source", "TaskSourceLabel");
-}
-
-/// The v3 `why` task object splits the old `source` label into `kind`
+/// The `why` task object splits the old flat `source` label into `kind`
 /// (mechanism label) and `provider` (executing tool family); constrain
 /// both to their closed label sets.
-fn patch_why_task_v3(defs: &mut Map<String, Value>) {
-    if !defs.contains_key("WhyTaskV3") {
+fn patch_why_task(defs: &mut Map<String, Value>) {
+    if !defs.contains_key("WhyTask") {
         return;
     }
     defs.insert(
         "ProviderLabel".to_string(),
         json!({ "type": "string", "enum": PROVIDER_LABELS }),
     );
-    patch_def_field(defs, "WhyTaskV3", "kind", "TaskSourceLabel");
-    patch_def_field(defs, "WhyTaskV3", "provider", "ProviderLabel");
+    patch_def_field(defs, "WhyTask", "kind", "TaskSourceLabel");
+    patch_def_field(defs, "WhyTask", "provider", "ProviderLabel");
 }
 
 fn patch_def_field(
@@ -263,53 +235,59 @@ fn patch_def_field(
     *field_schema = json!({ "$ref": format!("#/$defs/{target_def}") });
 }
 
-fn task_source_label_schema(version: u32) -> Value {
-    json!({ "type": "string", "enum": source_labels(version) })
+fn task_source_label_schema(command: &str) -> Value {
+    json!({ "type": "string", "enum": source_labels(command) })
 }
 
-/// Closed set for the v3 `provider` field — the tool family that
+/// Closed set for the `why` `provider` field — the tool family that
 /// executes the task. Mirrors `cmd::why::provider_label`.
 const PROVIDER_LABELS: &[&str] = &[
     "node", "make", "just", "task", "turbo", "deno", "cargo", "go", "bacon", "mise", "python",
 ];
 
-/// Closed label set for schema version `version`, derived from
-/// [`crate::types::TaskSource::all`] through the same
-/// [`crate::schema::labels::source_label_for`] dispatcher `why`/`doctor`
-/// use at runtime — so the committed schema's enum can't drift from what
-/// the binary actually emits.
-fn source_labels(version: u32) -> Vec<&'static str> {
-    crate::types::TaskSource::all()
+/// Closed label set for `command`'s source labels, derived from
+/// [`crate::types::TaskSource::all`] through the same label functions
+/// `list`/`doctor`/`why` use at runtime — so the committed schema's enum
+/// can't drift from what the binary actually emits. `list` uses the flat
+/// label convention; `doctor`/`why` use the structured one (only
+/// `CargoAliases` differs — `"cargo-alias"` vs `"cargo"`).
+fn source_labels(command: &str) -> Vec<&'static str> {
+    use crate::schema::labels::{flat_source_label, structured_source_label};
+    use crate::types::TaskSource;
+
+    TaskSource::all()
         .iter()
-        .map(|&source| crate::schema::labels::source_label_for(source, version))
+        .map(|&source| {
+            if command == "list" {
+                flat_source_label(source)
+            } else {
+                structured_source_label(source)
+            }
+        })
         .collect()
 }
 
-fn schema_id(command: &str, version: u32) -> String {
-    crate::schema::schema_url(command, version)
+fn schema_id(command: &str) -> String {
+    crate::schema::schema_url(command)
 }
 
-fn title(command: &str, version: u32) -> String {
+fn title(command: &str) -> String {
     match command {
-        "why" => format!("runner why <task> --json --schema-version {version}"),
-        _ => format!("runner {command} --json --schema-version {version}"),
+        "why" => "runner why <task> --json".to_string(),
+        _ => format!("runner {command} --json"),
     }
 }
 
-fn description(command: &str, version: u32) -> String {
-    match (command, version) {
-        ("doctor", 1) => "JSON schema for the legacy v1 `runner doctor --json` document. v1 uses \
-                          filename-style task source labels."
+fn description(command: &str) -> String {
+    match command {
+        "doctor" => "JSON schema for `runner doctor --json`: structured diagnostic inventory with \
+                     invocation/environment provenance, per-ecosystem decisions, sources, \
+                     fqn-keyed tasks, tools, conflicts, and diagnostics."
             .to_string(),
-        ("doctor", 2) => "JSON schema for the v2 `runner doctor --json` document. v2 uses \
-                          tool-name task source labels."
+        "why" => "JSON schema for `runner why <task> --json`: candidate `{task, match}` pairs \
+                  plus the selection decision."
             .to_string(),
-        ("doctor", _) => "JSON schema for the current v3 `runner doctor --json` document: \
-                          structured diagnostic inventory with invocation/environment provenance, \
-                          per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, \
-                          and diagnostics."
-            .to_string(),
-        _ => format!("JSON schema for `{}`.", title(command, version)),
+        _ => format!("JSON schema for `{}`.", title(command)),
     }
 }
 
@@ -319,23 +297,23 @@ mod tests {
 
     use super::output_schema;
 
-    fn overrides_v3(schema: &Value) -> &Value {
+    fn overrides_def(schema: &Value) -> &Value {
         schema
             .get("$defs")
             .and_then(Value::as_object)
-            .and_then(|defs| defs.get("OverridesV3"))
-            .expect("schema should define OverridesV3")
+            .and_then(|defs| defs.get("Overrides"))
+            .expect("schema should define Overrides")
     }
 
     fn quiet_is_optional(schema: &Value) -> bool {
-        overrides_v3(schema)
+        overrides_def(schema)
             .get("required")
             .and_then(Value::as_array)
             .is_some_and(|required| !required.iter().any(|name| name.as_str() == Some("quiet")))
     }
 
     fn quiet_type(schema: &Value) -> Option<&str> {
-        overrides_v3(schema)
+        overrides_def(schema)
             .get("properties")
             .and_then(Value::as_object)
             .and_then(|properties| properties.get("quiet"))
@@ -344,19 +322,18 @@ mod tests {
     }
 
     #[test]
-    fn doctor_v3_schema_keeps_quiet_optional_for_compat() {
-        let schema =
-            output_schema::<crate::schema::doctor_v3::DoctorReportV3<'static>>("doctor", 3)
-                .expect("doctor v3 schema should render");
+    fn doctor_schema_keeps_quiet_optional_for_compat() {
+        let schema = output_schema::<crate::schema::doctor::DoctorReport<'static>>("doctor")
+            .expect("doctor schema should render");
 
         assert!(quiet_is_optional(&schema));
         assert_eq!(quiet_type(&schema), Some("boolean"));
     }
 
     #[test]
-    fn committed_doctor_v3_schema_keeps_quiet_optional_for_compat() {
-        let raw = std::fs::read_to_string("schemas/doctor.v3.schema.json")
-            .expect("committed doctor v3 schema should be readable");
+    fn committed_doctor_schema_keeps_quiet_optional_for_compat() {
+        let raw = std::fs::read_to_string("schemas/doctor.schema.json")
+            .expect("committed doctor schema should be readable");
         let schema: Value = serde_json::from_str(&raw).expect("schema should parse as JSON");
 
         assert!(quiet_is_optional(&schema));
@@ -364,56 +341,58 @@ mod tests {
     }
 
     #[test]
-    fn committed_doctor_v3_example_includes_quiet_override() {
-        let raw = std::fs::read_to_string("schemas/doctor.v3.example.json")
-            .expect("committed doctor v3 example should be readable");
+    fn committed_doctor_example_includes_quiet_override() {
+        let raw = std::fs::read_to_string("schemas/doctor.example.json")
+            .expect("committed doctor example should be readable");
         let example: Value = serde_json::from_str(&raw).expect("example should parse as JSON");
 
         assert_eq!(example["overrides"]["quiet"], serde_json::json!(false));
     }
 
     /// Every committed schema file that carries a `TaskSourceLabel` def,
-    /// paired with the schema version its label convention follows.
-    const COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL: &[(&str, u32)] = &[
-        ("schemas/doctor.v1.schema.json", 1),
-        ("schemas/doctor.v2.schema.json", 2),
-        ("schemas/doctor.v3.schema.json", 3),
-        ("schemas/list.v1.schema.json", 1),
-        ("schemas/list.v2.schema.json", 2),
-        ("schemas/why.v1.schema.json", 1),
-        ("schemas/why.v2.schema.json", 2),
-        ("schemas/why.v3.schema.json", 3),
+    /// paired with whether its source labels follow the structured
+    /// (`doctor`/`why`) or flat (`list`) convention.
+    const COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL: &[(&str, &str)] = &[
+        ("schemas/doctor.schema.json", "doctor"),
+        ("schemas/list.schema.json", "list"),
+        ("schemas/why.schema.json", "why"),
     ];
 
-    fn runtime_labels(version: u32) -> Vec<&'static str> {
-        use crate::schema::labels::source_label_for;
+    fn runtime_labels(command: &str) -> Vec<&'static str> {
+        use crate::schema::labels::{flat_source_label, structured_source_label};
         use crate::types::TaskSource;
 
         TaskSource::all()
             .iter()
-            .map(|&source| source_label_for(source, version))
+            .map(|&source| {
+                if command == "list" {
+                    flat_source_label(source)
+                } else {
+                    structured_source_label(source)
+                }
+            })
             .collect()
     }
 
     #[test]
-    fn task_source_label_schema_matches_runtime_labels_per_version() {
-        // source_labels(version) used to be three hand-maintained arrays,
-        // free to drift from the source_label_for dispatcher `why`/`doctor`
+    fn task_source_label_schema_matches_runtime_labels_per_command() {
+        // source_labels(command) used to be three hand-maintained arrays,
+        // free to drift from the label functions `list`/`why`/`doctor`
         // actually call at runtime. Now that it's derived, this test is a
         // tautology against today's implementation — its job is to catch a
         // future regression back to a hardcoded list.
-        for version in 1..=3 {
-            let schema = super::task_source_label_schema(version);
+        for command in ["list", "doctor", "why"] {
+            let schema = super::task_source_label_schema(command);
             let enum_values: Vec<&str> = schema["enum"]
                 .as_array()
-                .unwrap_or_else(|| panic!("v{version}: expected enum array"))
+                .unwrap_or_else(|| panic!("{command}: expected enum array"))
                 .iter()
                 .map(|v| v.as_str().expect("enum values should be strings"))
                 .collect();
             assert_eq!(
                 enum_values,
-                runtime_labels(version),
-                "v{version}: schema TaskSourceLabel enum must match source_label_for exactly"
+                runtime_labels(command),
+                "{command}: schema TaskSourceLabel enum must match the runtime label function"
             );
         }
     }
@@ -426,7 +405,7 @@ mod tests {
         // that defines TaskSourceLabel directly off disk so a stale
         // artifact — the generator fixed, the commit forgotten — fails
         // here instead of shipping silently.
-        for &(path, version) in COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL {
+        for &(path, command) in COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL {
             let raw = std::fs::read_to_string(path)
                 .unwrap_or_else(|err| panic!("{path}: should be readable: {err}"));
             let schema: Value = serde_json::from_str(&raw)
@@ -439,9 +418,9 @@ mod tests {
                 .collect();
             assert_eq!(
                 enum_values,
-                runtime_labels(version),
-                "{path}: committed TaskSourceLabel enum has drifted from source_label_for — run \
-                 `just gen-schema` and commit the result"
+                runtime_labels(command),
+                "{path}: committed TaskSourceLabel enum has drifted from the runtime label \
+                 function — run `just gen-schema` and commit the result"
             );
         }
     }

@@ -1,63 +1,6 @@
 {
   "schema_version": 1,
   "root": "/path/to/project",
-  "ecosystems": [
-    "node",
-    "rust"
-  ],
-  "detected": {
-    "package_managers": [
-      "bun",
-      "cargo"
-    ],
-    "task_runners": [
-      "just"
-    ],
-    "node_version": null,
-    "current_node": "24.0.0",
-    "monorepo": true
-  },
-  "overrides": {
-    "pm": null,
-    "pm_by_ecosystem": {},
-    "runner": null,
-    "prefer_runners": [],
-    "fallback": "probe",
-    "on_mismatch": "warn",
-    "explain": false,
-    "no_warnings": false
-  },
-  "signals": {
-    "node": {
-      "lockfile_pm": "bun",
-      "manifest_pm": {
-        "pm": "bun",
-        "source": "packageManager",
-        "version": "1.0.0",
-        "on_fail": "ignore"
-      },
-      "path_probe": {
-        "bun": "/usr/local/bin/bun",
-        "npm": "/opt/volta/bin/npm",
-        "pnpm": null,
-        "yarn": "/opt/volta/bin/yarn"
-      },
-      "volta_shims": {
-        "npm": {
-          "resolved": "/opt/volta/tools/image/npm/10.0.0/bin/npm"
-        },
-        "yarn": {
-          "resolved": null
-        }
-      }
-    }
-  },
-  "decisions": {
-    "node_pm": {
-      "pm": "bun",
-      "via": "bun via package.json \"packageManager\""
-    }
-  },
   "tasks": [
     {
       "name": "fmt",
@@ -73,32 +16,32 @@
     },
     {
       "name": "build-packages",
-      "source": "justfile"
+      "source": "just"
     },
     {
       "name": "default",
-      "source": "justfile"
+      "source": "just"
     },
     {
       "name": "gen-schema",
-      "source": "justfile",
+      "source": "just",
       "description": "Drift guard: just gen-schema && git diff --exit-code schemas/"
     },
     {
       "name": "ls",
-      "source": "justfile"
+      "source": "just"
     },
     {
       "name": "run",
-      "source": "justfile"
+      "source": "just"
     },
     {
       "name": "runner",
-      "source": "justfile"
+      "source": "just"
     },
     {
       "name": "test-release",
-      "source": "justfile",
+      "source": "just",
       "description": "Build release bin and verify the facade shims spawn the native binary."
     },
     {
@@ -226,6 +169,5 @@
       "source": "cargo",
       "alias_of": "test"
     }
-  ],
-  "warnings": []
+  ]
 }

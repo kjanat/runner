@@ -26,17 +26,12 @@ pub(crate) fn info(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     json: bool,
-    schema_version: u32,
 ) -> Result<()> {
     if json {
-        let view =
-            Project::build_with_schema(ctx, overrides, schema_version, true).into_info_view();
+        let view = Project::build_with_schema(ctx, overrides, true).into_info_view();
         println!("{}", serde_json::to_string_pretty(&view)?);
         return Ok(());
     }
-    // Human output is not schema-versioned; callers pass the current version
-    // only to keep the JSON-capable function signature narrow.
-    let _ = schema_version;
 
     super::print_warnings(ctx, overrides, None);
 

@@ -811,7 +811,7 @@ fn run_path_builtin_fallback(
         // `info` maps to a plain `list`: the deprecation warning is specific
         // to the explicit `runner info` subcommand, not the run path.
         "list" | "info" => {
-            cmd::list(ctx, overrides, false, false, None, schema::CURRENT_VERSION)?;
+            cmd::list(ctx, overrides, false, false, None)?;
             0
         }
         "completions" => {
@@ -823,39 +823,15 @@ fn run_path_builtin_fallback(
     Ok(Some(code))
 }
 
-/// Resolve the effective JSON schema version for schema-aware output:
-/// explicit `--schema-version=N` wins, otherwise default to latest.
-fn resolve_schema_version(requested: Option<u32>) -> Result<u32> {
-    schema::validate_schema_version(requested.unwrap_or(schema::CURRENT_VERSION))
-}
-
+/// Validate `--schema-version=N` for schema-aware (`--json`) output.
+/// `clap` already bounds the flag to [`schema::SCHEMA_VERSION`]; this is a
+/// defensive second check so a future non-CLI caller can't slip an
+/// unsupported version past the JSON-producing commands.
 fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
     if json {
-        resolve_schema_version(requested)
+        schema::validate_schema_version(requested.unwrap_or(schema::SCHEMA_VERSION))
     } else {
-        Ok(schema::CURRENT_VERSION)
-    }
-}
-
-/// `why`-specific version resolution: `why` is at
-/// [`schema::WHY_CURRENT_VERSION`] while list remains at
-/// [`schema::CURRENT_VERSION`], so it validates against its own range
-/// and defaults to its own latest.
-fn why_schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
-    if json {
-        schema::validate_why_schema_version(requested.unwrap_or(schema::WHY_CURRENT_VERSION))
-    } else {
-        Ok(schema::WHY_CURRENT_VERSION)
-    }
-}
-
-/// `doctor`-specific version resolution; see
-/// [`schema::DOCTOR_CURRENT_VERSION`].
-fn doctor_schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
-    if json {
-        schema::validate_doctor_schema_version(requested.unwrap_or(schema::DOCTOR_CURRENT_VERSION))
-    } else {
-        Ok(schema::DOCTOR_CURRENT_VERSION)
+        Ok(schema::SCHEMA_VERSION)
     }
 }
 
@@ -989,7 +965,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
 
     match cli.command {
-        None => cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION).map(|()| 0),
+        None => cmd::info(&ctx, &overrides, false).map(|()| 0),
         // `info` is a deprecated alias for `list`. Bare `runner` (the
         // `None` arm above) keeps the dashboard; only the explicit verb
         // is deprecated.
@@ -1008,8 +984,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                     "::warning title=Deprecation::`runner info` is deprecated; use `runner list`"
                 );
             }
-            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::list(&ctx, &overrides, false, json, None, schema_version)?;
+            schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::list(&ctx, &overrides, false, json, None)?;
             Ok(0)
         }
         Some(cli::Command::Run {
@@ -1017,7 +993,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) => dispatch_run(&ctx, &overrides, task, args, mode),
         Some(cli::Command::External(args)) => {
             if args.is_empty() {
-                cmd::info(&ctx, &overrides, false, schema::CURRENT_VERSION)?;
+                cmd::info(&ctx, &overrides, false)?;
                 Ok(0)
             } else {
                 cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
@@ -1054,15 +1030,8 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             Ok(0)
         }
         Some(cli::Command::List { raw, json, source }) => {
-            let schema_version = schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::list(
-                &ctx,
-                &overrides,
-                raw,
-                json,
-                source.as_deref(),
-                schema_version,
-            )?;
+            schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::list(&ctx, &overrides, raw, json, source.as_deref())?;
             Ok(0)
         }
         Some(cli::Command::Completions { shell, output }) => {
@@ -1076,14 +1045,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         #[cfg(feature = "lsp")]
         Some(cli::Command::Lsp) => cmd::lsp::run(), // intercepted pre-detection
         Some(cli::Command::Doctor { json }) => {
-            let schema_version = doctor_schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::doctor(&ctx, &overrides, json, schema_version)?;
+            schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::doctor(&ctx, &overrides, json)?;
             Ok(0)
         }
         Some(cli::Command::Config { action }) => cmd::config(dir, action),
         Some(cli::Command::Why { task, json }) => {
-            let schema_version = why_schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::why(&ctx, &overrides, &task, json, schema_version)?;
+            schema_version_for_json(json, cli.global.schema_version)?;
+            cmd::why(&ctx, &overrides, &task, json)?;
             Ok(0)
         }
     }

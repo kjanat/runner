@@ -15,6 +15,21 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Changed
+
+- **Breaking:** `doctor --json` and `why --json` now always emit the
+  structured report (previously reachable via `--schema-version 3`); the
+  flat v1/v2 shape is gone from both. `--schema-version` now only accepts
+  `1`; `2`/`3` are rejected.
+
+### Removed
+
+- The v1/v2/v3 schema split. Not enough external adoption yet to justify
+  carrying three versions per surface — today's shape is the only one,
+  retroactively called v1. Committed schema files dropped their version
+  suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
+  superseded schema/example files are deleted.
+
 ## [0.18.1] - 2026-07-04
 
 ### Fixed

@@ -1,8 +1,8 @@
 {
-  "$id": "https://kjanat.github.io/runner/schemas/doctor.v3.schema.json",
+  "$id": "https://kjanat.github.io/runner/schemas/doctor.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
-    "ConfidenceV3": {
+    "Confidence": {
       "description": "How sure the resolver is about an ecosystem's PM selection.",
       "oneOf": [
         {
@@ -27,7 +27,7 @@
         }
       ]
     },
-    "ConflictV3": {
+    "Conflict": {
       "description": "A task name claimed by more than one source: who wins, who is shadowed.",
       "type": "object",
       "required": [
@@ -53,7 +53,7 @@
           "type": "string"
         },
         "severity": {
-          "$ref": "#/$defs/SeverityV3"
+          "$ref": "#/$defs/Severity"
         },
         "shadowed": {
           "type": "array",
@@ -64,7 +64,7 @@
       },
       "additionalProperties": false
     },
-    "DependencyKindV3": {
+    "DependencyKind": {
       "description": "What kind of thing a probed tool is. The draft's `binary` /\n`package-binary` kinds join when something probes them.",
       "type": "string",
       "enum": [
@@ -73,7 +73,7 @@
         "task-runner"
       ]
     },
-    "DiagnosticV3": {
+    "Diagnostic": {
       "description": "One detection/resolution diagnostic, flattened from the warning\nstreams.",
       "type": "object",
       "required": [
@@ -92,7 +92,7 @@
           "type": "string"
         },
         "severity": {
-          "$ref": "#/$defs/SeverityV3"
+          "$ref": "#/$defs/Severity"
         },
         "source": {
           "type": [
@@ -109,8 +109,8 @@
       },
       "additionalProperties": false
     },
-    "DoctorTaskV3": {
-      "description": "One task in the doctor inventory. Same identity scheme as `why` v3\n(`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).",
+    "DoctorTask": {
+      "description": "One task in the doctor inventory. Same identity scheme as `why`\n(`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).",
       "type": "object",
       "required": [
         "aliases",
@@ -189,7 +189,7 @@
       },
       "additionalProperties": false
     },
-    "EcosystemDecisionV3": {
+    "EcosystemDecision": {
       "type": "object",
       "required": [
         "confidence",
@@ -198,7 +198,7 @@
       ],
       "properties": {
         "confidence": {
-          "$ref": "#/$defs/ConfidenceV3"
+          "$ref": "#/$defs/Confidence"
         },
         "reason": {
           "type": "string"
@@ -212,7 +212,7 @@
       },
       "additionalProperties": false
     },
-    "EcosystemV3": {
+    "EcosystemEntry": {
       "description": "One detected ecosystem and the PM decision made for it.",
       "type": "object",
       "required": [
@@ -224,7 +224,7 @@
       ],
       "properties": {
         "decision": {
-          "$ref": "#/$defs/EcosystemDecisionV3"
+          "$ref": "#/$defs/EcosystemDecision"
         },
         "name": {
           "type": "string"
@@ -244,7 +244,7 @@
       },
       "additionalProperties": false
     },
-    "EnvironmentV3": {
+    "Environment": {
       "description": "Host facts that influence probing and dispatch.",
       "type": "object",
       "required": [
@@ -275,7 +275,7 @@
       },
       "additionalProperties": false
     },
-    "InvocationV3": {
+    "Invocation": {
       "description": "How this report came to be: the exact process invocation.",
       "type": "object",
       "required": [
@@ -300,8 +300,8 @@
       },
       "additionalProperties": false
     },
-    "OverridesV3": {
-      "description": "Effective override stack, labels only. Provenance (cli/env/config)\nstays on the v2 surface.",
+    "Overrides": {
+      "description": "Effective override stack, labels only. Provenance (cli/env/config)\nstays on the flat `list`/`info` surface.",
       "type": "object",
       "required": [
         "explain",
@@ -359,7 +359,7 @@
       },
       "additionalProperties": false
     },
-    "ProjectInfoV3": {
+    "ProjectInfo": {
       "description": "Project anchoring facts.",
       "type": "object",
       "required": [
@@ -385,7 +385,7 @@
       },
       "additionalProperties": false
     },
-    "ResolutionPolicyV3": {
+    "ResolutionPolicy": {
       "description": "Self-description of the task-selection policy, so consumers don't\nhardcode runner's precedence rules.",
       "type": "object",
       "required": [
@@ -409,7 +409,7 @@
       },
       "additionalProperties": false
     },
-    "RunnerInfoV3": {
+    "RunnerInfo": {
       "description": "The reporting binary's own identity and contract versions.",
       "type": "object",
       "required": [
@@ -426,7 +426,7 @@
           "type": "string"
         },
         "schema_versions": {
-          "$ref": "#/$defs/SchemaVersionsV3"
+          "$ref": "#/$defs/SchemaVersions"
         },
         "version": {
           "type": "string"
@@ -434,7 +434,7 @@
       },
       "additionalProperties": false
     },
-    "SchemaVersionsV3": {
+    "SchemaVersions": {
       "description": "Latest schema version each `--json` surface speaks.",
       "type": "object",
       "required": [
@@ -461,7 +461,7 @@
       },
       "additionalProperties": false
     },
-    "SeverityV3": {
+    "Severity": {
       "description": "Severity of a conflict or diagnostic. The draft's `debug`/`error`\nlevels join when something emits them.",
       "type": "string",
       "enum": [
@@ -469,7 +469,7 @@
         "warning"
       ]
     },
-    "SourceV3": {
+    "SourceEntry": {
       "description": "One task-source config file as a first-class object.",
       "type": "object",
       "required": [
@@ -532,7 +532,37 @@
         "pyproject.toml"
       ]
     },
-    "ToolProbeV3": {
+    "Tool": {
+      "description": "One PATH-probed tool the project relies on.",
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "name",
+        "probe",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "description": "Stable tool identity: `tool:<kind>:<name>`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DependencyKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "probe": {
+          "$ref": "#/$defs/ToolProbe"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ToolProbe": {
       "description": "PATH-probe outcome, tagged by `status`.",
       "oneOf": [
         {
@@ -574,40 +604,10 @@
           "additionalProperties": false
         }
       ]
-    },
-    "ToolV3": {
-      "description": "One PATH-probed tool the project relies on.",
-      "type": "object",
-      "required": [
-        "id",
-        "kind",
-        "name",
-        "probe",
-        "required"
-      ],
-      "properties": {
-        "id": {
-          "description": "Stable tool identity: `tool:<kind>:<name>`.",
-          "type": "string"
-        },
-        "kind": {
-          "$ref": "#/$defs/DependencyKindV3"
-        },
-        "name": {
-          "type": "string"
-        },
-        "probe": {
-          "$ref": "#/$defs/ToolProbeV3"
-        },
-        "required": {
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
     }
   },
-  "title": "runner doctor --json --schema-version 3",
-  "description": "JSON schema for the current v3 `runner doctor --json` document: structured diagnostic inventory with invocation/environment provenance, per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, and diagnostics.",
+  "title": "runner doctor --json",
+  "description": "JSON schema for `runner doctor --json`: structured diagnostic inventory with invocation/environment provenance, per-ecosystem decisions, sources, fqn-keyed tasks, tools, conflicts, and diagnostics.",
   "type": "object",
   "required": [
     "$schema",
@@ -634,66 +634,66 @@
     "conflicts": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/ConflictV3"
+        "$ref": "#/$defs/Conflict"
       }
     },
     "diagnostics": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/DiagnosticV3"
+        "$ref": "#/$defs/Diagnostic"
       }
     },
     "ecosystems": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/EcosystemV3"
+        "$ref": "#/$defs/EcosystemEntry"
       }
     },
     "environment": {
-      "$ref": "#/$defs/EnvironmentV3"
+      "$ref": "#/$defs/Environment"
     },
     "invocation": {
-      "$ref": "#/$defs/InvocationV3"
+      "$ref": "#/$defs/Invocation"
     },
     "kind": {
       "description": "Payload discriminator; always \"runner.doctor\".",
       "type": "string"
     },
     "overrides": {
-      "$ref": "#/$defs/OverridesV3"
+      "$ref": "#/$defs/Overrides"
     },
     "project": {
-      "$ref": "#/$defs/ProjectInfoV3"
+      "$ref": "#/$defs/ProjectInfo"
     },
     "resolution": {
-      "$ref": "#/$defs/ResolutionPolicyV3"
+      "$ref": "#/$defs/ResolutionPolicy"
     },
     "runner": {
-      "$ref": "#/$defs/RunnerInfoV3"
+      "$ref": "#/$defs/RunnerInfo"
     },
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",
       "type": "integer",
-      "const": 3,
+      "const": 1,
       "minimum": 0,
       "format": "uint32"
     },
     "sources": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/SourceV3"
+        "$ref": "#/$defs/SourceEntry"
       }
     },
     "tasks": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/DoctorTaskV3"
+        "$ref": "#/$defs/DoctorTask"
       }
     },
     "tools": {
       "type": "array",
       "items": {
-        "$ref": "#/$defs/ToolV3"
+        "$ref": "#/$defs/Tool"
       }
     }
   },

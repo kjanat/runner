@@ -30,7 +30,6 @@ pub(crate) fn why(
     overrides: &ResolutionOverrides,
     task: &str,
     json: bool,
-    schema_version: u32,
 ) -> Result<()> {
     // Interpret the token exactly like `run` does — qualified syntax
     // (`deno:lint`), FQN (`root:package.json#name`), and the exact-name
@@ -74,18 +73,7 @@ pub(crate) fn why(
 
     let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
 
-    if json && schema_version >= 3 {
-        let report = build_report_v3(
-            task,
-            &candidates,
-            selected,
-            pm_decision.as_ref(),
-            overrides,
-            ctx,
-            schema_version,
-        );
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else if json {
+    if json {
         let report = build_report(
             task,
             &candidates,
@@ -93,7 +81,6 @@ pub(crate) fn why(
             pm_decision.as_ref(),
             overrides,
             ctx,
-            schema_version,
         );
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -113,40 +100,6 @@ pub(crate) fn why(
 enum PmDecision {
     Node(Result<ResolvedPm, ResolveError>),
     Python(Result<ResolvedPythonPm, String>),
-}
-
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-pub(super) struct WhyReport<'a> {
-    #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "URI of the JSON Schema that describes this payload.")
-    )]
-    schema: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Schema contract version for this JSON payload.")
-    )]
-    schema_version: u32,
-    task: &'a str,
-    candidates: Vec<WhyCandidate<'a>>,
-    selected: Option<WhyCandidate<'a>>,
-    pm_resolution: Option<PmResolution>,
-}
-
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-struct WhyCandidate<'a> {
-    source: &'static str,
-    source_priority: u16,
-    depth: Option<usize>,
-    display_order: u8,
-    is_alias: bool,
-    alias_of: Option<&'a str>,
-    description: Option<&'a str>,
-    passthrough_to: Option<&'static str>,
-    source_dir: Option<String>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -190,28 +143,6 @@ fn pm_decision_for_selected(
     }
 }
 
-fn build_report<'a>(
-    task: &'a str,
-    candidates: &[&'a Task],
-    selected: Option<&'a Task>,
-    pm_decision: Option<&PmDecision>,
-    overrides: &ResolutionOverrides,
-    ctx: &ProjectContext,
-    schema_version: u32,
-) -> WhyReport<'a> {
-    WhyReport {
-        schema: String::new(),
-        schema_version,
-        task,
-        candidates: candidates
-            .iter()
-            .map(|candidate| candidate_json(candidate, overrides, ctx, schema_version))
-            .collect::<Vec<_>>(),
-        selected: selected.map(|task| candidate_json(task, overrides, ctx, schema_version)),
-        pm_resolution: pm_decision.map(pm_resolution),
-    }
-}
-
 fn pm_resolution(decision: &PmDecision) -> PmResolution {
     match decision {
         PmDecision::Node(Ok(decision)) => PmResolution::Resolved {
@@ -238,38 +169,12 @@ fn pm_resolution(decision: &PmDecision) -> PmResolution {
     }
 }
 
-fn candidate_json<'a>(
-    task: &'a Task,
-    overrides: &ResolutionOverrides,
-    ctx: &ProjectContext,
-    schema_version: u32,
-) -> WhyCandidate<'a> {
-    let depth = source_depth(ctx, task.source);
-    let depth = if depth == usize::MAX {
-        None
-    } else {
-        Some(depth)
-    };
-    WhyCandidate {
-        source: labels::source_label_for(task.source, schema_version),
-        source_priority: source_priority(overrides, task.source),
-        depth,
-        display_order: task.source.display_order(),
-        is_alias: task.alias_of.is_some(),
-        alias_of: task.alias_of.as_deref(),
-        description: task.description.as_deref(),
-        passthrough_to: task.passthrough_to.map(crate::types::TaskRunner::label),
-        source_dir: labels::source_anchor(task.source, &ctx.root)
-            .map(|path| path.display().to_string()),
-    }
-}
-
-/// `runner why --json --schema-version 3` payload. Field order mirrors
-/// the committed `schemas/why.v3.example.json`.
+/// `runner why --json` payload. Field order mirrors the committed
+/// `schemas/why.example.json`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-pub(super) struct WhyReportV3<'a> {
+pub(super) struct WhyReport<'a> {
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
     #[cfg_attr(
         feature = "schema",
@@ -297,25 +202,25 @@ pub(super) struct WhyReportV3<'a> {
     )]
     query: &'a str,
     pm_resolution: Option<PmResolution>,
-    selected: Option<WhyCandidateV3<'a>>,
-    candidates: Vec<WhyCandidateV3<'a>>,
-    decision: WhyDecisionV3,
+    selected: Option<WhyCandidate<'a>>,
+    candidates: Vec<WhyCandidate<'a>>,
+    decision: WhyDecision,
 }
 
 /// One candidate: the task's identity plus how it matched the query.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct WhyCandidateV3<'a> {
-    task: WhyTaskV3<'a>,
+struct WhyCandidate<'a> {
+    task: WhyTask<'a>,
     #[serde(rename = "match")]
-    matched: WhyMatchV3<'a>,
+    matched: WhyMatch<'a>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct WhyTaskV3<'a> {
+struct WhyTask<'a> {
     name: &'a str,
     #[cfg_attr(
         feature = "schema",
@@ -335,7 +240,9 @@ struct WhyTaskV3<'a> {
     provider: &'static str,
     #[cfg_attr(
         feature = "schema",
-        schemars(description = "Task mechanism label (v3 source label, e.g. `cargo-alias`).")
+        schemars(
+            description = "Task mechanism label (structured source label, e.g. `cargo-alias`)."
+        )
     )]
     kind: &'static str,
     #[cfg_attr(
@@ -386,7 +293,7 @@ struct WhyTaskV3<'a> {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct WhyMatchV3<'a> {
+struct WhyMatch<'a> {
     selector: &'a str,
     #[cfg_attr(
         feature = "schema",
@@ -403,7 +310,7 @@ struct WhyMatchV3<'a> {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct WhyDecisionV3 {
+struct WhyDecision {
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Selection branch taken: `single-candidate`, `ranked`, \
@@ -413,44 +320,42 @@ struct WhyDecisionV3 {
     reason: String,
 }
 
-fn build_report_v3<'a>(
+fn build_report<'a>(
     query: &'a str,
     candidates: &[&'a Task],
     selected: Option<&'a Task>,
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &'a ProjectContext,
-    schema_version: u32,
-) -> WhyReportV3<'a> {
-    let candidate_v3 = |task: &'a Task| WhyCandidateV3 {
-        task: task_v3(task, ctx, pm_decision, selected, schema_version),
-        matched: match_v3(query, task, overrides, ctx),
+) -> WhyReport<'a> {
+    let candidate_report = |task: &'a Task| WhyCandidate {
+        task: task_report(task, ctx, pm_decision, selected),
+        matched: match_report(query, task, overrides, ctx),
     };
-    WhyReportV3 {
-        schema: String::new(),
-        schema_version,
+    WhyReport {
+        schema: crate::schema::schema_url("why"),
+        schema_version: crate::schema::SCHEMA_VERSION,
         kind: "runner.why",
         root: ctx.root.display().to_string(),
         query,
         pm_resolution: pm_decision.map(pm_resolution),
-        selected: selected.map(candidate_v3),
-        candidates: candidates.iter().copied().map(candidate_v3).collect(),
-        decision: decision_v3(candidates, selected),
+        selected: selected.map(candidate_report),
+        candidates: candidates.iter().copied().map(candidate_report).collect(),
+        decision: decision_report(candidates, selected),
     }
 }
 
-fn task_v3<'a>(
+fn task_report<'a>(
     task: &'a Task,
     ctx: &'a ProjectContext,
     pm_decision: Option<&PmDecision>,
     selected: Option<&Task>,
-    schema_version: u32,
-) -> WhyTaskV3<'a> {
-    let kind = labels::source_label_for(task.source, schema_version);
+) -> WhyTask<'a> {
+    let kind = labels::structured_source_label(task.source);
     let is_selected = selected.is_some_and(|sel| std::ptr::eq(sel, task));
-    WhyTaskV3 {
+    WhyTask {
         name: &task.name,
-        fqn: labels::fqn(task.source, &task.name, schema_version),
+        fqn: labels::fqn(task.source, &task.name),
         provider: provider_label(task.source),
         kind,
         source: labels::source_anchor(task.source, &ctx.root)
@@ -472,14 +377,14 @@ fn task_v3<'a>(
     }
 }
 
-fn match_v3<'a>(
+fn match_report<'a>(
     selector: &'a str,
     task: &Task,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
-) -> WhyMatchV3<'a> {
+) -> WhyMatch<'a> {
     let depth = source_depth(ctx, task.source);
-    WhyMatchV3 {
+    WhyMatch {
         selector,
         matched_by: "name",
         depth: (depth != usize::MAX).then_some(depth),
@@ -490,9 +395,9 @@ fn match_v3<'a>(
     }
 }
 
-fn decision_v3(candidates: &[&Task], selected: Option<&Task>) -> WhyDecisionV3 {
+fn decision_report(candidates: &[&Task], selected: Option<&Task>) -> WhyDecision {
     if candidates.is_empty() {
-        return WhyDecisionV3 {
+        return WhyDecision {
             strategy: "exec-fallback",
             reason: "no task matched; `runner run` would route the name through the primary \
                      package manager's exec primitive"
@@ -500,19 +405,19 @@ fn decision_v3(candidates: &[&Task], selected: Option<&Task>) -> WhyDecisionV3 {
         };
     }
     if selected.is_none() {
-        return WhyDecisionV3 {
+        return WhyDecision {
             strategy: "filtered",
             reason: "every candidate was filtered out by --runner/RUNNER_RUNNER restrictions"
                 .to_string(),
         };
     }
     if candidates.len() == 1 {
-        return WhyDecisionV3 {
+        return WhyDecision {
             strategy: "single-candidate",
             reason: "exact task name matched one candidate".to_string(),
         };
     }
-    WhyDecisionV3 {
+    WhyDecision {
         strategy: "ranked",
         reason: format!(
             "{} candidates; lowest (source_priority, source_depth, display_order, alias-last) key \
@@ -523,7 +428,7 @@ fn decision_v3(candidates: &[&Task], selected: Option<&Task>) -> WhyDecisionV3 {
 }
 
 /// Tool family that executes tasks from this source. Distinct from the
-/// v3 `kind` label, which names the extraction mechanism.
+/// structured `kind` label, which names the extraction mechanism.
 const fn provider_label(source: TaskSource) -> &'static str {
     match source {
         TaskSource::PackageJson => "node",
@@ -543,7 +448,7 @@ const fn provider_label(source: TaskSource) -> &'static str {
 /// Effective command preview for the candidate. `why` only resolves the
 /// PM for the selected task — other candidates report null. Delegates the
 /// per-source dispatch to [`labels::resolved_command`], shared with
-/// `doctor` v3.
+/// `doctor`.
 fn resolved_command(task: &Task, pm_decision: Option<&PmDecision>) -> Option<String> {
     let node_pm = match pm_decision {
         Some(PmDecision::Node(Ok(decision))) => Some(decision.pm.label()),
@@ -645,7 +550,7 @@ fn print_human(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{PmDecision, build_report, build_report_v3, pm_decision_for_selected, why};
+    use super::{PmDecision, build_report, pm_decision_for_selected, why};
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
@@ -676,14 +581,8 @@ mod tests {
     #[test]
     fn why_handles_missing_task() {
         let ctx = context(vec![]);
-        why(
-            &ctx,
-            &ResolutionOverrides::default(),
-            "build",
-            true,
-            crate::schema::CURRENT_VERSION,
-        )
-        .expect("why should succeed even when task is missing");
+        why(&ctx, &ResolutionOverrides::default(), "build", true)
+            .expect("why should succeed even when task is missing");
     }
 
     #[test]
@@ -692,23 +591,8 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
-        let version = crate::schema::CURRENT_VERSION;
-        why(
-            &ctx,
-            &ResolutionOverrides::default(),
-            "build",
-            true,
-            version,
-        )
-        .expect("json should succeed");
-        why(
-            &ctx,
-            &ResolutionOverrides::default(),
-            "build",
-            false,
-            version,
-        )
-        .expect("human should succeed");
+        why(&ctx, &ResolutionOverrides::default(), "build", true).expect("json should succeed");
+        why(&ctx, &ResolutionOverrides::default(), "build", false).expect("human should succeed");
     }
 
     #[test]
@@ -725,65 +609,58 @@ mod tests {
         )
         .expect("runner override should parse");
 
-        let err = why(
-            &ctx,
-            &overrides,
-            "build",
-            true,
-            crate::schema::CURRENT_VERSION,
-        )
-        .expect_err("why should mirror run runner constraints");
+        let err = why(&ctx, &overrides, "build", true)
+            .expect_err("why should mirror run runner constraints");
 
         assert!(format!("{err}").contains("no candidate task is registered"));
     }
 
     #[test]
-    fn why_pyproject_script_reports_detected_python_pm() {
-        let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
-        ctx.package_managers.push(PackageManager::Uv);
+    fn why_pyproject_script_reports_python_pm_override() {
+        let ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
+        let overrides = ResolutionOverrides::from_cli_and_env(
+            Some("uv"),
+            None,
+            None,
+            None,
+            DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("PM override should parse");
         let selected = ctx.tasks.first();
-        let pm_decision = pm_decision_for_selected(&ctx, &ResolutionOverrides::default(), selected)
+        let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected)
             .expect("pyproject task should resolve PM diagnostics");
 
-        let report = build_report(
-            "greenpy",
-            &[&ctx.tasks[0]],
-            selected,
-            Some(&pm_decision),
-            &ResolutionOverrides::default(),
-            &ctx,
-            crate::schema::CURRENT_VERSION,
-        );
-        let report = serde_json::to_value(report).expect("why report should serialize");
-
-        assert_eq!(report["pm_resolution"]["pm"], serde_json::json!("uv"));
-        assert!(
-            report["pm_resolution"]["via"]
-                .as_str()
-                .is_some_and(|via| via.contains("detected Python project"))
-        );
+        match pm_decision {
+            PmDecision::Python(Ok(decision)) => {
+                assert_eq!(decision.pm, PackageManager::Uv);
+                assert!(decision.describe().contains("--pm"));
+            }
+            PmDecision::Python(Err(err)) => panic!("override should resolve: {err}"),
+            PmDecision::Node(_) => panic!("pyproject script should use Python PM resolver"),
+        }
     }
 
     #[test]
-    fn v3_report_describes_cargo_alias_like_the_committed_example() {
+    fn report_describes_cargo_alias_like_the_committed_example() {
         let mut alias = task("t", TaskSource::CargoAliases);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias]);
         let candidates = vec![&ctx.tasks[0]];
         let selected = ctx.tasks.first();
 
-        let report = build_report_v3(
+        let report = build_report(
             "t",
             &candidates,
             selected,
             None,
             &ResolutionOverrides::default(),
             &ctx,
-            3,
         );
-        let json = serde_json::to_value(&report).expect("v3 report should serialize");
+        let json = serde_json::to_value(&report).expect("report should serialize");
 
-        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["schema_version"], 1);
         assert_eq!(json["kind"], "runner.why");
         assert_eq!(json["query"], "t");
         assert_eq!(json["pm_resolution"], serde_json::Value::Null);
@@ -812,18 +689,17 @@ mod tests {
     }
 
     #[test]
-    fn v3_report_uses_exec_fallback_decision_when_nothing_matches() {
+    fn report_uses_exec_fallback_decision_when_nothing_matches() {
         let ctx = context(vec![]);
-        let report = build_report_v3(
+        let report = build_report(
             "nope",
             &[],
             None,
             None,
             &ResolutionOverrides::default(),
             &ctx,
-            3,
         );
-        let json = serde_json::to_value(&report).expect("v3 report should serialize");
+        let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["selected"], serde_json::Value::Null);
         assert_eq!(json["candidates"], serde_json::json!([]));
@@ -831,22 +707,21 @@ mod tests {
     }
 
     #[test]
-    fn v3_report_ranks_multiple_candidates() {
+    fn report_ranks_multiple_candidates() {
         let ctx = context(vec![
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
         let candidates: Vec<&Task> = ctx.tasks.iter().collect();
-        let report = build_report_v3(
+        let report = build_report(
             "build",
             &candidates,
             ctx.tasks.first(),
             None,
             &ResolutionOverrides::default(),
             &ctx,
-            3,
         );
-        let json = serde_json::to_value(&report).expect("v3 report should serialize");
+        let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["decision"]["strategy"], "ranked");
         assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
@@ -860,7 +735,7 @@ mod tests {
     }
 
     #[test]
-    fn v3_report_resolves_selected_pyproject_script_through_python_pm() {
+    fn report_resolves_selected_pyproject_script_through_python_pm() {
         let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
         ctx.package_managers.push(PackageManager::Uv);
         let selected = ctx.tasks.first();
@@ -868,16 +743,15 @@ mod tests {
             .expect("pyproject task should resolve PM diagnostics");
         let candidates = vec![&ctx.tasks[0]];
 
-        let report = build_report_v3(
+        let report = build_report(
             "greenpy",
             &candidates,
             selected,
             Some(&pm_decision),
             &ResolutionOverrides::default(),
             &ctx,
-            3,
         );
-        let json = serde_json::to_value(&report).expect("v3 report should serialize");
+        let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["selected"]["task"]["provider"], "python");
         assert_eq!(json["selected"]["task"]["resolved"], "uv run greenpy");
@@ -888,53 +762,25 @@ mod tests {
     }
 
     #[test]
-    fn v3_report_collects_sibling_aliases() {
+    fn report_collects_sibling_aliases() {
         let mut shortcut = task("f", TaskSource::Justfile);
         shortcut.alias_of = Some("fmt".to_string());
         let ctx = context(vec![task("fmt", TaskSource::Justfile), shortcut]);
         let candidates = vec![&ctx.tasks[0]];
 
-        let report = build_report_v3(
+        let report = build_report(
             "fmt",
             &candidates,
             ctx.tasks.first(),
             None,
             &ResolutionOverrides::default(),
             &ctx,
-            3,
         );
-        let json = serde_json::to_value(&report).expect("v3 report should serialize");
+        let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(
             json["selected"]["task"]["aliases"],
             serde_json::json!(["f"])
         );
-    }
-
-    #[test]
-    fn why_pyproject_script_reports_python_pm_override() {
-        let ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
-        let overrides = ResolutionOverrides::from_cli_and_env(
-            Some("uv"),
-            None,
-            None,
-            None,
-            DiagnosticFlags::default(),
-            crate::cli::ChainFailureFlags::default(),
-            None,
-        )
-        .expect("PM override should parse");
-        let selected = ctx.tasks.first();
-        let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected)
-            .expect("pyproject task should resolve PM diagnostics");
-
-        match pm_decision {
-            PmDecision::Python(Ok(decision)) => {
-                assert_eq!(decision.pm, PackageManager::Uv);
-                assert!(decision.describe().contains("--pm"));
-            }
-            PmDecision::Python(Err(err)) => panic!("override should resolve: {err}"),
-            PmDecision::Node(_) => panic!("pyproject script should use Python PM resolver"),
-        }
     }
 }

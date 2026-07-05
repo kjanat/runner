@@ -1,42 +1,37 @@
-//! `doctor --json` schema **v3** — the structured diagnostic report.
+//! `doctor --json` schema — the structured diagnostic report.
 //!
-//! Implements the contract drafted in `schemas/doctor.v3-draft.schema.json`
-//! (now retired): instead of v2's flat detection dump, the report is an
-//! inventory — `invocation`/`environment`/`runner` provenance, per-ecosystem
-//! decisions with confidence, task `sources` as first-class objects, tasks
-//! with stable `fqn`s, PATH-probe `tools`, duplicate-name `conflicts`, and
-//! flattened `diagnostics` — plus a self-describing `resolution` policy
-//! block.
+//! A structured inventory — `invocation`/`environment`/`runner`
+//! provenance, per-ecosystem decisions with confidence, task `sources` as
+//! first-class objects, tasks with stable `fqn`s, PATH-probe `tools`,
+//! duplicate-name `conflicts`, and flattened `diagnostics` — plus a
+//! self-describing `resolution` policy block.
 //!
-//! Deliberate deltas from the draft, found while reviewing it against the
-//! codebase:
+//! Notes on the shape:
 //!
 //! - `tasks[].resolved` and `tasks[].source` are nullable: a
 //!   `package.json` script's command depends on PM resolution, which can
-//!   fail, and a source anchor file can be undiscoverable. The draft
-//!   required both non-null; lying was the alternative.
-//! - `sources[].kind` uses the v3 source labels (`cargo-alias`, `just`,
-//!   …) for cross-surface consistency with `why` v3, not the draft's
-//!   filename-flavored examples (`cargo-config`, `justfile`).
-//! - `overrides.pm`/`overrides.runner` are bare labels (per draft); the
-//!   provenance (`cli`/`env`/`config:…`) remains available on the v2
+//!   fail, and a source anchor file can be undiscoverable.
+//! - `sources[].kind` uses the structured source labels (`cargo-alias`,
+//!   `just`, …) shared with `why`, not the flat `list`/`info` labels.
+//! - `overrides.pm`/`overrides.runner` are bare labels; the provenance
+//!   (`cli`/`env`/`config:…`) remains available on the flat `list`/`info`
 //!   surface.
 //! - `project.workspace` is always `null` and `project.root_source` is
 //!   the root itself until workspace/root-anchor detection is modeled.
-//! - Speculative draft shapes nothing can emit yet are deferred rather
-//!   than declared: the rich `dependency` object (`tasks[].dependencies`
-//!   stays an always-empty array), `workspace`/`package_identity`
-//!   objects (fields stay null), the `tool_probe_error` variant (the
-//!   probe cannot error), the `binary`/`package-binary` tool kinds, and
-//!   the `debug`/`error` severities. Each gets declared when an
-//!   emitter exists — contracts should describe output, not ambition.
+//! - Shapes nothing can emit yet are deferred rather than declared: the
+//!   rich `dependency` object (`tasks[].dependencies` stays an
+//!   always-empty array), `workspace`/`package_identity` objects (fields
+//!   stay null), the `tool_probe_error` variant (the probe cannot
+//!   error), the `binary`/`package-binary` tool kinds, and the
+//!   `debug`/`error` severities. Each gets declared when an emitter
+//!   exists — contracts should describe output, not ambition.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Serialize;
 
-use super::labels::source_label_for;
+use super::labels::structured_source_label;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
     FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
@@ -44,11 +39,11 @@ use crate::resolver::{
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
-/// `runner doctor --json --schema-version 3` payload.
+/// `runner doctor --json` payload.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-pub(crate) struct DoctorReportV3<'a> {
+pub(crate) struct DoctorReport<'a> {
     #[serde(rename = "$schema")]
     #[cfg_attr(
         feature = "schema",
@@ -65,25 +60,25 @@ pub(crate) struct DoctorReportV3<'a> {
         schemars(description = "Payload discriminator; always \"runner.doctor\".")
     )]
     kind: &'static str,
-    invocation: InvocationV3,
-    environment: EnvironmentV3,
-    runner: RunnerInfoV3,
-    project: ProjectInfoV3,
-    overrides: OverridesV3,
-    ecosystems: Vec<EcosystemV3>,
-    sources: Vec<SourceV3>,
-    tasks: Vec<DoctorTaskV3<'a>>,
-    tools: Vec<ToolV3>,
-    conflicts: Vec<ConflictV3>,
-    diagnostics: Vec<DiagnosticV3>,
-    resolution: ResolutionPolicyV3,
+    invocation: Invocation,
+    environment: Environment,
+    runner: RunnerInfo,
+    project: ProjectInfo,
+    overrides: Overrides,
+    ecosystems: Vec<EcosystemEntry>,
+    sources: Vec<SourceEntry>,
+    tasks: Vec<DoctorTask<'a>>,
+    tools: Vec<Tool>,
+    conflicts: Vec<Conflict>,
+    diagnostics: Vec<Diagnostic>,
+    resolution: ResolutionPolicy,
 }
 
 /// How this report came to be: the exact process invocation.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct InvocationV3 {
+struct Invocation {
     argv: Vec<String>,
     cwd: String,
     #[cfg_attr(
@@ -97,7 +92,7 @@ struct InvocationV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct EnvironmentV3 {
+struct Environment {
     arch: &'static str,
     os: &'static str,
     path_entries: Vec<String>,
@@ -108,18 +103,18 @@ struct EnvironmentV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct RunnerInfoV3 {
+struct RunnerInfo {
     binary: String,
     name: String,
     version: &'static str,
-    schema_versions: SchemaVersionsV3,
+    schema_versions: SchemaVersions,
 }
 
 /// Latest schema version each `--json` surface speaks.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct SchemaVersionsV3 {
+struct SchemaVersions {
     doctor: u32,
     list: u32,
     why: u32,
@@ -129,7 +124,7 @@ struct SchemaVersionsV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct ProjectInfoV3 {
+struct ProjectInfo {
     monorepo: bool,
     root: String,
     #[cfg_attr(
@@ -151,11 +146,11 @@ struct ProjectInfoV3 {
 }
 
 /// Effective override stack, labels only. Provenance (cli/env/config)
-/// stays on the v2 surface.
+/// stays on the flat `list`/`info` surface.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct OverridesV3 {
+struct Overrides {
     explain: bool,
     fallback: &'static str,
     no_warnings: bool,
@@ -171,8 +166,8 @@ struct OverridesV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct EcosystemV3 {
-    decision: EcosystemDecisionV3,
+struct EcosystemEntry {
+    decision: EcosystemDecision,
     name: &'static str,
     root: String,
     selected_package_manager: Option<&'static str>,
@@ -189,8 +184,8 @@ struct EcosystemV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct EcosystemDecisionV3 {
-    confidence: ConfidenceV3,
+struct EcosystemDecision {
+    confidence: Confidence,
     reason: String,
     selected: Option<&'static str>,
 }
@@ -199,7 +194,7 @@ struct EcosystemDecisionV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum ConfidenceV3 {
+enum Confidence {
     /// Explicit signal: override, manifest declaration, or lockfile.
     High,
     /// Inferred: PATH probe found a usable binary.
@@ -214,7 +209,7 @@ enum ConfidenceV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct SourceV3 {
+struct SourceEntry {
     exists: bool,
     #[cfg_attr(
         feature = "schema",
@@ -223,7 +218,7 @@ struct SourceV3 {
     id: String,
     #[cfg_attr(
         feature = "schema",
-        schemars(description = "v3 source label (same convention as `why` v3).")
+        schemars(description = "Structured source label (same convention as `why`).")
     )]
     kind: &'static str,
     #[cfg_attr(
@@ -248,12 +243,12 @@ struct SourceV3 {
     task_pointer: Option<&'static str>,
 }
 
-/// One task in the doctor inventory. Same identity scheme as `why` v3
+/// One task in the doctor inventory. Same identity scheme as `why`
 /// (`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct DoctorTaskV3<'a> {
+struct DoctorTask<'a> {
     aliases: Vec<&'a str>,
     cwd: String,
     definition: Option<&'a str>,
@@ -302,13 +297,13 @@ struct DoctorTaskV3<'a> {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
-enum DependencyKindV3 {
+enum DependencyKind {
     Runtime,
     PackageManager,
     TaskRunner,
 }
 
-impl DependencyKindV3 {
+impl DependencyKind {
     const fn label(self) -> &'static str {
         match self {
             Self::Runtime => "runtime",
@@ -322,15 +317,15 @@ impl DependencyKindV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct ToolV3 {
+struct Tool {
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Stable tool identity: `tool:<kind>:<name>`.")
     )]
     id: String,
-    kind: DependencyKindV3,
+    kind: DependencyKind,
     name: &'static str,
-    probe: ToolProbeV3,
+    probe: ToolProbe,
     required: bool,
 }
 
@@ -339,7 +334,7 @@ struct ToolV3 {
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-enum ToolProbeV3 {
+enum ToolProbe {
     Found {
         path: String,
         #[cfg_attr(
@@ -357,13 +352,13 @@ enum ToolProbeV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct ConflictV3 {
+struct Conflict {
     kind: &'static str,
     reason: String,
     #[cfg_attr(feature = "schema", schemars(description = "FQN of the winning task."))]
     selected: String,
     selector: String,
-    severity: SeverityV3,
+    severity: Severity,
     shadowed: Vec<String>,
 }
 
@@ -372,7 +367,7 @@ struct ConflictV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum SeverityV3 {
+enum Severity {
     Info,
     Warning,
 }
@@ -382,14 +377,14 @@ enum SeverityV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct DiagnosticV3 {
+struct Diagnostic {
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Stable warning category (the warning's source subsystem).")
     )]
     code: &'static str,
     message: String,
-    severity: SeverityV3,
+    severity: Severity,
     source: Option<&'static str>,
     task: Option<String>,
 }
@@ -399,51 +394,50 @@ struct DiagnosticV3 {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct ResolutionPolicyV3 {
+struct ResolutionPolicy {
     fqn_policy: &'static str,
     precedence: Vec<&'static str>,
     short_name_policy: &'static str,
 }
 
-impl<'a> DoctorReportV3<'a> {
-    /// Build the v3 report. `resolve_shims` is forwarded to the Volta
-    /// shim classifier exactly like the v2 builder.
+impl<'a> DoctorReport<'a> {
+    /// Build the report. `resolve_shims` is forwarded to the Volta shim
+    /// classifier exactly like the flat `list`/`info` builder.
     pub(crate) fn build(
         ctx: &'a ProjectContext,
         overrides: &ResolutionOverrides,
         resolve_shims: bool,
     ) -> Self {
         let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
-        let schema_version = super::DOCTOR_CURRENT_VERSION;
 
         let diagnostics = ctx
             .warnings
             .iter()
             .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
-            .map(diagnostic_v3)
+            .map(diagnostic)
             .collect();
 
         Self {
-            schema: super::schema_url("doctor", schema_version),
-            schema_version,
+            schema: super::schema_url("doctor"),
+            schema_version: super::SCHEMA_VERSION,
             kind: "runner.doctor",
-            invocation: invocation_v3(),
-            environment: environment_v3(),
-            runner: runner_info_v3(),
-            project: ProjectInfoV3 {
+            invocation: invocation(),
+            environment: environment(),
+            runner: runner_info(),
+            project: ProjectInfo {
                 monorepo: ctx.is_monorepo,
                 root: ctx.root.display().to_string(),
                 root_source: ctx.root.display().to_string(),
                 workspace: None,
             },
-            overrides: overrides_v3(overrides),
-            ecosystems: ecosystems_v3(ctx, overrides, &node_pm, resolve_shims),
-            sources: sources_v3(ctx, schema_version),
-            tasks: tasks_v3(ctx, &node_pm, overrides, schema_version),
-            tools: tools_v3(ctx, overrides, &node_pm),
-            conflicts: conflicts_v3(ctx, overrides, schema_version),
+            overrides: overrides_report(overrides),
+            ecosystems: ecosystems(ctx, overrides, &node_pm, resolve_shims),
+            sources: sources(ctx),
+            tasks: tasks(ctx, &node_pm, overrides),
+            tools: tools(ctx, overrides, &node_pm),
+            conflicts: conflicts(ctx, overrides),
             diagnostics,
-            resolution: ResolutionPolicyV3 {
+            resolution: ResolutionPolicy {
                 fqn_policy: "exact-only",
                 precedence: vec![
                     "source-priority",
@@ -457,8 +451,8 @@ impl<'a> DoctorReportV3<'a> {
     }
 }
 
-fn invocation_v3() -> InvocationV3 {
-    InvocationV3 {
+fn invocation() -> Invocation {
+    Invocation {
         argv: std::env::args().collect(),
         cwd: std::env::current_dir()
             .map(|d| d.display().to_string())
@@ -467,8 +461,8 @@ fn invocation_v3() -> InvocationV3 {
     }
 }
 
-fn environment_v3() -> EnvironmentV3 {
-    EnvironmentV3 {
+fn environment() -> Environment {
+    Environment {
         arch: std::env::consts::ARCH,
         os: std::env::consts::OS,
         path_entries: std::env::var_os("PATH")
@@ -482,27 +476,27 @@ fn environment_v3() -> EnvironmentV3 {
     }
 }
 
-fn runner_info_v3() -> RunnerInfoV3 {
+fn runner_info() -> RunnerInfo {
     let binary = std::env::current_exe()
         .map_or_else(|_| "runner".to_string(), |exe| exe.display().to_string());
     let name = std::env::args_os()
         .next()
         .and_then(|arg0| crate::bin_name_from_arg0(&arg0))
         .unwrap_or_else(|| "runner".to_string());
-    RunnerInfoV3 {
+    RunnerInfo {
         binary,
         name,
         version: env!("CARGO_PKG_VERSION"),
-        schema_versions: SchemaVersionsV3 {
-            doctor: super::DOCTOR_CURRENT_VERSION,
-            list: super::CURRENT_VERSION,
-            why: super::WHY_CURRENT_VERSION,
+        schema_versions: SchemaVersions {
+            doctor: super::SCHEMA_VERSION,
+            list: super::SCHEMA_VERSION,
+            why: super::SCHEMA_VERSION,
         },
     }
 }
 
-fn overrides_v3(overrides: &ResolutionOverrides) -> OverridesV3 {
-    OverridesV3 {
+fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
+    Overrides {
         explain: overrides.explain,
         fallback: match overrides.fallback {
             FallbackPolicy::Probe => "probe",
@@ -527,12 +521,12 @@ fn overrides_v3(overrides: &ResolutionOverrides) -> OverridesV3 {
     }
 }
 
-fn ecosystems_v3(
+fn ecosystems(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
     resolve_shims: bool,
-) -> Vec<EcosystemV3> {
+) -> Vec<EcosystemEntry> {
     let mut seen = Vec::new();
     for pm in &ctx.package_managers {
         let eco = pm.ecosystem();
@@ -544,10 +538,10 @@ fn ecosystems_v3(
     // Seeding from detected `package_managers` alone misses every Node
     // resolution that doesn't leave a lockfile-detected PM behind
     // (manifest `packageManager` without a lockfile, PATH-probe, npm
-    // fallback, override). In those cases `tasks_v3` still resolves
+    // fallback, override). In those cases `tasks` still resolves
     // `package.json` scripts via `npm run`, so dropping Node here would
     // emit an internally inconsistent document. Same predicate gates the
-    // node runtime entry in `tools_v3`.
+    // node runtime entry in `tools`.
     if has_node_context(ctx, node_pm) && !seen.contains(&Ecosystem::Node) {
         seen.push(Ecosystem::Node);
     }
@@ -560,9 +554,9 @@ fn ecosystems_v3(
 
     seen.into_iter()
         .map(|eco| match eco {
-            Ecosystem::Node => node_ecosystem_v3(ctx, node_pm, resolve_shims),
-            Ecosystem::Python => python_ecosystem_v3(ctx, overrides),
-            other => single_pm_ecosystem_v3(ctx, other),
+            Ecosystem::Node => node_ecosystem(ctx, node_pm, resolve_shims),
+            Ecosystem::Python => python_ecosystem(ctx, overrides),
+            other => single_pm_ecosystem(ctx, other),
         })
         .collect()
 }
@@ -571,8 +565,8 @@ fn ecosystems_v3(
 /// task signals — not just lockfile-detected `package_managers`. A Node
 /// PM decision (`resolve_node_pm` Ok), a detected Node-ecosystem PM, or
 /// any `package.json`-sourced task each count. Gates Node inclusion in
-/// both [`ecosystems_v3`] and [`tools_v3`] so the two surfaces never
-/// disagree with what `tasks_v3` resolves.
+/// both [`ecosystems`] and [`tools`] so the two surfaces never
+/// disagree with what `tasks` resolves.
 fn has_node_context(
     ctx: &ProjectContext,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
@@ -590,8 +584,8 @@ fn has_node_context(
 
 /// Whether the project carries Python context, considering resolver and
 /// task signals — not just lockfile-detected `package_managers`. Mirrors
-/// [`has_node_context`]; gates Python inclusion in both [`ecosystems_v3`]
-/// and [`tools_v3`] so neither surface disagrees with what `tasks_v3`
+/// [`has_node_context`]; gates Python inclusion in both [`ecosystems`]
+/// and [`tools`] so neither surface disagrees with what `tasks`
 /// resolves.
 fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
     resolve_python_pm(ctx, overrides).is_some()
@@ -605,14 +599,14 @@ fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> 
             .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
 }
 
-fn node_ecosystem_v3(
+fn node_ecosystem(
     ctx: &ProjectContext,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
     resolve_shims: bool,
-) -> EcosystemV3 {
+) -> EcosystemEntry {
     let (decision, selected) = match node_pm {
         Ok(decision) => (
-            EcosystemDecisionV3 {
+            EcosystemDecision {
                 confidence: confidence_for_step(&decision.via),
                 reason: decision.describe(),
                 selected: Some(decision.pm.label()),
@@ -620,8 +614,8 @@ fn node_ecosystem_v3(
             Some(decision.pm.label()),
         ),
         Err(err) => (
-            EcosystemDecisionV3 {
-                confidence: ConfidenceV3::None,
+            EcosystemDecision {
+                confidence: Confidence::None,
                 reason: format!("{err}"),
                 selected: None,
             },
@@ -634,8 +628,8 @@ fn node_ecosystem_v3(
     // Shims are keyed by tool and carry the shim *manager* as data, not
     // as the field name — Volta is merely the first manager the prober
     // classifies; asdf/mise/proto entries slot in without a contract
-    // change. (v2's `volta_shims` spelling is frozen; only v3 gets the
-    // generic shape.)
+    // change. (The flat `list`/`info` shape's `volta_shims` spelling is
+    // frozen; only this structured report gets the generic shape.)
     let shims = probes
         .volta_shims
         .iter()
@@ -653,7 +647,7 @@ fn node_ecosystem_v3(
         "shims": shims,
     });
 
-    EcosystemV3 {
+    EcosystemEntry {
         decision,
         name: "node",
         root: ctx.root.display().to_string(),
@@ -662,13 +656,13 @@ fn node_ecosystem_v3(
     }
 }
 
-fn python_ecosystem_v3(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> EcosystemV3 {
+fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> EcosystemEntry {
     let resolved = resolve_python_pm(ctx, overrides);
     let (decision, selected) = resolved.map_or_else(
         || {
             (
-                EcosystemDecisionV3 {
-                    confidence: ConfidenceV3::None,
+                EcosystemDecision {
+                    confidence: Confidence::None,
                     reason: "no Python package manager detected".to_string(),
                     selected: None,
                 },
@@ -678,8 +672,8 @@ fn python_ecosystem_v3(ctx: &ProjectContext, overrides: &ResolutionOverrides) ->
         |decision| {
             let label = decision.pm.label();
             (
-                EcosystemDecisionV3 {
-                    confidence: ConfidenceV3::High,
+                EcosystemDecision {
+                    confidence: Confidence::High,
                     reason: decision.describe(),
                     selected: Some(label),
                 },
@@ -688,7 +682,7 @@ fn python_ecosystem_v3(ctx: &ProjectContext, overrides: &ResolutionOverrides) ->
         },
     );
 
-    EcosystemV3 {
+    EcosystemEntry {
         decision,
         name: "python",
         root: ctx.root.display().to_string(),
@@ -699,16 +693,16 @@ fn python_ecosystem_v3(ctx: &ProjectContext, overrides: &ResolutionOverrides) ->
 
 /// Single-PM ecosystems (rust/go/deno/ruby/php): the detected manager
 /// *is* the decision — there is no competing-PM resolution chain.
-fn single_pm_ecosystem_v3(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemV3 {
+fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
     let selected = ctx
         .package_managers
         .iter()
         .find(|pm| pm.ecosystem() == eco)
         .map(|pm| pm.label());
 
-    EcosystemV3 {
-        decision: EcosystemDecisionV3 {
-            confidence: ConfidenceV3::High,
+    EcosystemEntry {
+        decision: EcosystemDecision {
+            confidence: Confidence::High,
             reason: format!(
                 "detected via {} project signal",
                 selected.unwrap_or("manifest")
@@ -733,18 +727,18 @@ fn detected_pm_signals(ctx: &ProjectContext, eco: Ecosystem) -> serde_json::Valu
     })
 }
 
-const fn confidence_for_step(step: &ResolutionStep) -> ConfidenceV3 {
+const fn confidence_for_step(step: &ResolutionStep) -> Confidence {
     match step {
         ResolutionStep::Override(_)
         | ResolutionStep::ManifestPackageManager
         | ResolutionStep::ManifestDevEngines { .. }
-        | ResolutionStep::Lockfile => ConfidenceV3::High,
-        ResolutionStep::PathProbe { .. } => ConfidenceV3::Medium,
-        ResolutionStep::LegacyNpmFallback => ConfidenceV3::Low,
+        | ResolutionStep::Lockfile => Confidence::High,
+        ResolutionStep::PathProbe { .. } => Confidence::Medium,
+        ResolutionStep::LegacyNpmFallback => Confidence::Low,
     }
 }
 
-fn sources_v3(ctx: &ProjectContext, schema_version: u32) -> Vec<SourceV3> {
+fn sources(ctx: &ProjectContext) -> Vec<SourceEntry> {
     let mut seen: Vec<TaskSource> = Vec::new();
     for task in &ctx.tasks {
         if !seen.contains(&task.source) {
@@ -754,7 +748,7 @@ fn sources_v3(ctx: &ProjectContext, schema_version: u32) -> Vec<SourceV3> {
 
     seen.into_iter()
         .map(|source| {
-            let kind = source_label_for(source, schema_version);
+            let kind = structured_source_label(source);
             let anchor = super::labels::source_anchor(source, &ctx.root);
             let path = anchor
                 .as_ref()
@@ -762,7 +756,7 @@ fn sources_v3(ctx: &ProjectContext, schema_version: u32) -> Vec<SourceV3> {
             let relpath = anchor.as_ref().map_or_else(String::new, |p| {
                 p.strip_prefix(&ctx.root).unwrap_or(p).display().to_string()
             });
-            SourceV3 {
+            SourceEntry {
                 exists: anchor.as_ref().is_some_and(|p| p.is_file()),
                 id: format!("src:root:{kind}"),
                 kind,
@@ -776,12 +770,11 @@ fn sources_v3(ctx: &ProjectContext, schema_version: u32) -> Vec<SourceV3> {
         .collect()
 }
 
-fn tasks_v3<'a>(
+fn tasks<'a>(
     ctx: &'a ProjectContext,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
     overrides: &ResolutionOverrides,
-    schema_version: u32,
-) -> Vec<DoctorTaskV3<'a>> {
+) -> Vec<DoctorTask<'a>> {
     let node_pm_label = node_pm.as_ref().ok().map(|d| d.pm.label());
     let python_pm_label = resolve_python_pm(ctx, overrides).map(|d| d.pm.label());
 
@@ -797,7 +790,7 @@ fn tasks_v3<'a>(
 
     ctx.tasks
         .iter()
-        .map(|task| DoctorTaskV3 {
+        .map(|task| DoctorTask {
             aliases: ctx
                 .tasks
                 .iter()
@@ -810,7 +803,7 @@ fn tasks_v3<'a>(
             definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
             dependencies: Vec::new(),
             description: task.description.as_deref(),
-            fqn: super::labels::fqn(task.source, &task.name, schema_version),
+            fqn: super::labels::fqn(task.source, &task.name),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
             resolved: super::labels::resolved_command(task, node_pm_label, python_pm_label),
@@ -850,11 +843,11 @@ const fn task_container_key(source: TaskSource) -> Option<&'static str> {
     }
 }
 
-fn tools_v3(
+fn tools(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-) -> Vec<ToolV3> {
+) -> Vec<Tool> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
@@ -864,7 +857,7 @@ fn tools_v3(
     if has_node_context(ctx, node_pm) {
         tools.push(probe_tool(
             "node",
-            DependencyKindV3::Runtime,
+            DependencyKind::Runtime,
             ctx.current_node
                 .as_deref()
                 .map(|v| v.trim_start_matches('v').to_string()),
@@ -881,7 +874,7 @@ fn tools_v3(
 
         tools.push(probe_tool(
             PYTHON_BIN,
-            DependencyKindV3::Runtime,
+            DependencyKind::Runtime,
             None,
             true,
             &path,
@@ -907,7 +900,7 @@ fn tools_v3(
         };
         tools.push(probe_tool(
             pm_binary_name(*pm),
-            DependencyKindV3::PackageManager,
+            DependencyKind::PackageManager,
             None,
             required,
             &path,
@@ -917,7 +910,7 @@ fn tools_v3(
     for runner in &ctx.task_runners {
         tools.push(probe_tool(
             runner.label(),
-            DependencyKindV3::TaskRunner,
+            DependencyKind::TaskRunner,
             None,
             true,
             &path,
@@ -939,22 +932,22 @@ const fn pm_binary_name(pm: PackageManager) -> &'static str {
 
 fn probe_tool(
     name: &'static str,
-    kind: DependencyKindV3,
+    kind: DependencyKind,
     version: Option<String>,
     required: bool,
     path: &std::ffi::OsStr,
     pathext: Option<&std::ffi::OsStr>,
-) -> ToolV3 {
+) -> Tool {
     let probe = crate::resolver::probe_path_for_doctor(name, path, pathext).map_or(
-        ToolProbeV3::Missing,
-        |hit| ToolProbeV3::Found {
+        ToolProbe::Missing,
+        |hit| ToolProbe::Found {
             // Prefer a version already known from detection (the node
             // runtime); otherwise ask the binary directly.
             version: version.or_else(|| probe_tool_version(&hit)),
             path: hit.display().to_string(),
         },
     );
-    ToolV3 {
+    Tool {
         id: format!("tool:{kind}:{name}", kind = kind.label()),
         kind,
         name,
@@ -990,11 +983,7 @@ fn probe_tool_version(binary: &Path) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn conflicts_v3(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    schema_version: u32,
-) -> Vec<ConflictV3> {
+fn conflicts(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Vec<Conflict> {
     let mut by_name: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
     for task in &ctx.tasks {
         by_name.entry(&task.name).or_default().push(task);
@@ -1005,8 +994,8 @@ fn conflicts_v3(
         .filter(|(_, group)| group.len() > 1)
         .map(|(name, group)| {
             let selected = select_task_entry(ctx, overrides, &group);
-            let fqn_of = |task: &Task| super::labels::fqn(task.source, &task.name, schema_version);
-            ConflictV3 {
+            let fqn_of = |task: &Task| super::labels::fqn(task.source, &task.name);
+            Conflict {
                 kind: "duplicate-task-name",
                 reason: format!(
                     "{count} sources define `{name}`; lowest (source_priority={priority}, \
@@ -1018,7 +1007,7 @@ fn conflicts_v3(
                 ),
                 selected: fqn_of(selected),
                 selector: name.to_string(),
-                severity: SeverityV3::Info,
+                severity: Severity::Info,
                 shadowed: group
                     .iter()
                     .filter(|task| !std::ptr::eq(**task, selected))
@@ -1037,11 +1026,11 @@ fn display_depth(depth: usize) -> String {
     }
 }
 
-fn diagnostic_v3(warning: &DetectionWarning) -> DiagnosticV3 {
-    DiagnosticV3 {
+fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
+    Diagnostic {
         code: warning.source(),
         message: warning.detail(),
-        severity: SeverityV3::Warning,
+        severity: Severity::Warning,
         source: Some(warning.source()),
         task: None,
     }
@@ -1088,7 +1077,7 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{DoctorReportV3, rfc3339_utc};
+    use super::{DoctorReport, rfc3339_utc};
     use crate::resolver::ResolutionOverrides;
     use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
@@ -1129,16 +1118,16 @@ mod tests {
     #[test]
     fn v3_report_carries_contract_constants() {
         let ctx = context(vec![]);
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["kind"], "runner.doctor");
-        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["schema_version"], 1);
         assert_eq!(json["overrides"]["quiet"], serde_json::json!(false));
         assert!(
             json["$schema"]
                 .as_str()
-                .is_some_and(|s| s.contains("doctor.v3"))
+                .is_some_and(|s| s.contains("doctor.schema.json"))
         );
         assert_eq!(json["resolution"]["fqn_policy"], "exact-only");
         assert_eq!(json["project"]["workspace"], serde_json::Value::Null);
@@ -1152,7 +1141,7 @@ mod tests {
     #[test]
     fn v3_report_lists_rust_ecosystem_with_high_confidence() {
         let ctx = context(vec![]);
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let eco = &json["ecosystems"][0];
@@ -1166,7 +1155,7 @@ mod tests {
         let mut alias = task("t", TaskSource::CargoAliases);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias, task("t", TaskSource::Justfile)]);
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let conflict = &json["conflicts"][0];
@@ -1186,7 +1175,7 @@ mod tests {
         let mut alias = task("t", TaskSource::CargoAliases);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias]);
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let task = &json["tasks"][0];
@@ -1212,7 +1201,7 @@ mod tests {
                 .any(|pm| pm.ecosystem() == Ecosystem::Node),
             "precondition: no Node PM detected"
         );
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let ecosystems = json["ecosystems"].as_array().expect("ecosystems array");
@@ -1242,7 +1231,7 @@ mod tests {
                 .any(|pm| pm.ecosystem() == Ecosystem::Python),
             "precondition: no Python PM detected"
         );
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let ecosystems = json["ecosystems"].as_array().expect("ecosystems array");
@@ -1260,7 +1249,7 @@ mod tests {
     #[test]
     fn v3_report_probes_detected_pms_as_tools() {
         let ctx = context(vec![]);
-        let report = DoctorReportV3::build(&ctx, &ResolutionOverrides::default(), false);
+        let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let tool = &json["tools"][0];
