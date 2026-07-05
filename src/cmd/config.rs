@@ -37,17 +37,29 @@ fn init(dir: &Path, force: bool) -> Result<i32> {
         );
         return Ok(2);
     }
-    // Line 1 is a `#:schema` directive (derived from the crate's repository)
-    // so editors with a TOML language server get autocompletion with no setup.
-    let contents = format!(
-        "#:schema {}\n{}",
-        crate::schema::config_schema_url(),
-        config::INIT_TEMPLATE,
-    );
+    // config::INIT_TEMPLATE carries its own repo-relative `#:schema` pragma
+    // (for editing this repo's copy) — swap it for the real published URL
+    // rather than stacking a second pragma line in the user's project.
+    let body = strip_leading_schema_pragma(config::INIT_TEMPLATE);
+    let contents = format!("#:schema {}\n\n{body}", crate::schema::config_schema_url());
     fs::write(&target, contents)
         .with_context(|| format!("failed to write {}", target.display()))?;
     println!("{} {}", "wrote".green().bold(), target.display());
     Ok(0)
+}
+
+/// Strips a leading `#:schema ...` pragma line (plus one following blank
+/// line) from `template`, or returns it unchanged if it doesn't start with
+/// one. Not tied to the exact pragma text, so it keeps working if the
+/// repo-relative path in `schemas/runner.init.toml` ever changes.
+fn strip_leading_schema_pragma(template: &str) -> &str {
+    let Some(rest) = template.strip_prefix("#:schema ") else {
+        return template;
+    };
+    let Some((_, after_line)) = rest.split_once('\n') else {
+        return template;
+    };
+    after_line.strip_prefix('\n').unwrap_or(after_line)
 }
 
 /// `runner config show` — render the effective config (file values merged
@@ -152,6 +164,14 @@ mod tests {
                 && first.ends_with("schemas/runner.toml.schema.json"),
             "line 1 must be the schema directive, got: {first:?}"
         );
+        // INIT_TEMPLATE carries its own repo-relative `#:schema` pragma (for
+        // editing schemas/runner.init.toml in this repo); it must be swapped
+        // for the absolute one above, not stacked alongside it.
+        assert_eq!(
+            written.matches("#:schema").count(),
+            1,
+            "exactly one #:schema directive, got:\n{written}"
+        );
         // The scaffold must itself be valid (the directive is a comment, and
         // everything else is commented out → an empty, all-defaults config).
         assert_eq!(
@@ -159,6 +179,21 @@ mod tests {
             0,
             "scaffolded template must validate:\n{written}"
         );
+    }
+
+    #[test]
+    fn strip_leading_schema_pragma_removes_pragma_and_blank_line() {
+        let template = "#:schema ./runner.toml.schema.json\n\n# runner.toml\n[pm]\n";
+        assert_eq!(
+            super::strip_leading_schema_pragma(template),
+            "# runner.toml\n[pm]\n"
+        );
+    }
+
+    #[test]
+    fn strip_leading_schema_pragma_leaves_non_pragma_content_untouched() {
+        let template = "# runner.toml\n[pm]\n";
+        assert_eq!(super::strip_leading_schema_pragma(template), template);
     }
 
     #[test]

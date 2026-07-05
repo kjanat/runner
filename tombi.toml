@@ -50,4 +50,4 @@ strict  = true
 
 [[schemas]]
 path    = "./schemas/runner.toml.schema.json"
-include = ["runner.toml"]
+include = ["runner.toml", "schemas/runner.init.toml"]

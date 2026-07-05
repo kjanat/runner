@@ -139,6 +139,23 @@ pub(crate) enum FallbackPolicy {
     Error,
 }
 
+impl FallbackPolicy {
+    /// Every variant, in the order [`Self::label`]'s callers should list
+    /// them. Single source of truth for
+    /// [`super::policies::parse_fallback_label`] and any surface that
+    /// needs to advertise or validate against the same closed set.
+    pub(crate) const ALL: [Self; 3] = [Self::Probe, Self::Npm, Self::Error];
+
+    /// The `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback` label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Probe => "probe",
+            Self::Npm => "npm",
+            Self::Error => "error",
+        }
+    }
+}
+
 /// Install-time lifecycle-script execution policy for `runner install`.
 ///
 /// Lifecycle/build scripts (`postinstall`, native-extension compilation,
@@ -175,6 +192,24 @@ pub(crate) enum ScriptPolicy {
     Allow,
 }
 
+impl ScriptPolicy {
+    /// The two labels a user can actually type — `Default` is the
+    /// internal "unset" sentinel, never a valid `[install].scripts` /
+    /// `RUNNER_INSTALL_SCRIPTS` value. Single source of truth for
+    /// [`super::overrides::parse_script_policy_label`].
+    pub(crate) const SETTABLE: [Self; 2] = [Self::Deny, Self::Allow];
+
+    /// The user-facing label, or `None` for [`Self::Default`] (never
+    /// user-settable — see [`Self::SETTABLE`]).
+    pub(crate) const fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Deny => Some("deny"),
+            Self::Allow => Some("allow"),
+        }
+    }
+}
+
 /// How to react when manifest declaration (step 5) and lockfile (step 6)
 /// disagree about which package manager the project uses.
 ///
@@ -195,6 +230,24 @@ pub(crate) enum MismatchPolicy {
     /// Bail with [`super::ResolveError::MismatchPolicyError`]. Intended for
     /// CI guardrails where a mismatch should block the run.
     Error,
+}
+
+impl MismatchPolicy {
+    /// Every variant, in the order [`Self::label`]'s callers should list
+    /// them. Single source of truth for
+    /// [`super::policies::parse_mismatch_label`] and any surface that
+    /// needs to advertise or validate against the same closed set.
+    pub(crate) const ALL: [Self; 3] = [Self::Warn, Self::Ignore, Self::Error];
+
+    /// The `--on-mismatch` / `RUNNER_ON_MISMATCH` / `[resolution].on_mismatch`
+    /// label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Ignore => "ignore",
+            Self::Error => "error",
+        }
+    }
 }
 
 /// A package-manager override plus the source the user set it from.

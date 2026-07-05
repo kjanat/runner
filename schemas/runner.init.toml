@@ -1,0 +1,65 @@
+#:schema ./runner.toml.schema.json
+
+# runner.toml — project task-runner configuration.
+# Docs: https://runner.kjanat.dev
+#
+# Every key below is commented out, showing either its built-in default or an
+# illustrative example value. Uncomment and edit the ones you want to pin.
+# Precedence, highest first:
+#   CLI flags  >  RUNNER_* env vars  >  this file  >  manifest declarations.
+
+# `[pm]` section — per-ecosystem package manager overrides.
+[pm]
+# node = "pnpm"   # npm | yarn | pnpm | bun | deno
+# python = "uv"   # uv | poetry | pipenv
+
+# `[tasks]` section — persistent task-source preference for ambiguous task
+# names (a name that exists under more than one source, e.g. a `package.json`
+# script *and* a `turbo` task).
+#
+# Both knobs speak the same label vocabulary: a label is a task runner
+# (`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,
+# `deno`, …), or a source name (`package.json`, `deno`, …). Package-manager
+# labels map to the script source they run (`bun` → `package.json`).
+# Selection here is **rank-only**: it never hard-rejects an unlisted source,
+# it only reorders. An explicit CLI qualifier (`package.json:test`),
+# `--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.
+[tasks]
+# prefer = ["turbo", "bun"]   # global order: turbo, then package.json (bun)
+# overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order
+
+# `[install]` section — restrict which detected package managers
+# `runner install` runs with. Absent or empty installs every detected
+# PM (the default). Overridden by `RUNNER_INSTALL_PMS`.
+#
+# Unlike `[pm]` (which scopes *script dispatch* per ecosystem), this
+# scopes the *install fan-out*: in a polyglot repo where both `bun` and
+# `deno` would write `node_modules`, `pms = ["bun"]` keeps install to bun.
+[install]
+# pms = ["bun"]   # only install with these; each must be detected
+# scripts = "deny"   # deny | allow  (absent = each PM's own default)
+
+# `[resolution]` section — resolver policy knobs.
+[resolution]
+# fallback = "probe"   # probe (PATH probe) | npm (legacy) | error
+# on_mismatch = "warn"   # warn | ignore | error (exit 2)
+
+# `[chain]` section — failure policy for `run -s/-p` chains and
+# `runner install <tasks>`.
+[chain]
+# keep_going = false   # run every task despite failures (same as -k)
+# kill_on_fail = false   # parallel: kill siblings on first failure (same as -K)
+
+# `[github]` section — GitHub Actions integration. Both knobs only take
+# effect under GitHub Actions (gated at the call site by
+# `actions_rs::env::is_github_actions`); in a normal terminal nothing here
+# changes behavior.
+[github]
+# group_output = true   # wrap each task's output in a collapsible ::group::
+# group_parallel = true   # buffer parallel tasks, print each as one block
+
+# `[parallel]` section — how parallel (`-p`) chains present their output
+# **outside** GitHub Actions. (Under GitHub Actions, see
+# `[github].group_parallel` instead.)
+[parallel]
+# grouped = false   # buffer + print each task as one block on completion

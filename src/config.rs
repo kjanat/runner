@@ -49,69 +49,14 @@ pub(crate) const CONFIG_FILENAME: &str = "runner.toml";
 /// precedence first: the directory itself (`""`) and its `.config/` subdir.
 pub(crate) const CONFIG_DIRS: [&str; 2] = ["", ".config"];
 
-/// Starter `runner.toml` scaffolded by `runner config init`. Every knob is
-/// present, set to its built-in default, and commented out — uncommenting a
-/// line is the only edit needed to override it. Keep in sync with the
-/// section structs below; `config init` is the most discoverable docs we
-/// ship, so a missing knob here is effectively an undocumented feature.
-pub(crate) const INIT_TEMPLATE: &str = r#"# runner.toml — project task-runner configuration.
-# Docs: https://runner.kjanat.dev
-#
-# Every key below shows its built-in default and is commented out. Uncomment
-# and edit the ones you want to pin. Precedence, highest first:
-#   CLI flags  >  RUNNER_* env vars  >  this file  >  manifest declarations.
-
-# Force the package manager per ecosystem, overriding lockfile detection.
-[pm]
-# node = "pnpm"          # npm | pnpm | yarn | bun | deno
-# python = "uv"          # uv | poetry | pipenv
-
-# Persistent preference for which source runs an ambiguous task name (a name
-# that exists under more than one source — e.g. a package.json script AND a
-# turbo task). Labels are runner names, package-manager names (bun, npm, ...),
-# or source names (package.json). Rank-only: unlisted sources still run.
-[tasks]
-# prefer = ["turbo", "bun"]                      # global order: turbo, then package.json (bun)
-# overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order
-
-# Deprecated — use [tasks] above. Legacy ranked allow-list of task runners that
-# also *restricts* candidates (a same-named task under an unlisted runner is
-# rejected). Still honored for existing configs; prints a deprecation warning.
-[task_runner]
-# prefer = ["just", "turbo"]   # turbo, nx, make, just, task, mise, bacon
-
-# Restrict which detected package managers `runner install` runs. Empty/absent
-# installs every detected PM. Overridden by RUNNER_INSTALL_PMS (comma-separated).
-# `scripts` controls install-time lifecycle scripts: "deny" skips them where the
-# PM allows it (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces
-# them on where the PM can express it (npm/yarn-berry/deno). bun and pnpm (>=10)
-# deny fine but can't force scripts on: their dependency build scripts are gated
-# by a manifest allowlist runner won't touch, so only "allow" warns there.
-# Overridden by RUNNER_INSTALL_SCRIPTS, then the --no-scripts / --scripts flags.
-[install]
-# pms = ["bun"]                # only install with these; each must be detected
-# scripts = "deny"             # deny | allow  (absent = each PM's own default)
-
-# Resolver policy knobs.
-[resolution]
-# fallback = "probe"     # probe (PATH probe) | npm (legacy) | error
-# on_mismatch = "warn"   # warn | error (exit 2) | ignore  (manifest vs lockfile)
-
-# Failure policy for `-s`/`-p` task chains and `install <tasks>`.
-# keep_going and kill_on_fail are mutually exclusive — setting both is an error.
-[chain]
-# keep_going = false     # run every task despite failures (same as -k)
-# kill_on_fail = false   # parallel: kill siblings on first failure (same as -K)
-
-# GitHub Actions output grouping. Both keys take effect only under Actions.
-[github]
-# group_output = true    # wrap each task's output in a collapsible ::group::
-# group_parallel = true  # buffer parallel tasks, print each as one block
-
-# Parallel (`-p`) output presentation outside GitHub Actions.
-[parallel]
-# grouped = false        # buffer + print each task as one block on completion
-"#;
+/// Starter `runner.toml` scaffolded by `runner config init`. Generated from
+/// [`RunnerConfig`]'s schemars metadata (section/field doc comments) plus a
+/// small hand-picked value/hint table — see
+/// `cmd::schema::render_init_template` — so a field can't silently ship
+/// without scaffold coverage. Regenerate with `just gen-schema` after
+/// changing a section struct; a drift-guard test enforces this file stays
+/// in sync.
+pub(crate) const INIT_TEMPLATE: &str = include_str!("../schemas/runner.init.toml");
 
 /// Parsed `runner.toml` content plus the absolute path it was loaded from.
 #[derive(Debug, Clone)]
@@ -138,13 +83,16 @@ pub(crate) struct RunnerConfig {
     /// `[pm]` — per-ecosystem package-manager overrides.
     #[serde(default)]
     pub pm: PmSection,
+    /// `[tasks]` — persistent task-source preference (global order + per-task pins).
+    #[serde(default)]
+    pub tasks: TasksSection,
     /// `[task_runner]` — task-runner preferences. Deprecated; superseded
     /// by [`Self::tasks`].
     #[serde(default, rename = "task_runner")]
     pub task_runner: TaskRunnerSection,
-    /// `[tasks]` — persistent task-source preference (global order + per-task pins).
+    /// `[install]` — restrict which detected PMs `runner install` runs.
     #[serde(default)]
-    pub tasks: TasksSection,
+    pub install: InstallSection,
     /// `[resolution]` — resolver-policy knobs.
     #[serde(default)]
     pub resolution: ResolutionSection,
@@ -157,9 +105,6 @@ pub(crate) struct RunnerConfig {
     /// `[parallel]` — presentation of parallel (`-p`) chain output.
     #[serde(default)]
     pub parallel: ParallelSection,
-    /// `[install]` — restrict which detected PMs `runner install` runs.
-    #[serde(default)]
-    pub install: InstallSection,
 }
 
 /// `[install]` section — restrict which detected package managers
@@ -205,11 +150,10 @@ pub(crate) struct InstallSection {
 
 /// `[chain]` section — failure policy for `run -s/-p` chains and
 /// `runner install <tasks>`.
-///
-/// `Option<bool>` rather than `bool` so the resolver can distinguish
-/// "user explicitly set false" from "user didn't say": env-overrides-
-/// config layering means `[chain].keep_going = false` plus
-/// `RUNNER_KEEP_GOING=1` resolves to `true`.
+// Fields are `Option<bool>` rather than `bool` so the resolver can
+// distinguish "user explicitly set false" from "user didn't say":
+// env-overrides-config layering means `[chain].keep_going = false` plus
+// `RUNNER_KEEP_GOING=1` resolves to `true`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(
     feature = "schema",
@@ -292,7 +236,7 @@ const fn default_github_group_parallel() -> bool {
 
 /// `[parallel]` section — how parallel (`-p`) chains present their output
 /// **outside** GitHub Actions. (Under GitHub Actions, see
-/// [`GitHubSection::group_parallel`].)
+/// `[github].group_parallel` instead.)
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(
     feature = "schema",
@@ -335,8 +279,7 @@ pub(crate) struct PmSection {
     pub python: Option<String>,
 }
 
-/// `[task_runner]` section — **deprecated**. Use [`TasksSection`] (`[tasks]`)
-/// instead.
+/// `[task_runner]` section — **deprecated**. Use `[tasks]` instead.
 ///
 /// Kept for backward compatibility: existing `[task_runner].prefer` files
 /// keep working (and emit a deprecation warning), but `[tasks].prefer` is the
@@ -862,13 +805,21 @@ mod tests {
     #[test]
     fn known_schema_matches_init_template_sections_and_fields() {
         // Guard KNOWN_SCHEMA against drift in both directions, at section AND
-        // field granularity. The scaffold ships every knob (commented out), so
-        // its sections/fields are the canonical set; a field missing from
-        // KNOWN_SCHEMA makes `config init` write a file that warns about its
-        // own keys, while a stale KNOWN_SCHEMA entry lists a field nobody can
-        // set. Equality catches either, so adding a struct field forces the
-        // template and KNOWN_SCHEMA to be updated alongside it.
+        // field granularity. The scaffold ships every non-deprecated knob
+        // (commented out), so its sections/fields are the canonical set
+        // modulo deprecated sections (see DEPRECATED_SECTIONS below), which
+        // `render_init_template` deliberately omits so new users never get
+        // handed one; a field missing from KNOWN_SCHEMA makes `config init`
+        // write a file that warns about its own keys, while a stale
+        // KNOWN_SCHEMA entry lists a field nobody can set. Equality catches
+        // either, so adding a struct field forces the template and
+        // KNOWN_SCHEMA to be updated alongside it.
         use std::collections::{BTreeMap, BTreeSet};
+
+        // Sections KNOWN_SCHEMA recognizes (for backward-compat parsing) but
+        // that `render_init_template` intentionally leaves out of the
+        // scaffold because they're deprecated.
+        const DEPRECATED_SECTIONS: &[&str] = &["task_runner"];
 
         // Walk the template into section -> {field names it emits}.
         let mut template: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -901,7 +852,7 @@ mod tests {
             }
         }
 
-        let known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
+        let mut known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
             .iter()
             .map(|(name, fields)| {
                 (
@@ -910,11 +861,15 @@ mod tests {
                 )
             })
             .collect();
+        for section in DEPRECATED_SECTIONS {
+            known.remove(*section);
+        }
 
         assert_eq!(
             template, known,
-            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA exactly — keep the section \
-             structs, the scaffold template, and KNOWN_SCHEMA in sync when adding a knob"
+            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA (minus DEPRECATED_SECTIONS) \
+             exactly — keep the section structs, the scaffold template, and KNOWN_SCHEMA in sync \
+             when adding a knob"
         );
     }
 

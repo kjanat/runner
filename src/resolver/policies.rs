@@ -39,14 +39,15 @@ pub(super) const ENV_BOOL_FALSY: &[&str] = &["0", "false", "no", "off"];
 pub(super) const ENV_BOOL_TRUTHY: &[&str] = &["1", "true", "yes", "on"];
 
 pub(super) fn parse_fallback_label(raw: &str) -> Result<FallbackPolicy> {
-    match raw {
-        "probe" => Ok(FallbackPolicy::Probe),
-        "npm" => Ok(FallbackPolicy::Npm),
-        "error" => Ok(FallbackPolicy::Error),
-        other => Err(anyhow!(
-            "unknown fallback policy {other:?}; expected one of probe, npm, error",
-        )),
-    }
+    FallbackPolicy::ALL
+        .into_iter()
+        .find(|policy| policy.label() == raw)
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown fallback policy {raw:?}; expected one of {}",
+                join_labels(FallbackPolicy::ALL.iter().map(|p| p.label())),
+            )
+        })
 }
 
 pub(super) fn resolve_fallback_policy(
@@ -201,14 +202,15 @@ pub(super) fn parse_tasks_overrides(
 }
 
 pub(super) fn parse_mismatch_label(raw: &str) -> Result<MismatchPolicy> {
-    match raw {
-        "warn" => Ok(MismatchPolicy::Warn),
-        "error" => Ok(MismatchPolicy::Error),
-        "ignore" => Ok(MismatchPolicy::Ignore),
-        other => Err(anyhow!(
-            "unknown on-mismatch policy {other:?}; expected one of warn, error, ignore",
-        )),
-    }
+    MismatchPolicy::ALL
+        .into_iter()
+        .find(|policy| policy.label() == raw)
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown on-mismatch policy {raw:?}; expected one of {}",
+                join_labels(MismatchPolicy::ALL.iter().map(|p| p.label())),
+            )
+        })
 }
 
 pub(super) fn resolve_mismatch_policy(

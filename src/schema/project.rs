@@ -10,9 +10,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::labels::flat_source_label;
-use crate::resolver::{
-    FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides, Resolver,
-};
+use crate::resolver::{OverrideOrigin, ResolutionOverrides, Resolver};
 use crate::tool::node::{ManifestSource, detect_pm_from_manifest};
 use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource};
 
@@ -267,8 +265,8 @@ impl OverridesView {
                 origin: origin_label(&o.origin),
             }),
             prefer_runners: overrides.prefer_runners.iter().map(|r| r.label()).collect(),
-            fallback: fallback_label(overrides.fallback),
-            on_mismatch: mismatch_label(overrides.on_mismatch),
+            fallback: overrides.fallback.label(),
+            on_mismatch: overrides.on_mismatch.label(),
             explain: overrides.explain,
             no_warnings: overrides.no_warnings,
         }
@@ -444,22 +442,6 @@ fn origin_label(origin: &OverrideOrigin) -> String {
         OverrideOrigin::CliFlag => "cli".to_string(),
         OverrideOrigin::EnvVar => "env".to_string(),
         OverrideOrigin::ConfigFile { path } => format!("config:{}", path.display()),
-    }
-}
-
-const fn fallback_label(policy: FallbackPolicy) -> &'static str {
-    match policy {
-        FallbackPolicy::Probe => "probe",
-        FallbackPolicy::Npm => "npm",
-        FallbackPolicy::Error => "error",
-    }
-}
-
-const fn mismatch_label(policy: MismatchPolicy) -> &'static str {
-    match policy {
-        MismatchPolicy::Warn => "warn",
-        MismatchPolicy::Error => "error",
-        MismatchPolicy::Ignore => "ignore",
     }
 }
 

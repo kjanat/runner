@@ -24,8 +24,13 @@ use crate::types::ProjectContext;
 ///
 /// # Errors
 ///
-/// Propagates `Resolver::resolve_node_pm` errors when the configured fallback policy is `error` and
-/// nothing is on `$PATH`. Always succeeds for the `probe`/`npm` fallback policies on real systems.
+/// A `Resolver::resolve_node_pm` failure (e.g. `--fallback error` with
+/// nothing on `$PATH`) is embedded in the report rather than propagated:
+/// the JSON path serializes `DoctorReport::build`, which keeps the
+/// resolver's `Result` as part of the report, and the human path builds
+/// `Project` the same way. This can only return `Err` when JSON
+/// serialization itself fails, which does not happen for these types in
+/// practice.
 pub(crate) fn doctor(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,

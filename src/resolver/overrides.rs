@@ -362,14 +362,21 @@ fn parse_install_scripts(sources: &OverrideSources<'_>) -> Result<ScriptPolicy> 
 /// Returns an error naming the (sanitized) value when it is neither `deny`
 /// nor `allow`.
 fn parse_script_policy_label(raw: &str) -> Result<ScriptPolicy> {
-    match raw.trim() {
-        "deny" => Ok(ScriptPolicy::Deny),
-        "allow" => Ok(ScriptPolicy::Allow),
-        _ => Err(anyhow!(
-            "unknown script policy \"{}\"; expected \"deny\" or \"allow\"",
-            sanitize_raw_label(raw),
-        )),
-    }
+    let trimmed = raw.trim();
+    ScriptPolicy::SETTABLE
+        .into_iter()
+        .find(|policy| policy.label() == Some(trimmed))
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown script policy \"{}\"; expected \"{}\"",
+                sanitize_raw_label(raw),
+                ScriptPolicy::SETTABLE
+                    .iter()
+                    .filter_map(|p| p.label())
+                    .collect::<Vec<_>>()
+                    .join("\" or \""),
+            )
+        })
 }
 
 /// Validate a loaded `runner.toml` in isolation — no CLI or environment
