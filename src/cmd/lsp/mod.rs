@@ -190,8 +190,26 @@ impl Server {
         let Some(text) = self.documents.get(uri).filter(|_| is_runner_toml(uri)) else {
             return Vec::new();
         };
-        analysis::completion(&LineIndex::new(text), &self.schema, text, pos)
+        analysis::completion(
+            &LineIndex::new(text),
+            &self.schema,
+            text,
+            pos,
+            document_dir(uri).as_deref(),
+        )
     }
+}
+
+/// The document's directory for a `file:` URI, anchoring project-task
+/// discovery. Non-file URIs (or a rootless path) yield `None`.
+fn document_dir(uri: &Uri) -> Option<std::path::PathBuf> {
+    if uri.scheme().is_some_and(|s| s.as_str() != "file") {
+        return None;
+    }
+    let path = std::path::Path::new(uri.path().as_str());
+    path.parent()
+        .filter(|parent| parent.is_absolute())
+        .map(std::path::Path::to_path_buf)
 }
 
 /// Whether `uri`'s basename is `runner.toml` or its dotfile form, at any depth —
@@ -214,5 +232,29 @@ fn send_diagnostics(connection: &Connection, uri: Uri, diagnostics: Vec<lsp_type
             method: lsp_types::notification::PublishDiagnostics::METHOD.to_string(),
             params,
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use lsp_types::Uri;
+
+    use super::document_dir;
+
+    #[test]
+    fn document_dir_takes_the_file_uri_parent() {
+        let uri = Uri::from_str("file:///home/user/proj/runner.toml").expect("uri");
+        assert_eq!(
+            document_dir(&uri).as_deref(),
+            Some(std::path::Path::new("/home/user/proj"))
+        );
+    }
+
+    #[test]
+    fn document_dir_rejects_non_file_schemes() {
+        let uri = Uri::from_str("untitled:Untitled-1").expect("uri");
+        assert_eq!(document_dir(&uri), None);
     }
 }

@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- `runner lsp` completes `[tasks.overrides]` entry keys with the
+  project's own task names (discovered from the document's directory,
+  same detection as the CLI), each carrying its source and description.
+  Works both under the `[tasks.overrides]` header and as a dotted
+  `overrides.<task>` key in `[tasks]`; names that aren't bare TOML keys
+  (e.g. `build:web`) insert quoted. Dotted `overrides.<task> =` values
+  now complete the source-label vocabulary like their
+  `[tasks.overrides]` equivalents.
+
 ### Fixed
 
 - `runner lsp` no longer offers field completions after a dotted key

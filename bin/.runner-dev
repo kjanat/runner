@@ -44,7 +44,7 @@ target_dir="${script_dir}/../target/runner-dev"
 
 exec cargo run --locked --quiet \
 	--bin "${invoked_name}" \
-	--features=run,man,schema \
+	--features=run,man,schema,lsp \
 	--manifest-path="${manifest}" \
 	--target-dir="${target_dir}" \
 	-- "$@"

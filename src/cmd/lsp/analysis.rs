@@ -5,6 +5,9 @@
 //! am I in, and am I on a key or a value?" — which drives both hover lookups and
 //! completion candidate sets without a full document parse.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionItemTag, Documentation, Hover, HoverContents,
     MarkupContent, MarkupKind, Position,
@@ -170,12 +173,14 @@ fn describe_field(schema: &SchemaIndex, section: &str, key: &str) -> Option<(Str
     Some((format!("[{section}].{key}"), body))
 }
 
-/// Completion candidates for the cursor.
+/// Completion candidates for the cursor. `project_dir` anchors project-task
+/// discovery for `[tasks.overrides]` entry keys.
 pub(super) fn completion(
     index: &LineIndex,
     schema: &SchemaIndex,
     text: &str,
     pos: Position,
+    project_dir: Option<&Path>,
 ) -> Vec<CompletionItem> {
     let cursor = analyze(index, text, pos);
     match cursor.shape {
@@ -183,34 +188,115 @@ pub(super) fn completion(
         LineShape::Value { key, in_array } => {
             value_items(schema, cursor.section.as_deref(), &key, in_array)
         }
-        LineShape::Key => key_items(index, schema, cursor.section.as_deref(), text, pos),
-        LineShape::Empty => cursor.section.as_deref().map_or_else(
-            || header_items(schema, "", true),
-            |section| field_items(schema, Some(section), None),
+        LineShape::Key => key_items(
+            index,
+            schema,
+            cursor.section.as_deref(),
+            text,
+            pos,
+            project_dir,
         ),
+        LineShape::Empty => match cursor.section.as_deref() {
+            None => header_items(schema, "", true),
+            Some("tasks.overrides") => task_key_items(project_dir, None),
+            Some(section) => field_items(schema, Some(section), None),
+        },
     }
 }
 
-/// Completion on the key side of a line. A dotted key (`group_output.`)
-/// completes nothing — TOML reads it as a key *path*, and no section has
-/// enumerable sub-keys (`[tasks].overrides` entries are user-chosen names).
-/// The typed token is replaced via an explicit text edit so a client can
-/// only ever substitute it, never append to it (a stale list left open
-/// after a backspace would otherwise paste at its old anchor).
+/// Completion on the key side of a line. In `[tasks.overrides]` (or after
+/// `overrides.` in `[tasks]`) the keys are the project's own task names, so
+/// they complete from task discovery over the document's directory; any
+/// other dotted key completes nothing — TOML reads it as a key *path*, and
+/// no other section has enumerable sub-keys. The typed token is replaced
+/// via an explicit text edit so a client can only ever substitute it, never
+/// append to it (a stale list left open after a backspace would otherwise
+/// paste at its old anchor).
 fn key_items(
     index: &LineIndex,
     schema: &SchemaIndex,
     section: Option<&str>,
     text: &str,
     pos: Position,
+    project_dir: Option<&Path>,
 ) -> Vec<CompletionItem> {
     let Some((token, range)) = key_token(index, text, pos) else {
-        return field_items(schema, section, None);
+        return match section {
+            Some("tasks.overrides") => task_key_items(project_dir, None),
+            _ => field_items(schema, section, None),
+        };
     };
-    if token.contains('.') {
-        return Vec::new();
+    match (section, token.rsplit_once('.')) {
+        (Some("tasks.overrides"), None) => task_key_items(project_dir, Some(range)),
+        // `overrides.<task>` as a dotted key inside `[tasks]`: complete the
+        // task name after the dot.
+        (Some("tasks"), Some(("overrides", partial))) => {
+            let after_dot = lsp_types::Range {
+                start: Position {
+                    line: range.end.line,
+                    character: range.end.character
+                        - u32::try_from(partial.chars().count()).unwrap_or(0),
+                },
+                end: range.end,
+            };
+            task_key_items(project_dir, Some(after_dot))
+        }
+        (_, Some(_)) => Vec::new(),
+        (_, None) => field_items(schema, section, Some(range)),
     }
-    field_items(schema, section, Some(range))
+}
+
+/// Key completions for `[tasks.overrides]` entries: the project's own task
+/// names, discovered from `project_dir` with the same detection the CLI
+/// uses. Names that aren't bare TOML keys insert quoted.
+fn task_key_items(
+    project_dir: Option<&Path>,
+    replace: Option<lsp_types::Range>,
+) -> Vec<CompletionItem> {
+    let Some(dir) = project_dir else {
+        return Vec::new();
+    };
+    // First source wins on duplicate names, matching dispatch display.
+    let mut tasks: BTreeMap<String, (&'static str, Option<String>)> = BTreeMap::new();
+    for task in crate::detect::detect(dir).tasks {
+        tasks
+            .entry(task.name)
+            .or_insert_with(|| (task.source.label(), task.description));
+    }
+    tasks
+        .into_iter()
+        .map(|(name, (source, description))| {
+            let new_text = format!("{} = ", toml_key(&name));
+            CompletionItem {
+                text_edit: replace.map(|range| {
+                    lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                        range,
+                        new_text: new_text.clone(),
+                    })
+                }),
+                insert_text: Some(new_text),
+                label: name,
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(source.to_string()),
+                documentation: description.map(doc_markup),
+                ..CompletionItem::default()
+            }
+        })
+        .collect()
+}
+
+/// Render a task name as a TOML key: bare when possible, quoted otherwise
+/// (e.g. `build:web` → `"build:web"`).
+fn toml_key(name: &str) -> String {
+    let bare = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare {
+        name.to_string()
+    } else {
+        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+    }
 }
 
 /// The whitespace-delimited token immediately before the cursor and its
@@ -400,6 +486,8 @@ fn code_values(section: &str, key: &str) -> Vec<(String, &'static str)> {
 
     match (section, key) {
         ("tasks", "prefer") | ("tasks.overrides", _) => label_vocab(),
+        // `overrides.<task> = ...` as a dotted key inside `[tasks]`.
+        ("tasks", key) if key.starts_with("overrides.") => label_vocab(),
         ("task_runner", "prefer") => TaskRunner::all()
             .iter()
             .map(|r| (r.label().to_string(), "task runner"))
@@ -484,7 +572,13 @@ mod tests {
     fn completion_offers_section_names_after_bracket() {
         let schema = SchemaIndex::build();
         let text = "[\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 1));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(0, 1),
+            None,
+        );
         let names = labels(&items);
         assert!(names.contains(&"tasks"), "{names:?}");
         assert!(names.contains(&"pm"), "{names:?}");
@@ -494,7 +588,13 @@ mod tests {
     fn completion_offers_field_names_in_a_section() {
         let schema = SchemaIndex::build();
         let text = "[tasks]\n\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 0));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 0),
+            None,
+        );
         let names = labels(&items);
         assert!(names.contains(&"prefer"), "{names:?}");
         assert!(names.contains(&"overrides"), "{names:?}");
@@ -504,7 +604,13 @@ mod tests {
     fn completion_offers_label_vocab_for_tasks_prefer() {
         let schema = SchemaIndex::build();
         let text = "[tasks]\nprefer = \n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 9));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 9),
+            None,
+        );
         let names = labels(&items);
         assert!(names.contains(&"turbo"), "{names:?}");
         assert!(names.contains(&"bun"), "{names:?}");
@@ -515,7 +621,13 @@ mod tests {
     fn completion_offers_schema_enum_for_pm_node() {
         let schema = SchemaIndex::build();
         let text = "[pm]\nnode = \n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 7),
+            None,
+        );
         let names = labels(&items);
         assert!(names.contains(&"bun"), "{names:?}");
         assert!(names.contains(&"pnpm"), "{names:?}");
@@ -525,7 +637,13 @@ mod tests {
     fn completion_offers_nested_section_for_tasks_overrides() {
         let schema = SchemaIndex::build();
         let text = "[\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 1));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(0, 1),
+            None,
+        );
         let names = labels(&items);
         assert!(names.contains(&"tasks.overrides"), "{names:?}");
     }
@@ -534,7 +652,13 @@ mod tests {
     fn array_field_value_completion_wraps_the_first_element() {
         let schema = SchemaIndex::build();
         let text = "[install]\npms = \n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 6));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 6),
+            None,
+        );
         let bun = items.iter().find(|i| i.label == "bun").expect("bun item");
         assert_eq!(bun.insert_text.as_deref(), Some("[\"bun\"]"));
     }
@@ -543,7 +667,13 @@ mod tests {
     fn array_field_value_completion_inside_brackets_stays_bare() {
         let schema = SchemaIndex::build();
         let text = "[install]\npms = [\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 7),
+            None,
+        );
         let bun = items.iter().find(|i| i.label == "bun").expect("bun item");
         assert_eq!(bun.insert_text.as_deref(), Some("\"bun\""));
     }
@@ -552,7 +682,13 @@ mod tests {
     fn dotted_header_completion_offers_only_the_parents_subtables() {
         let schema = SchemaIndex::build();
         let text = "[tasks.\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 7));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(0, 7),
+            None,
+        );
         assert_eq!(labels(&items), vec!["overrides"], "{items:?}");
         assert_eq!(items[0].insert_text.as_deref(), Some("overrides"));
     }
@@ -561,7 +697,13 @@ mod tests {
     fn dotted_header_without_subtables_completes_nothing() {
         let schema = SchemaIndex::build();
         let text = "[github.\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 8));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(0, 8),
+            None,
+        );
         assert!(items.is_empty(), "{:?}", labels(&items));
     }
 
@@ -569,7 +711,13 @@ mod tests {
     fn deprecated_section_completion_is_tagged() {
         let schema = SchemaIndex::build();
         let text = "[\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(0, 1));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(0, 1),
+            None,
+        );
         let item = items
             .iter()
             .find(|i| i.label == "task_runner")
@@ -585,7 +733,13 @@ mod tests {
     fn dotted_key_completes_nothing() {
         let schema = SchemaIndex::build();
         let text = "[github]\ngroup_output.\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 13));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 13),
+            None,
+        );
         assert!(items.is_empty(), "{:?}", labels(&items));
     }
 
@@ -593,7 +747,13 @@ mod tests {
     fn key_completion_replaces_the_typed_token() {
         let schema = SchemaIndex::build();
         let text = "[github]\ngroup_o\n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 7),
+            None,
+        );
         let item = items
             .iter()
             .find(|i| i.label == "group_output")
@@ -610,10 +770,93 @@ mod tests {
     }
 
     #[test]
+    fn tasks_overrides_keys_complete_project_task_names() {
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("lsp-overrides-tasks");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "dev": "vite", "build:web": "vite build" } }"#,
+        )
+        .expect("package.json should be written");
+
+        let schema = SchemaIndex::build();
+        let text = "[tasks.overrides]\n\n";
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 0),
+            Some(dir.path()),
+        );
+        let dev = items.iter().find(|i| i.label == "dev").expect("dev item");
+        assert_eq!(dev.insert_text.as_deref(), Some("dev = "));
+        // A name that isn't a bare TOML key inserts quoted.
+        let web = items
+            .iter()
+            .find(|i| i.label == "build:web")
+            .expect("build:web item");
+        assert_eq!(web.insert_text.as_deref(), Some("\"build:web\" = "));
+    }
+
+    #[test]
+    fn dotted_overrides_key_completes_task_names_after_the_dot() {
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("lsp-overrides-dotted");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "dev": "vite" } }"#,
+        )
+        .expect("package.json should be written");
+
+        let schema = SchemaIndex::build();
+        let text = "[tasks]\noverrides.\n";
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 10),
+            Some(dir.path()),
+        );
+        let dev = items.iter().find(|i| i.label == "dev").expect("dev item");
+        let Some(lsp_types::CompletionTextEdit::Edit(edit)) = &dev.text_edit else {
+            panic!("expected a text edit: {dev:?}");
+        };
+        // Replaces only the (empty) partial after the dot, not `overrides.`.
+        assert_eq!(
+            (edit.range.start.character, edit.range.end.character),
+            (10, 10),
+            "{edit:?}"
+        );
+    }
+
+    #[test]
+    fn dotted_overrides_value_completes_source_labels() {
+        let schema = SchemaIndex::build();
+        let text = "[tasks]\noverrides.dev = \n";
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 17),
+            None,
+        );
+        let names = labels(&items);
+        assert!(names.contains(&"just"), "{names:?}");
+    }
+
+    #[test]
     fn string_value_completions_insert_quoted_text() {
         let schema = SchemaIndex::build();
         let text = "[pm]\nnode = \n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 7));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 7),
+            None,
+        );
         let bun = items.iter().find(|i| i.label == "bun").expect("bun item");
         assert_eq!(bun.insert_text.as_deref(), Some("\"bun\""));
     }
@@ -622,7 +865,13 @@ mod tests {
     fn bool_value_completions_stay_unquoted() {
         let schema = SchemaIndex::build();
         let text = "[chain]\nkeep_going = \n";
-        let items = completion(&LineIndex::new(text), &schema, text, Position::new(1, 13));
+        let items = completion(
+            &LineIndex::new(text),
+            &schema,
+            text,
+            Position::new(1, 13),
+            None,
+        );
         let names = labels(&items);
         assert!(names.contains(&"true"), "{names:?}");
         let item = items.iter().find(|i| i.label == "true").expect("true item");
