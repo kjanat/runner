@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.19.1] - 2026-07-05
+
 ### Added
 
 - `runner lsp` completes `[tasks.overrides]` entry keys with the
@@ -1743,7 +1745,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/kjanat/runner/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/kjanat/runner/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/kjanat/runner/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/kjanat/runner/compare/v0.17.0...v0.18.0
