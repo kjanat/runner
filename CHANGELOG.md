@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
   superseded schema/example files are deleted.
 
+### Fixed
+
+- `runner schema --all` no longer surfaces a raw Rust panic if the
+  init-template generator ever drifts from `RunnerConfig` in a released
+  binary (the drift-guard test should already catch this before merge);
+  it now reports a clean CLI error instead.
+
 ## [0.18.1] - 2026-07-04
 
 ### Fixed

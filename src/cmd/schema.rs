@@ -87,10 +87,39 @@ fn write_all_schemas(dir: &Path) -> Result<()> {
     }
 
     let init_template_path = dir.join("runner.init.toml");
-    std::fs::write(&init_template_path, render_init_template())
+    std::fs::write(&init_template_path, checked_init_template()?)
         .with_context(|| format!("failed to write {}", init_template_path.display()))?;
 
     Ok(())
+}
+
+/// [`render_init_template`], but converted into a clean [`anyhow::Error`]
+/// instead of an unhandled panic reaching `runner schema --all`'s caller.
+/// `render_init_template` panics on `FIELD_TEMPLATE`/`RunnerConfig` drift
+/// by design (a hard, loud failure is exactly right for the drift-guard
+/// test that normally catches this before merge) — this is only the
+/// production CLI path's translation of that same failure into a
+/// `Result`, with the default panic hook suppressed so users see one
+/// clean error instead of a raw backtrace followed by one.
+fn checked_init_template() -> Result<String> {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(render_init_template);
+    std::panic::set_hook(previous_hook);
+
+    result.map_err(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| {
+                "render_init_template panicked with a non-string payload".to_string()
+            });
+        anyhow::anyhow!(
+            "internal error generating the runner.toml scaffold (FIELD_TEMPLATE has drifted from \
+             RunnerConfig): {message}"
+        )
+    })
 }
 
 /// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
