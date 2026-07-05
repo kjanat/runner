@@ -62,6 +62,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   accepted values documented per variant), not generic strings — editors
   and validators can now catch a typo'd override value against the
   committed schema instead of silently accepting anything.
+  `pm_by_ecosystem`'s keys are constrained the same way: the schema now
+  lists the seven ecosystem names explicitly instead of allowing any
+  string key.
 
 ### Fixed
 
