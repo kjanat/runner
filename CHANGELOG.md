@@ -56,12 +56,23 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
   superseded schema/example files are deleted.
 
+- `doctor --json` `overrides.fallback`, `on_mismatch`, `failure_policy`,
+  `script_policy`, `pm`, `pm_by_ecosystem`, `runner`, `prefer_runners`, and
+  `install_pms` are now closed enums in `doctor.schema.json` (with the
+  accepted values documented per variant), not generic strings — editors
+  and validators can now catch a typo'd override value against the
+  committed schema instead of silently accepting anything.
+
 ### Fixed
 
 - `runner schema --all` no longer surfaces a raw Rust panic if the
   init-template generator ever drifts from `RunnerConfig` in a released
   binary (the drift-guard test should already catch this before merge);
   it now reports a clean CLI error instead.
+- `doctor --json` `overrides.quiet` is now listed as required in
+  `doctor.schema.json`, like every other boolean override — it was kept
+  optional for compatibility with the pre-collapse `doctor` v3 schema,
+  which this same release already removed.
 
 ## [0.18.1] - 2026-07-04
 
