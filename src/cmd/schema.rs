@@ -108,18 +108,25 @@ fn checked_init_template() -> Result<String> {
     std::panic::set_hook(previous_hook);
 
     result.map_err(|payload| {
-        let message = payload
-            .downcast_ref::<&str>()
-            .map(|s| (*s).to_string())
-            .or_else(|| payload.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| {
-                "render_init_template panicked with a non-string payload".to_string()
-            });
+        let message = panic_message(&*payload);
         anyhow::anyhow!(
             "internal error generating the runner.toml scaffold (FIELD_TEMPLATE has drifted from \
              RunnerConfig): {message}"
         )
     })
+}
+
+/// Extracts a human-readable message from a caught panic payload, covering
+/// the two payload shapes `panic!`/`assert!` actually produce (`&str` for
+/// string literals, `String` for `format!`-built messages) and falling back
+/// to a fixed message for anything else (e.g. a payload built from
+/// `panic_any` with a non-string type).
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "render_init_template panicked with a non-string payload".to_string())
 }
 
 /// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
@@ -868,6 +875,27 @@ mod tests {
             generated, committed,
             "schemas/runner.init.toml has drifted from render_init_template() — run `just \
              gen-schema` and commit the result"
+        );
+    }
+
+    #[test]
+    fn panic_message_extracts_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(super::panic_message(&*payload), "boom");
+    }
+
+    #[test]
+    fn panic_message_extracts_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(String::from("boom"));
+        assert_eq!(super::panic_message(&*payload), "boom");
+    }
+
+    #[test]
+    fn panic_message_falls_back_for_non_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42_i32);
+        assert_eq!(
+            super::panic_message(&*payload),
+            "render_init_template panicked with a non-string payload"
         );
     }
 }

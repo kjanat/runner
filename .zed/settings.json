@@ -15,36 +15,16 @@
 							"url": "https://json-schema.org/draft/2020-12/schema",
 						},
 						{
-							"fileMatch": ["schemas/doctor.v1.example.json", "doctor.v1.example.json"],
-							"url": "./schemas/doctor.v1.schema.json",
+							"fileMatch": ["schemas/doctor.example.json", "doctor.example.json"],
+							"url": "./schemas/doctor.schema.json",
 						},
 						{
-							"fileMatch": ["schemas/doctor.v2.example.json", "doctor.v2.example.json"],
-							"url": "./schemas/doctor.v2.schema.json",
+							"fileMatch": ["schemas/list.example.json", "list.example.json"],
+							"url": "./schemas/list.schema.json",
 						},
 						{
-							"fileMatch": ["schemas/list.v1.example.json", "list.v1.example.json"],
-							"url": "./schemas/list.v1.schema.json",
-						},
-						{
-							"fileMatch": ["schemas/list.v2.example.json", "list.v2.example.json"],
-							"url": "./schemas/list.v2.schema.json",
-						},
-						{
-							"fileMatch": ["schemas/why.v1.example.json", "why.v1.example.json"],
-							"url": "./schemas/why.v1.schema.json",
-						},
-						{
-							"fileMatch": ["schemas/why.v2.example.json", "why.v2.example.json"],
-							"url": "./schemas/why.v2.schema.json",
-						},
-						{
-							"fileMatch": ["schemas/doctor.v3.example.json", "doctor.v3.example.json"],
-							"url": "./schemas/doctor.v3.schema.json",
-						},
-						{
-							"fileMatch": ["schemas/why.v3.example.json", "why.v3.example.json"],
-							"url": "./schemas/why.v3.schema.json",
+							"fileMatch": ["schemas/why.example.json", "why.example.json"],
+							"url": "./schemas/why.schema.json",
 						},
 					],
 				},
