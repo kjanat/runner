@@ -1396,6 +1396,30 @@ mod tests {
         // resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[("task_source_overrides", "task_source_pins")];
 
+        // Exhaustive destructure (no `..`): if ResolutionOverrides gains a
+        // field, this fails to compile until it's added here too, instead
+        // of RESOLUTION_OVERRIDES_FIELDS above silently staying stale.
+        let ResolutionOverrides {
+            pm: _,
+            pm_by_ecosystem: _,
+            runner: _,
+            prefer_runners: _,
+            prefer_sources: _,
+            task_source_overrides: _,
+            fallback: _,
+            on_mismatch: _,
+            no_warnings: _,
+            quiet: _,
+            explain: _,
+            failure_policy: _,
+            group_output: _,
+            github_group_parallel: _,
+            parallel_grouped: _,
+            install_pms: _,
+            script_policy: _,
+            parent_group_open: _,
+        } = ResolutionOverrides::default();
+
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
             .expect("Overrides schema should serialize");
         let top_properties = schema["properties"]

@@ -56,15 +56,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
   superseded schema/example files are deleted.
 
-- `doctor --json` `overrides.fallback`, `on_mismatch`, `failure_policy`,
-  `script_policy`, `pm`, `pm_by_ecosystem`, `runner`, `prefer_runners`, and
-  `install_pms` are now closed enums in `doctor.schema.json` (with the
-  accepted values documented per variant), not generic strings — editors
-  and validators can now catch a typo'd override value against the
-  committed schema instead of silently accepting anything.
-  `pm_by_ecosystem`'s keys are constrained the same way: the schema now
-  lists the seven ecosystem names explicitly instead of allowing any
-  string key.
+- `doctor --json` `overrides.fallback`, `on_mismatch`, `pm`,
+  `pm_by_ecosystem`, `runner`, and `prefer_runners` are now closed enums in
+  `doctor.schema.json` (with the accepted values documented per variant),
+  not generic strings — editors and validators can now catch a typo'd
+  override value against the committed schema instead of silently
+  accepting anything. `pm_by_ecosystem`'s keys are constrained the same
+  way: the schema now lists the seven ecosystem names explicitly instead
+  of allowing any string key. `failure_policy`, `script_policy`, and
+  `install_pms` (new fields, see Added above) get the same closed-enum
+  treatment from the start.
 
 ### Fixed
 
