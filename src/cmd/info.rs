@@ -114,7 +114,7 @@ fn title_line(arg0: Option<OsString>, stdout_is_terminal: bool) -> String {
 }
 
 fn release_url() -> String {
-    format!("{REPOSITORY_URL}releases/tag/v{VERSION}")
+    format!("{REPOSITORY_URL}/releases/tag/v{VERSION}")
 }
 
 fn bin_name_from_arg0(arg0: Option<OsString>) -> String {
@@ -162,7 +162,7 @@ mod tests {
     fn title_line_wraps_label_with_osc8_when_terminal() {
         let line = title_line(Some(OsString::from("run")), true);
 
-        assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner/\u{1b}\\"));
+        assert!(line.contains("\u{1b}]8;;https://github.com/kjanat/runner\u{1b}\\"));
         assert!(line.contains("run"));
         assert!(line.contains(&format!(
             "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
