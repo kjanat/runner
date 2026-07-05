@@ -33,9 +33,7 @@ use serde::Serialize;
 
 use super::labels::structured_source_label;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
-use crate::resolver::{
-    FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
-};
+use crate::resolver::{ResolutionOverrides, ResolutionStep, Resolver};
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
@@ -498,18 +496,10 @@ fn runner_info() -> RunnerInfo {
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     Overrides {
         explain: overrides.explain,
-        fallback: match overrides.fallback {
-            FallbackPolicy::Probe => "probe",
-            FallbackPolicy::Npm => "npm",
-            FallbackPolicy::Error => "error",
-        },
+        fallback: overrides.fallback.label(),
         no_warnings: overrides.no_warnings,
         quiet: overrides.quiet,
-        on_mismatch: match overrides.on_mismatch {
-            MismatchPolicy::Warn => "warn",
-            MismatchPolicy::Error => "error",
-            MismatchPolicy::Ignore => "ignore",
-        },
+        on_mismatch: overrides.on_mismatch.label(),
         pm: overrides.pm.as_ref().map(|o| o.pm.label()),
         pm_by_ecosystem: overrides
             .pm_by_ecosystem

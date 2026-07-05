@@ -3,7 +3,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "ChainSection": {
-      "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.\n\n`Option<bool>` rather than `bool` so the resolver can distinguish\n\"user explicitly set false\" from \"user didn't say\": env-overrides-\nconfig layering means `[chain].keep_going = false` plus\n`RUNNER_KEEP_GOING=1` resolves to `true`.",
+      "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.",
       "type": "object",
       "properties": {
         "keep_going": {
@@ -81,7 +81,7 @@
       "additionalProperties": false
     },
     "ParallelSection": {
-      "description": "`[parallel]` section — how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n[`GitHubSection::group_parallel`].)",
+      "description": "`[parallel]` section — how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n`[github].group_parallel` instead.)",
       "type": "object",
       "properties": {
         "grouped": {
@@ -161,7 +161,7 @@
       "additionalProperties": false
     },
     "TaskRunnerSection": {
-      "description": "`[task_runner]` section — **deprecated**. Use [`TasksSection`] (`[tasks]`)\ninstead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor — rank-only and able to name package managers, not just\ntask runners.",
+      "description": "`[task_runner]` section — **deprecated**. Use `[tasks]` instead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor — rank-only and able to name package managers, not just\ntask runners.",
       "deprecated": true,
       "type": "object",
       "properties": {

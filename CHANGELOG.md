@@ -21,6 +21,20 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   structured report (previously reachable via `--schema-version 3`); the
   flat v1/v2 shape is gone from both. `--schema-version` now only accepts
   `1`; `2`/`3` are rejected.
+- `runner config init`'s scaffold is now generated from `RunnerConfig`'s
+  schemars metadata instead of hand-typed: section headers and their
+  leading comments come straight from the section structs' doc comments,
+  and every enum-valued field's inline hint (`pm.node`, `pm.python`,
+  `resolution.fallback`, `resolution.on_mismatch`, `install.scripts`,
+  `task_runner.prefer`) is generated from the same types the resolver
+  parses those values with, not hand-typed prose. A config field, or an
+  accepted value for one of these, can no longer ship without scaffold
+  coverage — drift-guard tests fail the build instead. A few section
+  descriptions read slightly differently as a result. `FallbackPolicy`,
+  `MismatchPolicy`, and `ScriptPolicy` gained real `label()`/`ALL` (or
+  `SETTABLE`) methods, replacing four separate hardcoded copies of their
+  accepted strings (parse function, two display call sites, and now the
+  scaffold) with one.
 
 ### Removed
 

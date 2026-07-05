@@ -1,5 +1,6 @@
 //! `runner schema` — emit committed JSON Schemas (feature `schema`).
 
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::Path;
 
@@ -85,7 +86,366 @@ fn write_all_schemas(dir: &Path) -> Result<()> {
         write_json(Some(&dir.join(document.filename)), &document.value)?;
     }
 
+    let init_template_path = dir.join("runner.init.toml");
+    std::fs::write(&init_template_path, render_init_template())
+        .with_context(|| format!("failed to write {}", init_template_path.display()))?;
+
     Ok(())
+}
+
+/// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
+#[derive(Clone, Copy)]
+enum FieldHint {
+    /// Hand-written hint text — for booleans and fields whose accepted
+    /// values aren't a small fixed set ([`broader_vocab`] validates
+    /// their example value instead of enumerating every label inline).
+    Static(&'static str),
+    /// The field's real accepted-value set ([`accepted_labels`]),
+    /// pipe-joined bare, with an optional trailing suffix note.
+    ClosedSet { suffix: Option<&'static str> },
+    /// The field's real accepted-value set, each with a short
+    /// parenthetical note. Every label [`accepted_labels`] returns for
+    /// this field must have exactly one entry here — enforced by
+    /// `field_template_hints_cover_every_accepted_label`.
+    Annotated(&'static [(&'static str, &'static str)]),
+}
+
+/// (section, field) -> (commented-out value, hint). Every field
+/// [`crate::config::RunnerConfig`]'s schemars metadata declares must
+/// have an entry here, and every entry must name a real field — both
+/// enforced by [`render_init_template`]'s own assertions, which run
+/// whenever `committed_init_template_matches_generator` exercises it —
+/// so a new config field can't ship without scaffold coverage. Values
+/// are either the field's real built-in default (`fallback`,
+/// `on_mismatch`, the three booleans) or, where there's no single
+/// sensible default to show (an unset PM override, an empty preference
+/// list), a hand-picked illustrative example — validated against the
+/// real accepted vocabulary (`accepted_labels`/`broader_vocab`) by
+/// `field_template_values_use_real_accepted_labels`.
+const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
+    (
+        "pm",
+        "node",
+        r#""pnpm""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "pm",
+        "python",
+        r#""uv""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "tasks",
+        "prefer",
+        r#"["turbo", "bun"]"#,
+        FieldHint::Static("global order: turbo, then package.json (bun)"),
+    ),
+    (
+        "tasks",
+        "overrides",
+        r#"{ dev = "bun", build = "turbo" }"#,
+        FieldHint::Static("per-task pins beat the order"),
+    ),
+    (
+        "task_runner",
+        "prefer",
+        r#"["just", "turbo"]"#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "install",
+        "pms",
+        r#"["bun"]"#,
+        FieldHint::Static("only install with these; each must be detected"),
+    ),
+    (
+        "install",
+        "scripts",
+        r#""deny""#,
+        FieldHint::ClosedSet {
+            suffix: Some("(absent = each PM's own default)"),
+        },
+    ),
+    (
+        "resolution",
+        "fallback",
+        r#""probe""#,
+        FieldHint::Annotated(&[("probe", "PATH probe"), ("npm", "legacy"), ("error", "")]),
+    ),
+    (
+        "resolution",
+        "on_mismatch",
+        r#""warn""#,
+        FieldHint::Annotated(&[("warn", ""), ("ignore", ""), ("error", "exit 2")]),
+    ),
+    (
+        "chain",
+        "keep_going",
+        "false",
+        FieldHint::Static("run every task despite failures (same as -k)"),
+    ),
+    (
+        "chain",
+        "kill_on_fail",
+        "false",
+        FieldHint::Static("parallel: kill siblings on first failure (same as -K)"),
+    ),
+    (
+        "github",
+        "group_output",
+        "true",
+        FieldHint::Static("wrap each task's output in a collapsible ::group::"),
+    ),
+    (
+        "github",
+        "group_parallel",
+        "true",
+        FieldHint::Static("buffer parallel tasks, print each as one block"),
+    ),
+    (
+        "parallel",
+        "grouped",
+        "false",
+        FieldHint::Static("buffer + print each task as one block on completion"),
+    ),
+];
+
+/// Render a [`FieldHint`] into the trailing `# ...` comment text (without
+/// the leading `#`), or `None` for no hint.
+fn render_hint(section: &str, field: &str, hint: &FieldHint) -> String {
+    match hint {
+        FieldHint::Static(text) => (*text).to_string(),
+        FieldHint::ClosedSet { suffix } => {
+            let labels = accepted_labels(section, field).unwrap_or_else(|| {
+                panic!("{section}.{field}: ClosedSet needs an accepted_labels entry")
+            });
+            let joined = labels.join(" | ");
+            suffix.map_or_else(|| joined.clone(), |suffix| format!("{joined}  {suffix}"))
+        }
+        FieldHint::Annotated(notes) => {
+            let labels = accepted_labels(section, field).unwrap_or_else(|| {
+                panic!("{section}.{field}: Annotated needs an accepted_labels entry")
+            });
+            let annotated: Vec<&str> = notes.iter().map(|(label, _)| *label).collect();
+            assert!(
+                annotated == labels,
+                "{section}.{field}: Annotated labels {annotated:?} don't match the real accepted \
+                 set {labels:?} exactly (wrong order, or a variant was added/removed without \
+                 updating the annotation table)"
+            );
+            notes
+                .iter()
+                .map(|(label, note)| {
+                    if note.is_empty() {
+                        (*label).to_string()
+                    } else {
+                        format!("{label} ({note})")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        }
+    }
+}
+
+/// The real, closed accepted-value set for a config field with a small
+/// fixed vocabulary — derived from the same types/functions the resolver
+/// uses to parse that field, so it cannot drift from what's actually
+/// accepted. `None` for booleans and fields with no single fixed set
+/// (see [`broader_vocab`] for those with a large-but-real vocabulary).
+fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
+    use crate::resolver::{FallbackPolicy, MismatchPolicy, ScriptPolicy};
+    use crate::types::{Ecosystem, PackageManager, TaskRunner};
+
+    match (section, field) {
+        ("pm", "node") => Some(
+            PackageManager::all()
+                .iter()
+                .filter(|pm| matches!(pm.ecosystem(), Ecosystem::Node | Ecosystem::Deno))
+                .map(|pm| pm.label())
+                .collect(),
+        ),
+        ("pm", "python") => Some(
+            PackageManager::all()
+                .iter()
+                .filter(|pm| pm.ecosystem() == Ecosystem::Python)
+                .map(|pm| pm.label())
+                .collect(),
+        ),
+        ("task_runner", "prefer") => Some(TaskRunner::all().iter().map(|r| r.label()).collect()),
+        ("install", "scripts") => Some(
+            ScriptPolicy::SETTABLE
+                .iter()
+                .filter_map(|p| p.label())
+                .collect(),
+        ),
+        ("resolution", "fallback") => Some(FallbackPolicy::ALL.iter().map(|p| p.label()).collect()),
+        ("resolution", "on_mismatch") => {
+            Some(MismatchPolicy::ALL.iter().map(|p| p.label()).collect())
+        }
+        _ => None,
+    }
+}
+
+/// The real accepted-value vocabulary for a config field whose set is
+/// too large to enumerate as an inline hint (so [`FIELD_TEMPLATE`] keeps
+/// a hand-written [`FieldHint::Static`] hint for it), but whose example
+/// *value* should still be checked against something real rather than
+/// trusted blind. `None` for fields with neither a closed nor a broader
+/// vocabulary to check against (plain booleans).
+fn broader_vocab(section: &str, field: &str) -> Option<Vec<&'static str>> {
+    match (section, field) {
+        ("install", "pms") => Some(
+            crate::types::PackageManager::all()
+                .iter()
+                .map(|pm| pm.label())
+                .collect(),
+        ),
+        ("tasks", "prefer" | "overrides") => Some(crate::types::task_source_labels()),
+        _ => None,
+    }
+}
+
+/// Assert every string leaf in a [`FIELD_TEMPLATE`] `value` literal is a
+/// real accepted value for `section.field` — [`accepted_labels`] when the
+/// field has a closed vocabulary, else [`broader_vocab`], else no check
+/// (plain booleans have neither). `value` parses directly as a bare TOML
+/// value expression (scalar, array, or inline table) — the same syntax
+/// it's spliced into after `field = ` in the real scaffold.
+fn assert_value_uses_real_labels(section: &str, field: &str, value: &str) {
+    let Some(vocab) = accepted_labels(section, field).or_else(|| broader_vocab(section, field))
+    else {
+        return;
+    };
+
+    let parsed: toml::Value = value.parse().unwrap_or_else(|err| {
+        panic!("{section}.{field}: value {value:?} is not valid TOML: {err}")
+    });
+    let mut leaves = Vec::new();
+    collect_string_leaves(&parsed, &mut leaves);
+
+    for leaf in leaves {
+        assert!(
+            vocab.contains(&leaf.as_str()),
+            "{section}.{field}: example value {value:?} uses {leaf:?}, which isn't in the real \
+             accepted set {vocab:?}"
+        );
+    }
+}
+
+fn collect_string_leaves(value: &toml::Value, out: &mut Vec<String>) {
+    match value {
+        toml::Value::String(s) => out.push(s.clone()),
+        toml::Value::Array(items) => items.iter().for_each(|v| collect_string_leaves(v, out)),
+        toml::Value::Table(map) => map.values().for_each(|v| collect_string_leaves(v, out)),
+        _ => {}
+    }
+}
+
+const INIT_TEMPLATE_HEADER: &str = r"# runner.toml — project task-runner configuration.
+# Docs: https://runner.kjanat.dev
+#
+# Every key below is commented out, showing either its built-in default or an
+# illustrative example value. Uncomment and edit the ones you want to pin.
+# Precedence, highest first:
+#   CLI flags  >  RUNNER_* env vars  >  this file  >  manifest declarations.
+";
+
+/// Render the `runner.toml` scaffold `runner config init` writes.
+///
+/// Walks [`crate::config::RunnerConfig`]'s schemars metadata — section
+/// order and doc-comment descriptions come straight from the struct, so
+/// a field can't be silently forgotten or its prose silently drift from
+/// the type. [`FIELD_TEMPLATE`] supplies the one thing schemars can't:
+/// which value to show commented-out.
+///
+/// # Panics
+///
+/// Panics if `RunnerConfig`'s schema is malformed (a property without a
+/// `$defs` `$ref`) or a schema field has no [`FIELD_TEMPLATE`] entry —
+/// both indicate a real bug the generator should surface loudly, not
+/// paper over, since this only ever runs under `just gen-schema`.
+pub(crate) fn render_init_template() -> String {
+    let schema = serde_json::to_value(schemars::schema_for!(crate::config::RunnerConfig))
+        .expect("RunnerConfig schema should serialize");
+    let top_properties = schema["properties"]
+        .as_object()
+        .expect("RunnerConfig schema must have top-level properties");
+    let defs = schema["$defs"]
+        .as_object()
+        .expect("RunnerConfig schema must have $defs");
+
+    let mut out = INIT_TEMPLATE_HEADER.to_string();
+    let mut used = std::collections::HashSet::with_capacity(FIELD_TEMPLATE.len());
+    for (section, section_schema) in top_properties {
+        let def_name = section_schema["$ref"]
+            .as_str()
+            .and_then(|r| r.strip_prefix("#/$defs/"))
+            .unwrap_or_else(|| panic!("{section}: expected a $defs $ref in the schema"));
+        let def = &defs[def_name];
+        let description = def["description"].as_str().unwrap_or_default();
+
+        out.push('\n');
+        for line in description.lines() {
+            if line.is_empty() {
+                out.push_str("#\n");
+            } else {
+                out.push_str("# ");
+                out.push_str(&strip_intra_doc_links(line));
+                out.push('\n');
+            }
+        }
+        let _ = writeln!(out, "[{section}]");
+
+        let properties = def["properties"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{def_name}: expected a properties object"));
+        for field in properties.keys() {
+            let &(entry_section, entry_field, value, hint) = FIELD_TEMPLATE
+                .iter()
+                .find(|(s, f, ..)| s == section && f == field)
+                .unwrap_or_else(|| panic!("{section}.{field}: missing FIELD_TEMPLATE entry"));
+            used.insert((entry_section, entry_field));
+            assert_value_uses_real_labels(section, field, value);
+            let hint = render_hint(section, field, &hint);
+            let _ = writeln!(out, "# {field} = {value}   # {hint}");
+        }
+    }
+
+    let orphaned: Vec<String> = FIELD_TEMPLATE
+        .iter()
+        .filter(|&&(s, f, ..)| !used.contains(&(s, f)))
+        .map(|(s, f, ..)| format!("{s}.{f}"))
+        .collect();
+    assert!(
+        orphaned.is_empty(),
+        "FIELD_TEMPLATE has entries for fields RunnerConfig no longer declares: {orphaned:?} — \
+         remove them"
+    );
+
+    out
+}
+
+/// Rewrite a rustdoc intra-doc link (`` [`Type::field`] ``) into plain
+/// backticked text (`` `Type::field` ``) — the square brackets signal a
+/// hyperlink to rustdoc/schemars consumers, but read as stray punctuation
+/// in a plain-text scaffold comment.
+fn strip_intra_doc_links(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("[`") {
+        out.push_str(&rest[..start]);
+        let after_bracket = &rest[start + 1..];
+        let Some(end) = after_bracket.find("`]") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        out.push_str(&after_bracket[..=end]);
+        rest = &after_bracket[end + 2..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn schema_documents() -> Result<Vec<SchemaDocument>> {
@@ -467,6 +827,18 @@ mod tests {
             super::provider_labels(),
             "schemas/why.schema.json: committed ProviderLabel enum has drifted from \
              cmd::why::provider_label — run `just gen-schema` and commit the result"
+        );
+    }
+
+    #[test]
+    fn committed_init_template_matches_generator() {
+        let generated = super::render_init_template();
+        let committed = std::fs::read_to_string("schemas/runner.init.toml")
+            .expect("committed init template should be readable");
+        assert_eq!(
+            generated, committed,
+            "schemas/runner.init.toml has drifted from render_init_template() — run `just \
+             gen-schema` and commit the result"
         );
     }
 }
