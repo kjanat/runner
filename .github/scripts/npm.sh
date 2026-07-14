@@ -325,7 +325,7 @@ publish_allowed() {
 
 	local args=(publish --registry "${REGISTRY}" --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
 	if [[ "${DRY_RUN}" == "true" ]]; then args+=(--dry-run); fi
-	echo "+ npx -y npm@latest ${args[*]}  (cwd: ${dir})"
+	echo "+ npx -y npm@11 ${args[*]}  (cwd: ${dir})"
 	# Tolerate the TOCTOU race between the npm view check above and
 	# this publish: if another actor publishes the same version in
 	# the gap, npm exits with EPUBLISHCONFLICT and we treat that as a
@@ -337,10 +337,10 @@ publish_allowed() {
 	# captures the negation status (always 0), not npm's real exit
 	# code — silently masking real publish failures.
 	local output status=0
-	output=$(cd "${dir}" && timeout 120s npx -y npm@latest "${args[@]}" 2>&1) || status=$?
+	output=$(cd "${dir}" && timeout 120s npx -y npm@11 "${args[@]}" 2>&1) || status=$?
 	if [[ "${status}" -eq 124 ]]; then
 		printf '%s\n' "${output}" >&2
-		echo "error: 'npx -y npm@latest publish' for ${actual_name}@${version} timed out after 120s" >&2
+		echo "error: 'npx -y npm@11 publish' for ${actual_name}@${version} timed out after 120s" >&2
 		return 1
 	fi
 	if [[ "${status}" -ne 0 ]]; then
