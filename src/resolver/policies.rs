@@ -119,7 +119,7 @@ pub(super) fn parse_prefer_runners(config: Option<&LoadedConfig>) -> Result<Vec<
 ///    `uv`, …) → its [`PackageManager::owned_task_sources`] (`bun` →
 ///    `package.json`; `deno` → `deno.json` then `package.json`),
 /// 2. a **task runner** (`turbo`, `make`, `just`, `task`, `mise`, `bacon`) →
-///    its [`TaskRunner::task_source`] (`nx` resolves to nothing, it has no
+///    its [`TaskRunner::task_source`] (`nx` resolves to nothing; it has no
 ///    extractable source, which is recognized but contributes no source),
 /// 3. a **source name** (`package.json`, `pyproject.toml`, …) via
 ///    [`TaskSource::from_label`].
@@ -179,7 +179,7 @@ pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<Ta
 
 /// Parse `[tasks].overrides` into per-task source pins (task name → preferred
 /// [`TaskSource`]s, most-native first). Empty/missing → empty map. A label that
-/// names no task source (e.g. `nx`) is rejected here, a pin must be
+/// names no task source (e.g. `nx`) is rejected here: a pin must be
 /// actionable, unlike a `prefer` entry which may legitimately rank nothing.
 pub(super) fn parse_tasks_overrides(
     config: Option<&LoadedConfig>,
@@ -252,7 +252,7 @@ pub(super) fn resolve_mismatch_policy(
 
 /// Resolve a chain failure policy from CLI/env/config sources.
 ///
-/// `keep_going` and `kill_on_fail` are independent bool layers, CLI flag
+/// `keep_going` and `kill_on_fail` are independent bool layers: CLI flag
 /// presence beats env (explicit either polarity) beats `[chain]` config
 /// beats `false`. The env layer is presence-authoritative: an explicit
 /// `RUNNER_KEEP_GOING=0` overrides `[chain].keep_going = true` in config.
@@ -261,7 +261,7 @@ pub(super) fn resolve_mismatch_policy(
 /// is a `ResolveError::ConflictingFailurePolicy`), but *across* layers
 /// the stronger source wins the whole policy: `-k` on the command line
 /// beats a `[chain] kill_on_fail = true` in config rather than
-/// colliding with it, otherwise a config-pinned polarity would be
+/// colliding with it; otherwise a config-pinned polarity would be
 /// uncancellable from the CLI, contradicting CLI > env > config.
 pub(super) fn resolve_failure_policy(
     keep_going: ExplainSource<'_>,

@@ -80,7 +80,7 @@ pub(crate) fn source_anchor(source: TaskSource, root: &Path) -> Option<PathBuf> 
 /// a fixed executing binary resolve deterministically; `package.json` and
 /// `pyproject.toml` scripts depend on package-manager resolution, which the
 /// two callers perform differently (why: only for the selected candidate;
-/// doctor: project-wide), `node_pm`/`python_pm` take that result already
+/// doctor: project-wide). `node_pm`/`python_pm` take that result already
 /// resolved to a label.
 pub(crate) fn resolved_command(
     task: &Task,

@@ -30,7 +30,7 @@ pub(crate) fn test_cmd(args: &[String]) -> Command {
 /// run). [`ScriptDirective::Deny`] appends `--ignore-scripts`, additionally
 /// skipping the trusted ones. [`ScriptDirective::ForceOn`] adds nothing: bun
 /// re-enables dependency scripts only through the `trustedDependencies` manifest
-/// allowlist runner won't write, `cmd::install` warns instead of emitting a
+/// allowlist runner won't write, so `cmd::install` warns instead of emitting a
 /// misleading flag.
 pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("bun");

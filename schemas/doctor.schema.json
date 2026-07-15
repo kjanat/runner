@@ -356,10 +356,10 @@
       "additionalProperties": false
     },
     "MismatchPolicy": {
-      "description": "How to react when manifest declaration (step 5) and lockfile (step 6)\ndisagree about which package manager the project uses.\n\nSet via `--on-mismatch` / `RUNNER_ON_MISMATCH` /\n`[resolution].on_mismatch`. Independent from\n`devEngines.packageManager` `onFail`, that policy governs whether\nthe *declared* PM can actually run; this one governs whether the\nresolver tolerates the declaration disagreeing with the install\nstate at all.",
+      "description": "How to react when manifest declaration (step 5) and lockfile (step 6)\ndisagree about which package manager the project uses.\n\nSet via `--on-mismatch` / `RUNNER_ON_MISMATCH` /\n`[resolution].on_mismatch`. Independent from\n`devEngines.packageManager` `onFail`. That policy governs whether\nthe *declared* PM can actually run; this one governs whether the\nresolver tolerates the declaration disagreeing with the install\nstate at all.",
       "oneOf": [
         {
-          "description": "Emit a `package.json` warning, prefer the declaration (Corepack\nsemantics, the lockfile is most likely stale).",
+          "description": "Emit a `package.json` warning; prefer the declaration (Corepack\nsemantics, the lockfile is most likely stale).",
           "type": "string",
           "const": "warn"
         },
@@ -693,7 +693,7 @@
       "additionalProperties": false
     },
     "ScriptPolicy": {
-      "description": "Install-time lifecycle-script execution policy for `runner install`.\n\nLifecycle/build scripts (`postinstall`, native-extension compilation,\n…) are the primary supply-chain attack surface during dependency\ninstalls. This knob lets a project deny them across the package managers\nthat expose a skip mechanism, or force them on across the managers that\ncan express it, the latter matters because several package managers\n(npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.\n\nSet via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,\n`RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest\nfirst.",
+      "description": "Install-time lifecycle-script execution policy for `runner install`.\n\nLifecycle/build scripts (`postinstall`, native-extension compilation,\n…) are the primary supply-chain attack surface during dependency\ninstalls. This knob lets a project deny them across the package managers\nthat expose a skip mechanism, or force them on across the managers that\ncan express it. The latter matters because several package managers\n(npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.\n\nSet via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,\n`RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest\nfirst.",
       "oneOf": [
         {
           "description": "Leave each package manager at its own built-in default: npm,\nyarn-classic, pnpm (<10) and composer run dependency scripts, while\nbun, pnpm (>=10) and deno already deny them.",

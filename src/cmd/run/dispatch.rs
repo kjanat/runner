@@ -181,7 +181,7 @@ pub(super) fn resolve_dispatch(
     // candidate that isn't under one of the allowed sources is treated
     // as non-existent. A qualifier (`runner.json:task`) is the user
     // narrowing *to* a source explicitly and outranks the runner
-    // constraint, the qualified branch below applies its own match.
+    // constraint; the qualified branch below applies its own match.
     let restricted: Vec<_> = if qualifier.is_some() {
         found.clone()
     } else if let Some(allowed) = allowed_runner_sources(overrides) {
@@ -224,7 +224,7 @@ pub(super) fn resolve_dispatch(
             // file) but *before* PM resolution, so a local file still runs when
             // node-PM resolution would hard-error for reasons unrelated to it (a
             // strict devEngines/`packageManager` mismatch, an incompatible
-            // `--pm`), running `main.ts` via its runtime doesn't need the
+            // `--pm`); running `main.ts` via its runtime doesn't need the
             // package.json PM. Tasks already matched above (`restricted` is empty
             // here), so this never shadows a same-named task, and `bunx`/`npx`
             // never sees a local file.
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn resolve_dispatch_accepts_v3_cargo_alias_fqn() {
         // Schema v3 labels cargo alias tasks `cargo-alias`, so doctor/why
-        // print `root:cargo-alias#<name>`, that exact string must run.
+        // print `root:cargo-alias#<name>`; that exact string must run.
         let mut ctx = context();
         ctx.tasks.push(Task {
             name: "b".to_string(),
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn resolve_dispatch_github_spec_still_reaches_pm_exec() {
-        // `user/repo#ref` is a legit bunx/npx package spec, its prefix
+        // `user/repo#ref` is a legit bunx/npx package spec; its prefix
         // is not a source label, so it must keep flowing to PM-exec.
         let dispatch = resolve_dispatch(
             &context(),

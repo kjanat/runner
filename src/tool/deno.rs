@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn exec_uses_deno_x_passthrough() {
         // `runner --pm deno run npm:create-vite my-app` should build
-        // `deno x npm:create-vite my-app`, the `x` subcommand sits
+        // `deno x npm:create-vite my-app`; the `x` subcommand sits
         // before the target so Deno's `npx`-equivalent picks up the
         // user's verbatim args.
         let args = [String::from("npm:create-vite"), String::from("my-app")];

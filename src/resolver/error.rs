@@ -39,7 +39,7 @@ pub(crate) enum ResolveError {
         soft: bool,
     },
     /// `devEngines.packageManager` `onFail = error` rejected the
-    /// installed environment, either the declared binary is missing or
+    /// installed environment: either the declared binary is missing or
     /// its version doesn't satisfy the declared range.
     DevEnginesFailHard {
         /// The PM the manifest declared.

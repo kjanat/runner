@@ -23,7 +23,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// the installed major version is probed whenever either is requested. Yarn 2+
 /// (Berry) uses `--immutable` for frozen and the `YARN_ENABLE_SCRIPTS` env to
 /// toggle scripts (it dropped `--ignore-scripts` and has no per-dependency
-/// allowlist, `enableScripts` is a single global switch, so both deny and
+/// allowlist; `enableScripts` is a single global switch, so both deny and
 /// force-on are expressible). Yarn 1 / undetected falls back to the classic
 /// `--frozen-lockfile` and `--ignore-scripts` flags; Classic runs scripts by
 /// default and has no `--no-ignore-scripts`, so force-on is a no-op there.
@@ -104,7 +104,7 @@ fn parse_major_version(version: &str) -> Option<u32> {
 
 /// `yarn exec <args...>` (Yarn 2+) or `yarn run <args...>` (Yarn 1).
 ///
-/// Yarn Classic (v1) does not expose an `exec` subcommand,
+/// Yarn Classic (v1) does not expose an `exec` subcommand;
 /// `yarn run <bin>` is the documented way to run a binary out of
 /// `node_modules/.bin/` there. Yarn Berry (v2+) ships a dedicated
 /// `yarn exec` subcommand for the same job. We pick the right form

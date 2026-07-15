@@ -115,7 +115,7 @@ cmd_verify_asset() {
 	if [[ "${#missing[@]}" -gt 0 ]]; then
 		echo "error: build+upload for ${TARGET} reported success but these assets are not on release ${RELEASE_TAG}:" >&2
 		printf '  - %s\n' "${missing[@]}" >&2
-		echo "the build step produced no artifact, inspect its log for a silent no-op." >&2
+		echo "the build step produced no artifact; inspect its log for a silent no-op." >&2
 		exit 1
 	fi
 
@@ -151,7 +151,7 @@ cmd_verify_checksums() {
 	local tarballs=(*.tar.gz)
 	local sums=(*.sha256)
 
-	# Every tarball needs a matching .sha256 and vice versa, otherwise an
+	# Every tarball needs a matching .sha256 and vice versa; otherwise an
 	# unchecksummed binary could slip through to publish.
 	if [[ "${#tarballs[@]}" -eq 0 ]]; then
 		echo "error: no tarballs downloaded for ${RELEASE_TAG}" >&2

@@ -97,7 +97,7 @@ fn write_registrations(
 
 /// Resolve the sibling `run` binary next to the `runner` executable so the
 /// generated completion script can invoke it directly. Returns `None` when
-/// no sibling exists, the caller skips the `run` registration in that
+/// no sibling exists; the caller skips the `run` registration in that
 /// case rather than guessing at PATH resolution.
 fn sibling_run_binary(runner_exe: &Path) -> Option<PathBuf> {
     let parent = runner_exe.parent()?;
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn parse_shell_arg_accepts_absolute_path() {
         // Regression guard: `runner completions $SHELL` (which expands to
-        // a full path) must succeed, the stock clap `ValueEnum` parser
+        // a full path) must succeed; the stock clap `ValueEnum` parser
         // rejected anything but the bare name, so this is the whole reason
         // the custom parser exists.
         assert_eq!(parse_shell_arg("/usr/bin/zsh").unwrap(), Shell::Zsh);

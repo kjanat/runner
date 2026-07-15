@@ -31,7 +31,7 @@ pub(crate) fn why(
     task: &str,
     json: bool,
 ) -> Result<()> {
-    // Interpret the token exactly like `run` does, qualified syntax
+    // Interpret the token exactly like `run` does: qualified syntax
     // (`deno:lint`), FQN (`root:package.json#name`), and the exact-name
     // fallback for colon-named scripts all resolve here, so `why` can
     // explain the very dispatch `run` would perform for the same token.

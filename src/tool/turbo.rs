@@ -30,7 +30,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 ///
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Workspace-
 /// scoped entries like `"my-app#build"` are filtered out, while Root Task
-/// entries (`"//#lint"`) are surfaced as their bare name (`"lint"`), both
+/// entries (`"//#lint"`) are surfaced as their bare name (`"lint"`); both
 /// are invoked the same way as a plain task. JSONC syntax (line comments,
 /// block comments, trailing commas) is accepted under either filename,
 /// matching Turborepo's own parser.
@@ -91,7 +91,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// `--key=value`), values following a non-`=` flag, or args after a
 /// bare `--` end-of-options separator (turbo's `turbo run <task> --
 /// <args...>` forwarding pattern). Any shell control operator, redirect,
-/// or expansion token (`$`/backtick) rejects the match, they mean the
+/// or expansion token (`$`/backtick) rejects the match; they mean the
 /// script does more than dispatch to turbo.
 ///
 /// Purely a textual heuristic on the script body. Indirect invocations
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn extract_tasks_drops_malformed_root_task_keys() {
         // `//#` with no name and `//#a#b` (extra `#`) are not valid root
-        // tasks, drop them rather than surface a confusing entry.
+        // tasks; drop them rather than surface a confusing entry.
         let dir = TempDir::new("turbo-malformed-root");
         fs::write(
             dir.path().join("turbo.json"),
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn is_self_passthrough_rejects_extra_positional_target() {
-        // `turbo run build lint` runs both `build` and `lint`, invoking
+        // `turbo run build lint` runs both `build` and `lint`; invoking
         // through runner would silently drop `lint`, so don't classify
         // this as a passthrough.
         assert!(!is_self_passthrough("build", "turbo run build lint"));
@@ -712,7 +712,7 @@ mod tests {
     fn is_self_passthrough_rejects_quoted_expansion_after_flag() {
         // The exact form from the user's bug report:
         // `"build": "turbo run build \"${X}\""` decodes to
-        // `turbo run build "${X}"`, the quoted form must reject too.
+        // `turbo run build "${X}"`; the quoted form must reject too.
         assert!(!is_self_passthrough(
             "build",
             "turbo run build --filter \"${X}\""

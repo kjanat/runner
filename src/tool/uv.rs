@@ -36,7 +36,7 @@ pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
 ///
 /// Runs a tool from `PyPI` in an ephemeral environment without
 /// installing it permanently into the project venv. This is the
-/// right primitive for the arbitrary-command exec fallback,
+/// right primitive for the arbitrary-command exec fallback;
 /// `uv run` is for the project's own Python scripts /
 /// `pyproject.toml#project.scripts.<name>` entries, not for
 /// `npx`-style "fetch and run any binary."
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn exec_uses_uvx_passthrough() {
         // `runner --pm uv run ruff check` should build
-        // `uvx ruff check`, uvx is the `uv tool run` shorthand and
+        // `uvx ruff check`; uvx is the `uv tool run` shorthand and
         // is the npx-equivalent. `uv run` (the previous
         // implementation) only finds binaries already installed in
         // the project venv, which is a different code path.

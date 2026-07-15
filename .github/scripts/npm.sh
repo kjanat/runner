@@ -52,7 +52,7 @@ cmd_derive() {
 }
 
 # Install the packed tarballs into a scratch project and execute every
-# bin, runs on the exact bytes `npm publish` ships.
+# bin. Runs on the exact bytes `npm publish` ships.
 # Required env: RELEASE_TAG.
 cmd_smoke() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
@@ -123,9 +123,9 @@ cmd_smoke() {
 #   1. Hardcoded allowlist of expected directory names, a tampered
 #      artifact cannot smuggle extra package directories.
 #   2. Each package.json's `name` field must equal the expected
-#      scope/key, prevents republishing as an unexpected package.
+#      scope/key, which prevents republishing as an unexpected package.
 #   3. Each package.json's `version` field must equal the version
-#      derived from the trigger tag (trusted metadata), prevents
+#      derived from the trigger tag (trusted metadata), which prevents
 #      stamping arbitrary versions onto allowed packages.
 # Single source of truth: npm/targets.json. `experimental: true`
 # packages may legitimately be missing because their build matrix uses
@@ -159,7 +159,7 @@ cmd_publish() {
 	EXPECTED_VERSION="${RELEASE_TAG#v}"
 
 	# Refuse to proceed if the artifact contains anything outside the
-	# allowlist, that's either a misconfiguration or an attack.
+	# allowlist; that's either a misconfiguration or an attack.
 	local allowed_set=" ${FACADE} ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
 	local dir base
 	for dir in npm/dist/*/; do
@@ -198,7 +198,7 @@ cmd_publish() {
 	# Tier-1/2 are always required: the artifact is built by release.yml's
 	# build-dist (where missing tier-1/2 tarballs already fail loud),
 	# so a missing dir here means the artifact was tampered with or the
-	# build silently dropped a target, either case warrants a hard fail.
+	# build silently dropped a target; either case warrants a hard fail.
 	# Sub-packages first so the façade's optionalDependencies resolve on install.
 	for platform in "${REQUIRED_PLATFORMS[@]}"; do
 		publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" true
@@ -263,7 +263,7 @@ publish_allowed() {
 	# optionalDependencies validation. The facade is the only package that
 	# legitimately ships optionalDependencies (one entry per built platform
 	# package, all pinned to EXPECTED_VERSION). Platform packages must have
-	# none, a tampered platform package could otherwise smuggle attacker-
+	# none; a tampered platform package could otherwise smuggle attacker-
 	# controlled deps that npm would happily install transitively.
 	if [[ "${expected_name}" == "${FACADE}" ]]; then
 		local dep_name dep_version platform dep_entries expected_dep_set=" ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
@@ -306,7 +306,7 @@ publish_allowed() {
 		echo "package-url=https://npm.im/package/${actual_name}/v/${version}" >>"${GITHUB_OUTPUT}"
 	fi
 
-	# Skip if already published, npm versions are immutable, so reruns
+	# Skip if already published; npm versions are immutable, so reruns
 	# after a partial publish would otherwise fail on the first
 	# sub-package that already published. Bound the probe at 120s so a
 	# hung registry can't stall the whole publish job. Non-timeout

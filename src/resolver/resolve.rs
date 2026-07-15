@@ -1,6 +1,6 @@
 //! Resolution algorithm: the `impl Resolver` block plus the manifest or lockfile cross-checks that feed it.
 //!
-//! Pure logic only, parsing user input lives in [`super::overrides`] and
+//! Pure logic only. Parsing user input lives in [`super::overrides`] and
 //! [`super::policies`]; data types live in [`super::types`].
 
 use super::probe;
@@ -53,7 +53,7 @@ impl<'ctx> Resolver<'ctx> {
             if !o.pm.can_dispatch_node_scripts() {
                 // The user explicitly pinned a PM that can't dispatch
                 // package.json scripts. Falling through to step 4-7
-                // would silently disregard their intent, surface the
+                // would silently disregard their intent. Surface the
                 // mismatch as a hard error instead.
                 return Err(ResolveError::InvalidOverride {
                     value: o.pm.label().to_string(),
@@ -175,11 +175,11 @@ impl<'ctx> Resolver<'ctx> {
 /// Version checks that can't run (unparseable range, missing
 /// `--version` output, etc.) are skipped silently: the proposal says
 /// `onFail` enforces user intent, but blocking dispatch on an
-/// unverifiable constraint would be worse than continuing, the binary
+/// unverifiable constraint would be worse than continuing; the binary
 /// will surface the real problem at spawn time.
 ///
 /// Binary-presence and version-check side effects are injected so the
-/// `Error` branches stay exercisable in unit tests, `Error + missing`
+/// `Error` branches stay exercisable in unit tests: `Error + missing`
 /// and `Error + mismatched version` both `bail!`, which is impossible
 /// to cover otherwise without controlling the host `$PATH` and running
 /// `<pm> --version` against a real binary. Production callers wire in
@@ -286,7 +286,7 @@ const fn no_pm_found_hard() -> ResolveError {
 /// Compare a manifest declaration against the lockfile-signal recorded in
 /// [`ProjectContext`] and apply the configured [`MismatchPolicy`].
 ///
-/// - [`MismatchPolicy::Warn`], push a `PmMismatch` warning, declaration wins.
+/// - [`MismatchPolicy::Warn`], push a `PmMismatch` warning; declaration wins.
 /// - [`MismatchPolicy::Ignore`], declaration wins silently.
 /// - [`MismatchPolicy::Error`], bail with
 ///   [`ResolveError::MismatchPolicyError`] so the CLI exits with code 2.

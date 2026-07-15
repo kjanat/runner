@@ -52,7 +52,7 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
         .stderr(Stdio::inherit());
     // Mark children (and, by env inheritance, all descendants) when this
     // runner opens a GHA group around them, so a nested `runner`/`run`
-    // suppresses its own group, GHA groups don't nest. When we're already
+    // suppresses its own group; GHA groups don't nest. When we're already
     // nested the marker is in our inherited env, so children get it for free.
     if emits_group(overrides) {
         command.env(GROUP_ACTIVE_ENV, "1");
@@ -183,7 +183,7 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// group", which is slightly broader than "a literal `::group::` is open right
 /// now": it is also set in parallel-*streaming* mode, where the parent muxes
 /// child output behind a `[task] ` prefix instead of a group. Suppressing
-/// nested grouping is correct in every case, a nested group would otherwise
+/// nested grouping is correct in every case; a nested group would otherwise
 /// either nest-and-corrupt (grouped) or render as inert prefixed text
 /// (streaming).
 pub(crate) const GROUP_ACTIVE_ENV: &str = "RUNNER_GROUP_ACTIVE";
@@ -297,7 +297,7 @@ fn print_warning_slice(
 /// executor after all per-task resolutions have populated the sink.
 ///
 /// Sorted by `Display` form before emission so output is stable across
-/// runs, `HashSet` iteration order is unspecified, which made the
+/// runs; `HashSet` iteration order is unspecified, which made the
 /// warning block jump around between invocations of the same chain.
 pub(crate) fn emit_collected_warnings(
     warnings: &std::collections::HashSet<DetectionWarning>,
@@ -497,7 +497,7 @@ mod tests {
         // OS-level bare-name lookup must honor the PATH set on the
         // child Command (std documents this on `Command::new`). A
         // devDependency-style shim that exists only under the project's
-        // `node_modules/.bin` has to spawn, this is exactly the
+        // `node_modules/.bin` has to spawn; this is exactly the
         // "turbo.json task dies with ENOENT because turbo is only a
         // devDependency" report.
         let dir = TempDir::new("child-path-spawn");

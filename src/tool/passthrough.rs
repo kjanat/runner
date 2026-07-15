@@ -5,7 +5,7 @@
 //! `"build": "just build"` entry whose only purpose is to expose the
 //! `just` recipe under the package-manager script vocabulary.
 //!
-//! Detecting these lets the resolver (and shell completion) dedupe, when
+//! Detecting these lets the resolver (and shell completion) dedupe: when
 //! a `"build"` script is just `just build` and a `justfile` already
 //! exposes a real `build` recipe, listing both as separate candidates only
 //! adds noise.
@@ -58,7 +58,7 @@ const CANDIDATES: &[(TaskRunner, &str, Option<&str>)] = &[
 
 /// Conservative passthrough matcher: requires `command` to be exactly
 /// `<binary> [run_subcommand] <name> [args…]`, rejecting any tail with a
-/// shell-active token. Strict in the safe direction, a false negative
+/// shell-active token. Strict in the safe direction: a false negative
 /// just leaves a script visible; a false positive silently swallows one.
 fn simple_passthrough(
     name: &str,
@@ -98,7 +98,7 @@ fn simple_passthrough(
 /// arithmetic expansion, backtick substitution.
 ///
 /// Meta-characters are detected anywhere in the token (not just at the
-/// start) so glued forms like `--watch&&echo` and `arg>out` are caught,
+/// start) so glued forms like `--watch&&echo` and `arg>out` are caught;
 /// the shell tokenises those exactly as `--watch && echo` and
 /// `arg > out` respectively, so a passthrough wrapper that contains
 /// them is not actually a thin dispatch.
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn rejects_when_target_name_mismatches() {
-        // `just build` under a script named `dev` is doing real work, it
+        // `just build` under a script named `dev` is doing real work; it
         // dispatches to a different recipe, not the same-named one.
         assert!(detect_target("dev", "just build").is_none());
     }
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn rejects_when_tail_contains_glued_logical_and() {
-        // No whitespace around `&&`, the shell still parses this as
+        // No whitespace around `&&`: the shell still parses this as
         // `--watch && echo malicious`, so the wrapper isn't actually a
         // thin dispatch.
         assert!(detect_target("test", "just test --watch&&echo done").is_none());
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn rejects_when_body_contains_newline() {
         // Multi-line scripts are NOT thin passthroughs even if the
-        // first line happens to look like one, the second line is a
+        // first line happens to look like one; the second line is a
         // separate command. `split_whitespace` would otherwise
         // flatten the newline and let the trailing `echo owned`
         // masquerade as forwarded args.
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn rejects_when_body_contains_carriage_return() {
         // `\r\n` line endings (Windows editors) get the same
-        // treatment as `\n`, bash treats `\r` as a token separator
+        // treatment as `\n`; bash treats `\r` as a token separator
         // that can hide multi-line content.
         assert!(detect_target("build", "just build\r\necho owned").is_none());
     }
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn rejects_when_tail_contains_glob_star() {
-        // `src/*.js` is a pathname glob, bash expands it into the
+        // `src/*.js` is a pathname glob; bash expands it into the
         // matching file list before invoking `just`, so the wrapper
         // is doing real shell work.
         assert!(detect_target("build", "just build src/*.js").is_none());
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn rejects_when_tail_contains_brace_expansion() {
-        // `foo{1,2}` expands to `foo1 foo2`, extra args appear that
+        // `foo{1,2}` expands to `foo1 foo2`; extra args appear that
         // the user didn't literally write.
         assert!(detect_target("build", "just build foo{1,2}").is_none());
     }
@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn accepts_when_tail_is_plain_flags_only() {
-        // Plain `--watch` is fine, it's just an arg forwarded to the
+        // Plain `--watch` is fine; it's just an arg forwarded to the
         // underlying runner, no shell action.
         assert_eq!(
             detect_target("test", "just test --watch"),

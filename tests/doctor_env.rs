@@ -22,7 +22,7 @@ fn runner_binary() -> PathBuf {
 /// variable scrubbed, so only what a test sets explicitly reaches the
 /// child. A dev box exporting e.g. `RUNNER_NO_WARNINGS` or
 /// `RUNNER_FALLBACK` would otherwise flip these assertions. Matched
-/// case-insensitively, Windows env lookups ignore case.
+/// case-insensitively because Windows env lookups ignore case.
 fn runner_command() -> Command {
     let mut cmd = Command::new(runner_binary());
     for (key, _) in std::env::vars_os() {

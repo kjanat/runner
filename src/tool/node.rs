@@ -156,7 +156,7 @@ pub(crate) enum OnFail {
 
 impl OnFail {
     /// Canonical lowercase label used in `--json` output. Stable across
-    /// `Debug` changes, consumers can branch on the exact string.
+    /// `Debug` changes: consumers can branch on the exact string.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Ignore => "ignore",
@@ -336,7 +336,7 @@ pub(crate) enum VersionCheck {
 /// Spawns `<pm> --version`, parses the output, and runs
 /// [`semver::VersionReq::matches`]. Errors during any of those steps
 /// collapse to [`VersionCheck::Unverifiable`] so a partially-broken
-/// environment never blocks dispatch unnecessarily, `onFail = error` is
+/// environment never blocks dispatch unnecessarily. `onFail = error` is
 /// expected to handle the missing-binary case via the PATH probe; this
 /// helper is the *version* gate.
 pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> VersionCheck {
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn malformed_dev_engines_does_not_poison_scripts_or_pm() {
         // `devEngines` written as a Corepack-style string instead of the
-        // spec'd object is valid JSON with valid scripts, a strict parse
+        // spec'd object is valid JSON with valid scripts; a strict parse
         // used to abort the whole manifest (zero tasks + a false "not
         // valid JSON" warning) and lose the `packageManager` signal.
         let dir = TempDir::new("node-malformed-devengines");
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn parse_package_manager_spec_rejects_trailing_at_sign() {
-        // `"pnpm@"` is a typo (`pnpm@9` minus the version), treating
+        // `"pnpm@"` is a typo (`pnpm@9` minus the version); treating
         // it as "pnpm without a version constraint" silently hides
         // user intent. The parser must reject so the detection-layer
         // warning surfaces the verbatim value.
@@ -1033,7 +1033,7 @@ mod tests {
 
     #[test]
     fn detect_pm_from_manifest_array_trailing_unresolvable_does_not_downgrade_on_fail() {
-        // Earlier resolvable entry plus a trailing unresolvable name,
+        // Earlier resolvable entry plus a trailing unresolvable name:
         // the resolvable one must inherit the "last entry" default
         // (Error) because it *is* the last resolvable entry.
         use super::{OnFail, detect_pm_from_manifest};
@@ -1068,7 +1068,7 @@ mod tests {
         // every canary/nightly build fails a range that doesn't name one.
         assert!(clears(">=1.0.0", "1.99.0-nightly"));
         assert!(clears(">=1.2", "1.3.0-canary.20"));
-        // The range itself is still enforced, a prerelease doesn't buy a pass.
+        // The range itself is still enforced; a prerelease doesn't buy a pass.
         assert!(!clears(">=1.0.0", "0.9.0-beta"));
         assert!(!clears(">=2", "1.9.0-rc.1"));
         // Releases keep behaving exactly as before.
@@ -1093,7 +1093,7 @@ mod tests {
                 panic!("expected satisfaction, got mismatch: {declared} vs {actual}");
             }
             VersionCheck::Unverifiable { reason } => {
-                // `cargo` may not be on PATH in some CI environments,
+                // `cargo` may not be on PATH in some CI environments;
                 // accept the skip rather than fail the suite.
                 eprintln!("skipping: {reason}");
             }

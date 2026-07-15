@@ -92,7 +92,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   across a backspace) substitutes the token instead of pasting after it
   (`group_outputgroup_output =`).
 - `runner lsp` value completions inside an open string literal
-  (`prefer = ["ba`) insert the bare word instead of a quoted one, the
+  (`prefer = ["ba`) insert the bare word instead of a quoted one; the
   quotes are already typed (and auto-paired), so accepting previously
   produced `""bacon""`.
 - `runner lsp` is now comment-aware: no completions or hover at or after
@@ -127,7 +127,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `task_runner.prefer`) is generated from the same types the resolver
   parses those values with, not hand-typed prose. A config field, or an
   accepted value for one of these, can no longer ship without scaffold
-  coverage, drift-guard tests fail the build instead. A few section
+  coverage; drift-guard tests fail the build instead. A few section
   descriptions read slightly differently as a result. `FallbackPolicy`,
   `MismatchPolicy`, and `ScriptPolicy` gained real `label()`/`ALL` (or
   `SETTABLE`) methods, replacing four separate hardcoded copies of their
@@ -137,7 +137,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Removed
 
 - The v1/v2/v3 schema split. Not enough external adoption yet to justify
-  carrying three versions per surface, today's shape is the only one,
+  carrying three versions per surface. Today's shape is the only one,
   retroactively called v1. Committed schema files dropped their version
   suffix (`doctor.v3.schema.json` → `doctor.schema.json`, etc.); the 10
   superseded schema/example files are deleted.
@@ -145,12 +145,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `doctor --json` `overrides.fallback`, `on_mismatch`, `pm`,
   `pm_by_ecosystem`, `runner`, and `prefer_runners` are now closed enums in
   `doctor.schema.json` (with the accepted values documented per variant),
-  not generic strings, editors and validators can now catch a typo'd
+  not generic strings; editors and validators can now catch a typo'd
   override value against the committed schema instead of silently
   accepting anything. `pm_by_ecosystem`'s keys are constrained the same
   way: the schema now lists the seven ecosystem names explicitly instead
   of allowing any string key, and its values are plain (non-nullable)
-  package-manager labels, the report never emits a `null` there.
+  package-manager labels; the report never emits a `null` there.
   `failure_policy`, `script_policy`, and `install_pms` (new fields, see
   Added above) get the same closed-enum treatment from the start.
 
@@ -161,14 +161,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   binary (the drift-guard test should already catch this before merge);
   it now reports a clean CLI error instead.
 - `doctor --json` `overrides.quiet` is now listed as required in
-  `doctor.schema.json`, like every other boolean override, it was kept
+  `doctor.schema.json`, like every other boolean override; it was kept
   optional for compatibility with the pre-collapse `doctor` v3 schema,
   which this same release already removed.
 - `runner lsp` diagnostics for a wrong-typed known field (e.g.
   `pms = "bun"`) now point at the offending value instead of line one.
 - `runner lsp` value completion for sequence-typed fields
   (`[install].pms`, `[tasks].prefer`, `[task_runner].prefer`) wraps the
-  first element as `["bun"]` when no `[` is typed yet, accepting a
+  first element as `["bun"]` when no `[` is typed yet; accepting a
   completion previously inserted a bare scalar, minting the exact type
   error above. Inside an open `[` the element stays bare.
 - `runner lsp` header completion after a dotted partial (`[tasks.`) now
@@ -225,7 +225,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Added
 
 - FQN task syntax: the `root:<source>#<name>` identity that `doctor --json` /
-  `why --json` print for a task is now runnable,
+  `why --json` print for a task is now runnable;
   `run 'root:package.json#deno:importsmap'` (the `root:` scope prefix is
   optional) dispatches that exact task. Every source label of every schema
   version round-trips, including v3's `cargo-alias`, which previously named a
@@ -243,7 +243,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - A qualified or FQN miss (`deno:nope`, `package.json#nope`) is now a hard
   error in every path. Previously an FQN token fell through to the PM-exec
   fallback, where bunx/npx treated it as a package spec and resolved it off
-  the network, a typo could hang on registry resolution or download an
+  the network; a typo could hang on registry resolution or download an
   arbitrary package. Bare unmatched names still fall through; `user/repo#ref`
   package specs still work.
 - Single runs and chain pre-validation (`run -p`/`-s`) report a qualified
@@ -252,7 +252,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   misleading `did you mean …?` hint).
 - A CLI chain-failure flag now beats the opposite polarity from a lower
   layer: `run -s a b -k` with `[chain] kill_on_fail = true` in `runner.toml`
-  keeps going instead of aborting with a cross-source conflict, the config
+  keeps going instead of aborting with a cross-source conflict; the config
   polarity had no command-line escape hatch. Same-source conflicts
   (`-k -K`, both env vars, both config keys) still error.
 - Boolean `RUNNER_*` env vars (`RUNNER_QUIET`, `RUNNER_EXPLAIN`,
@@ -342,7 +342,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
     (`turbo`, `make`, …), package managers (`bun`, `npm`, … map to
     `package.json`; `deno` → `deno.json` then `package.json`), or source names
     (`package.json`). Unlike the old `[task_runner].prefer`, it never
-    hard-rejects an unlisted source, it only reorders ties.
+    hard-rejects an unlisted source; it only reorders ties.
   - `[tasks.overrides]`, per-task pins, e.g. `build = "turbo"`, `dev = "bun"`,
     that beat the global order for those names.
   - An explicit `source:task` qualifier, `--runner`, or `--pm`/`RUNNER_PM` still
@@ -360,7 +360,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- `runner install` gained a two-way install-time lifecycle-script control,
+- `runner install` gained a two-way install-time lifecycle-script control:
   lifecycle/build scripts are the primary supply-chain attack surface during
   dependency installs, and several package managers (npm, pnpm, …) are moving to
   scripts-off-by-default in upcoming majors, so projects need to deny *and*
@@ -375,7 +375,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
     and a bare `--allow-scripts` (allow all) for deno. Managers that already run
     scripts by default (composer, cargo, go, bundler, uv/poetry/pipenv,
     yarn-classic) are satisfied without a flag. bun and pnpm (>=10) can't be
-    forced on by a flag, their dependency build scripts are gated by a manifest
+    forced on by a flag; their dependency build scripts are gated by a manifest
     allowlist (`trustedDependencies` / `onlyBuiltDependencies`) that runner won't
     write, so they `warn:` instead of silently no-op'ing.
   - The two flags are mutually exclusive. Both the dropped-deny and the
@@ -395,7 +395,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   (`bin/tool`) are each run as the file when they match no task: a recognized
   source file runs via the detected runtime
   (`.ts`/`.mts`/`.cts`/`.js`/`.mjs`/`.cjs` via bun, `deno run`, or node, while
-  `.jsx`/`.tsx` run only via bun or deno, Node has no JSX transform, so a
+  `.jsx`/`.tsx` run only via bun or deno; Node has no JSX transform, so a
   node-only project reports a clear `node cannot run` error instead of
   building an unrunnable `node app.tsx`; `.py` via `uv run` or python; `.go`
   via `go run`), a `#!` shebang (including the `#!/usr/bin/env -S <interp>
@@ -404,7 +404,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   script is spawned directly, including an execute-only binary (Unix mode
   0111), whose unreadable shebang probe is treated as "no shebang" so the
   binary still spawns directly rather than hard-failing the run. A source file
-  carrying the exec bit but no shebang still runs via its runtime, a raw
+  carrying the exec bit but no shebang still runs via its runtime; a raw
   `execve` on shebang-less text fails `ENOEXEC`, so `chmod +x deploy.ts;
   run ./deploy.ts` dispatches `bun deploy.ts` rather than erroring (this also
   fixes whole-tree breakage on vfat/exfat/ntfs-3g mounts that report mode
@@ -431,7 +431,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   (`RUNNER_NO_WARNINGS`) suppress it.
 - `runner install -p <TASK> <TASK>` runs the post-install tasks in parallel
   (`-s` stays the default sequential). Install always runs first as the
-  prerequisite, never as a parallel sibling, then the tasks fan out. A
+  prerequisite, never as a parallel sibling; then the tasks fan out. A
   failed install still aborts the tasks unless `-k`; `-K` (kill siblings) now
   bites for the parallel post-install phase.
 
@@ -445,7 +445,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   the script relies on npm lifecycle build artifacts deno cannot honor. Now the
   forced PM's own source wins the conflict, most-native first: `RUNNER_PM=deno`
   picks `deno:check`, `--pm bun` picks `package.json:check`. The rule is general
-  across every PM, deno is one member, not a special case, and a PM that owns
+  across every PM; deno is one member, not a special case, and a PM that owns
   no task source (Bundler, Composer) re-orders nothing. Only conflicting
   same-name candidates are re-ordered; runs with no `--pm`/`RUNNER_PM` are
   unchanged. See https://github.com/kjanat/runner/issues/70.
@@ -517,7 +517,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Changed
 
 - `config validate` rejects a `[chain]` that sets both `keep_going` and
-  `kill_on_fail` true, the resolver already errored on this combination at
+  `kill_on_fail` true; the resolver already errored on this combination at
   dispatch time; validation now catches it statically against the file
   alone.
 - JSON Schema URLs rehosted from `https://kjanat.github.io/schemas/…` to
@@ -649,7 +649,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `remove` tasks (e.g. `test (t)`) instead of standing alone; both the
   canonical name and the short form still dispatch. Aliases that carry
   extra arguments (`bb`, `cl`, `rq`, …) keep their own rows. Promoting
-  `run`/`remove` can collide with a same-named `just`/other task, that
+  `run`/`remove` can collide with a same-named `just`/other task; that
   collision now surfaces in the conflict footer above rather than hiding.
 - `runner doctor --json` (v3) now probes package-manager and task-runner
   versions via `<tool> --version` (previously only the Node runtime
@@ -781,7 +781,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `/usr/share/fish/vendor_completions.d/{runner,run}.fish`. PowerShell
   on Linux has no autoload convention, so the pwsh script is installed
   at `/usr/share/runner/runner.ps1` for users to dot-source from their
-  `$PROFILE`. Completions are clap-dynamic, the shell shells out to
+  `$PROFILE`. Completions are clap-dynamic; the shell shells out to
   the binary for candidates, so tab-completing in a project picks up
   the *current* task list from `package.json` / `turbo.json` /
   `Justfile` / etc., not a static snapshot.
@@ -877,13 +877,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   exit code reflecting the first failure. `--kill-on-fail`
   (parallel only) terminates siblings immediately when one fails.
   `-k` and `--kill-on-fail` are mutually exclusive across CLI,
-  env, and config, conflicting layers surface
+  env, and config; conflicting layers surface
   `ResolveError::ConflictingFailurePolicy` with the offending
   source named.
 - `[chain]` section in `runner.toml` plus `RUNNER_KEEP_GOING` /
   `RUNNER_KILL_ON_FAIL` env-var mirrors. Same resolver-chain
   precedence as the rest of the policy knobs: CLI > env > config.
-  Env layer is presence-authoritative, `RUNNER_KEEP_GOING=0`
+  Env layer is presence-authoritative; `RUNNER_KEEP_GOING=0`
   overrides `[chain].keep_going = true` in config, not just the
   default.
 - Line-prefix multiplexer for parallel chain output. Each task's
@@ -937,7 +937,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Added
 
 - mise task extraction and dispatch. `mise` was previously
-  detection-only, `runner` listed it under "Task Runners" but its
+  detection-only; `runner` listed it under "Task Runners" but its
   tasks were invisible to `runner list` and `runner run <task>`.
   New `TaskSource::MiseToml` makes mise a first-class source: tasks
   declared in `mise.toml` / `.mise.toml` (and the `*.local.toml`,
@@ -1103,7 +1103,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   fires in parallel with binary builds and no longer waits on the npm
   publish chain to complete first. `release.yml` gains a final
   `publish-release` job that flips the draft GitHub release to
-  published once binaries and the `dist` artifact land, this is
+  published once binaries and the `dist` artifact land; this is
   now the natural pivot of the release lifecycle and drives
   `npm-release.yml` via `release: published`. `npm-release.yml`
   drops its `workflow_run` trigger (and the draft-flip side job that
@@ -1281,7 +1281,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `site/build.ts` `publicPath` precedence: the original
   `env["PUBLIC_PATH"] || isCI ? X : Y` parsed as
   `(... || ...) ? X : Y`, so a literal `PUBLIC_PATH` value never
-  reached `Bun.build`, it acted as a boolean toggle. The hardcoded
+  reached `Bun.build`; it acted as a boolean toggle. The hardcoded
   `runner.kjanat.com/` fallback also leaked into Cloudflare Workers
   preview deploys (`*.workers.dev`) and tripped CSP `'self'`,
   blocking every asset on every PR preview. Replaced with
@@ -1294,7 +1294,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `.github/scripts/build/package-release-asset.sh` writes checksum
   files as `<basename>.sha256` (not `<basename>.tar.gz.sha256`),
   matching `taiki-e/upload-rust-binary-action`'s convention and what
-  `verify-checksum.sh` enforces, the previous mismatch would have
+  `verify-checksum.sh` enforces; the previous mismatch would have
   broken the npm pipeline's checksum verification on release.
 - `npm/scripts/build-packages.ts`: `Target.build` union now covers
   all five schema enum values (previously only `cargo` | `cross`,
@@ -1428,7 +1428,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `site/build.ts` `publicPath` precedence: the original
   `env["PUBLIC_PATH"] || isCI ? X : Y` parsed as
   `(... || ...) ? X : Y`, so a literal `PUBLIC_PATH` value never
-  reached `Bun.build`, it acted as a boolean toggle. The hardcoded
+  reached `Bun.build`; it acted as a boolean toggle. The hardcoded
   `runner.kjanat.com/` fallback also leaked into Cloudflare Workers
   preview deploys (`*.workers.dev`) and tripped CSP `'self'`,
   blocking every asset on every PR preview. Replaced with
@@ -1441,7 +1441,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `.github/scripts/build/package-release-asset.sh` writes checksum
   files as `<basename>.sha256` (not `<basename>.tar.gz.sha256`),
   matching `taiki-e/upload-rust-binary-action`'s convention and what
-  `verify-checksum.sh` enforces, the previous mismatch would have
+  `verify-checksum.sh` enforces; the previous mismatch would have
   broken the npm pipeline's checksum verification on release.
 - `npm/scripts/build-packages.ts`: `Target.build` union now covers
   all five schema enum values (previously only `cargo` | `cross`,
@@ -1689,7 +1689,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `run` alias binary.
 - Remove the `tool::deno::exec_cmd` and `tool::cargo_pm::exec_cmd` helpers:
   `deno run <target>` treats the target as a local script, and
-  `cargo <target>` dispatches to a cargo subcommand/plugin, neither runs
+  `cargo <target>` dispatches to a cargo subcommand/plugin; neither runs
   arbitrary package binaries like `npx` does. `runner run <target>` in a
   Deno- or Cargo-only project now spawns `<target>` directly via `PATH`.
 

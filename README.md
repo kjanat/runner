@@ -190,7 +190,7 @@ Use the action to install runner in CI ([view on marketplace](https://github.com
 - run: runner install --frozen test build
 ```
 
-`runner install` is not a task, it runs the project's toolchain command(s)
+`runner install` is not a task; it runs the project's toolchain command(s)
 (`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
 (`test`, then `build`) sequentially.
 
@@ -314,7 +314,7 @@ back to that built-in's default form (so `run install` installs dependencies)
 rather than the package-manager exec path.
 
 The explicit subcommand is the inverse: `runner install` (and `runner clean`,
-`runner list`, …) is **always** the built-in and never runs a same-named task,
+`runner list`, …) is **always** the built-in and never runs a same-named task;
 use `run install` / `runner run install` to reach a task called `install`.
 
 ## Configuration
@@ -389,7 +389,7 @@ fallback    = "probe"  # probe (PATH probe) | npm (legacy) | error
 on_mismatch = "warn"   # warn | error (exit 2) | ignore  (manifest vs lockfile)
 
 # Failure policy for `-s`/`-p` chains and `install <tasks>`.
-# keep_going and kill_on_fail are mutually exclusive, setting both is an error.
+# keep_going and kill_on_fail are mutually exclusive; setting both is an error.
 [chain]
 keep_going   = false  # run every task despite failures (same as -k)
 kill_on_fail = false  # parallel: kill siblings on first failure (same as -K)

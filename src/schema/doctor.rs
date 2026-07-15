@@ -24,7 +24,7 @@
 //!   stay null), the `tool_probe_error` variant (the probe cannot
 //!   error), the `binary`/`package-binary` tool kinds, and the
 //!   `debug`/`error` severities. Each gets declared when an emitter
-//!   exists, contracts should describe output, not ambition.
+//!   exists; contracts should describe output, not ambition.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -460,7 +460,20 @@ impl<'a> DoctorReport<'a> {
         // reports as a diagnostic too: `doctor` has to survive the
         // configuration it exists to explain.
         let plan_diagnostics: Vec<Diagnostic> = match &plan {
-            Ok(plan) => plan.collisions.iter().map(diagnostic).collect(),
+            Ok(plan) => plan
+                .collisions
+                .iter()
+                .map(|collision| Diagnostic {
+                    code: "install",
+                    message: crate::cmd::install::collision_warning(
+                        collision.dir,
+                        &collision.writers,
+                    ),
+                    severity: Severity::Warning,
+                    source: Some("install"),
+                    task: None,
+                })
+                .collect(),
             Err(err) => vec![Diagnostic {
                 code: "install",
                 message: err.to_string(),
@@ -705,7 +718,7 @@ fn node_ecosystem(
     let manifest_decl = detect_pm_from_manifest(&ctx.root);
     let probes = super::project::probe_signals(&ctx.root, resolve_shims);
     // Shims are keyed by tool and carry the shim *manager* as data, not
-    // as the field name, Volta is merely the first manager the prober
+    // as the field name. Volta is merely the first manager the prober
     // classifies; asdf/mise/proto entries slot in without a contract
     // change. (The flat `list`/`info` shape's `volta_shims` spelling is
     // frozen; only this structured report gets the generic shape.)
@@ -771,7 +784,7 @@ fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Ec
 }
 
 /// Single-PM ecosystems (rust/go/deno/ruby/php): the detected manager
-/// *is* the decision, there is no competing-PM resolution chain.
+/// *is* the decision; there is no competing-PM resolution chain.
 fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
     let selected = ctx
         .package_managers
@@ -1108,24 +1121,25 @@ fn conflicts(
 /// shape a duplicate task name reports under.
 ///
 /// Only *resolved* directories appear. A directory the user told runner to
-/// share has no winner and no shadowed party, every writer runs, so it
+/// share has no winner and no shadowed party (every writer runs), so it
 /// reports as a diagnostic instead of a conflict with two lying fields.
 fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
     plan.shadowed
         .iter()
-        .map(|(loser, winner, dir)| Conflict {
+        .map(|shadow| Conflict {
             kind: "install-dir-collision",
             reason: format!(
-                "{} and {} both install into {dir}/; the package manager resolved for the \
-                 ecosystem installs it and the other is skipped. List both in `[install].pms` to \
-                 run them anyway.",
-                winner.label(),
-                loser.label(),
+                "{} and {} both install into {}/; the package manager resolved for the ecosystem \
+                 installs it and the other is skipped. List both in `[install].pms` to run them \
+                 anyway.",
+                shadow.winner.label(),
+                shadow.loser.label(),
+                shadow.dir,
             ),
-            selected: winner.label().to_string(),
-            selector: (*dir).to_string(),
+            selected: shadow.winner.label().to_string(),
+            selector: shadow.dir.to_string(),
             severity: Severity::Info,
-            shadowed: vec![loser.label().to_string()],
+            shadowed: vec![shadow.loser.label().to_string()],
         })
         .collect()
 }
@@ -1304,7 +1318,7 @@ mod tests {
     fn v3_report_keeps_node_when_only_package_json_tasks_present() {
         // package.json scripts with no lockfile-detected Node PM: the
         // resolver still resolves them via `npm run`, so `ecosystems`
-        // and `tools` must surface Node too, otherwise the document is
+        // and `tools` must surface Node too; otherwise the document is
         // internally inconsistent (tasks reference a runtime the rest of
         // the report claims absent).
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);

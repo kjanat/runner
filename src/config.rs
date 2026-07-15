@@ -402,7 +402,7 @@ pub(crate) struct ResolutionSection {
 /// [`INIT_TEMPLATE`]. A key absent from this table is reported as an
 /// [`DetectionWarning::UnknownConfigKey`] rather than aborting the load, so a
 /// config written by a newer `runner` never bricks an older binary (and vice
-/// versa). Keep in sync when adding a section or field, the
+/// versa). Keep in sync when adding a section or field; the
 /// `known_schema_covers_every_section` test guards section-level drift.
 const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("pm", &["node", "python"]),
@@ -792,7 +792,7 @@ mod tests {
     #[test]
     fn load_warns_on_unknown_section_without_failing() {
         // Forward compat: a section this build doesn't know (a typo, or one a
-        // newer runner added) must not abort the load, it warns and the rest
+        // newer runner added) must not abort the load; it warns and the rest
         // of the config still applies.
         let dir = TempDir::new("config-unknown-key");
         fs::write(
@@ -870,7 +870,7 @@ mod tests {
                 continue;
             }
             // Field lines are `key = ...`, shipped commented-out. Strip one
-            // leading `#`, then keep only a bare-identifier left of `=`, that
+            // leading `#`, then keep only a bare-identifier left of `=`; that
             // shape excludes the prose comments, which carry no `key =`.
             let body = trimmed.strip_prefix('#').map_or(trimmed, str::trim);
             let Some((lhs, _)) = body.split_once('=') else {

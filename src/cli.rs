@@ -76,7 +76,7 @@ fn env_suffix(var: &str) -> String {
 /// Cyan-styled env-var suffix for `--dir`. Kept alongside [`PM_HELP`] /
 /// [`RUNNER_HELP`] rather than as a plain `format!` inline in the doc
 /// comment so the `--dir` flag renders identically to every other flag's
-/// `[env: VAR]` suffix, clap's own `env = "..."` attribute would style
+/// `[env: VAR]` suffix; clap's own `env = "..."` attribute would style
 /// it differently and also print the variable's *current* value (e.g.
 /// `[env: RUNNER_DIR=]` when set-but-empty), which the other flags never
 /// do since their env fallback lives at the call site, not in clap.
@@ -243,7 +243,7 @@ fn global_value_flags() -> Vec<String> {
 /// (`-s`/`-p` typed before the first task) the trailing words are extra
 /// task names, so complete tasks; otherwise they are arguments forwarded
 /// verbatim to the task, where suggesting task names would be noise,
-/// complete nothing.
+/// so complete nothing.
 fn chain_args_candidates() -> Vec<CompletionCandidate> {
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if !chain_flag_precedes_first_task(&argv) {
@@ -262,7 +262,7 @@ fn chain_args_candidates() -> Vec<CompletionCandidate> {
 /// `--dir /some/path -s build` still detects the chain flag.
 fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
     // Flags whose value arrives as the *next* word (the `=` form needs no
-    // special casing, it stays one word). Derived from the real clap
+    // special casing; it stays one word). Derived from the real clap
     // definition so a new value-taking global can't silently drift out of
     // sync with this scanner and get its value mistaken for the task.
     let value_flags = global_value_flags();
@@ -280,7 +280,7 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
             "-s" | "--sequential" | "-p" | "--parallel" => return true,
             // The `run` subcommand token (`runner run …`); the alias
             // binary has no subcommand. Only the first bare word can be
-            // it, a task literally named `run` still terminates the
+            // it. A task literally named `run` still terminates the
             // scan below on any later occurrence.
             "run" | "r" if !subcommand_seen => subcommand_seen = true,
             _ if value_flags.iter().any(|flag| flag == word) => {
@@ -668,7 +668,7 @@ mod tests {
     fn real_package_json_script_keeps_qualified_form_alongside_turbo() {
         // Regression guard: a real `"build": "vite build"` script that
         // happens to share its name with a `turbo.json` task must NOT be
-        // swallowed, the passthrough flag is set per-script-body during
+        // swallowed. The passthrough flag is set per-script-body during
         // detection, not inferred from name collisions alone.
         let tasks = vec![
             // Same name, but `passthrough_to_turbo: false` because the
@@ -698,7 +698,7 @@ mod tests {
         // `package.json` is detected first, but `runner build` dispatches to
         // turbo (Turbo > Package in the default selector tier). The bare
         // candidate's label must therefore name turbo, not the detection-order
-        // first source, otherwise the completion menu misreports what runs.
+        // first source; otherwise the completion menu misreports what runs.
         let tasks = vec![
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::TurboJson),
@@ -774,7 +774,7 @@ mod tests {
             candidates
                 .iter()
                 .any(|c| c.get_value().to_string_lossy() == "build"),
-            "without a turbo.json twin, the passthrough is the only source, keep it"
+            "without a turbo.json twin, the passthrough is the only source; keep it"
         );
     }
 
@@ -1133,7 +1133,7 @@ pub(crate) struct Cli {
 
 /// Flags shared by both `runner` and `run`. Carried inline via
 /// `#[command(flatten)]` so each binary's `--help` lists them at the
-/// same level as subcommand-specific arguments, clap unrolls them as
+/// same level as subcommand-specific arguments; clap unrolls them as
 /// if they were defined on the parent struct.
 #[derive(Debug, Args)]
 pub(crate) struct GlobalOpts {
@@ -1286,7 +1286,7 @@ pub(crate) enum Command {
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: Option<String>,
         /// Arguments forwarded to the task, or extra task names in chain mode.
-        // In chain mode, chain-failure flags (`-k`) must precede task names,
+        // In chain mode, chain-failure flags (`-k`) must precede task names;
         // `trailing_var_arg` consumes everything after the first positional.
         #[arg(
             trailing_var_arg = true,
@@ -1511,7 +1511,7 @@ pub(crate) enum ConfigAction {
     // `-k`), but an *undefined* hyphen token after the first positional is
     // swallowed by `args` (`trailing_var_arg`) and forwarded to the task.
     // A leading `--help`/`--version` (before any task) instead surfaces as
-    // an `UnknownArgument` error, `task` takes no hyphen values, which
+    // an `UnknownArgument` error; `task` takes no hyphen values, which
     // `run_alias_in_dir` recognises as this binary's own help/version
     // request. `run <task> -- --help` keeps forwarding literally.
     disable_help_flag = true,
@@ -1527,7 +1527,7 @@ pub(crate) struct RunAliasCli {
     pub task: Option<String>,
 
     /// Arguments forwarded to the task, or extra task names in chain mode.
-    // In chain mode, chain-failure flags (`-k`) must precede task names,
+    // In chain mode, chain-failure flags (`-k`) must precede task names;
     // `trailing_var_arg` consumes everything after the first positional.
     // That same rule forwards a *trailing* `--help`/`--version` to the task
     // rather than treating it as this binary's own.

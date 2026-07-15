@@ -60,7 +60,7 @@ impl VoltaInstall {
     }
 
     /// True when `bin` lives directly in one of the shim directories.
-    /// Exact parent-directory equality, not prefix matching,
+    /// Exact parent-directory equality, not prefix matching:
     /// `<shimdir>/nested/npm` is not a shim. Only the *parent* is
     /// canonicalized: on Unix the shims themselves are symlinks to
     /// `volta-shim`, and canonicalizing the file would escape the bin
@@ -88,7 +88,7 @@ pub(crate) enum ShimResolution {
     Resolved(PathBuf),
     /// Volta answered but has no version of the tool ("No default …").
     NotProvisioned,
-    /// Volta itself failed to answer (spawn error, empty output),
+    /// Volta itself failed to answer (spawn error, empty output);
     /// claim nothing.
     Unknown,
 }
@@ -97,7 +97,7 @@ pub(crate) enum ShimResolution {
 ///
 /// Runs with `project_root` as the working directory because `volta
 /// which` honors the project pinning of its CWD. Classification uses
-/// exit status and stdout only, Volta's error wording ("No default
+/// exit status and stdout only; Volta's error wording ("No default
 /// npm version set") varies across versions and must not be parsed.
 pub(crate) fn resolve_shim(tool: &str, project_root: &Path) -> ShimResolution {
     match program::command("volta")

@@ -139,7 +139,7 @@ fn detect_path_files_flags(
     let current = args.get(index)?.to_string_lossy();
     let chain = active_command_chain(cmd, args, index);
 
-    // `--flag=value`, the current token carries both, we're completing `value`.
+    // `--flag=value`, the current token carries both; we're completing `value`.
     if let Some((flag, _value)) = current.split_once('=')
         && let Some(long) = flag.strip_prefix("--")
         && let Some(hint) = find_long_value_hint(&chain, long)
@@ -181,7 +181,7 @@ fn detect_path_files_flags(
 
 /// Walk `args[1..index]` and descend into matching subcommands to build the
 /// active command chain (root first, deepest last). Stops as soon as a
-/// positional argument fails to match any subcommand of the current node,
+/// positional argument fails to match any subcommand of the current node;
 /// that's where positionals for the leaf command begin. Leading options
 /// and their values are skipped.
 fn active_command_chain<'a>(
@@ -246,7 +246,7 @@ fn active_command_chain<'a>(
 /// [`find_long_value_hint`]: the subcommand-local definition wins over an
 /// ancestor's. This matters when a subcommand reuses a root flag name
 /// with a different [`clap::ArgAction`] (e.g. root defines `--flag <VALUE>`
-/// and a subcommand redeclares `--flag` as a boolean), the walker must
+/// and a subcommand redeclares `--flag` as a boolean); the walker must
 /// honour the leaf command's semantics.
 fn long_flag_takes_value(chain: &[&clap::Command], name: &str) -> bool {
     chain

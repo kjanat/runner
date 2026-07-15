@@ -170,7 +170,7 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
         Some(pm)
     } else if tool::node::has_package_json(dir) {
         // Read the field with diagnostics so a present-but-unparseable
-        // value (typo, unsupported PM) doesn't disappear silently,
+        // value (typo, unsupported PM) doesn't disappear silently;
         // emit a `DetectionWarning::UnparseablePackageManager` so the
         // user sees the raw value they wrote and can fix it.
         let (field_pm, unparseable) = tool::node::detect_pm_field_with_diagnostics(dir);
@@ -626,7 +626,7 @@ fn push_described_tasks(
 /// Append `package.json` scripts, classifying each entry as a
 /// passthrough wrapper iff its command body literally invokes a known
 /// task runner against a same-named target (turbo, just, make, task,
-/// nx, bacon, mise). Detection is purely textual, the surrounding
+/// nx, bacon, mise). Detection is purely textual; the surrounding
 /// project state is not consulted, so a real script like
 /// `"build": "vite build"` is never flagged regardless of what other
 /// sources exist.
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn node_modules_writers_recorded_for_bun_plus_deno_node_modules_dir() {
-        use crate::types::{DetectionWarning, PackageManager};
+        use crate::types::PackageManager;
         let dir = TempDir::new("detect-collision");
         fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
         fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
@@ -968,16 +968,10 @@ mod tests {
             .map(|entry| entry.writers.clone())
             .expect("bun + node_modules-dir deno both write node_modules");
         assert_eq!(writers, vec![PackageManager::Bun, PackageManager::Deno]);
-        // A shared directory is a fact. Whether it is a *collision* depends on
-        // the install set, which detection knows nothing about, so detection
-        // must not have an opinion about it.
-        assert!(
-            !ctx.warnings
-                .iter()
-                .any(|w| matches!(w, DetectionWarning::InstallDirCollision { .. })),
-            "detection must not judge install dirs: {:?}",
-            ctx.warnings,
-        );
+        // A shared directory is a fact; whether it is a collision depends on the
+        // install set, which detection knows nothing about. That is now enforced
+        // by the type system: there is no collision variant on `DetectionWarning`
+        // for detection to emit. The install planner owns that verdict.
     }
 
     #[test]

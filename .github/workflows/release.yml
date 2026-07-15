@@ -126,7 +126,7 @@ jobs:
         with: { sparse-checkout: npm/targets.json, sparse-checkout-cone-mode: false, persist-credentials: false }
 
       - id: gen
-        # `target: .rust` is mandatory, taiki-e and build-packages.ts both
+        # `target: .rust` is mandatory; taiki-e and build-packages.ts both
         # derive the asset filename `runner-<tag>-<rust>.tar.gz` from it.
         # `vm`-typed targets need a dedicated job; filtered out here.
         run: |

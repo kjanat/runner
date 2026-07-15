@@ -232,15 +232,20 @@ fn print_human(
                 if !pms.is_empty() {
                     writeln_field(out, "install", &pms);
                 }
-                for (loser, winner, dir) in &plan.shadowed {
+                for shadow in &plan.shadowed {
                     writeln_field(
                         out,
-                        dir,
-                        &format!("{} installs it, {} shadowed", winner.label(), loser.label()),
+                        shadow.dir,
+                        &format!(
+                            "{} installs it, {} shadowed",
+                            shadow.winner.label(),
+                            shadow.loser.label(),
+                        ),
                     );
                 }
-                for shared in &plan.serialized {
-                    let names = shared
+                for collision in &plan.collisions {
+                    let names = collision
+                        .writers
                         .iter()
                         .map(|pm| pm.label())
                         .collect::<Vec<_>>()
@@ -257,7 +262,7 @@ fn print_human(
 
     // Detection warnings, plus the collisions the install plan kept. The
     // collision is the plan's verdict on the effective install set, not a fact
-    // about the tree, so it lives here and nowhere else, commands that never
+    // about the tree, so it lives here and nowhere else; commands that never
     // install have nothing to say about it.
     let mut warnings: Vec<(String, String)> = report["warnings"]
         .as_array()
@@ -273,11 +278,12 @@ fn print_human(
         })
         .unwrap_or_default();
     if let Ok(plan) = plan {
-        warnings.extend(
-            plan.collisions
-                .iter()
-                .map(|c| (c.source().to_string(), c.detail())),
-        );
+        warnings.extend(plan.collisions.iter().map(|collision| {
+            (
+                "install".to_string(),
+                crate::cmd::install::collision_warning(collision.dir, &collision.writers),
+            )
+        }));
     }
     if !warnings.is_empty() {
         println!("{}", "Warnings".bold());

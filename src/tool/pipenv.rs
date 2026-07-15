@@ -16,7 +16,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// `Pipfile.lock` without touching the lockfile and errors if the
 /// lockfile is missing. That's the documented "deterministic
 /// install" command for Pipenv (similar to `pipenv install
-/// --deploy` but stricter, `--deploy` keeps the install verb,
+/// --deploy` but stricter: `--deploy` keeps the install verb,
 /// `sync` is the canonical name).
 pub(crate) fn install_cmd(frozen: bool) -> Command {
     let mut c = super::program::command("pipenv");

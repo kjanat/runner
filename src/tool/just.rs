@@ -615,7 +615,7 @@ mod tests {
         // when a `[private]` top-level `bar` exists alongside `foo::bar`, the
         // JSON view can't prove which one the alias points to. The documented
         // trade-off (see the comment on the `ambiguous` branch) is to surface
-        // the alias rather than hide it, hiding would drop a legitimate
+        // the alias rather than hide it; hiding would drop a legitimate
         // public submodule alias whenever any same-leaf private top-level
         // recipe happens to exist. Locking the behavior in so future refactors
         // make this call-out explicit.
@@ -658,7 +658,7 @@ mod tests {
     fn json_alias_hides_private_submodule_target_without_top_level() {
         // `alias s := foo::hush` where `foo::hush` is the only candidate and
         // it is `[private]`. Since there is no same-leaf top-level recipe,
-        // the privacy check is unambiguous, we know exactly which recipe the
+        // the privacy check is unambiguous: we know exactly which recipe the
         // alias points to, and it is private. The alias must be hidden.
         let dir = TempDir::new("just-json-alias-submodule-private");
         let root = dir.path();

@@ -10,7 +10,7 @@
  * `GITHUB_ACTIONS=true`), a dev machine only ever has native binaries for its
  * own host, so a bare local run: builds the host's own tarball with
  * `cargo bbr` if it's missing, and treats every other target's missing
- * tarball as skippable (same as `--skip-missing`) instead of failing, a
+ * tarball as skippable (same as `--skip-missing`) instead of failing; a
  * plain `build-packages` "just works" for whatever platform you're on.
  *
  * Usage:
@@ -42,7 +42,7 @@ const FACADE_BIN_FILES = ["runner.cjs", "run.cjs"] as const;
 const FACADE_LIB_FILES = ["resolve.cjs", "launch.cjs"] as const;
 
 // npm allows multiple shapes for several `package.json` fields. Cargo's
-// `package.metadata` is user-defined freeform JSON, the user could put any
+// `package.metadata` is user-defined freeform JSON; the user could put any
 // of these shapes (or a typo, or a number) under `metadata.npm.repository`
 // and Cargo wouldn't care. We narrow at parse time so a malformed manifest
 // fails the build with a useful pointer instead of producing a garbage
@@ -224,7 +224,7 @@ function readCargoManifest(): CargoManifest {
 		: [];
 	// Single workspace member: that's the package. Multi-member workspace:
 	// match the first default member by id (Cargo's own "what does a bare
-	// `cargo build` build" answer), falls back to the first package so a
+	// `cargo build` build" answer). Falls back to the first package so a
 	// non-virtual workspace without explicit defaults still resolves.
 	const pickById = defaults[0]
 		? envelope.packages.find((p): p is Record<string, unknown> => isObject(p) && p.id === defaults[0])
@@ -549,7 +549,7 @@ async function buildFacade(
 
 	// Cargo metadata wins over the template for fields it owns (license,
 	// author, homepage, repository, bugs, engines). Keeps the facade and
-	// sub-packages in lockstep on engines/runtime contract, drop those
+	// sub-packages in lockstep on engines/runtime contract; drop those
 	// fields from the template so there's only one source of truth.
 	const files = Array.isArray(template.files) ? [...template.files] : [];
 	if (manFiles.length > 0 && !files.includes("man/")) files.push("man/");
@@ -829,7 +829,7 @@ platform, so prefer \`${matrix.facade}\` for anything portable.
 
 ## Standalone use
 
-The package is a working CLI in its own right, its bins point straight at the bundled
+The package is a working CLI in its own right; its bins point straight at the bundled
 ${binaries} binaries, so on a matching machine it runs without the facade:
 
 \`\`\`sh

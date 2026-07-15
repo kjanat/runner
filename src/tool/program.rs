@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(resolved, Some(shim));
     }
 
-    // An explicit extension must short-circuit PATHEXT, a later directory
+    // An explicit extension must short-circuit PATHEXT; a later directory
     // holding the exact name wins over an earlier `<name><ext>` candidate. This
     // is the cmd.exe behaviour and avoids resolving `foo.cmd.exe` for `foo.cmd`.
     #[test]

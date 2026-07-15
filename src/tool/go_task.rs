@@ -86,7 +86,7 @@ fn parse_task_list_json(stdout: &[u8]) -> Option<Vec<(String, Option<String>)>> 
 /// real YAML instead of line-scanning it. The previous hand-rolled
 /// scanner silently dropped legal names its `[alnum]-_` filter didn't
 /// recognize (quoted or namespaced keys like `"build:prod"`) and never
-/// surfaced malformed YAML, a broken Taskfile just yielded zero tasks
+/// surfaced malformed YAML; a broken Taskfile just yielded zero tasks
 /// with no `TaskListUnreadable` warning. Invalid YAML now errors so
 /// detection can warn.
 fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
@@ -109,7 +109,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
         return Ok(vec![]);
     };
     // Present but not a mapping (`tasks: []`, `tasks: "x"`) is a broken
-    // Taskfile, not an empty one, error so detection warns.
+    // Taskfile, not an empty one; error so detection warns.
     let Some(tasks) = tasks_value.as_hash() else {
         anyhow::bail!(
             "{} has a `tasks` key, but its value is not a mapping",
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn source_fallback_errors_when_tasks_is_not_a_mapping() {
         // `tasks: []` is YAML-valid but broken as a Taskfile, distinct
-        // from having no `tasks:` key at all, it must error, not yield
+        // from having no `tasks:` key at all; it must error, not yield
         // zero tasks silently.
         let dir = TempDir::new("go-task-tasks-not-mapping");
         fs::write(dir.path().join("Taskfile.yml"), "version: '3'\ntasks: []\n")

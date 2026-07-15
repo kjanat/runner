@@ -102,7 +102,7 @@ pub(crate) fn lookup_token<'a>(
 
 /// The one spelling of a qualified miss, shared by dispatch and precheck
 /// so `run deno:x` and `run -p deno:x` fail identically. Appends a note
-/// when a source's task list failed to load, a miss caused by a broken
+/// when a source's task list failed to load; a miss caused by a broken
 /// `package.json` should say so instead of leaving the user chasing the
 /// task name.
 pub(super) fn qualified_miss_error(
@@ -178,11 +178,11 @@ pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str
 /// `t` to completion before surfacing the typo at item 3.
 ///
 /// Returns `Ok(())` on:
-/// - an explicit-prefix local path (`./gen.sh`, `~/x`), dispatch runs it
+/// - an explicit-prefix local path (`./gen.sh`, `~/x`): dispatch runs it
 ///   as a file before any runner-constraint check, so precheck must too,
 /// - matched task (qualified or unqualified),
 /// - unmatched task whose dispatch would fall back to bun-test or
-///   PM-exec, those paths require resolver state we deliberately
+///   PM-exec: those paths require resolver state we deliberately
 ///   skip here; they get their proper error at dispatch time.
 ///
 /// Returns `Err` on:
@@ -256,7 +256,7 @@ pub(crate) fn precheck_task(
 /// Compute the set of [`TaskSource`]s the user's runner constraint
 /// permits, or `None` when no constraint is active.
 ///
-/// `--runner` / `RUNNER_RUNNER` is the strongest signal, only that
+/// `--runner` / `RUNNER_RUNNER` is the strongest signal: only that
 /// runner's source is allowed. `[task_runner].prefer` is the next:
 /// every runner in the list is allowed, in listed order. Runners that
 /// don't map to a [`TaskSource`] (`nx`, `mise`) are dropped from the
@@ -512,7 +512,7 @@ mod tests {
     fn precheck_does_not_restrict_under_tasks_prefer() {
         // `[tasks].prefer` is rank-only: unlike the deprecated restrictive
         // `[task_runner].prefer`, a prefix-less miss under it must NOT fail
-        // precheck, nothing is hard-rejected, it only reorders.
+        // precheck; nothing is hard-rejected. It only reorders.
         let overrides = ResolutionOverrides {
             prefer_sources: vec![TaskSource::TurboJson],
             ..ResolutionOverrides::default()

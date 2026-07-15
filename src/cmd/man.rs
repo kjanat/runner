@@ -72,7 +72,7 @@ fn render_command(cmd: Command, page_name: &str) -> Vec<u8> {
     strip_ansi(&raw)
 }
 
-/// Drop ANSI escapes (CSI/OSC) that the CLI help strings bake in for color,
+/// Drop ANSI escapes (CSI/OSC) that the CLI help strings bake in for color;
 /// they have no place in roff and would corrupt the page otherwise.
 fn strip_ansi(input: &[u8]) -> Vec<u8> {
     const ESC: u8 = 0x1b;

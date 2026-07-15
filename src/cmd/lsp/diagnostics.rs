@@ -31,7 +31,7 @@ pub(super) fn compute(text: &str, index: &LineIndex) -> Vec<Diagnostic> {
         out.push(warning_diagnostic(text, index, &warning));
     }
 
-    // Deserialize from the text, not the parsed `value`, the text-based
+    // Deserialize from the text, not the parsed `value`: the text-based
     // deserializer spans a wrong-typed known field, so the diagnostic can
     // point at the offending value instead of line one.
     let config: RunnerConfig = match toml::from_str(text) {

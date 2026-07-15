@@ -1510,7 +1510,7 @@ mod tests {
         use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail};
 
         // OnFail=Ignore short-circuits before the binary/version checks
-        // even run, they should never be called. Use a panicking
+        // even run; they should never be called. Use a panicking
         // checker to prove the early return holds.
         let decl = ManifestPmDecl {
             pm: PackageManager::Npm,
@@ -1536,8 +1536,8 @@ mod tests {
         use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
 
         // Version checks that can't run (unparseable range, missing
-        // --version output) collapse to Unverifiable, that path must
-        // continue silently, not warn or bail, otherwise a partially
+        // --version output) collapse to Unverifiable. That path must
+        // continue silently, not warn or bail; otherwise a partially
         // broken environment blocks dispatch unnecessarily.
         let decl = ManifestPmDecl {
             pm: PackageManager::Yarn,
@@ -1681,7 +1681,7 @@ mod tests {
 
         // Table-driven: each row pairs a decision with the exact string
         // it must produce. Locks down the provenance wording that
-        // `--explain` and `runner why` surface verbatim, a casual
+        // `--explain` and `runner why` surface verbatim; a casual
         // re-phrase shouldn't slip through silently.
         let cases: &[(super::ResolvedPm, &str)] = &[
             (
@@ -1857,7 +1857,7 @@ mod tests {
     #[test]
     fn from_sources_cli_flag_beats_opposite_config_polarity() {
         // `-k` must override `[chain] kill_on_fail = true`, not collide
-        // with it, the config polarity has no CLI negation flag, so a
+        // with it: the config polarity has no CLI negation flag, so a
         // cross-source conflict error would make it uncancellable from
         // the command line.
         use crate::chain::FailurePolicy;

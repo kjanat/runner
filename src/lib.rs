@@ -187,7 +187,7 @@ where
         Err(err) => return render_clap_error(&err),
     };
     // The language server parses each editor buffer itself and needs neither a
-    // resolved project dir nor detection, handle it before either can bail.
+    // resolved project dir nor detection; handle it before either can bail.
     #[cfg(feature = "lsp")]
     if matches!(cli.command.as_ref(), Some(cli::Command::Lsp)) {
         return cmd::lsp::run();
@@ -241,7 +241,7 @@ fn shorten_help_subcommand(mut command: clap::Command) -> clap::Command {
 /// dispatch, and return the exit code.
 ///
 /// Always treats positional arguments as a task or command (routed through
-/// `cmd::run`), built-in subcommand names are never parsed specially, so
+/// `cmd::run`); built-in subcommand names are never parsed specially, so
 /// `run clean`, `run install`, etc. run a same-named project task when one
 /// exists. When no such task exists, a bare run token naming a built-in verb
 /// (`install`/`clean`/`list`/`info`/`completions`) falls back to that
@@ -352,7 +352,7 @@ enum AliasBuiltin {
 /// With clap's built-in `--help`/`--version` disabled and undefined, a
 /// leading `-h`/`--help`/`-V`/`--version` cannot fill the hyphen-rejecting
 /// `task` positional, so clap reports [`ErrorKind::UnknownArgument`] naming
-/// the offending flag. A *trailing* one never reaches here, it is captured
+/// the offending flag. A *trailing* one never reaches here; it is captured
 /// by `args` and forwarded, so an `UnknownArgument` naming a help/version
 /// flag unambiguously means "before any task", i.e. ours to handle.
 fn alias_builtin_request(err: &clap::Error) -> Option<AliasBuiltin> {
@@ -702,7 +702,7 @@ fn dispatch_install_chain(
     // Pre-flight the task tokens up front to preserve the "typo aborts before
     // install" guarantee the sequential path gets for free. `run_chain` below
     // re-prechecks (it can't assume a caller did), but that pass runs after
-    // install, this loop is what gates the slow install. precheck_task is
+    // install; this loop is what gates the slow install. precheck_task is
     // side-effect-free, so the redundant second pass is harmless.
     for task in tasks {
         cmd::run::precheck_task(ctx, overrides, task)?;
@@ -927,7 +927,7 @@ fn build_overrides_lenient(
 
 /// Resolve overrides for [`dispatch`]. Strict for every command;
 /// `doctor` retries leniently on failure because it must survive the
-/// misconfigured environment it exists to diagnose, env garbage
+/// misconfigured environment it exists to diagnose; env garbage
 /// degrades to warnings appended to `ctx`, while CLI flag garbage
 /// re-raises from the lenient pass and stays fatal.
 fn dispatch_overrides(
@@ -948,7 +948,7 @@ fn dispatch_overrides(
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let mut ctx = detect::detect(dir);
-    // A malformed `runner.toml` must not abort the `config` subcommand,
+    // A malformed `runner.toml` must not abort the `config` subcommand;
     // `config validate`/`show` exist to inspect and repair exactly that
     // file, and they re-load it with their own error handling. Unknown
     // sections/fields are tolerated everywhere (forward compat) and surface
@@ -1014,7 +1014,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             failure,
             ..
         }) => {
-            // No post-install tasks, so the chain flags govern nothing, say so
+            // No post-install tasks, so the chain flags govern nothing; say so
             // rather than silently swallowing a `-p`/`-k` the user expected to
             // matter.
             if mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail {
@@ -1445,7 +1445,7 @@ mod tests {
     #[test]
     fn run_alias_bare_matches_bare_runner_dashboard() {
         // A bare `run` maps to `command: None`, the same project-dashboard
-        // path bare `runner` takes, both succeed identically on an empty
+        // path bare `runner` takes; both succeed identically on an empty
         // directory.
         let dir = TempDir::new("runner-run-alias-bare-eq");
         let alias = run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed");

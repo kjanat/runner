@@ -13,8 +13,8 @@
 //! 1. **Directly executable file** (a native binary, or a script whose `#!`
 //!    line the kernel can honor) → spawned directly (`Command::new(path)`).
 //!    A recognized *source* file that merely carries the exec bit but has no
-//!    `#!` line is **not** run this way, `execve` cannot run shebang-less
-//!    text (it returns `ENOEXEC`), it falls to outcome 3 instead.
+//!    `#!` line is **not** run this way; `execve` cannot run shebang-less
+//!    text (it returns `ENOEXEC`); it falls to outcome 3 instead.
 //! 2. **Non-executable file with a `#!` shebang** → the interpreter is
 //!    parsed (including `#!/usr/bin/env -S <interp> <args>`) and the file is
 //!    run through it.
@@ -154,7 +154,7 @@ fn dispatch_for_path(
     let Ok(meta) = fs::metadata(path) else {
         // The path resolves to nothing on disk. An explicit local path
         // (`./x`, `../x`, `/x`, `~/x`, `C:\x`) clearly means a file that
-        // is not there, report it plainly. Anything else (`@scope/pkg`,
+        // is not there; report it plainly. Anything else (`@scope/pkg`,
         // `github.com/owner/tool`) falls through so the PM-exec / Go
         // import-path fallback can treat it as a remote spec.
         if has_local_prefix(token) {
@@ -187,7 +187,7 @@ fn build_command(
     // text that `execve` cannot run) from a genuine self-executable script
     // or native binary. An execute-only file (mode 0111) cannot be opened for
     // read, so the probe simply yields `None` (no shebang to honor) rather
-    // than aborting, the kernel can still `execve` such a binary.
+    // than aborting; the kernel can still `execve` such a binary.
     let shebang = read_shebang(path);
     let routing = routing_for_extension(ctx, overrides, path);
 
@@ -206,7 +206,7 @@ fn build_command(
         return Ok((String::from("exec"), command));
     }
 
-    // 2. A `#!` shebang names the interpreter explicitly, honor it even
+    // 2. A `#!` shebang names the interpreter explicitly; honor it even
     //    without the executable bit (and on Windows, which has none).
     if let Some(shebang) = shebang {
         return Ok(shebang_command(&shebang, path, args));
@@ -359,7 +359,7 @@ fn read_shebang(path: &Path) -> Option<Shebang> {
 /// Parse a `#!` line into the interpreter program and its arguments.
 ///
 /// The kernel hands the interpreter exactly one argument: everything after the
-/// first whitespace, internal spaces intact, it does *not* whitespace-split.
+/// first whitespace, internal spaces intact; it does *not* whitespace-split.
 /// So a direct interpreter and a plain `env` both keep the remainder as a
 /// single argument. Only `env -S` / `--split-string` re-splits that argument,
 /// using env's own quote-aware parser ([`split_env_string`]), never a naive
@@ -381,7 +381,7 @@ fn parse_shebang(line: &str) -> Option<Shebang> {
         // --allow-read="a b"`) stay one token. Plain `env` (no `-S`) does NOT
         // split: the kernel's single argument is the program name, so
         // `#!/usr/bin/env python3 -O` resolves to the (bogus) program
-        // `"python3 -O"` exactly as the kernel would run it, `-S` is what adds
+        // `"python3 -O"` exactly as the kernel would run it; `-S` is what adds
         // the splitting.
         let split_form = rest
             .strip_prefix("--split-string=")
@@ -608,7 +608,7 @@ fn js_runtime_from_override(overrides: &ResolutionOverrides) -> Option<Runtime> 
 
 /// Python runtime: `uv run` when uv is overridden or detected, otherwise the
 /// plain interpreter. A non-uv Python override (poetry/pipenv) uses the
-/// plain interpreter, `uv run` would be wrong for those projects.
+/// plain interpreter; `uv run` would be wrong for those projects.
 fn py_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime {
     let overridden = overrides.pm.as_ref().map(|over| over.pm).or_else(|| {
         overrides

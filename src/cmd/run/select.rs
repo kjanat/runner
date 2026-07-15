@@ -12,7 +12,7 @@
 //! front of a same-name conflict, most-native first, so `RUNNER_PM=deno run
 //! check` picks `deno:check` (a `deno task`) instead of running
 //! `package.json:check` *through* deno, and `--pm bun` pulls `package.json`
-//! to the front the same way. Every PM biases toward what it owns, deno is
+//! to the front the same way. Every PM biases toward what it owns; deno is
 //! one member of the rule, not a special case.
 
 use std::path::{Path, PathBuf};
@@ -72,7 +72,7 @@ pub(crate) fn select_task_entry<'a>(
 ///   is bumped below them. So `RUNNER_PM=deno run check` resolves a `deno:check` /
 ///   `package.json:check` conflict to the native deno task instead of running the package.json
 ///   script *through* deno; `--pm bun` pulls `package.json` to the front the same way. Every PM
-///   biases toward what it owns, deno is one member of the rule, not a special case. A PM that
+///   biases toward what it owns; deno is one member of the rule, not a special case. A PM that
 ///   owns no modeled task source (Bundler, Composer) re-orders nothing. Fires only when a PM is
 ///   forced; with no `--pm` / `RUNNER_PM` the ranking is unchanged.
 /// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in the list win in listed order
@@ -134,7 +134,7 @@ fn base_source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> 
         .iter()
         .position(|r| r.task_source() == Some(source))
     {
-        // Listed runners always beat unlisted ones, the offset
+        // Listed runners always beat unlisted ones; the offset
         // guarantees `default_tier + prefer.len()` never collides.
         return u16::try_from(idx).unwrap_or(u16::MAX);
     }
@@ -143,7 +143,7 @@ fn base_source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> 
 
 /// The package manager forced via `--pm` / `RUNNER_PM`, if any. Only this
 /// cross-ecosystem CLI/env override (`overrides.pm`) biases source
-/// selection, `runner.toml` PM overrides live in `pm_by_ecosystem` and
+/// selection; `runner.toml` PM overrides live in `pm_by_ecosystem` and
 /// never do. The caller reads its [`PackageManager::owned_task_sources`] to
 /// rank the forced PM's own source(s) first.
 fn forced_pm(overrides: &ResolutionOverrides) -> Option<PackageManager> {

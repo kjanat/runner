@@ -136,7 +136,7 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
 /// Print tasks grouped by [`TaskSource`], collapsing to compact mode
 /// when the rich form would overflow the terminal.
 ///
-/// Operates over a borrowed task slice + the project root, the renderer
+/// Operates over a borrowed task slice + the project root; the renderer
 /// never reads other [`ProjectContext`] fields, so callers that already
 /// have a filtered task list pass the slice directly instead of forging
 /// a synthetic context.
@@ -536,7 +536,7 @@ fn pad_visible(value: &str, width: usize) -> String {
 }
 
 fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> String {
-    // Display text is always the canonical `TaskSource::label()`, using
+    // Display text is always the canonical `TaskSource::label()`; using
     // `path.file_name()` instead collapses any source whose backing file
     // happens to be named `config.toml` (cargo, uv, pip, rust-toolchain,
     // mise variants, …) into an ambiguous single column. The OSC8 link

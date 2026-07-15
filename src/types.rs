@@ -121,7 +121,7 @@ pub(crate) enum TaskRunner {
     /// just, detected via case-insensitive `justfile` / `.justfile`.
     Just,
     /// go-task, detected via `Taskfile.yml` and variants. Serializes as
-    /// `"task"` (matching [`Self::label`]), `kebab-case` alone would
+    /// `"task"` (matching [`Self::label`]); `kebab-case` alone would
     /// produce `"go-task"`, the accepted parse *alias*, not the canonical
     /// label.
     #[cfg_attr(
@@ -283,7 +283,7 @@ pub(crate) enum DetectionWarning {
     },
     /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
     /// that doesn't parse, and the command chose to report it instead
-    /// of dying, `runner doctor` must be able to diagnose the broken
+    /// of dying; `runner doctor` must be able to diagnose the broken
     /// environment it exists to diagnose. Strict commands still treat
     /// the same condition as a fatal error.
     InvalidEnvOverride {
@@ -294,16 +294,6 @@ pub(crate) enum DetectionWarning {
         raw: String,
         /// Rendered parse error, already source-prefixed.
         message: String,
-    },
-    /// Two or more detected package managers install into the same
-    /// directory (e.g. `bun` and a `nodeModulesDir`-enabled `deno` both
-    /// write `node_modules/`). Running both fans out redundant installs
-    /// over a shared tree; restrict the set with `[install].pms`.
-    InstallDirCollision {
-        /// The shared install directory, e.g. `"node_modules"`.
-        dir: &'static str,
-        /// The detected PMs that target it, in detection order.
-        pms: Vec<PackageManager>,
     },
     /// `runner.toml` carries a key this build doesn't recognize, a typo, or
     /// a section/field added by a newer `runner`. Tolerated for forward
@@ -346,7 +336,6 @@ impl DetectionWarning {
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
-            Self::InstallDirCollision { .. } => "install",
             Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
         }
     }
@@ -361,7 +350,7 @@ impl DetectionWarning {
                 field,
                 lockfile,
             } => format!(
-                "{field} declares {} but the lockfile reflects {}, declaration wins; regenerate \
+                "{field} declares {} but the lockfile reflects {} (declaration wins); regenerate \
                  the lockfile to silence this",
                 declared.label(),
                 lockfile.label(),
@@ -388,7 +377,7 @@ impl DetectionWarning {
                 let eco = ecosystem.label();
                 if others_available.is_empty() {
                     format!(
-                        "no {eco} signals matched, using {} from PATH",
+                        "no {eco} signals matched; using {} from PATH",
                         picked.label(),
                     )
                 } else {
@@ -398,7 +387,7 @@ impl DetectionWarning {
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!(
-                        "no {eco} signals matched, using {} from PATH (also available: {others})",
+                        "no {eco} signals matched; using {} from PATH (also available: {others})",
                         picked.label(),
                     )
                 }
@@ -415,20 +404,6 @@ impl DetectionWarning {
             ),
             Self::InvalidEnvOverride { var, message, .. } => {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
-            }
-            Self::InstallDirCollision { dir, pms } => {
-                let list = pms
-                    .iter()
-                    .map(|pm| pm.label())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let first = pms.first().map_or("bun", |pm| pm.label());
-                format!(
-                    "{list} all install into {dir}/, and the install allowlist names them all, so \
-                     they run one after another over the same tree instead of one of them being \
-                     skipped. Drop all but `{first}` from `[install].pms` (or \
-                     `RUNNER_INSTALL_PMS`) to skip the redundant install.",
-                )
             }
             Self::UnknownConfigKey { path } => format!(
                 "unknown key `{path}` ignored, a typo, or written by a newer runner. This build \
@@ -640,7 +615,7 @@ impl PackageManager {
     /// the latter. Cargo, Go, and the Python PMs own their ecosystem's
     /// source. Bundler and Composer have no task source modeled yet, so
     /// they bias nothing. Deno is one member of this rule, not a special
-    /// case, the bias is general across every PM.
+    /// case; the bias is general across every PM.
     pub(crate) const fn owned_task_sources(self) -> &'static [TaskSource] {
         match self {
             Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => &[TaskSource::PackageJson],
@@ -749,8 +724,8 @@ impl TaskSource {
     /// (`"bacon.toml"`, `"turbo.json"`); the inconsistency made the
     /// `runner list` column read like a typo. Standardizing on tool
     /// names also stops cases like `bacon.toml` claiming jobs that
-    /// actually come from `~/.config/bacon/prefs.toml`, the label
-    /// "bacon" is honest about that breadth, the label "bacon.toml"
+    /// actually come from `~/.config/bacon/prefs.toml`; the label
+    /// "bacon" is honest about that breadth. The label "bacon.toml"
     /// isn't.
     pub(crate) const fn label(self) -> &'static str {
         match self {
@@ -853,7 +828,7 @@ pub(crate) fn task_source_labels() -> Vec<&'static str> {
 /// form it parses.
 ///
 /// Bare versions (`"20"`, `"20.11"`) keep prefix-at-segment-boundary
-/// semantics, a `.nvmrc` saying `20.11` means "any 20.11.x", which is
+/// semantics: a `.nvmrc` saying `20.11` means "any 20.11.x", which is
 /// narrower than the caret default the `semver` crate would apply.
 ///
 /// Anything unevaluable (`lts/*`, malformed ranges, a non-version
@@ -947,7 +922,7 @@ fn range_matches(expected: &str, current: &str) -> Option<bool> {
 /// bound is already inclusive of its whole segment in the crate's
 /// grammar), whitespace-separated AND comparators, operators detached
 /// from their version (`>= 18`), and per-token `v` prefixes. Bare
-/// digit-leading tokens get an `=` operator, the crate would otherwise
+/// digit-leading tokens get an `=` operator; the crate would otherwise
 /// default them to caret, which is looser than node's exact-partial
 /// semantics. Wildcard tokens (`*`, `x`) pass through untouched because
 /// `=*` does not parse.
@@ -1000,7 +975,7 @@ fn split_operator(token: &str) -> (&str, &str) {
 /// Parse `current` (a `node --version`-style string with the `v`
 /// already stripped by detection) into a full [`semver::Version`],
 /// padding bare `major`/`major.minor` forms to a triple. Deliberately
-/// duplicates the padding in `tool::node::normalize_version`, `types`
+/// duplicates the padding in `tool::node::normalize_version`; `types`
 /// must not grow a dependency on `tool`.
 fn parse_current_version(current: &str) -> Option<semver::Version> {
     let padded = match current.split('.').count() {
@@ -1065,7 +1040,7 @@ mod tests {
     #[test]
     fn gte_range_matches_higher_versions() {
         // Regression: ">=22.22.2" used to prefix-match as "=22.22.2",
-        // warning on 22.22.3 and 25.9.0, both satisfy the range.
+        // warning on 22.22.3 and 25.9.0, which both satisfy the range.
         assert!(version_matches(">=22.22.2", "22.22.3"));
         assert!(version_matches(">=22.22.2", "25.9.0"));
         assert!(!version_matches(">=22.22.2", "22.22.1"));

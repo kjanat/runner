@@ -43,7 +43,7 @@ pub(crate) fn run_chain(
         }
     }
 
-    // Emit warnings on both success and error paths, a chain that
+    // Emit warnings on both success and error paths: a chain that
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.
     let result = match chain.mode {
@@ -137,7 +137,7 @@ fn run_parallel_streaming(
 
     // Spawn loop. On any per-item failure (resolver error or the Install
     // bail-out below), already-spawned children would otherwise outlive
-    // this function, `std::process::Child::drop` does NOT kill the
+    // this function because `std::process::Child::drop` does NOT kill the
     // process. Cleanup explicitly: kill + reap accumulated children,
     // then join readers (their pipes close once the children are
     // reaped, so the threads exit on their own).
@@ -156,7 +156,7 @@ fn run_parallel_streaming(
                 ChainItemKind::Install { .. } => {
                     // Install is always Sequential in v1 (CLI rejects `-p` on
                     // `runner install`); reaching here would mean a synthetic
-                    // Parallel chain was constructed elsewhere, bail loudly.
+                    // Parallel chain was constructed elsewhere, so bail loudly.
                     anyhow::bail!("install items cannot run in parallel chains")
                 }
             };
@@ -312,7 +312,7 @@ fn run_parallel_grouped(
             // unsizes to the trait object; `Arc::clone(&sink)` would instead
             // infer its generic from the annotation and fail to coerce.
             let dyn_sink: Arc<dyn LineSink> = sink.clone();
-            // No prefix, the group title identifies the task, while the sink
+            // No prefix: the group title identifies the task, while the sink
             // preserves stdout/stderr identity for replay.
             let readers = spawn_readers(
                 vec![
@@ -503,7 +503,7 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
 }
 
 /// Kill + reap streaming-chain children that must not outlive an error
-/// return, `Child::drop` does not kill, so every early exit routes
+/// return: `Child::drop` does not kill, so every early exit routes
 /// through here.
 fn kill_and_reap<I: IntoIterator<Item = (String, std::time::Instant, std::process::Child)>>(
     children: I,

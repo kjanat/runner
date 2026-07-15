@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn detect_reversed_qualifier_catches_task_colon_source() {
-        // `lint:cargo` has the qualifier inverted, caller should bail
+        // `lint:cargo` has the qualifier inverted; caller should bail
         // with `did you mean "cargo:lint"?` instead of falling through
         // to PM-exec and spawning a binary named `lint:cargo`.
         let got = detect_reversed_qualifier("lint:cargo");
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn reversed_qualifier_fast_fail_does_not_block_real_tasks() {
         // The fast-fail in `resolve_dispatch` is gated by
-        // `restricted.is_empty()`, a real task whose name happens to
+        // `restricted.is_empty()`; a real task whose name happens to
         // match the `task:source` shape must still dispatch.
         //
         // We mirror the dispatch lookup directly: `parse_qualified_task`

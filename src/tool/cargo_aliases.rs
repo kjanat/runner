@@ -304,7 +304,7 @@ mod tests {
             .map(|p| p.parent().unwrap().parent().unwrap().to_path_buf())
             .collect();
 
-        // Deepest first, nested dir's `.cargo` should appear before the
+        // Deepest first: nested dir's `.cargo` should appear before the
         // ancestor's.
         assert!(names[0].ends_with("b"));
         assert!(names.iter().any(|p| p == dir.path()));

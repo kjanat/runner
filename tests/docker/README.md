@@ -1,7 +1,7 @@
 # Docker-based integration tests
 
 Container tests that verify the **published** `runner-run` npm distribution on
-real target environments. These pull the package from the npm registry, they
+real target environments. These pull the package from the npm registry; they
 do not build from local source, so they validate what consumers actually get.
 
 ## [`musl-resolve.Dockerfile`][musl-resolve]
@@ -9,13 +9,13 @@ do not build from local source, so they validate what consumers actually get.
 Verifies that `npm i -g runner-run@<ver>` resolves and executes on **pure
 Alpine/musl** (no `libc6-compat` glibc shim that would mask a failure).
 
-The facade's `lib/resolve.cjs` is libc-blind, it walks `optionalDependencies`
+The facade's `lib/resolve.cjs` is libc-blind; it walks `optionalDependencies`
 order and returns the first sub-package whose bin exists. Correctness on musl
 therefore depends entirely on the package manager having libc-filtered the
 install down to `@runner-run/linux-x64-musl`. This test makes that visible
 instead of letting an alternate install path (e.g. cargo-binstall) mask it.
 
-The build itself is the assertion, every stage `exit 1`s on regression:
+The build itself is the assertion; every stage `exit 1`s on regression:
 
 1. confirm musl libc environment
 2. `npm i -g` + dependency tree

@@ -102,7 +102,7 @@ pub(crate) struct ResolutionOverrides {
     pub parallel_grouped: bool,
     /// Allowlist of package managers `runner install` may run, resolved
     /// from `RUNNER_INSTALL_PMS` (env) → `[install].pms` (config). Empty
-    /// means "no install filter", install fans out to every detected PM.
+    /// means "no install filter": install fans out to every detected PM.
     /// Unlike [`Self::pm`], this never affects script dispatch.
     pub install_pms: Vec<PackageManager>,
     /// Install-time lifecycle-script policy, resolved from
@@ -117,7 +117,7 @@ pub(crate) struct ResolutionOverrides {
     pub on_collision: CollisionPolicy,
     /// `true` when a parent `runner`/`run` already opened a GitHub Actions
     /// log group above this process (signalled via the inherited
-    /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest,
+    /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest:
     /// a nested `::endgroup::` closes the parent's group early, so when this
     /// is set, this runner's own group-opening sites stay silent and output
     /// flows into the parent's group. Internal/runner-set, never a user
@@ -173,7 +173,7 @@ impl FallbackPolicy {
 /// …) are the primary supply-chain attack surface during dependency
 /// installs. This knob lets a project deny them across the package managers
 /// that expose a skip mechanism, or force them on across the managers that
-/// can express it, the latter matters because several package managers
+/// can express it. The latter matters because several package managers
 /// (npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.
 ///
 /// Set via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,
@@ -206,7 +206,7 @@ pub(crate) enum ScriptPolicy {
 }
 
 impl ScriptPolicy {
-    /// The two labels a user can actually type, `Default` is the
+    /// The two labels a user can actually type. `Default` is the
     /// internal "unset" sentinel, never a valid `[install].scripts` /
     /// `RUNNER_INSTALL_SCRIPTS` value. Single source of truth for
     /// [`super::overrides::parse_script_policy_label`].
@@ -228,7 +228,7 @@ impl ScriptPolicy {
 ///
 /// Set via `--on-mismatch` / `RUNNER_ON_MISMATCH` /
 /// `[resolution].on_mismatch`. Independent from
-/// `devEngines.packageManager` `onFail`, that policy governs whether
+/// `devEngines.packageManager` `onFail`. That policy governs whether
 /// the *declared* PM can actually run; this one governs whether the
 /// resolver tolerates the declaration disagreeing with the install
 /// state at all.
@@ -236,7 +236,7 @@ impl ScriptPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum MismatchPolicy {
-    /// Emit a `package.json` warning, prefer the declaration (Corepack
+    /// Emit a `package.json` warning; prefer the declaration (Corepack
     /// semantics, the lockfile is most likely stale).
     #[default]
     Warn,
@@ -398,7 +398,7 @@ pub(crate) enum ResolutionStep {
         /// the resolver fell back to.
         binary: PathBuf,
     },
-    /// Step 8 (legacy), no signals matched, default to `npm` so that
+    /// Step 8 (legacy), no signals matched; default to `npm` so that
     /// `runner run <script>` still has a chance to dispatch. The Phase 5
     /// default replaces this with a [`Self::PathProbe`]; this variant only
     /// fires with `--fallback npm`.
@@ -447,7 +447,7 @@ pub(crate) struct OverrideSources<'a> {
     /// config side comes from the loaded `runner.toml` `[install].pms`.
     pub install_pms: SourceValue<'a>,
     /// `RUNNER_INSTALL_SCRIPTS` env (`deny`|`allow`). The `cli` side stays
-    /// unused here, the `--no-scripts`/`--scripts` flags are layered on at the
+    /// unused here; the `--no-scripts`/`--scripts` flags are layered on at the
     /// dispatch boundary; the config side comes from `[install].scripts`.
     pub install_scripts: SourceValue<'a>,
     /// `RUNNER_INSTALL_ON_COLLISION` env (`resolve`|`error`). No CLI flag; the

@@ -8,7 +8,7 @@ Two packages on the [AUR](https://aur.archlinux.org/):
 | `runner-run-bin` | prebuilt from GitHub release tars | x86_64, aarch64, armv7h |
 
 `runner-run-bin` `provides`/`conflicts` `runner-run`, so it is a drop-in
-replacement, install whichever you prefer, not both.
+replacement; install whichever you prefer, not both.
 
 Both packages install bash, zsh, and fish completion files for `runner`
 and `run` into the system autoload dirs, no `eval` line needed in a

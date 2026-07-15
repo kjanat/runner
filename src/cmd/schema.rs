@@ -97,7 +97,7 @@ fn write_all_schemas(dir: &Path) -> Result<()> {
 /// instead of an unhandled panic reaching `runner schema --all`'s caller.
 /// `render_init_template` panics on `FIELD_TEMPLATE`/`RunnerConfig` drift
 /// by design (a hard, loud failure is exactly right for the drift-guard
-/// test that normally catches this before merge), this is only the
+/// test that normally catches this before merge); this is only the
 /// production CLI path's translation of that same failure into a
 /// `Result`, with the default panic hook suppressed so users see one
 /// clean error instead of a raw backtrace followed by one.
@@ -606,7 +606,7 @@ fn patch_source_schema(schema: &mut Value, command: &str) {
 }
 
 /// `Overrides.prefer_sources`/`task_source_pins` hold the same structured
-/// source labels as `SourceEntry.kind`, command-dependent like it, reuse
+/// source labels as `SourceEntry.kind`, command-dependent like it; reuse
 /// `TaskSourceLabel` instead of leaving them generic strings. (Every other
 /// `Overrides` label field is backed by a real enum and gets its schema
 /// constraint straight from `#[derive(schemars::JsonSchema)]` on that enum,
@@ -801,7 +801,7 @@ mod tests {
         // source_labels(command) used to be three hand-maintained arrays,
         // free to drift from the label functions `list`/`why`/`doctor`
         // actually call at runtime. Now that it's derived, this test is a
-        // tautology against today's implementation, its job is to catch a
+        // tautology against today's implementation; its job is to catch a
         // future regression back to a hardcoded list.
         for command in ["list", "doctor", "why"] {
             let schema = super::task_source_label_schema(command);
@@ -852,7 +852,7 @@ mod tests {
         // provider_labels() used to be a hand-maintained PROVIDER_LABELS
         // array, free to drift from cmd::why::provider_label. Now that
         // it's derived, this test is a tautology against today's
-        // implementation, its job is to catch a future regression back
+        // implementation; its job is to catch a future regression back
         // to a hardcoded list.
         let enum_values = super::provider_labels();
         let runtime_values: Vec<&str> = crate::types::TaskSource::all()

@@ -55,7 +55,7 @@ pub(crate) struct Project<'a> {
 }
 
 impl<'a> Project<'a> {
-    /// Build the full report. Test-only convenience, production callers go through the dispatcher,
+    /// Build the full report. Test-only convenience. Production callers go through the dispatcher,
     /// which validates `--schema-version` and calls [`Self::build_with_schema`] directly.
     #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
@@ -65,7 +65,7 @@ impl<'a> Project<'a> {
 
     /// Build the report. `resolve_shims` controls whether PATH-probe hits are classified against a
     /// Volta installation (one `volta which` spawn per shimmed tool). Diagnostic surfaces
-    /// (`doctor`, `info --json`) pass `true`; `list` passes `false`, it drops signals anyway.
+    /// (`doctor`, `info --json`) pass `true`; `list` passes `false` because it drops signals anyway.
     pub(crate) fn build_with_schema(
         ctx: &'a ProjectContext,
         overrides: &ResolutionOverrides,
@@ -138,7 +138,7 @@ impl<'a> Project<'a> {
     }
 
     /// Project the full report to a `list`-shaped view: just the tasks (filtered by `source` when set)
-    /// plus the schema version and root. Drops resolver state, `list` is purely a directory listing for tasks.
+    /// plus the schema version and root. Drops resolver state because `list` is purely a directory listing for tasks.
     pub(crate) fn into_list_view(self, source: Option<TaskSource>) -> TaskListView<'a> {
         let target = source.map(flat_source_label);
         let tasks = self
@@ -483,7 +483,7 @@ pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> Prob
     thread::scope(|s| {
         // Spawn all probes first (push, don't lazy-iterate) so they
         // actually run in parallel; chaining `.map(spawn).map(join)`
-        // without the eager push would serialize, `Iterator::map` is
+        // without the eager push would serialize: `Iterator::map` is
         // lazy, so the next `spawn` wouldn't fire until the previous
         // join returned.
         let mut handles = Vec::with_capacity(crate::resolver::NODE_PROBE_ORDER.len());

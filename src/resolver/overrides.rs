@@ -56,7 +56,7 @@ impl ResolutionOverrides {
     }
 
     /// Lenient sibling of [`Self::from_cli_and_env`] for commands that
-    /// must keep working when the *environment* is misconfigured,
+    /// must keep working when the *environment* is misconfigured.
     /// `runner doctor` exists to diagnose exactly that, so it can't die
     /// on the condition it should report. Invalid env-sourced override
     /// values are blanked and returned as
@@ -93,7 +93,7 @@ impl ResolutionOverrides {
     /// pre-validates every env-sourced string field, blanking invalid
     /// values into warnings, then delegates to [`Self::from_sources`].
     ///
-    /// Mirrors [`parse_override`] precedence exactly, an env value
+    /// Mirrors [`parse_override`] precedence exactly: an env value
     /// shadowed by a CLI value is never parsed by the strict path, so
     /// it is not validated (or warned about) here either.
     ///
@@ -199,7 +199,7 @@ impl ResolutionOverrides {
         )?;
         // `[tasks]` (rank-only, PM-aware) supersedes the deprecated
         // `[task_runner].prefer` (restrictive, runners-only). When the new
-        // section carries anything, the legacy list is ignored entirely, the
+        // section carries anything, the legacy list is ignored entirely; the
         // config loader has already emitted the deprecation warning.
         //
         // "Carries anything" is judged on the *raw* config fields, not the
@@ -338,7 +338,7 @@ fn parse_install_pms(sources: &OverrideSources<'_>) -> Result<Vec<PackageManager
 /// Resolve the `runner install` lifecycle-script policy: `RUNNER_INSTALL_SCRIPTS`
 /// (env) wins over `[install].scripts` (config). The CLI `--no-scripts` /
 /// `--scripts` flags are layered on top later, at the dispatch boundary, so they
-/// are not consulted here. Unset on both sides yields [`ScriptPolicy::Default`],
+/// are not consulted here. Unset on both sides yields [`ScriptPolicy::Default`]:
 /// each package manager keeps its own default.
 ///
 /// # Errors
@@ -422,7 +422,7 @@ fn parse_script_policy_label(raw: &str) -> Result<ScriptPolicy> {
 /// `true`) surfaces here too: with no env var to neutralize a side, the
 /// same [`ResolveError::ConflictingFailurePolicy`] the resolver raises at
 /// dispatch time fires during construction. Delegating keeps `config
-/// validate` honest, it can never accept a file a real run would reject.
+/// validate` honest: it can never accept a file a real run would reject.
 ///
 /// # Errors
 ///
