@@ -24,7 +24,7 @@
 //!   stay null), the `tool_probe_error` variant (the probe cannot
 //!   error), the `binary`/`package-binary` tool kinds, and the
 //!   `debug`/`error` severities. Each gets declared when an emitter
-//!   exists; contracts should describe output, not ambition.
+//!   exists. Contracts should describe output, not ambition.
 
 use std::collections::BTreeMap;
 use std::path::Path;

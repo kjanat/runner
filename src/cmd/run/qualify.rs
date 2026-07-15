@@ -30,7 +30,7 @@ pub(super) fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
 /// Parse the `#`-separated FQN form that `doctor --json` / `why --json`
 /// print as a task's identity: `root:<source>#<name>` (the `root:` scope
 /// prefix is optional on input). Returns `None` for anything whose part
-/// before the `#` doesn't name a source, `user/repo#ref` package specs
+/// before the `#` doesn't name a source. `user/repo#ref` package specs
 /// keep flowing to the PM-exec fallback untouched.
 pub(super) fn parse_fqn_task(input: &str) -> Option<(TaskSource, &str)> {
     let (prefix, name) = input.split_once('#')?;
@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn lookup_token_exact_name_wins_on_qualified_miss() {
         // A script literally named `deno:importsmap` was unreachable:
-        // `deno` parses as a source label, the lookup missed, dispatch
+        // `deno` parses as a source label, so the lookup missed and dispatch
         // fell to PM-exec (ts-x509 transcript). Exact full-name match
         // must win when the qualified lookup has no candidate.
         let mut ctx = context();

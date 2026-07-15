@@ -38,7 +38,7 @@ fn init(dir: &Path, force: bool) -> Result<i32> {
         return Ok(2);
     }
     // config::INIT_TEMPLATE carries its own repo-relative `#:schema` pragma
-    // (for editing this repo's copy), swap it for the real published URL
+    // (for editing this repo's copy); swap it for the real published URL
     // rather than stacking a second pragma line in the user's project.
     let body = strip_leading_schema_pragma(config::INIT_TEMPLATE);
     let contents = format!("#:schema {}\n\n{body}", crate::schema::config_schema_url());

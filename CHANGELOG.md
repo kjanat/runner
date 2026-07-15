@@ -444,7 +444,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   forced PM (`RUNNER_PM=deno run check` → `deno task check`), which breaks when
   the script relies on npm lifecycle build artifacts deno cannot honor. Now the
   forced PM's own source wins the conflict, most-native first: `RUNNER_PM=deno`
-  picks `deno:check`, `--pm bun` picks `package.json:check`. The rule is general
+  picks `deno:check`; `--pm bun` picks `package.json:check`. The rule is general
   across every PM; deno is one member, not a special case, and a PM that owns
   no task source (Bundler, Composer) re-orders nothing. Only conflicting
   same-name candidates are re-ordered; runs with no `--pm`/`RUNNER_PM` are
@@ -852,7 +852,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   section; elsewhere it gets a plain colored header. Defaults diverge by
   environment so CI and local can differ: `[github].group_parallel`
   (default `true`, only when `[github].group_output` is also `true`)
-  governs runs under GitHub Actions, `[parallel].grouped` (default
+  governs runs under GitHub Actions; `[parallel].grouped` (default
   `false`) governs runs elsewhere. Opting out on either path restores the
   live `[<task>]`-prefixed multiplexer.
 - `[github]` and `[parallel]` sections in `runner.toml`, reflected in the

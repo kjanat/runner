@@ -52,7 +52,7 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
         .stderr(Stdio::inherit());
     // Mark children (and, by env inheritance, all descendants) when this
     // runner opens a GHA group around them, so a nested `runner`/`run`
-    // suppresses its own group; GHA groups don't nest. When we're already
+    // suppresses its own group. GHA groups don't nest. When we're already
     // nested the marker is in our inherited env, so children get it for free.
     if emits_group(overrides) {
         command.env(GROUP_ACTIVE_ENV, "1");
@@ -99,7 +99,7 @@ fn prepend_node_bin_path(command: &mut Command, dir: &Path) {
 
 /// `bins` followed by the entries of `parent`, joined with the platform
 /// separator. `None` when joining fails (a bin dir embeds the separator
-/// itself), the caller leaves `PATH` untouched rather than corrupt it.
+/// itself). The caller leaves `PATH` untouched rather than corrupt it.
 fn prepended_path(bins: &[PathBuf], parent: Option<&OsStr>) -> Option<OsString> {
     let inherited = parent.map(std::env::split_paths).into_iter().flatten();
     std::env::join_paths(bins.iter().cloned().chain(inherited)).ok()
@@ -435,7 +435,7 @@ mod tests {
 
         let bins = node_bin_dirs(&member);
 
-        // `apps/` has no node_modules, levels without an installed
+        // `apps/` has no node_modules; levels without an installed
         // `.bin` are skipped, not invented. Entries past the temp root
         // (a stray `/tmp/node_modules`) are out of our control, so only
         // pin the leading order and that nothing else came from inside

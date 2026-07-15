@@ -354,7 +354,7 @@ fn install_single(
 }
 
 /// Split the plan into lanes: the package managers that share an install
-/// directory form one lane and run in sequence, everything else gets a lane of
+/// directory form one lane and run in sequence; everything else gets a lane of
 /// its own. Lanes are emitted in detection order, as are the managers inside
 /// one.
 fn install_lanes(plan: &InstallPlan) -> Vec<Vec<PackageManager>> {
@@ -1213,7 +1213,7 @@ mod tests {
 
     #[test]
     fn force_on_is_noop_for_already_runs_and_unforceable_managers() {
-        // composer/cargo run scripts by default, force-on changes nothing.
+        // composer/cargo run scripts by default; force-on changes nothing.
         assert_eq!(
             install_argv(PackageManager::Composer, ScriptDirective::ForceOn),
             ["install"]

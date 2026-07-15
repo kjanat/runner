@@ -291,7 +291,7 @@
       "additionalProperties": false
     },
     "FailurePolicy": {
-      "description": "Failure policy for a chain. `FailFast` is the default and matches\n`make -j` semantics in parallel mode (let running siblings finish,\ndon't start new ones).",
+      "description": "Failure policy for a chain. `FailFast` is the default and matches\n`make -j` semantics in parallel mode (let running siblings finish;\ndon't start new ones).",
       "oneOf": [
         {
           "description": "Stop the chain on the first failing task. In parallel mode,\nalready-running siblings complete naturally.",

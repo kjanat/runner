@@ -446,7 +446,7 @@ mod tests {
         use crate::detect::detect;
         use crate::tool::test_support::TempDir;
 
-        // Manifest declaration disagrees with the detected lockfile,
+        // When the manifest declaration disagrees with the detected lockfile,
         // the resolver emits a `package.json` warning. Doctor should
         // surface it alongside whatever ctx.warnings already carries.
         let dir = TempDir::new("doctor-merges-warnings");

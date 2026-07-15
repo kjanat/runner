@@ -199,7 +199,7 @@ cmd_build_npm_packages() {
 	[[ -d man ]] && man_arg=(--man-dir man)
 
 	# build-packages.ts is tier-aware: missing tier-3 (experimental)
-	# tarballs are skipped, missing tier-1/2 fail the job.
+	# tarballs are skipped; missing tier-1/2 fail the job.
 	node npm/scripts/build-packages.ts --version "${version}" "${man_arg[@]}"
 }
 

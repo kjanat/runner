@@ -99,6 +99,6 @@ RUN set -eux; \
     echo "--- run --version ---"; run --version; \
     echo "--- runner --help (head) ---"; runner --help 2>&1 | head -5; \
     echo "================================================"; \
-    echo "ALL CHECKS PASSED, npm/musl path is sound for VER=${VER}"
+    echo "ALL CHECKS PASSED. npm/musl path is sound for VER=${VER}"
 
 CMD ["sh", "-c", "echo 'musl smoke:'; runner --version && run --version && echo OK"]

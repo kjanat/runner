@@ -615,7 +615,7 @@ impl PackageManager {
     /// the latter. Cargo, Go, and the Python PMs own their ecosystem's
     /// source. Bundler and Composer have no task source modeled yet, so
     /// they bias nothing. Deno is one member of this rule, not a special
-    /// case; the bias is general across every PM.
+    /// case. The bias is general across every PM.
     pub(crate) const fn owned_task_sources(self) -> &'static [TaskSource] {
         match self {
             Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => &[TaskSource::PackageJson],

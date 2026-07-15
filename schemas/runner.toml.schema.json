@@ -189,7 +189,7 @@
       "additionalProperties": false
     },
     "TasksSection": {
-      "description": "`[tasks]` section, persistent task-source preference for ambiguous task\nnames (a name that exists under more than one source, e.g. a `package.json`\nscript *and* a `turbo` task).\n\nBoth knobs speak the same label vocabulary: a label is a task runner\n(`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,\n`deno`, …), or a source name (`package.json`, `deno`, …). Package-manager\nlabels map to the script source they run (`bun` → `package.json`).\nSelection here is **rank-only**: it never hard-rejects an unlisted source,\nit only reorders. An explicit CLI qualifier (`package.json:test`),\n`--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.",
+      "description": "`[tasks]` section, persistent task-source preference for ambiguous task\nnames (a name that exists under more than one source, e.g. a `package.json`\nscript *and* a `turbo` task).\n\nBoth knobs speak the same label vocabulary: a label is a task runner\n(`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,\n`deno`, …), or a source name (`package.json`, `deno`, …). Package-manager\nlabels map to the script source they run (`bun` → `package.json`).\nSelection here is **rank-only**: it never hard-rejects an unlisted source;\nit only reorders. An explicit CLI qualifier (`package.json:test`),\n`--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.",
       "type": "object",
       "properties": {
         "overrides": {

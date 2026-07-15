@@ -1360,7 +1360,7 @@ mod tests {
     fn try_bare_file_declines_local_prefix_tokens() {
         // Prefix-bearing paths are the pre-task path branch's responsibility;
         // the after-miss fallback must decline them outright. A prefix-less
-        // relative path like `bin/tool` is NOT declined here, see
+        // relative path like `bin/tool` is NOT declined here. See
         // `bare_file_resolves_relative_separator_token`.
         let ctx = context(vec![PackageManager::Bun]);
         let defaults = ResolutionOverrides::default();
@@ -1378,7 +1378,7 @@ mod tests {
     fn try_path_token_declines_relative_separator_tokens() {
         // `bin/tool` carries a separator but no explicit local prefix, so the
         // pre-task path branch must decline it (returning `None` without
-        // touching the filesystem), a matching `make bin/tool` task wins
+        // touching the filesystem); a matching `make bin/tool` task wins
         // first. Only an explicit `./bin/tool` outranks a task.
         let result = try_path_token(
             &context(vec![PackageManager::Bun]),
@@ -1422,7 +1422,7 @@ mod tests {
     #[test]
     fn try_bare_file_resolves_against_ctx_root() {
         // The bare-file fallback anchors on `ctx.root` (the detected project
-        // dir / `--dir` target), not the live process cwd, a `main.ts` under
+        // dir / `--dir` target), not the live process cwd; a `main.ts` under
         // the project root runs even when the shell cwd is elsewhere. This is
         // what stops a `--dir`-set run from missing the file and mis-routing
         // into the `bunx main.ts` 404 fallback (issue #69).

@@ -469,7 +469,7 @@ pub(super) const fn provider_label(source: TaskSource) -> &'static str {
 }
 
 /// Effective command preview for the candidate. `why` only resolves the
-/// PM for the selected task, other candidates report null. Delegates the
+/// PM for the selected task; other candidates report null. Delegates the
 /// per-source dispatch to [`labels::resolved_command`], shared with
 /// `doctor`.
 fn resolved_command(task: &Task, pm_decision: Option<&PmDecision>) -> Option<String> {

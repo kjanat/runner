@@ -404,7 +404,7 @@ const INIT_TEMPLATE_HEADER: &str = r"#:schema ./runner.toml.schema.json
 
 /// Render the `runner.toml` scaffold `runner config init` writes.
 ///
-/// Walks [`crate::config::RunnerConfig`]'s schemars metadata, section
+/// Walks [`crate::config::RunnerConfig`]'s schemars metadata. Section
 /// order and doc-comment descriptions come straight from the struct, so
 /// a field can't be silently forgotten or its prose silently drift from
 /// the type. [`FIELD_TEMPLATE`] supplies the one thing schemars can't:
@@ -413,8 +413,8 @@ const INIT_TEMPLATE_HEADER: &str = r"#:schema ./runner.toml.schema.json
 /// # Panics
 ///
 /// Panics if `RunnerConfig`'s schema is malformed (a property without a
-/// `$defs` `$ref`) or a schema field has no [`FIELD_TEMPLATE`] entry,
-/// both indicate a real bug the generator should surface loudly, not
+/// `$defs` `$ref`) or a schema field has no [`FIELD_TEMPLATE`] entry.
+/// Both indicate a real bug the generator should surface loudly, not
 /// paper over, since this only ever runs under `just gen-schema`.
 pub(crate) fn render_init_template() -> String {
     let schema = serde_json::to_value(schemars::schema_for!(crate::config::RunnerConfig))

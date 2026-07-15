@@ -21,7 +21,7 @@
 # (`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,
 # `deno`, …), or a source name (`package.json`, `deno`, …). Package-manager
 # labels map to the script source they run (`bun` → `package.json`).
-# Selection here is **rank-only**: it never hard-rejects an unlisted source,
+# Selection here is **rank-only**: it never hard-rejects an unlisted source;
 # it only reorders. An explicit CLI qualifier (`package.json:test`),
 # `--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.
 [tasks]
