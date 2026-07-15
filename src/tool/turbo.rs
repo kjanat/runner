@@ -1,4 +1,4 @@
-//! Turborepo — monorepo build system.
+//! Turborepo, monorepo build system.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 ///
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Workspace-
 /// scoped entries like `"my-app#build"` are filtered out, while Root Task
-/// entries (`"//#lint"`) are surfaced as their bare name (`"lint"`) — both
+/// entries (`"//#lint"`) are surfaced as their bare name (`"lint"`), both
 /// are invoked the same way as a plain task. JSONC syntax (line comments,
 /// block comments, trailing commas) is accepted under either filename,
 /// matching Turborepo's own parser.
@@ -60,8 +60,8 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
 
 /// Map a raw `tasks`/`pipeline` key to the runnable task name, or drop it.
 ///
-/// - `"//#lint"` → `Some("lint")` (Root Task — surface bare name).
-/// - `"web#build"` → `None` (workspace-scoped — invoked as `web#build`,
+/// - `"//#lint"` → `Some("lint")` (Root Task, surface bare name).
+/// - `"web#build"` → `None` (workspace-scoped, invoked as `web#build`,
 ///   not as a top-level task).
 /// - `"build"` → `Some("build")` (plain task).
 /// - `"//#"` or `"//#a#b"` → `None` (malformed).
@@ -83,7 +83,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 }
 
 /// Returns `true` if `command` is a thin invocation of `turbo` that targets
-/// the same task name — i.e. `turbo run <name>` or the shorthand
+/// the same task name, i.e. `turbo run <name>` or the shorthand
 /// `turbo <name>`, optionally followed by flag tokens (e.g. `--filter web`,
 /// `--concurrency=4`).
 ///
@@ -91,7 +91,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// `--key=value`), values following a non-`=` flag, or args after a
 /// bare `--` end-of-options separator (turbo's `turbo run <task> --
 /// <args...>` forwarding pattern). Any shell control operator, redirect,
-/// or expansion token (`$`/backtick) rejects the match — they mean the
+/// or expansion token (`$`/backtick) rejects the match, they mean the
 /// script does more than dispatch to turbo.
 ///
 /// Purely a textual heuristic on the script body. Indirect invocations
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn extract_tasks_drops_malformed_root_task_keys() {
         // `//#` with no name and `//#a#b` (extra `#`) are not valid root
-        // tasks — drop them rather than surface a confusing entry.
+        // tasks, drop them rather than surface a confusing entry.
         let dir = TempDir::new("turbo-malformed-root");
         fs::write(
             dir.path().join("turbo.json"),
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn is_self_passthrough_rejects_shell_chain_and() {
-        // `turbo run build && echo done` does extra work — not a thin
+        // `turbo run build && echo done` does extra work, not a thin
         // passthrough; swallowing it would hide the trailing command.
         assert!(!is_self_passthrough(
             "build",
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn is_self_passthrough_rejects_extra_positional_target() {
-        // `turbo run build lint` runs both `build` and `lint` — invoking
+        // `turbo run build lint` runs both `build` and `lint`, invoking
         // through runner would silently drop `lint`, so don't classify
         // this as a passthrough.
         assert!(!is_self_passthrough("build", "turbo run build lint"));
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn is_self_passthrough_rejects_pipe_with_stderr_after_flag() {
         // `|&` (bash 4+ pipe both stdout and stderr) was previously
-        // consumed as `--no-cache`'s value — now caught by the
+        // consumed as `--no-cache`'s value, now caught by the
         // expanded shell-control-token list.
         assert!(!is_self_passthrough(
             "build",
@@ -643,7 +643,7 @@ mod tests {
     fn is_self_passthrough_rejects_var_expansion_after_flag() {
         // `--filter $X` was previously consumed: the value of `$X` is
         // resolved at run time, so the script's effective filter
-        // depends on shell state — not a thin passthrough.
+        // depends on shell state, not a thin passthrough.
         assert!(!is_self_passthrough("build", "turbo run build --filter $X"));
     }
 
@@ -712,7 +712,7 @@ mod tests {
     fn is_self_passthrough_rejects_quoted_expansion_after_flag() {
         // The exact form from the user's bug report:
         // `"build": "turbo run build \"${X}\""` decodes to
-        // `turbo run build "${X}"` — the quoted form must reject too.
+        // `turbo run build "${X}"`, the quoted form must reject too.
         assert!(!is_self_passthrough(
             "build",
             "turbo run build --filter \"${X}\""
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn is_self_passthrough_rejects_bare_var_positional() {
-        // Standalone `$X` after the target — already rejected by the
+        // Standalone `$X` after the target, already rejected by the
         // positional rule; under the new rule it now rejects via the
         // explicit shell-expansion check, which is clearer.
         assert!(!is_self_passthrough("build", "turbo run build $X"));

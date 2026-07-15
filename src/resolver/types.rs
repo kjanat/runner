@@ -1,6 +1,6 @@
-//! Resolver data types — the public structs/enums + their trivial impls.
+//! Resolver data types, the public structs/enums + their trivial impls.
 //!
-//! No resolution logic, no parsing — just the shapes the rest of the
+//! No resolution logic, no parsing, just the shapes the rest of the
 //! resolver passes around. `impl Resolver` lives in [`super::resolve`];
 //! `impl ResolutionOverrides` lives in [`super::overrides`].
 
@@ -102,7 +102,7 @@ pub(crate) struct ResolutionOverrides {
     pub parallel_grouped: bool,
     /// Allowlist of package managers `runner install` may run, resolved
     /// from `RUNNER_INSTALL_PMS` (env) → `[install].pms` (config). Empty
-    /// means "no install filter" — install fans out to every detected PM.
+    /// means "no install filter", install fans out to every detected PM.
     /// Unlike [`Self::pm`], this never affects script dispatch.
     pub install_pms: Vec<PackageManager>,
     /// Install-time lifecycle-script policy, resolved from
@@ -112,14 +112,23 @@ pub(crate) struct ResolutionOverrides {
     /// boundary; [`ScriptPolicy::Default`] leaves each package manager at its
     /// own built-in default.
     pub script_policy: ScriptPolicy,
+    /// Install-directory collision policy, resolved from
+    /// `RUNNER_INSTALL_ON_COLLISION` (env) → `[install].on_collision` (config).
+    pub on_collision: CollisionPolicy,
     /// `true` when a parent `runner`/`run` already opened a GitHub Actions
     /// log group above this process (signalled via the inherited
-    /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest —
-    /// a nested `::endgroup::` closes the parent's group early — so when this
+    /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest,
+    /// a nested `::endgroup::` closes the parent's group early, so when this
     /// is set, this runner's own group-opening sites stay silent and output
     /// flows into the parent's group. Internal/runner-set, never a user
     /// override.
     pub parent_group_open: bool,
+    /// `true` when a parent `runner`/`run` already emitted this project's
+    /// detection warnings (signalled via the inherited `RUNNER_WARNED_ROOT`
+    /// env marker, which carries the root it warned about). A script that
+    /// calls `runner` again would otherwise repeat every warning at each
+    /// level. Internal/runner-set, never a user override.
+    pub parent_warned: bool,
 }
 
 /// What to do when no signal in steps 2–6 matches.
@@ -164,7 +173,7 @@ impl FallbackPolicy {
 /// …) are the primary supply-chain attack surface during dependency
 /// installs. This knob lets a project deny them across the package managers
 /// that expose a skip mechanism, or force them on across the managers that
-/// can express it — the latter matters because several package managers
+/// can express it, the latter matters because several package managers
 /// (npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.
 ///
 /// Set via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,
@@ -197,14 +206,14 @@ pub(crate) enum ScriptPolicy {
 }
 
 impl ScriptPolicy {
-    /// The two labels a user can actually type — `Default` is the
+    /// The two labels a user can actually type, `Default` is the
     /// internal "unset" sentinel, never a valid `[install].scripts` /
     /// `RUNNER_INSTALL_SCRIPTS` value. Single source of truth for
     /// [`super::overrides::parse_script_policy_label`].
     pub(crate) const SETTABLE: [Self; 2] = [Self::Deny, Self::Allow];
 
     /// The user-facing label, or `None` for [`Self::Default`] (never
-    /// user-settable — see [`Self::SETTABLE`]).
+    /// user-settable, see [`Self::SETTABLE`]).
     pub(crate) const fn label(self) -> Option<&'static str> {
         match self {
             Self::Default => None,
@@ -219,7 +228,7 @@ impl ScriptPolicy {
 ///
 /// Set via `--on-mismatch` / `RUNNER_ON_MISMATCH` /
 /// `[resolution].on_mismatch`. Independent from
-/// `devEngines.packageManager` `onFail` — that policy governs whether
+/// `devEngines.packageManager` `onFail`, that policy governs whether
 /// the *declared* PM can actually run; this one governs whether the
 /// resolver tolerates the declaration disagreeing with the install
 /// state at all.
@@ -228,13 +237,13 @@ impl ScriptPolicy {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum MismatchPolicy {
     /// Emit a `package.json` warning, prefer the declaration (Corepack
-    /// semantics — the lockfile is most likely stale).
+    /// semantics, the lockfile is most likely stale).
     #[default]
     Warn,
     /// Stay silent; prefer the declaration.
     Ignore,
-    /// Bail with [`super::ResolveError::MismatchPolicyError`]. Intended for
-    /// CI guardrails where a mismatch should block the run.
+    /// Refuse to run and exit non-zero. Intended for CI guardrails where a
+    /// mismatch should block the run.
     Error,
 }
 
@@ -251,6 +260,42 @@ impl MismatchPolicy {
         match self {
             Self::Warn => "warn",
             Self::Ignore => "ignore",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// How `runner install` reacts when two or more package managers in the
+/// install set write the same directory (a node PM plus a
+/// `nodeModulesDir`-enabled Deno both materializing `node_modules/`).
+///
+/// Set via `[install].on_collision` / `RUNNER_INSTALL_ON_COLLISION`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CollisionPolicy {
+    /// Install with one writer per directory and shadow the rest, the same
+    /// way a duplicate task name resolves to one source. An explicit
+    /// `[install].pms` naming several writers is consent: they all run,
+    /// serialized over the shared tree.
+    #[default]
+    Resolve,
+    /// Refuse to install and exit non-zero rather than pick. For CI
+    /// guardrails that want an ambiguous tree to block the run.
+    Error,
+}
+
+impl CollisionPolicy {
+    /// Every variant, in the order [`Self::label`]'s callers should list
+    /// them. Single source of truth for
+    /// [`super::policies::parse_collision_label`] and any surface that
+    /// needs to advertise or validate against the same closed set.
+    pub(crate) const ALL: [Self; 2] = [Self::Resolve, Self::Error];
+
+    /// The `[install].on_collision` / `RUNNER_INSTALL_ON_COLLISION` label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Resolve => "resolve",
             Self::Error => "error",
         }
     }
@@ -322,7 +367,7 @@ pub(crate) struct ResolvedPm {
     /// Surfaced by [`Self::describe`] for `--explain` and the
     /// `doctor` / `why` traces.
     pub via: ResolutionStep,
-    /// Non-fatal warnings emitted while resolving — e.g. a manifest
+    /// Non-fatal warnings emitted while resolving, e.g. a manifest
     /// declaration that disagrees with the detected lockfile.
     pub warnings: Vec<DetectionWarning>,
 }
@@ -333,27 +378,27 @@ pub(crate) struct ResolvedPm {
 /// that adding a step is a compile error to handle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolutionStep {
-    /// Steps 2–4 — user-supplied override won.
+    /// Steps 2–4, user-supplied override won.
     Override(OverrideOrigin),
-    /// Step 5a — `package.json` legacy `packageManager` field.
+    /// Step 5a, `package.json` legacy `packageManager` field.
     ManifestPackageManager,
-    /// Step 5b — `package.json` `devEngines.packageManager` field.
+    /// Step 5b, `package.json` `devEngines.packageManager` field.
     ManifestDevEngines {
         /// Effective `onFail` value for the chosen entry. Rendered into
         /// the `--explain` / `doctor` trace via [`ResolvedPm::describe`].
         on_fail: OnFail,
     },
-    /// Step 6 — package manager inferred from a lockfile (or another
+    /// Step 6, package manager inferred from a lockfile (or another
     /// detector recorded in [`ProjectContext::package_managers`]).
     Lockfile,
-    /// Step 7 — discovered via `$PATH` probe in canonical order.
+    /// Step 7, discovered via `$PATH` probe in canonical order.
     PathProbe {
         /// Absolute path of the executable found on PATH. Rendered by
         /// [`ResolvedPm::describe`] so the user can spot which directory
         /// the resolver fell back to.
         binary: PathBuf,
     },
-    /// Step 8 (legacy) — no signals matched, default to `npm` so that
+    /// Step 8 (legacy), no signals matched, default to `npm` so that
     /// `runner run <script>` still has a chance to dispatch. The Phase 5
     /// default replaces this with a [`Self::PathProbe`]; this variant only
     /// fires with `--fallback npm`.
@@ -363,7 +408,7 @@ pub(crate) enum ResolutionStep {
 /// Sources contributing to a [`ResolutionOverrides`].
 ///
 /// Bundles every CLI/env input the resolver consumes so
-/// `ResolutionOverrides::from_sources` stays extensible — adding a new
+/// `ResolutionOverrides::from_sources` stays extensible, adding a new
 /// override (say `--on-mismatch` / `RUNNER_ON_MISMATCH`) is one field on
 /// this struct, not a positional-argument expansion across every test site.
 ///
@@ -402,12 +447,15 @@ pub(crate) struct OverrideSources<'a> {
     /// config side comes from the loaded `runner.toml` `[install].pms`.
     pub install_pms: SourceValue<'a>,
     /// `RUNNER_INSTALL_SCRIPTS` env (`deny`|`allow`). The `cli` side stays
-    /// unused here — the `--no-scripts`/`--scripts` flags are layered on at the
+    /// unused here, the `--no-scripts`/`--scripts` flags are layered on at the
     /// dispatch boundary; the config side comes from `[install].scripts`.
     pub install_scripts: SourceValue<'a>,
+    /// `RUNNER_INSTALL_ON_COLLISION` env (`resolve`|`error`). No CLI flag; the
+    /// config side comes from `[install].on_collision`.
+    pub install_on_collision: SourceValue<'a>,
     /// Internal `RUNNER_GROUP_ACTIVE` nesting marker a parent runner set on
-    /// this process (see `crate::cmd::GROUP_ACTIVE_ENV`). Env-only — no CLI or
-    /// config side — but captured here so `from_sources` stays a pure function
+    /// this process (see `crate::cmd::GROUP_ACTIVE_ENV`). Env-only, no CLI or
+    /// config side, but captured here so `from_sources` stays a pure function
     /// of its inputs and tests can inject it.
     pub group_active: Option<&'a str>,
     /// Loaded `runner.toml` if any.
@@ -430,13 +478,13 @@ pub(crate) struct SourceValue<'a> {
 /// stays under clippy's argument/bool thresholds.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct DiagnosticFlags {
-    /// `--no-warnings` flag presence (CLI side only — env handled inside
+    /// `--no-warnings` flag presence (CLI side only, env handled inside
     /// `from_cli_and_env`).
     pub no_warnings: bool,
-    /// `-q`/`--quiet` flag presence (CLI side only — env handled inside
+    /// `-q`/`--quiet` flag presence (CLI side only, env handled inside
     /// `from_cli_and_env`).
     pub quiet: bool,
-    /// `--explain` flag presence (CLI side only — env handled inside
+    /// `--explain` flag presence (CLI side only, env handled inside
     /// `from_cli_and_env`).
     pub explain: bool,
 }

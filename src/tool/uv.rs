@@ -1,4 +1,4 @@
-//! uv — fast Python package manager.
+//! uv, fast Python package manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -18,12 +18,12 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
     c
 }
 
-/// `uv run <script> [args...]` — run a `[project.scripts]` console
+/// `uv run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project environment.
 ///
 /// `uv run` resolves the name against the scripts installed for the
 /// project (the PEP 621 `[project.scripts]` entry points), syncing the
-/// environment first if needed — exactly the dispatch path a
+/// environment first if needed, exactly the dispatch path a
 /// `[project.scripts]` task wants. This is distinct from [`exec_cmd`]
 /// (`uvx`), which fetches and runs an arbitrary tool from `PyPI`.
 pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
@@ -32,11 +32,11 @@ pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
     c
 }
 
-/// `uvx <args...>` — uv's `npx`-equivalent (i.e. `uv tool run`).
+/// `uvx <args...>`, uv's `npx`-equivalent (i.e. `uv tool run`).
 ///
 /// Runs a tool from `PyPI` in an ephemeral environment without
 /// installing it permanently into the project venv. This is the
-/// right primitive for the arbitrary-command exec fallback —
+/// right primitive for the arbitrary-command exec fallback,
 /// `uv run` is for the project's own Python scripts /
 /// `pyproject.toml#project.scripts.<name>` entries, not for
 /// `npx`-style "fetch and run any binary."
@@ -46,7 +46,7 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
-/// `uv run <file> [args...]` — execute a local Python script inside the
+/// `uv run <file> [args...]`, execute a local Python script inside the
 /// project environment. `uv run` accepts a script path directly, syncing
 /// the environment first when needed. Distinct from [`exec_cmd`] (`uvx`),
 /// which fetches and runs a `PyPI` tool.
@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn run_uses_uv_run_with_script_and_args() {
         // `runner run greenpy --flag` on a uv project should build
-        // `uv run greenpy --flag` — the project-environment dispatch
+        // `uv run greenpy --flag`, the project-environment dispatch
         // for a `[project.scripts]` entry point, not the `uvx`
         // fetch-and-run path.
         let built: Vec<_> = run_cmd("greenpy", &[String::from("--flag")])
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn exec_uses_uvx_passthrough() {
         // `runner --pm uv run ruff check` should build
-        // `uvx ruff check` — uvx is the `uv tool run` shorthand and
+        // `uvx ruff check`, uvx is the `uv tool run` shorthand and
         // is the npx-equivalent. `uv run` (the previous
         // implementation) only finds binaries already installed in
         // the project venv, which is a different code path.

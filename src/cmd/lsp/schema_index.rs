@@ -34,7 +34,7 @@ pub(super) struct FieldDoc {
 /// The (single) JSON type shape a field schema declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FieldType {
-    /// An object — a nested table writable as its own `[section.field]`
+    /// An object, a nested table writable as its own `[section.field]`
     /// header, e.g. `[tasks.overrides]`.
     Table,
     /// An array (a TOML sequence, e.g. `prefer = [...]`).

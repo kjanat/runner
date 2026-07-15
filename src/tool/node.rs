@@ -30,7 +30,7 @@ pub(crate) fn has_package_json(dir: &Path) -> bool {
     find_manifest(dir).is_some()
 }
 
-/// `node <file> [args...]` — execute a local source file with the Node.js
+/// `node <file> [args...]`, execute a local source file with the Node.js
 /// runtime. Used as the default JS/TS runtime for local-file dispatch when
 /// the project is neither a Bun nor a Deno project.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
@@ -49,7 +49,7 @@ pub(crate) fn find_manifest_upwards(dir: &Path) -> Option<PathBuf> {
     files::find_first_upwards(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
 }
 
-/// Returns `true` if `dir` sits inside a JS monorepo — i.e. some ancestor
+/// Returns `true` if `dir` sits inside a JS monorepo, i.e. some ancestor
 /// (within the VCS root) declares a workspace via `pnpm-workspace.yaml`,
 /// `lerna.json`, or a `package.json` carrying a `"workspaces"` key.
 ///
@@ -82,10 +82,10 @@ pub(crate) fn detect_pm_from_field(dir: &Path) -> Option<PackageManager> {
 /// wrote in `package.json`, suitable for echoing back in the warning.
 ///
 /// Returns:
-/// - `(Some(pm), None)` — field present and parses to a script-dispatching PM.
-/// - `(None, Some(raw))` — field present but unparseable; caller emits a
+/// - `(Some(pm), None)`, field present and parses to a script-dispatching PM.
+/// - `(None, Some(raw))`, field present but unparseable; caller emits a
 ///   `DetectionWarning::UnparseablePackageManager { raw }`.
-/// - `(None, None)` — field absent / empty / whitespace.
+/// - `(None, None)`, field absent / empty / whitespace.
 pub(crate) fn detect_pm_field_with_diagnostics(
     dir: &Path,
 ) -> (Option<PackageManager>, Option<String>) {
@@ -156,7 +156,7 @@ pub(crate) enum OnFail {
 
 impl OnFail {
     /// Canonical lowercase label used in `--json` output. Stable across
-    /// `Debug` changes — consumers can branch on the exact string.
+    /// `Debug` changes, consumers can branch on the exact string.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Ignore => "ignore",
@@ -178,7 +178,7 @@ pub(crate) enum ManifestSource {
 
 /// Package-manager declaration extracted from `package.json`.
 ///
-/// Returned by [`detect_pm_from_manifest`] — combines either the legacy
+/// Returned by [`detect_pm_from_manifest`], combines either the legacy
 /// `packageManager` field or the new `devEngines.packageManager` field
 /// (when the legacy field is absent), tagged with provenance and the
 /// proposal-default `onFail` policy.
@@ -317,7 +317,7 @@ pub(crate) enum VersionCheck {
         /// What `<pm> --version` returned, normalized.
         actual: String,
     },
-    /// The check could not run — typically because the PM binary is
+    /// The check could not run, typically because the PM binary is
     /// missing from `$PATH` or the declared range is unparseable. Treated
     /// as "no constraint to enforce" by callers, mirroring proposal
     /// guidance that unparseable ranges should not block dispatch.
@@ -336,7 +336,7 @@ pub(crate) enum VersionCheck {
 /// Spawns `<pm> --version`, parses the output, and runs
 /// [`semver::VersionReq::matches`]. Errors during any of those steps
 /// collapse to [`VersionCheck::Unverifiable`] so a partially-broken
-/// environment never blocks dispatch unnecessarily — `onFail = error` is
+/// environment never blocks dispatch unnecessarily, `onFail = error` is
 /// expected to handle the missing-binary case via the PATH probe; this
 /// helper is the *version* gate.
 pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> VersionCheck {
@@ -367,7 +367,7 @@ pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> Ve
         }
     };
 
-    if req.matches(&actual) {
+    if satisfies(&req, &actual) {
         VersionCheck::Satisfied
     } else {
         VersionCheck::Mismatch {
@@ -375,6 +375,25 @@ pub(crate) fn check_version_constraint(pm: PackageManager, declared: &str) -> Ve
             actual: actual.to_string(),
         }
     }
+}
+
+/// Whether an installed tool version clears a declared range.
+///
+/// Semver excludes prereleases from a range that doesn't name one, which is
+/// right for a dependency solver and wrong for a "is the installed tool new
+/// enough" gate: it fails `bun 1.3.0-canary` and `cargo 1.99.0-nightly`
+/// against `>=1.0.0`. A prerelease build clears the range its release version
+/// clears.
+fn satisfies(req: &semver::VersionReq, actual: &semver::Version) -> bool {
+    if req.matches(actual) {
+        return true;
+    }
+    !actual.pre.is_empty()
+        && req.matches(&semver::Version::new(
+            actual.major,
+            actual.minor,
+            actual.patch,
+        ))
 }
 
 /// Run `<pm> --version` and return its trimmed stdout, stripping a `v`
@@ -482,7 +501,7 @@ struct PackageJson {
 /// Deserialize `devEngines` without letting a malformed value poison the
 /// whole manifest. The field rides in the same struct as `scripts`, so a
 /// strict parse of e.g. `"devEngines": "pnpm@9"` (spec requires an
-/// object) used to abort the entire deserialize — dropping every script
+/// object) used to abort the entire deserialize, dropping every script
 /// and the `packageManager` signal, and mislabeling valid JSON as "not
 /// valid JSON". A shape we don't recognize degrades to `None` (same
 /// outcome as an absent key) instead.
@@ -650,7 +669,7 @@ mod tests {
     #[test]
     fn malformed_dev_engines_does_not_poison_scripts_or_pm() {
         // `devEngines` written as a Corepack-style string instead of the
-        // spec'd object is valid JSON with valid scripts — a strict parse
+        // spec'd object is valid JSON with valid scripts, a strict parse
         // used to abort the whole manifest (zero tasks + a false "not
         // valid JSON" warning) and lose the `packageManager` signal.
         let dir = TempDir::new("node-malformed-devengines");
@@ -866,7 +885,7 @@ mod tests {
 
     #[test]
     fn parse_package_manager_spec_rejects_trailing_at_sign() {
-        // `"pnpm@"` is a typo (`pnpm@9` minus the version) — treating
+        // `"pnpm@"` is a typo (`pnpm@9` minus the version), treating
         // it as "pnpm without a version constraint" silently hides
         // user intent. The parser must reject so the detection-layer
         // warning surfaces the verbatim value.
@@ -874,10 +893,10 @@ mod tests {
 
         assert!(parse_package_manager_spec(Some("pnpm@")).is_none());
         assert!(parse_package_manager_spec(Some("npm@")).is_none());
-        // Whitespace inside the version still counts as empty after trim
-        // — split_once('@') doesn't trim, but the leading raw is trimmed
+        // Whitespace inside the version still counts as empty after trim.
+        // split_once('@') doesn't trim, but the leading raw is trimmed
         // before splitting, so `"  pnpm@  "` becomes `"pnpm@"` then
-        // splits to ("pnpm", " ") — non-empty whitespace remains as the
+        // splits to ("pnpm", " "), non-empty whitespace remains as the
         // version literal, intentionally NOT a typo signal.
         assert!(parse_package_manager_spec(Some(" pnpm@ ".trim())).is_none());
     }
@@ -926,7 +945,7 @@ mod tests {
 
         let decl = detect_pm_from_manifest(dir.path()).expect("decl should be present");
         assert_eq!(decl.pm, PackageManager::Bun);
-        // Single-object form defaults to onFail=error per proposal — implemented
+        // Single-object form defaults to onFail=error per proposal, implemented
         // here as "last entry of a 1-element array defaults to error".
         assert_eq!(decl.on_fail, OnFail::Error);
     }
@@ -1014,7 +1033,7 @@ mod tests {
 
     #[test]
     fn detect_pm_from_manifest_array_trailing_unresolvable_does_not_downgrade_on_fail() {
-        // Earlier resolvable entry plus a trailing unresolvable name —
+        // Earlier resolvable entry plus a trailing unresolvable name,
         // the resolvable one must inherit the "last entry" default
         // (Error) because it *is* the last resolvable entry.
         use super::{OnFail, detect_pm_from_manifest};
@@ -1035,6 +1054,29 @@ mod tests {
     }
 
     #[test]
+    fn prerelease_tool_builds_clear_the_range_their_release_clears() {
+        use super::satisfies;
+
+        let clears = |declared: &str, installed: &str| {
+            satisfies(
+                &semver::VersionReq::parse(declared).expect("range"),
+                &semver::Version::parse(installed).expect("version"),
+            )
+        };
+
+        // What semver's dependency-resolution rule gets wrong for a tool gate:
+        // every canary/nightly build fails a range that doesn't name one.
+        assert!(clears(">=1.0.0", "1.99.0-nightly"));
+        assert!(clears(">=1.2", "1.3.0-canary.20"));
+        // The range itself is still enforced, a prerelease doesn't buy a pass.
+        assert!(!clears(">=1.0.0", "0.9.0-beta"));
+        assert!(!clears(">=2", "1.9.0-rc.1"));
+        // Releases keep behaving exactly as before.
+        assert!(clears(">=1.0.0", "1.0.0"));
+        assert!(!clears(">=1.1", "1.0.0"));
+    }
+
+    #[test]
     fn check_version_constraint_satisfied_for_matching_range() {
         // Use the host's `cargo --version` since cargo ships with the
         // toolchain; rust-toolchain.toml pins to 1.95 which means
@@ -1051,7 +1093,7 @@ mod tests {
                 panic!("expected satisfaction, got mismatch: {declared} vs {actual}");
             }
             VersionCheck::Unverifiable { reason } => {
-                // `cargo` may not be on PATH in some CI environments —
+                // `cargo` may not be on PATH in some CI environments,
                 // accept the skip rather than fail the suite.
                 eprintln!("skipping: {reason}");
             }

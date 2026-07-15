@@ -190,7 +190,7 @@ Use the action to install runner in CI ([view on marketplace](https://github.com
 - run: runner install --frozen test build
 ```
 
-`runner install` is not a task — it runs the project's toolchain command(s)
+`runner install` is not a task, it runs the project's toolchain command(s)
 (`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
 (`test`, then `build`) sequentially.
 
@@ -281,7 +281,7 @@ Cargo, Make, just, Deno, uv, or some handcrafted nonsense from 2021.
 ## Man pages
 
 `man runner` and `man run` (plus `man runner-<subcommand>`) ship with every
-install channel — AUR (`runner-run` / `runner-run-bin`), npm
+install channel, AUR (`runner-run` / `runner-run-bin`), npm
 (`npm i -g runner-run`), crates.io, and `install.sh`. The pages are rendered
 from the CLI definition at release time, not committed.
 
@@ -307,14 +307,14 @@ run clean
 run install
 ```
 
-runs a project task named `clean` or `install` when one exists — even though
+runs a project task named `clean` or `install` when one exists, even though
 those names are also built-in `runner` subcommands. When no such task exists, a
 bare built-in verb (`install`, `clean`, `list`, `info`, `completions`) falls
 back to that built-in's default form (so `run install` installs dependencies)
 rather than the package-manager exec path.
 
 The explicit subcommand is the inverse: `runner install` (and `runner clean`,
-`runner list`, …) is **always** the built-in and never runs a same-named task —
+`runner list`, …) is **always** the built-in and never runs a same-named task,
 use `run install` / `runner run install` to reach a task called `install`.
 
 ## Configuration
@@ -345,7 +345,7 @@ node   = "pnpm"  # npm | pnpm | yarn | bun | deno
 python = "uv"    # uv | poetry | pipenv
 
 # Prefer which source runs an ambiguous task name (one that exists under more
-# than one source — e.g. a package.json script AND a turbo task). Labels are
+# than one source, e.g. a package.json script AND a turbo task). Labels are
 # task runners, package managers (bun, npm, ... map to package.json), or source
 # names (package.json). Rank-only: unlisted sources still run. An explicit
 # qualifier (package.json:test), --runner, or --pm still outranks these.
@@ -353,29 +353,35 @@ python = "uv"    # uv | poetry | pipenv
 prefer    = ["turbo", "bun"]                  # global order: turbo, then package.json
 overrides = { dev = "bun", build = "turbo" }  # per-task pins beat the order
 
-# Deprecated — superseded by [tasks] above. Legacy ranked allow-list of task
+# Deprecated, superseded by [tasks] above. Legacy ranked allow-list of task
 # runners that also *restricts* candidates (a same-named task under an unlisted
 # runner is rejected). Still honored for existing configs, with a warning.
 # [task_runner]
 # prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
 
 # Restrict which detected package managers `runner install` runs. Empty/absent
-# installs every detected PM. In a polyglot repo where both bun and deno would
-# write node_modules, this keeps install to one. Overridden by
-# RUNNER_INSTALL_PMS (comma-separated). `[pm]` above only scopes script
-# dispatch, not the install fan-out.
+# installs every detected PM. Overridden by RUNNER_INSTALL_PMS
+# (comma-separated). `[pm]` above only scopes script dispatch, not the install
+# fan-out.
+# `on_collision` decides what happens when two of them write the same directory
+# (bun and a nodeModulesDir-enabled deno both writing node_modules). "resolve"
+# (the default) installs with the PM the resolver already picked for the
+# ecosystem and skips the other, saying so; naming both in `pms` runs both, one
+# after another over the shared tree. "error" refuses to pick and exits 2.
+# Overridden by RUNNER_INSTALL_ON_COLLISION.
 # `scripts` controls install-time lifecycle scripts (the main supply-chain
 # attack surface): "deny" skips them where the PM allows it
 # (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces them on
 # where the PM can express it (npm --no-ignore-scripts, yarn-berry
-# YARN_ENABLE_SCRIPTS=true, deno --allow-scripts) — useful now that npm/pnpm are
+# YARN_ENABLE_SCRIPTS=true, deno --allow-scripts), useful now that npm/pnpm are
 # moving to scripts-off-by-default. bun and pnpm (>=10) can't be forced on by a
 # flag (their dependency build scripts need a trustedDependencies /
 # onlyBuiltDependencies manifest allowlist runner won't write), so they warn.
 # Precedence: CLI --no-scripts/--scripts > RUNNER_INSTALL_SCRIPTS > [install].scripts.
 [install]
-pms     = ["bun"]  # only install with these; each must be detected
-scripts = "deny"   # deny | allow  (absent = each PM's own default)
+pms          = ["bun"]    # only install with these; each must be detected
+scripts      = "deny"     # deny | allow  (absent = each PM's own default)
+on_collision = "resolve"  # resolve (one writer per install dir) | error
 
 # Resolver policy knobs.
 [resolution]
@@ -383,7 +389,7 @@ fallback    = "probe"  # probe (PATH probe) | npm (legacy) | error
 on_mismatch = "warn"   # warn | error (exit 2) | ignore  (manifest vs lockfile)
 
 # Failure policy for `-s`/`-p` chains and `install <tasks>`.
-# keep_going and kill_on_fail are mutually exclusive — setting both is an error.
+# keep_going and kill_on_fail are mutually exclusive, setting both is an error.
 [chain]
 keep_going   = false  # run every task despite failures (same as -k)
 kill_on_fail = false  # parallel: kill siblings on first failure (same as -K)
@@ -414,11 +420,11 @@ runner lsp                  # speaks LSP over stdio
 
 It provides, reusing the same logic the CLI uses:
 
-- **diagnostics** — the exact `runner config validate` checks (syntax, unknown
+- **diagnostics**, the exact `runner config validate` checks (syntax, unknown
   keys, bad package-manager / runner / source labels, conflicting policies) plus
   deprecation hints, live as you type;
-- **hover** — section and field documentation, sourced from the JSON Schema;
-- **completion** — section names, field names, and value sets (package managers,
+- **hover**, section and field documentation, sourced from the JSON Schema;
+- **completion**, section names, field names, and value sets (package managers,
   the `[tasks]` runner/PM/source labels, policy enums, booleans).
 
 Point your editor's generic LSP client at `runner lsp` for files named

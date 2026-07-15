@@ -42,7 +42,7 @@ cmd_package_asset() {
 	for bin in runner run; do
 		src="${BIN_DIR}/${bin}"
 		if [[ ! -f "${src}" ]]; then
-			echo "error: ${src} not found — build step did not produce ${bin}" >&2
+			echo "error: ${src} not found, build step did not produce ${bin}" >&2
 			exit 1
 		fi
 		cp "${src}" "${staging}/${bin}"
@@ -115,7 +115,7 @@ cmd_verify_asset() {
 	if [[ "${#missing[@]}" -gt 0 ]]; then
 		echo "error: build+upload for ${TARGET} reported success but these assets are not on release ${RELEASE_TAG}:" >&2
 		printf '  - %s\n' "${missing[@]}" >&2
-		echo "the build step produced no artifact — inspect its log for a silent no-op." >&2
+		echo "the build step produced no artifact, inspect its log for a silent no-op." >&2
 		exit 1
 	fi
 
@@ -151,7 +151,7 @@ cmd_verify_checksums() {
 	local tarballs=(*.tar.gz)
 	local sums=(*.sha256)
 
-	# Every tarball needs a matching .sha256 and vice versa — otherwise an
+	# Every tarball needs a matching .sha256 and vice versa, otherwise an
 	# unchecksummed binary could slip through to publish.
 	if [[ "${#tarballs[@]}" -eq 0 ]]; then
 		echo "error: no tarballs downloaded for ${RELEASE_TAG}" >&2
@@ -166,7 +166,7 @@ cmd_verify_checksums() {
 		fi
 	done
 
-	# Each .sha256 must reference a tarball matching its own basename —
+	# Each .sha256 must reference a tarball matching its own basename,
 	# defends against a swapped reference leaving a tarball unchecked.
 	for s in "${sums[@]}"; do
 		inner=$(awk '{sub(/^\*/, "", $2); print $2}' "${s}")

@@ -7,7 +7,7 @@ use super::ChainItem;
 
 /// Parse a positional list of task names into a v1 chain.
 ///
-/// v1 rules (reserved space for v2 quoted bundles — see spec §10):
+/// v1 rules (reserved space for v2 quoted bundles, see spec §10):
 /// - Positionals containing whitespace are rejected.
 /// - Positionals starting with `-` are rejected.
 /// - At least one task is required.

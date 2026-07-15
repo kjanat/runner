@@ -1,4 +1,4 @@
-//! npm — the default Node.js package manager.
+//! npm, the default Node.js package manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn force_on_appends_no_ignore_scripts() {
-        // The nopt negation of the `ignore-scripts` boolean config — keeps
+        // The nopt negation of the `ignore-scripts` boolean config, keeps
         // scripts running even if npm flips the default to off.
         assert_eq!(
             args_of(&install_cmd(false, ScriptDirective::ForceOn)),

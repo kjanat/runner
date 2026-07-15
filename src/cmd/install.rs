@@ -1,4 +1,4 @@
-//! `runner install` — install dependencies via every detected package manager.
+//! `runner install`, install dependencies via every detected package manager.
 
 use std::any::Any;
 use std::process::{Command, Stdio};
@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
-use crate::resolver::{ResolutionOverrides, ResolveError, ScriptPolicy};
+use crate::resolver::{CollisionPolicy, ResolutionOverrides, ResolveError, Resolver, ScriptPolicy};
 use crate::tool;
 use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskRunner, version_matches};
 
@@ -47,13 +47,13 @@ pub(crate) fn install_pms(
         bail!("No package manager detected.");
     }
 
-    // Resolved before the GHA group opens so a refused override doesn't
-    // emit an empty `runner: install` group — same rationale as the
+    // Planned before the GHA group opens so a refused override doesn't
+    // emit an empty `runner: install` group, same rationale as the
     // no-PM bail above.
-    let pms = select_install_pms(ctx, overrides)?;
+    let plan = plan_install(ctx, overrides)?;
 
-    warn_selected_collisions(ctx, &pms, overrides);
-    warn_unsupported_script_policy(&pms, overrides);
+    report_plan(&plan, overrides);
+    warn_unsupported_script_policy(&plan.pms, overrides);
 
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
@@ -72,20 +72,20 @@ pub(crate) fn install_pms(
         suggest_version_switch(ctx);
     }
 
-    if let [pm] = pms.as_slice() {
+    if let [pm] = plan.pms.as_slice() {
         return install_single(ctx, *pm, frozen, overrides);
     }
 
-    run_installs_parallel(ctx, &pms, frozen, overrides)
+    run_installs_parallel(ctx, &plan, frozen, overrides)
 }
 
 /// Which PMs this invocation installs with, in precedence order:
 ///
 /// 1. The cross-ecosystem `--pm`/`RUNNER_PM` override (which also affects
-///    script dispatch) — installs with that PM alone; errors if it isn't
+///    script dispatch), installs with that PM alone; errors if it isn't
 ///    detected.
 /// 2. The install-scoped allowlist `RUNNER_INSTALL_PMS` / `[install].pms`
-///    (resolved into `overrides.install_pms`) — installs with the detected
+///    (resolved into `overrides.install_pms`), installs with the detected
 ///    PMs in that list, preserving detection order; errors if a listed PM
 ///    isn't detected.
 /// 3. Otherwise every detected PM.
@@ -98,18 +98,14 @@ fn select_install_pms(
     overrides: &ResolutionOverrides,
 ) -> Result<Vec<PackageManager>, ResolveError> {
     if let Some(o) = &overrides.pm {
-        return if ctx.package_managers.contains(&o.pm) {
-            Ok(vec![o.pm])
-        } else {
-            Err(ResolveError::PmOverrideNotDetected {
+        if !ctx.package_managers.contains(&o.pm) {
+            return Err(ResolveError::PmOverrideNotDetected {
                 pm: o.pm,
                 origin: o.origin.clone(),
                 detected: ctx.package_managers.clone(),
-            })
-        };
-    }
-
-    if !overrides.install_pms.is_empty() {
+            });
+        }
+    } else {
         let missing: Vec<PackageManager> = overrides
             .install_pms
             .iter()
@@ -122,56 +118,178 @@ fn select_install_pms(
                 detected: ctx.package_managers.clone(),
             });
         }
-        // Keep detection order; the allowlist only filters, never reorders.
-        return Ok(ctx
+    }
+
+    Ok(effective_install_pms(ctx, overrides))
+}
+
+/// The same selection as [`select_install_pms`] with the not-detected
+/// errors dropped: an override naming an absent PM narrows to nothing
+/// instead of failing. Reporting surfaces need the effective set without
+/// inheriting dispatch's fatal cases, `doctor` must survive the broken
+/// config it exists to diagnose.
+fn effective_install_pms(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+) -> Vec<PackageManager> {
+    // Detection order throughout; overrides only filter, never reorder.
+    if let Some(o) = &overrides.pm {
+        return ctx
             .package_managers
             .iter()
             .copied()
-            .filter(|pm| overrides.install_pms.contains(pm))
-            .collect());
+            .filter(|pm| *pm == o.pm)
+            .collect();
     }
-
-    Ok(ctx.package_managers.clone())
+    if overrides.install_pms.is_empty() {
+        return ctx.package_managers.clone();
+    }
+    ctx.package_managers
+        .iter()
+        .copied()
+        .filter(|pm| overrides.install_pms.contains(pm))
+        .collect()
 }
 
-/// Warn about an install-dir collision only when the *selected* PM set
-/// still collides. Detection records the collision over every detected PM
-/// (so `doctor` reports it), but `[install].pms` / `RUNNER_INSTALL_PMS` may
-/// already have narrowed install to a single writer — in which case there
-/// is nothing left to warn about.
-fn warn_selected_collisions(
+/// What this invocation will install with, and what it decided about the
+/// directories two package managers would otherwise write at once.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct InstallPlan {
+    /// The package managers that actually run, in detection order.
+    pub pms: Vec<PackageManager>,
+    /// Writers dropped from `pms` because another writer owns their
+    /// directory: `(loser, winner, dir)`.
+    pub shadowed: Vec<(PackageManager, PackageManager, &'static str)>,
+    /// Directories `pms` still writes with two or more managers, because the
+    /// user asked for them all by name.
+    pub collisions: Vec<DetectionWarning>,
+    /// The `pms` sharing one directory, grouped, in the order they must run.
+    /// Concurrent installs over one tree corrupt it, so these never race.
+    pub serialized: Vec<Vec<PackageManager>>,
+}
+
+/// Resolve the install set and every install-directory collision in it.
+///
+/// Detection records which managers write which directory ([`ProjectContext::install_dirs`])
+/// without judging it, because whether a shared directory is a collision
+/// depends on the install set, which only overrides can settle. This is where
+/// it gets settled, and it is the only place: nothing else in the codebase
+/// decides what "colliding" means.
+///
+/// # Errors
+///
+/// [`ResolveError::InstallDirCollision`] under
+/// [`CollisionPolicy::Error`], plus the not-detected errors from
+/// [`select_install_pms`].
+pub(crate) fn plan_install(
     ctx: &ProjectContext,
-    pms: &[PackageManager],
     overrides: &ResolutionOverrides,
-) {
+) -> Result<InstallPlan, ResolveError> {
+    let mut plan = InstallPlan {
+        pms: select_install_pms(ctx, overrides)?,
+        shadowed: Vec::new(),
+        collisions: Vec::new(),
+        serialized: Vec::new(),
+    };
+
+    for install_dir in &ctx.install_dirs {
+        let writers: Vec<PackageManager> = install_dir
+            .writers
+            .iter()
+            .copied()
+            .filter(|pm| plan.pms.contains(pm))
+            .collect();
+        if writers.len() < 2 {
+            continue;
+        }
+        if overrides.on_collision == CollisionPolicy::Error {
+            return Err(ResolveError::InstallDirCollision {
+                dir: install_dir.dir,
+                writers,
+            });
+        }
+        // Naming several writers in the allowlist is consent: the user knows
+        // both write the tree and wants both to run. Runner honours it, warns
+        // once, and serializes them so consent doesn't become corruption.
+        if consented_to(&writers, overrides) {
+            plan.collisions.push(DetectionWarning::InstallDirCollision {
+                dir: install_dir.dir,
+                pms: writers.clone(),
+            });
+            plan.serialized.push(writers);
+            continue;
+        }
+        let winner = dir_winner(ctx, overrides, &writers);
+        for loser in writers.iter().copied().filter(|pm| *pm != winner) {
+            plan.shadowed.push((loser, winner, install_dir.dir));
+            plan.pms.retain(|pm| *pm != loser);
+        }
+    }
+
+    Ok(plan)
+}
+
+/// Whether the user named two or more of `writers` in the install allowlist,
+/// rather than runner having swept them in by detecting everything.
+fn consented_to(writers: &[PackageManager], overrides: &ResolutionOverrides) -> bool {
+    writers
+        .iter()
+        .filter(|pm| overrides.install_pms.contains(pm))
+        .count()
+        >= 2
+}
+
+/// Which writer owns a shared install directory.
+///
+/// The node ecosystem already has an answer: the PM the resolver picks for
+/// `package.json` scripts (lockfile, `packageManager`, `[pm].node`, PATH
+/// probe). Reusing it keeps one project from having two different "primary"
+/// package managers depending on whether it is running a script or an install,
+/// and it means `[pm].node = "deno"` hands deno the tree without a second knob.
+/// A directory whose writers the resolver has no opinion about falls back to
+/// detection order.
+fn dir_winner(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    writers: &[PackageManager],
+) -> PackageManager {
+    let resolved = Resolver::new(ctx, overrides)
+        .resolve_node_pm()
+        .ok()
+        .map(|decision| decision.pm)
+        .filter(|pm| writers.contains(pm));
+    resolved.unwrap_or_else(|| {
+        writers
+            .first()
+            .copied()
+            .expect("dir_winner is only called with at least two writers")
+    })
+}
+
+/// Print what the plan decided: the collisions the user asked for, then the
+/// writers that lost a directory. A skipped install is never silent, that is
+/// how a lockfile goes stale without anyone noticing.
+fn report_plan(plan: &InstallPlan, overrides: &ResolutionOverrides) {
     if overrides.no_warnings {
         return;
     }
-    for warning in &ctx.warnings {
-        if let Some(reduced) = still_colliding(warning, pms) {
-            eprintln!("{} {reduced}", "warn:".yellow().bold());
-        }
+    for collision in &plan.collisions {
+        eprintln!("{} {collision}", "warn:".yellow().bold());
     }
-}
-
-/// If `warning` is an install-dir collision that still has ≥2 writers once
-/// narrowed to the `selected` install set, return the reduced warning to
-/// emit; otherwise `None`. Pure so the narrowing is unit-testable.
-fn still_colliding(
-    warning: &DetectionWarning,
-    selected: &[PackageManager],
-) -> Option<DetectionWarning> {
-    let DetectionWarning::InstallDirCollision { dir, pms: writers } = warning else {
-        return None;
-    };
-    // Copy the `&'static str` out of the by-ref match binding (`&&str`).
-    let &dir = dir;
-    let still: Vec<PackageManager> = writers
-        .iter()
-        .copied()
-        .filter(|pm| selected.contains(pm))
-        .collect();
-    (still.len() >= 2).then_some(DetectionWarning::InstallDirCollision { dir, pms: still })
+    for (loser, winner, dir) in &plan.shadowed {
+        eprintln!(
+            "{}",
+            format!(
+                "{dir}/: {} installs it, {} shadowed (run both with `[install].pms = [\"{}\", \
+                 \"{}\"]`)",
+                winner.label(),
+                loser.label(),
+                winner.label(),
+                loser.label(),
+            )
+            .dimmed(),
+        );
+    }
 }
 
 /// Run a single PM's install in the foreground, inheriting stdio.
@@ -192,81 +310,142 @@ fn install_single(
     })
 }
 
-/// Run every detected package manager's install in parallel, multiplexing
-/// stdout/stderr through a [`LineSink`] so each line is prefixed with the
-/// PM that produced it.
+/// Split the plan into lanes: the package managers that share an install
+/// directory form one lane and run in sequence, everything else gets a lane of
+/// its own. Lanes are emitted in detection order, as are the managers inside
+/// one.
+fn install_lanes(plan: &InstallPlan) -> Vec<Vec<PackageManager>> {
+    let mut lanes: Vec<Vec<PackageManager>> = Vec::new();
+    for pm in &plan.pms {
+        if lanes.iter().flatten().any(|queued| queued == pm) {
+            continue;
+        }
+        match plan
+            .serialized
+            .iter()
+            .find(|shared_dir| shared_dir.contains(pm))
+        {
+            Some(shared_dir) => lanes.push(shared_dir.clone()),
+            None => lanes.push(vec![*pm]),
+        }
+    }
+    lanes
+}
+
+/// Run the plan's lanes concurrently, multiplexing stdout/stderr through a
+/// [`LineSink`] so each line is prefixed with the PM that produced it.
 ///
-/// Failure policy mirrors chain mode's `FailFast` default: record the
-/// first non-zero exit code, let the remaining installs finish on their
-/// own. Killing siblings on first failure (the `KillOnFail` analogue)
-/// isn't exposed yet — the v1 `runner install` CLI has no flag for it,
-/// and the conservative default for a top-level command is "don't tear
-/// down the user's slow `cargo fetch` because `npm` blew up on a 404."
+/// Managers sharing an install directory run in sequence inside their lane:
+/// two installs writing one tree at the same time corrupt it.
+///
+/// Failure policy mirrors chain mode's `FailFast` default: record the first
+/// non-zero exit code (by detection order), let the other lanes finish on their
+/// own. A failure *inside* a lane stops that lane, because the next manager in
+/// it would install over the tree the failed one left behind.
 fn run_installs_parallel(
     ctx: &ProjectContext,
-    pms: &[PackageManager],
+    plan: &InstallPlan,
     frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
-    use std::process::Child;
-
-    let names: Vec<&str> = pms.iter().map(|pm| pm.label()).collect();
+    let lanes = install_lanes(plan);
+    let names: Vec<&str> = plan.pms.iter().map(|pm| pm.label()).collect();
     let width = prefix_width(&names);
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
     let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
     let directive = script_directive(overrides);
 
-    let mut children: Vec<(PackageManager, Child)> = Vec::with_capacity(pms.len());
-    let mut reader_handles = Vec::new();
+    let outcomes: Vec<Result<Option<(PackageManager, i32)>>> = std::thread::scope(|scope| {
+        // Every lane is spawned before any is joined: joining as we go would
+        // serialize the lanes, which is the whole thing this function exists
+        // not to do.
+        let mut handles = Vec::with_capacity(lanes.len());
+        for lane in &lanes {
+            let sink = Arc::clone(&sink);
+            handles.push(scope.spawn(move || {
+                run_lane(
+                    ctx, lane, frozen, overrides, &sink, width, colorize, directive,
+                )
+            }));
+        }
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|payload| {
+                    bail!("install lane panicked: {}", panic_payload(&*payload))
+                })
+            })
+            .collect()
+    });
 
-    let spawn_outcome: Result<()> = (|| {
-        for pm in pms {
-            eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
-            let mut cmd = build_install_command(ctx, *pm, frozen, directive);
-            super::configure_command(&mut cmd, &ctx.root, overrides);
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            let mut child = cmd.spawn()?;
-            let prefix = render_prefix(pm.label(), width, colorize);
-            let stdout: Box<dyn std::io::Read + Send> =
-                Box::new(child.stdout.take().expect("stdout piped"));
-            let stderr: Box<dyn std::io::Read + Send> =
-                Box::new(child.stderr.take().expect("stderr piped"));
-            reader_handles.extend(spawn_readers(
-                vec![
-                    (prefix.clone(), false, stdout),
-                    (prefix.clone(), true, stderr),
-                ],
-                &sink,
-            ));
-            children.push((*pm, child));
+    let mut failures: Vec<(PackageManager, i32)> = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Ok(Some(failure)) => failures.push(failure),
+            Ok(None) => {}
+            Err(e) => return Err(e),
         }
-        Ok(())
-    })();
-    if let Err(e) = spawn_outcome {
-        for (_, mut c) in children {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-        for h in reader_handles {
-            join_reader_thread(h);
-        }
-        return Err(e);
     }
+    let index_of = |pm: PackageManager| plan.pms.iter().position(|p| *p == pm);
+    Ok(failures
+        .into_iter()
+        .min_by_key(|(pm, _)| index_of(*pm))
+        .map_or(0, |(_, code)| code))
+}
 
-    let mut first_failure: Option<i32> = None;
-    for (_, mut child) in children {
-        let status = child.wait()?;
+/// Run one lane's installs back to back, returning the lane's first failure.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one lane's worth of the parallel executor's state; bundling it into a struct buys \
+              nothing at one call site"
+)]
+fn run_lane(
+    ctx: &ProjectContext,
+    lane: &[PackageManager],
+    frozen: bool,
+    overrides: &ResolutionOverrides,
+    sink: &Arc<dyn LineSink>,
+    width: usize,
+    colorize: bool,
+    directive: tool::ScriptDirective,
+) -> Result<Option<(PackageManager, i32)>> {
+    for pm in lane {
+        eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+        let mut cmd = build_install_command(ctx, *pm, frozen, directive);
+        super::configure_command(&mut cmd, &ctx.root, overrides);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn()?;
+        let prefix = render_prefix(pm.label(), width, colorize);
+        let stdout: Box<dyn std::io::Read + Send> =
+            Box::new(child.stdout.take().expect("stdout piped"));
+        let stderr: Box<dyn std::io::Read + Send> =
+            Box::new(child.stderr.take().expect("stderr piped"));
+        let readers = spawn_readers(
+            vec![(prefix.clone(), false, stdout), (prefix, true, stderr)],
+            sink,
+        );
+
+        let waited = child.wait();
+        for handle in readers {
+            join_reader_thread(handle);
+        }
+        let status = match waited {
+            Ok(status) => status,
+            Err(e) => {
+                // The child outlives a failed `wait`; reap it here rather than
+                // drop the handle and orphan the process.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(e.into());
+            }
+        };
         if !status.success() {
-            first_failure.get_or_insert_with(|| super::exit_code(status));
+            return Ok(Some((*pm, super::exit_code(status))));
         }
     }
-    for h in reader_handles {
-        join_reader_thread(h);
-    }
-
-    Ok(first_failure.unwrap_or(0))
+    Ok(None)
 }
 
 fn join_reader_thread(handle: JoinHandle<()>) {
@@ -388,7 +567,7 @@ enum ForceSupport {
     AlreadyRuns,
     /// Denies dependency build scripts by default and re-enables them only
     /// through a manifest allowlist runner must not write (bun
-    /// `trustedDependencies`, pnpm >=10 `onlyBuiltDependencies`) — so force-on
+    /// `trustedDependencies`, pnpm >=10 `onlyBuiltDependencies`), so force-on
     /// cannot be expressed by a flag. A force-on request is reported and the
     /// install proceeds at the manager's default.
     NotExpressible,
@@ -424,10 +603,10 @@ const fn force_support(pm: PackageManager) -> ForceSupport {
 /// Unlike the cosmetic collision/version warnings, both notices fire
 /// unconditionally when their policy is active and are *not* silenced by
 /// `--no-warnings` / `RUNNER_NO_WARNINGS`:
-/// - **deny** is a security-relevant disclosure — the unsupported managers
+/// - **deny** is a security-relevant disclosure, the unsupported managers
 ///   (bundler, uv/poetry/pipenv, cargo, go) execute arbitrary install-time
 ///   code and have no flag to skip it, so a dropped deny must never hide.
-/// - **force-on** is a request-fidelity disclosure — bun and pnpm (>=10) deny
+/// - **force-on** is a request-fidelity disclosure, bun and pnpm (>=10) deny
 ///   dependency build scripts by default and only a manifest allowlist runner
 ///   won't write re-enables them, so the user learns their `--scripts` couldn't
 ///   be applied rather than assuming it was.
@@ -513,15 +692,16 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        DenySupport, ForceSupport, build_install_command, deny_support, force_support,
-        script_directive, select_install_pms, unforceable_managers, unsupported_deny_managers,
-        warn_unsupported_script_policy,
+        DenySupport, ForceSupport, InstallPlan, build_install_command, deny_support, force_support,
+        install_lanes, plan_install, script_directive, select_install_pms, unforceable_managers,
+        unsupported_deny_managers, warn_unsupported_script_policy,
     };
     use crate::resolver::{
-        OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError, ScriptPolicy,
+        CollisionPolicy, OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError,
+        ScriptPolicy,
     };
     use crate::tool::ScriptDirective;
-    use crate::types::{Ecosystem, PackageManager, ProjectContext};
+    use crate::types::{DetectionWarning, Ecosystem, InstallDir, PackageManager, ProjectContext};
 
     fn context(pms: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
@@ -532,6 +712,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -553,7 +734,7 @@ mod tests {
 
     #[test]
     fn detected_override_installs_with_it_alone() {
-        // The dreamcli CI bug: bun + deno detected, RUNNER_PM=bun set —
+        // The dreamcli CI bug: bun + deno detected, RUNNER_PM=bun set,
         // deno must not install (and must not write deno.lock).
         let ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
         let overrides = override_pm(PackageManager::Bun, OverrideOrigin::EnvVar);
@@ -584,29 +765,6 @@ mod tests {
     }
 
     #[test]
-    fn still_colliding_clears_once_filtered_to_single_writer() {
-        use super::still_colliding;
-        use crate::types::DetectionWarning;
-
-        let warning = DetectionWarning::InstallDirCollision {
-            dir: "node_modules",
-            pms: vec![PackageManager::Bun, PackageManager::Deno],
-        };
-        // Restricting install to bun alone resolves the collision.
-        assert!(still_colliding(&warning, &[PackageManager::Bun]).is_none());
-        // Both still selected → still a collision (reduced set unchanged).
-        let reduced = still_colliding(&warning, &[PackageManager::Bun, PackageManager::Deno])
-            .expect("two writers still collide");
-        match reduced {
-            DetectionWarning::InstallDirCollision { dir, pms } => {
-                assert_eq!(dir, "node_modules");
-                assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Deno]);
-            }
-            other => panic!("expected collision, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn install_pms_allowlist_filters_to_listed_detected_pms() {
         // The reported case: bun + deno + cargo detected, allowlist = [bun]
         // → only bun installs (no competing node_modules writer, no cargo).
@@ -623,6 +781,165 @@ mod tests {
         assert_eq!(pms, vec![PackageManager::Bun]);
     }
 
+    /// bun + deno both writing `node_modules`, which is dreamcli's shape.
+    fn colliding_context() -> ProjectContext {
+        let mut ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
+        ctx.install_dirs = vec![InstallDir {
+            dir: "node_modules",
+            writers: vec![PackageManager::Bun, PackageManager::Deno],
+        }];
+        ctx
+    }
+
+    #[test]
+    fn colliding_writers_resolve_to_one_installer_by_default() {
+        let ctx = colliding_context();
+        let plan = plan_install(&ctx, &ResolutionOverrides::default()).expect("plan");
+
+        assert_eq!(plan.pms, vec![PackageManager::Bun], "deno must not install");
+        assert_eq!(
+            plan.shadowed,
+            vec![(PackageManager::Deno, PackageManager::Bun, "node_modules")],
+        );
+        assert!(plan.collisions.is_empty(), "resolved, so nothing to warn");
+        assert!(plan.serialized.is_empty());
+    }
+
+    #[test]
+    fn ecosystem_pm_override_hands_the_tree_to_deno() {
+        // `[pm].node = "deno"` picks deno for package.json scripts; the same
+        // decision decides who owns node_modules, so bun is the one shadowed.
+        let ctx = colliding_context();
+        let mut overrides = ResolutionOverrides::default();
+        overrides.pm_by_ecosystem.insert(
+            Ecosystem::Deno,
+            PmOverride {
+                pm: PackageManager::Deno,
+                origin: OverrideOrigin::ConfigFile {
+                    path: PathBuf::from("/tmp/test/runner.toml"),
+                },
+            },
+        );
+
+        let plan = plan_install(&ctx, &overrides).expect("plan");
+
+        assert_eq!(plan.pms, vec![PackageManager::Deno]);
+        assert_eq!(
+            plan.shadowed,
+            vec![(PackageManager::Bun, PackageManager::Deno, "node_modules")],
+        );
+    }
+
+    #[test]
+    fn naming_both_writers_runs_both_serialized_with_one_warning() {
+        let ctx = colliding_context();
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Bun, PackageManager::Deno],
+            ..Default::default()
+        };
+
+        let plan = plan_install(&ctx, &overrides).expect("plan");
+
+        assert_eq!(plan.pms, vec![PackageManager::Bun, PackageManager::Deno]);
+        assert!(plan.shadowed.is_empty(), "consent means nothing is dropped");
+        assert!(matches!(
+            plan.collisions.as_slice(),
+            [DetectionWarning::InstallDirCollision { dir, pms }]
+                if *dir == "node_modules"
+                    && pms == &[PackageManager::Bun, PackageManager::Deno]
+        ));
+        assert_eq!(
+            plan.serialized,
+            vec![vec![PackageManager::Bun, PackageManager::Deno]],
+            "consented writers still must not race over one tree",
+        );
+    }
+
+    #[test]
+    fn on_collision_error_refuses_to_pick() {
+        let ctx = colliding_context();
+        let overrides = ResolutionOverrides {
+            on_collision: CollisionPolicy::Error,
+            ..Default::default()
+        };
+
+        let err = plan_install(&ctx, &overrides).expect_err("must refuse");
+
+        assert!(matches!(err, ResolveError::InstallDirCollision { .. }));
+        let msg = format!("{err}");
+        assert!(msg.contains("node_modules"), "msg: {msg}");
+        assert!(msg.contains("[install].pms"), "msg: {msg}");
+    }
+
+    #[test]
+    fn on_collision_error_refuses_even_when_both_were_named() {
+        // The strict CI guard means "never two writers on one tree", so an
+        // explicit allowlist doesn't buy its way past it.
+        let ctx = colliding_context();
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Bun, PackageManager::Deno],
+            on_collision: CollisionPolicy::Error,
+            ..Default::default()
+        };
+
+        let err = plan_install(&ctx, &overrides).expect_err("must refuse");
+        assert!(matches!(err, ResolveError::InstallDirCollision { .. }));
+    }
+
+    #[test]
+    fn pm_override_leaves_one_writer_and_nothing_to_say() {
+        let ctx = colliding_context();
+        let overrides = override_pm(PackageManager::Bun, OverrideOrigin::EnvVar);
+
+        let plan = plan_install(&ctx, &overrides).expect("plan");
+
+        assert_eq!(plan.pms, vec![PackageManager::Bun]);
+        assert!(plan.collisions.is_empty());
+        assert!(
+            plan.shadowed.is_empty(),
+            "nothing was dropped: deno was never in the install set to begin with"
+        );
+    }
+
+    #[test]
+    fn a_lone_writer_plans_clean() {
+        let mut ctx = context(vec![PackageManager::Bun, PackageManager::Cargo]);
+        ctx.install_dirs = vec![InstallDir {
+            dir: "node_modules",
+            writers: vec![PackageManager::Bun],
+        }];
+
+        let plan = plan_install(&ctx, &ResolutionOverrides::default()).expect("plan");
+
+        assert_eq!(plan.pms, vec![PackageManager::Bun, PackageManager::Cargo]);
+        assert!(plan.collisions.is_empty());
+        assert!(plan.shadowed.is_empty());
+        assert!(plan.serialized.is_empty());
+    }
+
+    #[test]
+    fn lanes_serialize_shared_writers_and_leave_the_rest_parallel() {
+        let plan = InstallPlan {
+            pms: vec![
+                PackageManager::Bun,
+                PackageManager::Cargo,
+                PackageManager::Deno,
+            ],
+            shadowed: Vec::new(),
+            collisions: Vec::new(),
+            serialized: vec![vec![PackageManager::Bun, PackageManager::Deno]],
+        };
+
+        assert_eq!(
+            install_lanes(&plan),
+            vec![
+                vec![PackageManager::Bun, PackageManager::Deno],
+                vec![PackageManager::Cargo],
+            ],
+            "bun and deno share one lane and run in order; cargo runs alongside",
+        );
+    }
+
     #[test]
     fn install_pms_allowlist_preserves_detection_order() {
         let ctx = context(vec![
@@ -630,7 +947,7 @@ mod tests {
             PackageManager::Cargo,
             PackageManager::Uv,
         ]);
-        // Listed out of detection order — output still follows detection.
+        // Listed out of detection order, output still follows detection.
         let overrides = ResolutionOverrides {
             install_pms: vec![PackageManager::Uv, PackageManager::Bun],
             ..Default::default()
@@ -816,12 +1133,12 @@ mod tests {
 
     #[test]
     fn deny_is_noop_for_default_deny_and_unsupported_managers() {
-        // deno already denies by default — no flag added.
+        // deno already denies by default, no flag added.
         assert_eq!(
             install_argv(PackageManager::Deno, ScriptDirective::Deny),
             ["install"]
         );
-        // cargo has no toggle — the deny is reported elsewhere, command unchanged.
+        // cargo has no toggle, the deny is reported elsewhere, command unchanged.
         assert_eq!(
             install_argv(PackageManager::Cargo, ScriptDirective::Deny),
             ["fetch"]
@@ -843,7 +1160,7 @@ mod tests {
 
     #[test]
     fn force_on_is_noop_for_already_runs_and_unforceable_managers() {
-        // composer/cargo run scripts by default — force-on changes nothing.
+        // composer/cargo run scripts by default, force-on changes nothing.
         assert_eq!(
             install_argv(PackageManager::Composer, ScriptDirective::ForceOn),
             ["install"]
@@ -852,7 +1169,7 @@ mod tests {
             install_argv(PackageManager::Cargo, ScriptDirective::ForceOn),
             ["fetch"]
         );
-        // bun/pnpm gate dependency builds behind a manifest allowlist — no flag;
+        // bun/pnpm gate dependency builds behind a manifest allowlist, no flag;
         // the request is disclosed by warn_unsupported_script_policy instead.
         assert_eq!(
             install_argv(PackageManager::Bun, ScriptDirective::ForceOn),

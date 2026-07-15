@@ -1,4 +1,4 @@
-//! Policy parsing — `FallbackPolicy`, `MismatchPolicy`, `FailurePolicy`,
+//! Policy parsing, `FallbackPolicy`, `MismatchPolicy`, `FailurePolicy`,
 //! plus the `[task_runner].prefer` list and the shared `RUNNER_*` env
 //! parsers.
 //!
@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow};
 
-use super::types::{ExplainSource, FallbackPolicy, MismatchPolicy};
+use super::types::{CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolicy};
 use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
@@ -21,7 +21,7 @@ use crate::types::{PackageManager, TaskRunner, TaskSource};
 /// Surrounding whitespace is stripped first so a trailing newline (the
 /// shell-export pattern `RUNNER_EXPLAIN=$VAR \n …`) doesn't accidentally
 /// flip an explicit "off" into truthy. Without the case-insensitive
-/// compare, `RUNNER_EXPLAIN=FALSE` would silently enable the trace —
+/// compare, `RUNNER_EXPLAIN=FALSE` would silently enable the trace,
 /// the opposite of what the user clearly meant.
 pub(super) fn is_env_truthy(raw: &str) -> bool {
     let v = raw.trim();
@@ -119,8 +119,8 @@ pub(super) fn parse_prefer_runners(config: Option<&LoadedConfig>) -> Result<Vec<
 ///    `uv`, …) → its [`PackageManager::owned_task_sources`] (`bun` →
 ///    `package.json`; `deno` → `deno.json` then `package.json`),
 /// 2. a **task runner** (`turbo`, `make`, `just`, `task`, `mise`, `bacon`) →
-///    its [`TaskRunner::task_source`] (`nx` resolves to nothing — it has no
-///    extractable source — which is recognized but contributes no source),
+///    its [`TaskRunner::task_source`] (`nx` resolves to nothing, it has no
+///    extractable source, which is recognized but contributes no source),
 /// 3. a **source name** (`package.json`, `pyproject.toml`, …) via
 ///    [`TaskSource::from_label`].
 ///
@@ -179,7 +179,7 @@ pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<Ta
 
 /// Parse `[tasks].overrides` into per-task source pins (task name → preferred
 /// [`TaskSource`]s, most-native first). Empty/missing → empty map. A label that
-/// names no task source (e.g. `nx`) is rejected here — a pin must be
+/// names no task source (e.g. `nx`) is rejected here, a pin must be
 /// actionable, unlike a `prefer` entry which may legitimately rank nothing.
 pub(super) fn parse_tasks_overrides(
     config: Option<&LoadedConfig>,
@@ -213,6 +213,18 @@ pub(super) fn parse_mismatch_label(raw: &str) -> Result<MismatchPolicy> {
         })
 }
 
+pub(super) fn parse_collision_label(raw: &str) -> Result<CollisionPolicy> {
+    CollisionPolicy::ALL
+        .into_iter()
+        .find(|policy| policy.label() == raw)
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown on-collision policy {raw:?}; expected one of {}",
+                join_labels(CollisionPolicy::ALL.iter().map(|p| p.label())),
+            )
+        })
+}
+
 pub(super) fn resolve_mismatch_policy(
     cli: Option<&str>,
     env: Option<&str>,
@@ -240,7 +252,7 @@ pub(super) fn resolve_mismatch_policy(
 
 /// Resolve a chain failure policy from CLI/env/config sources.
 ///
-/// `keep_going` and `kill_on_fail` are independent bool layers — CLI flag
+/// `keep_going` and `kill_on_fail` are independent bool layers, CLI flag
 /// presence beats env (explicit either polarity) beats `[chain]` config
 /// beats `false`. The env layer is presence-authoritative: an explicit
 /// `RUNNER_KEEP_GOING=0` overrides `[chain].keep_going = true` in config.
@@ -249,7 +261,7 @@ pub(super) fn resolve_mismatch_policy(
 /// is a `ResolveError::ConflictingFailurePolicy`), but *across* layers
 /// the stronger source wins the whole policy: `-k` on the command line
 /// beats a `[chain] kill_on_fail = true` in config rather than
-/// colliding with it — otherwise a config-pinned polarity would be
+/// colliding with it, otherwise a config-pinned polarity would be
 /// uncancellable from the CLI, contradicting CLI > env > config.
 pub(super) fn resolve_failure_policy(
     keep_going: ExplainSource<'_>,
@@ -307,7 +319,7 @@ enum ChainBoolLayer {
 
 /// The highest-precedence layer that turns a chain knob ON, or `None`
 /// when no layer does. An explicit env falsy (`RUNNER_*=0`) shadows a
-/// config `true` below it — presence-authoritative, matching
+/// config `true` below it, presence-authoritative, matching
 /// [`parse_env_bool`].
 fn chain_bool_layer(cli: bool, env: Option<bool>, config: Option<bool>) -> Option<ChainBoolLayer> {
     if cli {

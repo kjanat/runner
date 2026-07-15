@@ -3,7 +3,7 @@
 //! Pure structural checks on a task string (the qualifier `source:task`
 //! syntax, reversed-qualifier detection, runner-constraint matching).
 //! No subprocess spawning, no `→` arrow printed, no resolver state
-//! consulted — so the chain executor can run [`precheck_task`] on every
+//! consulted, so the chain executor can run [`precheck_task`] on every
 //! item *before* any sibling dispatches.
 
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ pub(super) fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
 /// Parse the `#`-separated FQN form that `doctor --json` / `why --json`
 /// print as a task's identity: `root:<source>#<name>` (the `root:` scope
 /// prefix is optional on input). Returns `None` for anything whose part
-/// before the `#` doesn't name a source — `user/repo#ref` package specs
+/// before the `#` doesn't name a source, `user/repo#ref` package specs
 /// keep flowing to the PM-exec fallback untouched.
 pub(super) fn parse_fqn_task(input: &str) -> Option<(TaskSource, &str)> {
     let (prefix, name) = input.split_once('#')?;
@@ -41,7 +41,7 @@ pub(super) fn parse_fqn_task(input: &str) -> Option<(TaskSource, &str)> {
 
 /// How a task token was interpreted by [`lookup_token`].
 ///
-/// A `Some` qualifier — whether from colon or FQN syntax — pins the
+/// A `Some` qualifier, whether from colon or FQN syntax, pins the
 /// lookup to that source; the caller errors on a miss instead of
 /// falling through to PM-exec. That property is what keeps an FQN typo
 /// (`root:package.json#nope`) from being handed to bunx/npx as a
@@ -102,7 +102,7 @@ pub(crate) fn lookup_token<'a>(
 
 /// The one spelling of a qualified miss, shared by dispatch and precheck
 /// so `run deno:x` and `run -p deno:x` fail identically. Appends a note
-/// when a source's task list failed to load — a miss caused by a broken
+/// when a source's task list failed to load, a miss caused by a broken
 /// `package.json` should say so instead of leaving the user chasing the
 /// task name.
 pub(super) fn qualified_miss_error(
@@ -158,8 +158,8 @@ fn append_unreadable_note(ctx: &ProjectContext, msg: &mut String) {
 /// named after the user's typo.
 ///
 /// Matches only on the last colon so a hypothetical task name with
-/// embedded colons (`foo:bar:cargo`) collapses to a single suffix check
-/// — if `cargo` is the suffix, suggest `cargo:foo:bar`; otherwise let
+/// embedded colons (`foo:bar:cargo`) collapses to a single suffix check.
+/// If `cargo` is the suffix, suggest `cargo:foo:bar`; otherwise let
 /// the existing fallback path handle it.
 pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str)> {
     let colon = input.rfind(':')?;
@@ -174,15 +174,15 @@ pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str
 /// expensive or stdio-visible work: no warnings emitted, no `→` arrow
 /// printed, no `<pm> --version` probes. Used by chain mode to bail
 /// before running *any* sibling task when a later token is clearly
-/// broken — otherwise a chain like `bb t lint:cargo` runs `bb` and
+/// broken, otherwise a chain like `bb t lint:cargo` runs `bb` and
 /// `t` to completion before surfacing the typo at item 3.
 ///
 /// Returns `Ok(())` on:
-/// - an explicit-prefix local path (`./gen.sh`, `~/x`) — dispatch runs it
+/// - an explicit-prefix local path (`./gen.sh`, `~/x`), dispatch runs it
 ///   as a file before any runner-constraint check, so precheck must too,
 /// - matched task (qualified or unqualified),
 /// - unmatched task whose dispatch would fall back to bun-test or
-///   PM-exec — those paths require resolver state we deliberately
+///   PM-exec, those paths require resolver state we deliberately
 ///   skip here; they get their proper error at dispatch time.
 ///
 /// Returns `Err` on:
@@ -196,7 +196,7 @@ pub(crate) fn precheck_task(
 ) -> Result<()> {
     // An explicit-prefix local path (`./gen.sh`, `~/x`, `/abs/x`) is dispatched
     // by `try_path_token` at the very top of `resolve_dispatch`, *before* the
-    // runner-constraint check — so an explicit path outranks task/runner
+    // runner-constraint check, so an explicit path outranks task/runner
     // resolution. Mirror that precedence here: without this escape hatch, an
     // active `--runner` / `[task_runner].prefer` constraint would make precheck
     // compute `found = []` and bail with a runner-constraint error, aborting a
@@ -256,7 +256,7 @@ pub(crate) fn precheck_task(
 /// Compute the set of [`TaskSource`]s the user's runner constraint
 /// permits, or `None` when no constraint is active.
 ///
-/// `--runner` / `RUNNER_RUNNER` is the strongest signal — only that
+/// `--runner` / `RUNNER_RUNNER` is the strongest signal, only that
 /// runner's source is allowed. `[task_runner].prefer` is the next:
 /// every runner in the list is allowed, in listed order. Runners that
 /// don't map to a [`TaskSource`] (`nx`, `mise`) are dropped from the
@@ -352,6 +352,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -476,7 +477,7 @@ mod tests {
     fn precheck_passes_explicit_local_path_under_runner_constraint() {
         // An explicit-prefix local path is dispatched as a file by
         // `try_path_token` *before* the runner-constraint check, so precheck
-        // must wave it through too — otherwise a chain / install --parallel
+        // must wave it through too, otherwise a chain / install --parallel
         // under an active `[task_runner].prefer` aborts on a token that a
         // single `run ./gen.sh` executes fine.
         let overrides = ResolutionOverrides {
@@ -511,7 +512,7 @@ mod tests {
     fn precheck_does_not_restrict_under_tasks_prefer() {
         // `[tasks].prefer` is rank-only: unlike the deprecated restrictive
         // `[task_runner].prefer`, a prefix-less miss under it must NOT fail
-        // precheck — nothing is hard-rejected, it only reorders.
+        // precheck, nothing is hard-rejected, it only reorders.
         let overrides = ResolutionOverrides {
             prefer_sources: vec![TaskSource::TurboJson],
             ..ResolutionOverrides::default()

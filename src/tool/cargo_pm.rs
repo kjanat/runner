@@ -1,4 +1,4 @@
-//! Cargo — the Rust package manager and build tool.
+//! Cargo, the Rust package manager and build tool.
 
 use std::path::Path;
 use std::process::Command;

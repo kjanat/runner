@@ -1,4 +1,4 @@
-//! `runner list` — display available tasks from all detected sources.
+//! `runner list`, display available tasks from all detected sources.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -38,7 +38,7 @@ pub(crate) fn list(
         Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
             let expected = expected_source_labels();
             anyhow!(
-                "--source {label:?}: unknown source label (expected one of: {expected} — legacy \
+                "--source {label:?}: unknown source label (expected one of: {expected}, legacy \
                  filename forms like justfile/bacon.toml/Makefile are also accepted)",
             )
         })?),
@@ -68,7 +68,7 @@ pub(crate) fn list(
     } else if filtered.is_empty() {
         println!("{}", "No tasks found.".dimmed());
     } else {
-        // `runner list` is an explicit request for the task list —
+        // `runner list` is an explicit request for the task list,
         // always full detail, never collapse. The height-adaptive
         // compact path is reserved for the bare `runner` / `runner
         // info` glance view (see `print_tasks_grouped`).
@@ -109,7 +109,7 @@ fn select_render_mode(tasks: &[&Task], reserved_rows: usize) -> RenderMode {
 
 /// `reserved_rows` is output the caller has already emitted (or will
 /// emit) above the task list and that therefore eats into the visible
-/// budget — e.g. the `runner` info banner (version line, Package
+/// budget, e.g. the `runner` info banner (version line, Package
 /// Managers / Task Runners / Node / Monorepo rows, blank separators).
 /// `runner list` has no banner and passes `0`. The `+ 2` is a fixed
 /// allowance for the shell prompt that reappears after rendering plus a
@@ -136,7 +136,7 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
 /// Print tasks grouped by [`TaskSource`], collapsing to compact mode
 /// when the rich form would overflow the terminal.
 ///
-/// Operates over a borrowed task slice + the project root — the renderer
+/// Operates over a borrowed task slice + the project root, the renderer
 /// never reads other [`ProjectContext`] fields, so callers that already
 /// have a filtered task list pass the slice directly instead of forging
 /// a synthetic context.
@@ -152,8 +152,8 @@ pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path, reserved_rows: u
 }
 
 /// Print duplicate-name conflicts beneath the task list so a shadowed
-/// task — one the bare-name lookup silently will *not* run (e.g. `cargo
-/// run` losing to `just run`) — doesn't go unnoticed. Resolution uses the
+/// task, one the bare-name lookup silently will *not* run (e.g. `cargo
+/// run` losing to `just run`), doesn't go unnoticed. Resolution uses the
 /// same precedence as `runner run`, so the named winner is what actually
 /// executes. No output when there are no conflicts.
 pub(super) fn print_conflicts(ctx: &ProjectContext, overrides: &ResolutionOverrides) {
@@ -203,7 +203,7 @@ fn format_conflicts(
 
     let count = conflicts.len();
     let header = format!(
-        "{count} name conflict{} — `runner run <name>` picks one source:",
+        "{count} name conflict{}, `runner run <name>` picks one source:",
         if count == 1 { "" } else { "s" }
     );
     let mut out = String::from("\n");
@@ -536,7 +536,7 @@ fn pad_visible(value: &str, width: usize) -> String {
 }
 
 fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> String {
-    // Display text is always the canonical `TaskSource::label()` — using
+    // Display text is always the canonical `TaskSource::label()`, using
     // `path.file_name()` instead collapses any source whose backing file
     // happens to be named `config.toml` (cargo, uv, pip, rust-toolchain,
     // mise variants, …) into an ambiguous single column. The OSC8 link
@@ -698,6 +698,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -743,7 +744,7 @@ mod tests {
 
     #[test]
     fn source_label_uses_canonical_source_label_regardless_of_filename_variant() {
-        // The displayed text is always `TaskSource::label()` — never
+        // The displayed text is always `TaskSource::label()`, never
         // the resolved manifest's filename. Mixing in `file_name()`
         // would collapse the many sources whose config happens to
         // be named `config.toml` (cargo, uv, pip, mise variants, …)
@@ -810,6 +811,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }

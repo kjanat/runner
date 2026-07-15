@@ -1,6 +1,6 @@
 # Verification: does `npm i -g runner-run` resolve + run on PURE musl?
 # Bare Alpine, NO libc6-compat (a glibc shim would mask a musl failure).
-# `docker build` IS the test — any broken step fails the build.
+# `docker build` IS the test, any broken step fails the build.
 #
 # Run from the repo root:
 #
@@ -13,7 +13,7 @@
 # `--network=host` only needed where Docker's bridge/veth setup is blocked.
 #
 # What this actually probes: facade `lib/resolve.cjs` does NOT inspect
-# platform/arch/libc itself — it walks `optionalDependencies` key order and
+# platform/arch/libc itself, it walks `optionalDependencies` key order and
 # returns the FIRST sub-package whose bin exists. So correctness on Alpine
 # hinges entirely on npm having installed ONLY the musl sub-package (npm
 # filtering by the `libc` field). If npm also keeps the -gnu package, the
@@ -61,7 +61,7 @@ RUN set -eux; \
     COUNT=$(ls -1 "${DIR}" | wc -l); \
     echo "sub-package count: ${COUNT}"; \
     if ls -1 "${DIR}" | grep -q -- '-gnu' && ls -1 "${DIR}" | grep -q -- 'musl'; then \
-        echo "WARN: BOTH -gnu and -musl present — npm did NOT libc-filter; resolve order now decides correctness"; \
+        echo "WARN: BOTH -gnu and -musl present, npm did NOT libc-filter; resolve order now decides correctness"; \
     fi
 
 # ── 4. what does the resolve shim hand back? (correct API: resolveBinary) ──
@@ -73,7 +73,7 @@ RUN set -eux; \
         echo "resolveBinary(${name}) -> ${P}"; \
         case "${P}" in \
             *musl*) echo "PASS: ${name} resolved to a musl sub-package" ;; \
-            *gnu*) echo "FAIL: ${name} resolved to a GLIBC (-gnu) build on musl — shim picked wrong"; exit 1 ;; \
+            *gnu*) echo "FAIL: ${name} resolved to a GLIBC (-gnu) build on musl, shim picked wrong"; exit 1 ;; \
             *) echo "WARN: ${name} path has no libc marker: ${P}" ;; \
         esac; \
     done
@@ -99,6 +99,6 @@ RUN set -eux; \
     echo "--- run --version ---"; run --version; \
     echo "--- runner --help (head) ---"; runner --help 2>&1 | head -5; \
     echo "================================================"; \
-    echo "ALL CHECKS PASSED — npm/musl path is sound for VER=${VER}"
+    echo "ALL CHECKS PASSED, npm/musl path is sound for VER=${VER}"
 
 CMD ["sh", "-c", "echo 'musl smoke:'; runner --version && run --version && echo OK"]

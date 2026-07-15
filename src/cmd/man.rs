@@ -1,4 +1,4 @@
-//! `runner man` — render roff man pages (feature `man`).
+//! `runner man`, render roff man pages (feature `man`).
 
 use std::io::Write as _;
 use std::path::Path;
@@ -72,7 +72,7 @@ fn render_command(cmd: Command, page_name: &str) -> Vec<u8> {
     strip_ansi(&raw)
 }
 
-/// Drop ANSI escapes (CSI/OSC) that the CLI help strings bake in for color —
+/// Drop ANSI escapes (CSI/OSC) that the CLI help strings bake in for color,
 /// they have no place in roff and would corrupt the page otherwise.
 fn strip_ansi(input: &[u8]) -> Vec<u8> {
     const ESC: u8 = 0x1b;
@@ -151,7 +151,7 @@ mod tests {
                 "missing {expected} page; got {names:?}"
             );
         }
-        // `info` is `#[command(hide = true)]` — no page for it.
+        // `info` is `#[command(hide = true)]`, no page for it.
         assert!(
             !names.contains(&"runner-info"),
             "hidden `info` subcommand should not produce a page; got {names:?}"

@@ -30,8 +30,8 @@ pub(crate) fn run_chain(
     // Pre-flight every task token before *any* sibling runs. Catches
     // the common UX trap where `runner run -s bb t lint:cargo` would
     // run `bb` and `t` to completion before bailing on the obvious
-    // typo at item 3. `precheck_task` is side-effect-free — no
-    // warnings emitted, no arrows printed, no subprocess spawned —
+    // typo at item 3. `precheck_task` is side-effect-free, no
+    // warnings emitted, no arrows printed, no subprocess spawned,
     // and only fires for errors we can determine purely from
     // `ctx.tasks` + the override shape. Errors that need the resolver
     // (PM-exec fallback miss, manifest mismatch) still surface at
@@ -43,7 +43,7 @@ pub(crate) fn run_chain(
         }
     }
 
-    // Emit warnings on both success and error paths — a chain that
+    // Emit warnings on both success and error paths, a chain that
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.
     let result = match chain.mode {
@@ -137,7 +137,7 @@ fn run_parallel_streaming(
 
     // Spawn loop. On any per-item failure (resolver error or the Install
     // bail-out below), already-spawned children would otherwise outlive
-    // this function — `std::process::Child::drop` does NOT kill the
+    // this function, `std::process::Child::drop` does NOT kill the
     // process. Cleanup explicitly: kill + reap accumulated children,
     // then join readers (their pipes close once the children are
     // reaped, so the threads exit on their own).
@@ -156,7 +156,7 @@ fn run_parallel_streaming(
                 ChainItemKind::Install { .. } => {
                     // Install is always Sequential in v1 (CLI rejects `-p` on
                     // `runner install`); reaching here would mean a synthetic
-                    // Parallel chain was constructed elsewhere — bail loudly.
+                    // Parallel chain was constructed elsewhere, bail loudly.
                     anyhow::bail!("install items cannot run in parallel chains")
                 }
             };
@@ -267,7 +267,7 @@ struct GroupedTask {
 const READER_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Parallel execution that buffers each task's output and displays it as one
-/// contiguous block the moment that task finishes (completion order — first
+/// contiguous block the moment that task finishes (completion order, first
 /// done, first shown). Under GitHub Actions each block is a `::group::`
 /// section; elsewhere it gets a plain header. See [`run_parallel`].
 fn run_parallel_grouped(
@@ -312,7 +312,7 @@ fn run_parallel_grouped(
             // unsizes to the trait object; `Arc::clone(&sink)` would instead
             // infer its generic from the annotation and fail to coerce.
             let dyn_sink: Arc<dyn LineSink> = sink.clone();
-            // No prefix — the group title identifies the task, while the sink
+            // No prefix, the group title identifies the task, while the sink
             // preserves stdout/stderr identity for replay.
             let readers = spawn_readers(
                 vec![
@@ -503,7 +503,7 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
 }
 
 /// Kill + reap streaming-chain children that must not outlive an error
-/// return — `Child::drop` does not kill, so every early exit routes
+/// return, `Child::drop` does not kill, so every early exit routes
 /// through here.
 fn kill_and_reap<I: IntoIterator<Item = (String, std::time::Instant, std::process::Child)>>(
     children: I,
@@ -515,7 +515,7 @@ fn kill_and_reap<I: IntoIterator<Item = (String, std::time::Instant, std::proces
 }
 
 /// Kill + reap a grouped task and drain its readers with the bounded
-/// grace — the cleanup every grouped-chain error path shares.
+/// grace, the cleanup every grouped-chain error path shares.
 fn cleanup_grouped_task(mut t: GroupedTask) {
     let _ = t.child.kill();
     let _ = t.child.wait();

@@ -38,7 +38,7 @@ pub(crate) fn command(name: &str) -> Command {
 
 /// Walk `path` × `pathext` looking for an executable for `name`.
 ///
-/// Pure function — takes the relevant env vars as arguments so tests can drive
+/// Pure function, takes the relevant env vars as arguments so tests can drive
 /// it on any host. Returns `None` when `name` already contains a path
 /// separator (`CreateProcessW` handles those directly) or no candidate matches.
 #[cfg(any(windows, test))]
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(resolved, Some(shim));
     }
 
-    // An explicit extension must short-circuit PATHEXT — a later directory
+    // An explicit extension must short-circuit PATHEXT, a later directory
     // holding the exact name wins over an earlier `<name><ext>` candidate. This
     // is the cmd.exe behaviour and avoids resolving `foo.cmd.exe` for `foo.cmd`.
     #[test]

@@ -29,7 +29,7 @@ pub(crate) trait LineSink: Send + Sync {
     fn emit(&self, prefix: &str, is_stderr: bool, line: &str);
 }
 
-/// Production sink — locks `std::io::stdout` / `std::io::stderr` per
+/// Production sink, locks `std::io::stdout` / `std::io::stderr` per
 /// line. Zero-sized; share via `Arc::new(StdioSink)`.
 pub(crate) struct StdioSink;
 
@@ -105,8 +105,8 @@ impl BufferSink {
     ///
     /// When `neutralize` is set (grouped replay under GitHub Actions), a child
     /// line that is exactly a `::group::<title>` or `::endgroup::` workflow
-    /// command at column 0 is rewritten so it can't nest inside — or
-    /// prematurely close — runner's own per-task group: the group title is
+    /// command at column 0 is rewritten so it can't nest inside, or
+    /// prematurely close, runner's own per-task group: the group title is
     /// surfaced as plain text and the endgroup is dropped. All other lines,
     /// including `::warning::`/`::error::`/`::notice::` annotations, replay
     /// verbatim.
@@ -289,7 +289,7 @@ pub(crate) fn render_prefix(name: &str, width: usize, colorize: bool) -> String 
 /// Spawn one reader thread per `(prefix, is_stderr, reader)` entry in
 /// `streams`. Each thread reads its `Read` line-by-line and pushes the
 /// result through `sink`. Returns the `Vec<JoinHandle<()>>` for the
-/// spawned threads — the caller joins each handle once the underlying
+/// spawned threads, the caller joins each handle once the underlying
 /// pipes close (which happens naturally when each child process exits
 /// and the OS tears its stdio fds down).
 pub(crate) fn spawn_readers<R>(

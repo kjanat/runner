@@ -8,7 +8,8 @@ use serde::Deserialize;
 
 use crate::tool;
 use crate::types::{
-    DetectionWarning, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+    DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner,
+    TaskSource,
 };
 
 /// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
@@ -28,11 +29,12 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
         node_version: None,
         current_node: None,
         is_monorepo: false,
+        install_dirs: Vec::new(),
         warnings: Vec::new(),
     };
 
     detect_package_managers(dir, &mut ctx);
-    detect_install_collisions(dir, &mut ctx);
+    detect_install_dirs(dir, &mut ctx);
     detect_task_runners(dir, &mut ctx);
     detect_node_version(dir, &mut ctx);
     detect_monorepo(dir, &mut ctx);
@@ -48,14 +50,16 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     ctx
 }
 
-// Install-directory collisions
+// Install directories
 
-/// Flag detected package managers that would install into the same
-/// directory, so `runner install`/`doctor` can warn before fanning out
-/// redundant installs over a shared tree. Today the one real case is
-/// `node_modules`: any node-ecosystem PM writes it, and Deno joins only
-/// when its `nodeModulesDir` materializes a local tree.
-fn detect_install_collisions(dir: &Path, ctx: &mut ProjectContext) {
+/// Record which detected package managers write which install directory.
+/// Today the one shared directory is `node_modules`: any node-ecosystem PM
+/// writes it, and Deno joins whenever it materializes a local tree rather than
+/// resolving npm packages from its global cache (see
+/// [`tool::deno::writes_node_modules`]). Whether a shared directory is a
+/// *collision* is an install-time question ([`crate::cmd::install`] answers it
+/// against the effective install set), so nothing is judged or warned here.
+fn detect_install_dirs(dir: &Path, ctx: &mut ProjectContext) {
     let mut node_modules_writers: Vec<PackageManager> = ctx
         .package_managers
         .iter()
@@ -74,10 +78,10 @@ fn detect_install_collisions(dir: &Path, ctx: &mut ProjectContext) {
     {
         node_modules_writers.push(PackageManager::Deno);
     }
-    if node_modules_writers.len() >= 2 {
-        ctx.warnings.push(DetectionWarning::InstallDirCollision {
+    if !node_modules_writers.is_empty() {
+        ctx.install_dirs.push(InstallDir {
             dir: "node_modules",
-            pms: node_modules_writers,
+            writers: node_modules_writers,
         });
     }
 }
@@ -86,7 +90,7 @@ fn detect_install_collisions(dir: &Path, ctx: &mut ProjectContext) {
 
 /// Filesystem detector for a Node-ecosystem PM, keyed by the same
 /// [`crate::resolver::NODE_PROBE_ORDER`] the resolver's PATH probe and the
-/// doctor's signals section use — one priority list instead of a third
+/// doctor's signals section use, one priority list instead of a third
 /// copy encoded as if-else order. Only ever called with a PM drawn from
 /// that array, so the wildcard is unreachable in practice, not a
 /// silently-accepted gap.
@@ -100,13 +104,61 @@ fn node_pm_detector(pm: PackageManager) -> fn(&Path) -> bool {
     }
 }
 
-/// Detect a Node-ecosystem PM in `dir` alone (no upward walk), in
-/// [`crate::resolver::NODE_PROBE_ORDER`] priority.
+/// Detect a Node-ecosystem PM in `dir` alone (no upward walk).
+///
+/// One lockfile answers by itself. Several is a question about intent, and the
+/// committed lockfile answers it: a project that ships `bun.lock` and ignores
+/// `package-lock.json` has said which manager is its own. Tracked status is the
+/// signal, not ignore status, which is ambiguous in both directions (a
+/// gitignored `bun.lock` can mean "we never commit lockfiles", which is
+/// evidence the project *does* use bun).
+///
+/// [`crate::resolver::NODE_PROBE_ORDER`] decides only when git can't: no
+/// repository, no git, nothing committed, or several lockfiles committed.
 fn detect_local_node_pm(dir: &Path) -> Option<PackageManager> {
-    crate::resolver::NODE_PROBE_ORDER
+    let present: Vec<PackageManager> = crate::resolver::NODE_PROBE_ORDER
         .iter()
         .copied()
-        .find(|&pm| node_pm_detector(pm)(dir))
+        .filter(|&pm| node_pm_detector(pm)(dir))
+        .collect();
+    let (preferred, rest) = present.split_first()?;
+    if rest.is_empty() {
+        return Some(*preferred);
+    }
+    Some(committed_lockfile_pm(dir, &present).unwrap_or(*preferred))
+}
+
+/// The one package manager among `candidates` whose lockfile git tracks.
+///
+/// `None` when git leaves the question open: it couldn't answer, nothing is
+/// committed, or more than one lockfile is. A repository that commits two
+/// lockfiles is genuinely ambiguous, and detection must not dress a guess up as
+/// evidence.
+fn committed_lockfile_pm(dir: &Path, candidates: &[PackageManager]) -> Option<PackageManager> {
+    let names: Vec<&str> = candidates
+        .iter()
+        .flat_map(|pm| node_lockfiles(*pm))
+        .copied()
+        .collect();
+    let tracked = tool::git::tracked(dir, &names)?;
+    let mut committed = candidates.iter().copied().filter(|pm| {
+        node_lockfiles(*pm)
+            .iter()
+            .any(|lockfile| tracked.iter().any(|path| path == lockfile))
+    });
+    let only = committed.next()?;
+    committed.next().is_none().then_some(only)
+}
+
+/// The lockfiles a Node-ecosystem package manager writes.
+const fn node_lockfiles(pm: PackageManager) -> &'static [&'static str] {
+    match pm {
+        PackageManager::Bun => &["bun.lock", "bun.lockb"],
+        PackageManager::Pnpm => &["pnpm-lock.yaml"],
+        PackageManager::Yarn => &["yarn.lock"],
+        PackageManager::Npm => &["package-lock.json"],
+        _ => &[],
+    }
 }
 
 /// Detect package managers by checking for lockfiles and config files.
@@ -118,7 +170,7 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
         Some(pm)
     } else if tool::node::has_package_json(dir) {
         // Read the field with diagnostics so a present-but-unparseable
-        // value (typo, unsupported PM) doesn't disappear silently —
+        // value (typo, unsupported PM) doesn't disappear silently,
         // emit a `DetectionWarning::UnparseablePackageManager` so the
         // user sees the raw value they wrote and can fix it.
         let (field_pm, unparseable) = tool::node::detect_pm_field_with_diagnostics(dir);
@@ -163,13 +215,13 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
     }
 }
 
-/// Walk upward — workspace-root-aware and VCS-bounded — for the package
+/// Walk upward, workspace-root-aware and VCS-bounded, for the package
 /// manager that governs a manifest-less (or PM-less) workspace member:
 /// the nearest ancestor Node lockfile, else the nearest ancestor
 /// manifest's `packageManager`/`devEngines` declaration.
 ///
 /// Returns `None` outside a JS workspace so an unrelated outer-project
-/// lockfile is never adopted — the same guard that gates upward script
+/// lockfile is never adopted, the same guard that gates upward script
 /// discovery, applied to PM resolution.
 fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
     if !tool::node::within_workspace_upwards(dir) {
@@ -184,7 +236,7 @@ fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
     })
 }
 
-/// Walk upward — VCS-bounded — for the Python package manager governing
+/// Walk upward, VCS-bounded, for the Python package manager governing
 /// a nested project directory. Nearest ancestor wins; within one directory
 /// keep the same uv > poetry > pipenv priority as local detection.
 fn detect_python_pm_upwards(dir: &Path) -> Option<PackageManager> {
@@ -574,7 +626,7 @@ fn push_described_tasks(
 /// Append `package.json` scripts, classifying each entry as a
 /// passthrough wrapper iff its command body literally invokes a known
 /// task runner against a same-named target (turbo, just, make, task,
-/// nx, bacon, mise). Detection is purely textual — the surrounding
+/// nx, bacon, mise). Detection is purely textual, the surrounding
 /// project state is not consulted, so a real script like
 /// `"build": "vite build"` is never flagged regardless of what other
 /// sources exist.
@@ -629,7 +681,7 @@ type RecipeOrAlias = (String, Option<String>, Option<String>);
 
 /// Push `(name, description, alias_of)` triples into `ctx.tasks` under
 /// `source`, or record a `TaskListUnreadable` warning on error. Shared
-/// by [`push_mise_tasks`] and [`push_just_tasks`] — both runners emit
+/// by [`push_mise_tasks`] and [`push_just_tasks`], both runners emit
 /// recipe-or-alias variants that flatten to the same triple shape.
 fn push_recipe_alias_tasks(
     ctx: &mut ProjectContext,
@@ -659,10 +711,13 @@ fn push_recipe_alias_tasks(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
 
     use super::parse_tool_versions_node;
     use crate::detect::detect;
     use crate::tool::test_support::TempDir;
+    use crate::types::PackageManager;
 
     #[test]
     fn parses_tool_versions_node_entry() {
@@ -696,7 +751,7 @@ mod tests {
     #[test]
     fn detect_records_warning_for_unparseable_package_manager_field() {
         // The user typo'd `pnpm` → `pnpmm`. The resolver can't dispatch
-        // through `pnpmm@9`, so the manifest declaration is ignored —
+        // through `pnpmm@9`, so the manifest declaration is ignored,
         // but the detection layer surfaces the raw value verbatim so
         // the user sees their typo instead of staring at a doctor
         // report that just shows `manifest_pm: null`.
@@ -815,10 +870,7 @@ mod tests {
 
         let ctx = detect(dir.path());
 
-        assert!(
-            ctx.package_managers
-                .contains(&crate::types::PackageManager::Uv)
-        );
+        assert!(ctx.package_managers.contains(&PackageManager::Uv));
         let names: Vec<&str> = ctx
             .tasks
             .iter()
@@ -850,7 +902,7 @@ mod tests {
 
         let ctx = detect(&nested);
 
-        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Uv]);
+        assert_eq!(ctx.package_managers, [PackageManager::Uv]);
         assert!(ctx.tasks.iter().any(|task| {
             task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
         }));
@@ -889,17 +941,14 @@ mod tests {
 
         let ctx = detect(dir.path());
 
-        assert!(
-            ctx.package_managers
-                .contains(&crate::types::PackageManager::Poetry)
-        );
+        assert!(ctx.package_managers.contains(&PackageManager::Poetry));
         assert!(ctx.tasks.iter().any(|t| {
             t.source == crate::types::TaskSource::PyprojectScripts && t.name == "cli"
         }));
     }
 
     #[test]
-    fn node_modules_collision_detected_for_bun_plus_deno_node_modules_dir() {
+    fn node_modules_writers_recorded_for_bun_plus_deno_node_modules_dir() {
         use crate::types::{DetectionWarning, PackageManager};
         let dir = TempDir::new("detect-collision");
         fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
@@ -911,31 +960,163 @@ mod tests {
         .expect("deno.jsonc");
 
         let ctx = detect(dir.path());
-        let collision = ctx.warnings.iter().find_map(|w| match w {
-            DetectionWarning::InstallDirCollision { dir, pms } => Some((*dir, pms.clone())),
-            _ => None,
-        });
-        let (cdir, pms) = collision.expect("bun + node_modules-dir deno must collide");
-        assert_eq!(cdir, "node_modules");
-        assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Deno]);
-    }
 
-    #[test]
-    fn no_collision_when_deno_keeps_deps_in_global_cache() {
-        use crate::types::DetectionWarning;
-        let dir = TempDir::new("detect-no-collision");
-        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
-        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
-        // No nodeModulesDir → deno uses its global cache, no node_modules.
-        fs::write(dir.path().join("deno.jsonc"), r#"{ "tasks": {} }"#).expect("deno.jsonc");
-
-        let ctx = detect(dir.path());
+        let writers = ctx
+            .install_dirs
+            .iter()
+            .find(|entry| entry.dir == "node_modules")
+            .map(|entry| entry.writers.clone())
+            .expect("bun + node_modules-dir deno both write node_modules");
+        assert_eq!(writers, vec![PackageManager::Bun, PackageManager::Deno]);
+        // A shared directory is a fact. Whether it is a *collision* depends on
+        // the install set, which detection knows nothing about, so detection
+        // must not have an opinion about it.
         assert!(
             !ctx.warnings
                 .iter()
                 .any(|w| matches!(w, DetectionWarning::InstallDirCollision { .. })),
-            "deno without nodeModulesDir must not collide"
+            "detection must not judge install dirs: {:?}",
+            ctx.warnings,
         );
+    }
+
+    #[test]
+    fn deno_is_no_node_modules_writer_when_it_opts_out_of_a_local_tree() {
+        let dir = TempDir::new("detect-no-collision");
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
+        // Explicit `none` overrides the package.json default of `manual`, so
+        // deno resolves npm packages from its global cache.
+        fs::write(
+            dir.path().join("deno.jsonc"),
+            r#"{ "nodeModulesDir": "none" }"#,
+        )
+        .expect("deno.jsonc");
+
+        let ctx = detect(dir.path());
+
+        let writers = ctx
+            .install_dirs
+            .iter()
+            .find(|entry| entry.dir == "node_modules")
+            .map(|entry| entry.writers.clone())
+            .expect("bun still writes node_modules");
+        assert_eq!(writers, vec![PackageManager::Bun]);
+    }
+
+    #[test]
+    fn a_deno_project_with_a_package_json_writes_node_modules_without_being_told_to() {
+        // The shape that used to slip through: no `nodeModulesDir` line at all,
+        // so runner said deno kept its deps in the global cache, while
+        // `deno install` was in fact populating node_modules alongside bun.
+        let dir = TempDir::new("detect-implicit-collision");
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
+        fs::write(dir.path().join("deno.jsonc"), r#"{ "tasks": {} }"#).expect("deno.jsonc");
+
+        let ctx = detect(dir.path());
+
+        let writers = ctx
+            .install_dirs
+            .iter()
+            .find(|entry| entry.dir == "node_modules")
+            .map(|entry| entry.writers.clone())
+            .expect("both write node_modules");
+        assert_eq!(writers, vec![PackageManager::Bun, PackageManager::Deno]);
+    }
+
+    /// `git init` + commit the named files. Returns false when git is
+    /// unavailable, so the caller can skip rather than fail.
+    fn commit_in(dir: &Path, files: &[&str]) -> bool {
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        if !git(&["init"]) {
+            return false;
+        }
+        let mut add = vec!["add"];
+        add.extend_from_slice(files);
+        git(&add) && git(&["commit", "-m", "lockfiles"])
+    }
+
+    /// A project carrying two node lockfiles.
+    fn two_lockfiles(name: &str) -> TempDir {
+        let dir = TempDir::new(name);
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
+        fs::write(dir.path().join("package-lock.json"), "{}").expect("package-lock.json");
+        dir
+    }
+
+    #[test]
+    fn the_committed_lockfile_wins_over_the_preference_order() {
+        // npm's lockfile is committed and bun's is not, so this is an npm
+        // project, even though bun outranks npm in NODE_PROBE_ORDER.
+        let dir = two_lockfiles("detect-committed-npm");
+        fs::write(dir.path().join(".gitignore"), "bun.lock\n").expect(".gitignore");
+        if !commit_in(
+            dir.path(),
+            &["package-lock.json", ".gitignore", "package.json"],
+        ) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+
+        let ctx = detect(dir.path());
+        assert_eq!(ctx.package_managers, vec![PackageManager::Npm]);
+    }
+
+    #[test]
+    fn an_ignored_lockfile_still_wins_when_it_is_the_only_one() {
+        // Ignoring a lockfile is a policy about the repository, not a statement
+        // that the manager is unused. With nothing to disambiguate, the
+        // lockfile that exists is the answer.
+        let dir = TempDir::new("detect-ignored-only");
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
+        fs::write(dir.path().join(".gitignore"), "bun.lock\n").expect(".gitignore");
+        if !commit_in(dir.path(), &[".gitignore", "package.json"]) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+
+        let ctx = detect(dir.path());
+        assert_eq!(ctx.package_managers, vec![PackageManager::Bun]);
+    }
+
+    #[test]
+    fn two_committed_lockfiles_fall_back_to_the_preference_order() {
+        // A repository that commits both is genuinely ambiguous. Detection
+        // picks by preference rather than pretending to have evidence.
+        let dir = two_lockfiles("detect-both-committed");
+        if !commit_in(
+            dir.path(),
+            &["bun.lock", "package-lock.json", "package.json"],
+        ) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+
+        let ctx = detect(dir.path());
+        assert_eq!(ctx.package_managers, vec![PackageManager::Bun]);
+    }
+
+    #[test]
+    fn outside_a_repository_the_preference_order_decides() {
+        let dir = two_lockfiles("detect-no-git");
+
+        let ctx = detect(dir.path());
+        assert_eq!(ctx.package_managers, vec![PackageManager::Bun]);
     }
 
     #[test]
@@ -954,7 +1135,7 @@ mod tests {
 
         let ctx = detect(dir.path());
 
-        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Deno]);
+        assert_eq!(ctx.package_managers, [PackageManager::Deno]);
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
@@ -983,10 +1164,7 @@ mod tests {
 
         let ctx = detect(&nested);
 
-        assert!(
-            ctx.package_managers
-                .contains(&crate::types::PackageManager::Deno)
-        );
+        assert!(ctx.package_managers.contains(&PackageManager::Deno));
         assert!(ctx.tasks.iter().any(|task| task.name == "member"));
         assert!(ctx.tasks.iter().any(|task| task.name == "root"));
     }
@@ -1082,7 +1260,7 @@ mod tests {
 
         let ctx = detect(dir.path());
 
-        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Pnpm]);
+        assert_eq!(ctx.package_managers, [PackageManager::Pnpm]);
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
@@ -1116,7 +1294,7 @@ mod tests {
 
         let ctx = detect(&member);
 
-        assert_eq!(ctx.package_managers, [crate::types::PackageManager::Pnpm]);
+        assert_eq!(ctx.package_managers, [PackageManager::Pnpm]);
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));

@@ -41,7 +41,7 @@ pub(crate) struct Project<'a> {
     /// Raw, type-deduplicated detection results: PMs, runners, Node
     /// version, monorepo flag. Stable across resolver behavior tweaks.
     pub detected: Detected<'a>,
-    /// Effective override stack — CLI, env, and config bundled.
+    /// Effective override stack, CLI, env, and config bundled.
     pub overrides: OverridesView,
     /// Per-ecosystem detection signals: lockfile pick, manifest declaration, PATH probe results.
     pub signals: Signals,
@@ -55,17 +55,17 @@ pub(crate) struct Project<'a> {
 }
 
 impl<'a> Project<'a> {
-    /// Build the full report. Test-only convenience — production callers go through the dispatcher,
+    /// Build the full report. Test-only convenience, production callers go through the dispatcher,
     /// which validates `--schema-version` and calls [`Self::build_with_schema`] directly.
     #[cfg(test)]
     pub(crate) fn build(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Self {
-        // `resolve_shims = false` keeps unit tests hermetic — no `volta which` spawns against the test host.
+        // `resolve_shims = false` keeps unit tests hermetic, no `volta which` spawns against the test host.
         Self::build_with_schema(ctx, overrides, false)
     }
 
     /// Build the report. `resolve_shims` controls whether PATH-probe hits are classified against a
     /// Volta installation (one `volta which` spawn per shimmed tool). Diagnostic surfaces
-    /// (`doctor`, `info --json`) pass `true`; `list` passes `false` — it drops signals anyway.
+    /// (`doctor`, `info --json`) pass `true`; `list` passes `false`, it drops signals anyway.
     pub(crate) fn build_with_schema(
         ctx: &'a ProjectContext,
         overrides: &ResolutionOverrides,
@@ -138,7 +138,7 @@ impl<'a> Project<'a> {
     }
 
     /// Project the full report to a `list`-shaped view: just the tasks (filtered by `source` when set)
-    /// plus the schema version and root. Drops resolver state — `list` is purely a directory listing for tasks.
+    /// plus the schema version and root. Drops resolver state, `list` is purely a directory listing for tasks.
     pub(crate) fn into_list_view(self, source: Option<TaskSource>) -> TaskListView<'a> {
         let target = source.map(flat_source_label);
         let tasks = self
@@ -178,7 +178,7 @@ pub(crate) struct TaskListView<'a> {
     pub tasks: Vec<TaskInfo<'a>>,
 }
 
-/// Detection results — what the file scan found, before any resolver policy was applied.
+/// Detection results, what the file scan found, before any resolver policy was applied.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Detected<'a> {
@@ -219,7 +219,7 @@ pub(crate) struct NodeVersionInfo<'a> {
     pub source: &'static str,
 }
 
-/// Materialised override stack — the inputs that fed into resolver
+/// Materialised override stack, the inputs that fed into resolver
 /// decisions.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
@@ -293,7 +293,7 @@ pub(crate) struct RunnerOverrideInfo {
     pub origin: String,
 }
 
-/// Per-ecosystem signals — what the resolver had to work with.
+/// Per-ecosystem signals, what the resolver had to work with.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 pub(crate) struct Signals {
@@ -360,7 +360,7 @@ pub(crate) enum NodePmDecision {
     Resolved {
         /// The chosen PM label.
         pm: &'static str,
-        /// Human-readable `via` line — the same string `--explain` prints.
+        /// Human-readable `via` line, the same string `--explain` prints.
         via: String,
     },
     /// Resolver bailed; carries the rendered error message.
@@ -376,7 +376,7 @@ pub(crate) enum NodePmDecision {
 pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
-    /// Source label — resolved at build time via [`super::labels::flat_source_label`].
+    /// Source label, resolved at build time via [`super::labels::flat_source_label`].
     pub source: &'static str,
     /// Human-readable description, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -472,7 +472,7 @@ pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> Prob
     let pathext = env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
     // Located once, shared by every probe thread. `None` either means
-    // "no Volta on this host" or "shim resolution not requested" —
+    // "no Volta on this host" or "shim resolution not requested",
     // both collapse to "classify nothing".
     let volta = if resolve_shims {
         VoltaInstall::locate()
@@ -483,7 +483,7 @@ pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> Prob
     thread::scope(|s| {
         // Spawn all probes first (push, don't lazy-iterate) so they
         // actually run in parallel; chaining `.map(spawn).map(join)`
-        // without the eager push would serialize — `Iterator::map` is
+        // without the eager push would serialize, `Iterator::map` is
         // lazy, so the next `spawn` wouldn't fire until the previous
         // join returned.
         let mut handles = Vec::with_capacity(crate::resolver::NODE_PROBE_ORDER.len());
@@ -521,7 +521,7 @@ pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> Prob
                 Some(ShimResolution::NotProvisioned) => {
                     volta_shims.insert(label, VoltaShimInfo { resolved: None });
                 }
-                // Unknown: volta failed to answer — claim nothing.
+                // Unknown: volta failed to answer, claim nothing.
                 Some(ShimResolution::Unknown) | None => {}
             }
         }
@@ -549,6 +549,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -630,6 +631,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 

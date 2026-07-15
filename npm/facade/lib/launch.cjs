@@ -15,7 +15,7 @@ module.exports = function launch(name) {
 		if (result.error) throw result.error;
 		// Child died from a signal (SIGINT, SIGTERM, …).
 		// Re-raise it on ourselves so the parent shell sees `WIFSIGNALED` / exit -
-		// code 128 + N instead of a generic 1 — `set -e`, trap handlers,
+		// code 128 + N instead of a generic 1, `set -e`, trap handlers,
 		// and Ctrl+C chaining all depend on this.
 		if (result.signal) {
 			process.removeAllListeners(result.signal);

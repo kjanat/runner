@@ -1,6 +1,6 @@
 //! Resolution algorithm: the `impl Resolver` block plus the manifest or lockfile cross-checks that feed it.
 //!
-//! Pure logic only — parsing user input lives in [`super::overrides`] and
+//! Pure logic only, parsing user input lives in [`super::overrides`] and
 //! [`super::policies`]; data types live in [`super::types`].
 
 use super::probe;
@@ -24,16 +24,16 @@ impl<'ctx> Resolver<'ctx> {
     /// Resolve the package manager used to dispatch `package.json` scripts.
     ///
     /// Walks the precedence chain in order:
-    /// - Step 2–3 — CLI/env PM override (when compatible with Node scripts).
-    /// - Step 4 — `runner.toml` `[pm].node` override.
-    /// - Step 5a — `package.json` legacy `packageManager` field.
-    /// - Step 5b — `package.json` `devEngines.packageManager` field
+    /// - Step 2–3, CLI/env PM override (when compatible with Node scripts).
+    /// - Step 4, `runner.toml` `[pm].node` override.
+    /// - Step 5a, `package.json` legacy `packageManager` field.
+    /// - Step 5b, `package.json` `devEngines.packageManager` field
     ///   (honoring `onFail` when the declared PM is missing from PATH).
-    /// - Step 6 — lockfile (via [`ProjectContext::primary_node_pm`]).
-    /// - Step 7 — `$PATH` probe in canonical Node order
+    /// - Step 6, lockfile (via [`ProjectContext::primary_node_pm`]).
+    /// - Step 7, `$PATH` probe in canonical Node order
     ///   (`bun > pnpm > yarn > npm`). Active by default; replaced by
     ///   step 8 when `--fallback npm` is set.
-    /// - Step 8 — error or legacy `npm` (depending on
+    /// - Step 8, error or legacy `npm` (depending on
     ///   [`FallbackPolicy`]).
     ///
     /// When a manifest declaration (step 5) disagrees with a detected
@@ -53,7 +53,7 @@ impl<'ctx> Resolver<'ctx> {
             if !o.pm.can_dispatch_node_scripts() {
                 // The user explicitly pinned a PM that can't dispatch
                 // package.json scripts. Falling through to step 4-7
-                // would silently disregard their intent — surface the
+                // would silently disregard their intent, surface the
                 // mismatch as a hard error instead.
                 return Err(ResolveError::InvalidOverride {
                     value: o.pm.label().to_string(),
@@ -167,19 +167,19 @@ impl<'ctx> Resolver<'ctx> {
 /// declared PM is present on `$PATH` *and*, when a semver range is
 /// declared, that the installed version satisfies it.
 ///
-/// - `Ignore` — no check.
-/// - `Warn` — emit a `package.json` warning when the PM is missing or
+/// - `Ignore`, no check.
+/// - `Warn`, emit a `package.json` warning when the PM is missing or
 ///   the version doesn't match; continue with the declared PM regardless.
-/// - `Error` — bail on a missing PM or a version mismatch.
+/// - `Error`, bail on a missing PM or a version mismatch.
 ///
 /// Version checks that can't run (unparseable range, missing
 /// `--version` output, etc.) are skipped silently: the proposal says
 /// `onFail` enforces user intent, but blocking dispatch on an
-/// unverifiable constraint would be worse than continuing — the binary
+/// unverifiable constraint would be worse than continuing, the binary
 /// will surface the real problem at spawn time.
 ///
 /// Binary-presence and version-check side effects are injected so the
-/// `Error` branches stay exercisable in unit tests — `Error + missing`
+/// `Error` branches stay exercisable in unit tests, `Error + missing`
 /// and `Error + mismatched version` both `bail!`, which is impossible
 /// to cover otherwise without controlling the host `$PATH` and running
 /// `<pm> --version` against a real binary. Production callers wire in
@@ -261,7 +261,7 @@ fn on_fail_version_mismatch(
     }
 }
 
-/// Soft "no PM found" — only emitted from the `Probe` fallback when
+/// Soft "no PM found", only emitted from the `Probe` fallback when
 /// nothing on `$PATH` matches. Callers that legitimately want to fall
 /// through to a direct PATH spawn (`cmd::run::run_pm_exec_fallback`)
 /// match on `ResolveError::NoSignalsFound { soft: true, .. }` and swallow
@@ -273,7 +273,7 @@ const fn no_pm_found_soft() -> ResolveError {
     }
 }
 
-/// Hard "no PM found" — emitted from `FallbackPolicy::Error`. Carries
+/// Hard "no PM found", emitted from `FallbackPolicy::Error`. Carries
 /// the same payload but with `soft = false`, so `cmd::run::run`
 /// propagates it instead of falling through.
 const fn no_pm_found_hard() -> ResolveError {
@@ -286,9 +286,9 @@ const fn no_pm_found_hard() -> ResolveError {
 /// Compare a manifest declaration against the lockfile-signal recorded in
 /// [`ProjectContext`] and apply the configured [`MismatchPolicy`].
 ///
-/// - [`MismatchPolicy::Warn`] — push a `PmMismatch` warning, declaration wins.
-/// - [`MismatchPolicy::Ignore`] — declaration wins silently.
-/// - [`MismatchPolicy::Error`] — bail with
+/// - [`MismatchPolicy::Warn`], push a `PmMismatch` warning, declaration wins.
+/// - [`MismatchPolicy::Ignore`], declaration wins silently.
+/// - [`MismatchPolicy::Error`], bail with
 ///   [`ResolveError::MismatchPolicyError`] so the CLI exits with code 2.
 ///
 /// Manifest declarations frequently come from a project intentionally

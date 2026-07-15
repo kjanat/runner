@@ -85,7 +85,7 @@ pub(crate) enum FailurePolicy {
     KeepGoing,
     /// Parallel only: SIGKILL siblings on first failure (`std::process::Child::kill`).
     /// Sequential callers accept this silently (no-op). Catch-able SIGTERM
-    /// semantics would need a libc/nix dep — deferred to a follow-up.
+    /// semantics would need a libc/nix dep, deferred to a follow-up.
     KillOnFail,
 }
 

@@ -1,4 +1,4 @@
-//! pnpm — fast, disk-efficient Node.js package manager.
+//! pnpm, fast, disk-efficient Node.js package manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -27,7 +27,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// `onlyBuiltDependencies` manifest allowlist. [`ScriptDirective::ForceOn`]
 /// adds nothing: pnpm 10+ denies dependency build scripts by default and only
 /// the `onlyBuiltDependencies` manifest allowlist re-enables them, which runner
-/// won't write — `cmd::install` warns instead of emitting a misleading flag.
+/// won't write, `cmd::install` warns instead of emitting a misleading flag.
 pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("pnpm");
     c.arg("install");
@@ -77,7 +77,7 @@ mod tests {
     fn force_on_adds_no_flag() {
         // pnpm 10+ gates dependency build scripts behind the
         // `onlyBuiltDependencies` allowlist runner won't write, so force-on is
-        // not flag-expressible — `cmd::install` warns about it instead.
+        // not flag-expressible, `cmd::install` warns about it instead.
         assert_eq!(
             args_of(&install_cmd(false, ScriptDirective::ForceOn)),
             ["install"]

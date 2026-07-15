@@ -46,5 +46,5 @@ site/
 └── wrangler.jsonc        # Static Assets binding, custom domain
 ```
 
-`dist/` is gitignored — produced by `build.ts`, consumed by
+`dist/` is gitignored, produced by `build.ts`, consumed by
 `wrangler deploy`.

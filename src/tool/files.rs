@@ -10,8 +10,8 @@ pub(crate) fn find_first(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-/// Walk `dir` and its ancestors — bounded to the VCS root when one is
-/// found — returning the first `pred` result that is `Some`. Shared by
+/// Walk `dir` and its ancestors, bounded to the VCS root when one is
+/// found, returning the first `pred` result that is `Some`. Shared by
 /// every upward probe so the VCS-boundary rule lives in exactly one place.
 pub(crate) fn find_in_ancestors<T>(
     dir: &Path,

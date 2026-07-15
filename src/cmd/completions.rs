@@ -1,4 +1,4 @@
-//! `runner completions` — generate dynamic shell completion scripts.
+//! `runner completions`, generate dynamic shell completion scripts.
 
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
@@ -15,8 +15,8 @@ use crate::complete::SHELLS;
 /// Resolves the target shell from the explicit argument, `$SHELL`, or the
 /// presence of `$PSModulePath` (PowerShell sets it but never `$SHELL`),
 /// looks up the matching completer from our [`SHELLS`] table, and calls
-/// [`clap_complete::env::EnvCompleter::write_registration`] directly — once
-/// per binary — so users only need a single
+/// [`clap_complete::env::EnvCompleter::write_registration`] directly, once
+/// per binary, so users only need a single
 /// `eval "$(runner completions zsh)"` in their rc file to get completion
 /// for both CLIs.
 ///
@@ -25,9 +25,9 @@ use crate::complete::SHELLS;
 /// stderr. Otherwise they go to stdout, byte-for-byte the same output the
 /// command has always produced.
 pub(crate) fn completions(shell: Option<Shell>, output: Option<&Path>) -> Result<()> {
-    let shell = shell.or_else(detect_shell).context(
-        "could not detect shell — set $SHELL or pass explicitly: runner completions zsh",
-    )?;
+    let shell = shell
+        .or_else(detect_shell)
+        .context("could not detect shell, set $SHELL or pass explicitly: runner completions zsh")?;
 
     let shell_name = env_shell_name(shell);
     let completer = SHELLS
@@ -65,8 +65,8 @@ pub(crate) fn completions(shell: Option<Shell>, output: Option<&Path>) -> Result
     Ok(())
 }
 
-/// Emit `runner`'s registration, and — when a sibling `run` binary was
-/// located — `run`'s registration separated by a blank line. Shared
+/// Emit `runner`'s registration, and, when a sibling `run` binary was
+/// located, `run`'s registration separated by a blank line. Shared
 /// between the stdout and file-output paths so the byte stream is
 /// identical either way.
 fn write_registrations(
@@ -97,7 +97,7 @@ fn write_registrations(
 
 /// Resolve the sibling `run` binary next to the `runner` executable so the
 /// generated completion script can invoke it directly. Returns `None` when
-/// no sibling exists — the caller skips the `run` registration in that
+/// no sibling exists, the caller skips the `run` registration in that
 /// case rather than guessing at PATH resolution.
 fn sibling_run_binary(runner_exe: &Path) -> Option<PathBuf> {
     let parent = runner_exe.parent()?;
@@ -154,8 +154,8 @@ fn shell_from_path(path: &Path) -> Option<Shell> {
 pub(crate) fn parse_shell_arg(raw: &str) -> Result<Shell, String> {
     shell_from_path(Path::new(raw)).ok_or_else(|| {
         format!(
-            "unsupported shell: {raw:?} (accepted: bash, zsh, fish, elvish, pwsh|powershell — \
-             bare name or full path)"
+            "unsupported shell: {raw:?} (accepted: bash, zsh, fish, elvish, pwsh|powershell, bare \
+             name or full path)"
         )
     })
 }
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn parse_shell_arg_accepts_absolute_path() {
         // Regression guard: `runner completions $SHELL` (which expands to
-        // a full path) must succeed — the stock clap `ValueEnum` parser
+        // a full path) must succeed, the stock clap `ValueEnum` parser
         // rejected anything but the bare name, so this is the whole reason
         // the custom parser exists.
         assert_eq!(parse_shell_arg("/usr/bin/zsh").unwrap(), Shell::Zsh);
@@ -209,8 +209,8 @@ mod tests {
     #[test]
     fn parse_shell_arg_error_lists_accepted_forms() {
         let err = parse_shell_arg("ksh").expect_err("ksh should be rejected");
-        // Surface every accepted shell — including the `pwsh|powershell`
-        // pair — so users hit by the rejection see the full menu.
+        // Surface every accepted shell, including the `pwsh|powershell`
+        // pair, so users hit by the rejection see the full menu.
         for needle in ["bash", "zsh", "fish", "elvish", "pwsh", "powershell"] {
             assert!(
                 err.contains(needle),

@@ -1,4 +1,4 @@
-//! `runner info` — print detected project context to stdout.
+//! `runner info`, print detected project context to stdout.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -114,7 +114,7 @@ fn release_url() -> String {
 
 fn bin_name_from_arg0(arg0: Option<OsString>) -> String {
     // Delegate to the canonical helper so the banner presents the same
-    // `run` / `runner` identity as `--version` and `--help` — notably it
+    // `run` / `runner` identity as `--version` and `--help`, notably it
     // strips the Windows `.exe` suffix that `argv[0]` carries.
     arg0.and_then(|raw| crate::bin_name_from_arg0(&raw))
         .unwrap_or_else(|| "runner".to_string())

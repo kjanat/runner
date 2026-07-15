@@ -129,9 +129,9 @@ fn decide_deno_self_exec(
 
 /// Resolve `task` to a fully-configured [`Command`] without spawning it.
 ///
-/// Walks the same cascade for every caller — warning emission, qualified
+/// Walks the same cascade for every caller, warning emission, qualified
 /// vs unqualified lookup, runner constraint check, resolver chain,
-/// bun-test special case, PM-exec fallback, or a normal task entry —
+/// bun-test special case, PM-exec fallback, or a normal task entry,
 /// and returns a [`Command`] whose working directory + env have already
 /// been set via [`crate::cmd::configure_command`]. Callers attach stdio +
 /// `.status()` / `.spawn()` according to their needs.
@@ -181,7 +181,7 @@ pub(super) fn resolve_dispatch(
     // candidate that isn't under one of the allowed sources is treated
     // as non-existent. A qualifier (`runner.json:task`) is the user
     // narrowing *to* a source explicitly and outranks the runner
-    // constraint — the qualified branch below applies its own match.
+    // constraint, the qualified branch below applies its own match.
     let restricted: Vec<_> = if qualifier.is_some() {
         found.clone()
     } else if let Some(allowed) = allowed_runner_sources(overrides) {
@@ -197,7 +197,7 @@ pub(super) fn resolve_dispatch(
     if restricted.is_empty() {
         // Restrictive override active but no candidate matched: hard
         // error per the resolved design decision (explicit intent
-        // never silently downgrades). Skipped for qualified misses —
+        // never silently downgrades). Skipped for qualified misses,
         // the qualifier (`justfile:foo`) is stronger user intent than
         // `--runner` / `[task_runner].prefer`, so report the qualified
         // miss directly instead of surfacing a runner-constraint error
@@ -217,14 +217,14 @@ pub(super) fn resolve_dispatch(
             }
 
             // Local file without an explicit prefix: a token that names a
-            // runnable file under the project root — a bare name (`main.ts`,
-            // `build.sh`) or a relative path with a separator (`bin/tool`) — runs
+            // runnable file under the project root, a bare name (`main.ts`,
+            // `build.sh`) or a relative path with a separator (`bin/tool`), runs
             // as that file. Sits *after* the runner-constraint hard error (an
             // explicit `--runner` never silently downgrades to a coincidental
             // file) but *before* PM resolution, so a local file still runs when
             // node-PM resolution would hard-error for reasons unrelated to it (a
             // strict devEngines/`packageManager` mismatch, an incompatible
-            // `--pm`) — running `main.ts` via its runtime doesn't need the
+            // `--pm`), running `main.ts` via its runtime doesn't need the
             // package.json PM. Tasks already matched above (`restricted` is empty
             // here), so this never shadows a same-named task, and `bunx`/`npx`
             // never sees a local file.
@@ -266,7 +266,7 @@ pub(super) fn resolve_dispatch(
         };
 
         // Qualified miss (colon or FQN syntax): the qualifier is explicit
-        // task-lookup intent, so error here — never fall through to
+        // task-lookup intent, so error here, never fall through to
         // PM-exec, which would hand the token to bunx/npx as a package
         // spec and resolve it off the network.
         return Err(qualified_miss_error(ctx, missed_source, task_name));
@@ -370,8 +370,8 @@ impl ResolvedPythonPm {
 /// `package.json` `test` script: forward to `bun test`.
 ///
 /// `resolved_pm` is the verdict from the full resolver chain, so all
-/// signals — `--pm`, `RUNNER_PM`, `runner.toml`, `packageManager`,
-/// `devEngines.packageManager`, lockfile, PATH probe — get a vote.
+/// signals, `--pm`, `RUNNER_PM`, `runner.toml`, `packageManager`,
+/// `devEngines.packageManager`, lockfile, PATH probe, get a vote.
 /// Fires only when the resolver landed on Bun.
 pub(super) fn should_use_bun_test_fallback(
     ctx: &ProjectContext,
@@ -499,6 +499,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -579,7 +580,7 @@ mod tests {
     #[test]
     fn resolve_dispatch_accepts_v3_cargo_alias_fqn() {
         // Schema v3 labels cargo alias tasks `cargo-alias`, so doctor/why
-        // print `root:cargo-alias#<name>` — that exact string must run.
+        // print `root:cargo-alias#<name>`, that exact string must run.
         let mut ctx = context();
         ctx.tasks.push(Task {
             name: "b".to_string(),
@@ -625,7 +626,7 @@ mod tests {
 
     #[test]
     fn resolve_dispatch_github_spec_still_reaches_pm_exec() {
-        // `user/repo#ref` is a legit bunx/npx package spec — its prefix
+        // `user/repo#ref` is a legit bunx/npx package spec, its prefix
         // is not a source label, so it must keep flowing to PM-exec.
         let dispatch = resolve_dispatch(
             &context(),

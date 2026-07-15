@@ -9,7 +9,7 @@
 //!   ubiquitous on dev/CI machines);
 //! - the explain test uses a `package.json` script pinned to npm via an empty
 //!   lockfile (npm ships with Node on every runner), because `--explain` only
-//!   traces package-manager resolution — a `make` task never emits it.
+//!   traces package-manager resolution, a `make` task never emits it.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

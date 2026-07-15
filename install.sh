@@ -70,7 +70,7 @@ resolve_target() {
 
 # These predicates print "yes"/"no" rather than returning an exit status:
 # callers invoke them via command substitution and test the printed string.
-# That keeps them composable under `set -e` without ShellCheck SC2310 — a
+# That keeps them composable under `set -e` without ShellCheck SC2310, a
 # function used directly as a condition silently disables set -e inside it.
 dir_on_path() {
 	case ":${PATH:-}:" in

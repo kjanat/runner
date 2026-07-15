@@ -12,7 +12,7 @@ import { arch, env, exit, platform, stdout } from "node:process";
  */
 function fileCommand(name, block) {
 	const file = env[name];
-	if (!file) throw new Error(`${name} is not set — not running inside a GitHub Action?`);
+	if (!file) throw new Error(`${name} is not set, not running inside a GitHub Action?`);
 	appendFileSync(file, `${block}${EOL}`);
 }
 
@@ -28,7 +28,7 @@ function addPath(dir) {
 function setOutput(name, value) {
 	const delim = `ghadelimiter_${randomUUID()}`;
 	if (name.includes(delim) || value.includes(delim)) {
-		throw new Error("output delimiter collision (astronomically unlikely — retry)");
+		throw new Error("output delimiter collision (astronomically unlikely, retry)");
 	}
 	fileCommand("GITHUB_OUTPUT", `${name}<<${delim}${EOL}${value}${EOL}${delim}`);
 }
@@ -94,7 +94,7 @@ function withRetry(fn, backoffsMs) {
 			if (attempt >= backoffsMs.length) throw err;
 			const wait = backoffsMs[attempt];
 			const msg = err instanceof Error ? err.message : String(err);
-			debug(`attempt ${attempt + 1} failed (${msg}) — retrying in ${wait}ms`);
+			debug(`attempt ${attempt + 1} failed (${msg}), retrying in ${wait}ms`);
 			sleep(wait);
 		}
 	}
@@ -110,7 +110,7 @@ function resolveSpec() {
 	const m = /^v?(\d{1,9}(?:\.\d{1,9}){0,2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/
 		.exec(requested);
 	if (!m) {
-		warn(`'${requested}' is not a semver pin or 'latest' — falling back to 'latest'`);
+		warn(`'${requested}' is not a semver pin or 'latest', falling back to 'latest'`);
 		return "latest";
 	}
 	console.log(`version: ${m[1]} (from '${requested}')`);
@@ -120,7 +120,7 @@ function resolveSpec() {
 /** @returns {string} */
 function installPrefix() {
 	const toolCache = env.RUNNER_TOOL_CACHE;
-	if (!toolCache) throw new Error("RUNNER_TOOL_CACHE is not set — not running inside a GitHub Action?");
+	if (!toolCache) throw new Error("RUNNER_TOOL_CACHE is not set, not running inside a GitHub Action?");
 	const prefix = join(toolCache, "runner-cli");
 	mkdirSync(prefix, { recursive: true });
 	return prefix;
@@ -130,8 +130,8 @@ function installPrefix() {
  * Resolve the `@runner-run/<pkg>` platform package matching this runner,
  * so install can skip the facade's optionalDependencies resolution
  * (13 extra registry metadata fetches for packages that'll never be used).
- * Returns null on anything unexpected — unmapped platform, unreadable
- * manifest, undetectable libc — so the caller falls back to the facade,
+ * Returns null on anything unexpected, unmapped platform, unreadable
+ * manifest, undetectable libc, so the caller falls back to the facade,
  * which covers every platform npm's own optionalDependencies resolution
  * covers.
  * @returns {{ scope: string, pkg: string } | null}
@@ -142,7 +142,7 @@ function resolvePlatformTarget() {
 	try {
 		manifest = JSON.parse(readFileSync(join(import.meta.dirname, "npm", "targets.json"), "utf8"));
 	} catch (err) {
-		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)}) — using facade`);
+		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)}), using facade`);
 		return null;
 	}
 
@@ -150,7 +150,7 @@ function resolvePlatformTarget() {
 	let libc;
 	if (platform === "linux") {
 		try {
-			// Node's own signal for glibc vs musl — the same mechanism npm's
+			// Node's own signal for glibc vs musl, the same mechanism npm's
 			// optionalDependencies resolution relies on for the `libc` field.
 			const report = /** @type {{ header?: { glibcVersionRuntime?: string } }} */ (process.report?.getReport?.());
 			libc = report?.header?.glibcVersionRuntime ? "glibc" : "musl";
@@ -165,7 +165,7 @@ function resolvePlatformTarget() {
 		&& (t.libc == null || (libc !== undefined && t.libc.includes(libc)))
 	);
 	if (!match) {
-		debug(`no npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""} — using facade`);
+		debug(`no npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""}, using facade`);
 		return null;
 	}
 	return { scope: manifest.scope, pkg: match.pkg };
@@ -224,8 +224,8 @@ try {
 
 	// Installing the platform package directly skips the facade's
 	// optionalDependencies resolution (a registry metadata fetch per
-	// sibling platform package that will never be used). Any failure —
-	// including a genuinely unpublished experimental-platform version —
+	// sibling platform package that will never be used). Any failure,
+	// including a genuinely unpublished experimental-platform version,
 	// falls back to the facade, which is what every platform used before.
 	let installedPkg = facade;
 	const target = resolvePlatformTarget();
@@ -236,7 +236,7 @@ try {
 			installedPkg = fastPkg;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			warn(`fast install of ${fastPkg}@${spec} failed (${msg}) — falling back to ${facade}`);
+			warn(`fast install of ${fastPkg}@${spec} failed (${msg}), falling back to ${facade}`);
 			installPackage(facade, spec, prefix);
 		}
 	} else {

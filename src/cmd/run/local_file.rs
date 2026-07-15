@@ -1,6 +1,6 @@
 //! Local-file execution for `run <path>`.
 //!
-//! A token that points at a local file should be *run as that file* — never
+//! A token that points at a local file should be *run as that file*, never
 //! handed to a package manager's package-exec primitive (`bunx`/`npx`/
 //! `pnpm dlx`/`deno x`/`uvx`), which would resolve a local path as a remote
 //! package spec and fail with a registry 404 or a `git clone` error.
@@ -13,8 +13,8 @@
 //! 1. **Directly executable file** (a native binary, or a script whose `#!`
 //!    line the kernel can honor) → spawned directly (`Command::new(path)`).
 //!    A recognized *source* file that merely carries the exec bit but has no
-//!    `#!` line is **not** run this way — `execve` cannot run shebang-less
-//!    text (it returns `ENOEXEC`) — it falls to outcome 3 instead.
+//!    `#!` line is **not** run this way, `execve` cannot run shebang-less
+//!    text (it returns `ENOEXEC`), it falls to outcome 3 instead.
 //! 2. **Non-executable file with a `#!` shebang** → the interpreter is
 //!    parsed (including `#!/usr/bin/env -S <interp> <args>`) and the file is
 //!    run through it.
@@ -53,13 +53,13 @@ pub(super) struct LocalDispatch {
 /// target) wins first and a built artifact on disk cannot silently shadow it.
 ///
 /// Returns:
-/// - `Ok(None)` — `token` has no local prefix (a bare name, a relative
+/// - `Ok(None)`, `token` has no local prefix (a bare name, a relative
 ///   `bin/tool`, an existing directory, or a remote spec like `@scope/pkg`
 ///   or `github.com/owner/tool`); the caller continues normal task /
 ///   PM-exec resolution.
-/// - `Ok(Some(_))` — `token` resolves to a runnable file; the caller spawns
+/// - `Ok(Some(_))`, `token` resolves to a runnable file; the caller spawns
 ///   the returned command instead of touching any package manager.
-/// - `Err(_)` — `token` is unambiguously a local path that cannot be run
+/// - `Err(_)`, `token` is unambiguously a local path that cannot be run
 ///   (a missing file behind an explicit `./`/`/`/`~` prefix, or a file of
 ///   unrecognized type); surfaced as a clear error rather than a 404.
 pub(super) fn try_path_token(
@@ -75,9 +75,9 @@ pub(super) fn try_path_token(
     dispatch_for_path(ctx, overrides, token, &path, args)
 }
 
-/// Try to interpret a `token` *without* an explicit local-path prefix — a
+/// Try to interpret a `token` *without* an explicit local-path prefix, a
 /// bare name (`main.ts`) or a relative path bearing a separator
-/// (`bin/tool`) — as a runnable file under the project root (`ctx.root`).
+/// (`bin/tool`), as a runnable file under the project root (`ctx.root`).
 /// Used as a
 /// fallback *after* task lookup misses but before the PM-exec fallback, so a
 /// matching task always wins first (a bare name or a `make bin/tool` target
@@ -92,11 +92,11 @@ pub(super) fn try_path_token(
 /// directory) is left to the PM-exec fallback (a real package spec).
 ///
 /// Returns:
-/// - `Ok(None)` — `token` carries a local prefix, names nothing on disk, or
+/// - `Ok(None)`, `token` carries a local prefix, names nothing on disk, or
 ///   resolves to a non-file (a directory like `./cmd/foo`); the caller
 ///   continues to the PM-exec fallback.
-/// - `Ok(Some(_))` — `token` resolves to a runnable file; the caller spawns it.
-/// - `Err(_)` — `token` resolves to an existing regular file the chosen runtime
+/// - `Ok(Some(_))`, `token` resolves to a runnable file; the caller spawns it.
+/// - `Err(_)`, `token` resolves to an existing regular file the chosen runtime
 ///   can't run (an unsupported type, no shebang and not executable, or a `.tsx`
 ///   in a node-only project). Surfaces the same clear error the explicit `./`
 ///   form raises, never a swallowed `None` that mis-routes an existing file
@@ -132,7 +132,7 @@ fn bare_file_in(
     }
     // The token names an existing regular file, so it is a local file: run it,
     // and if it can't be run (unsupported type, no shebang and not executable,
-    // or a `.tsx` resolved to Node) surface that as the clear local-file error —
+    // or a `.tsx` resolved to Node) surface that as the clear local-file error,
     // exactly what the explicit `./file` form does (`dispatch_for_path` ->
     // `build_command?`). Never swallow it into a `None` that falls through to
     // `pnpm exec`/`npx <file>` and a registry 404 (#69). Missing tokens and
@@ -154,7 +154,7 @@ fn dispatch_for_path(
     let Ok(meta) = fs::metadata(path) else {
         // The path resolves to nothing on disk. An explicit local path
         // (`./x`, `../x`, `/x`, `~/x`, `C:\x`) clearly means a file that
-        // is not there — report it plainly. Anything else (`@scope/pkg`,
+        // is not there, report it plainly. Anything else (`@scope/pkg`,
         // `github.com/owner/tool`) falls through so the PM-exec / Go
         // import-path fallback can treat it as a remote spec.
         if has_local_prefix(token) {
@@ -187,7 +187,7 @@ fn build_command(
     // text that `execve` cannot run) from a genuine self-executable script
     // or native binary. An execute-only file (mode 0111) cannot be opened for
     // read, so the probe simply yields `None` (no shebang to honor) rather
-    // than aborting — the kernel can still `execve` such a binary.
+    // than aborting, the kernel can still `execve` such a binary.
     let shebang = read_shebang(path);
     let routing = routing_for_extension(ctx, overrides, path);
 
@@ -197,7 +197,7 @@ fn build_command(
     //    shebang-less source file with the exec bit (common on
     //    vfat/exfat/ntfs-3g mounts that report mode 0777 for every file)
     //    would otherwise hit `execve`, fail `ENOEXEC`, and never reach
-    //    bun/deno/node/uv/python/go — so route it to the runtime (outcome 3).
+    //    bun/deno/node/uv/python/go, so route it to the runtime (outcome 3).
     if is_directly_executable(path, meta)
         && (shebang.is_some() || matches!(routing, SourceRouting::Unrecognized))
     {
@@ -206,13 +206,13 @@ fn build_command(
         return Ok((String::from("exec"), command));
     }
 
-    // 2. A `#!` shebang names the interpreter explicitly — honor it even
+    // 2. A `#!` shebang names the interpreter explicitly, honor it even
     //    without the executable bit (and on Windows, which has none).
     if let Some(shebang) = shebang {
         return Ok(shebang_command(&shebang, path, args));
     }
 
-    // 3. A recognized source extension runs via the project runtime — except
+    // 3. A recognized source extension runs via the project runtime, except
     //    a `.jsx`/`.tsx` file resolved to Node, which Node cannot execute
     //    (no JSX transform; type-stripping covers only `.ts`/`.mts`/`.cts`).
     //    Erroring is honest; `node app.tsx` would be guaranteed-broken.
@@ -260,7 +260,7 @@ pub(super) fn has_local_prefix(token: &str) -> bool {
 }
 
 /// Whether `token` starts with a Windows drive-letter root (`C:\` / `C:/`).
-fn is_windows_drive_abs(token: &str) -> bool {
+const fn is_windows_drive_abs(token: &str) -> bool {
     let bytes = token.as_bytes();
     bytes.len() >= 3
         && bytes[0].is_ascii_alphabetic()
@@ -269,7 +269,7 @@ fn is_windows_drive_abs(token: &str) -> bool {
 }
 
 /// Resolve `token` to an absolute path: expand a leading `~`, then anchor a
-/// relative path on `base` — the detected project root (`ctx.root`), which
+/// relative path on `base`, the detected project root (`ctx.root`), which
 /// also becomes the spawned child's working directory and is what task
 /// detection runs against. Anchoring here (rather than on the live process
 /// cwd) keeps local-file lookup consistent with every other dispatch step,
@@ -328,7 +328,7 @@ struct Shebang {
 ///
 /// I/O failure is non-fatal and yields `None`: by the time this runs the path
 /// is already a regular file (`fs::metadata` succeeded), so a failed
-/// `open`/`read` means an execute-only file (Unix mode 0111 — a legitimate
+/// `open`/`read` means an execute-only file (Unix mode 0111, a legitimate
 /// mode for compiled binaries) that the kernel can `execve` but cannot be
 /// opened `O_RDONLY` (EACCES). "No shebang we can honor" → defer to the exec
 /// bit / extension rather than hard-failing the whole dispatch.
@@ -359,10 +359,10 @@ fn read_shebang(path: &Path) -> Option<Shebang> {
 /// Parse a `#!` line into the interpreter program and its arguments.
 ///
 /// The kernel hands the interpreter exactly one argument: everything after the
-/// first whitespace, internal spaces intact — it does *not* whitespace-split.
+/// first whitespace, internal spaces intact, it does *not* whitespace-split.
 /// So a direct interpreter and a plain `env` both keep the remainder as a
 /// single argument. Only `env -S` / `--split-string` re-splits that argument,
-/// using env's own quote-aware parser ([`split_env_string`]) — never a naive
+/// using env's own quote-aware parser ([`split_env_string`]), never a naive
 /// `split_whitespace`, which would tear `--allow-read="a b"` in two and invent
 /// argv for `#!/usr/bin/env python3 -O`.
 fn parse_shebang(line: &str) -> Option<Shebang> {
@@ -381,7 +381,7 @@ fn parse_shebang(line: &str) -> Option<Shebang> {
         // --allow-read="a b"`) stay one token. Plain `env` (no `-S`) does NOT
         // split: the kernel's single argument is the program name, so
         // `#!/usr/bin/env python3 -O` resolves to the (bogus) program
-        // `"python3 -O"` exactly as the kernel would run it — `-S` is what adds
+        // `"python3 -O"` exactly as the kernel would run it, `-S` is what adds
         // the splitting.
         let split_form = rest
             .strip_prefix("--split-string=")
@@ -417,7 +417,7 @@ fn single_arg(rest: &str) -> Vec<String> {
 /// Split an `env -S` / `--split-string` argument the way GNU `env`'s
 /// split-string parser does for the cases shebangs actually use: ASCII
 /// whitespace separates words, while single quotes, double quotes, and a
-/// backslash keep a run — embedded spaces and all — as one word. This
+/// backslash keep a run, embedded spaces and all, as one word. This
 /// preserves quoted arguments (`--allow-read="a b"`) that `split_whitespace`
 /// would tear in two. The exotic `\t`/`\n`/`\c` escape sequences env also
 /// understands are vanishingly rare in shebangs and intentionally unmodeled.
@@ -528,7 +528,7 @@ enum SourceRouting {
     /// execute JSX/TSX: Node has no JSX transform and type-strips only
     /// `.ts`/`.mts`/`.cts`. A clear error, never a broken `node app.tsx`.
     NodeCannotRunJsx,
-    /// Not a recognized source extension — defer to the exec bit / shebang
+    /// Not a recognized source extension, defer to the exec bit / shebang
     /// (a native binary) or, failing that, outcome 4's error.
     Unrecognized,
 }
@@ -608,7 +608,7 @@ fn js_runtime_from_override(overrides: &ResolutionOverrides) -> Option<Runtime> 
 
 /// Python runtime: `uv run` when uv is overridden or detected, otherwise the
 /// plain interpreter. A non-uv Python override (poetry/pipenv) uses the
-/// plain interpreter — `uv run` would be wrong for those projects.
+/// plain interpreter, `uv run` would be wrong for those projects.
 fn py_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime {
     let overridden = overrides.pm.as_ref().map(|over| over.pm).or_else(|| {
         overrides
@@ -692,6 +692,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -776,8 +777,8 @@ mod tests {
 
     #[test]
     fn parse_shebang_plain_env_keeps_tail_as_single_argument() {
-        // Plain `env` (no `-S`) gets ONE argument from the kernel — the whole
-        // remainder — and treats it as the program name. It does not split on
+        // Plain `env` (no `-S`) gets ONE argument from the kernel, the whole
+        // remainder, and treats it as the program name. It does not split on
         // whitespace (that's what `-S` is for), so `env python3 -O` resolves to
         // the program `"python3 -O"`, matching how the kernel runs the file.
         let parsed = parse_shebang("#!/usr/bin/env python3 -O").expect("should parse");
@@ -793,7 +794,7 @@ mod tests {
     #[test]
     fn parse_shebang_direct_interpreter_keeps_tail_as_single_argument() {
         // A direct interpreter also receives a single kernel argument: the
-        // whole remainder, internal spaces intact — never re-split.
+        // whole remainder, internal spaces intact, never re-split.
         let parsed = parse_shebang("#!/bin/awk -f -v").expect("should parse");
         assert_eq!(parsed.program, "/bin/awk");
         assert_eq!(parsed.args, ["-f -v"]);
@@ -1057,7 +1058,7 @@ mod tests {
     fn build_command_spawns_execute_only_binary_directly() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        // A native binary at mode 0111 (execute-only — a legitimate mode):
+        // A native binary at mode 0111 (execute-only, a legitimate mode):
         // the kernel can `execve` it, but `open(O_RDONLY)` returns EACCES so
         // the shebang probe cannot read it. It must still spawn directly
         // (outcome 1) rather than hard-fail on the unreadable shebang read.
@@ -1315,7 +1316,7 @@ mod tests {
     #[test]
     fn bare_file_existing_unsupported_file_errors() {
         // Once the token names an existing regular file it is a local file: an
-        // unsupported one (`data.bin` — no extension we run, no shebang, not
+        // unsupported one (`data.bin`, no extension we run, no shebang, not
         // executable) surfaces the clear local-file error instead of falling
         // through to `bunx data.bin` and a registry 404, matching the explicit
         // `./data.bin` form (#69).
@@ -1333,7 +1334,7 @@ mod tests {
     fn bare_file_errors_on_jsx_in_node_project() {
         // Regression for #69: a bare (no `./` prefix) `app.tsx` that exists on
         // disk in a node-only project must surface the same `node cannot run`
-        // error the explicit `./app.tsx` form raises — never let `build_command`'s
+        // error the explicit `./app.tsx` form raises, never let `build_command`'s
         // error be swallowed into a `None` that falls through to `pnpm exec
         // app.tsx` / `npx app.tsx` and a registry 404.
         let dir = TempDir::new("bare-tsx-node");
@@ -1359,7 +1360,7 @@ mod tests {
     fn try_bare_file_declines_local_prefix_tokens() {
         // Prefix-bearing paths are the pre-task path branch's responsibility;
         // the after-miss fallback must decline them outright. A prefix-less
-        // relative path like `bin/tool` is NOT declined here — see
+        // relative path like `bin/tool` is NOT declined here, see
         // `bare_file_resolves_relative_separator_token`.
         let ctx = context(vec![PackageManager::Bun]);
         let defaults = ResolutionOverrides::default();
@@ -1377,7 +1378,7 @@ mod tests {
     fn try_path_token_declines_relative_separator_tokens() {
         // `bin/tool` carries a separator but no explicit local prefix, so the
         // pre-task path branch must decline it (returning `None` without
-        // touching the filesystem) — a matching `make bin/tool` task wins
+        // touching the filesystem), a matching `make bin/tool` task wins
         // first. Only an explicit `./bin/tool` outranks a task.
         let result = try_path_token(
             &context(vec![PackageManager::Bun]),
@@ -1397,7 +1398,7 @@ mod tests {
     fn bare_file_resolves_relative_separator_token() {
         // The after-miss fallback accepts a prefix-less relative path that
         // carries a separator (`bin/main.ts`), resolving it under the base
-        // directory — so an unmatched make-style target name still runs as a
+        // directory, so an unmatched make-style target name still runs as a
         // local file once task lookup has missed.
         let dir = TempDir::new("bare-file-nested");
         std::fs::create_dir(dir.path().join("bin")).expect("subdir should be created");
@@ -1421,7 +1422,7 @@ mod tests {
     #[test]
     fn try_bare_file_resolves_against_ctx_root() {
         // The bare-file fallback anchors on `ctx.root` (the detected project
-        // dir / `--dir` target), not the live process cwd — a `main.ts` under
+        // dir / `--dir` target), not the live process cwd, a `main.ts` under
         // the project root runs even when the shell cwd is elsewhere. This is
         // what stops a `--dir`-set run from missing the file and mis-routing
         // into the `bunx main.ts` 404 fallback (issue #69).
@@ -1441,7 +1442,7 @@ mod tests {
     #[test]
     fn try_path_token_resolves_relative_prefix_against_ctx_root() {
         // An explicit `./main.ts` is joined onto `ctx.root`, so it resolves the
-        // project-root file regardless of the process cwd — consistent with
+        // project-root file regardless of the process cwd, consistent with
         // task detection and the spawned child's working directory.
         let dir = TempDir::new("path-root");
         std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")

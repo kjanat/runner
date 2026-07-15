@@ -24,7 +24,7 @@ pub(crate) const SHELLS: Shells<'static> =
 ///
 /// Emits `TAG\x1fVALUE\tDESCRIPTION` lines from [`write_complete`] and
 /// generates a registration script that groups completions under separate
-/// `compadd -V` calls per tag — producing `-- tag --` section headers.
+/// `compadd -V` calls per tag, producing `-- tag --` section headers.
 struct GroupedZsh;
 
 impl EnvCompleter for GroupedZsh {
@@ -80,7 +80,7 @@ impl EnvCompleter for GroupedZsh {
         // Short-circuit when the current position is a path-typed flag value:
         // emit a sentinel so the zsh script can delegate to its native
         // `_files` builtin (which understands `~`, named dirs, `cdpath`,
-        // globs — all things clap's Rust-side path lister doesn't know).
+        // globs, all things clap's Rust-side path lister doesn't know).
         if let Some(flags) = detect_path_files_flags(cmd, &args, index) {
             write!(buf, "{PATHFILES_SENTINEL}\t{flags}")?;
             return Ok(());
@@ -139,7 +139,7 @@ fn detect_path_files_flags(
     let current = args.get(index)?.to_string_lossy();
     let chain = active_command_chain(cmd, args, index);
 
-    // `--flag=value` — the current token carries both, we're completing `value`.
+    // `--flag=value`, the current token carries both, we're completing `value`.
     if let Some((flag, _value)) = current.split_once('=')
         && let Some(long) = flag.strip_prefix("--")
         && let Some(hint) = find_long_value_hint(&chain, long)
@@ -147,7 +147,7 @@ fn detect_path_files_flags(
         return zsh_files_flags(hint);
     }
 
-    // `-oVALUE` — short flag with its value attached in the same token.
+    // `-oVALUE`, short flag with its value attached in the same token.
     // Only meaningful if the first char after `-` is a value-taking short.
     if let Some(rest) = current.strip_prefix('-')
         && !current.starts_with("--")
@@ -181,7 +181,7 @@ fn detect_path_files_flags(
 
 /// Walk `args[1..index]` and descend into matching subcommands to build the
 /// active command chain (root first, deepest last). Stops as soon as a
-/// positional argument fails to match any subcommand of the current node —
+/// positional argument fails to match any subcommand of the current node,
 /// that's where positionals for the leaf command begin. Leading options
 /// and their values are skipped.
 fn active_command_chain<'a>(
@@ -217,7 +217,7 @@ fn active_command_chain<'a>(
             // Short option. Handle two forms:
             //   `-o value` (two tokens) → skip 2 if `-o` takes a value.
             //   `-oPATH` / `-abc`       → value attached (if any) or
-            //                             boolean cluster — skip 1.
+            //                             boolean cluster, skip 1.
             if token.len() == 2
                 && let Some(c) = token.chars().nth(1)
                 && short_flag_takes_value(&chain, c)
@@ -233,7 +233,7 @@ fn active_command_chain<'a>(
             current = sub;
             i += 1;
         } else {
-            // First positional that isn't a subcommand — we've hit the
+            // First positional that isn't a subcommand, we've hit the
             // leaf command's own positionals (task name, etc).
             break;
         }
@@ -246,7 +246,7 @@ fn active_command_chain<'a>(
 /// [`find_long_value_hint`]: the subcommand-local definition wins over an
 /// ancestor's. This matters when a subcommand reuses a root flag name
 /// with a different [`clap::ArgAction`] (e.g. root defines `--flag <VALUE>`
-/// and a subcommand redeclares `--flag` as a boolean) — the walker must
+/// and a subcommand redeclares `--flag` as a boolean), the walker must
 /// honour the leaf command's semantics.
 fn long_flag_takes_value(chain: &[&clap::Command], name: &str) -> bool {
     chain
@@ -316,8 +316,8 @@ fn find_short_value_hint(chain: &[&clap::Command], c: char) -> Option<ValueHint>
 /// Returns `None` for hints that aren't path-like (so regular clap
 /// completion keeps running).
 ///
-/// `ExecutablePath` uses zsh's `(*)` glob qualifier — which matches files
-/// the current user has execute permission on — so completion doesn't
+/// `ExecutablePath` uses zsh's `(*)` glob qualifier, which matches files
+/// the current user has execute permission on, so completion doesn't
 /// suggest non-executable regular files for args that only accept
 /// binaries. Written without surrounding quotes because the caller
 /// (`grouped.zsh`) disables globbing locally before splitting the string
@@ -528,7 +528,7 @@ mod tests {
     }
 
     /// Boolean short flag (no value) must NOT cause the walker to skip
-    /// the next token — otherwise `runner clean -y build` would wrongly
+    /// the next token, otherwise `runner clean -y build` would wrongly
     /// consume `build` as `-y`'s value and never descend into it.
     #[test]
     fn detect_path_files_ignores_boolean_short_flag() {

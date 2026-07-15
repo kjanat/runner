@@ -126,7 +126,7 @@ jobs:
         with: { sparse-checkout: npm/targets.json, sparse-checkout-cone-mode: false, persist-credentials: false }
 
       - id: gen
-        # `target: .rust` is mandatory — taiki-e and build-packages.ts both
+        # `target: .rust` is mandatory, taiki-e and build-packages.ts both
         # derive the asset filename `runner-<tag>-<rust>.tar.gz` from it.
         # `vm`-typed targets need a dedicated job; filtered out here.
         run: |
@@ -215,7 +215,7 @@ jobs:
     needs: [upload-assets, man]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions: { contents: write } # contents: write — drafts are invisible to read-only tokens.
+    permissions: { contents: write } # contents: write, drafts are invisible to read-only tokens.
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
       - uses: actions/checkout@v7

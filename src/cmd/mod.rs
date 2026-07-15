@@ -52,15 +52,19 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
         .stderr(Stdio::inherit());
     // Mark children (and, by env inheritance, all descendants) when this
     // runner opens a GHA group around them, so a nested `runner`/`run`
-    // suppresses its own group — GHA groups don't nest. When we're already
+    // suppresses its own group, GHA groups don't nest. When we're already
     // nested the marker is in our inherited env, so children get it for free.
     if emits_group(overrides) {
         command.env(GROUP_ACTIVE_ENV, "1");
     }
+    // Same idea for warnings: this process has already printed (or suppressed)
+    // everything detection found for `dir` by the time it spawns anything, so a
+    // nested runner over the same root stays quiet instead of repeating it.
+    command.env(WARNED_ROOT_ENV, dir);
 }
 
 /// Every existing `node_modules/.bin` from `dir` up to the filesystem
-/// root, nearest first — the same set (and order) `npm run` exposes to
+/// root, nearest first, the same set (and order) `npm run` exposes to
 /// `package.json` scripts. Levels without an installed `.bin` are
 /// skipped, so non-Node projects collect nothing and the whole
 /// augmentation becomes a no-op.
@@ -95,7 +99,7 @@ fn prepend_node_bin_path(command: &mut Command, dir: &Path) {
 
 /// `bins` followed by the entries of `parent`, joined with the platform
 /// separator. `None` when joining fails (a bin dir embeds the separator
-/// itself) — the caller leaves `PATH` untouched rather than corrupt it.
+/// itself), the caller leaves `PATH` untouched rather than corrupt it.
 fn prepended_path(bins: &[PathBuf], parent: Option<&OsStr>) -> Option<OsString> {
     let inherited = parent.map(std::env::split_paths).into_iter().flatten();
     std::env::join_paths(bins.iter().cloned().chain(inherited)).ok()
@@ -105,7 +109,7 @@ fn prepended_path(bins: &[PathBuf], parent: Option<&OsStr>) -> Option<OsString> 
 ///
 /// [`crate::tool::program::command`] resolves bare names against the
 /// parent `PATH`×`PATHEXT` before the bin dirs are prepended, and the
-/// std child-`PATH` search only appends `.exe` at spawn time — so a
+/// std child-`PATH` search only appends `.exe` at spawn time, so a
 /// `turbo.cmd`/`.ps1` shim living only under `node_modules/.bin` would
 /// fail to spawn. When a bare name resolves inside `bins`, rebuild the
 /// command around the absolute shim path, preserving args and env.
@@ -175,14 +179,41 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// transitively through intermediate processes; read into
 /// [`ResolutionOverrides::parent_group_open`].
 ///
-/// The contract is "a parent is *collecting* your output — don't open your own
+/// The contract is "a parent is *collecting* your output, don't open your own
 /// group", which is slightly broader than "a literal `::group::` is open right
 /// now": it is also set in parallel-*streaming* mode, where the parent muxes
 /// child output behind a `[task] ` prefix instead of a group. Suppressing
-/// nested grouping is correct in every case — a nested group would otherwise
+/// nested grouping is correct in every case, a nested group would otherwise
 /// either nest-and-corrupt (grouped) or render as inert prefixed text
 /// (streaming).
 pub(crate) const GROUP_ACTIVE_ENV: &str = "RUNNER_GROUP_ACTIVE";
+
+/// Env marker carrying the project root whose detection warnings a parent
+/// `runner`/`run` has already printed. A `package.json` script that calls
+/// `runner` again (the common `"fmt": "runner run lint:fix fmt:dprint"` shape)
+/// otherwise repeats every warning at every level.
+pub(crate) const WARNED_ROOT_ENV: &str = "RUNNER_WARNED_ROOT";
+
+/// Whether a parent runner already warned about this project.
+///
+/// Keyed on the root, not merely on the marker's presence: a nested runner
+/// pointed at a different directory (`--dir`, a monorepo package) has its own
+/// detection to report, and must still report it.
+pub(crate) fn parent_warned_about(root: &Path) -> bool {
+    let Some(marked) = std::env::var_os(WARNED_ROOT_ENV) else {
+        return false;
+    };
+    same_root(Path::new(&marked), root)
+}
+
+/// Compare two roots, preferring canonical paths so a symlinked or
+/// `..`-laden spelling of one directory doesn't read as two.
+fn same_root(marked: &Path, root: &Path) -> bool {
+    match (marked.canonicalize(), root.canonicalize()) {
+        (Ok(marked), Ok(root)) => marked == root,
+        _ => marked == root,
+    }
+}
 
 /// Whether to wrap a run in a GitHub Actions log group: only when the user
 /// hasn't opted out (`[github].group_output`) *and* we're under GitHub
@@ -220,7 +251,7 @@ pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
 /// grouping is enabled (see [`should_group`]).
 ///
 /// The returned [`actions_rs::log::GroupGuard`] emits `::endgroup::` when it
-/// is dropped — including on the `?` error path and on panic — so callers
+/// is dropped, including on the `?` error path and on panic, so callers
 /// just bind it for the duration of the run. Returns `None` (emitting
 /// nothing) when grouping is off, which lets callers hold it unconditionally.
 fn task_group(overrides: &ResolutionOverrides, name: &str) -> Option<actions_rs::log::GroupGuard> {
@@ -229,7 +260,7 @@ fn task_group(overrides: &ResolutionOverrides, name: &str) -> Option<actions_rs:
 
 /// Optional warning collector. `None` means "emit warnings to stderr
 /// directly" (single-task path). `Some(set)` means "stash for deduped
-/// emission later" (chain dispatch — chain executor emits the deduped
+/// emission later" (chain dispatch, chain executor emits the deduped
 /// set once at the end).
 pub(crate) type WarningSink<'a> = Option<&'a mut std::collections::HashSet<DetectionWarning>>;
 
@@ -237,12 +268,18 @@ fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides, sink: W
     print_warning_slice(&ctx.warnings, overrides, sink);
 }
 
+/// Whether detection warnings stay unsaid: the user asked for silence, or a
+/// parent runner already said them for this root.
+const fn silenced(overrides: &ResolutionOverrides) -> bool {
+    overrides.no_warnings || overrides.parent_warned
+}
+
 fn print_warning_slice(
     warnings: &[DetectionWarning],
     overrides: &ResolutionOverrides,
     sink: WarningSink<'_>,
 ) {
-    if overrides.no_warnings {
+    if silenced(overrides) {
         return;
     }
     if let Some(set) = sink {
@@ -260,13 +297,13 @@ fn print_warning_slice(
 /// executor after all per-task resolutions have populated the sink.
 ///
 /// Sorted by `Display` form before emission so output is stable across
-/// runs — `HashSet` iteration order is unspecified, which made the
+/// runs, `HashSet` iteration order is unspecified, which made the
 /// warning block jump around between invocations of the same chain.
 pub(crate) fn emit_collected_warnings(
     warnings: &std::collections::HashSet<DetectionWarning>,
     overrides: &ResolutionOverrides,
 ) {
-    if overrides.no_warnings {
+    if silenced(overrides) {
         return;
     }
     let mut sorted: Vec<(String, &DetectionWarning)> =
@@ -361,7 +398,7 @@ mod tests {
     fn group_emission_gates_on_nesting() {
         // Exercise the pure core directly (no live GITHUB_ACTIONS needed): the
         // nested flag is the load-bearing gate. Holding grouping on + under
-        // Actions, flipping parent_group_open flips the decision — proving the
+        // Actions, flipping parent_group_open flips the decision, proving the
         // nesting suppression actually fires (a tautological test that only
         // checked the env-false path would pass even without the gate).
         assert!(
@@ -398,7 +435,7 @@ mod tests {
 
         let bins = node_bin_dirs(&member);
 
-        // `apps/` has no node_modules — levels without an installed
+        // `apps/` has no node_modules, levels without an installed
         // `.bin` are skipped, not invented. Entries past the temp root
         // (a stray `/tmp/node_modules`) are out of our control, so only
         // pin the leading order and that nothing else came from inside
@@ -460,7 +497,7 @@ mod tests {
         // OS-level bare-name lookup must honor the PATH set on the
         // child Command (std documents this on `Command::new`). A
         // devDependency-style shim that exists only under the project's
-        // `node_modules/.bin` has to spawn — this is exactly the
+        // `node_modules/.bin` has to spawn, this is exactly the
         // "turbo.json task dies with ENOENT because turbo is only a
         // devDependency" report.
         let dir = TempDir::new("child-path-spawn");
@@ -488,7 +525,7 @@ mod tests {
         // `CreateProcessW` never consults PATHEXT and the std child-PATH
         // search only appends `.exe`, so a bare name backed only by a
         // `.cmd` shim in node_modules/.bin must be rebuilt around the
-        // absolute shim path — with args and env tweaks surviving.
+        // absolute shim path, with args and env tweaks surviving.
         let dir = TempDir::new("win-bin-shim");
         let bin = dir.path().join("node_modules").join(".bin");
         fs::create_dir_all(&bin).expect("bin dir should be created");

@@ -1,4 +1,4 @@
-//! Composer — the PHP dependency manager.
+//! Composer, the PHP dependency manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -15,7 +15,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// [`ScriptDirective::Deny`] appends `--no-scripts`, skipping the root scripts
 /// defined in `composer.json`. Plugin code execution is gated separately by
 /// the `allow-plugins` config (Composer 2.2+), which runner does not touch.
-/// [`ScriptDirective::ForceOn`] adds nothing — composer runs scripts by
+/// [`ScriptDirective::ForceOn`] adds nothing, composer runs scripts by
 /// default, so force-on is satisfied by simply not passing `--no-scripts`.
 pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("composer");

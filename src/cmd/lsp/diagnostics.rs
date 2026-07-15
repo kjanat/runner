@@ -1,7 +1,7 @@
 //! Diagnostics for a `runner.toml` buffer.
 //!
-//! Runs exactly the checks `runner config validate` runs — TOML parse, unknown
-//! keys, the deprecation nudges, and the resolver's field/policy validation —
+//! Runs exactly the checks `runner config validate` runs, TOML parse, unknown
+//! keys, the deprecation nudges, and the resolver's field/policy validation,
 //! against in-memory text, mapping each finding to an editor range. The
 //! validation logic itself is reused verbatim from [`crate::config`] and
 //! [`crate::resolver`]; only the range-anchoring is LSP-specific.
@@ -31,7 +31,7 @@ pub(super) fn compute(text: &str, index: &LineIndex) -> Vec<Diagnostic> {
         out.push(warning_diagnostic(text, index, &warning));
     }
 
-    // Deserialize from the text, not the parsed `value` — the text-based
+    // Deserialize from the text, not the parsed `value`, the text-based
     // deserializer spans a wrong-typed known field, so the diagnostic can
     // point at the offending value instead of line one.
     let config: RunnerConfig = match toml::from_str(text) {

@@ -1,4 +1,4 @@
-//! Bun — all-in-one JavaScript runtime, bundler, and package manager.
+//! Bun, all-in-one JavaScript runtime, bundler, and package manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -30,7 +30,7 @@ pub(crate) fn test_cmd(args: &[String]) -> Command {
 /// run). [`ScriptDirective::Deny`] appends `--ignore-scripts`, additionally
 /// skipping the trusted ones. [`ScriptDirective::ForceOn`] adds nothing: bun
 /// re-enables dependency scripts only through the `trustedDependencies` manifest
-/// allowlist runner won't write — `cmd::install` warns instead of emitting a
+/// allowlist runner won't write, `cmd::install` warns instead of emitting a
 /// misleading flag.
 pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
     let mut c = super::program::command("bun");
@@ -51,7 +51,7 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
-/// `bun <file> [args...]` — execute a local script file with the Bun
+/// `bun <file> [args...]`, execute a local script file with the Bun
 /// runtime. Distinct from [`exec_cmd`] (`bunx`), which fetches and runs a
 /// remote package; this runs an on-disk path the caller already resolved.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {

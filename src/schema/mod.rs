@@ -2,13 +2,13 @@
 //!
 //! # Layout
 //!
-//! - [`SCHEMA_VERSION`] — the schema contract version every `--json` surface stamps into its `schema_version` field.
-//! - [`validate_schema_version`] — gatekeeper for `--schema-version=N`; `clap` already bounds the flag to `1..=1`,
+//! - [`SCHEMA_VERSION`], the schema contract version every `--json` surface stamps into its `schema_version` field.
+//! - [`validate_schema_version`], gatekeeper for `--schema-version=N`; `clap` already bounds the flag to `1..=1`,
 //!   so this is a defensive second check for callers that build a version outside CLI parsing.
-//! - [`project`] — the flat JSON shape ([`Project`], [`TaskListView`]) served by `list`/`info`
+//! - [`project`], the flat JSON shape ([`Project`], [`TaskListView`]) served by `list`/`info`
 //!   (and read internally by `doctor`'s human renderer).
-//! - [`doctor`] — the structured `doctor --json` report.
-//! - [`labels::flat_source_label`] / [`labels::structured_source_label`] — the two source-label conventions the shapes above use.
+//! - [`doctor`], the structured `doctor --json` report.
+//! - [`labels::flat_source_label`] / [`labels::structured_source_label`], the two source-label conventions the shapes above use.
 //!
 //! There used to be three independently-versioned schemas (`list` at v2, `doctor`/`why` at v3, with v1 the original filename-style labels).
 //! Adoption never grew past internal use, so the versions were collapsed: today's shapes are the only ones, retroactively called v1.
@@ -52,7 +52,7 @@ pub(crate) fn schema_url(command: &str) -> String {
     format!("{}/{command}.schema.json", schemas_base_url())
 }
 
-/// Canonical URL of the `runner.toml` config schema — the committed file's `$id` and the `#:schema` directive the scaffold writes.
+/// Canonical URL of the `runner.toml` config schema, the committed file's `$id` and the `#:schema` directive the scaffold writes.
 pub(crate) fn config_schema_url() -> String {
     format!("{}/runner.toml.schema.json", schemas_base_url())
 }
