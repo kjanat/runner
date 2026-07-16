@@ -2,7 +2,7 @@
 //!
 //! `runner info` is a hidden, deprecated alias for `runner list`: it
 //! warns on stderr then renders the task list. The explicit subcommand is
-//! ALWAYS the builtin — a project task named `info` no longer shadows it;
+//! ALWAYS the builtin: a project task named `info` no longer shadows it;
 //! the task is reachable via `run info` / `runner run info`. Bare `runner`
 //! (no subcommand) keeps the project dashboard and is unaffected.
 //!
@@ -152,7 +152,7 @@ fn info_json_maps_to_list_json_with_tasks_array() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // `serde_json` is a normal dependency, not a dev-dependency, so it
-    // isn't linkable from this integration crate — assert on the
+    // isn't linkable from this integration crate; assert on the
     // serialized text instead. list's JSON view emits a `"tasks"` array
     // containing the justfile recipes; info's task-less view would emit
     // neither. A `"tasks"` key plus a recipe name proves the alias
@@ -190,7 +190,7 @@ fn runner_info_is_the_deprecated_alias_even_when_a_task_is_named_info() {
     );
     assert!(
         stderr.contains("deprecated"),
-        "deprecation warning expected — the task no longer shadows. stderr: {stderr}",
+        "deprecation warning expected, the task no longer shadows. stderr: {stderr}",
     );
     // List shape: the recipe names are present, the dashboard banner is not.
     assert!(

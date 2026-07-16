@@ -9,7 +9,7 @@
 //!
 //! Wherever a caller wants to bubble up through `anyhow`, the variant
 //! converts automatically because `ResolveError` implements
-//! `std::error::Error` — `?` works, and `main` recovers the variant via
+//! `std::error::Error`, `?` works, and `main` recovers the variant via
 //! `err.downcast_ref::<ResolveError>()` to decide the exit code.
 
 use std::fmt;
@@ -39,7 +39,7 @@ pub(crate) enum ResolveError {
         soft: bool,
     },
     /// `devEngines.packageManager` `onFail = error` rejected the
-    /// installed environment — either the declared binary is missing or
+    /// installed environment: either the declared binary is missing or
     /// its version doesn't satisfy the declared range.
     DevEnginesFailHard {
         /// The PM the manifest declared.
@@ -61,7 +61,7 @@ pub(crate) enum ResolveError {
         lockfile: PackageManager,
     },
     /// A user-supplied override (CLI flag, env var, or config) names a
-    /// PM that can't satisfy the requested resolution — e.g. `--pm cargo`
+    /// PM that can't satisfy the requested resolution, e.g. `--pm cargo`
     /// when the call is dispatching a `package.json` script. Phase B5
     /// will start emitting this; B2 introduces the variant.
     InvalidOverride {
@@ -100,6 +100,14 @@ pub(crate) enum ResolveError {
         /// Where the conflict was detected: `"CLI flags"`, `"env vars"`,
         /// `"[chain] config"`, or `"cross-source"`.
         source: &'static str,
+    },
+    /// `[install].on_collision = "error"` and the install set holds two or
+    /// more package managers that write the same directory.
+    InstallDirCollision {
+        /// The shared directory, e.g. `"node_modules"`.
+        dir: &'static str,
+        /// The colliding writers, in detection order.
+        writers: Vec<PackageManager>,
     },
 }
 
@@ -209,8 +217,25 @@ impl fmt::Display for ResolveError {
                  `[chain].keep_going` or `--kill-on-fail` / `RUNNER_KILL_ON_FAIL` / \
                  `[chain].kill_on_fail` to pick a policy.",
             ),
+            Self::InstallDirCollision { dir, writers } => {
+                write!(f, "{}", install_dir_collision(dir, writers))
+            }
         }
     }
+}
+
+fn install_dir_collision(dir: &str, writers: &[PackageManager]) -> String {
+    let list = writers
+        .iter()
+        .map(|pm| pm.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let first = writers.first().map_or("bun", |pm| pm.label());
+    format!(
+        "{list} all install into {dir}/ and `[install].on_collision = \"error\"` refuses to run \
+         two writers over one tree. Pick one with `[install].pms = [\"{first}\"]` (or \
+         `RUNNER_INSTALL_PMS`), or drop `on_collision` to let runner resolve it.",
+    )
 }
 
 impl std::error::Error for ResolveError {}

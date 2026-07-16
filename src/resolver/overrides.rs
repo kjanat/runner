@@ -1,4 +1,4 @@
-//! Override construction — `impl ResolutionOverrides` plus the CLI/env
+//! Override construction, `impl ResolutionOverrides` plus the CLI/env
 //! parsers that feed it. Policy parsing lives in [`super::policies`];
 //! the data shapes live in [`super::types`].
 
@@ -8,12 +8,12 @@ use anyhow::{Result, anyhow};
 
 use super::join_labels;
 use super::policies::{
-    is_env_truthy, parse_fallback_label, parse_mismatch_label, parse_prefer_runners,
-    parse_tasks_overrides, parse_tasks_prefer, resolve_failure_policy, resolve_fallback_policy,
-    resolve_mismatch_policy,
+    is_env_truthy, parse_collision_label, parse_fallback_label, parse_mismatch_label,
+    parse_prefer_runners, parse_tasks_overrides, parse_tasks_prefer, resolve_failure_policy,
+    resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
-    DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
+    CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
     ResolutionOverrides, RunnerOverride, ScriptPolicy, SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
@@ -56,7 +56,7 @@ impl ResolutionOverrides {
     }
 
     /// Lenient sibling of [`Self::from_cli_and_env`] for commands that
-    /// must keep working when the *environment* is misconfigured —
+    /// must keep working when the *environment* is misconfigured.
     /// `runner doctor` exists to diagnose exactly that, so it can't die
     /// on the condition it should report. Invalid env-sourced override
     /// values are blanked and returned as
@@ -93,7 +93,7 @@ impl ResolutionOverrides {
     /// pre-validates every env-sourced string field, blanking invalid
     /// values into warnings, then delegates to [`Self::from_sources`].
     ///
-    /// Mirrors [`parse_override`] precedence exactly — an env value
+    /// Mirrors [`parse_override`] precedence exactly: an env value
     /// shadowed by a CLI value is never parsed by the strict path, so
     /// it is not validated (or warned about) here either.
     ///
@@ -138,6 +138,12 @@ impl ResolutionOverrides {
             "RUNNER_INSTALL_SCRIPTS",
             &mut warnings,
             |raw| parse_script_policy_label(raw).map(drop),
+        );
+        lenient_env_field(
+            &mut sources.install_on_collision,
+            "RUNNER_INSTALL_ON_COLLISION",
+            &mut warnings,
+            |raw| parse_collision_label(raw).map(drop),
         );
         for (field, var) in [
             (&mut sources.no_warnings, "RUNNER_NO_WARNINGS"),
@@ -193,7 +199,7 @@ impl ResolutionOverrides {
         )?;
         // `[tasks]` (rank-only, PM-aware) supersedes the deprecated
         // `[task_runner].prefer` (restrictive, runners-only). When the new
-        // section carries anything, the legacy list is ignored entirely — the
+        // section carries anything, the legacy list is ignored entirely; the
         // config loader has already emitted the deprecation warning.
         //
         // "Carries anything" is judged on the *raw* config fields, not the
@@ -230,6 +236,7 @@ impl ResolutionOverrides {
         let parallel_grouped = sources.config.is_some_and(|c| c.config.parallel.grouped);
         let install_pms = parse_install_pms(&sources)?;
         let script_policy = parse_install_scripts(&sources)?;
+        let on_collision = parse_install_on_collision(&sources)?;
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -277,6 +284,11 @@ impl ResolutionOverrides {
             parallel_grouped,
             install_pms,
             script_policy,
+            on_collision,
+            // Set in `dispatch`, which is the first place a resolved project
+            // root and the inherited `RUNNER_WARNED_ROOT` marker are both in
+            // hand. Nothing to capture from `sources`.
+            parent_warned: false,
             // Set by a parent runner that already opened a GHA group (see
             // `crate::cmd::GROUP_ACTIVE_ENV`), captured into `sources` so this
             // stays a pure function of its inputs. An internal nesting signal,
@@ -326,7 +338,7 @@ fn parse_install_pms(sources: &OverrideSources<'_>) -> Result<Vec<PackageManager
 /// Resolve the `runner install` lifecycle-script policy: `RUNNER_INSTALL_SCRIPTS`
 /// (env) wins over `[install].scripts` (config). The CLI `--no-scripts` /
 /// `--scripts` flags are layered on top later, at the dispatch boundary, so they
-/// are not consulted here. Unset on both sides yields [`ScriptPolicy::Default`] —
+/// are not consulted here. Unset on both sides yields [`ScriptPolicy::Default`]:
 /// each package manager keeps its own default.
 ///
 /// # Errors
@@ -353,8 +365,31 @@ fn parse_install_scripts(sources: &OverrideSources<'_>) -> Result<ScriptPolicy> 
     Ok(ScriptPolicy::Default)
 }
 
+/// `RUNNER_INSTALL_ON_COLLISION` (env) → `[install].on_collision` (config),
+/// highest first. Absent leaves [`CollisionPolicy::Resolve`].
+fn parse_install_on_collision(sources: &OverrideSources<'_>) -> Result<CollisionPolicy> {
+    if let Some(raw) = sources
+        .install_on_collision
+        .env
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return parse_collision_label(raw)
+            .map_err(|err| anyhow!("RUNNER_INSTALL_ON_COLLISION: {err}"));
+    }
+    if let Some(raw) = sources
+        .config
+        .and_then(|loaded| loaded.config.install.on_collision.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return parse_collision_label(raw).map_err(|err| anyhow!("[install].on_collision: {err}"));
+    }
+    Ok(CollisionPolicy::default())
+}
+
 /// Parse a single `deny`/`allow` script-policy label (case-sensitive,
-/// lowercase-only — matching the sibling enum-label parsers and the
+/// lowercase-only, matching the sibling enum-label parsers and the
 /// committed JSON Schema enum).
 ///
 /// # Errors
@@ -379,15 +414,15 @@ fn parse_script_policy_label(raw: &str) -> Result<ScriptPolicy> {
         })
 }
 
-/// Validate a loaded `runner.toml` in isolation — no CLI or environment
-/// layer — by running it through the real override builder. Every field is
+/// Validate a loaded `runner.toml` in isolation, no CLI or environment
+/// layer, by running it through the real override builder. Every field is
 /// parsed exactly as a live dispatch would parse it (PM names, task-runner
 /// `prefer` list, `fallback` / `on_mismatch` policies), and the in-file
 /// `[chain]` failure-policy conflict (`keep_going` and `kill_on_fail` both
 /// `true`) surfaces here too: with no env var to neutralize a side, the
 /// same [`ResolveError::ConflictingFailurePolicy`] the resolver raises at
 /// dispatch time fires during construction. Delegating keeps `config
-/// validate` honest — it can never accept a file a real run would reject.
+/// validate` honest: it can never accept a file a real run would reject.
 ///
 /// # Errors
 ///
@@ -708,6 +743,7 @@ struct EnvSnapshot {
     kill_on_fail: Option<String>,
     install_pms: Option<String>,
     install_scripts: Option<String>,
+    install_on_collision: Option<String>,
     group_active: Option<String>,
 }
 
@@ -727,6 +763,7 @@ impl EnvSnapshot {
             kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
             install_pms: std::env::var("RUNNER_INSTALL_PMS").ok(),
             install_scripts: std::env::var("RUNNER_INSTALL_SCRIPTS").ok(),
+            install_on_collision: std::env::var("RUNNER_INSTALL_ON_COLLISION").ok(),
             group_active: std::env::var(crate::cmd::GROUP_ACTIVE_ENV).ok(),
         }
     }
@@ -783,6 +820,10 @@ impl EnvSnapshot {
                 cli: None,
                 env: self.install_scripts.as_deref(),
             },
+            install_on_collision: SourceValue {
+                cli: None,
+                env: self.install_on_collision.as_deref(),
+            },
             group_active: self.group_active.as_deref(),
             config,
         }
@@ -791,8 +832,8 @@ impl EnvSnapshot {
 
 /// Pre-validate one env-sourced override field for the lenient
 /// constructor. The env side is only consulted (and therefore only
-/// validated) when the CLI side is unset or whitespace-only — exactly
-/// the precedence [`parse_override`] applies — so CLI-shadowed env
+/// validated) when the CLI side is unset or whitespace-only, exactly
+/// the precedence [`parse_override`] applies, so CLI-shadowed env
 /// garbage stays invisible, same as the strict path. An invalid env
 /// value is blanked from `field` and reported as a warning carrying
 /// the sanitized value and the bare parse error.
@@ -822,11 +863,11 @@ fn lenient_env_field(
 /// Boolean counterpart of [`lenient_env_field`]: a `RUNNER_*` toggle
 /// whose value is not a recognized boolean token warns and is ignored
 /// instead of silently reading as truthy. Without this, a typo like
-/// `RUNNER_KEEP_GOING=flase` turned the knob ON — the opposite of the
+/// `RUNNER_KEEP_GOING=flase` turned the knob ON, the opposite of the
 /// user's clear intent. Recognized (case-insensitive): `1`, `true`,
 /// `yes`, `on` / `0`, `false`, `no`, `off`; blank stays "unset" per the
 /// resolver-wide convention. A set CLI flag shadows the env value, so it
-/// isn't validated (or warned about) then — mirroring
+/// isn't validated (or warned about) then, mirroring
 /// [`lenient_env_field`].
 fn lenient_env_bool(
     field: &mut ExplainSource<'_>,

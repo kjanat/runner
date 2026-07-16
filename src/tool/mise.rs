@@ -1,4 +1,4 @@
-//! mise — polyglot dev tool version manager with a `[tasks]` table for
+//! mise, polyglot dev tool version manager with a `[tasks]` table for
 //! project-local commands (see <https://mise.jdx.dev/tasks/toml-tasks.html>).
 //!
 //! Detection covers the canonical filenames `mise.toml`, `.mise.toml`, plus
@@ -6,7 +6,7 @@
 //! `.mise/config.toml` / `.config/mise.toml` nested locations.
 //!
 //! Task extraction prefers `mise tasks --json` when the binary is on
-//! `$PATH` — that's the source of truth, merging all config layers
+//! `$PATH` (that's the source of truth), merging all config layers
 //! (project, env-specific, `.local`, `conf.d`) and surfacing file-based
 //! tasks the same way `mise run <name>` will find them. Falls back to
 //! direct TOML parsing of the first project-local config when mise
@@ -71,7 +71,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
 
 /// Run `mise tasks --json` in `dir` and parse the result. Returns `None`
 /// when mise is missing, the invocation fails, or the output doesn't
-/// parse — caller falls back to direct TOML reads.
+/// parse; caller falls back to direct TOML reads.
 fn extract_tasks_with_cli(dir: &Path) -> Option<Vec<ExtractedTask>> {
     let output = super::program::command("mise")
         .arg("tasks")
@@ -142,7 +142,7 @@ fn task_belongs_to(source: &Path, project_root: &Path) -> bool {
 
 /// Direct-parse fallback for hosts without the `mise` binary. Reads the
 /// first existing project-local config (precedence per [`FILENAMES`])
-/// and produces the same shape as the CLI path. Only sees one file —
+/// and produces the same shape as the CLI path. Only sees one file;
 /// mise's cross-file merge isn't replicated.
 fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let Some(path) = find_file(dir) else {
@@ -284,7 +284,7 @@ struct TaskTable {
     #[serde(default)]
     run: Option<RunField>,
     /// External script path (local or URL). When set, `run` is usually
-    /// absent — the file body provides the commands. Kept here so we
+    /// absent; the file body provides the commands. Kept here so we
     /// can fall back to it for the description column.
     #[serde(default)]
     file: Option<String>,
@@ -365,7 +365,7 @@ impl<'de> Deserialize<'de> for TaskEntry {
         D: serde::Deserializer<'de>,
     {
         // Use `toml::Value` as an intermediate so we can pick the
-        // representation based on the runtime shape — bare string,
+        // representation based on the runtime shape: bare string,
         // array of strings, or full table.
         let value = toml::Value::deserialize(deserializer)?;
         let kind = match value {
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn cli_output_filters_tasks_outside_project_root() {
         // Global tasks (from `~/.config/mise/config.toml`) show up in
-        // `mise tasks --json` too — they must not pollute the
+        // `mise tasks --json` too; they must not pollute the
         // project's task list.
         let dir = TempDir::new("mise-cli-global-filter");
         let project = dir

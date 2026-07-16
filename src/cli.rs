@@ -76,7 +76,7 @@ fn env_suffix(var: &str) -> String {
 /// Cyan-styled env-var suffix for `--dir`. Kept alongside [`PM_HELP`] /
 /// [`RUNNER_HELP`] rather than as a plain `format!` inline in the doc
 /// comment so the `--dir` flag renders identically to every other flag's
-/// `[env: VAR]` suffix — clap's own `env = "..."` attribute would style
+/// `[env: VAR]` suffix; clap's own `env = "..."` attribute would style
 /// it differently and also print the variable's *current* value (e.g.
 /// `[env: RUNNER_DIR=]` when set-but-empty), which the other flags never
 /// do since their env fallback lives at the call site, not in clap.
@@ -136,7 +136,7 @@ mod help_order {
     pub(super) const SCHEMA_VERSION: usize = 203;
 }
 /// Produce [`CompletionCandidate`]s for every detected task in the current
-/// directory. Called lazily by clap's runtime completion engine — only runs
+/// directory. Called lazily by clap's runtime completion engine, only runs
 /// when the shell is actually requesting completions, never during normal
 /// execution.
 fn task_candidates() -> Vec<CompletionCandidate> {
@@ -159,7 +159,7 @@ fn completion_dir() -> std::io::Result<PathBuf> {
 
 /// Mirror clap's `--dir` precedence at completion time.
 ///
-/// Precedence (highest first) — same as the resolver at runtime so
+/// Precedence (highest first), same as the resolver at runtime so
 /// the completion list matches the directory the user is about to
 /// dispatch against:
 /// 1. `--dir` parsed from the in-flight argv (the user is typing
@@ -242,8 +242,8 @@ fn global_value_flags() -> Vec<String> {
 /// Candidates for the trailing `args` positional of `run`. In chain mode
 /// (`-s`/`-p` typed before the first task) the trailing words are extra
 /// task names, so complete tasks; otherwise they are arguments forwarded
-/// verbatim to the task, where suggesting task names would be noise —
-/// complete nothing.
+/// verbatim to the task, where suggesting task names would be noise,
+/// so complete nothing.
 fn chain_args_candidates() -> Vec<CompletionCandidate> {
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if !chain_flag_precedes_first_task(&argv) {
@@ -254,7 +254,7 @@ fn chain_args_candidates() -> Vec<CompletionCandidate> {
 
 /// Scan the in-flight completion argv for a chain-mode flag (`-s`/`-p`,
 /// long forms, or a short cluster like `-sk`) *before* the first task
-/// word — mirroring dispatch, where `trailing_var_arg` means chain flags
+/// word, mirroring dispatch, where `trailing_var_arg` means chain flags
 /// must precede task names and a later `-s`/`-p` is forwarded to the
 /// task instead. Same argv shape as [`cli_dir_from_argv`]: user words
 /// follow the first `--`, and the word after that is the binary name.
@@ -262,7 +262,7 @@ fn chain_args_candidates() -> Vec<CompletionCandidate> {
 /// `--dir /some/path -s build` still detects the chain flag.
 fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
     // Flags whose value arrives as the *next* word (the `=` form needs no
-    // special casing — it stays one word). Derived from the real clap
+    // special casing; it stays one word). Derived from the real clap
     // definition so a new value-taking global can't silently drift out of
     // sync with this scanner and get its value mistaken for the task.
     let value_flags = global_value_flags();
@@ -280,7 +280,7 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
             "-s" | "--sequential" | "-p" | "--parallel" => return true,
             // The `run` subcommand token (`runner run …`); the alias
             // binary has no subcommand. Only the first bare word can be
-            // it — a task literally named `run` still terminates the
+            // it. A task literally named `run` still terminates the
             // scan below on any later occurrence.
             "run" | "r" if !subcommand_seen => subcommand_seen = true,
             _ if value_flags.iter().any(|flag| flag == word) => {
@@ -361,14 +361,14 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
 
     // Pick which source supplies each name's bare candidate by mirroring the
     // runtime selector's default tier (`Turbo > Package > others`, then
-    // `display_order`, then recipes-before-aliases — see
+    // `display_order`, then recipes-before-aliases, see
     // `cmd::run::select::select_task_entry`). Previously the bare label came
     // from whichever source appeared first in detection order, which could
     // name a different source than the one `runner <name>` actually
     // dispatches to. The selector's `[task_runner].prefer` and nearest-config
     // (`source_depth`) tiebreaks need config plus a `ProjectContext` the
     // completion callback doesn't have, so the bare label aligns with the
-    // *default* tier only — still strictly better than detection order, and
+    // *default* tier only, still strictly better than detection order, and
     // the qualified `source:name` forms remain for exact disambiguation.
     let no_overrides = crate::resolver::ResolutionOverrides::default();
     let bare_rank = |task: &crate::types::Task| {
@@ -490,7 +490,7 @@ mod tests {
 
     #[test]
     fn chain_flag_detected_before_first_task() {
-        // `runner run -s build <TAB>` — chain mode, trailing words are tasks.
+        // `runner run -s build <TAB>`, chain mode, trailing words are tasks.
         assert!(chain_flag_precedes_first_task(&osv(&[
             "completer",
             "--",
@@ -534,7 +534,7 @@ mod tests {
 
     #[test]
     fn chain_flag_after_first_task_is_forwarded_not_chain() {
-        // `run build -p 3000 <TAB>` — `-p` lands after the task, so
+        // `run build -p 3000 <TAB>`, `-p` lands after the task, so
         // trailing_var_arg forwards it to the task; not chain mode.
         assert!(!chain_flag_precedes_first_task(&osv(&[
             "completer",
@@ -656,7 +656,7 @@ mod tests {
         );
         assert!(
             values.contains(&"make:build".to_string()),
-            "Makefile is a real definition, not a passthrough — keep its qualified form"
+            "Makefile is a real definition, not a passthrough, keep its qualified form"
         );
         assert!(
             values.contains(&"turbo:build".to_string()),
@@ -668,7 +668,7 @@ mod tests {
     fn real_package_json_script_keeps_qualified_form_alongside_turbo() {
         // Regression guard: a real `"build": "vite build"` script that
         // happens to share its name with a `turbo.json` task must NOT be
-        // swallowed — the passthrough flag is set per-script-body during
+        // swallowed. The passthrough flag is set per-script-body during
         // detection, not inferred from name collisions alone.
         let tasks = vec![
             // Same name, but `passthrough_to_turbo: false` because the
@@ -698,7 +698,7 @@ mod tests {
         // `package.json` is detected first, but `runner build` dispatches to
         // turbo (Turbo > Package in the default selector tier). The bare
         // candidate's label must therefore name turbo, not the detection-order
-        // first source — otherwise the completion menu misreports what runs.
+        // first source; otherwise the completion menu misreports what runs.
         let tasks = vec![
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::TurboJson),
@@ -774,7 +774,7 @@ mod tests {
             candidates
                 .iter()
                 .any(|c| c.get_value().to_string_lossy() == "build"),
-            "without a turbo.json twin, the passthrough is the only source — keep it"
+            "without a turbo.json twin, the passthrough is the only source; keep it"
         );
     }
 
@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn resolve_completion_dir_prefers_cli_over_env() {
         // `runner --dir /cli-target <TAB>` with `RUNNER_DIR=/env-target`
-        // set in the environment — completion should reflect the CLI
+        // set in the environment, completion should reflect the CLI
         // flag, matching clap's runtime precedence.
         let dir = resolve_completion_dir(
             Path::new("/tmp/workspace"),
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn info_subcommand_still_parses_but_is_hidden() {
-        // Deprecated alias — must keep parsing (with and without --json)
+        // Deprecated alias, must keep parsing (with and without --json)
         // so existing `runner info` invocations don't break …
         Cli::try_parse_from(["runner", "info"]).expect("`runner info` still parses");
         Cli::try_parse_from(["runner", "info", "--json"])
@@ -1133,7 +1133,7 @@ pub(crate) struct Cli {
 
 /// Flags shared by both `runner` and `run`. Carried inline via
 /// `#[command(flatten)]` so each binary's `--help` lists them at the
-/// same level as subcommand-specific arguments — clap unrolls them as
+/// same level as subcommand-specific arguments; clap unrolls them as
 /// if they were defined on the parent struct.
 #[derive(Debug, Args)]
 pub(crate) struct GlobalOpts {
@@ -1259,16 +1259,15 @@ pub(crate) struct GlobalOpts {
     )]
     pub quiet: bool,
 
-    /// Pin the `--json` output schema version. Currently always `1` —
-    /// kept for scripts that already pass it explicitly; any other value
-    /// is rejected.
+    /// Pin the `--json` output schema version. Currently always `2`; any other
+    /// value is rejected.
     #[arg(
         long = "schema-version",
         global = true,
-        value_parser = clap::value_parser!(u32).range(1..=1),
+        value_parser = clap::value_parser!(u32).range(2..=2),
         value_name = "N",
         display_order = help_order::SCHEMA_VERSION,
-        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("1"), ")"),
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("2"), ")"),
     )]
     pub schema_version: Option<u32>,
 }
@@ -1286,7 +1285,7 @@ pub(crate) enum Command {
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: Option<String>,
         /// Arguments forwarded to the task, or extra task names in chain mode.
-        // In chain mode, chain-failure flags (`-k`) must precede task names —
+        // In chain mode, chain-failure flags (`-k`) must precede task names;
         // `trailing_var_arg` consumes everything after the first positional.
         #[arg(
             trailing_var_arg = true,
@@ -1345,7 +1344,7 @@ pub(crate) enum Command {
         /// task list still parse as flags, not task names.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         tasks: Vec<String>,
-        /// Chain mode flags `-s`/`-p` — govern the post-install tasks only.
+        /// Chain mode flags `-s`/`-p`, govern the post-install tasks only.
         #[command(flatten)]
         mode: ChainModeFlags,
         /// Chain failure-policy flags `-k`/`-K`. `-K` (kill siblings) only
@@ -1364,7 +1363,7 @@ pub(crate) enum Command {
         include_framework: bool,
     },
 
-    /// Deprecated alias for `list` — hidden, prints a warning, then
+    /// Deprecated alias for `list`, hidden, prints a warning, then
     /// renders the task list. Bare `runner` still shows the project
     /// dashboard; only the explicit `info` verb is deprecated.
     #[command(hide = true)]
@@ -1399,7 +1398,7 @@ pub(crate) enum Command {
 
     /// Generate shell completions
     Completions {
-        /// Target shell — bare name (`zsh`) or full path (`/usr/bin/zsh`).
+        /// Target shell, bare name (`zsh`) or full path (`/usr/bin/zsh`).
         /// Defaults to `$SHELL`.
         #[arg(value_parser = crate::cmd::parse_shell_arg)]
         shell: Option<Shell>,
@@ -1511,7 +1510,7 @@ pub(crate) enum ConfigAction {
     // `-k`), but an *undefined* hyphen token after the first positional is
     // swallowed by `args` (`trailing_var_arg`) and forwarded to the task.
     // A leading `--help`/`--version` (before any task) instead surfaces as
-    // an `UnknownArgument` error — `task` takes no hyphen values — which
+    // an `UnknownArgument` error; `task` takes no hyphen values, which
     // `run_alias_in_dir` recognises as this binary's own help/version
     // request. `run <task> -- --help` keeps forwarding literally.
     disable_help_flag = true,
@@ -1527,7 +1526,7 @@ pub(crate) struct RunAliasCli {
     pub task: Option<String>,
 
     /// Arguments forwarded to the task, or extra task names in chain mode.
-    // In chain mode, chain-failure flags (`-k`) must precede task names —
+    // In chain mode, chain-failure flags (`-k`) must precede task names;
     // `trailing_var_arg` consumes everything after the first positional.
     // That same rule forwards a *trailing* `--help`/`--version` to the task
     // rather than treating it as this binary's own.

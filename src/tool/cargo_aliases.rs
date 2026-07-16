@@ -1,10 +1,10 @@
-//! Cargo `[alias]` table — surfaces user-defined and built-in aliases from
+//! Cargo `[alias]` table, surfaces user-defined and built-in aliases from
 //! the hierarchical `.cargo/config.toml` chain as runnable tasks.
 //!
 //! Cargo probes config files from the current directory up to the filesystem
 //! root, then `$CARGO_HOME/config.toml`, merging tables with deeper directories
 //! taking precedence. Built-in aliases (`b/c/d/t/r/rm`) cannot be redefined,
-//! so we always overwrite user attempts with cargo's defaults — same effective
+//! so we always overwrite user attempts with cargo's defaults, same effective
 //! behavior as cargo itself.
 //!
 //! Each surfaced task carries the *fully-expanded* command string as its alias
@@ -106,7 +106,7 @@ fn cargo_home() -> Option<PathBuf> {
 
 /// Best-effort home-directory resolution. We deliberately avoid the `home`
 /// or `dirs` crates since the values consulted here only feed display +
-/// dispatch — never security-sensitive paths.
+/// dispatch, never security-sensitive paths.
 fn home_dir() -> Option<PathBuf> {
     #[cfg(unix)]
     let var = "HOME";
@@ -128,7 +128,7 @@ pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedAlias>> {
     Ok(expand_all(&raw))
 }
 
-/// Pick one path to represent the cargo-aliases source for `root` — the
+/// Pick one path to represent the cargo-aliases source for `root`, the
 /// deepest applicable `.cargo/config{,.toml}` if one exists, otherwise
 /// `<root>/Cargo.toml` so built-ins-only projects still anchor at a real
 /// file. Used by `runner list` for the OSC8 link target and by `runner
@@ -244,7 +244,7 @@ fn expand_chain(mut tokens: Vec<String>, map: &HashMap<String, Vec<String>>) -> 
             return tokens;
         };
         // Canonical subcommands are self-entries (`run → [run]`), so the
-        // cycle guard — not the Some() check — terminates them: the head
+        // cycle guard, not the Some() check, terminates them: the head
         // is revisited on the next pass and we bail with the expansion so
         // far. Genuine alias cycles bottom out the same way.
         if !visited.insert(head) {
@@ -304,7 +304,7 @@ mod tests {
             .map(|p| p.parent().unwrap().parent().unwrap().to_path_buf())
             .collect();
 
-        // Deepest first — nested dir's `.cargo` should appear before the
+        // Deepest first: nested dir's `.cargo` should appear before the
         // ancestor's.
         assert!(names[0].ends_with("b"));
         assert!(names.iter().any(|p| p == dir.path()));

@@ -1,19 +1,19 @@
-//! `runner run <target>` — resolve a task name to the right tool and execute
+//! `runner run <target>`, resolve a task name to the right tool and execute
 //! it. When no task matches, fall back to executing the target as an
 //! arbitrary command through the detected package manager (formerly `runner
 //! exec`).
 //!
 //! # Module layout
 //!
-//! - [`qualify`] — `source:task` parsing, reversed-qualifier detection,
+//! - [`qualify`], `source:task` parsing, reversed-qualifier detection,
 //!   and the side-effect-free [`qualify::precheck_task`] used by chain
 //!   mode to bail before any sibling task runs.
-//! - [`select`] — picking the best [`crate::types::Task`] candidate when
+//! - [`select`], picking the best [`crate::types::Task`] candidate when
 //!   a name matches multiple sources. The ranking key (priority, depth,
 //!   display order, alias-ness) is split into individual `pub(crate)`
 //!   helpers so [`crate::cmd::why`] can render the same key the dispatcher
 //!   used.
-//! - [`dispatch`] — turning a task token into a fully-configured
+//! - [`dispatch`], turning a task token into a fully-configured
 //!   [`std::process::Command`]: warning emission, the resolver chain,
 //!   bun-test special case, PM-exec fallback, and per-source `run_cmd`
 //!   selection.
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn detect_reversed_qualifier_catches_task_colon_source() {
-        // `lint:cargo` has the qualifier inverted — caller should bail
+        // `lint:cargo` has the qualifier inverted; caller should bail
         // with `did you mean "cargo:lint"?` instead of falling through
         // to PM-exec and spawning a binary named `lint:cargo`.
         let got = detect_reversed_qualifier("lint:cargo");
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn detect_reversed_qualifier_returns_none_for_correct_syntax() {
-        // Correct ordering — the prefix branch (`parse_qualified_task`)
+        // Correct ordering, the prefix branch (`parse_qualified_task`)
         // handles this; the reversed-detector must not fire.
         assert!(detect_reversed_qualifier("cargo:lint").is_none());
         // Plain name, no colon.
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn reversed_qualifier_fast_fail_does_not_block_real_tasks() {
         // The fast-fail in `resolve_dispatch` is gated by
-        // `restricted.is_empty()` — a real task whose name happens to
+        // `restricted.is_empty()`; a real task whose name happens to
         // match the `task:source` shape must still dispatch.
         //
         // We mirror the dispatch lookup directly: `parse_qualified_task`
@@ -231,6 +231,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -358,6 +359,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -372,7 +374,7 @@ mod tests {
         // never matches it, so without the subdir-fallback the depth
         // would collapse to `usize::MAX` and any root-level source
         // (`bacon.toml`, `Makefile`, …) would win every tiebreak by
-        // default — robbing `display_order` of the tie-break it was
+        // default, robbing `display_order` of the tie-break it was
         // designed to perform.
         let dir = TempDir::new("source-depth-subdirectory");
         let cargo_dir = dir.path().join(".cargo");
@@ -391,6 +393,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -449,6 +452,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -501,6 +505,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
@@ -520,6 +525,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }

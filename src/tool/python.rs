@@ -13,7 +13,7 @@ use serde::Deserialize;
 /// Python 2 or leave it unset).
 pub(crate) const PYTHON_BIN: &str = if cfg!(windows) { "python" } else { "python3" };
 
-/// `<python> <file> [args...]` — execute a local Python script with the
+/// `<python> <file> [args...]`, execute a local Python script with the
 /// system interpreter. The uv path (`uv run <file>`) is preferred when a
 /// uv project is detected; this is the plain fallback.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
@@ -94,7 +94,7 @@ pub(crate) fn find_pyproject_upwards(dir: &Path) -> Option<PathBuf> {
 ///
 /// These are surfaced as tasks and dispatched via the detected Python
 /// PM's `run` subcommand (`uv run <name>`, `poetry run <name>`,
-/// `pipenv run <name>`) — the same way the script's installed console
+/// `pipenv run <name>`), the same way the script's installed console
 /// entry point would be invoked inside the project environment.
 ///
 /// Returns an empty list when `pyproject.toml` is absent or declares no
@@ -113,7 +113,7 @@ pub(crate) fn extract_pyproject_scripts(
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
 
     // `BTreeMap` iterates in sorted key order, so the returned list is
-    // already alphabetized — matching the post-extraction sort that
+    // already alphabetized, matching the post-extraction sort that
     // `detect::detect` applies to the full task list.
     Ok(doc
         .project

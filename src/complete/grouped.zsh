@@ -3,10 +3,10 @@
 # Dynamic completion for {BIN} with tag-based grouping.
 #
 # Placeholders replaced at registration time by the Rust binary:
-#   {NAME}       — sanitised binary name (function identifier)
-#   {BIN}        — binary name as seen by the shell
-#   {COMPLETER}  — path to the binary that produces completions
-#   {VAR}        — env-var that activates CompleteEnv (default: COMPLETE)
+#   {NAME}      , sanitised binary name (function identifier)
+#   {BIN}       , binary name as seen by the shell
+#   {COMPLETER} , path to the binary that produces completions
+#   {VAR}       , env-var that activates CompleteEnv (default: COMPLETE)
 #
 # The binary outputs one candidate per line:
 #   TAG \x1f VALUE [\t DESCRIPTION]
@@ -25,13 +25,13 @@ function _clap_dynamic_completer_{NAME}() {
 	# and our tracing doesn't bleed into their prompt. `-o NULL_GLOB`
 	# silences "no matches found" errors that `_files` internals and
 	# user zstyles (e.g. specs tagged `globbed-files`) would otherwise
-	# raise into the prompt when an unquoted `*` fails to match — and,
+	# raise into the prompt when an unquoted `*` fails to match, and,
 	# unlike `NO_NOMATCH`, it does so without leaving the literal glob
 	# (e.g. `*(/)` from `_files -/` in a dir with no subdirectories)
 	# as a candidate that then gets inserted into the command line.
 	# `-o EXTENDED_GLOB` is required because zsh's own `_files` builds
 	# qualifier patterns like `*(#q-/)` and uses `(#b)` backreferences
-	# internally — without extended glob, those raise
+	# internally, without extended glob, those raise
 	# `bad pattern: *(#q-/):globbed-files` the moment `_files -/` runs.
 	emulate -L zsh -o NULL_GLOB -o EXTENDED_GLOB
 
@@ -58,7 +58,7 @@ function _clap_dynamic_completer_{NAME}() {
 			# `noglob` as a PRECOMMAND modifier (not `setopt noglob`)
 			# keeps globs like `*(*)` from expanding at the call site so
 			# they reach `_files` literally, while leaving globbing ON
-			# inside `_files` itself — `_path_files` internally does
+			# inside `_files` itself, `_path_files` internally does
 			# `tmp1=( $~tmp1 )` to list directories, and a function-wide
 			# `setopt noglob` would leave that pattern (e.g. `*(-/)` from
 			# `_files -/` in a dir with no subdirectories) unexpanded and
@@ -85,7 +85,7 @@ function _clap_dynamic_completer_{NAME}() {
 	# Empty assignment matters: `local NAME` with no value, on an
 	# already-set local (Pass 1 localized __runner_g), is the typeset
 	# display form and prints `__runner_g=<last value>` to the terminal.
-	# Normally invisible — zle redisplay redraws the line — but with
+	# Normally invisible, zle redisplay redraws the line, but with
 	# oh-my-zsh's `COMPLETION_WAITING_DOTS` indicator already on the
 	# line, the spurious print survives the redraw and lingers next to
 	# the dots after the menu opens.

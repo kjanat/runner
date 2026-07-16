@@ -77,7 +77,7 @@
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",
       "type": "integer",
-      "const": 1,
+      "const": 2,
       "minimum": 0,
       "format": "uint32"
     },

@@ -1,4 +1,4 @@
-//! Nx — monorepo build system.
+//! Nx, monorepo build system.
 
 use std::path::Path;
 

@@ -1,4 +1,4 @@
-//! Yarn — Node.js package manager.
+//! Yarn, Node.js package manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -23,7 +23,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
 /// the installed major version is probed whenever either is requested. Yarn 2+
 /// (Berry) uses `--immutable` for frozen and the `YARN_ENABLE_SCRIPTS` env to
 /// toggle scripts (it dropped `--ignore-scripts` and has no per-dependency
-/// allowlist — `enableScripts` is a single global switch, so both deny and
+/// allowlist; `enableScripts` is a single global switch, so both deny and
 /// force-on are expressible). Yarn 1 / undetected falls back to the classic
 /// `--frozen-lockfile` and `--ignore-scripts` flags; Classic runs scripts by
 /// default and has no `--no-ignore-scripts`, so force-on is a no-op there.
@@ -66,7 +66,7 @@ fn install_cmd_with_major(
             // security-sensitive, so cover both mechanisms rather than silently
             // assume Classic: the flag denies on Classic (which ignores the
             // env), and the env denies on Berry (which would otherwise reject
-            // the flag — or, worse, accept-and-ignore it and run scripts). Belt
+            // the flag, or, worse, accept-and-ignore it and run scripts). Belt
             // and suspenders so a misdetected version can never fail open.
             None => {
                 c.arg("--ignore-scripts");
@@ -76,7 +76,7 @@ fn install_cmd_with_major(
         ScriptDirective::ForceOn => {
             // Berry's `enableScripts` is a global toggle (no per-dependency
             // allowlist), so forcing on is just the env set to `true`. Classic
-            // runs scripts by default and has no negation flag — nothing to do.
+            // runs scripts by default and has no negation flag, nothing to do.
             if is_berry {
                 c.env("YARN_ENABLE_SCRIPTS", "true");
             }
@@ -104,7 +104,7 @@ fn parse_major_version(version: &str) -> Option<u32> {
 
 /// `yarn exec <args...>` (Yarn 2+) or `yarn run <args...>` (Yarn 1).
 ///
-/// Yarn Classic (v1) does not expose an `exec` subcommand —
+/// Yarn Classic (v1) does not expose an `exec` subcommand;
 /// `yarn run <bin>` is the documented way to run a binary out of
 /// `node_modules/.bin/` there. Yarn Berry (v2+) ships a dedicated
 /// `yarn exec` subcommand for the same job. We pick the right form
@@ -115,7 +115,7 @@ fn parse_major_version(version: &str) -> Option<u32> {
 /// to the Classic-compatible `yarn run`. Yarn Berry also accepts
 /// `yarn run <bin>` for binaries that live in the project's
 /// `node_modules/.bin/`, so the Classic-default behaves correctly
-/// on Berry projects too — at the cost of routing through Berry's
+/// on Berry projects too, at the cost of routing through Berry's
 /// script lookup rather than the dedicated exec primitive.
 pub(crate) fn exec_cmd(dir: &Path, args: &[String]) -> Command {
     let yarn_major = detect_major_version(dir);
@@ -214,7 +214,7 @@ mod tests {
     fn deny_scripts_covers_both_mechanisms_when_version_missing() {
         // Undetected version is security-sensitive on the deny path, so cover
         // both: the `--ignore-scripts` flag denies on Classic, and the
-        // `YARN_ENABLE_SCRIPTS=false` env denies on Berry — neither silently
+        // `YARN_ENABLE_SCRIPTS=false` env denies on Berry, neither silently
         // fails open if the version was misdetected.
         let cmd = install_cmd_with_major(false, ScriptDirective::Deny, None);
         assert_eq!(args_of(&cmd), ["install", "--ignore-scripts"]);
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn exec_falls_back_to_run_when_version_missing() {
         // Without a detected major version we default to Yarn
-        // Classic's `run` form — works on both Classic (canonical)
+        // Classic's `run` form, works on both Classic (canonical)
         // and Berry (Berry's `yarn run <bin>` also dispatches a
         // bin from node_modules/.bin/, just not via the dedicated
         // exec primitive). Erring toward `run` is the safe choice

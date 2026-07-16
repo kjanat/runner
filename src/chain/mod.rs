@@ -70,7 +70,7 @@ pub(crate) enum ChainItemKind {
 }
 
 /// Failure policy for a chain. `FailFast` is the default and matches
-/// `make -j` semantics in parallel mode (let running siblings finish,
+/// `make -j` semantics in parallel mode (let running siblings finish;
 /// don't start new ones).
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -85,7 +85,7 @@ pub(crate) enum FailurePolicy {
     KeepGoing,
     /// Parallel only: SIGKILL siblings on first failure (`std::process::Child::kill`).
     /// Sequential callers accept this silently (no-op). Catch-able SIGTERM
-    /// semantics would need a libc/nix dep — deferred to a follow-up.
+    /// semantics would need a libc/nix dep, deferred to a follow-up.
     KillOnFail,
 }
 

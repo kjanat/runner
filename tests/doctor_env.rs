@@ -4,8 +4,8 @@
 //! `runner doctor` exists to diagnose a misconfigured environment, so a
 //! garbage `RUNNER_PM` (e.g. PowerShell's unquoted `$env:RUNNER_PM=deno`
 //! capturing deno's REPL banner) must degrade to a warning on the
-//! report instead of killing the command. Every other command — and an
-//! explicit `--pm` flag, even on doctor — stays strict.
+//! report instead of killing the command. Every other command, and an
+//! explicit `--pm` flag, even on doctor, stays strict.
 //!
 //! Env vars are injected per spawned child (never `std::env::set_var`),
 //! so these tests are safe under the parallel test runner.
@@ -22,7 +22,7 @@ fn runner_binary() -> PathBuf {
 /// variable scrubbed, so only what a test sets explicitly reaches the
 /// child. A dev box exporting e.g. `RUNNER_NO_WARNINGS` or
 /// `RUNNER_FALLBACK` would otherwise flip these assertions. Matched
-/// case-insensitively — Windows env lookups ignore case.
+/// case-insensitively because Windows env lookups ignore case.
 fn runner_command() -> Command {
     let mut cmd = Command::new(runner_binary());
     for (key, _) in std::env::vars_os() {

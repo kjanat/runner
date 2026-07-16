@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// A language/runtime ecosystem that owns one or more package managers.
 ///
-/// Used by the resolver to scope overrides — a `[pm].node = "pnpm"` entry
+/// Used by the resolver to scope overrides, a `[pm].node = "pnpm"` entry
 /// in `runner.toml` applies only when resolving for [`Ecosystem::Node`].
 /// Deno is its own ecosystem even though its package manager can also
 /// dispatch `package.json` scripts.
@@ -81,29 +81,29 @@ impl Ecosystem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PackageManager {
-    /// npm — detected via `package-lock.json`.
+    /// npm, detected via `package-lock.json`.
     Npm,
-    /// Yarn — detected via `yarn.lock`.
+    /// Yarn, detected via `yarn.lock`.
     Yarn,
-    /// pnpm — detected via `pnpm-lock.yaml`.
+    /// pnpm, detected via `pnpm-lock.yaml`.
     Pnpm,
-    /// Bun — detected via `bun.lockb` or `bun.lock`.
+    /// Bun, detected via `bun.lockb` or `bun.lock`.
     Bun,
-    /// Cargo (Rust) — detected via `Cargo.toml`.
+    /// Cargo (Rust), detected via `Cargo.toml`.
     Cargo,
-    /// Deno — detected via `deno.json` / `deno.jsonc`.
+    /// Deno, detected via `deno.json` / `deno.jsonc`.
     Deno,
-    /// uv (Python) — detected via `uv.lock`.
+    /// uv (Python), detected via `uv.lock`.
     Uv,
-    /// Poetry (Python) — detected via `poetry.lock` or Poetry `pyproject.toml` markers.
+    /// Poetry (Python), detected via `poetry.lock` or Poetry `pyproject.toml` markers.
     Poetry,
-    /// Pipenv (Python) — detected via `Pipfile` / `Pipfile.lock`.
+    /// Pipenv (Python), detected via `Pipfile` / `Pipfile.lock`.
     Pipenv,
-    /// Go modules — detected via `go.mod`.
+    /// Go modules, detected via `go.mod`.
     Go,
-    /// Bundler (Ruby) — detected via `Gemfile`.
+    /// Bundler (Ruby), detected via `Gemfile`.
     Bundler,
-    /// Composer (PHP) — detected via `composer.json`.
+    /// Composer (PHP), detected via `composer.json`.
     Composer,
 }
 
@@ -112,23 +112,27 @@ pub(crate) enum PackageManager {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum TaskRunner {
-    /// Turborepo — detected via `turbo.json` / `turbo.jsonc`.
+    /// Turborepo, detected via `turbo.json` / `turbo.jsonc`.
     Turbo,
-    /// Nx — detected via `nx.json`.
+    /// Nx, detected via `nx.json`.
     Nx,
-    /// GNU Make — detected via `Makefile` / `GNUmakefile` / `makefile`.
+    /// GNU Make, detected via `Makefile` / `GNUmakefile` / `makefile`.
     Make,
-    /// just — detected via case-insensitive `justfile` / `.justfile`.
+    /// just, detected via case-insensitive `justfile` / `.justfile`.
     Just,
-    /// go-task — detected via `Taskfile.yml` and variants. Serializes as
-    /// `"task"` (matching [`Self::label`]) — `kebab-case` alone would
+    /// go-task, detected via `Taskfile.yml` and variants. Serializes as
+    /// `"task"` (matching [`Self::label`]); `kebab-case` alone would
     /// produce `"go-task"`, the accepted parse *alias*, not the canonical
     /// label.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "go-task, detected via `Taskfile.yml` and variants.")
+    )]
     #[serde(rename = "task")]
     GoTask,
-    /// mise — detected via `mise.toml` / `.mise.toml`.
+    /// mise, detected via `mise.toml` / `.mise.toml`.
     Mise,
-    /// bacon — detected via `bacon.toml`.
+    /// bacon, detected via `bacon.toml`.
     Bacon,
 }
 
@@ -149,7 +153,7 @@ pub(crate) struct Task {
     /// resolves to (e.g. `alias b := build` → `Some("build")`).
     pub alias_of: Option<String>,
     /// `Some(runner)` when this task's command body is a thin
-    /// passthrough to a task runner for a same-named target — e.g. a
+    /// passthrough to a task runner for a same-named target, e.g. a
     /// `package.json` script `"build": "just build"` records
     /// `Some(TaskRunner::Just)`. Set during detection by inspecting the
     /// actual script body, not inferred from name collisions, so real
@@ -175,7 +179,7 @@ pub(crate) enum TaskSource {
     TurboJson,
     /// `deno.json` / `deno.jsonc` `"tasks"` field.
     DenoJson,
-    /// Cargo `[alias]` table — built-ins plus user aliases merged across the
+    /// Cargo `[alias]` table, built-ins plus user aliases merged across the
     /// hierarchical `.cargo/config.toml` chain.
     CargoAliases,
     /// Go root or `cmd/<name>` package containing `package main`.
@@ -185,7 +189,7 @@ pub(crate) enum TaskSource {
     /// `mise.toml` / `.mise.toml` `[tasks.<name>]` tables (and the
     /// inline `[tasks]` flat form).
     MiseToml,
-    /// `pyproject.toml` `[project.scripts]` — PEP 621 console-script
+    /// `pyproject.toml` `[project.scripts]`, PEP 621 console-script
     /// entry points, dispatched via the detected Python PM's `run`
     /// (`uv run`, `poetry run`, `pipenv run`).
     PyprojectScripts,
@@ -217,7 +221,7 @@ pub(crate) enum DetectionWarning {
     PmMismatch {
         /// The PM the manifest declared.
         declared: PackageManager,
-        /// Which manifest field carried the declaration — `"packageManager"`
+        /// Which manifest field carried the declaration, `"packageManager"`
         /// or `"devEngines.packageManager"`. `&'static str` so it round-trips
         /// through `Display` and JSON unchanged.
         field: &'static str,
@@ -225,13 +229,13 @@ pub(crate) enum DetectionWarning {
         lockfile: PackageManager,
     },
     /// `devEngines.packageManager` declares a binary that isn't on `PATH`.
-    /// `onFail=warn` — dispatch proceeds and will fail at spawn time.
+    /// `onFail=warn`, dispatch proceeds and will fail at spawn time.
     DevEnginesBinaryMissing {
         /// The declared package manager.
         pm: PackageManager,
     },
     /// `devEngines.packageManager` version range isn't satisfied by the
-    /// installed binary. `onFail=warn` — declaration wins.
+    /// installed binary. `onFail=warn`, declaration wins.
     DevEnginesVersionMismatch {
         /// The declared package manager.
         pm: PackageManager,
@@ -279,7 +283,7 @@ pub(crate) enum DetectionWarning {
     },
     /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
     /// that doesn't parse, and the command chose to report it instead
-    /// of dying — `runner doctor` must be able to diagnose the broken
+    /// of dying; `runner doctor` must be able to diagnose the broken
     /// environment it exists to diagnose. Strict commands still treat
     /// the same condition as a fatal error.
     InvalidEnvOverride {
@@ -291,17 +295,7 @@ pub(crate) enum DetectionWarning {
         /// Rendered parse error, already source-prefixed.
         message: String,
     },
-    /// Two or more detected package managers install into the same
-    /// directory (e.g. `bun` and a `nodeModulesDir`-enabled `deno` both
-    /// write `node_modules/`). Running both fans out redundant installs
-    /// over a shared tree; restrict the set with `[install].pms`.
-    InstallDirCollision {
-        /// The shared install directory, e.g. `"node_modules"`.
-        dir: &'static str,
-        /// The detected PMs that target it, in detection order.
-        pms: Vec<PackageManager>,
-    },
-    /// `runner.toml` carries a key this build doesn't recognize — a typo, or
+    /// `runner.toml` carries a key this build doesn't recognize, a typo, or
     /// a section/field added by a newer `runner`. Tolerated for forward
     /// compatibility: the key is ignored and the rest of the config still
     /// applies, so a config written by one version never bricks task
@@ -342,7 +336,6 @@ impl DetectionWarning {
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
-            Self::InstallDirCollision { .. } => "install",
             Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
         }
     }
@@ -357,7 +350,7 @@ impl DetectionWarning {
                 field,
                 lockfile,
             } => format!(
-                "{field} declares {} but the lockfile reflects {} — declaration wins; regenerate \
+                "{field} declares {} but the lockfile reflects {} (declaration wins); regenerate \
                  the lockfile to silence this",
                 declared.label(),
                 lockfile.label(),
@@ -384,7 +377,7 @@ impl DetectionWarning {
                 let eco = ecosystem.label();
                 if others_available.is_empty() {
                     format!(
-                        "no {eco} signals matched — using {} from PATH",
+                        "no {eco} signals matched; using {} from PATH",
                         picked.label(),
                     )
                 } else {
@@ -394,7 +387,7 @@ impl DetectionWarning {
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!(
-                        "no {eco} signals matched — using {} from PATH (also available: {others})",
+                        "no {eco} signals matched; using {} from PATH (also available: {others})",
                         picked.label(),
                     )
                 }
@@ -412,21 +405,9 @@ impl DetectionWarning {
             Self::InvalidEnvOverride { var, message, .. } => {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
             }
-            Self::InstallDirCollision { dir, pms } => {
-                let pms = pms
-                    .iter()
-                    .map(|pm| pm.label())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "{pms} all install into {dir}/ — running them together fans out redundant \
-                     installs over a shared tree. Restrict the set with `[install].pms` in \
-                     runner.toml (or `RUNNER_INSTALL_PMS`).",
-                )
-            }
             Self::UnknownConfigKey { path } => format!(
-                "unknown key `{path}` ignored — a typo, or written by a newer runner. This build \
-                 doesn't recognize it; the rest of the config still applies.",
+                "unknown key `{path}` ignored: it may be a typo or written by a newer runner. \
+                 This build doesn't recognize it; the rest of the config still applies.",
             ),
             Self::DeprecatedConfigKey {
                 path,
@@ -471,8 +452,21 @@ pub(crate) struct ProjectContext {
     pub current_node: Option<String>,
     /// Whether the project appears to be a monorepo.
     pub is_monorepo: bool,
+    /// Which package managers materialize which install directory. A fact,
+    /// not a verdict: whether two writers sharing one directory is a problem
+    /// depends on the install set, which detection cannot know.
+    pub install_dirs: Vec<InstallDir>,
     /// Non-fatal detection issues surfaced to task-facing commands.
     pub warnings: Vec<DetectionWarning>,
+}
+
+/// One install directory and every detected package manager that writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallDir {
+    /// Path relative to the project root, e.g. `"node_modules"`.
+    pub dir: &'static str,
+    /// Writers in detection order.
+    pub writers: Vec<PackageManager>,
 }
 
 impl ProjectContext {
@@ -599,7 +593,7 @@ impl PackageManager {
     }
 
     /// Whether this PM can dispatch a script declared in `package.json`
-    /// `"scripts"` — Node ecosystem (`npm`, `yarn`, `pnpm`, `bun`) plus
+    /// `"scripts"`, Node ecosystem (`npm`, `yarn`, `pnpm`, `bun`) plus
     /// Deno (via `deno run <task>`). Used by both the resolver (to
     /// scope `--pm` overrides for Node-script resolution) and the
     /// bun-test fallback path (to answer "did the user pick a
@@ -621,7 +615,7 @@ impl PackageManager {
     /// the latter. Cargo, Go, and the Python PMs own their ecosystem's
     /// source. Bundler and Composer have no task source modeled yet, so
     /// they bias nothing. Deno is one member of this rule, not a special
-    /// case — the bias is general across every PM.
+    /// case. The bias is general across every PM.
     pub(crate) const fn owned_task_sources(self) -> &'static [TaskSource] {
         match self {
             Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => &[TaskSource::PackageJson],
@@ -721,7 +715,7 @@ impl TaskSource {
         ]
     }
 
-    /// Canonical display label shown to the user — the *tool* name where a
+    /// Canonical display label shown to the user, the *tool* name where a
     /// single tool owns the source (`"make"`, `"just"`, `"bacon"`, …), or
     /// the filename when multiple tools share the source (`"package.json"`
     /// is read by npm/yarn/pnpm/bun, so there's no single owner to name).
@@ -730,8 +724,8 @@ impl TaskSource {
     /// (`"bacon.toml"`, `"turbo.json"`); the inconsistency made the
     /// `runner list` column read like a typo. Standardizing on tool
     /// names also stops cases like `bacon.toml` claiming jobs that
-    /// actually come from `~/.config/bacon/prefs.toml` — the label
-    /// "bacon" is honest about that breadth, the label "bacon.toml"
+    /// actually come from `~/.config/bacon/prefs.toml`; the label
+    /// "bacon" is honest about that breadth. The label "bacon.toml"
     /// isn't.
     pub(crate) const fn label(self) -> &'static str {
         match self {
@@ -741,7 +735,7 @@ impl TaskSource {
             Self::Taskfile => "task",
             Self::TurboJson => "turbo",
             Self::DenoJson => "deno",
-            // Synthetic source — aliases merge across the hierarchical
+            // Synthetic source, aliases merge across the hierarchical
             // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
             // file name represents it.
             Self::CargoAliases => "cargo",
@@ -834,7 +828,7 @@ pub(crate) fn task_source_labels() -> Vec<&'static str> {
 /// form it parses.
 ///
 /// Bare versions (`"20"`, `"20.11"`) keep prefix-at-segment-boundary
-/// semantics — a `.nvmrc` saying `20.11` means "any 20.11.x", which is
+/// semantics: a `.nvmrc` saying `20.11` means "any 20.11.x", which is
 /// narrower than the caret default the `semver` crate would apply.
 ///
 /// Anything unevaluable (`lts/*`, malformed ranges, a non-version
@@ -842,7 +836,7 @@ pub(crate) fn task_source_labels() -> Vec<&'static str> {
 /// panics and never rejects input it used to accept.
 ///
 /// A prerelease `current` (e.g. `23.0.0-nightly`) only matches a
-/// comparator that pins the same triple with a prerelease tag — the
+/// comparator that pins the same triple with a prerelease tag, the
 /// `semver` crate's gate, mirroring node-semver's default behavior.
 pub(crate) fn version_matches(expected: &str, current: &str) -> bool {
     let expected = expected.trim();
@@ -881,7 +875,7 @@ fn prefix_version_matches(expected: &str, current: &str) -> bool {
             .is_none_or(|c| c == '.')
 }
 
-/// True when `s` is a plain version literal — optionally `v`-prefixed,
+/// True when `s` is a plain version literal, optionally `v`-prefixed,
 /// then nothing but ASCII digits and dots (`20`, `20.11`, `v20.11.0`).
 /// Operators, wildcards, and named aliases (`lts/*`) all return false.
 fn bare_version(s: &str) -> bool {
@@ -896,9 +890,9 @@ fn strip_v(s: &str) -> &str {
 
 /// Evaluate `expected` as a node-semver range against `current`.
 ///
-/// Returns `None` when the outcome could not be determined — `current`
+/// Returns `None` when the outcome could not be determined, `current`
 /// isn't a version, or no `||` group both parsed and matched while at
-/// least one group was unparseable — so the caller can fall back to the
+/// least one group was unparseable, so the caller can fall back to the
 /// prefix match. A parsed-and-matching group wins immediately, letting
 /// `">=18 || lts/*"` succeed on the evaluable half.
 fn range_matches(expected: &str, current: &str) -> Option<bool> {
@@ -928,7 +922,7 @@ fn range_matches(expected: &str, current: &str) -> Option<bool> {
 /// bound is already inclusive of its whole segment in the crate's
 /// grammar), whitespace-separated AND comparators, operators detached
 /// from their version (`>= 18`), and per-token `v` prefixes. Bare
-/// digit-leading tokens get an `=` operator — the crate would otherwise
+/// digit-leading tokens get an `=` operator; the crate would otherwise
 /// default them to caret, which is looser than node's exact-partial
 /// semantics. Wildcard tokens (`*`, `x`) pass through untouched because
 /// `=*` does not parse.
@@ -981,7 +975,7 @@ fn split_operator(token: &str) -> (&str, &str) {
 /// Parse `current` (a `node --version`-style string with the `v`
 /// already stripped by detection) into a full [`semver::Version`],
 /// padding bare `major`/`major.minor` forms to a triple. Deliberately
-/// duplicates the padding in `tool::node::normalize_version` — `types`
+/// duplicates the padding in `tool::node::normalize_version`; `types`
 /// must not grow a dependency on `tool`.
 fn parse_current_version(current: &str) -> Option<semver::Version> {
     let padded = match current.split('.').count() {
@@ -1046,7 +1040,7 @@ mod tests {
     #[test]
     fn gte_range_matches_higher_versions() {
         // Regression: ">=22.22.2" used to prefix-match as "=22.22.2",
-        // warning on 22.22.3 and 25.9.0 — both satisfy the range.
+        // warning on 22.22.3 and 25.9.0, which both satisfy the range.
         assert!(version_matches(">=22.22.2", "22.22.3"));
         assert!(version_matches(">=22.22.2", "25.9.0"));
         assert!(!version_matches(">=22.22.2", "22.22.1"));

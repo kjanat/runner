@@ -1,4 +1,4 @@
-//! `runner doctor` — dump every signal the resolver considers.
+//! `runner doctor`, dump every signal the resolver considers.
 //!
 //! Surface for users (and bug reports) to inspect what runner sees in the current project:
 //! detected package managers and task runners, the manifest declaration if any, lockfile presence,
@@ -15,7 +15,8 @@ use anyhow::Result;
 use colored::Colorize;
 use serde_json::{Map, Value};
 
-use crate::resolver::ResolutionOverrides;
+use crate::cmd::install::InstallPlan;
+use crate::resolver::{ResolutionOverrides, ResolveError};
 use crate::schema::Project;
 use crate::schema::doctor::DoctorReport;
 use crate::types::ProjectContext;
@@ -49,14 +50,18 @@ pub(crate) fn doctor(
     // `Value` keeps that ergonomics while the JSON contract itself stays
     // typed via `Project`.
     let report = serde_json::to_value(&project)?;
-    print_human(&report, overrides);
+    // A plan that refuses to resolve (`on_collision = "error"`, an override
+    // naming an undetected PM) is the diagnosis, so it is rendered rather than
+    // propagated, same contract as the resolver error above.
+    let plan = super::install::plan_install(ctx, overrides);
+    print_human(&report, overrides, plan.as_ref());
 
     Ok(())
 }
 
 /// Legacy stub retained for the existing tests that exercise
 /// `build_report` directly. Pure passthrough to `Project::build` +
-/// `serde_json::to_value` — same contract, same shape.
+/// `serde_json::to_value`, same contract, same shape.
 #[cfg(test)]
 fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value {
     serde_json::to_value(Project::build(ctx, overrides))
@@ -67,7 +72,11 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
     clippy::too_many_lines,
     reason = "linear section-by-section renderer; splitting hurts readability"
 )]
-fn print_human(report: &Value, overrides: &ResolutionOverrides) {
+fn print_human(
+    report: &Value,
+    overrides: &ResolutionOverrides,
+    plan: Result<&InstallPlan, &ResolveError>,
+) {
     let root = report["root"].as_str().unwrap_or("?");
     println!(
         "{} {}",
@@ -150,6 +159,15 @@ fn print_human(report: &Value, overrides: &ResolutionOverrides) {
                 ),
             );
         }
+        if !overrides.install_pms.is_empty() {
+            let pms = overrides
+                .install_pms
+                .iter()
+                .map(|pm| pm.label())
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln_field(out, "install.pms", &pms);
+        }
         writeln_field(
             out,
             "fallback",
@@ -203,18 +221,74 @@ fn print_human(report: &Value, overrides: &ResolutionOverrides) {
             writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
                 .expect("writeln to String should not fail");
         }
+        match plan {
+            Ok(plan) => {
+                let pms = plan
+                    .pms
+                    .iter()
+                    .map(|pm| pm.label())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !pms.is_empty() {
+                    writeln_field(out, "install", &pms);
+                }
+                for shadow in &plan.shadowed {
+                    writeln_field(
+                        out,
+                        shadow.dir,
+                        &format!(
+                            "{} installs it, {} shadowed",
+                            shadow.winner.label(),
+                            shadow.loser.label(),
+                        ),
+                    );
+                }
+                for collision in &plan.collisions {
+                    let names = collision
+                        .writers
+                        .iter()
+                        .map(|pm| pm.label())
+                        .collect::<Vec<_>>()
+                        .join(" then ");
+                    writeln_field(out, "shared tree", &format!("{names} (serialized)"));
+                }
+            }
+            Err(err) => {
+                writeln!(out, "  {:<20}{}", "install".red(), err.to_string().red())
+                    .expect("writeln to String should not fail");
+            }
+        }
     });
 
-    let warnings = report["warnings"].as_array().cloned().unwrap_or_default();
+    // Detection warnings, plus the collisions the install plan kept. The
+    // collision is the plan's verdict on the effective install set, not a fact
+    // about the tree, so it lives here and nowhere else; commands that never
+    // install have nothing to say about it.
+    let mut warnings: Vec<(String, String)> = report["warnings"]
+        .as_array()
+        .map(|ws| {
+            ws.iter()
+                .map(|w| {
+                    (
+                        w["source"].as_str().unwrap_or("?").to_string(),
+                        w["detail"].as_str().unwrap_or("?").to_string(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(plan) = plan {
+        warnings.extend(plan.collisions.iter().map(|collision| {
+            (
+                "install".to_string(),
+                crate::cmd::install::collision_warning(collision.dir, &collision.writers),
+            )
+        }));
+    }
     if !warnings.is_empty() {
         println!("{}", "Warnings".bold());
-        for w in &warnings {
-            println!(
-                "  {} {}: {}",
-                "warn:".yellow().bold(),
-                w["source"].as_str().unwrap_or("?"),
-                w["detail"].as_str().unwrap_or("?"),
-            );
+        for (source, detail) in &warnings {
+            println!("  {} {source}: {detail}", "warn:".yellow().bold());
         }
     }
 }
@@ -270,6 +344,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -328,7 +403,7 @@ mod tests {
         let ctx = context();
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
-        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["schema_version"], 2);
     }
 
     #[test]
@@ -371,7 +446,7 @@ mod tests {
         use crate::detect::detect;
         use crate::tool::test_support::TempDir;
 
-        // Manifest declaration disagrees with the detected lockfile —
+        // When the manifest declaration disagrees with the detected lockfile,
         // the resolver emits a `package.json` warning. Doctor should
         // surface it alongside whatever ctx.warnings already carries.
         let dir = TempDir::new("doctor-merges-warnings");

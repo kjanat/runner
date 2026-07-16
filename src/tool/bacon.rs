@@ -1,10 +1,10 @@
-//! bacon — a Rust background checker driven by `bacon.toml`.
+//! bacon, a Rust background checker driven by `bacon.toml`.
 //!
 //! Surfaces every runnable job. When the `bacon` CLI is available the fast
 //! path runs `bacon --list-jobs` so we see the same merged view bacon itself
 //! presents (built-in jobs + user overrides + project-local additions). When
 //! bacon isn't installed we fall back to parsing `bacon.toml` directly,
-//! which only sees the project-declared jobs — built-ins live in the bacon
+//! which only sees the project-declared jobs; built-ins live in the bacon
 //! binary and there's no way to enumerate them without invoking it.
 
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// Extract job names with optional descriptions, sorted alphabetically.
 ///
-/// Prefers `bacon --list-jobs` (the source of truth — it merges bacon's
+/// Prefers `bacon --list-jobs` (the source of truth: it merges bacon's
 /// baked-in jobs with whatever `bacon.toml` declares), falling back to
 /// parsing `bacon.toml` directly when the binary is missing or its
 /// output won't parse.
@@ -99,7 +99,7 @@ fn parse_list_jobs_table(stdout: &[u8]) -> Option<Vec<(String, Option<String>)>>
     (!tasks.is_empty()).then_some(tasks)
 }
 
-/// Strip CSI `m` (SGR color/bold/style) escape sequences. Hand-rolled —
+/// Strip CSI `m` (SGR color/bold/style) escape sequences. Hand-rolled:
 /// the form is narrow (`\x1b[…m`) and doesn't justify a `regex` dep.
 fn strip_csi_m(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -389,7 +389,7 @@ mod tests {
     fn extract_tasks_uses_bacon_cli_when_available() {
         // When bacon is installed, the fast path should pull in built-in
         // jobs (e.g. `check`, `test`, `clippy`) on top of whatever the
-        // local `bacon.toml` declares — that's the whole point of
+        // local `bacon.toml` declares; that's the whole point of
         // shelling out instead of parsing the TOML alone. Skip silently
         // when bacon isn't on PATH so this stays portable.
         if std::process::Command::new("bacon")

@@ -3,22 +3,22 @@
 //! Each module corresponds to a single tool (package manager or task runner)
 //! and exposes a consistent set of public functions:
 //!
-//! - `detect(dir)` — returns `true` if the tool's config/lockfile exists
-//! - `extract_tasks(dir)` — parses config and returns task names or a parse error
-//! - `run_cmd(task, args)` — builds a [`std::process::Command`] to run a task
-//! - `install_cmd(frozen)` — builds a [`std::process::Command`] to install deps
-//! - `exec_cmd(args)` — builds a [`std::process::Command`] for ad-hoc execution
-//! - clean-dir constants — directories to remove on `runner clean`
+//! - `detect(dir)`, returns `true` if the tool's config/lockfile exists
+//! - `extract_tasks(dir)`, parses config and returns task names or a parse error
+//! - `run_cmd(task, args)`, builds a [`std::process::Command`] to run a task
+//! - `install_cmd(frozen, scripts)`, builds a [`std::process::Command`] to install deps
+//! - `exec_cmd(args)`, builds a [`std::process::Command`] for ad-hoc execution
+//! - clean-dir constants, directories to remove on `runner clean`
 //!
 //! Not every module exposes every function; only what the tool supports.
 
-/// bacon — Rust background checker (`bacon.toml`).
+/// bacon, Rust background checker (`bacon.toml`).
 pub(crate) mod bacon;
 /// Bun JavaScript runtime and package manager.
 pub(crate) mod bun;
 /// Bundler, the Ruby dependency manager (`Gemfile`).
 pub(crate) mod bundler;
-/// Cargo `[alias]` table — `.cargo/config.toml` aliases as runnable tasks.
+/// Cargo `[alias]` table, `.cargo/config.toml` aliases as runnable tasks.
 pub(crate) mod cargo_aliases;
 /// Cargo, the Rust package manager and build tool (`Cargo.toml`).
 pub(crate) mod cargo_pm;
@@ -30,6 +30,8 @@ pub(crate) mod deno;
 pub(crate) mod deno_exec;
 /// Shared filesystem helpers for tool modules.
 pub(crate) mod files;
+/// Git queries used by detection.
+pub(crate) mod git;
 /// Go modules (`go.mod`).
 pub(crate) mod go_pm;
 /// go-task, a task runner using `Taskfile.yml`.
@@ -65,7 +67,7 @@ pub(crate) mod shell;
 pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).
 pub(crate) mod uv;
-/// Volta toolchain manager — shim classification and `volta which` resolution.
+/// Volta toolchain manager, shim classification and `volta which` resolution.
 pub(crate) mod volta;
 /// Yarn, a Node.js package manager (`yarn.lock`).
 pub(crate) mod yarn;
@@ -78,10 +80,10 @@ pub(crate) mod test_support;
 /// Lowered from `crate::resolver::ScriptPolicy` at the install dispatch
 /// boundary so the per-tool `install_cmd` builders stay decoupled from the
 /// resolver. Each manager translates this into its own flag/env (or no-ops
-/// where it cannot express the request — `cmd::install` warns about those).
+/// where it cannot express the request, `cmd::install` warns about those).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ScriptDirective {
-    /// Leave the package manager at its built-in default — add nothing.
+    /// Leave the package manager at its built-in default, add nothing.
     #[default]
     Default,
     /// Skip lifecycle scripts where the manager exposes a skip mechanism

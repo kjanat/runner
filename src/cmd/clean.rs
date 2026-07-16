@@ -1,4 +1,4 @@
-//! `runner clean` — remove caches and build artifacts for detected tools.
+//! `runner clean`, remove caches and build artifacts for detected tools.
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -168,6 +168,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }

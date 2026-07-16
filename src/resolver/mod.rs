@@ -2,33 +2,32 @@
 //!
 //! The resolver consumes a [`ProjectContext`] (signals discovered during
 //! detection) plus a [`ResolutionOverrides`] bundle (CLI flags, env vars,
-//! and — in later phases — a `runner.toml`) and returns a single decision
+//! and, in later phases, a `runner.toml`) and returns a single decision
 //! tagged with the chain step that produced it.
 //!
 //! Chain order (lower wins):
 //!
-//! 1. Qualified syntax (`turbo.json:build`) — handled in `cmd::run` today.
+//! 1. Qualified syntax (`turbo.json:build`), handled in `cmd::run` today.
 //! 2. CLI flag (`--pm`, `--runner`).
 //! 3. Environment variable (`RUNNER_PM`, `RUNNER_RUNNER`).
-//! 4. Project config (`./runner.toml`) — Phase 3.
-//! 5. Manifest declaration (`packageManager`, `devEngines.packageManager`)
-//!    — Phase 4.
+//! 4. Project config (`./runner.toml`), Phase 3.
+//! 5. Manifest declaration (`packageManager`, `devEngines.packageManager`), Phase 4.
 //! 6. Lockfile (current behavior; lives in [`crate::detect`]).
-//! 7. `PATH` probe in canonical order — Phase 5.
-//! 8. Terminal — error with actionable guidance — Phase 5.
+//! 7. `PATH` probe in canonical order, Phase 5.
+//! 8. Terminal, error with actionable guidance, Phase 5.
 
 //! # Module layout
 //!
-//! - [`types`] — data shapes ([`Resolver`], [`ResolutionOverrides`], the
+//! - [`types`], data shapes ([`Resolver`], [`ResolutionOverrides`], the
 //!   policy enums, override-builder helpers).
-//! - [`resolve`] — the resolution algorithm itself: `impl Resolver` plus
+//! - [`resolve`], the resolution algorithm itself: `impl Resolver` plus
 //!   the manifest / lockfile cross-checks.
-//! - [`overrides`] — `impl ResolutionOverrides` and the CLI/env parsers
+//! - [`overrides`], `impl ResolutionOverrides` and the CLI/env parsers
 //!   that feed it.
-//! - [`policies`] — pure string→enum parsing for the `FallbackPolicy`,
+//! - [`policies`], pure string→enum parsing for the `FallbackPolicy`,
 //!   `MismatchPolicy`, and `FailurePolicy` knobs.
-//! - [`error`] — the `ResolveError` type surfaced to callers.
-//! - [`probe`] — `$PATH` probing for the fallback step.
+//! - [`error`], the `ResolveError` type surfaced to callers.
+//! - [`probe`], `$PATH` probing for the fallback step.
 
 mod error;
 mod overrides;
@@ -54,8 +53,8 @@ pub(crate) use probe::probe_in as probe_path_for_doctor;
 #[cfg(test)]
 pub(crate) use types::PmOverride;
 pub(crate) use types::{
-    DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin, ResolutionOverrides,
-    ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
+    CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
+    ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
 };
 
 /// Join an iterator of `&'static str` labels with `", "`. Used by the
@@ -89,14 +88,15 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
 
     /// Like [`context`], but rooted in a fresh temp dir instead of `"."`.
     ///
-    /// Tests that exercise the manifest-blind steps — lockfile and the
-    /// fallback policies — must not anchor at the repo checkout: the
+    /// Tests that exercise the manifest-blind steps, lockfile and the
+    /// fallback policies, must not anchor at the repo checkout: the
     /// manifest walk (`detect_pm_from_manifest` / `find_manifest_upwards`)
     /// starts at `ctx.root`, and runner's own `package.json` declares
     /// `"packageManager": "bun@…"`, which outranks the synthetic context
@@ -239,7 +239,7 @@ mod tests {
         // routing through `bun`/`pnpm`/`yarn`/`npm`.
 
         let dir = TempDir::new("resolver-no-pkgjson");
-        // Detected ecosystem signals are non-Node — mirrors what
+        // Detected ecosystem signals are non-Node, mirrors what
         // `detect` would produce for a Go project.
         let mut ctx = context(vec![PackageManager::Go]);
         ctx.root = dir.path().to_path_buf();
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn lenient_env_bool_typo_warns_and_is_ignored() {
         // `RUNNER_KEEP_GOING=flase` (typo'd "false") used to read as
-        // truthy — the opposite of the user's intent. It must warn and
+        // truthy, the opposite of the user's intent. It must warn and
         // stay unset instead.
         use crate::chain::FailurePolicy;
         let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(OverrideSources {
@@ -1197,7 +1197,7 @@ mod tests {
         .expect("tasks.prefer of known labels should parse");
 
         // `bun` (a package manager) maps to its package.json source; `turbo`
-        // (a runner) to turbo.json — proving the unified label vocabulary.
+        // (a runner) to turbo.json, proving the unified label vocabulary.
         assert_eq!(
             overrides.prefer_sources,
             vec![TaskSource::PackageJson, TaskSource::TurboJson],
@@ -1510,7 +1510,7 @@ mod tests {
         use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail};
 
         // OnFail=Ignore short-circuits before the binary/version checks
-        // even run — they should never be called. Use a panicking
+        // even run; they should never be called. Use a panicking
         // checker to prove the early return holds.
         let decl = ManifestPmDecl {
             pm: PackageManager::Npm,
@@ -1536,8 +1536,8 @@ mod tests {
         use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
 
         // Version checks that can't run (unparseable range, missing
-        // --version output) collapse to Unverifiable — that path must
-        // continue silently, not warn or bail, otherwise a partially
+        // --version output) collapse to Unverifiable. That path must
+        // continue silently, not warn or bail; otherwise a partially
         // broken environment blocks dispatch unnecessarily.
         let decl = ManifestPmDecl {
             pm: PackageManager::Yarn,
@@ -1681,7 +1681,7 @@ mod tests {
 
         // Table-driven: each row pairs a decision with the exact string
         // it must produce. Locks down the provenance wording that
-        // `--explain` and `runner why` surface verbatim — a casual
+        // `--explain` and `runner why` surface verbatim; a casual
         // re-phrase shouldn't slip through silently.
         let cases: &[(super::ResolvedPm, &str)] = &[
             (
@@ -1857,7 +1857,7 @@ mod tests {
     #[test]
     fn from_sources_cli_flag_beats_opposite_config_polarity() {
         // `-k` must override `[chain] kill_on_fail = true`, not collide
-        // with it — the config polarity has no CLI negation flag, so a
+        // with it: the config polarity has no CLI negation flag, so a
         // cross-source conflict error would make it uncancellable from
         // the command line.
         use crate::chain::FailurePolicy;

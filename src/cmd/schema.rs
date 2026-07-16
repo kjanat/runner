@@ -1,4 +1,4 @@
-//! `runner schema` — emit committed JSON Schemas (feature `schema`).
+//! `runner schema`, emit committed JSON Schemas (feature `schema`).
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -44,7 +44,7 @@ pub(crate) fn config_schema() -> Result<Value> {
 
 /// Constrain `[tasks].prefer` and `[tasks.overrides]` values to the closed
 /// label vocabulary the resolver actually accepts (task runners, package
-/// managers, source names — see `resolver::policies::resolve_source_label`),
+/// managers, source names, see `resolver::policies::resolve_source_label`),
 /// instead of leaving them as unconstrained strings. Derived from
 /// [`crate::types::task_source_labels`] so the schema can't drift from the
 /// resolver's own vocabulary.
@@ -97,7 +97,7 @@ fn write_all_schemas(dir: &Path) -> Result<()> {
 /// instead of an unhandled panic reaching `runner schema --all`'s caller.
 /// `render_init_template` panics on `FIELD_TEMPLATE`/`RunnerConfig` drift
 /// by design (a hard, loud failure is exactly right for the drift-guard
-/// test that normally catches this before merge) — this is only the
+/// test that normally catches this before merge); this is only the
 /// production CLI path's translation of that same failure into a
 /// `Result`, with the default panic hook suppressed so users see one
 /// clean error instead of a raw backtrace followed by one.
@@ -132,7 +132,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 /// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
 #[derive(Clone, Copy)]
 enum FieldHint {
-    /// Hand-written hint text — for booleans and fields whose accepted
+    /// Hand-written hint text, for booleans and fields whose accepted
     /// values aren't a small fixed set ([`broader_vocab`] validates
     /// their example value instead of enumerating every label inline).
     Static(&'static str),
@@ -141,21 +141,21 @@ enum FieldHint {
     ClosedSet { suffix: Option<&'static str> },
     /// The field's real accepted-value set, each with a short
     /// parenthetical note. Every label [`accepted_labels`] returns for
-    /// this field must have exactly one entry here — enforced by
+    /// this field must have exactly one entry here, enforced by
     /// `field_template_hints_cover_every_accepted_label`.
     Annotated(&'static [(&'static str, &'static str)]),
 }
 
 /// (section, field) -> (commented-out value, hint). Every field
 /// [`crate::config::RunnerConfig`]'s schemars metadata declares must
-/// have an entry here, and every entry must name a real field — both
+/// have an entry here, and every entry must name a real field, both
 /// enforced by [`render_init_template`]'s own assertions, which run
-/// whenever `committed_init_template_matches_generator` exercises it —
+/// whenever `committed_init_template_matches_generator` exercises it,
 /// so a new config field can't ship without scaffold coverage. Values
 /// are either the field's real built-in default (`fallback`,
 /// `on_mismatch`, the three booleans) or, where there's no single
 /// sensible default to show (an unset PM override, an empty preference
-/// list), a hand-picked illustrative example — validated against the
+/// list), a hand-picked illustrative example, validated against the
 /// real accepted vocabulary (`accepted_labels`/`broader_vocab`) by
 /// `field_template_values_use_real_accepted_labels`.
 const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
@@ -202,6 +202,15 @@ const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
         FieldHint::ClosedSet {
             suffix: Some("(absent = each PM's own default)"),
         },
+    ),
+    (
+        "install",
+        "on_collision",
+        r#""resolve""#,
+        FieldHint::Annotated(&[
+            ("resolve", "one writer per install dir, rest shadowed"),
+            ("error", "refuse to pick"),
+        ]),
     ),
     (
         "resolution",
@@ -286,12 +295,12 @@ fn render_hint(section: &str, field: &str, hint: &FieldHint) -> String {
 }
 
 /// The real, closed accepted-value set for a config field with a small
-/// fixed vocabulary — derived from the same types/functions the resolver
+/// fixed vocabulary, derived from the same types/functions the resolver
 /// uses to parse that field, so it cannot drift from what's actually
 /// accepted. `None` for booleans and fields with no single fixed set
 /// (see [`broader_vocab`] for those with a large-but-real vocabulary).
 fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
-    use crate::resolver::{FallbackPolicy, MismatchPolicy, ScriptPolicy};
+    use crate::resolver::{CollisionPolicy, FallbackPolicy, MismatchPolicy, ScriptPolicy};
     use crate::types::{Ecosystem, PackageManager, TaskRunner};
 
     match (section, field) {
@@ -316,6 +325,9 @@ fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
                 .filter_map(|p| p.label())
                 .collect(),
         ),
+        ("install", "on_collision") => {
+            Some(CollisionPolicy::ALL.iter().map(|p| p.label()).collect())
+        }
         ("resolution", "fallback") => Some(FallbackPolicy::ALL.iter().map(|p| p.label()).collect()),
         ("resolution", "on_mismatch") => {
             Some(MismatchPolicy::ALL.iter().map(|p| p.label()).collect())
@@ -344,10 +356,10 @@ fn broader_vocab(section: &str, field: &str) -> Option<Vec<&'static str>> {
 }
 
 /// Assert every string leaf in a [`FIELD_TEMPLATE`] `value` literal is a
-/// real accepted value for `section.field` — [`accepted_labels`] when the
+/// real accepted value for `section.field`, [`accepted_labels`] when the
 /// field has a closed vocabulary, else [`broader_vocab`], else no check
 /// (plain booleans have neither). `value` parses directly as a bare TOML
-/// value expression (scalar, array, or inline table) — the same syntax
+/// value expression (scalar, array, or inline table), the same syntax
 /// it's spliced into after `field = ` in the real scaffold.
 fn assert_value_uses_real_labels(section: &str, field: &str, value: &str) {
     let Some(vocab) = accepted_labels(section, field).or_else(|| broader_vocab(section, field))
@@ -381,7 +393,7 @@ fn collect_string_leaves(value: &toml::Value, out: &mut Vec<String>) {
 
 const INIT_TEMPLATE_HEADER: &str = r"#:schema ./runner.toml.schema.json
 
-# runner.toml — project task-runner configuration.
+# runner.toml, project task-runner configuration.
 # Docs: https://runner.kjanat.dev
 #
 # Every key below is commented out, showing either its built-in default or an
@@ -392,7 +404,7 @@ const INIT_TEMPLATE_HEADER: &str = r"#:schema ./runner.toml.schema.json
 
 /// Render the `runner.toml` scaffold `runner config init` writes.
 ///
-/// Walks [`crate::config::RunnerConfig`]'s schemars metadata — section
+/// Walks [`crate::config::RunnerConfig`]'s schemars metadata. Section
 /// order and doc-comment descriptions come straight from the struct, so
 /// a field can't be silently forgotten or its prose silently drift from
 /// the type. [`FIELD_TEMPLATE`] supplies the one thing schemars can't:
@@ -401,8 +413,8 @@ const INIT_TEMPLATE_HEADER: &str = r"#:schema ./runner.toml.schema.json
 /// # Panics
 ///
 /// Panics if `RunnerConfig`'s schema is malformed (a property without a
-/// `$defs` `$ref`) or a schema field has no [`FIELD_TEMPLATE`] entry —
-/// both indicate a real bug the generator should surface loudly, not
+/// `$defs` `$ref`) or a schema field has no [`FIELD_TEMPLATE`] entry.
+/// Both indicate a real bug the generator should surface loudly, not
 /// paper over, since this only ever runs under `just gen-schema`.
 pub(crate) fn render_init_template() -> String {
     let schema = serde_json::to_value(schemars::schema_for!(crate::config::RunnerConfig))
@@ -430,7 +442,7 @@ pub(crate) fn render_init_template() -> String {
             // Deprecated sections (e.g. `task_runner`, superseded by `tasks`)
             // still need their FIELD_TEMPLATE entries validated so drift is
             // caught, but new users shouldn't be handed a deprecated section
-            // in their starter file — so skip printing it entirely.
+            // in their starter file, so skip printing it entirely.
             for field in properties.keys() {
                 let &(entry_section, entry_field, value, hint) = FIELD_TEMPLATE
                     .iter()
@@ -476,7 +488,7 @@ pub(crate) fn render_init_template() -> String {
         .collect();
     assert!(
         orphaned.is_empty(),
-        "FIELD_TEMPLATE has entries for fields RunnerConfig no longer declares: {orphaned:?} — \
+        "FIELD_TEMPLATE has entries for fields RunnerConfig no longer declares: {orphaned:?}, \
          remove them"
     );
 
@@ -484,9 +496,9 @@ pub(crate) fn render_init_template() -> String {
 }
 
 /// Rewrite a rustdoc intra-doc link (`` [`Type::field`] ``) into plain
-/// backticked text (`` `Type::field` ``) — the square brackets signal a
-/// hyperlink to rustdoc/schemars consumers, but read as stray punctuation
-/// in a plain-text scaffold comment.
+/// backticked text (`` `Type::field` ``). The square brackets signal a
+/// hyperlink to rustdoc, but read as stray punctuation in the plain-text
+/// scaffold comments this feeds.
 fn strip_intra_doc_links(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
@@ -594,11 +606,11 @@ fn patch_source_schema(schema: &mut Value, command: &str) {
 }
 
 /// `Overrides.prefer_sources`/`task_source_pins` hold the same structured
-/// source labels as `SourceEntry.kind`, command-dependent like it — reuse
+/// source labels as `SourceEntry.kind`, command-dependent like it; reuse
 /// `TaskSourceLabel` instead of leaving them generic strings. (Every other
 /// `Overrides` label field is backed by a real enum and gets its schema
-/// constraint straight from `#[derive(schemars::JsonSchema)]` on that enum
-/// — no hand-built schema needed there.)
+/// constraint straight from `#[derive(schemars::JsonSchema)]` on that enum,
+/// no hand-built schema needed there.)
 fn patch_overrides_source_labels(defs: &mut Map<String, Value>) {
     if !defs.contains_key("Overrides") {
         return;
@@ -654,7 +666,7 @@ fn patch_def_field(
     }
 }
 
-/// Like [`patch_def_field`], but for an array-typed field — constrains its
+/// Like [`patch_def_field`], but for an array-typed field, constrains its
 /// `items` schema instead of the field itself.
 fn patch_def_array_items(
     defs: &mut Map<String, Value>,
@@ -669,7 +681,7 @@ fn patch_def_array_items(
     }
 }
 
-/// Like [`patch_def_array_items`], but for a map-of-array field — constrains
+/// Like [`patch_def_array_items`], but for a map-of-array field, constrains
 /// the array items nested under `additionalProperties`.
 fn patch_def_map_array_items(
     defs: &mut Map<String, Value>,
@@ -689,7 +701,7 @@ fn task_source_label_schema(command: &str) -> Value {
     json!({ "type": "string", "enum": source_labels(command) })
 }
 
-/// Closed set for the `why` `provider` field — the tool family that
+/// Closed set for the `why` `provider` field, the tool family that
 /// executes the task. Derived from [`crate::types::TaskSource::all`]
 /// through [`super::why::provider_label`], the same function `why` calls
 /// at runtime, so the committed schema's enum can't drift from it.
@@ -702,10 +714,10 @@ fn provider_labels() -> Vec<&'static str> {
 
 /// Closed label set for `command`'s source labels, derived from
 /// [`crate::types::TaskSource::all`] through the same label functions
-/// `list`/`doctor`/`why` use at runtime — so the committed schema's enum
+/// `list`/`doctor`/`why` use at runtime, so the committed schema's enum
 /// can't drift from what the binary actually emits. `list` uses the flat
 /// label convention; `doctor`/`why` use the structured one (only
-/// `CargoAliases` differs — `"cargo-alias"` vs `"cargo"`).
+/// `CargoAliases` differs, `"cargo-alias"` vs `"cargo"`).
 fn source_labels(command: &str) -> Vec<&'static str> {
     use crate::schema::labels::{flat_source_label, structured_source_label};
     use crate::types::TaskSource;
@@ -751,6 +763,45 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn doctor_conflict_schema_distinguishes_task_and_install_metadata() {
+        let schema = super::output_schema::<crate::schema::doctor::DoctorReport<'static>>("doctor")
+            .expect("doctor schema should generate");
+        let variants = schema["$defs"]["Conflict"]["oneOf"]
+            .as_array()
+            .expect("Conflict should be split by kind");
+        let variant = |kind: &str| {
+            variants
+                .iter()
+                .find(|variant| variant["properties"]["kind"]["const"] == kind)
+                .unwrap_or_else(|| panic!("missing {kind} conflict schema"))
+        };
+
+        let task = variant("duplicate-task-name");
+        assert_eq!(
+            task["properties"]["selected"]["description"],
+            "FQN of the winning task."
+        );
+        assert_eq!(
+            task["properties"]["shadowed"]["description"],
+            "FQNs of the shadowed tasks."
+        );
+
+        let install = variant("install-dir-collision");
+        assert_eq!(
+            install["properties"]["selected"]["description"],
+            "Label of the selected package manager."
+        );
+        assert_eq!(
+            install["properties"]["selector"]["description"],
+            "Path of the conflicting installation directory."
+        );
+        assert_eq!(
+            install["properties"]["shadowed"]["description"],
+            "Labels of the shadowed package managers."
+        );
+    }
+
+    #[test]
     fn committed_doctor_example_includes_quiet_override() {
         let raw = std::fs::read_to_string("schemas/doctor.example.json")
             .expect("committed doctor example should be readable");
@@ -789,7 +840,7 @@ mod tests {
         // source_labels(command) used to be three hand-maintained arrays,
         // free to drift from the label functions `list`/`why`/`doctor`
         // actually call at runtime. Now that it's derived, this test is a
-        // tautology against today's implementation — its job is to catch a
+        // tautology against today's implementation; its job is to catch a
         // future regression back to a hardcoded list.
         for command in ["list", "doctor", "why"] {
             let schema = super::task_source_label_schema(command);
@@ -813,7 +864,7 @@ mod tests {
         // correct; it says nothing about whether `just gen-schema` was
         // actually re-run before committing. Read every checked-in schema
         // that defines TaskSourceLabel directly off disk so a stale
-        // artifact — the generator fixed, the commit forgotten — fails
+        // artifact, the generator fixed, the commit forgotten, fails
         // here instead of shipping silently.
         for &(path, command) in COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL {
             let raw = std::fs::read_to_string(path)
@@ -830,7 +881,7 @@ mod tests {
                 enum_values,
                 runtime_labels(command),
                 "{path}: committed TaskSourceLabel enum has drifted from the runtime label \
-                 function — run `just gen-schema` and commit the result"
+                 function, run `just gen-schema` and commit the result"
             );
         }
     }
@@ -840,7 +891,7 @@ mod tests {
         // provider_labels() used to be a hand-maintained PROVIDER_LABELS
         // array, free to drift from cmd::why::provider_label. Now that
         // it's derived, this test is a tautology against today's
-        // implementation — its job is to catch a future regression back
+        // implementation; its job is to catch a future regression back
         // to a hardcoded list.
         let enum_values = super::provider_labels();
         let runtime_values: Vec<&str> = crate::types::TaskSource::all()
@@ -871,7 +922,7 @@ mod tests {
             enum_values,
             super::provider_labels(),
             "schemas/why.schema.json: committed ProviderLabel enum has drifted from \
-             cmd::why::provider_label — run `just gen-schema` and commit the result"
+             cmd::why::provider_label, run `just gen-schema` and commit the result"
         );
     }
 
@@ -882,7 +933,7 @@ mod tests {
             .expect("committed init template should be readable");
         assert_eq!(
             generated, committed,
-            "schemas/runner.init.toml has drifted from render_init_template() — run `just \
+            "schemas/runner.init.toml has drifted from render_init_template(), run `just \
              gen-schema` and commit the result"
         );
     }

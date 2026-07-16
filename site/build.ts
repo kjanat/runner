@@ -118,7 +118,7 @@ export async function build(options: BuildOptions = {}): Promise<DistFile[]> {
 	const dirMode: DirMode = options.dir ?? "relative";
 	const display = (abs: string, base: string) => dirMode === "full" ? abs : relative(base, abs);
 
-	// Bun.build's outputs already hold the bundled bytes in memory — no re-read from disk.
+	// Bun.build's outputs already hold the bundled bytes in memory, no re-read from disk.
 	// HTMLs get post-processed (placeholders, analytics, dead-script pruning)
 	// and rewritten; everything else stays as Bun emitted it.
 	const fromBundle = await Promise.all(

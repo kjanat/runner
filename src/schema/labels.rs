@@ -17,7 +17,7 @@ pub(crate) const fn flat_source_label(source: TaskSource) -> &'static str {
 }
 
 /// Source label for the structured `doctor`/`why` reports. Only
-/// [`TaskSource::CargoAliases`] diverges from [`flat_source_label`] — see
+/// [`TaskSource::CargoAliases`] diverges from [`flat_source_label`], see
 /// module docs.
 pub(crate) const fn structured_source_label(source: TaskSource) -> &'static str {
     match source {
@@ -80,7 +80,7 @@ pub(crate) fn source_anchor(source: TaskSource, root: &Path) -> Option<PathBuf> 
 /// a fixed executing binary resolve deterministically; `package.json` and
 /// `pyproject.toml` scripts depend on package-manager resolution, which the
 /// two callers perform differently (why: only for the selected candidate;
-/// doctor: project-wide) — `node_pm`/`python_pm` take that result already
+/// doctor: project-wide). `node_pm`/`python_pm` take that result already
 /// resolved to a label.
 pub(crate) fn resolved_command(
     task: &Task,

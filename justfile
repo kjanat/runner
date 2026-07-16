@@ -1,7 +1,7 @@
 # https://just.systems
 set unstable
 
-# Version/triple live in recipe parameter defaults (evaluated per invocation), not globals — just evaluates globals on every run.
+# Version/triple live in recipe parameter defaults (evaluated per invocation), not globals; just evaluates globals on every run.
 build-pkgscript := "npm" / "scripts" / "build-packages.ts"
 downloads-dir := "npm" / "downloads"
 

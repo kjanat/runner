@@ -239,7 +239,7 @@ fn parallel_install_chain_times_the_install_step() {
     // Parity guard for install-chain timing: the parallel (`-p`) install path
     // runs install imperatively before fanning the tasks out, so it must wrap
     // that install in the same timing the sequential path's synthetic install
-    // head gets — otherwise `runner install -p ...` would time the tasks but
+    // head gets; otherwise `runner install -p ...` would time the tasks but
     // not the install step, while `-s` times both.
     let project = isolated_install_project();
     let output = Command::new(runner_binary())
@@ -323,7 +323,7 @@ fn grouped_parallel_chain_folds_timing_into_group_footer_under_actions() {
     // under GitHub Actions the same grouped fixture wraps each task in a
     // `::group::runner: <task>` block and folds its duration into the block's
     // footer *inside* the group, before `::endgroup::` (see `flush_task_group`'s
-    // `gha_syntax` path in src/chain/exec.rs — the footer is written before the
+    // `gha_syntax` path in src/chain/exec.rs; the footer is written before the
     // GroupGuard's Drop emits `::endgroup::`).
     let output = Command::new(runner_binary())
         .arg("--dir")
@@ -410,7 +410,7 @@ fn quiet_suppresses_chain_timing() {
         0,
         "--quiet must suppress timing lines. stderr: {stderr}",
     );
-    // The tasks still ran — quiet hides meta-output, not task output.
+    // The tasks still ran: quiet hides meta-output, not task output.
     assert!(
         stdout.contains("build-ran") && stdout.contains("test-ran"),
         "tasks should still run under --quiet. stdout: {stdout}",
@@ -474,7 +474,7 @@ fn chain_rejects_mutually_exclusive_mode_flags() {
 
 #[test]
 fn chain_rejects_whitespace_positional_in_v1() {
-    // No `just_available()` gate — the parser rejects the whitespace
+    // No `just_available()` gate: the parser rejects the whitespace
     // positional before any task is dispatched, so the test runs
     // regardless of whether `just` is on PATH.
     let output = Command::new(runner_binary())
@@ -535,7 +535,7 @@ fn chain_mode_completion_offers_tasks_after_first_task() {
         return;
     }
 
-    // `run -s build <TAB>` — the trailing words are extra task names in
+    // `run -s build <TAB>`, the trailing words are extra task names in
     // chain mode, so the second position must offer task candidates.
     let output = Command::new(runner_binary())
         .env("COMPLETE", "zsh")
@@ -557,7 +557,7 @@ fn chain_mode_completion_offers_tasks_after_first_task() {
         "chain-mode completion should offer task candidates. stdout: {stdout}",
     );
 
-    // Without a chain flag the trailing words are the task's own args —
+    // Without a chain flag the trailing words are the task's own args, so
     // task names would be noise there.
     let output = Command::new(runner_binary())
         .env("COMPLETE", "zsh")
@@ -577,12 +577,12 @@ fn chain_mode_completion_offers_tasks_after_first_task() {
 
 #[test]
 fn chain_prevalidates_all_tokens_before_running_any_task() {
-    // A chain with a clearly-broken third token (`lint:cargo` — the
+    // A chain with a clearly-broken third token (`lint:cargo`, the
     // reversed qualifier we error on) must NOT run `build` and `test`
     // to completion first. The pre-validation in `run_chain` should
     // bail before any sibling dispatches.
     //
-    // No `just_available()` gate — `precheck_task` works off
+    // No `just_available()` gate: `precheck_task` works off
     // `ctx.tasks` (populated from the justfile by the detector) and
     // never spawns the just binary itself. If `just` is missing the
     // tasks table is empty, which would make this test pass for the
@@ -658,7 +658,7 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
         .unwrap_or_else(|| panic!("build-ran missing. stdout: {stdout}"));
 
     // build's group opens, contains its output, and closes before test's
-    // group opens — flat, non-overlapping groups (GitHub Actions can't
+    // group opens, flat, non-overlapping groups (GitHub Actions can't
     // render nested ones).
     assert!(
         g_build < build_ran && build_ran < end_build && end_build < g_test,
@@ -682,8 +682,8 @@ fn single_task_is_grouped_under_github_actions() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // A bare single task (no `-s`) still gets one group under GitHub Actions
-    // — grouping covers every task run, not just multi-step chains.
+    // A bare single task (no `-s`) still gets one group under GitHub Actions.
+    // Grouping covers every task run, not just multi-step chains.
     let output = Command::new(runner_binary())
         .arg("--dir")
         .arg(fixture("chain-sequential"))
@@ -803,7 +803,7 @@ fn parallel_chain_grouped_under_github_actions() {
         return;
     }
     // Default `[github].group_parallel` buffers each task and emits it as its
-    // own ::group:: block under GitHub Actions — no live `[task]` prefixes.
+    // own ::group:: block under GitHub Actions, no live `[task]` prefixes.
     let output = Command::new(runner_binary())
         .arg("--dir")
         .arg(fixture("chain-sequential"))

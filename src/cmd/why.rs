@@ -1,4 +1,4 @@
-//! `runner why <task>` — explain how a specific task name would be
+//! `runner why <task>`, explain how a specific task name would be
 //! dispatched.
 //!
 //! Walks the same source-selection chain used by `runner run`, plus the PM
@@ -31,7 +31,7 @@ pub(crate) fn why(
     task: &str,
     json: bool,
 ) -> Result<()> {
-    // Interpret the token exactly like `run` does — qualified syntax
+    // Interpret the token exactly like `run` does: qualified syntax
     // (`deno:lint`), FQN (`root:package.json#name`), and the exact-name
     // fallback for colon-named scripts all resolve here, so `why` can
     // explain the very dispatch `run` would perform for the same token.
@@ -469,7 +469,7 @@ pub(super) const fn provider_label(source: TaskSource) -> &'static str {
 }
 
 /// Effective command preview for the candidate. `why` only resolves the
-/// PM for the selected task — other candidates report null. Delegates the
+/// PM for the selected task; other candidates report null. Delegates the
 /// per-source dispatch to [`labels::resolved_command`], shared with
 /// `doctor`.
 fn resolved_command(task: &Task, pm_decision: Option<&PmDecision>) -> Option<String> {
@@ -513,7 +513,7 @@ fn print_human(
     for c in candidates {
         let depth = source_depth(ctx, c.source);
         let depth_label = if depth == usize::MAX {
-            "—".to_string()
+            "-".to_string()
         } else {
             depth.to_string()
         };
@@ -586,6 +586,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -684,7 +685,7 @@ mod tests {
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["kind"], "runner.why");
         assert_eq!(json["query"], "t");
         assert_eq!(json["pm_resolution"], serde_json::Value::Null);
@@ -735,7 +736,7 @@ mod tests {
     fn report_describes_qualifier_mismatch_as_filtered_not_runner_restricted() {
         // `why deno:build` when "build" exists elsewhere but not under
         // deno.json: `candidates` still lists the same-named tasks
-        // (useful diagnostic — `lookup_token` surfaces them precisely so
+        // (useful diagnostic, `lookup_token` surfaces them precisely so
         // this case is explainable), but nothing is eligible under the
         // `deno:` qualifier, so `selected` is None. The "filtered" reason
         // must name the qualifier, not blame a --runner restriction that
@@ -787,7 +788,7 @@ mod tests {
         assert_eq!(json["decision"]["strategy"], "ranked");
         assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
         // package.json resolved depends on PM resolution, which only the
-        // selected task gets — and no PM decision was passed here.
+        // selected task gets, and no PM decision was passed here.
         assert_eq!(
             json["candidates"][0]["task"]["resolved"],
             serde_json::Value::Null

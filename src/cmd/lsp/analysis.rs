@@ -2,7 +2,7 @@
 //!
 //! A small, TOML-aware (not TOML-complete) reading of the line under the cursor
 //! plus the nearest `[section]` header above it. Enough to answer "what section
-//! am I in, and am I on a key or a value?" — which drives both hover lookups and
+//! am I in, and am I on a key or a value?", which drives both hover lookups and
 //! completion candidate sets without a full document parse.
 
 use std::collections::BTreeMap;
@@ -47,7 +47,7 @@ struct Cursor {
     shape: LineShape,
 }
 
-/// Byte offset of the `#` that starts a comment on `line`, if any — the
+/// Byte offset of the `#` that starts a comment on `line`, if any, the
 /// first `#` outside a `"`/`'` string literal.
 fn comment_start(line: &str) -> Option<usize> {
     let (mut in_basic, mut in_literal) = (false, false);
@@ -242,7 +242,7 @@ pub(super) fn completion(
 /// Completion on the key side of a line. In `[tasks.overrides]` (or after
 /// `overrides.` in `[tasks]`) the keys are the project's own task names, so
 /// they complete from task discovery over the document's directory; any
-/// other dotted key completes nothing — TOML reads it as a key *path*, and
+/// other dotted key completes nothing: TOML reads it as a key *path*, and
 /// no other section has enumerable sub-keys. The typed token is replaced
 /// via an explicit text edit so a client can only ever substitute it, never
 /// append to it (a stale list left open after a backspace would otherwise
@@ -404,7 +404,7 @@ fn section_items(schema: &SchemaIndex, bracketed: bool) -> Vec<CompletionItem> {
 }
 
 /// Sub-table completion under `parent` (e.g. `overrides` for `[tasks.`).
-/// A parent with no sub-tables completes nothing — the top-level list would
+/// A parent with no sub-tables completes nothing: the top-level list would
 /// only mint invalid `[parent.section]` paths.
 fn subtable_items(schema: &SchemaIndex, parent: &str) -> Vec<CompletionItem> {
     let prefix = format!("{parent}.");
@@ -526,7 +526,7 @@ fn value_items(
     let field = schema.section(section).and_then(|s| s.fields.get(key));
     // For a sequence-typed field with no `[` typed yet, wrap the first
     // element so accepting a completion yields valid TOML. Inside an open
-    // string literal the quotes (and brackets) are already typed — insert
+    // string literal the quotes (and brackets) are already typed, so insert
     // the bare word.
     let wrap = !in_array && !in_string && field.is_some_and(|f| f.field_type == FieldType::Array);
     if let Some(field) = field
@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn value_completion_inside_an_open_string_stays_bare() {
         let schema = SchemaIndex::build();
-        // `prefer = ["ba` — the quote is already typed (and the client may
+        // `prefer = ["ba`, the quote is already typed (and the client may
         // auto-pair the closer); inserting a quoted value would double it.
         let text = "[tasks]\nprefer = [\"ba\n";
         let items = completion(

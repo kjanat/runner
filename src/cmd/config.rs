@@ -1,4 +1,4 @@
-//! `runner config` — scaffold, inspect, and validate the project-level
+//! `runner config`, scaffold, inspect, and validate the project-level
 //! `runner.toml`. These actions operate on the file directly and must run
 //! *before* the resolver's own `config::load` (which aborts on a malformed
 //! file); `config validate` exists precisely to report that condition.
@@ -24,7 +24,7 @@ pub(crate) fn config(dir: &Path, action: ConfigAction) -> Result<i32> {
     }
 }
 
-/// `runner config init` — write the commented starter template to
+/// `runner config init`, write the commented starter template to
 /// `<dir>/runner.toml`. Refuses to clobber an existing file unless `force`.
 fn init(dir: &Path, force: bool) -> Result<i32> {
     let target = dir.join(CONFIG_FILENAME);
@@ -38,7 +38,7 @@ fn init(dir: &Path, force: bool) -> Result<i32> {
         return Ok(2);
     }
     // config::INIT_TEMPLATE carries its own repo-relative `#:schema` pragma
-    // (for editing this repo's copy) — swap it for the real published URL
+    // (for editing this repo's copy); swap it for the real published URL
     // rather than stacking a second pragma line in the user's project.
     let body = strip_leading_schema_pragma(config::INIT_TEMPLATE);
     let contents = format!("#:schema {}\n\n{body}", crate::schema::config_schema_url());
@@ -62,7 +62,7 @@ fn strip_leading_schema_pragma(template: &str) -> &str {
     after_line.strip_prefix('\n').unwrap_or(after_line)
 }
 
-/// `runner config show` — render the effective config (file values merged
+/// `runner config show`, render the effective config (file values merged
 /// with built-in defaults) as TOML, or JSON with `--json`. Propagates parse
 /// errors; use `validate` for a non-fatal diagnostic.
 fn show(dir: &Path, json: bool) -> Result<i32> {
@@ -87,7 +87,7 @@ fn show(dir: &Path, json: bool) -> Result<i32> {
                 "{} {} {}",
                 "config:".bold(),
                 target.display(),
-                "(not found — built-in defaults)".dimmed(),
+                "(not found, built-in defaults)".dimmed(),
             );
         }
         print!("{}", toml::to_string_pretty(&cfg)?);
@@ -95,7 +95,7 @@ fn show(dir: &Path, json: bool) -> Result<i32> {
     Ok(0)
 }
 
-/// `runner config validate` — parse the file and run the same field and
+/// `runner config validate`, parse the file and run the same field and
 /// failure-policy checks a live dispatch applies. Returns the exit code:
 /// `0` when valid (or absent), `2` on any parse or policy error.
 fn validate(dir: &Path) -> i32 {
@@ -117,7 +117,7 @@ fn validate(dir: &Path) -> i32 {
     };
 
     // Unknown sections/fields are tolerated (forward compat) but worth
-    // flagging here — a typo, or a key from a newer runner. They don't make
+    // flagging here, a typo, or a key from a newer runner. They don't make
     // the file invalid, so they warn without changing the exit code.
     for warning in &loaded.warnings {
         eprintln!("{} {warning}", "warn:".yellow().bold());
@@ -131,7 +131,7 @@ fn validate(dir: &Path) -> i32 {
     0
 }
 
-/// `runner config path` — print the resolved `runner.toml` path (whether or
+/// `runner config path`, print the resolved `runner.toml` path (whether or
 /// not it exists), one line, for scripting. Always succeeds.
 fn path(dir: &Path) -> i32 {
     println!("{}", dir.join(CONFIG_FILENAME).display());

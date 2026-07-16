@@ -1,6 +1,6 @@
 //! Integration coverage for the builtin-verb dispatch split.
 //!
-//! The explicit `runner <verb>` subcommand is ALWAYS the builtin — a
+//! The explicit `runner <verb>` subcommand is ALWAYS the builtin: a
 //! same-named project task never shadows it. The run path (`run <verb>` /
 //! `runner run <verb>`) runs a same-named task when one exists, else falls
 //! back to the builtin's default (no-flag) form.

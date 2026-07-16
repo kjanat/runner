@@ -92,9 +92,9 @@ pub fn config_schema() -> schemars::Schema {
 }
 
 /// Exit code semantics:
-/// - `0` — success
-/// - `1` — generic failure (I/O, detection, child-process non-zero)
-/// - `2` — resolver could not satisfy intent (typed resolver error)
+/// - `0`, success
+/// - `1`, generic failure (I/O, detection, child-process non-zero)
+/// - `2`, resolver could not satisfy intent (typed resolver error)
 ///
 /// `main` and `bin/run.rs` use this to map an [`anyhow::Error`] to the
 /// right code: anything that downcasts to the internal resolver-error
@@ -187,7 +187,7 @@ where
         Err(err) => return render_clap_error(&err),
     };
     // The language server parses each editor buffer itself and needs neither a
-    // resolved project dir nor detection — handle it before either can bail.
+    // resolved project dir nor detection; handle it before either can bail.
     #[cfg(feature = "lsp")]
     if matches!(cli.command.as_ref(), Some(cli::Command::Lsp)) {
         return cmd::lsp::run();
@@ -241,7 +241,7 @@ fn shorten_help_subcommand(mut command: clap::Command) -> clap::Command {
 /// dispatch, and return the exit code.
 ///
 /// Always treats positional arguments as a task or command (routed through
-/// `cmd::run`) — built-in subcommand names are never parsed specially, so
+/// `cmd::run`); built-in subcommand names are never parsed specially, so
 /// `run clean`, `run install`, etc. run a same-named project task when one
 /// exists. When no such task exists, a bare run token naming a built-in verb
 /// (`install`/`clean`/`list`/`info`/`completions`) falls back to that
@@ -315,7 +315,7 @@ where
         // clap's built-ins are disabled and the flag is undefined, so it
         // can't fill the hyphen-rejecting `task` positional and surfaces as
         // `UnknownArgument`. (A *trailing* one is swallowed by `args` and
-        // forwarded instead — see `cli::RunAliasCli`.) Covers the bare
+        // forwarded instead, see `cli::RunAliasCli`.) Covers the bare
         // `run --help` as well as `run --pm npm --help`, `run --dir … -V`.
         Err(err) => {
             return match alias_builtin_request(&err) {
@@ -352,8 +352,8 @@ enum AliasBuiltin {
 /// With clap's built-in `--help`/`--version` disabled and undefined, a
 /// leading `-h`/`--help`/`-V`/`--version` cannot fill the hyphen-rejecting
 /// `task` positional, so clap reports [`ErrorKind::UnknownArgument`] naming
-/// the offending flag. A *trailing* one never reaches here — it is captured
-/// by `args` and forwarded — so an `UnknownArgument` naming a help/version
+/// the offending flag. A *trailing* one never reaches here; it is captured
+/// by `args` and forwarded, so an `UnknownArgument` naming a help/version
 /// flag unambiguously means "before any task", i.e. ours to handle.
 fn alias_builtin_request(err: &clap::Error) -> Option<AliasBuiltin> {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
@@ -416,14 +416,14 @@ where
 ///   `command: None`, reproducing the bare-`runner` project dashboard.
 ///   A lone `-k`/`-K` does not defeat this: the chain-failure flags are
 ///   inert on the dashboard (which never reads the failure policy) and are
-///   dropped before override building, so — unlike the old eager builder —
+///   dropped before override building, so, unlike the old eager builder,
 ///   a bare `run -k`/`-K` no longer conflicts with an opposite-polarity
 ///   `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or `[chain]` config;
 /// - everything else becomes [`cli::Command::Run`] carrying the alias's
 ///   task, forwarded args, and chain flags.
 ///
-/// Building a typed [`cli::Cli`] here — rather than rewriting argv to
-/// `["runner", "run", …]` and re-parsing through clap — keeps the mapping
+/// Building a typed [`cli::Cli`] here, rather than rewriting argv to
+/// `["runner", "run", …]` and re-parsing through clap, keeps the mapping
 /// total and compiler-checked and, crucially, leaves the alias's bespoke
 /// help/version forwarding untouched. That forwarding lives in the parse
 /// layer ([`cli::RunAliasCli`] disables clap's `--help`/`--version` so a
@@ -702,7 +702,7 @@ fn dispatch_install_chain(
     // Pre-flight the task tokens up front to preserve the "typo aborts before
     // install" guarantee the sequential path gets for free. `run_chain` below
     // re-prechecks (it can't assume a caller did), but that pass runs after
-    // install — this loop is what gates the slow install. precheck_task is
+    // install; this loop is what gates the slow install. precheck_task is
     // side-effect-free, so the redundant second pass is harmless.
     for task in tasks {
         cmd::run::precheck_task(ctx, overrides, task)?;
@@ -780,7 +780,7 @@ fn dispatch_run(
 /// Run-path fallback for builtin verbs.
 ///
 /// When a bare, arg-less `run`/`runner run` token names a built-in verb and
-/// no same-named task exists, run that built-in's default (no-flag) form —
+/// no same-named task exists, run that built-in's default (no-flag) form,
 /// the same behavior the explicit `runner <verb>` subcommand provides. A
 /// project task of the same name takes precedence (handled by the early
 /// `has_task` return → falls through to `cmd::run`).
@@ -789,10 +789,10 @@ fn dispatch_run(
 /// to fall through to `cmd::run` (task dispatch / PM-exec).
 ///
 /// Qualified tokens (`source:verb`) carry the `source:` prefix, so they never
-/// match a bare verb arm and fall through untouched — no qualifier parsing
+/// match a bare verb arm and fall through untouched, no qualifier parsing
 /// needed here. `info` maps to a plain `list` (no deprecation warning): the
 /// deprecation is specific to the explicit `runner info` subcommand, and
-/// emitting it on the run path — where the user typed `run info` — would be
+/// emitting it on the run path, where the user typed `run info`, would be
 /// misleading and would spuriously fire the GitHub Actions annotation.
 fn run_path_builtin_fallback(
     ctx: &types::ProjectContext,
@@ -927,7 +927,7 @@ fn build_overrides_lenient(
 
 /// Resolve overrides for [`dispatch`]. Strict for every command;
 /// `doctor` retries leniently on failure because it must survive the
-/// misconfigured environment it exists to diagnose — env garbage
+/// misconfigured environment it exists to diagnose; env garbage
 /// degrades to warnings appended to `ctx`, while CLI flag garbage
 /// re-raises from the lenient pass and stays fatal.
 fn dispatch_overrides(
@@ -948,7 +948,7 @@ fn dispatch_overrides(
 
 fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let mut ctx = detect::detect(dir);
-    // A malformed `runner.toml` must not abort the `config` subcommand —
+    // A malformed `runner.toml` must not abort the `config` subcommand;
     // `config validate`/`show` exist to inspect and repair exactly that
     // file, and they re-load it with their own error handling. Unknown
     // sections/fields are tolerated everywhere (forward compat) and surface
@@ -962,7 +962,10 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     if let Some(loaded) = &loaded_config {
         ctx.warnings.extend(loaded.warnings.iter().cloned());
     }
-    let overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
+    let mut overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
+    // The first point where a resolved root and the inherited marker are both
+    // in hand, so it is where the nesting question gets answered.
+    overrides.parent_warned = cmd::parent_warned_about(&ctx.root);
 
     match cli.command {
         None => cmd::info(&ctx, &overrides, false).map(|()| 0),
@@ -1011,7 +1014,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             failure,
             ..
         }) => {
-            // No post-install tasks, so the chain flags govern nothing — say so
+            // No post-install tasks, so the chain flags govern nothing; say so
             // rather than silently swallowing a `-p`/`-k` the user expected to
             // matter.
             if mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail {
@@ -1319,7 +1322,7 @@ mod tests {
 
     #[test]
     fn bin_name_from_arg0_preserves_unrelated_extensions() {
-        // `.exe` only — names that happen to embed those characters in other
+        // `.exe` only, names that happen to embed those characters in other
         // positions, or carry different extensions, pass through unchanged.
         let dotted = bin_name_from_arg0(&OsString::from("/tmp/runner.exe.bak"));
         assert_eq!(dotted.as_deref(), Some("runner.exe.bak"));
@@ -1355,6 +1358,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -1441,7 +1445,7 @@ mod tests {
     #[test]
     fn run_alias_bare_matches_bare_runner_dashboard() {
         // A bare `run` maps to `command: None`, the same project-dashboard
-        // path bare `runner` takes — both succeed identically on an empty
+        // path bare `runner` takes; both succeed identically on an empty
         // directory.
         let dir = TempDir::new("runner-run-alias-bare-eq");
         let alias = run_alias_in_dir(["run"], dir.path()).expect("bare run should succeed");

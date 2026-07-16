@@ -1,4 +1,4 @@
-//! Deno — secure JavaScript/TypeScript runtime.
+//! Deno, secure JavaScript/TypeScript runtime.
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -198,7 +198,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
     c
 }
 
-/// `deno x <args...>` — Deno's `npx`-equivalent (Deno 2.x+).
+/// `deno x <args...>`, Deno's `npx`-equivalent (Deno 2.x+).
 ///
 /// Resolves and runs an `npm:` / `jsr:` package's binary entry point
 /// without installing it permanently. Bare-name targets (no registry
@@ -226,7 +226,7 @@ pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
     c
 }
 
-/// `deno run <file> [args...]` — execute a local source file with the
+/// `deno run <file> [args...]`, execute a local source file with the
 /// Deno runtime. Distinct from [`exec_cmd`] (`deno x`), which resolves a
 /// remote `npm:`/`jsr:` package; this runs an on-disk path. No permission
 /// flags are added, so the file runs under Deno's default deny-all sandbox;
@@ -238,31 +238,40 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     c
 }
 
-/// Whether this Deno project materializes a local `node_modules/` — its
-/// `nodeModulesDir` resolves to `auto`/`manual` (Deno 2.x) or the legacy
-/// boolean `true`. When it does, `deno install` writes the same directory a
-/// node-ecosystem PM (`npm`/`yarn`/`pnpm`/`bun`) would, so installing with
-/// both is a collision. Unreadable/absent config or any other value
-/// (`none`, unset) means Deno keeps deps in its global cache — no collision.
+/// Whether this Deno project materializes a local `node_modules/`, in which
+/// case `deno install` writes the same directory a node-ecosystem PM
+/// (`npm`/`yarn`/`pnpm`/`bun`) would.
+///
+/// An explicit `nodeModulesDir` decides it: `auto`/`manual` (Deno 2.x) or the
+/// legacy boolean `true` write the directory, `none`/`false` keep dependencies
+/// in Deno's global cache. Absent, the answer follows Deno's own default, which
+/// depends on the project: Deno's docs say "projects with a `package.json`
+/// default to the manual `node_modules` mode, which is why the explicit `deno
+/// install` step is needed", and everything else resolves npm packages from the
+/// global cache.
 pub(crate) fn writes_node_modules(dir: &Path) -> bool {
+    declared_node_modules_dir(dir).unwrap_or_else(|| node::has_package_json(dir))
+}
+
+/// The `nodeModulesDir` setting from the nearest Deno config, as a yes/no.
+/// `None` when there is no config, none that parses, or no such key in it.
+fn declared_node_modules_dir(dir: &Path) -> Option<bool> {
     #[derive(Deserialize)]
     struct Partial {
         #[serde(rename = "nodeModulesDir")]
         node_modules_dir: Option<serde_json::Value>,
     }
-    let Some(path) = find_config_upwards(dir) else {
-        return false;
-    };
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return false;
-    };
-    let Ok(parsed) = json5::from_str::<Partial>(&content) else {
-        return false;
-    };
-    match parsed.node_modules_dir {
-        Some(serde_json::Value::Bool(enabled)) => enabled,
-        Some(serde_json::Value::String(mode)) => matches!(mode.as_str(), "auto" | "manual"),
-        _ => false,
+    let path = find_config_upwards(dir)?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    let parsed = json5::from_str::<Partial>(&content).ok()?;
+    match parsed.node_modules_dir? {
+        serde_json::Value::Bool(enabled) => Some(enabled),
+        serde_json::Value::String(mode) => match mode.as_str() {
+            "auto" | "manual" => Some(true),
+            "none" => Some(false),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -319,7 +328,7 @@ mod tests {
     #[test]
     fn exec_uses_deno_x_passthrough() {
         // `runner --pm deno run npm:create-vite my-app` should build
-        // `deno x npm:create-vite my-app` — the `x` subcommand sits
+        // `deno x npm:create-vite my-app`; the `x` subcommand sits
         // before the target so Deno's `npx`-equivalent picks up the
         // user's verbatim args.
         let args = [String::from("npm:create-vite"), String::from("my-app")];
@@ -351,10 +360,65 @@ mod tests {
     }
 
     #[test]
+    fn unset_node_modules_dir_follows_denos_own_default() {
+        use super::writes_node_modules;
+
+        // "Projects with a package.json default to the manual node_modules
+        // mode, which is why the explicit `deno install` step is needed."
+        let with_manifest = TempDir::new("deno-nmd-package-json");
+        fs::write(with_manifest.path().join("deno.json"), r#"{ "tasks": {} }"#).expect("config");
+        fs::write(with_manifest.path().join("package.json"), r#"{"name":"x"}"#)
+            .expect("package.json");
+        assert!(
+            writes_node_modules(with_manifest.path()),
+            "`deno install` populates node_modules for a package.json project",
+        );
+
+        // Without one, npm packages resolve from the global cache.
+        let without = TempDir::new("deno-nmd-no-package-json");
+        fs::write(without.path().join("deno.json"), r#"{ "tasks": {} }"#).expect("config");
+        assert!(!writes_node_modules(without.path()));
+
+        // An explicit `none` still wins over the package.json default.
+        let opted_out = TempDir::new("deno-nmd-opted-out");
+        fs::write(
+            opted_out.path().join("deno.json"),
+            r#"{ "nodeModulesDir": "none" }"#,
+        )
+        .expect("config");
+        fs::write(opted_out.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        assert!(!writes_node_modules(opted_out.path()));
+
+        // Unknown values do not silently opt out; they defer to the project
+        // default just like an absent declaration.
+        for (i, value) in [r#""future-mode""#, "42"].iter().enumerate() {
+            let invalid = TempDir::new(&format!("deno-nmd-invalid-{i}"));
+            fs::write(
+                invalid.path().join("deno.json"),
+                format!(r#"{{ "nodeModulesDir": {value} }}"#),
+            )
+            .expect("config");
+            fs::write(invalid.path().join("package.json"), r#"{"name":"x"}"#)
+                .expect("package.json");
+            assert!(writes_node_modules(invalid.path()), "value: {value}");
+        }
+    }
+
+    #[test]
     fn writes_node_modules_false_without_config() {
         use super::writes_node_modules;
         let dir = TempDir::new("deno-no-config");
         assert!(!writes_node_modules(dir.path()));
+    }
+
+    #[test]
+    fn a_config_less_deno_project_with_a_package_json_still_writes_node_modules() {
+        // Deno needs no config at all: `deno.lock` alone detects it, and
+        // `deno install` reads the package.json.
+        use super::writes_node_modules;
+        let dir = TempDir::new("deno-no-config-package-json");
+        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
+        assert!(writes_node_modules(dir.path()));
     }
 
     #[test]

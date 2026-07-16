@@ -1,4 +1,4 @@
-//! Volta toolchain manager — shim classification and `volta which`
+//! Volta toolchain manager, shim classification and `volta which`
 //! resolution.
 //!
 //! Volta interposes shims for `node`/`npm`/`yarn`/`pnpm` on `PATH`
@@ -25,7 +25,7 @@ pub(crate) struct VoltaInstall {
 impl VoltaInstall {
     /// Locate Volta from the live environment: the directory holding
     /// the `volta` binary on `PATH`, plus `$VOLTA_HOME/bin` when set.
-    /// Returns `None` when neither signal exists — no Volta, nothing
+    /// Returns `None` when neither signal exists, no Volta, nothing
     /// to classify.
     pub(crate) fn locate() -> Option<Self> {
         let volta_bin = std::env::var_os("PATH").and_then(|path| {
@@ -39,7 +39,7 @@ impl VoltaInstall {
         Self::from_candidates(volta_bin.as_deref(), volta_home.as_deref())
     }
 
-    /// Pure constructor for tests — injected candidates, no env reads.
+    /// Pure constructor for tests, injected candidates, no env reads.
     pub(crate) fn from_candidates(
         volta_bin: Option<&Path>,
         volta_home: Option<&Path>,
@@ -60,7 +60,7 @@ impl VoltaInstall {
     }
 
     /// True when `bin` lives directly in one of the shim directories.
-    /// Exact parent-directory equality, not prefix matching —
+    /// Exact parent-directory equality, not prefix matching:
     /// `<shimdir>/nested/npm` is not a shim. Only the *parent* is
     /// canonicalized: on Unix the shims themselves are symlinks to
     /// `volta-shim`, and canonicalizing the file would escape the bin
@@ -88,7 +88,7 @@ pub(crate) enum ShimResolution {
     Resolved(PathBuf),
     /// Volta answered but has no version of the tool ("No default …").
     NotProvisioned,
-    /// Volta itself failed to answer (spawn error, empty output) —
+    /// Volta itself failed to answer (spawn error, empty output);
     /// claim nothing.
     Unknown,
 }
@@ -97,7 +97,7 @@ pub(crate) enum ShimResolution {
 ///
 /// Runs with `project_root` as the working directory because `volta
 /// which` honors the project pinning of its CWD. Classification uses
-/// exit status and stdout only — Volta's error wording ("No default
+/// exit status and stdout only; Volta's error wording ("No default
 /// npm version set") varies across versions and must not be parsed.
 pub(crate) fn resolve_shim(tool: &str, project_root: &Path) -> ShimResolution {
     match program::command("volta")

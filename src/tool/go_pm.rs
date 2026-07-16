@@ -1,4 +1,4 @@
-//! Go modules — the Go dependency system.
+//! Go modules, the Go dependency system.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -158,7 +158,7 @@ pub(crate) fn run_cmd(target: &str, args: &[String]) -> Command {
     c
 }
 
-/// `go run <file> [args...]` — execute a single-file Go program by path.
+/// `go run <file> [args...]`, execute a single-file Go program by path.
 /// Generalizes the slash-containing-token Go special case in the PM-exec
 /// fallback to the local-file dispatch path.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {

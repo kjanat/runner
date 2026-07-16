@@ -46,7 +46,7 @@ jobs:
       platforms: ${{ steps.matrix.outputs.platforms }}
       facade: ${{ steps.matrix.outputs.facade }}
     steps:
-      # Sparse-checkout from default branch — no tag-supplied code on disk.
+      # Sparse-checkout from default branch, no tag-supplied code on disk.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -78,7 +78,7 @@ jobs:
             echo "error: no run-id resolvable for ${RELEASE_TAG}" >&2
             exit 1
           fi
-          # Numeric guard — blocks GITHUB_OUTPUT injection.
+          # Numeric guard, blocks GITHUB_OUTPUT injection.
           if ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
             echo "error: run-id '${run_id}' is not a positive integer" >&2
             exit 1

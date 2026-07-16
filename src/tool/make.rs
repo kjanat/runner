@@ -1,4 +1,4 @@
-//! GNU Make — build automation via `Makefile`.
+//! GNU Make, build automation via `Makefile`.
 
 use std::path::Path;
 use std::process::Command;

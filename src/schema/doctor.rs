@@ -1,9 +1,9 @@
-//! `doctor --json` schema — the structured diagnostic report.
+//! `doctor --json` schema, the structured diagnostic report.
 //!
-//! A structured inventory — `invocation`/`environment`/`runner`
+//! A structured inventory, `invocation`/`environment`/`runner`
 //! provenance, per-ecosystem decisions with confidence, task `sources` as
 //! first-class objects, tasks with stable `fqn`s, PATH-probe `tools`,
-//! duplicate-name `conflicts`, and flattened `diagnostics` — plus a
+//! duplicate-name `conflicts`, and flattened `diagnostics`, plus a
 //! self-describing `resolution` policy block.
 //!
 //! Notes on the shape:
@@ -24,7 +24,7 @@
 //!   stay null), the `tool_probe_error` variant (the probe cannot
 //!   error), the `binary`/`package-binary` tool kinds, and the
 //!   `debug`/`error` severities. Each gets declared when an emitter
-//!   exists — contracts should describe output, not ambition.
+//!   exists. Contracts should describe output, not ambition.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -33,9 +33,11 @@ use serde::Serialize;
 
 use super::labels::structured_source_label;
 use crate::chain::FailurePolicy;
+use crate::cmd::install::InstallPlan;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
-    FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver, ScriptPolicy,
+    CollisionPolicy, FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
+    ScriptPolicy,
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
@@ -148,13 +150,15 @@ struct ProjectInfo {
     workspace: Option<serde_json::Value>,
 }
 
-/// Effective override stack, labels only. Provenance (cli/env/config) stays on the flat `list`/`info` surface.
-///
-/// Covers every field on [`ResolutionOverrides`] except `parent_group_open`, which is internal
-/// runner-to-runner plumbing (an inherited env marker, never a user override) and has nothing
-/// meaningful to report — see the drift guard test at the bottom of this file, which enforces that
-/// a future field can't land on `ResolutionOverrides` and silently miss both this struct and its
-/// exclusion list.
+/// The overrides in effect for this run: `--pm`, `--fallback`, the
+/// `RUNNER_*` env vars, and the `runner.toml` policy sections, reported by
+/// their labels. Where each came from (CLI, env, or config) is on the
+/// `list`/`info` surface instead.
+// Covers every field on `ResolutionOverrides` except `parent_group_open` and
+// `parent_warned`, internal runner-to-runner env markers with nothing to
+// report. `every_resolution_overrides_field_is_reported_or_excluded` (bottom of
+// this file) fails the build if a new field misses both this struct and that
+// exclusion list.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
@@ -164,6 +168,7 @@ struct Overrides {
     failure_policy: FailurePolicy,
     install_pms: Vec<PackageManager>,
     no_warnings: bool,
+    on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
     quiet: bool,
     on_mismatch: MismatchPolicy,
@@ -181,7 +186,14 @@ struct Overrides {
 /// [`ResolutionOverrides`].
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[cfg_attr(
+    feature = "schema",
+    schemars(
+        deny_unknown_fields,
+        description = "Whether task output is grouped into collapsible blocks, under GitHub \
+                       Actions and elsewhere."
+    )
+)]
 struct OutputGrouping {
     /// Broad GitHub Actions grouping switch (`[github].group_output`).
     group_output: bool,
@@ -379,18 +391,50 @@ enum ToolProbe {
     Missing,
 }
 
-/// A task name claimed by more than one source: who wins, who is shadowed.
+/// A task-name or install-directory conflict, tagged by `kind`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[serde(tag = "kind")]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct Conflict {
-    kind: &'static str,
-    reason: String,
-    #[cfg_attr(feature = "schema", schemars(description = "FQN of the winning task."))]
-    selected: String,
-    selector: String,
-    severity: Severity,
-    shadowed: Vec<String>,
+enum Conflict {
+    /// A task name claimed by more than one source: which task wins and which
+    /// fully-qualified task names are shadowed.
+    #[serde(rename = "duplicate-task-name")]
+    DuplicateTaskName {
+        reason: String,
+        #[cfg_attr(feature = "schema", schemars(description = "FQN of the winning task."))]
+        selected: String,
+        #[cfg_attr(feature = "schema", schemars(description = "Conflicting task name."))]
+        selector: String,
+        severity: Severity,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "FQNs of the shadowed tasks.")
+        )]
+        shadowed: Vec<String>,
+    },
+    /// Package managers that write the same installation directory: which
+    /// package manager installs it and which package managers are shadowed.
+    #[serde(rename = "install-dir-collision")]
+    InstallDirCollision {
+        reason: String,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "Label of the selected package manager.")
+        )]
+        selected: String,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "Path of the conflicting installation directory.")
+        )]
+        selector: String,
+        severity: Severity,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "Labels of the shadowed package managers.")
+        )]
+        shadowed: Vec<String>,
+    },
 }
 
 /// Severity of a conflict or diagnostic. The draft's `debug`/`error`
@@ -440,12 +484,42 @@ impl<'a> DoctorReport<'a> {
         resolve_shims: bool,
     ) -> Self {
         let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
+        let plan = crate::cmd::install::plan_install(ctx, overrides);
 
+        // A collision is the install plan's verdict, not a detection fact, so
+        // it joins the diagnostics here rather than riding in `ctx.warnings`
+        // where every command would flush it. A plan that refuses to resolve
+        // reports as a diagnostic too: `doctor` has to survive the
+        // configuration it exists to explain.
+        let plan_diagnostics: Vec<Diagnostic> = match &plan {
+            Ok(plan) => plan
+                .collisions
+                .iter()
+                .map(|collision| Diagnostic {
+                    code: "install",
+                    message: crate::cmd::install::collision_warning(
+                        collision.dir,
+                        &collision.writers,
+                    ),
+                    severity: Severity::Warning,
+                    source: Some("install"),
+                    task: None,
+                })
+                .collect(),
+            Err(err) => vec![Diagnostic {
+                code: "install",
+                message: err.to_string(),
+                severity: Severity::Warning,
+                source: Some("install"),
+                task: None,
+            }],
+        };
         let diagnostics = ctx
             .warnings
             .iter()
             .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
             .map(diagnostic)
+            .chain(plan_diagnostics)
             .collect();
 
         Self {
@@ -466,7 +540,7 @@ impl<'a> DoctorReport<'a> {
             sources: sources(ctx),
             tasks: tasks(ctx, &node_pm, overrides),
             tools: tools(ctx, overrides, &node_pm),
-            conflicts: conflicts(ctx, overrides),
+            conflicts: conflicts(ctx, overrides, plan.as_ref().ok()),
             diagnostics,
             resolution: ResolutionPolicy {
                 fqn_policy: "exact-only",
@@ -533,6 +607,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         failure_policy: overrides.failure_policy,
         install_pms: overrides.install_pms.clone(),
         no_warnings: overrides.no_warnings,
+        on_collision: overrides.on_collision,
         output_grouping: OutputGrouping {
             group_output: overrides.group_output,
             github_group_parallel: overrides.github_group_parallel,
@@ -611,7 +686,7 @@ fn ecosystems(
 }
 
 /// Whether the project carries Node context, considering resolver and
-/// task signals — not just lockfile-detected `package_managers`. A Node
+/// task signals, not just lockfile-detected `package_managers`. A Node
 /// PM decision (`resolve_node_pm` Ok), a detected Node-ecosystem PM, or
 /// any `package.json`-sourced task each count. Gates Node inclusion in
 /// both [`ecosystems`] and [`tools`] so the two surfaces never
@@ -632,7 +707,7 @@ fn has_node_context(
 }
 
 /// Whether the project carries Python context, considering resolver and
-/// task signals — not just lockfile-detected `package_managers`. Mirrors
+/// task signals, not just lockfile-detected `package_managers`. Mirrors
 /// [`has_node_context`]; gates Python inclusion in both [`ecosystems`]
 /// and [`tools`] so neither surface disagrees with what `tasks`
 /// resolves.
@@ -675,7 +750,7 @@ fn node_ecosystem(
     let manifest_decl = detect_pm_from_manifest(&ctx.root);
     let probes = super::project::probe_signals(&ctx.root, resolve_shims);
     // Shims are keyed by tool and carry the shim *manager* as data, not
-    // as the field name — Volta is merely the first manager the prober
+    // as the field name. Volta is merely the first manager the prober
     // classifies; asdf/mise/proto entries slot in without a contract
     // change. (The flat `list`/`info` shape's `volta_shims` spelling is
     // frozen; only this structured report gets the generic shape.)
@@ -741,7 +816,7 @@ fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Ec
 }
 
 /// Single-PM ecosystems (rust/go/deno/ruby/php): the detected manager
-/// *is* the decision — there is no competing-PM resolution chain.
+/// *is* the decision; there is no competing-PM resolution chain.
 fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
     let selected = ctx
         .package_managers
@@ -1032,20 +1107,23 @@ fn probe_tool_version(binary: &Path) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn conflicts(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Vec<Conflict> {
+fn conflicts(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    plan: Option<&InstallPlan>,
+) -> Vec<Conflict> {
     let mut by_name: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
     for task in &ctx.tasks {
         by_name.entry(&task.name).or_default().push(task);
     }
 
-    by_name
+    let duplicate_names = by_name
         .into_iter()
         .filter(|(_, group)| group.len() > 1)
         .map(|(name, group)| {
             let selected = select_task_entry(ctx, overrides, &group);
             let fqn_of = |task: &Task| super::labels::fqn(task.source, &task.name);
-            Conflict {
-                kind: "duplicate-task-name",
+            Conflict::DuplicateTaskName {
                 reason: format!(
                     "{count} sources define `{name}`; lowest (source_priority={priority}, \
                      source_depth={depth}, display_order={order}, alias-last) key wins",
@@ -1063,6 +1141,35 @@ fn conflicts(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Vec<Confl
                     .map(|task| fqn_of(task))
                     .collect(),
             }
+        });
+
+    duplicate_names
+        .chain(plan.into_iter().flat_map(install_dir_conflicts))
+        .collect()
+}
+
+/// The install plan's directory verdicts, in the same who-wins/who-is-shadowed
+/// shape a duplicate task name reports under.
+///
+/// Only *resolved* directories appear. A directory the user told runner to
+/// share has no winner and no shadowed party (every writer runs), so it
+/// reports as a diagnostic instead of a conflict with two lying fields.
+fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
+    plan.shadowed
+        .iter()
+        .map(|shadow| Conflict::InstallDirCollision {
+            reason: format!(
+                "{} and {} both install into {}/; the package manager resolved for the ecosystem \
+                 installs it and the other is skipped. List both in `[install].pms` to run them \
+                 anyway.",
+                shadow.winner.label(),
+                shadow.loser.label(),
+                shadow.dir,
+            ),
+            selected: shadow.winner.label().to_string(),
+            selector: shadow.dir.to_string(),
+            severity: Severity::Info,
+            shadowed: vec![shadow.loser.label().to_string()],
         })
         .collect()
 }
@@ -1139,6 +1246,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -1158,7 +1266,7 @@ mod tests {
     fn rfc3339_known_vectors() {
         assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
         assert_eq!(rfc3339_utc(86_400), "1970-01-02T00:00:00Z");
-        // 2000-02-29 — leap day in a century-leap year.
+        // 2000-02-29, leap day in a century-leap year.
         assert_eq!(rfc3339_utc(951_782_400), "2000-02-29T00:00:00Z");
         assert_eq!(rfc3339_utc(951_868_799), "2000-02-29T23:59:59Z");
         assert_eq!(rfc3339_utc(951_868_800), "2000-03-01T00:00:00Z");
@@ -1171,7 +1279,7 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["kind"], "runner.doctor");
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["overrides"]["quiet"], serde_json::json!(false));
         assert!(
             json["$schema"]
@@ -1240,7 +1348,7 @@ mod tests {
     fn v3_report_keeps_node_when_only_package_json_tasks_present() {
         // package.json scripts with no lockfile-detected Node PM: the
         // resolver still resolves them via `npm run`, so `ecosystems`
-        // and `tools` must surface Node too — otherwise the document is
+        // and `tools` must surface Node too; otherwise the document is
         // internally inconsistent (tasks reference a runtime the rest of
         // the report claims absent).
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);
@@ -1360,7 +1468,7 @@ mod tests {
     /// Two fields are reported under a different name/shape than
     /// `ResolutionOverrides` uses, both to dodge clippy lints:
     /// `task_source_overrides` reports as `task_source_pins`
-    /// (`struct_field_names` — it would otherwise end with the struct's
+    /// (`struct_field_names`, it would otherwise end with the struct's
     /// own name), and `group_output`/`github_group_parallel`/
     /// `parallel_grouped` nest under `output_grouping`
     /// (`struct_excessive_bools`). `RENAMED`/the `output_grouping` unnest
@@ -1368,9 +1476,9 @@ mod tests {
     #[cfg(feature = "schema")]
     #[test]
     fn every_resolution_overrides_field_is_reported_or_excluded() {
-        // Internal runner-to-runner plumbing (an inherited env marker),
-        // never a user override — nothing meaningful to report.
-        const EXCLUDED: &[&str] = &["parent_group_open"];
+        // Internal runner-to-runner plumbing (inherited env markers),
+        // never user overrides, nothing meaningful to report.
+        const EXCLUDED: &[&str] = &["parent_group_open", "parent_warned"];
         // resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[("task_source_overrides", "task_source_pins")];
 
@@ -1401,7 +1509,9 @@ mod tests {
             parallel_grouped,
             install_pms,
             script_policy,
+            on_collision,
             parent_group_open,
+            parent_warned,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
@@ -1440,7 +1550,7 @@ mod tests {
             assert!(
                 reported.contains(reported_name),
                 "{field}: ResolutionOverrides field is neither reported by Overrides (as \
-                 {reported_name:?}) nor on the EXCLUDED allowlist — add it to one"
+                 {reported_name:?}) nor on the EXCLUDED allowlist, add it to one"
             );
         }
     }

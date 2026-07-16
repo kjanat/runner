@@ -1,9 +1,9 @@
-//! `PATH` probe — step 7 of the resolution chain.
+//! `PATH` probe, step 7 of the resolution chain.
 //!
 //! When no manifest, lockfile, or override signal points the resolver at a
 //! package manager, this module walks `$PATH` (and `PATHEXT` on Windows)
 //! to discover what is actually installed. The Node ecosystem returns the
-//! first match in canonical order — `bun > pnpm > yarn > npm` — matching
+//! first match in canonical order, `bun > pnpm > yarn > npm`, matching
 //! the priority used elsewhere in detection. This replaces the silent
 //! `npm` fallback the resolver used to default to.
 //!
@@ -23,14 +23,14 @@ use crate::types::PackageManager;
 /// Process-wide cache of [`probe`] lookups, one slot per
 /// [`PackageManager`] variant. `OnceLock` initialises lazily and
 /// guarantees the initialiser runs at most once even when called
-/// concurrently — exactly the semantics we want here.
+/// concurrently, exactly the semantics we want here.
 static CACHE: [OnceLock<Option<PathBuf>>; PackageManager::COUNT] =
     [const { OnceLock::new() }; PackageManager::COUNT];
 
 /// Probe `$PATH` for `pm`. Returns the absolute path of the first
 /// matching executable, or `None` if nothing is found.
 ///
-/// On Windows, also walks `PATHEXT` so that `cmd`/`bat` shims are found —
+/// On Windows, also walks `PATHEXT` so that `cmd`/`bat` shims are found,
 /// the same approach used by [`crate::tool::program::command`].
 ///
 /// Result is memoized in [`CACHE`] for the lifetime of the process.
@@ -177,8 +177,8 @@ mod tests {
 
     #[test]
     fn probe_returns_consistent_value_across_calls() {
-        // Asserts the caller-visible property — repeated `probe(pm)`
-        // calls return the same cached value — rather than poking at
+        // Asserts the caller-visible property, repeated `probe(pm)`
+        // calls return the same cached value, rather than poking at
         // cache internals, which other tests in this process may have
         // already populated.
         use super::probe;

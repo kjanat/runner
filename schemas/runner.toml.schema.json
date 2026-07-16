@@ -3,7 +3,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "ChainSection": {
-      "description": "`[chain]` section — failure policy for `run -s/-p` chains and\n`runner install <tasks>`.",
+      "description": "`[chain]` section, failure policy for `run -s/-p` chains and\n`runner install <tasks>`.",
       "type": "object",
       "properties": {
         "keep_going": {
@@ -14,7 +14,7 @@
           ]
         },
         "kill_on_fail": {
-          "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown — uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
+          "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown, uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
           "type": [
             "boolean",
             "null"
@@ -38,7 +38,7 @@
       }
     },
     "GitHubSection": {
-      "description": "`[github]` section — GitHub Actions integration. Both knobs only take\neffect under GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing here\nchanges behavior.",
+      "description": "`[github]` section, GitHub Actions integration. Both knobs only take\neffect under GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing here\nchanges behavior.",
       "type": "object",
       "properties": {
         "group_output": {
@@ -47,7 +47,7 @@
           "type": "boolean"
         },
         "group_parallel": {
-          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task\nand print it as one block on completion instead of interleaving lines\nlive. Defaults to `true` (CI logs read better grouped), but only when\n[`Self::group_output`] is also true. The non-CI equivalent is\n`[parallel].grouped` (default `false`), so CI and local diverge unless\nyou set them to match.",
+          "description": "Under GitHub Actions, group parallel (`-p`) output: buffer each task and print it as one block on completion instead of interleaving lines live. Defaults to `true`, but only when `group_output` is also true. The non-CI equivalent is `[parallel].grouped` (default `false`).",
           "default": true,
           "type": "boolean"
         }
@@ -55,9 +55,21 @@
       "additionalProperties": false
     },
     "InstallSection": {
-      "description": "`[install]` section — restrict which detected package managers\n`runner install` runs with. Absent or empty installs every detected\nPM (the default). Overridden by `RUNNER_INSTALL_PMS`.\n\nUnlike `[pm]` (which scopes *script dispatch* per ecosystem), this\nscopes the *install fan-out*: in a polyglot repo where both `bun` and\n`deno` would write `node_modules`, `pms = [\"bun\"]` keeps install to bun.",
+      "description": "`[install]` section, restrict which detected package managers\n`runner install` runs with. Absent or empty installs every detected\nPM (the default). Overridden by `RUNNER_INSTALL_PMS`.\n\nUnlike `[pm]` (which scopes *script dispatch* per ecosystem), this\nscopes the *install fan-out*: in a polyglot repo where both `bun` and\n`deno` would write `node_modules`, `pms = [\"bun\"]` keeps install to bun.",
       "type": "object",
       "properties": {
+        "on_collision": {
+          "description": "What to do when two or more package managers in the install set write\nthe same directory (a node PM plus a `nodeModulesDir`-enabled Deno both\nmaterializing `node_modules/`). `\"resolve\"` (the default) installs with\none writer per directory and shadows the rest, the way a duplicate task\nname resolves to one source; listing several writers in `pms` is consent\nand runs them all, serialized over the shared tree. `\"error\"` refuses to\npick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "resolve",
+            "error",
+            null
+          ]
+        },
         "pms": {
           "description": "Allowlist of package-manager labels to install with, e.g.\n`[\"bun\"]`. Each must be a detected PM or `runner install` errors.\nEmpty = install with every detected PM.",
           "type": "array",
@@ -81,11 +93,11 @@
       "additionalProperties": false
     },
     "ParallelSection": {
-      "description": "`[parallel]` section — how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n`[github].group_parallel` instead.)",
+      "description": "`[parallel]` section, how parallel (`-p`) chains present their output\n**outside** GitHub Actions. (Under GitHub Actions, see\n`[github].group_parallel` instead.)",
       "type": "object",
       "properties": {
         "grouped": {
-          "description": "Buffer each parallel task's output and print it as one contiguous\nblock the moment that task finishes (completion order — first done,\nfirst shown), instead of interleaving prefixed lines live. Defaults to\n`false` (the live `[task]`-prefixed muxer); set `true` to group even in\na plain terminal, where a colored header delimits each block.",
+          "description": "Buffer each parallel task's output and print it as one contiguous\nblock the moment that task finishes (completion order, first done,\nfirst shown), instead of interleaving prefixed lines live. Defaults to\n`false` (the live `[task]`-prefixed muxer); set `true` to group even in\na plain terminal, where a colored header delimits each block.",
           "default": false,
           "type": "boolean"
         }
@@ -93,7 +105,7 @@
       "additionalProperties": false
     },
     "PmSection": {
-      "description": "`[pm]` section — per-ecosystem package manager overrides.",
+      "description": "`[pm]` section, per-ecosystem package manager overrides.",
       "type": "object",
       "properties": {
         "node": {
@@ -128,11 +140,11 @@
       "additionalProperties": false
     },
     "ResolutionSection": {
-      "description": "`[resolution]` section — resolver policy knobs.",
+      "description": "`[resolution]` section, resolver policy knobs.",
       "type": "object",
       "properties": {
         "fallback": {
-          "description": "`probe` (default) — PATH probe in canonical order when no signals\nmatch; `npm` — legacy silent fallback; `error` — refuse to proceed.",
+          "description": "`probe` (default), PATH probe in canonical order when no signals\nmatch; `npm`, legacy silent fallback; `error`, refuse to proceed.",
           "type": [
             "null",
             "string"
@@ -145,7 +157,7 @@
           ]
         },
         "on_mismatch": {
-          "description": "`warn` (default), `error`, `ignore` — how to react when declaration\n(manifest field) disagrees with detection (lockfile).",
+          "description": "`warn` (default), `error`, `ignore`, how to react when declaration\n(manifest field) disagrees with detection (lockfile).",
           "type": [
             "null",
             "string"
@@ -161,12 +173,12 @@
       "additionalProperties": false
     },
     "TaskRunnerSection": {
-      "description": "`[task_runner]` section — **deprecated**. Use `[tasks]` instead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor — rank-only and able to name package managers, not just\ntask runners.",
+      "description": "`[task_runner]` section, **deprecated**. Use `[tasks]` instead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor, rank-only and able to name package managers, not just\ntask runners.",
       "deprecated": true,
       "type": "object",
       "properties": {
         "prefer": {
-          "description": "**Deprecated — use `[tasks].prefer` instead** (rank-only, and accepts\npackage managers like `bun`, not just task runners). Migration:\n`[task_runner].prefer = [\"turbo\"]` → `[tasks].prefer = [\"turbo\"]`.\n\nLegacy behavior, still honored: a ranked preference list that\n*restricts* candidates to runners in the list (in listed order); a\nsame-named task under a runner not in the list is hard-rejected.\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.",
+          "description": "**Deprecated, use `[tasks].prefer` instead** (rank-only, and accepts\npackage managers like `bun`, not just task runners). Migration:\n`[task_runner].prefer = [\"turbo\"]` → `[tasks].prefer = [\"turbo\"]`.\n\nLegacy behavior, still honored: a ranked preference list that\n*restricts* candidates to runners in the list (in listed order); a\nsame-named task under a runner not in the list is hard-rejected.\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.",
           "deprecated": true,
           "type": "array",
           "items": {
@@ -177,11 +189,11 @@
       "additionalProperties": false
     },
     "TasksSection": {
-      "description": "`[tasks]` section — persistent task-source preference for ambiguous task\nnames (a name that exists under more than one source, e.g. a `package.json`\nscript *and* a `turbo` task).\n\nBoth knobs speak the same label vocabulary: a label is a task runner\n(`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,\n`deno`, …), or a source name (`package.json`, `deno`, …). Package-manager\nlabels map to the script source they run (`bun` → `package.json`).\nSelection here is **rank-only**: it never hard-rejects an unlisted source,\nit only reorders. An explicit CLI qualifier (`package.json:test`),\n`--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.",
+      "description": "`[tasks]` section, persistent task-source preference for ambiguous task\nnames (a name that exists under more than one source, e.g. a `package.json`\nscript *and* a `turbo` task).\n\nBoth knobs speak the same label vocabulary: a label is a task runner\n(`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,\n`deno`, …), or a source name (`package.json`, `deno`, …). Package-manager\nlabels map to the script source they run (`bun` → `package.json`).\nSelection here is **rank-only**: it never hard-rejects an unlisted source;\nit only reorders. An explicit CLI qualifier (`package.json:test`),\n`--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.",
       "type": "object",
       "properties": {
         "overrides": {
-          "description": "Per-task pins that override [`Self::prefer`] for specific names:\n`overrides = { dev = \"bun\", build = \"turbo\" }`. A pin to a source the\ntask doesn't have falls through to the normal ranking (no hard error).",
+          "description": "Per-task pins that override `prefer` for specific names: `overrides = { dev = \"bun\", build = \"turbo\" }`. A pin to a source the task doesn't have falls through to the normal ranking (no hard error).",
           "type": "object",
           "additionalProperties": {
             "type": "string",
@@ -250,12 +262,12 @@
   "properties": {
     "chain": {
       "$ref": "#/$defs/ChainSection",
-      "description": "`[chain]` — failure policy for multi-task chains.",
+      "description": "`[chain]`, failure policy for multi-task chains.",
       "default": {}
     },
     "github": {
       "$ref": "#/$defs/GitHubSection",
-      "description": "`[github]` — GitHub Actions integration (output grouping).",
+      "description": "`[github]`, GitHub Actions integration (output grouping).",
       "default": {
         "group_output": true,
         "group_parallel": true
@@ -263,34 +275,34 @@
     },
     "install": {
       "$ref": "#/$defs/InstallSection",
-      "description": "`[install]` — restrict which detected PMs `runner install` runs.",
+      "description": "`[install]`, restrict which detected PMs `runner install` runs.",
       "default": {}
     },
     "parallel": {
       "$ref": "#/$defs/ParallelSection",
-      "description": "`[parallel]` — presentation of parallel (`-p`) chain output.",
+      "description": "`[parallel]`, presentation of parallel (`-p`) chain output.",
       "default": {
         "grouped": false
       }
     },
     "pm": {
       "$ref": "#/$defs/PmSection",
-      "description": "`[pm]` — per-ecosystem package-manager overrides.",
+      "description": "`[pm]`, per-ecosystem package-manager overrides.",
       "default": {}
     },
     "resolution": {
       "$ref": "#/$defs/ResolutionSection",
-      "description": "`[resolution]` — resolver-policy knobs.",
+      "description": "`[resolution]`, resolver-policy knobs.",
       "default": {}
     },
     "task_runner": {
       "$ref": "#/$defs/TaskRunnerSection",
-      "description": "`[task_runner]` — task-runner preferences. Deprecated; superseded\nby [`Self::tasks`].",
+      "description": "`[task_runner]`, task-runner preferences. Deprecated; superseded by `[tasks]`.",
       "default": {}
     },
     "tasks": {
       "$ref": "#/$defs/TasksSection",
-      "description": "`[tasks]` — persistent task-source preference (global order + per-task pins).",
+      "description": "`[tasks]`, persistent task-source preference (global order + per-task pins).",
       "default": {}
     }
   },

@@ -1,4 +1,4 @@
-//! Poetry — Python dependency manager.
+//! Poetry, Python dependency manager.
 
 use std::path::Path;
 use std::process::Command;
@@ -53,7 +53,7 @@ pub(crate) fn install_cmd() -> Command {
     c
 }
 
-/// `poetry run <script> [args...]` — run a `[project.scripts]` console
+/// `poetry run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
 pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
     let mut c = super::program::command("poetry");

@@ -1,4 +1,4 @@
-//! `runner.toml` — project-level configuration.
+//! `runner.toml`, project-level configuration.
 //!
 //! The file lives at the project root. The resolver reads it as step 4 of
 //! the precedence chain (after CLI flags and environment variables, before
@@ -51,8 +51,8 @@ pub(crate) const CONFIG_DIRS: [&str; 2] = ["", ".config"];
 
 /// Starter `runner.toml` scaffolded by `runner config init`. Generated from
 /// [`RunnerConfig`]'s schemars metadata (section/field doc comments) plus a
-/// small hand-picked value/hint table — see
-/// `cmd::schema::render_init_template` — so a field can't silently ship
+/// small hand-picked value/hint table, see
+/// `cmd::schema::render_init_template`, so a field can't silently ship
 /// without scaffold coverage. Regenerate with `just gen-schema` after
 /// changing a section struct; a drift-guard test enforces this file stays
 /// in sync.
@@ -80,34 +80,39 @@ pub(crate) struct LoadedConfig {
     schemars(deny_unknown_fields)
 )]
 pub(crate) struct RunnerConfig {
-    /// `[pm]` — per-ecosystem package-manager overrides.
+    /// `[pm]`, per-ecosystem package-manager overrides.
     #[serde(default)]
     pub pm: PmSection,
-    /// `[tasks]` — persistent task-source preference (global order + per-task pins).
+    /// `[tasks]`, persistent task-source preference (global order + per-task pins).
     #[serde(default)]
     pub tasks: TasksSection,
-    /// `[task_runner]` — task-runner preferences. Deprecated; superseded
+    /// `[task_runner]`, task-runner preferences. Deprecated; superseded
     /// by [`Self::tasks`].
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "`[task_runner]`, task-runner preferences. Deprecated; \
+                                superseded by `[tasks]`.")
+    )]
     #[serde(default, rename = "task_runner")]
     pub task_runner: TaskRunnerSection,
-    /// `[install]` — restrict which detected PMs `runner install` runs.
+    /// `[install]`, restrict which detected PMs `runner install` runs.
     #[serde(default)]
     pub install: InstallSection,
-    /// `[resolution]` — resolver-policy knobs.
+    /// `[resolution]`, resolver-policy knobs.
     #[serde(default)]
     pub resolution: ResolutionSection,
-    /// `[chain]` — failure policy for multi-task chains.
+    /// `[chain]`, failure policy for multi-task chains.
     #[serde(default)]
     pub chain: ChainSection,
-    /// `[github]` — GitHub Actions integration (output grouping).
+    /// `[github]`, GitHub Actions integration (output grouping).
     #[serde(default)]
     pub github: GitHubSection,
-    /// `[parallel]` — presentation of parallel (`-p`) chain output.
+    /// `[parallel]`, presentation of parallel (`-p`) chain output.
     #[serde(default)]
     pub parallel: ParallelSection,
 }
 
-/// `[install]` section — restrict which detected package managers
+/// `[install]` section, restrict which detected package managers
 /// `runner install` runs with. Absent or empty installs every detected
 /// PM (the default). Overridden by `RUNNER_INSTALL_PMS`.
 ///
@@ -146,9 +151,23 @@ pub(crate) struct InstallSection {
         schemars(extend("enum" = ["deny", "allow", null]))
     )]
     pub scripts: Option<String>,
+
+    /// What to do when two or more package managers in the install set write
+    /// the same directory (a node PM plus a `nodeModulesDir`-enabled Deno both
+    /// materializing `node_modules/`). `"resolve"` (the default) installs with
+    /// one writer per directory and shadows the rest, the way a duplicate task
+    /// name resolves to one source; listing several writers in `pms` is consent
+    /// and runs them all, serialized over the shared tree. `"error"` refuses to
+    /// pick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["resolve", "error", null]))
+    )]
+    pub on_collision: Option<String>,
 }
 
-/// `[chain]` section — failure policy for `run -s/-p` chains and
+/// `[chain]` section, failure policy for `run -s/-p` chains and
 /// `runner install <tasks>`.
 // Fields are `Option<bool>` rather than `bool` so the resolver can
 // distinguish "user explicitly set false" from "user didn't say":
@@ -178,7 +197,7 @@ pub(crate) struct ChainSection {
     pub keep_going: Option<bool>,
 
     /// Parallel only: terminate sibling tasks immediately on first
-    /// failure (forcible kill, not graceful shutdown — uncatchable on
+    /// failure (forcible kill, not graceful shutdown, uncatchable on
     /// Unix). Mutually exclusive with `keep_going`. Equivalent to
     /// `--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential
     /// contexts.
@@ -186,7 +205,7 @@ pub(crate) struct ChainSection {
     pub kill_on_fail: Option<bool>,
 }
 
-/// `[github]` section — GitHub Actions integration. Both knobs only take
+/// `[github]` section, GitHub Actions integration. Both knobs only take
 /// effect under GitHub Actions (gated at the call site by
 /// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 /// changes behavior.
@@ -209,6 +228,15 @@ pub(crate) struct GitHubSection {
     /// [`Self::group_output`] is also true. The non-CI equivalent is
     /// `[parallel].grouped` (default `false`), so CI and local diverge unless
     /// you set them to match.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Under GitHub Actions, group parallel (`-p`) output: buffer each task \
+                           and print it as one block on completion instead of interleaving lines \
+                           live. Defaults to `true`, but only when `group_output` is also true. \
+                           The non-CI equivalent is `[parallel].grouped` (default `false`)."
+        )
+    )]
     #[serde(default = "default_github_group_parallel")]
     pub group_parallel: bool,
 }
@@ -234,7 +262,7 @@ const fn default_github_group_parallel() -> bool {
     true
 }
 
-/// `[parallel]` section — how parallel (`-p`) chains present their output
+/// `[parallel]` section, how parallel (`-p`) chains present their output
 /// **outside** GitHub Actions. (Under GitHub Actions, see
 /// `[github].group_parallel` instead.)
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -245,7 +273,7 @@ const fn default_github_group_parallel() -> bool {
 )]
 pub(crate) struct ParallelSection {
     /// Buffer each parallel task's output and print it as one contiguous
-    /// block the moment that task finishes (completion order — first done,
+    /// block the moment that task finishes (completion order, first done,
     /// first shown), instead of interleaving prefixed lines live. Defaults to
     /// `false` (the live `[task]`-prefixed muxer); set `true` to group even in
     /// a plain terminal, where a colored header delimits each block.
@@ -253,7 +281,7 @@ pub(crate) struct ParallelSection {
     pub grouped: bool,
 }
 
-/// `[pm]` section — per-ecosystem package manager overrides.
+/// `[pm]` section, per-ecosystem package manager overrides.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(
     feature = "schema",
@@ -279,11 +307,11 @@ pub(crate) struct PmSection {
     pub python: Option<String>,
 }
 
-/// `[task_runner]` section — **deprecated**. Use `[tasks]` instead.
+/// `[task_runner]` section, **deprecated**. Use `[tasks]` instead.
 ///
 /// Kept for backward compatibility: existing `[task_runner].prefer` files
 /// keep working (and emit a deprecation warning), but `[tasks].prefer` is the
-/// supported successor — rank-only and able to name package managers, not just
+/// supported successor, rank-only and able to name package managers, not just
 /// task runners.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(
@@ -292,7 +320,7 @@ pub(crate) struct PmSection {
     schemars(deny_unknown_fields, extend("deprecated" = true))
 )]
 pub(crate) struct TaskRunnerSection {
-    /// **Deprecated — use `[tasks].prefer` instead** (rank-only, and accepts
+    /// **Deprecated, use `[tasks].prefer` instead** (rank-only, and accepts
     /// package managers like `bun`, not just task runners). Migration:
     /// `[task_runner].prefer = ["turbo"]` → `[tasks].prefer = ["turbo"]`.
     ///
@@ -305,7 +333,7 @@ pub(crate) struct TaskRunnerSection {
     pub prefer: Vec<String>,
 }
 
-/// `[tasks]` section — persistent task-source preference for ambiguous task
+/// `[tasks]` section, persistent task-source preference for ambiguous task
 /// names (a name that exists under more than one source, e.g. a `package.json`
 /// script *and* a `turbo` task).
 ///
@@ -313,7 +341,7 @@ pub(crate) struct TaskRunnerSection {
 /// (`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,
 /// `deno`, …), or a source name (`package.json`, `deno`, …). Package-manager
 /// labels map to the script source they run (`bun` → `package.json`).
-/// Selection here is **rank-only**: it never hard-rejects an unlisted source,
+/// Selection here is **rank-only**: it never hard-rejects an unlisted source;
 /// it only reorders. An explicit CLI qualifier (`package.json:test`),
 /// `--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -332,11 +360,19 @@ pub(crate) struct TasksSection {
     /// Per-task pins that override [`Self::prefer`] for specific names:
     /// `overrides = { dev = "bun", build = "turbo" }`. A pin to a source the
     /// task doesn't have falls through to the normal ranking (no hard error).
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Per-task pins that override `prefer` for specific names: `overrides = \
+                           { dev = \"bun\", build = \"turbo\" }`. A pin to a source the task \
+                           doesn't have falls through to the normal ranking (no hard error)."
+        )
+    )]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, String>,
 }
 
-/// `[resolution]` section — resolver policy knobs.
+/// `[resolution]` section, resolver policy knobs.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[cfg_attr(
     feature = "schema",
@@ -344,15 +380,15 @@ pub(crate) struct TasksSection {
     schemars(deny_unknown_fields)
 )]
 pub(crate) struct ResolutionSection {
-    /// `probe` (default) — PATH probe in canonical order when no signals
-    /// match; `npm` — legacy silent fallback; `error` — refuse to proceed.
+    /// `probe` (default), PATH probe in canonical order when no signals
+    /// match; `npm`, legacy silent fallback; `error`, refuse to proceed.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
         schemars(extend("enum" = ["probe", "npm", "error", null]))
     )]
     pub fallback: Option<String>,
-    /// `warn` (default), `error`, `ignore` — how to react when declaration
+    /// `warn` (default), `error`, `ignore`, how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
@@ -366,13 +402,13 @@ pub(crate) struct ResolutionSection {
 /// [`INIT_TEMPLATE`]. A key absent from this table is reported as an
 /// [`DetectionWarning::UnknownConfigKey`] rather than aborting the load, so a
 /// config written by a newer `runner` never bricks an older binary (and vice
-/// versa). Keep in sync when adding a section or field — the
+/// versa). Keep in sync when adding a section or field; the
 /// `known_schema_covers_every_section` test guards section-level drift.
 const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("pm", &["node", "python"]),
     ("task_runner", &["prefer"]),
     ("tasks", &["prefer", "overrides"]),
-    ("install", &["pms", "scripts"]),
+    ("install", &["pms", "scripts", "on_collision"]),
     ("resolution", &["fallback", "on_mismatch"]),
     ("chain", &["keep_going", "kill_on_fail"]),
     ("github", &["group_output", "group_parallel"]),
@@ -414,8 +450,8 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
 /// Returns `Ok(None)` when no candidate exists; `Ok(Some(_))` otherwise, with
 /// `LoadedConfig::path` set to the file actually loaded. The parse is
 /// forward-compatible: unknown sections/fields are tolerated (and returned as
-/// `warnings`) so version skew never aborts the load. Genuine failures —
-/// unreadable file, malformed TOML, or a wrong-typed *known* field — still
+/// `warnings`) so version skew never aborts the load. Genuine failures,
+/// unreadable file, malformed TOML, or a wrong-typed *known* field, still
 /// propagate as errors.
 ///
 /// # Errors
@@ -720,7 +756,7 @@ mod tests {
 
     #[test]
     fn tasks_section_validates() {
-        // `[tasks]` with a PM label and a per-task pin is a valid config —
+        // `[tasks]` with a PM label and a per-task pin is a valid config,
         // the same check `runner config validate` runs.
         let dir = TempDir::new("config-tasks-valid");
         fs::write(
@@ -756,7 +792,7 @@ mod tests {
     #[test]
     fn load_warns_on_unknown_section_without_failing() {
         // Forward compat: a section this build doesn't know (a typo, or one a
-        // newer runner added) must not abort the load — it warns and the rest
+        // newer runner added) must not abort the load; it warns and the rest
         // of the config still applies.
         let dir = TempDir::new("config-unknown-key");
         fs::write(
@@ -834,7 +870,7 @@ mod tests {
                 continue;
             }
             // Field lines are `key = ...`, shipped commented-out. Strip one
-            // leading `#`, then keep only a bare-identifier left of `=` — that
+            // leading `#`, then keep only a bare-identifier left of `=`; that
             // shape excludes the prose comments, which carry no `key =`.
             let body = trimmed.strip_prefix('#').map_or(trimmed, str::trim);
             let Some((lhs, _)) = body.split_once('=') else {
@@ -868,7 +904,7 @@ mod tests {
         assert_eq!(
             template, known,
             "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA (minus DEPRECATED_SECTIONS) \
-             exactly — keep the section structs, the scaffold template, and KNOWN_SCHEMA in sync \
+             exactly, keep the section structs, the scaffold template, and KNOWN_SCHEMA in sync \
              when adding a knob"
         );
     }
@@ -877,7 +913,7 @@ mod tests {
     #[test]
     fn known_schema_matches_generated_runner_config_schema() {
         // known_schema_matches_init_template_sections_and_fields only
-        // catches INIT_TEMPLATE drifting from KNOWN_SCHEMA — a struct field
+        // catches INIT_TEMPLATE drifting from KNOWN_SCHEMA, a struct field
         // added to a section without updating either the scaffold or
         // KNOWN_SCHEMA passes that guard invisibly (template and KNOWN_SCHEMA
         // still agree with each other, just not with the real type; the
@@ -933,7 +969,7 @@ mod tests {
 
         assert_eq!(
             generated, known,
-            "KNOWN_SCHEMA must match RunnerConfig's real (schemars-derived) shape exactly — a \
+            "KNOWN_SCHEMA must match RunnerConfig's real (schemars-derived) shape exactly, a \
              struct field with no KNOWN_SCHEMA entry is silently treated as unknown by \
              collect_unknown_keys even though the typed deserializer accepts it"
         );

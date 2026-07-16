@@ -1,4 +1,4 @@
-//! Bundler — the Ruby dependency manager.
+//! Bundler, the Ruby dependency manager.
 
 use std::path::Path;
 use std::process::Command;

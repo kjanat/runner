@@ -1,7 +1,7 @@
 //! Source-selection logic: picking the best candidate when a task name matches multiple sources.
 //!
 //! The selector key is `(source_priority, source_depth, display_order,
-//! is_alias)` — primary tier (Turbo > Package > others, plus prefer-list
+//! is_alias)`, primary tier (Turbo > Package > others, plus prefer-list
 //! offset and the forced-PM source bias), then nearest-config tiebreak,
 //! then the source's canonical display order, then recipes-before-aliases.
 //! Each component is pure, exposed `pub(crate)` so `cmd::why` can show the
@@ -12,7 +12,7 @@
 //! front of a same-name conflict, most-native first, so `RUNNER_PM=deno run
 //! check` picks `deno:check` (a `deno task`) instead of running
 //! `package.json:check` *through* deno, and `--pm bun` pulls `package.json`
-//! to the front the same way. Every PM biases toward what it owns — deno is
+//! to the front the same way. Every PM biases toward what it owns; deno is
 //! one member of the rule, not a special case.
 
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub(crate) fn select_task_entry<'a>(
     overrides: &ResolutionOverrides,
     found: &[&'a crate::types::Task],
 ) -> &'a crate::types::Task {
-    // A `[tasks.overrides]` pin wins a same-name conflict — but only when the
+    // A `[tasks.overrides]` pin wins a same-name conflict, but only when the
     // user hasn't forced a PM/runner on the CLI/env, which outrank the config
     // file. The pin lists sources most-native first; the first candidate under
     // one of them wins (real recipe before a same-named alias).
@@ -72,7 +72,7 @@ pub(crate) fn select_task_entry<'a>(
 ///   is bumped below them. So `RUNNER_PM=deno run check` resolves a `deno:check` /
 ///   `package.json:check` conflict to the native deno task instead of running the package.json
 ///   script *through* deno; `--pm bun` pulls `package.json` to the front the same way. Every PM
-///   biases toward what it owns — deno is one member of the rule, not a special case. A PM that
+///   biases toward what it owns; deno is one member of the rule, not a special case. A PM that
 ///   owns no modeled task source (Bundler, Composer) re-orders nothing. Fires only when a PM is
 ///   forced; with no `--pm` / `RUNNER_PM` the ranking is unchanged.
 /// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in the list win in listed order
@@ -134,7 +134,7 @@ fn base_source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> 
         .iter()
         .position(|r| r.task_source() == Some(source))
     {
-        // Listed runners always beat unlisted ones — the offset
+        // Listed runners always beat unlisted ones; the offset
         // guarantees `default_tier + prefer.len()` never collides.
         return u16::try_from(idx).unwrap_or(u16::MAX);
     }
@@ -143,7 +143,7 @@ fn base_source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> 
 
 /// The package manager forced via `--pm` / `RUNNER_PM`, if any. Only this
 /// cross-ecosystem CLI/env override (`overrides.pm`) biases source
-/// selection — `runner.toml` PM overrides live in `pm_by_ecosystem` and
+/// selection; `runner.toml` PM overrides live in `pm_by_ecosystem` and
 /// never do. The caller reads its [`PackageManager::owned_task_sources`] to
 /// rank the forced PM's own source(s) first.
 fn forced_pm(overrides: &ResolutionOverrides) -> Option<PackageManager> {
@@ -155,8 +155,8 @@ fn forced_pm(overrides: &ResolutionOverrides) -> Option<PackageManager> {
 /// [`usize::MAX`] so they lose the tiebreak.
 ///
 /// Generalizes the depth-aware selection that previously only fired for
-/// Deno projects so that — for any pair of source candidates tied on
-/// [`source_priority`] — the one whose config sits in the nearest
+/// Deno projects so that, for any pair of source candidates tied on
+/// [`source_priority`], the one whose config sits in the nearest
 /// ancestor of cwd wins. Today this matters most in Deno + Node
 /// workspace layouts (member `package.json` near cwd vs root
 /// `deno.json`), and in Cargo + Make/Just/Taskfile setups where the
@@ -172,7 +172,7 @@ pub(crate) fn source_depth(ctx: &ProjectContext, source: TaskSource) -> usize {
                     // (e.g. `.cargo/config.toml` whose parent is
                     // `<root>/.cargo`). `ancestors()` only walks upward,
                     // so the position lookup never matches and depth
-                    // would otherwise collapse to `usize::MAX` — making
+                    // would otherwise collapse to `usize::MAX`, making
                     // any root-level source (`bacon.toml`, `Makefile`,
                     // `justfile`) win every tiebreak by default and
                     // starving `display_order` of the chance to choose.
@@ -232,6 +232,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -306,7 +307,7 @@ mod tests {
     fn forced_bun_biases_toward_its_own_package_json() {
         // Generalization past deno: bun owns `package.json`, so `--pm bun`
         // pulls it to the front. Here package.json already led deno, so the
-        // winner is unchanged — but now it wins *because* bun biases toward
+        // winner is unchanged, but now it wins *because* bun biases toward
         // it, not by default tier (see the turbo case for a winner flip).
         let ctx = context(vec![
             task("check", TaskSource::PackageJson),
@@ -428,7 +429,7 @@ mod tests {
 
     #[test]
     fn tasks_prefer_turbo_first_keeps_turbo() {
-        // The inverse order leaves turbo winning — confirms it's the listed
+        // The inverse order leaves turbo winning, confirms it's the listed
         // order driving the choice, not a fixed bias.
         let ctx = context(vec![
             task("build", TaskSource::TurboJson),

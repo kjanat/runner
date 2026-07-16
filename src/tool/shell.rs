@@ -9,7 +9,7 @@
 //!
 //! Used today by deno self-exec ([`super::deno_exec`]); any source whose
 //! task bodies are shell strings (e.g. `package.json` scripts) can build
-//! on it — provided that source's own semantics (env injection, local
+//! on it, provided that source's own semantics (env injection, local
 //! `bin` dirs, lifecycle hooks) are layered on top.
 
 use std::collections::HashMap;

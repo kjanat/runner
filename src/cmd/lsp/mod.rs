@@ -1,4 +1,4 @@
-//! `runner lsp` — a Language Server for `runner.toml`.
+//! `runner lsp`, a Language Server for `runner.toml`.
 //!
 //! Speaks LSP over stdio and provides three editor features, each reusing the
 //! same internals the CLI does:
@@ -10,7 +10,7 @@
 //!   and the runner/package-manager/source label vocabulary).
 //!
 //! The server is deliberately small and synchronous (one document at a time,
-//! full-text sync) — runner.toml files are tiny, so there is no need for
+//! full-text sync); runner.toml files are tiny, so there is no need for
 //! incremental sync or a background analysis thread.
 
 mod analysis;
@@ -53,7 +53,7 @@ pub(crate) fn run() -> Result<i32> {
     server.serve(&connection)?;
 
     // Drop the connection before joining: the writer thread only terminates
-    // once its channel sender (held by `connection`) is gone — otherwise
+    // once its channel sender (held by `connection`) is gone; otherwise
     // `join` blocks forever.
     drop(connection);
     io_threads.join()?;
@@ -243,8 +243,8 @@ fn document_dir(uri: &Uri) -> Option<std::path::PathBuf> {
         .map(std::path::Path::to_path_buf)
 }
 
-/// Whether `uri`'s basename is `runner.toml` or its dotfile form, at any depth —
-/// each directory can hold its own config.
+/// Whether `uri`'s basename is `runner.toml` or its dotfile form, at any depth,
+/// because each directory can hold its own config.
 fn is_runner_toml(uri: &Uri) -> bool {
     uri.path().as_str().rsplit('/').next().is_some_and(|name| {
         name == CONFIG_FILENAME || name.strip_prefix('.') == Some(CONFIG_FILENAME)
