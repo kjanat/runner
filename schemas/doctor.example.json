@@ -23,7 +23,7 @@
   "runner": {
     "binary": "/usr/local/bin/runner",
     "name": "runner",
-    "version": "0.19.1",
+    "version": "0.20.0",
     "schema_versions": {
       "doctor": 2,
       "list": 2,

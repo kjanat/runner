@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.20.0] - 2026-07-16
+
 ### Added
 
 - `[install].on_collision` (`RUNNER_INSTALL_ON_COLLISION`) decides what
@@ -57,12 +65,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   check.
 - `runner install` no longer orphans a running package manager when waiting on
   another one fails.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.19.1] - 2026-07-05
 
@@ -1794,7 +1796,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.19.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/kjanat/runner/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/kjanat/runner/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/kjanat/runner/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/kjanat/runner/compare/v0.18.0...v0.18.1
@@ -1830,5 +1833,4 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 [0.2.0]: https://github.com/kjanat/runner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/kjanat/runner/releases/tag/v0.1.0
 
-<!-- markdownlint-disable-file no-duplicate-heading MD034 -->
-<!-- rumdl-disable-file MD013 MD024 MD034 -->
+<!-- markdownlint-disable-file no-duplicate-heading MD013 MD024 MD034 -->
