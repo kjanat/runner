@@ -3,7 +3,7 @@
 //! # Layout
 //!
 //! - [`SCHEMA_VERSION`], the schema contract version every `--json` surface stamps into its `schema_version` field.
-//! - [`validate_schema_version`], gatekeeper for `--schema-version=N`; `clap` already bounds the flag to `1..=1`,
+//! - [`validate_schema_version`], gatekeeper for `--schema-version=N`; `clap` already bounds the flag to `2..=2`,
 //!   so this is a defensive second check for callers that build a version outside CLI parsing.
 //! - [`project`], the flat JSON shape ([`Project`], [`TaskListView`]) served by `list`/`info`
 //!   (and read internally by `doctor`'s human renderer).
@@ -11,7 +11,7 @@
 //! - [`labels::flat_source_label`] / [`labels::structured_source_label`], the two source-label conventions the shapes above use.
 //!
 //! There used to be three independently-versioned schemas (`list` at v2, `doctor`/`why` at v3, with v1 the original filename-style labels).
-//! Adoption never grew past internal use, so the versions were collapsed: today's shapes are the only ones, retroactively called v1.
+//! Adoption never grew past internal use, so the versions were collapsed into one contract that began at v1 and advances for observable breaking changes.
 
 pub(crate) mod doctor;
 pub(crate) mod labels;
@@ -23,14 +23,14 @@ pub(crate) use project::Project;
 
 /// Schema contract version every `--json` surface (`doctor`, `list`, `why`) stamps into its `schema_version` field.
 /// Bump whenever any field's serialized representation changes in a way clients can observe (rename, type change, removed field, etc.).
-pub(crate) const SCHEMA_VERSION: u32 = 1;
+pub(crate) const SCHEMA_VERSION: u32 = 2;
 
 /// Validate that `requested` is a schema version this binary can produce.
 /// Returns the version unchanged on success so callers can chain it directly into a builder.
 ///
 /// # Errors
 ///
-/// Returns `Err` when `requested != SCHEMA_VERSION`. `clap` already bounds `--schema-version` to `1..=1`,
+/// Returns `Err` when `requested != SCHEMA_VERSION`. `clap` already bounds `--schema-version` to `2..=2`,
 /// so this only fires for callers that construct a version outside CLI parsing.
 pub(crate) fn validate_schema_version(requested: u32) -> anyhow::Result<u32> {
     if requested != SCHEMA_VERSION {
@@ -63,8 +63,8 @@ mod tests {
 
     #[test]
     fn validate_schema_version_accepts_only_the_current_version() {
-        assert_eq!(validate_schema_version(1).unwrap(), 1);
-        assert_eq!(SCHEMA_VERSION, 1);
+        assert_eq!(validate_schema_version(2).unwrap(), 2);
+        assert_eq!(SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -72,11 +72,11 @@ mod tests {
         let err = validate_schema_version(0).expect_err("v0 must error");
         assert!(format!("{err}").contains("unsupported"));
 
-        let err = validate_schema_version(2).expect_err("v2 no longer exists");
+        let err = validate_schema_version(1).expect_err("v1 no longer exists");
         let msg = format!("{err}");
         assert!(msg.contains("unsupported"));
         assert!(
-            msg.contains("speaks 1"),
+            msg.contains("speaks 2"),
             "error should advertise the supported version: {msg}",
         );
     }

@@ -1259,16 +1259,15 @@ pub(crate) struct GlobalOpts {
     )]
     pub quiet: bool,
 
-    /// Pin the `--json` output schema version. Currently always `1`,
-    /// kept for scripts that already pass it explicitly; any other value
-    /// is rejected.
+    /// Pin the `--json` output schema version. Currently always `2`; any other
+    /// value is rejected.
     #[arg(
         long = "schema-version",
         global = true,
-        value_parser = clap::value_parser!(u32).range(1..=1),
+        value_parser = clap::value_parser!(u32).range(2..=2),
         value_name = "N",
         display_order = help_order::SCHEMA_VERSION,
-        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("1"), ")"),
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("2"), ")"),
     )]
     pub schema_version: Option<u32>,
 }

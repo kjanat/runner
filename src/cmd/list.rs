@@ -203,7 +203,7 @@ fn format_conflicts(
 
     let count = conflicts.len();
     let header = format!(
-        "{count} name conflict{}, `runner run <name>` picks one source:",
+        "{count} name conflict{}; `runner run <name>` picks one source:",
         if count == 1 { "" } else { "s" }
     );
     let mut out = String::from("\n");

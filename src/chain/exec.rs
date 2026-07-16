@@ -154,9 +154,9 @@ fn run_parallel_streaming(
                     Some(warnings),
                 )?,
                 ChainItemKind::Install { .. } => {
-                    // Install is always Sequential in v1 (CLI rejects `-p` on
-                    // `runner install`); reaching here would mean a synthetic
-                    // Parallel chain was constructed elsewhere, so bail loudly.
+                    // Parallel install is supported with the install head run
+                    // first. This executor only handles the parallel tasks
+                    // that follow, so an Install item here is invalid.
                     anyhow::bail!("install items cannot run in parallel chains")
                 }
             };

@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 //! Integration tests for install-directory collisions.
 //!
 //! `runner install`'s multi-PM executor is exercised here against fake package
@@ -64,11 +66,11 @@ fn fake_pm(dir: &Path, pm: &str) {
 fn install_in(dir: &Path, env: &[(&str, &str)]) -> (Output, String) {
     let log = dir.join("install.log");
     let _ = std::fs::remove_file(&log);
-    let path = format!(
-        "{}:{}",
-        dir.join("fakebin").display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let mut paths = vec![dir.join("fakebin")];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    let path = std::env::join_paths(paths).expect("test PATH entries are valid");
     let mut cmd = Command::new(runner_binary());
     cmd.arg("install")
         .current_dir(dir)
@@ -100,6 +102,20 @@ fn only_the_resolved_writer_installs_the_shared_tree() {
     assert!(
         stderr.contains("deno shadowed"),
         "a skipped install must be said out loud: {stderr}",
+    );
+}
+
+#[test]
+fn no_warnings_keeps_the_shadowed_installer_notice() {
+    let dir = colliding_project("shadow-notice", &[]);
+    let (output, _) = install_in(&dir, &[("RUNNER_NO_WARNINGS", "1")]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "install failed: {stderr}");
+    assert!(
+        stderr.contains("deno shadowed"),
+        "a skipped installer is a plan notice, not a suppressible warning: {stderr}",
     );
 }
 

@@ -763,6 +763,45 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn doctor_conflict_schema_distinguishes_task_and_install_metadata() {
+        let schema = super::output_schema::<crate::schema::doctor::DoctorReport<'static>>("doctor")
+            .expect("doctor schema should generate");
+        let variants = schema["$defs"]["Conflict"]["oneOf"]
+            .as_array()
+            .expect("Conflict should be split by kind");
+        let variant = |kind: &str| {
+            variants
+                .iter()
+                .find(|variant| variant["properties"]["kind"]["const"] == kind)
+                .unwrap_or_else(|| panic!("missing {kind} conflict schema"))
+        };
+
+        let task = variant("duplicate-task-name");
+        assert_eq!(
+            task["properties"]["selected"]["description"],
+            "FQN of the winning task."
+        );
+        assert_eq!(
+            task["properties"]["shadowed"]["description"],
+            "FQNs of the shadowed tasks."
+        );
+
+        let install = variant("install-dir-collision");
+        assert_eq!(
+            install["properties"]["selected"]["description"],
+            "Label of the selected package manager."
+        );
+        assert_eq!(
+            install["properties"]["selector"]["description"],
+            "Path of the conflicting installation directory."
+        );
+        assert_eq!(
+            install["properties"]["shadowed"]["description"],
+            "Labels of the shadowed package managers."
+        );
+    }
+
+    #[test]
     fn committed_doctor_example_includes_quiet_override() {
         let raw = std::fs::read_to_string("schemas/doctor.example.json")
             .expect("committed doctor example should be readable");

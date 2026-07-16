@@ -1019,11 +1019,21 @@ mod tests {
         assert_eq!(writers, vec![PackageManager::Bun, PackageManager::Deno]);
     }
 
-    /// `git init` + commit the named files. Returns false when git is
+    /// `git init` + commit the named files. Returns false only when git is
     /// unavailable, so the caller can skip rather than fail.
     fn commit_in(dir: &Path, files: &[&str]) -> bool {
+        let available = Command::new("git")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !available {
+            return false;
+        }
+
         let git = |args: &[&str]| {
-            Command::new("git")
+            let status = Command::new("git")
                 .args(args)
                 .current_dir(dir)
                 .env("GIT_AUTHOR_NAME", "t")
@@ -1033,14 +1043,19 @@ mod tests {
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()
-                .is_ok_and(|status| status.success())
+                .unwrap_or_else(|err| panic!("failed to run `git {}`: {err}", args.join(" ")));
+            assert!(
+                status.success(),
+                "`git {}` failed with {status}",
+                args.join(" "),
+            );
         };
-        if !git(&["init"]) {
-            return false;
-        }
+        git(&["init"]);
         let mut add = vec!["add"];
         add.extend_from_slice(files);
-        git(&add) && git(&["commit", "-m", "lockfiles"])
+        git(&add);
+        git(&["commit", "-m", "lockfiles"]);
+        true
     }
 
     /// A project carrying two node lockfiles.

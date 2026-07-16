@@ -44,19 +44,17 @@ fn a_nested_runner_does_not_repeat_the_warnings_its_parent_printed() {
         .parent()
         .expect("binary lives in a directory")
         .to_path_buf();
+    let mut paths = vec![bin_dir];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    let path = std::env::join_paths(paths).expect("test PATH entries are valid");
 
     let output = Command::new(runner_binary())
         .arg("run")
         .arg("outer")
         .current_dir(&dir)
-        .env(
-            "PATH",
-            format!(
-                "{}:{}",
-                bin_dir.display(),
-                std::env::var("PATH").unwrap_or_default()
-            ),
-        )
+        .env("PATH", path)
         .env_remove("RUNNER_WARNED_ROOT")
         .env_remove("RUNNER_NO_WARNINGS")
         .output()

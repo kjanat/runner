@@ -166,7 +166,7 @@ pub(crate) struct TaskListView<'a> {
         schemars(description = "URI of the JSON Schema that describes this payload.")
     )]
     pub schema: String,
-    /// Identical to [`Project::schema_version`]; consumers can assume `1` here means a v1-shaped `tasks` array.
+    /// Identical to [`Project::schema_version`]; consumers can assume `2` here means a v2-shaped `tasks` array.
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Schema contract version for this JSON payload.")
@@ -561,7 +561,7 @@ mod tests {
         let project = Project::build(&ctx, &overrides);
         let value = serde_json::to_value(&project).expect("Project should serialize to JSON");
 
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["root"], "/tmp/test");
         assert!(
             value["ecosystems"]
@@ -637,7 +637,7 @@ mod tests {
 
         let project = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&project).expect("serialization");
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["tasks"][0]["source"], "just");
     }
 }

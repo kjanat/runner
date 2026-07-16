@@ -685,7 +685,7 @@ mod tests {
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["kind"], "runner.why");
         assert_eq!(json["query"], "t");
         assert_eq!(json["pm_resolution"], serde_json::Value::Null);

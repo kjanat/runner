@@ -403,7 +403,7 @@ mod tests {
         let ctx = context();
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
-        assert_eq!(report["schema_version"], 1);
+        assert_eq!(report["schema_version"], 2);
     }
 
     #[test]

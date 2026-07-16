@@ -266,7 +266,11 @@ fn declared_node_modules_dir(dir: &Path) -> Option<bool> {
     let parsed = json5::from_str::<Partial>(&content).ok()?;
     match parsed.node_modules_dir? {
         serde_json::Value::Bool(enabled) => Some(enabled),
-        serde_json::Value::String(mode) => Some(matches!(mode.as_str(), "auto" | "manual")),
+        serde_json::Value::String(mode) => match mode.as_str() {
+            "auto" | "manual" => Some(true),
+            "none" => Some(false),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -384,6 +388,20 @@ mod tests {
         .expect("config");
         fs::write(opted_out.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
         assert!(!writes_node_modules(opted_out.path()));
+
+        // Unknown values do not silently opt out; they defer to the project
+        // default just like an absent declaration.
+        for (i, value) in [r#""future-mode""#, "42"].iter().enumerate() {
+            let invalid = TempDir::new(&format!("deno-nmd-invalid-{i}"));
+            fs::write(
+                invalid.path().join("deno.json"),
+                format!(r#"{{ "nodeModulesDir": {value} }}"#),
+            )
+            .expect("config");
+            fs::write(invalid.path().join("package.json"), r#"{"name":"x"}"#)
+                .expect("package.json");
+            assert!(writes_node_modules(invalid.path()), "value: {value}");
+        }
     }
 
     #[test]

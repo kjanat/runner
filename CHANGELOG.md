@@ -16,7 +16,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   directory. `"resolve"` (the default) installs with the PM already resolved
   for that ecosystem (lockfile, `packageManager`, `[pm].node`) and skips the
   other, printing which one it skipped; `"error"` refuses to pick and exits 2.
-  Naming both writers in `[install].pms` still runs both.
+  Under `"resolve"`, naming both writers in `[install].pms` still runs both;
+  `"error"` refuses the collision even when both writers are explicitly named.
 
 ### Changed
 

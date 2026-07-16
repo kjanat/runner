@@ -43,41 +43,89 @@
       ]
     },
     "Conflict": {
-      "description": "A task name claimed by more than one source: who wins, who is shadowed.",
-      "type": "object",
-      "required": [
-        "kind",
-        "reason",
-        "selected",
-        "selector",
-        "severity",
-        "shadowed"
-      ],
-      "properties": {
-        "kind": {
-          "type": "string"
+      "description": "A task-name or install-directory conflict, tagged by `kind`.",
+      "oneOf": [
+        {
+          "description": "A task name claimed by more than one source: which task wins and which\nfully-qualified task names are shadowed.",
+          "type": "object",
+          "required": [
+            "kind",
+            "reason",
+            "selected",
+            "selector",
+            "severity",
+            "shadowed"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "duplicate-task-name"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "description": "FQN of the winning task.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "Conflicting task name.",
+              "type": "string"
+            },
+            "severity": {
+              "$ref": "#/$defs/Severity"
+            },
+            "shadowed": {
+              "description": "FQNs of the shadowed tasks.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
         },
-        "reason": {
-          "type": "string"
-        },
-        "selected": {
-          "description": "FQN of the winning task.",
-          "type": "string"
-        },
-        "selector": {
-          "type": "string"
-        },
-        "severity": {
-          "$ref": "#/$defs/Severity"
-        },
-        "shadowed": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
+        {
+          "description": "Package managers that write the same installation directory: which\npackage manager installs it and which package managers are shadowed.",
+          "type": "object",
+          "required": [
+            "kind",
+            "reason",
+            "selected",
+            "selector",
+            "severity",
+            "shadowed"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "install-dir-collision"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "selected": {
+              "description": "Label of the selected package manager.",
+              "type": "string"
+            },
+            "selector": {
+              "description": "Path of the conflicting installation directory.",
+              "type": "string"
+            },
+            "severity": {
+              "$ref": "#/$defs/Severity"
+            },
+            "shadowed": {
+              "description": "Labels of the shadowed package managers.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
         }
-      },
-      "additionalProperties": false
+      ]
     },
     "DependencyKind": {
       "description": "What kind of thing a probed tool is. The draft's `binary` /\n`package-binary` kinds join when something probes them.",
@@ -965,7 +1013,7 @@
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",
       "type": "integer",
-      "const": 1,
+      "const": 2,
       "minimum": 0,
       "format": "uint32"
     },

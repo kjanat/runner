@@ -389,6 +389,10 @@ fn satisfies(req: &semver::VersionReq, actual: &semver::Version) -> bool {
         return true;
     }
     !actual.pre.is_empty()
+        && req
+            .comparators
+            .iter()
+            .all(|comparator| comparator.pre.is_empty())
         && req.matches(&semver::Version::new(
             actual.major,
             actual.minor,
@@ -1071,6 +1075,9 @@ mod tests {
         // The range itself is still enforced; a prerelease doesn't buy a pass.
         assert!(!clears(">=1.0.0", "0.9.0-beta"));
         assert!(!clears(">=2", "1.9.0-rc.1"));
+        // A range that names a prerelease keeps semver's prerelease ordering;
+        // stripping the installed prerelease must not turn alpha into release.
+        assert!(!clears(">=1.3.0-beta.2", "1.3.0-alpha.1"));
         // Releases keep behaving exactly as before.
         assert!(clears(">=1.0.0", "1.0.0"));
         assert!(!clears(">=1.1", "1.0.0"));

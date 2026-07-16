@@ -391,18 +391,50 @@ enum ToolProbe {
     Missing,
 }
 
-/// A task name claimed by more than one source: who wins, who is shadowed.
+/// A task-name or install-directory conflict, tagged by `kind`.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
+#[serde(tag = "kind")]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct Conflict {
-    kind: &'static str,
-    reason: String,
-    #[cfg_attr(feature = "schema", schemars(description = "FQN of the winning task."))]
-    selected: String,
-    selector: String,
-    severity: Severity,
-    shadowed: Vec<String>,
+enum Conflict {
+    /// A task name claimed by more than one source: which task wins and which
+    /// fully-qualified task names are shadowed.
+    #[serde(rename = "duplicate-task-name")]
+    DuplicateTaskName {
+        reason: String,
+        #[cfg_attr(feature = "schema", schemars(description = "FQN of the winning task."))]
+        selected: String,
+        #[cfg_attr(feature = "schema", schemars(description = "Conflicting task name."))]
+        selector: String,
+        severity: Severity,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "FQNs of the shadowed tasks.")
+        )]
+        shadowed: Vec<String>,
+    },
+    /// Package managers that write the same installation directory: which
+    /// package manager installs it and which package managers are shadowed.
+    #[serde(rename = "install-dir-collision")]
+    InstallDirCollision {
+        reason: String,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "Label of the selected package manager.")
+        )]
+        selected: String,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "Path of the conflicting installation directory.")
+        )]
+        selector: String,
+        severity: Severity,
+        #[cfg_attr(
+            feature = "schema",
+            schemars(description = "Labels of the shadowed package managers.")
+        )]
+        shadowed: Vec<String>,
+    },
 }
 
 /// Severity of a conflict or diagnostic. The draft's `debug`/`error`
@@ -1091,8 +1123,7 @@ fn conflicts(
         .map(|(name, group)| {
             let selected = select_task_entry(ctx, overrides, &group);
             let fqn_of = |task: &Task| super::labels::fqn(task.source, &task.name);
-            Conflict {
-                kind: "duplicate-task-name",
+            Conflict::DuplicateTaskName {
                 reason: format!(
                     "{count} sources define `{name}`; lowest (source_priority={priority}, \
                      source_depth={depth}, display_order={order}, alias-last) key wins",
@@ -1126,8 +1157,7 @@ fn conflicts(
 fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
     plan.shadowed
         .iter()
-        .map(|shadow| Conflict {
-            kind: "install-dir-collision",
+        .map(|shadow| Conflict::InstallDirCollision {
             reason: format!(
                 "{} and {} both install into {}/; the package manager resolved for the ecosystem \
                  installs it and the other is skipped. List both in `[install].pms` to run them \
@@ -1249,7 +1279,7 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["kind"], "runner.doctor");
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         assert_eq!(json["overrides"]["quiet"], serde_json::json!(false));
         assert!(
             json["$schema"]

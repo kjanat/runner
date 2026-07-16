@@ -1,7 +1,7 @@
 # Force the live, line-prefixed muxer regardless of environment so
 # `parallel_chain_exit_code_reflects_first_failure` (which asserts `[task]`
-# prefixes) is deterministic. Parallel grouping has divergent defaults, on
-# under GitHub Actions, off elsewhere, so disable both paths here.
+# prefixes) is deterministic. Parallel grouping is enabled by default under
+# GitHub Actions and disabled elsewhere; both paths are disabled here.
 [github]
 group_parallel = false
 

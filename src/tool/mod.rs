@@ -6,7 +6,7 @@
 //! - `detect(dir)`, returns `true` if the tool's config/lockfile exists
 //! - `extract_tasks(dir)`, parses config and returns task names or a parse error
 //! - `run_cmd(task, args)`, builds a [`std::process::Command`] to run a task
-//! - `install_cmd(frozen)`, builds a [`std::process::Command`] to install deps
+//! - `install_cmd(frozen, scripts)`, builds a [`std::process::Command`] to install deps
 //! - `exec_cmd(args)`, builds a [`std::process::Command`] for ad-hoc execution
 //! - clean-dir constants, directories to remove on `runner clean`
 //!

@@ -406,8 +406,8 @@ impl DetectionWarning {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
             }
             Self::UnknownConfigKey { path } => format!(
-                "unknown key `{path}` ignored, a typo, or written by a newer runner. This build \
-                 doesn't recognize it; the rest of the config still applies.",
+                "unknown key `{path}` ignored: it may be a typo or written by a newer runner. \
+                 This build doesn't recognize it; the rest of the config still applies.",
             ),
             Self::DeprecatedConfigKey {
                 path,

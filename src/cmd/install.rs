@@ -308,15 +308,14 @@ fn dir_winner(
 /// writers that lost a directory. A skipped install is never silent; that is
 /// how a lockfile goes stale without anyone noticing.
 fn report_plan(plan: &InstallPlan, overrides: &ResolutionOverrides) {
-    if overrides.no_warnings {
-        return;
-    }
-    for collision in &plan.collisions {
-        eprintln!(
-            "{} install: {}",
-            "warn:".yellow().bold(),
-            collision_warning(collision.dir, &collision.writers),
-        );
+    if !overrides.no_warnings {
+        for collision in &plan.collisions {
+            eprintln!(
+                "{} install: {}",
+                "warn:".yellow().bold(),
+                collision_warning(collision.dir, &collision.writers),
+            );
+        }
     }
     for shadow in &plan.shadowed {
         eprintln!(
@@ -470,20 +469,21 @@ fn run_lane(
             sink,
         );
 
-        let waited = child.wait();
+        let waited = match child.wait() {
+            Ok(status) => Ok(status),
+            Err(e) => {
+                // A failed wait can leave the process and its pipe writers
+                // alive. Stop and reap it before joining readers waiting for
+                // EOF, then propagate the original wait error.
+                let _ = child.kill();
+                let _ = child.wait();
+                Err(e)
+            }
+        };
         for handle in readers {
             join_reader_thread(handle);
         }
-        let status = match waited {
-            Ok(status) => status,
-            Err(e) => {
-                // The child outlives a failed `wait`; reap it here rather than
-                // drop the handle and orphan the process.
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e.into());
-            }
-        };
+        let status = waited?;
         if !status.success() {
             return Ok(Some((*pm, super::exit_code(status))));
         }
