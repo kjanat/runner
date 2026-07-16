@@ -13,6 +13,7 @@ And re-read/review the readme...
 
 [![Crates.io](https://img.shields.io/crates/v/runner-run?logo=rust&labelColor=B7410E&color=black)][crates]
 [![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
+[![Socket](https://badge.socket.dev/npm/package/runner-run)][socket]
 [![License: MIT](https://img.shields.io/npm/l/runner-run?color=blue)][LICENSE]
 
 **runner** is for people who bounce between codebases and refuse to memorize
@@ -519,5 +520,6 @@ turbo tasks first, then package manifest scripts, then other matching sources.
 [crates]: https://crates.io/crates/runner-run
 [npm]: https://npm.im/runner-run
 [runner.kjanat.dev]: https://runner.kjanat.dev "Site for runner"
+[socket]: https://socket.dev/npm/package/runner-run
 
 <!-- markdownlint-disable-file MD013 MD033 MD041 -->

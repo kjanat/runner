@@ -1,5 +1,8 @@
 # runner-run
 
+[![NPM](https://img.shields.io/npm/v/runner-run?logo=npm&labelColor=CB3837&color=black)][npm]
+[![Socket](https://badge.socket.dev/npm/package/runner-run)][socket]
+
 **runner** is for people who bounce between codebases and refuse to memorize
 each repo's private little task-running religion.
 
@@ -225,3 +228,6 @@ registration to cover both.
 ## License
 
 [MIT](https://github.com/kjanat/runner/blob/master/LICENSE) (c) 2026 Kaj Kowalski
+
+[npm]: https://npm.im/runner-run
+[socket]: https://socket.dev/npm/package/runner-run

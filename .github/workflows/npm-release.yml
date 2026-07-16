@@ -144,7 +144,7 @@ jobs:
     needs: [setup, publish]
     runs-on: ubuntu-latest
     permissions: { contents: read, id-token: write, actions: read }
-    environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
+    environment: { name: npm-facade, url: "${{ steps.publish.outputs.package-url }}" }
     steps:
       - uses: actions/checkout@v7
         with:
