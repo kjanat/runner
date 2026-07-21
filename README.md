@@ -199,6 +199,21 @@ That is the point: the workflow stays boring even when the project underneath is
 npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation that repo
 uses.
 
+A chain of more than one task closes with a roll-up on stderr, so a failure in
+a long `--keep-going` run does not have to be found by scrolling:
+
+```text
+· summary: 7 tasks, 5 ok, 1 failed, 1 skipped (exit 1, first failure)
+·   ✓ typecheck       0.9s
+·   ✗ test:bun        2.1s (exit 1)
+·   – test:regex      skipped
+```
+
+Under Actions, each failed task also lands in the Annotations panel. The
+annotations follow `[github].group_output`; the roll-up itself does not, so
+opting out of Actions decoration keeps the summary. `--quiet` silences both,
+along with everything else runner prints.
+
 <details>
 <summary><i>Install mechanics and outputs</i></summary>
 
@@ -237,6 +252,25 @@ runner why <task> [--json]          # explain how a task would dispatch
 runner config <init|show|validate|path>  # manage runner.toml
 runner completions [<shell>] [-o <path>]
 ```
+
+### Forwarding arguments
+
+Runner's own flags go **before** the task; everything after it belongs to the
+task, including flags that spell the same as runner's:
+
+```sh
+run -q tsc -p tsconfig.json --noEmit   # -q is runner's, -p is tsc's
+```
+
+The rule holds through nested dispatch, so a package script may delegate to
+another task without counting `--` delimiters:
+
+```json
+{ "scripts": { "typecheck": "run -q tsc -p tsconfig.json --noEmit" } }
+```
+
+`--` is still accepted for a task whose *name* starts with a hyphen, and for
+readability.
 
 ## Completions
 
@@ -290,8 +324,15 @@ from the CLI definition at release time, not committed.
 
 `runner run <target>` first looks for a matching task.
 
-If no task exists, it falls back to executing `<target>` through the detected
-toolchain where appropriate, such as:
+If no task exists, runner tries `<target>` as a local file, then as an
+installed dependency: `run @typescript/native` reads
+`node_modules/@typescript/native/package.json` and runs the binary it
+declares, without touching the network. A package that declares several
+binaries none of which is named after it, or none at all, is reported rather
+than guessed at.
+
+Failing that, it executes `<target>` through the detected toolchain where
+appropriate, such as:
 
 ```text
 npm exec / npx, yarn run / yarn exec, pnpm exec, bun x / bunx,
@@ -300,6 +341,10 @@ deno x, uvx, go run
 
 For package managers without a matching exec primitive, runner falls back to
 executing `<target>` directly from `PATH`.
+
+A task that resolves back to itself through a nested `runner`/`run` is
+refused with the cycle it found (`package.json:tsc -> package.json:tsc`)
+instead of spawning copies of itself.
 
 The `run` binary is equivalent to `runner run`, so:
 
@@ -397,7 +442,7 @@ kill_on_fail = false  # parallel: kill siblings on first failure (same as -K)
 
 # GitHub Actions output grouping (active only under Actions).
 [github]
-group_output   = true  # wrap each task's output in a collapsible ::group::
+group_output   = true  # ::group:: each task; annotate failed chain tasks
 group_parallel = true  # buffer parallel tasks, print each as one block
 
 # Parallel (`-p`) output presentation outside GitHub Actions.

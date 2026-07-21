@@ -20,12 +20,16 @@ use crate::types::{DetectionWarning, ProjectContext};
 ///
 /// Per-task resolver warnings are collected into a shared `HashSet`
 /// so the user sees each unique warning once, not N times.
+///
+/// A multi-task chain closes with a summary attributing the aggregate exit
+/// code to the task that produced it (see [`emit_chain_summary`]).
 pub(crate) fn run_chain(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     chain: &Chain,
 ) -> Result<i32> {
     let mut warnings: HashSet<DetectionWarning> = HashSet::new();
+    let mut outcomes: Vec<ItemOutcome> = Vec::new();
 
     // Pre-flight every task token before *any* sibling runs. Catches
     // the common UX trap where `runner run -s bb t lint:cargo` would
@@ -47,11 +51,31 @@ pub(crate) fn run_chain(
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.
     let result = match chain.mode {
-        ChainMode::Sequential => run_sequential(ctx, overrides, chain, &mut warnings),
-        ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings),
+        ChainMode::Sequential => {
+            run_sequential(ctx, overrides, chain, &mut warnings, &mut outcomes)
+        }
+        ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings, &mut outcomes),
     };
     crate::cmd::emit_collected_warnings(&warnings, overrides);
+    if let Ok(code) = result {
+        emit_chain_summary(overrides, &outcomes, code);
+    }
     result
+}
+
+/// What one chain item did, for the end-of-run summary.
+struct ItemOutcome {
+    name: String,
+    status: ItemStatus,
+}
+
+enum ItemStatus {
+    Ran {
+        code: i32,
+        elapsed: std::time::Duration,
+    },
+    /// Never started: an earlier task failed and the policy is fail-fast.
+    Skipped,
 }
 
 fn run_sequential(
@@ -59,17 +83,27 @@ fn run_sequential(
     overrides: &ResolutionOverrides,
     chain: &Chain,
     warnings: &mut HashSet<DetectionWarning>,
+    outcomes: &mut Vec<ItemOutcome>,
 ) -> Result<i32> {
     let keep_going = matches!(chain.failure, FailurePolicy::KeepGoing);
     let mut first_failure: Option<i32> = None;
 
-    for item in &chain.items {
+    for (index, item) in chain.items.iter().enumerate() {
         let started = std::time::Instant::now();
         let code = dispatch_item(ctx, overrides, item, warnings)?;
-        crate::cmd::emit_task_timing(overrides, item.display_name(), started.elapsed(), code);
+        let elapsed = started.elapsed();
+        crate::cmd::emit_task_timing(overrides, item.display_name(), elapsed, code);
+        outcomes.push(ItemOutcome {
+            name: item.display_name().to_string(),
+            status: ItemStatus::Ran { code, elapsed },
+        });
         if code != 0 {
             first_failure.get_or_insert(code);
             if !keep_going {
+                outcomes.extend(chain.items[index + 1..].iter().map(|skipped| ItemOutcome {
+                    name: skipped.display_name().to_string(),
+                    status: ItemStatus::Skipped,
+                }));
                 return Ok(code);
             }
         }
@@ -82,6 +116,7 @@ fn run_parallel(
     overrides: &ResolutionOverrides,
     chain: &Chain,
     warnings: &mut HashSet<DetectionWarning>,
+    outcomes: &mut Vec<ItemOutcome>,
 ) -> Result<i32> {
     // Whether to buffer each task and print it as one block on completion
     // (first done, first shown) instead of interleaving lines live. Under
@@ -99,12 +134,30 @@ fn run_parallel(
     };
     if grouped {
         // `::group::` workflow-command syntax is GitHub-only; elsewhere
-        // grouped blocks get plain headers.
-        let gha_syntax = in_gha;
-        run_parallel_grouped(ctx, overrides, chain, warnings, gha_syntax)
+        // grouped blocks get plain headers. Both land on stdout, so
+        // `--quiet` drops the delimiter and keeps the buffered blocks.
+        let style = if overrides.quiet {
+            BlockStyle::Bare
+        } else if in_gha {
+            BlockStyle::Gha
+        } else {
+            BlockStyle::Header
+        };
+        run_parallel_grouped(ctx, overrides, chain, warnings, outcomes, style, in_gha)
     } else {
-        run_parallel_streaming(ctx, overrides, chain, warnings)
+        run_parallel_streaming(ctx, overrides, chain, warnings, outcomes)
     }
+}
+
+/// How a completed parallel task's buffered block is delimited on stdout.
+#[derive(Debug, Clone, Copy)]
+enum BlockStyle {
+    /// A collapsible GitHub Actions `::group::` section.
+    Gha,
+    /// A plain `runner: <task>` header line.
+    Header,
+    /// No delimiter, `--quiet` leaves stdout to the tasks themselves.
+    Bare,
 }
 
 fn run_parallel_streaming(
@@ -112,6 +165,7 @@ fn run_parallel_streaming(
     overrides: &ResolutionOverrides,
     chain: &Chain,
     warnings: &mut HashSet<DetectionWarning>,
+    outcomes: &mut Vec<ItemOutcome>,
 ) -> Result<i32> {
     use std::process::Child;
     use std::sync::Arc;
@@ -201,10 +255,10 @@ fn run_parallel_streaming(
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let code = crate::cmd::exit_code(status);
-                    crate::cmd::emit_task_timing(overrides, &name, started.elapsed(), code);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
+                    record_finished(overrides, outcomes, name, started.elapsed(), code);
                 }
                 Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
@@ -212,12 +266,8 @@ fn run_parallel_streaming(
                         // Wait so stdio drains fully; a killed sibling still
                         // reports timing for the work it managed before SIGKILL.
                         if let Ok(status) = child.wait() {
-                            crate::cmd::emit_task_timing(
-                                overrides,
-                                &name,
-                                started.elapsed(),
-                                crate::cmd::exit_code(status),
-                            );
+                            let code = crate::cmd::exit_code(status);
+                            record_finished(overrides, outcomes, name, started.elapsed(), code);
                         }
                     } else {
                         next.push((name, started, child));
@@ -253,6 +303,23 @@ fn run_parallel_streaming(
     Ok(first_failure.unwrap_or(0))
 }
 
+/// Emit a finished streaming-chain task's timing line and record it for the
+/// end-of-chain summary. Shared by the normal-exit and SIGKILL branches, so
+/// a killed sibling appears in the summary with the work it did manage.
+fn record_finished(
+    overrides: &ResolutionOverrides,
+    outcomes: &mut Vec<ItemOutcome>,
+    name: String,
+    elapsed: std::time::Duration,
+    code: i32,
+) {
+    crate::cmd::emit_task_timing(overrides, &name, elapsed, code);
+    outcomes.push(ItemOutcome {
+        name,
+        status: ItemStatus::Ran { code, elapsed },
+    });
+}
+
 /// Per-task state for grouped parallel execution: the child, the
 /// sink its reader threads append into, those reader handles, and the
 /// spawn `Instant` anchoring the duration folded into the block footer.
@@ -275,7 +342,9 @@ fn run_parallel_grouped(
     overrides: &ResolutionOverrides,
     chain: &Chain,
     warnings: &mut HashSet<DetectionWarning>,
-    gha_syntax: bool,
+    outcomes: &mut Vec<ItemOutcome>,
+    style: BlockStyle,
+    in_gha: bool,
 ) -> Result<i32> {
     use std::sync::Arc;
 
@@ -338,8 +407,9 @@ fn run_parallel_grouped(
         return Err(e);
     }
 
-    // `gha_syntax` (passed in) selects `::group::` vs a plain header per
-    // block; colorize the plain headers only when stdout supports it.
+    // `style` (passed in) selects `::group::` vs a plain header vs no
+    // delimiter per block; colorize the plain headers only when stdout
+    // supports it.
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
 
     // Poll children; flush each task's block the moment it completes, so
@@ -363,19 +433,18 @@ fn run_parallel_grouped(
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
-                    let footer = timing_footer(overrides, t.started.elapsed(), code);
-                    flush_grouped_task(t, gha_syntax, colorize, footer.as_deref());
+                    let footer = record_grouped(overrides, outcomes, &t, code);
+                    flush_grouped_task(t, style, in_gha, colorize, footer.as_deref());
                 }
                 Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
                         let _ = t.child.kill();
                         // A killed sibling still reports timing for the work it
                         // completed before SIGKILL.
-                        let elapsed = t.started.elapsed();
                         let footer = t.child.wait().ok().and_then(|status| {
-                            timing_footer(overrides, elapsed, crate::cmd::exit_code(status))
+                            record_grouped(overrides, outcomes, &t, crate::cmd::exit_code(status))
                         });
-                        flush_grouped_task(t, gha_syntax, colorize, footer.as_deref());
+                        flush_grouped_task(t, style, in_gha, colorize, footer.as_deref());
                     } else {
                         next.push(t);
                     }
@@ -402,14 +471,38 @@ fn run_parallel_grouped(
     Ok(first_failure.unwrap_or(0))
 }
 
+/// Record a finished grouped task for the end-of-chain summary and return
+/// its block footer. Reads the elapsed time once so the summary row and the
+/// footer report the same duration.
+fn record_grouped(
+    overrides: &ResolutionOverrides,
+    outcomes: &mut Vec<ItemOutcome>,
+    task: &GroupedTask,
+    code: i32,
+) -> Option<String> {
+    let elapsed = task.started.elapsed();
+    outcomes.push(ItemOutcome {
+        name: task.name.clone(),
+        status: ItemStatus::Ran { code, elapsed },
+    });
+    timing_footer(overrides, elapsed, code)
+}
+
 /// Flush a completed grouped task's block, moving its reader handles into
 /// [`flush_task_group`]. Thin wrapper that keeps the supervisor poll loop
 /// under the per-function line budget by hiding the field-destructuring at
 /// the two completion sites (normal exit and SIGKILL).
-fn flush_grouped_task(task: GroupedTask, gha_syntax: bool, colorize: bool, footer: Option<&str>) {
+fn flush_grouped_task(
+    task: GroupedTask,
+    style: BlockStyle,
+    in_gha: bool,
+    colorize: bool,
+    footer: Option<&str>,
+) {
     flush_task_group(
         &task.name,
-        gha_syntax,
+        style,
+        in_gha,
         colorize,
         &task.sink,
         task.readers,
@@ -423,7 +516,8 @@ fn flush_grouped_task(task: GroupedTask, gha_syntax: bool, colorize: bool, foote
 /// supervisor loop forever after the direct task process exits.
 fn flush_task_group(
     name: &str,
-    gha_syntax: bool,
+    style: BlockStyle,
+    in_gha: bool,
     colorize: bool,
     sink: &crate::chain::mux::BufferSink,
     mut readers: Vec<std::thread::JoinHandle<()>>,
@@ -435,42 +529,39 @@ fn flush_task_group(
     sink.close();
     join_finished_readers(&mut readers);
 
-    if gha_syntax {
-        // GroupGuard writes `::group::` now and `::endgroup::` on drop; don't
-        // hold the stdout lock across the guard's Drop.
-        let _group = actions_rs::log::group_guard(format!("runner: {name}"));
-        let mut stdout = std::io::stdout();
-        let mut stderr = std::io::stderr();
-        // Neutralize child group/endgroup commands so they can't nest in or
-        // close our `runner: <name>` group early.
-        let _ = sink.replay_to(&mut stdout, &mut stderr, true);
-        // Footer goes inside the group, before the guard's Drop emits
-        // `::endgroup::`, so the duration stays attached to the block.
-        write_timing_footer(timing_footer, colorize);
-    } else {
-        let header = format!("runner: {name}");
-        let header = if colorize {
-            use colored::Colorize as _;
-            header
-                .color(crate::chain::mux::color_for(name))
-                .bold()
-                .to_string()
-        } else {
-            header
-        };
-        {
+    // GroupGuard writes `::group::` now and `::endgroup::` on drop; don't
+    // hold the stdout lock across the guard's Drop. Bound to the whole body
+    // so the footer lands inside the fold.
+    let group = match style {
+        BlockStyle::Gha => Some(actions_rs::log::group_guard(format!("runner: {name}"))),
+        BlockStyle::Header => {
+            let header = format!("runner: {name}");
+            let header = if colorize {
+                use colored::Colorize as _;
+                header
+                    .color(crate::chain::mux::color_for(name))
+                    .bold()
+                    .to_string()
+            } else {
+                header
+            };
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "{header}");
             let _ = out.flush();
+            None
         }
-        let mut stdout = std::io::stdout();
-        let mut stderr = std::io::stderr();
-        // Plain-header (non-Actions) replay: no `::group::` interpretation
-        // happens here, so leave the child's bytes untouched.
-        let _ = sink.replay_to(&mut stdout, &mut stderr, false);
-        // Footer closes the plain `runner: <name>` block with its duration.
-        write_timing_footer(timing_footer, colorize);
-    }
+        BlockStyle::Bare => None,
+    };
+
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    // Under Actions, neutralize child group/endgroup commands: replay
+    // reorders them relative to when they were written, so they would nest
+    // in or close a fold early. Elsewhere no interpretation happens, so
+    // leave the child's bytes untouched.
+    let _ = sink.replay_to(&mut stdout, &mut stderr, in_gha);
+    write_timing_footer(timing_footer, colorize);
+    drop(group);
 }
 
 /// Compute the grouped-mode block footer (`finished in 1.2s (exit 0)`) when
@@ -500,6 +591,109 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
     let _ = out.flush();
+}
+
+/// Close a multi-task chain with a per-task roll-up on stderr, so the one
+/// failing task in a long `--keep-going` run is visible without scrolling
+/// back through the interleaved logs, and the chain's exit code is
+/// attributed to the task that produced it.
+///
+/// Single-task chains get nothing: the per-task timing line already says
+/// everything a summary would. Follows the same mute switches as the rest
+/// of runner's meta-output ([`crate::cmd::timing_enabled`]).
+fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome], code: i32) {
+    use colored::Colorize as _;
+
+    if outcomes.len() < 2 || !crate::cmd::timing_enabled(overrides) {
+        return;
+    }
+
+    let failed: Vec<&ItemOutcome> = outcomes.iter().filter(|o| o.failed()).collect();
+    let counts = summary_counts(outcomes, failed.len());
+    // The aggregate is the first failure the chain observed, in detection
+    // order; say so rather than leaving a bare number to interpret.
+    let verdict = if failed.is_empty() {
+        format!("exit {code}")
+    } else {
+        format!("exit {code}, first failure")
+    };
+    eprintln!(
+        "{} {} {}",
+        "·".dimmed(),
+        format!("summary: {counts}").bold(),
+        format!("({verdict})").dimmed(),
+    );
+
+    let names: Vec<&str> = outcomes.iter().map(|o| o.name.as_str()).collect();
+    let width = crate::chain::mux::prefix_width(&names);
+    for outcome in outcomes {
+        eprintln!("{}   {}", "·".dimmed(), outcome.render(width));
+    }
+
+    // Failure attribution in the Annotations panel, where a reader lands
+    // before they ever open the log. Suppressed with the broad
+    // `[github].group_output` opt-out, which owns runner's Actions output.
+    if overrides.group_output && actions_rs::env::is_github_actions() {
+        for outcome in failed {
+            let ItemStatus::Ran { code, .. } = outcome.status else {
+                continue;
+            };
+            actions_rs::Annotation::new()
+                .title(format!("runner: {}", outcome.name))
+                .error(format!("exit {code}"));
+        }
+    }
+}
+
+/// `3 tasks, 1 ok, 1 failed, 1 skipped`, with the zero buckets left out.
+fn summary_counts(outcomes: &[ItemOutcome], failed: usize) -> String {
+    use std::fmt::Write as _;
+
+    let skipped = outcomes
+        .iter()
+        .filter(|o| matches!(o.status, ItemStatus::Skipped))
+        .count();
+    let mut counts = format!(
+        "{} tasks, {} ok",
+        outcomes.len(),
+        outcomes.len() - failed - skipped
+    );
+    if failed > 0 {
+        let _ = write!(counts, ", {failed} failed");
+    }
+    if skipped > 0 {
+        let _ = write!(counts, ", {skipped} skipped");
+    }
+    counts
+}
+
+impl ItemOutcome {
+    const fn failed(&self) -> bool {
+        matches!(self.status, ItemStatus::Ran { code, .. } if code != 0)
+    }
+
+    /// One summary row: status mark, padded task name, and either the
+    /// duration (plus exit code when non-zero) or `skipped`.
+    fn render(&self, width: usize) -> String {
+        use colored::Colorize as _;
+
+        let (mark, detail) = match self.status {
+            ItemStatus::Ran { code: 0, elapsed } => {
+                ("✓".green(), crate::cmd::format_duration(elapsed))
+            }
+            ItemStatus::Ran { code, elapsed } => (
+                "✗".red(),
+                format!("{} (exit {code})", crate::cmd::format_duration(elapsed)),
+            ),
+            ItemStatus::Skipped => ("–".dimmed(), String::from("skipped")),
+        };
+        format!(
+            "{mark} {:<width$}  {}",
+            self.name,
+            detail.dimmed(),
+            width = width,
+        )
+    }
 }
 
 /// Kill + reap streaming-chain children that must not outlive an error

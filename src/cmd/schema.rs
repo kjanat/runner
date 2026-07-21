@@ -240,7 +240,7 @@ const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
         "github",
         "group_output",
         "true",
-        FieldHint::Static("wrap each task's output in a collapsible ::group::"),
+        FieldHint::Static("::group:: each task; annotate failed chain tasks"),
     ),
     (
         "github",

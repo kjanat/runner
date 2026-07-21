@@ -973,3 +973,180 @@ fn parallel_grouped_does_not_wait_forever_on_inherited_stdout() {
         "completed task output should still flush. stdout: {stdout}",
     );
 }
+
+#[test]
+fn a_failed_chain_closes_with_a_summary_naming_the_failing_task() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // #87: with `--keep-going` the only signal was one error line buried in
+    // the interleaved logs, and the aggregate exit code explained nothing.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-s", "-k", "ok-one", "fail-mid", "ok-two"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(7), "stderr: {stderr}");
+    assert!(
+        stderr.contains("summary: 3 tasks, 2 ok, 1 failed"),
+        "expected a counted roll-up. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("exit 7, first failure"),
+        "the aggregate code must say where it came from. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("fail-mid") && stderr.contains("(exit 7)"),
+        "the failing task must carry its own exit code. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn a_fail_fast_chain_reports_the_tasks_it_never_started() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-s", "ok-one", "fail-mid", "ok-two"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("1 skipped"),
+        "fail-fast leaves siblings unrun; say so. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("ok-two") && stderr.contains("skipped"),
+        "name the task that never started. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn a_single_task_chain_gets_no_summary() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // The per-task timing line already says everything a one-row roll-up
+    // would; a summary here is pure noise.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("summary:"), "stderr: {stderr}");
+}
+
+#[test]
+fn quiet_suppresses_the_chain_summary() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("summary:"),
+        "the summary is meta-output and follows --quiet. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn github_actions_annotates_each_failed_chain_task() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // The Annotations panel is where a reader lands before opening the log,
+    // so a failed chain task has to reach it.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-s", "-k", "ok-one", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("::error") && stdout.contains("fail-mid"),
+        "expected an error annotation naming the task. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("exit 7"),
+        "the annotation carries the task's own exit code. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("::error title=runner%3A ok-one"),
+        "a passing task must not be annotated. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn quiet_suppresses_github_actions_annotations() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Annotations are workflow commands, so they land on stdout. Under
+    // `--quiet` that stream belongs to the task alone (#86).
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("::error"),
+        "--quiet must keep annotations off stdout. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `[github].group_output` owns runner's Actions output, so it takes the
+    // annotations with it. The roll-up is plain stderr meta-output and is not
+    // Actions-specific, so it stays.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("github-no-group"))
+        .args(["run", "-s", "-k", "build", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("::error"),
+        "group_output = false opts out of annotations. stdout: {stdout}",
+    );
+    assert!(
+        stderr.contains("summary: 2 tasks, 1 ok, 1 failed"),
+        "the roll-up does not follow group_output. stderr: {stderr}",
+    );
+}

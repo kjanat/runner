@@ -239,6 +239,72 @@ fn global_value_flags() -> Vec<String> {
         .collect()
 }
 
+/// Where the task positional sits in an argv, so [`forward_args_after_task`]
+/// knows how many leading bare words to walk past.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskPosition {
+    /// The `run` alias binary: the first bare word is the task.
+    First,
+    /// `runner run <task>`: the first bare word is the `run`/`r` subcommand
+    /// token and the second is the task. Any other subcommand declines.
+    AfterRunSubcommand,
+}
+
+/// Insert a `--` forwarding delimiter directly after the task positional,
+/// so every later token reaches the task verbatim.
+///
+/// `args` is declared `trailing_var_arg`, but clap only starts collecting
+/// raw values once that positional holds one: a flag sitting *immediately*
+/// after the task is still matched against runner's own options, so
+/// `run tsc -p tsconfig.json --noEmit` bound `-p` to `--parallel` and then
+/// rejected `--noEmit` as a non-task positional. Inserting the delimiter
+/// makes clap enforce the rule the surrounding code already documents,
+/// chain flags precede task names and everything after the task belongs to
+/// the task.
+///
+/// Returns `None` (leave argv alone) when there is nothing to forward, when
+/// the user already wrote a `--`, or when the argv names a different
+/// subcommand.
+pub(crate) fn forward_args_after_task(
+    argv: &[std::ffi::OsString],
+    position: TaskPosition,
+) -> Option<Vec<std::ffi::OsString>> {
+    let value_flags = global_value_flags();
+    let mut want_subcommand = position == TaskPosition::AfterRunSubcommand;
+    let mut index = 1;
+
+    while index < argv.len() {
+        let word = argv[index].to_str()?;
+        if word == "--" {
+            return None;
+        }
+        if value_flags.iter().any(|flag| flag == word) {
+            index += 2;
+            continue;
+        }
+        if word.starts_with('-') && word != "-" {
+            index += 1;
+            continue;
+        }
+        if want_subcommand {
+            if word != "run" && word != "r" {
+                return None;
+            }
+            want_subcommand = false;
+            index += 1;
+            continue;
+        }
+        let after = index + 1;
+        if argv.get(after).is_none_or(|next| next == "--") {
+            return None;
+        }
+        let mut out = argv.to_vec();
+        out.insert(after, std::ffi::OsString::from("--"));
+        return Some(out);
+    }
+    None
+}
+
 /// Candidates for the trailing `args` positional of `run`. In chain mode
 /// (`-s`/`-p` typed before the first task) the trailing words are extra
 /// task names, so complete tasks; otherwise they are arguments forwarded
@@ -461,12 +527,125 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{
-        ChainFailureFlags, Cli, Command, RunAliasCli, chain_flag_precedes_first_task,
-        cli_dir_from_argv, resolve_completion_dir, task_candidates_from,
+        ChainFailureFlags, Cli, Command, RunAliasCli, TaskPosition, chain_flag_precedes_first_task,
+        cli_dir_from_argv, forward_args_after_task, resolve_completion_dir, task_candidates_from,
     };
 
     fn osv(words: &[&str]) -> Vec<OsString> {
         words.iter().map(OsString::from).collect()
+    }
+
+    /// Apply the delimiter insertion and render the result as plain words.
+    fn forwarded(words: &[&str], position: TaskPosition) -> Option<Vec<String>> {
+        forward_args_after_task(&osv(words), position).map(|argv| {
+            argv.iter()
+                .map(|word| word.to_string_lossy().into_owned())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn a_flag_right_after_the_task_is_forwarded_not_reparsed() {
+        // #89: `-p` belongs to tsc, but clap only starts collecting raw
+        // trailing values once `args` holds one, so it bound `--parallel`
+        // and then rejected `--noEmit` as a non-task positional.
+        assert_eq!(
+            forwarded(
+                &["run", "tsc", "-p", "tsconfig.json", "--noEmit"],
+                TaskPosition::First,
+            )
+            .expect("delimiter inserted"),
+            ["run", "tsc", "--", "-p", "tsconfig.json", "--noEmit"],
+        );
+    }
+
+    #[test]
+    fn value_flags_before_the_task_keep_their_values() {
+        assert_eq!(
+            forwarded(
+                &["run", "--dir", "/repo", "--quiet", "build", "-p", "3000"],
+                TaskPosition::First,
+            )
+            .expect("delimiter inserted"),
+            [
+                "run", "--dir", "/repo", "--quiet", "build", "--", "-p", "3000"
+            ],
+        );
+    }
+
+    #[test]
+    fn chain_flags_before_the_task_still_reach_clap() {
+        // `-s` precedes the first task, so it stays a chain flag and the
+        // words after it stay task names.
+        assert_eq!(
+            forwarded(&["run", "-s", "build", "test"], TaskPosition::First)
+                .expect("delimiter inserted"),
+            ["run", "-s", "build", "--", "test"],
+        );
+    }
+
+    #[test]
+    fn nothing_to_forward_leaves_argv_alone() {
+        assert_eq!(forwarded(&["run", "build"], TaskPosition::First), None);
+        assert_eq!(forwarded(&["run"], TaskPosition::First), None);
+        assert_eq!(forwarded(&["run", "--help"], TaskPosition::First), None);
+    }
+
+    #[test]
+    fn an_existing_delimiter_is_never_doubled() {
+        // `run tsc -- -p x` already forwards; inserting again would make the
+        // task see a literal `--`, which is the delimiter-counting trap #89
+        // reported.
+        assert_eq!(
+            forwarded(&["run", "tsc", "--", "-p", "x"], TaskPosition::First),
+            None,
+        );
+        assert_eq!(
+            forwarded(&["run", "--", "tsc", "-p", "x"], TaskPosition::First),
+            None,
+        );
+    }
+
+    #[test]
+    fn the_runner_binary_delimits_after_the_run_subcommand() {
+        assert_eq!(
+            forwarded(
+                &["runner", "run", "tsc", "-p", "x"],
+                TaskPosition::AfterRunSubcommand,
+            )
+            .expect("delimiter inserted"),
+            ["runner", "run", "tsc", "--", "-p", "x"],
+        );
+    }
+
+    #[test]
+    fn other_subcommands_are_left_untouched() {
+        // `install` takes a plain positional list, and its chain flags are
+        // documented to parse after the task names.
+        for argv in [
+            ["runner", "install", "build", "-k"],
+            ["runner", "why", "build", "--json"],
+            ["runner", "list", "--source", "make"],
+        ] {
+            assert_eq!(
+                forwarded(&argv, TaskPosition::AfterRunSubcommand),
+                None,
+                "argv: {argv:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn an_external_task_subcommand_is_left_untouched() {
+        // `runner tsc -p x` reaches clap's external-subcommand catch-all,
+        // which already forwards every following word verbatim.
+        assert_eq!(
+            forwarded(
+                &["runner", "tsc", "-p", "x"],
+                TaskPosition::AfterRunSubcommand
+            ),
+            None,
+        );
     }
 
     #[test]
@@ -1244,16 +1423,20 @@ pub(crate) struct GlobalOpts {
     )]
     pub no_warnings: bool,
 
-    /// Suppress the dispatch arrow (`→ <source> <task>`) on stderr. Also
-    /// silences the `--explain` trace at dispatch time. Enabled when
-    /// `$RUNNER_QUIET` is set to a truthy value.
+    /// Suppress every piece of runner's own output: the dispatch arrow
+    /// (`→ <source> <task>`), the `--explain` trace, per-task timing, the
+    /// chain summary, and the GitHub Actions `::group::` markers. What
+    /// remains on stdout and stderr is what the task itself wrote, which is
+    /// what makes `run -q <task>` safe inside a pipeline whose output a
+    /// parent parses. Errors still surface. Enabled when `$RUNNER_QUIET` is
+    /// set to a truthy value.
     #[arg(
         short = 'q',
         long = "quiet",
         global = true,
         display_order = help_order::QUIET,
         help = concat!(
-            "Hide dispatch line + ", cyan!("--explain"), " trace ",
+            "Hide all runner output (arrow, ", cyan!("--explain"), ", timing, groups) ",
             "[env: ", cyan!("RUNNER_QUIET"), "]"
         ),
     )]

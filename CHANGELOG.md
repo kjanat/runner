@@ -9,6 +9,48 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- A chain of more than one task closes with a per-task roll-up on stderr:
+  status, duration, and the exit code of each failure, plus counts and the
+  chain's own exit code attributed to the task that produced it. Fail-fast runs
+  name the tasks they never started. Under GitHub Actions each failed task also
+  becomes an `::error::` annotation, so a failure in a long `--keep-going` run
+  is visible without reading the log. The annotations follow
+  `[github].group_output`; `--quiet` silences the whole summary.
+- A token naming an installed dependency resolves to the binary that
+  dependency's manifest declares. `run @typescript/native --noEmit` runs
+  `node_modules/@typescript/native/bin/tsc` without touching the registry,
+  which is the only way an npm alias (`"@typescript/native":
+  "npm:typescript@^7"`) can resolve at all: its directory name exists in no
+  registry, so `npx` answered with a 404. Packages declaring several binaries
+  none of which is named after the package, or none at all, are reported
+  instead of guessed at, and `--explain` names the package and the binary it
+  picked.
+- Nested `runner`/`run` processes carry an invocation stack, and a task already
+  on it is refused with the cycle it closes (`package.json:a -> package.json:b
+  -> package.json:a`). A script like `"tsc": "run -q tsc"` used to spawn copies
+  of itself until the process tree collapsed. The stack is inherited through
+  the package manager between two runner processes, and `--quiet` does not
+  suppress the diagnostic.
+
+### Fixed
+
+- A flag written immediately after the task now reaches the task instead of
+  being matched against runner's own options. `run tsc -p tsconfig.json
+  --noEmit` bound `-p` to `--parallel`, entered chain mode, and then rejected
+  `--noEmit` as a non-task positional; no number of `--` delimiters fixed it
+  across a nested dispatch. Flags before the task are runner's, everything
+  after it is the task's, at every level.
+- `--quiet` no longer writes GitHub Actions `::group::`/`::endgroup::` markers
+  to stdout. Workflow commands are a stdout protocol, so `run -q <task>` inside
+  a pipeline whose output a parent parses (`npm pack --json`) corrupted that
+  output. Quiet now suppresses every piece of runner's own output, including
+  the parallel block headers.
+- The dispatch arrow names the exec primitive it actually runs (`npx`, `bunx`,
+  `pnpm exec`, `yarn exec`) rather than the package manager, which read as
+  though runner had run `npm <package>` as a shell command.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.
