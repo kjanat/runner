@@ -209,7 +209,7 @@ a long `--keep-going` run does not have to be found by scrolling:
 ·   – test:regex      skipped
 ```
 
-Under Actions each failed task also lands in the Annotations panel. Both follow
+Under Actions, each failed task also lands in the Annotations panel. Both follow
 `[github].group_output`, and `--quiet` silences them along with everything else
 runner prints.
 
