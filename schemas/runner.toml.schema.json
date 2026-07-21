@@ -42,7 +42,7 @@
       "type": "object",
       "properties": {
         "group_output": {
-          "description": "Wrap task output in `runner: <task>` groups under GitHub Actions.\nDefaults to `true`; set `false` to restore the old ungrouped output,\nincluding the live `[task]`-prefixed muxer for parallel runs.",
+          "description": "Wrap task output in `runner: <task>` groups under GitHub Actions, and annotate each failed chain task in the Annotations panel. Defaults to `true`; set `false` to restore the old undecorated output, including the live `[task]`-prefixed muxer for parallel runs. `--quiet` suppresses both independently.",
           "default": true,
           "type": "boolean"
         },

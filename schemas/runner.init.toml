@@ -56,7 +56,7 @@
 # `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 # changes behavior.
 [github]
-# group_output = true   # wrap each task's output in a collapsible ::group::
+# group_output = true   # ::group:: each task; annotate failed chain tasks
 # group_parallel = true   # buffer parallel tasks, print each as one block
 
 # `[parallel]` section, how parallel (`-p`) chains present their output

@@ -973,3 +973,97 @@ fn parallel_grouped_does_not_wait_forever_on_inherited_stdout() {
         "completed task output should still flush. stdout: {stdout}",
     );
 }
+
+#[test]
+fn a_failed_chain_closes_with_a_summary_naming_the_failing_task() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // #87: with `--keep-going` the only signal was one error line buried in
+    // the interleaved logs, and the aggregate exit code explained nothing.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-s", "-k", "ok-one", "fail-mid", "ok-two"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(7), "stderr: {stderr}");
+    assert!(
+        stderr.contains("summary: 3 tasks, 2 ok, 1 failed"),
+        "expected a counted roll-up. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("exit 7, first failure"),
+        "the aggregate code must say where it came from. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("fail-mid") && stderr.contains("(exit 7)"),
+        "the failing task must carry its own exit code. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn a_fail_fast_chain_reports_the_tasks_it_never_started() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-s", "ok-one", "fail-mid", "ok-two"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("1 skipped"),
+        "fail-fast leaves siblings unrun; say so. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("ok-two") && stderr.contains("skipped"),
+        "name the task that never started. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn a_single_task_chain_gets_no_summary() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // The per-task timing line already says everything a one-row roll-up
+    // would; a summary here is pure noise.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "-s", "build"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("summary:"), "stderr: {stderr}");
+}
+
+#[test]
+fn quiet_suppresses_the_chain_summary() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("summary:"),
+        "the summary is meta-output and follows --quiet. stderr: {stderr}",
+    );
+}

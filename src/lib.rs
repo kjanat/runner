@@ -182,6 +182,8 @@ where
         return Ok(0);
     }
 
+    let args =
+        cli::forward_args_after_task(&args, cli::TaskPosition::AfterRunSubcommand).unwrap_or(args);
     let cli = match parse_cli(args) {
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err),
@@ -308,6 +310,8 @@ where
         println!("{}", version_line(&args, std::io::stdout().is_terminal()));
         return Ok(0);
     }
+
+    let args = cli::forward_args_after_task(&args, cli::TaskPosition::First).unwrap_or(args);
 
     let cli = match parse_run_alias_cli(args.clone()) {
         Ok(cli) => cli,

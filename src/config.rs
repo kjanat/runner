@@ -216,9 +216,22 @@ pub(crate) struct ChainSection {
     schemars(deny_unknown_fields)
 )]
 pub(crate) struct GitHubSection {
-    /// Wrap task output in `runner: <task>` groups under GitHub Actions.
-    /// Defaults to `true`; set `false` to restore the old ungrouped output,
-    /// including the live `[task]`-prefixed muxer for parallel runs.
+    /// Wrap task output in `runner: <task>` groups under GitHub Actions, and
+    /// annotate each failed chain task in the Annotations panel. Defaults to
+    /// `true`; set `false` to restore the old undecorated output, including
+    /// the live `[task]`-prefixed muxer for parallel runs. `--quiet`
+    /// suppresses both independently, since workflow commands are written to
+    /// stdout and would otherwise reach a caller parsing it.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Wrap task output in `runner: <task>` groups under GitHub Actions, and \
+                           annotate each failed chain task in the Annotations panel. Defaults to \
+                           `true`; set `false` to restore the old undecorated output, including \
+                           the live `[task]`-prefixed muxer for parallel runs. `--quiet` \
+                           suppresses both independently."
+        )
+    )]
     #[serde(default = "default_group_output")]
     pub group_output: bool,
 

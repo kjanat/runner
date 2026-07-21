@@ -116,7 +116,7 @@ pub(super) fn try_bare_file(
 /// Resolve a bare `token` against an explicit `base` directory. Split from
 /// [`try_bare_file`] so the lookup can be unit-tested against a temp
 /// directory without mutating the process working directory.
-fn bare_file_in(
+pub(super) fn bare_file_in(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     base: &Path,

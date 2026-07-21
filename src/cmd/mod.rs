@@ -7,7 +7,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use colored::Colorize;
 
 use crate::resolver::ResolutionOverrides;
-use crate::types::{DetectionWarning, ProjectContext};
+use crate::types::{DetectionWarning, ProjectContext, TaskSource};
 
 mod clean;
 mod completions;
@@ -194,6 +194,87 @@ pub(crate) const GROUP_ACTIVE_ENV: &str = "RUNNER_GROUP_ACTIVE";
 /// otherwise repeats every warning at every level.
 pub(crate) const WARNED_ROOT_ENV: &str = "RUNNER_WARNED_ROOT";
 
+/// Env marker carrying the stack of tasks the ancestor `runner`/`run`
+/// processes are currently dispatching, so a package script that calls
+/// `runner` again cannot resolve back to itself and fork bomb the machine.
+/// Inherited transitively, which is what makes it survive the package
+/// manager sitting between two runner processes (`run tsc` → `npm run tsc`
+/// → `run tsc`).
+pub(crate) const TASK_STACK_ENV: &str = "RUNNER_TASK_STACK";
+
+/// Separators inside [`TASK_STACK_ENV`]: ASCII record/unit separators, which
+/// no path or task name can contain.
+const FRAME_SEP: char = '\u{1e}';
+const FIELD_SEP: char = '\u{1f}';
+
+/// Identify a dispatch by canonical project root plus the qualified task,
+/// so the same task in two workspace members (or reached through a symlink)
+/// stays two distinct frames.
+fn task_frame(root: &Path, source: TaskSource, name: &str) -> String {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    format!(
+        "{}{FIELD_SEP}{}{FIELD_SEP}{name}",
+        root.to_string_lossy(),
+        source.label(),
+    )
+}
+
+/// The `source:task` form of a frame, which is also the qualified syntax the
+/// user can type to pin the offending candidate.
+fn frame_label(frame: &str) -> String {
+    let mut fields = frame.split(FIELD_SEP).skip(1);
+    let source = fields.next().unwrap_or_default();
+    let name = fields.next().unwrap_or_default();
+    format!("{source}:{name}")
+}
+
+fn inherited_task_stack() -> Vec<String> {
+    let Ok(raw) = std::env::var(TASK_STACK_ENV) else {
+        return Vec::new();
+    };
+    raw.split(FRAME_SEP)
+        .filter(|frame| !frame.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Admit a task into the invocation stack, or reject it as a cycle.
+///
+/// Returns the [`TASK_STACK_ENV`] value to hand the child on success. The
+/// check runs regardless of `--quiet`: quiet suppresses dispatch output,
+/// never a safety diagnostic.
+pub(crate) fn push_task_frame(
+    root: &Path,
+    source: TaskSource,
+    name: &str,
+) -> anyhow::Result<OsString> {
+    let pushed = admit_frame(inherited_task_stack(), task_frame(root, source, name))?;
+    Ok(OsString::from(pushed.join(&FRAME_SEP.to_string())))
+}
+
+/// Pure core of [`push_task_frame`], split from the env read so the cycle
+/// rule is unit-testable without mutating the process environment.
+fn admit_frame(stack: Vec<String>, frame: String) -> anyhow::Result<Vec<String>> {
+    if let Some(start) = stack.iter().position(|seen| *seen == frame) {
+        let cycle: Vec<String> = stack[start..]
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(frame.as_str()))
+            .map(frame_label)
+            .collect();
+        anyhow::bail!(
+            "recursive task resolution detected: {}\nnote: this task dispatches itself through a \
+             nested `runner`/`run`; point the script at the binary, file, or qualified task it \
+             actually means",
+            cycle.join(" -> "),
+        );
+    }
+
+    let mut pushed = stack;
+    pushed.push(frame);
+    Ok(pushed)
+}
+
 /// Whether a parent runner already warned about this project.
 ///
 /// Keyed on the root, not merely on the marker's presence: a nested runner
@@ -222,28 +303,60 @@ const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
     group_output && under_github_actions
 }
 
-/// Pure core of [`emits_group`]: grouping on, under Actions, and not already
-/// nested. Split out from the env read so the nesting gate is unit-testable
-/// without a live `GITHUB_ACTIONS` environment.
+/// Why a runner stays silent instead of opening its own Actions group,
+/// even where [`should_group`] says yes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupSuppression {
+    /// Nothing in the way; open the group.
+    None,
+    /// A parent runner already opened one, and Actions groups don't nest:
+    /// a nested `::endgroup::` closes the parent's fold early.
+    ParentGroupOpen,
+    /// `--quiet`, so stdout carries only what the child wrote.
+    Quiet,
+}
+
+const fn suppression(parent_group_open: bool, quiet: bool) -> GroupSuppression {
+    if quiet {
+        GroupSuppression::Quiet
+    } else if parent_group_open {
+        GroupSuppression::ParentGroupOpen
+    } else {
+        GroupSuppression::None
+    }
+}
+
+/// Pure core of [`emits_group`]: grouping on, under Actions, and nothing
+/// suppressing it. Split out from the env read so the gates are
+/// unit-testable without a live `GITHUB_ACTIONS` environment.
 const fn group_emission(
     group_output: bool,
     under_github_actions: bool,
-    parent_group_open: bool,
+    suppression: GroupSuppression,
 ) -> bool {
-    should_group(group_output, under_github_actions) && !parent_group_open
+    should_group(group_output, under_github_actions)
+        && matches!(suppression, GroupSuppression::None)
 }
 
 /// Whether *this* runner emits a GitHub Actions group around its children:
-/// grouping is on, we're under Actions, and a parent runner hasn't already
-/// opened one ([`ResolutionOverrides::parent_group_open`]). When true, the
-/// group-opening sites fire AND children are marked with [`GROUP_ACTIVE_ENV`]
-/// so a nested runner suppresses its own groups. When false, no group is
-/// opened (nested output flows into the parent's group, or grouping is off).
+/// grouping is on, we're under Actions, a parent runner hasn't already
+/// opened one ([`ResolutionOverrides::parent_group_open`]), and `--quiet`
+/// is off. When true, the group-opening sites fire AND children are marked
+/// with [`GROUP_ACTIVE_ENV`] so a nested runner suppresses its own groups.
+/// When false, no group is opened (nested output flows into the parent's
+/// group, or grouping is off).
+///
+/// GitHub Actions reads `::group::`/`::endgroup::` off the child's own
+/// stdout, so a runner that decorates while `--quiet` is set corrupts any
+/// parent capturing that stdout (`npm pack --json` piped into a script).
+/// The markers cannot move to stderr instead: GitHub Actions does not
+/// preserve relative order between the two streams, so a fold opened there
+/// would close around the wrong lines.
 pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
     group_emission(
         overrides.group_output,
         actions_rs::env::is_github_actions(),
-        overrides.parent_group_open,
+        suppression(overrides.parent_group_open, overrides.quiet),
     )
 }
 
@@ -390,7 +503,9 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::{configure_command, group_emission, node_bin_dirs, prepended_path};
+    use super::{
+        GroupSuppression, configure_command, group_emission, node_bin_dirs, prepended_path,
+    };
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
 
@@ -402,16 +517,100 @@ mod tests {
         // nesting suppression actually fires (a tautological test that only
         // checked the env-false path would pass even without the gate).
         assert!(
-            group_emission(true, true, false),
+            group_emission(true, true, GroupSuppression::None),
             "grouping on + under Actions + not nested → emit"
         );
         assert!(
-            !group_emission(true, true, true),
+            !group_emission(true, true, GroupSuppression::ParentGroupOpen),
             "...but a parent's open group suppresses it (GHA groups don't nest)"
         );
-        // The other two factors still gate independently.
-        assert!(!group_emission(false, true, false), "grouping opted out");
-        assert!(!group_emission(true, false, false), "not under Actions");
+        // The other factors still gate independently.
+        assert!(
+            !group_emission(false, true, GroupSuppression::None),
+            "grouping opted out"
+        );
+        assert!(
+            !group_emission(true, false, GroupSuppression::None),
+            "not under Actions"
+        );
+        assert!(
+            !group_emission(true, true, GroupSuppression::Quiet),
+            "--quiet keeps ::group:: off a stdout the caller is parsing",
+        );
+    }
+
+    #[test]
+    fn quiet_outranks_a_parents_open_group() {
+        use super::suppression;
+
+        // Both suppress, but they are not interchangeable: quiet means
+        // "write nothing", while a parent's group means "your output is
+        // already inside one". Reporting quiet first keeps the reason
+        // honest when a nested runner is also quiet.
+        assert_eq!(suppression(false, false), GroupSuppression::None);
+        assert_eq!(suppression(true, false), GroupSuppression::ParentGroupOpen);
+        assert_eq!(suppression(false, true), GroupSuppression::Quiet);
+        assert_eq!(suppression(true, true), GroupSuppression::Quiet);
+    }
+
+    #[test]
+    fn admit_frame_accepts_distinct_tasks() {
+        use super::{admit_frame, task_frame};
+        use crate::types::TaskSource;
+
+        let root = PathBuf::from("/repo");
+        let stack = admit_frame(Vec::new(), task_frame(&root, TaskSource::PackageJson, "a"))
+            .expect("first frame");
+        let stack = admit_frame(stack, task_frame(&root, TaskSource::PackageJson, "b"))
+            .expect("a different task is not a cycle");
+
+        assert_eq!(stack.len(), 2);
+    }
+
+    #[test]
+    fn admit_frame_reports_the_whole_cycle() {
+        use super::{admit_frame, task_frame};
+        use crate::types::TaskSource;
+
+        let root = PathBuf::from("/repo");
+        let frame = |name: &str| task_frame(&root, TaskSource::PackageJson, name);
+        let stack = admit_frame(Vec::new(), frame("a")).expect("first frame");
+        let stack = admit_frame(stack, frame("b")).expect("second frame");
+
+        let err = admit_frame(stack, frame("a")).expect_err("a -> b -> a is a cycle");
+        let msg = format!("{err:#}");
+
+        assert!(
+            msg.contains("package.json:a -> package.json:b -> package.json:a"),
+            "the diagnostic must name every task in the loop. msg: {msg}",
+        );
+    }
+
+    #[test]
+    fn admit_frame_separates_the_same_task_in_two_roots() {
+        use super::{admit_frame, task_frame};
+        use crate::types::TaskSource;
+
+        // A workspace member dispatching its own `build` from the root's
+        // `build` is a normal fan-out, not a loop.
+        let stack = admit_frame(
+            Vec::new(),
+            task_frame(&PathBuf::from("/repo"), TaskSource::PackageJson, "build"),
+        )
+        .expect("root frame");
+
+        assert!(
+            admit_frame(
+                stack,
+                task_frame(
+                    &PathBuf::from("/repo/apps/web"),
+                    TaskSource::PackageJson,
+                    "build",
+                ),
+            )
+            .is_ok(),
+            "same task name under a different root must still dispatch",
+        );
     }
 
     #[test]

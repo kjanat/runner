@@ -236,6 +236,21 @@ pub(super) fn resolve_dispatch(
                 return Ok(Dispatch::Spawn(command));
             }
 
+            // Locally installed dependency: run the binary its manifest
+            // declares. Sits alongside the local-file branch, before PM
+            // resolution, for the same reason, an installed package needs no
+            // package manager to run, and `npx` would treat the already-present
+            // directory as a registry spec (an npm alias resolves to a 404).
+            if let Some(dep) =
+                super::local_dep::try_installed_package(ctx, overrides, task_name, args)?
+            {
+                let mut command = dep.dispatch.command;
+                print_pm_explain(overrides, &dep.describe);
+                print_dispatch_arrow(overrides, &dep.dispatch.label, task_name, args);
+                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                return Ok(Dispatch::Spawn(command));
+            }
+
             let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
                 Ok(decision) => {
                     crate::cmd::print_warning_slice(
@@ -282,6 +297,12 @@ pub(super) fn resolve_dispatch(
         select_task_entry(ctx, overrides, &restricted)
     };
 
+    // Refuse a task already being dispatched further up this process
+    // lineage. Checked before anything is spawned or run in-process, and
+    // before the arrow, so the diagnostic is the only output a cycle
+    // produces.
+    let task_stack = crate::cmd::push_task_frame(&ctx.root, entry.source, &entry.name)?;
+
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
     if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
@@ -293,6 +314,7 @@ pub(super) fn resolve_dispatch(
 
     let mut cmd = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+    cmd.env(crate::cmd::TASK_STACK_ENV, task_stack);
     Ok(Dispatch::Spawn(cmd))
 }
 
@@ -317,10 +339,10 @@ fn build_pm_exec_command(
         ("exec", c)
     };
     match resolved_pm {
-        Some(PackageManager::Npm) => ("npm", tool::npm::exec_cmd(&combined())),
-        Some(PackageManager::Yarn) => ("yarn", tool::yarn::exec_cmd(&ctx.root, &combined())),
-        Some(PackageManager::Pnpm) => ("pnpm", tool::pnpm::exec_cmd(&combined())),
-        Some(PackageManager::Bun) => ("bun", tool::bun::exec_cmd(&combined())),
+        Some(PackageManager::Npm) => ("npx", tool::npm::exec_cmd(&combined())),
+        Some(PackageManager::Yarn) => ("yarn exec", tool::yarn::exec_cmd(&ctx.root, &combined())),
+        Some(PackageManager::Pnpm) => ("pnpm exec", tool::pnpm::exec_cmd(&combined())),
+        Some(PackageManager::Bun) => ("bunx", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
         Some(PackageManager::Go) => {
