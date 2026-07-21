@@ -1423,24 +1423,55 @@ pub(crate) struct GlobalOpts {
     )]
     pub no_warnings: bool,
 
-    /// Suppress every piece of runner's own output: the dispatch arrow
-    /// (`→ <source> <task>`), the `--explain` trace, per-task timing, the
-    /// chain summary, and the GitHub Actions `::group::` markers. What
-    /// remains on stdout and stderr is what the task itself wrote, which is
-    /// what makes `run -q <task>` safe inside a pipeline whose output a
-    /// parent parses. Errors still surface. Enabled when `$RUNNER_QUIET` is
-    /// set to a truthy value.
+    /// Quiet level, repeatable pytest-style: `-q`, `-qq`, `-qqq`.
+    ///
+    /// Unlike a runner-only switch, quiet now **crosses the process boundary**
+    /// into the spawned host tool:
+    /// - `-q`: suppress runner's own output (the dispatch arrow
+    ///   `→ <source> <task>`, the `--explain` trace, per-task timing, the chain
+    ///   summary, GitHub Actions `::group::` markers) **and** pass the host's
+    ///   own silence flag (`npm --silent`, `cargo -q`, `make -s`, …). What
+    ///   remains on stdout/stderr is what the task itself wrote, which is what
+    ///   makes `run -q <task>` safe inside a pipeline whose output a parent
+    ///   parses.
+    /// - `-qq`: also mute runner's non-fatal warnings (as `--no-warnings`) and
+    ///   push hosts with graduated loglevels to their quietest.
+    /// - `-qqq`: the saturating floor.
+    ///
+    /// Errors still surface. `RUNNER_QUIET` sets the level too: a number
+    /// (`0..3`) or a truthy word (→ `-q`). The resolved level is inherited by a
+    /// nested `runner` a task spawns. Orthogonal to `--host-stream`.
     #[arg(
         short = 'q',
         long = "quiet",
         global = true,
+        action = clap::ArgAction::Count,
         display_order = help_order::QUIET,
         help = concat!(
-            "Hide all runner output (arrow, ", cyan!("--explain"), ", timing, groups) ",
-            "[env: ", cyan!("RUNNER_QUIET"), "]"
+            "Quiet level, repeatable: runner + host tool (", cyan!("-q"), "/", cyan!("-qq"), "/",
+            cyan!("-qqq"), ") [env: ", cyan!("RUNNER_QUIET"), "]"
         ),
     )]
-    pub quiet: bool,
+    pub quiet: u8,
+
+    /// Keep the spawned host tool's **stdout** clean by diverting its own
+    /// diagnostics to stderr, so a pipeline parsing stdout stays uncorrupted.
+    /// Orthogonal to `--quiet`: silence and stream routing compose. Only pnpm
+    /// exposes the primitive (`--use-stderr`); every other host no-ops the
+    /// request silently. `inherit` (default) leaves routing untouched.
+    /// `[env: RUNNER_HOST_STREAM]`.
+    #[arg(
+        long = "host-stream",
+        global = true,
+        value_name = "WHERE",
+        value_parser = ["inherit", "stderr"],
+        display_order = help_order::QUIET,
+        help = concat!(
+            "Divert the host tool's diagnostics (", cyan!("inherit"), "|", cyan!("stderr"),
+            ") [env: ", cyan!("RUNNER_HOST_STREAM"), "]"
+        ),
+    )]
+    pub host_stream: Option<String>,
 
     /// Pin the `--json` output schema version. Currently always `2`; any other
     /// value is rejected.

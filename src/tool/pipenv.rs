@@ -30,7 +30,10 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 
 /// `pipenv run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
-pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(script: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    // pipenv exposes no reliable per-run quiet flag (its `--quiet` is not a
+    // stable global) and no stdout-diversion primitive, so both verbosity axes
+    // no-op here rather than risk emitting a flag pipenv rejects.
     let mut c = super::program::command("pipenv");
     c.arg("run").arg(script).args(args);
     c
@@ -60,10 +63,14 @@ mod tests {
 
     #[test]
     fn run_cmd_forwards_script_and_args() {
-        let args: Vec<_> = run_cmd("serve", &["--port".into(), "8000".into()])
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        let args: Vec<_> = run_cmd(
+            "serve",
+            &["--port".into(), "8000".into()],
+            crate::tool::HostVerbosity::default(),
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
         assert_eq!(args, ["run", "serve", "--port", "8000"]);
     }
 }

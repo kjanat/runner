@@ -9,6 +9,42 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Changed
+
+- `-q`/`--quiet` (and `RUNNER_QUIET`) now cross the process boundary into the
+  spawned tool instead of only silencing runner's own output. `run -q <task>`
+  passes the host its own silence flag — `npm --silent`, `pnpm --silent`,
+  `yarn --silent`, `bun run --silent`, `cargo -q`, `deno task -q`, `make -s`,
+  `task -s`, `mise --quiet`, `uv`/`poetry` `--quiet` — so a host that writes its
+  banner to stdout (npm on an npm project) no longer corrupts a pipeline reading
+  that stdout, the same failure #86 fixed one layer up. Hosts with no such flag,
+  or whose only "quiet" would also eat the task's own output (`just`, `turbo`,
+  `go run`, `bacon`, `pipenv`), are left untouched rather than warned about.
+  Existing `-q` callers who relied on the tool staying verbose will now see it
+  silenced; scope the quiet to runner alone by leaving `-q` off and configuring
+  per task instead. `RUNNER_QUIET` additionally accepts a numeric level
+  (`0`–`3`) alongside the truthy words it already took.
+
+### Added
+
+- Quiet escalates pytest-style: `-qq` also mutes runner's non-fatal warnings
+  (folding in `--no-warnings`), `-qqq` is the saturating floor. The resolved
+  level is exported to spawned children (`RUNNER_QUIET=<n>`), so a task that
+  shells out to `runner` again inherits it — previously only the env var
+  propagated, never the flag.
+- `--host-stream <inherit|stderr>` (`RUNNER_HOST_STREAM`), an orthogonal knob
+  that asks the host to keep stdout clean by routing its diagnostics to stderr.
+  Only pnpm has the primitive (`--use-stderr`); other hosts no-op it. Composes
+  with any quiet level.
+- `[tasks]` is now an open, Cargo-`[dependencies]`-style map keyed by task name:
+  each entry is a string shorthand for the source/runner pin (`build = "turbo"`)
+  or a table of per-task settings (`build = { runner = "turbo", verbosity =
+  "quiet" }`, or a `[tasks.build]` sub-table). `prefer` and `overrides` stay as
+  reserved back-compat keys. The new `verbosity` setting (string
+  `off|quiet|very-quiet|silent`, or a `{ level, stream }` table) is the per-task
+  form of the quiet/stream knobs, deep-merged under any global flag/env, so one
+  noisy task can be pinned quiet without a global flag.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

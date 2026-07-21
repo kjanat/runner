@@ -863,6 +863,7 @@ fn build_overrides(
             no_warnings: cli.global.no_warnings,
             quiet: cli.global.quiet,
             explain: cli.global.explain,
+            host_stream: cli.global.host_stream.as_deref(),
         },
         cli::ChainFailureFlags {
             keep_going: cli_keep_going,
@@ -920,6 +921,7 @@ fn build_overrides_lenient(
             no_warnings: cli.global.no_warnings,
             quiet: cli.global.quiet,
             explain: cli.global.explain,
+            host_stream: cli.global.host_stream.as_deref(),
         },
         cli::ChainFailureFlags {
             keep_going: cli_keep_going,

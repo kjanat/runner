@@ -3,16 +3,24 @@
 use std::path::Path;
 use std::process::Command;
 
-use super::ScriptDirective;
+use super::{HostVerbosity, ScriptDirective};
 
 /// Detected via `package-lock.json`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("package-lock.json").exists()
 }
 
-/// `npm run <task> [-- args...]`
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+/// `npm [--silent] run <task> [-- args...]`
+///
+/// `--silent` (an alias for `--loglevel=silent`) is npm's own quiet switch; it
+/// removes the lifecycle banner npm otherwise writes to **stdout**, so a `-q`
+/// pipeline reading that stdout stays clean. npm has no stdout-diversion
+/// primitive, so [`HostVerbosity::diverts_to_stderr`] is a no-op here.
+pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: HostVerbosity) -> Command {
     let mut c = super::program::command("npm");
+    if verbosity.silences() {
+        c.arg("--silent");
+    }
     c.arg("run").arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);
@@ -54,12 +62,43 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 
 #[cfg(test)]
 mod tests {
-    use super::{ScriptDirective, exec_cmd, install_cmd};
+    use super::{HostVerbosity, ScriptDirective, exec_cmd, install_cmd, run_cmd};
+    use crate::tool::{QuietLevel, Stream};
 
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn run_without_quiet_has_no_silent_flag() {
+        assert_eq!(
+            args_of(&run_cmd("build", &[], HostVerbosity::default())),
+            ["run", "build"]
+        );
+    }
+
+    #[test]
+    fn run_quiet_prepends_silent_before_run() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            stream: Stream::Inherit,
+        };
+        assert_eq!(
+            args_of(&run_cmd("build", &["--flag".into()], v)),
+            ["--silent", "run", "build", "--", "--flag"]
+        );
+    }
+
+    #[test]
+    fn run_stderr_stream_is_noop_for_npm() {
+        // npm has no stdout-diversion primitive; the stream axis no-ops.
+        let v = HostVerbosity {
+            level: QuietLevel::Off,
+            stream: Stream::Stderr,
+        };
+        assert_eq!(args_of(&run_cmd("build", &[], v)), ["run", "build"]);
     }
 
     #[test]

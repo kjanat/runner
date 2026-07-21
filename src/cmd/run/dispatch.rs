@@ -31,7 +31,7 @@ fn print_dispatch_arrow(
     task_name: &str,
     args: &[String],
 ) {
-    if overrides.quiet {
+    if overrides.silences_runner() {
         return;
     }
     eprintln!(
@@ -44,7 +44,7 @@ fn print_dispatch_arrow(
 }
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
-    if !overrides.explain || overrides.quiet {
+    if !overrides.explain || overrides.silences_runner() {
         return;
     }
     eprintln!(
@@ -420,35 +420,38 @@ fn build_run_command(
     args: &[String],
     sink: crate::cmd::WarningSink<'_>,
 ) -> Result<Command> {
+    // Deep-merge the global (CLI/env) quiet level + stream over this task's
+    // `[tasks.<name>].verbosity` config into the flags the host tool gets.
+    let hv = overrides.host_verbosity_for(&entry.name);
     Ok(match entry.source {
-        TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args),
+        TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args, hv),
         TaskSource::PackageJson => {
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
             print_pm_explain(overrides, &decision.describe());
             let pm = decision.pm;
             match pm {
-                PackageManager::Npm => tool::npm::run_cmd(&entry.name, args),
-                PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args),
-                PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args),
-                PackageManager::Bun => tool::bun::run_cmd(&entry.name, args),
-                PackageManager::Deno => tool::deno::run_cmd(&entry.name, args),
+                PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
+                PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
+                PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args, hv),
+                PackageManager::Bun => tool::bun::run_cmd(&entry.name, args, hv),
+                PackageManager::Deno => tool::deno::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run scripts", other.label()),
             }
         }
-        TaskSource::Makefile => tool::make::run_cmd(&entry.name, args),
-        TaskSource::Justfile => tool::just::run_cmd(&entry.name, args),
-        TaskSource::Taskfile => tool::go_task::run_cmd(&entry.name, args),
-        TaskSource::DenoJson => tool::deno::run_cmd(&entry.name, args),
-        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(&entry.name, args),
+        TaskSource::Makefile => tool::make::run_cmd(&entry.name, args, hv),
+        TaskSource::Justfile => tool::just::run_cmd(&entry.name, args, hv),
+        TaskSource::Taskfile => tool::go_task::run_cmd(&entry.name, args, hv),
+        TaskSource::DenoJson => tool::deno::run_cmd(&entry.name, args, hv),
+        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(&entry.name, args, hv),
         TaskSource::GoPackage => {
             let Some(run_target) = entry.run_target.as_deref() else {
                 bail!("go task {:?} is missing its run target", entry.name);
             };
-            tool::go_pm::run_cmd(run_target, args)
+            tool::go_pm::run_cmd(run_target, args, hv)
         }
-        TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args),
-        TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args),
+        TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args, hv),
+        TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args, hv),
         TaskSource::PyprojectScripts => {
             let Some(decision) = resolve_python_pm(ctx, overrides) else {
                 bail!(
@@ -459,9 +462,9 @@ fn build_run_command(
             print_pm_explain(overrides, &decision.describe());
             let pm = decision.pm;
             match pm {
-                PackageManager::Uv => tool::uv::run_cmd(&entry.name, args),
-                PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args),
-                PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args),
+                PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
+                PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
+                PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run pyproject scripts", other.label()),
             }
         }

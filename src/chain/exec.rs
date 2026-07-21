@@ -136,7 +136,7 @@ fn run_parallel(
         // `::group::` workflow-command syntax is GitHub-only; elsewhere
         // grouped blocks get plain headers. Both land on stdout, so
         // `--quiet` drops the delimiter and keeps the buffered blocks.
-        let style = if overrides.quiet {
+        let style = if overrides.silences_runner() {
             BlockStyle::Bare
         } else if in_gha {
             BlockStyle::Gha

@@ -73,7 +73,12 @@ fn classify_task_key(name: String) -> Option<String> {
 }
 
 /// `turbo run <task> [-- args...]`
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    // Both verbosity axes no-op here. turbo has no `--silent` that targets only
+    // its own summary; its `--output-logs` knob hides the *task's* logs (on
+    // success, all of them), which would eat the output a `-q` pipeline is
+    // trying to read — the opposite of the contract. turbo has no
+    // stdout-diversion primitive either.
     let mut c = super::program::command("turbo");
     c.arg("run").arg(task);
     if !args.is_empty() {
@@ -950,5 +955,32 @@ mod tests {
             "build",
             "turbo run build -- $(date +%s)"
         ));
+    }
+}
+
+#[cfg(test)]
+mod verbosity_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_default_adds_no_verbosity_flag() {
+        let v = HostVerbosity::default();
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["run", "build"]);
+    }
+
+    #[test]
+    fn run_cmd_quiet_maps_to_host_flag() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            ..HostVerbosity::default()
+        };
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["run", "build"]);
     }
 }

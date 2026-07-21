@@ -326,7 +326,12 @@ fn is_private_attr(trimmed: &str) -> bool {
 }
 
 /// `just <task> [args...]`
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    // Both verbosity axes no-op here. just's own noise (the recipe-line echo)
+    // already goes to stderr, so it never pollutes a stdout pipeline; and its
+    // only quiet switch, `--quiet`, suppresses the recipe's *own* output too
+    // (a full mute), which would violate the contract that quiet must leave the
+    // task's output intact. just has no stdout-diversion primitive either.
     let mut c = super::program::command("just");
     c.arg(task).args(args);
     c
@@ -682,5 +687,32 @@ mod tests {
             ["b", "build"],
             "alias `s` must be hidden when its only candidate submodule recipe is private"
         );
+    }
+}
+
+#[cfg(test)]
+mod verbosity_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_default_adds_no_verbosity_flag() {
+        let v = HostVerbosity::default();
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
+    }
+
+    #[test]
+    fn run_cmd_quiet_maps_to_host_flag() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            ..HostVerbosity::default()
+        };
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
     }
 }

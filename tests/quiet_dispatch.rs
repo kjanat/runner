@@ -221,3 +221,79 @@ fn quiet_suppresses_explain_trace() {
         "--quiet must suppress the arrow and the explain trace. stderr: {hidden_err}",
     );
 }
+
+/// #93: `--quiet` now crosses into the host tool. On an npm project npm's
+/// lifecycle banner (`> greet` / `> <cmd>`) is on **stdout**; `-q` must pass
+/// `npm --silent` so that banner is gone and stdout carries only the task's
+/// own output, the machine-readable pipeline the issue asked for.
+#[test]
+fn quiet_silences_npm_host_banner_on_stdout() {
+    if !tool_available("npm") {
+        eprintln!("skipping: `npm` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("npm-host-banner")
+        .file(
+            "package.json",
+            "{ \"scripts\": { \"greet\": \"echo SENTINEL-OUT\" } }\n",
+        )
+        .file("package-lock.json", "{}\n");
+
+    // Positive control: without -q npm prints its banner to stdout.
+    let loud = run_in(proj.path(), &[], &["greet"]);
+    let loud_out = String::from_utf8_lossy(&loud.stdout);
+    assert!(
+        loud_out.contains("> greet"),
+        "npm banner expected on stdout without -q. stdout: {loud_out}",
+    );
+
+    let quiet = run_in(proj.path(), &[], &["-q", "greet"]);
+    let quiet_out = String::from_utf8_lossy(&quiet.stdout);
+    assert!(
+        quiet.status.success(),
+        "run -q greet should succeed. stderr: {}",
+        String::from_utf8_lossy(&quiet.stderr),
+    );
+    assert!(
+        quiet_out.contains("SENTINEL-OUT"),
+        "the task's own output must survive -q. stdout: {quiet_out}",
+    );
+    assert!(
+        !quiet_out.contains("> greet"),
+        "-q must silence npm's host banner on stdout (#93). stdout: {quiet_out}",
+    );
+}
+
+/// #93 acceptance: a script that calls `runner` again inherits the quiet level
+/// via the exported `RUNNER_QUIET`, so the nested npm banner is silenced too.
+#[test]
+fn quiet_propagates_to_nested_runner() {
+    if !tool_available("npm") {
+        eprintln!("skipping: `npm` not found on PATH");
+        return;
+    }
+    let nested = format!("{} inner", run_binary().display());
+    let scripts = format!(
+        "{{ \"scripts\": {{ \"build\": \"{}\", \"inner\": \"echo INNER-OUT\" }} }}\n",
+        nested.replace('\\', "\\\\"),
+    );
+    let proj = TempProject::new("npm-nested-quiet")
+        .file("package.json", &scripts)
+        .file("package-lock.json", "{}\n");
+
+    let output = run_in(proj.path(), &[], &["-q", "build"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "run -q build should succeed. stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        stdout.contains("INNER-OUT"),
+        "the nested task's output must survive. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("> build") && !stdout.contains("> inner"),
+        "both the outer and inherited-quiet inner npm banners must be gone. stdout: {stdout}",
+    );
+}

@@ -346,23 +346,29 @@ pub(crate) struct TaskRunnerSection {
     pub prefer: Vec<String>,
 }
 
-/// `[tasks]` section, persistent task-source preference for ambiguous task
-/// names (a name that exists under more than one source, e.g. a `package.json`
-/// script *and* a `turbo` task).
+/// `[tasks]` section, per-task configuration keyed by task name, plus the two
+/// reserved cross-task knobs `prefer` and `overrides`.
 ///
-/// Both knobs speak the same label vocabulary: a label is a task runner
-/// (`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,
-/// `deno`, …), or a source name (`package.json`, `deno`, …). Package-manager
-/// labels map to the script source they run (`bun` → `package.json`).
-/// Selection here is **rank-only**: it never hard-rejects an unlisted source;
-/// it only reorders. An explicit CLI qualifier (`package.json:test`),
-/// `--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.
+/// A task entry works like a crate under Cargo's `[dependencies]`: the key is
+/// the task name and the value is either a **string** shorthand for the task's
+/// source/runner pin (`build = "turbo"`) or a **table** of per-task settings
+/// (`build = { runner = "turbo", verbosity = "quiet" }`, or a `[tasks.build]`
+/// sub-table). `prefer` (global rank) and `overrides` (legacy per-task pin map,
+/// superseded by a task entry's `runner`) are reserved names, so a task literally
+/// called `prefer` or `overrides` cannot use the map form.
+///
+/// The pin vocabulary is shared: a label is a task runner (`turbo`, `make`, …),
+/// a package manager (`bun`, `npm`, `pnpm`, `yarn`, `deno`, …), or a source
+/// name (`package.json`, `deno`, …). Package-manager labels map to the script
+/// source they run (`bun` → `package.json`). Selection is **rank-only**: it
+/// never hard-rejects an unlisted source, only reorders. An explicit CLI
+/// qualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still
+/// outranks these file settings.
+// No `schemars(deny_unknown_fields)`: the flattened `tasks` map makes this an
+// open object (task-name keys become `additionalProperties`), which is
+// mutually exclusive with denying unknown fields.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub(crate) struct TasksSection {
     /// Global tie-break order for ambiguous task names, highest priority
     /// first. Listed sources win over unlisted ones (which still run as
@@ -370,19 +376,105 @@ pub(crate) struct TasksSection {
     /// `turbo` task win, then a `package.json` script, then everything else.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prefer: Vec<String>,
-    /// Per-task pins that override [`Self::prefer`] for specific names:
-    /// `overrides = { dev = "bun", build = "turbo" }`. A pin to a source the
-    /// task doesn't have falls through to the normal ranking (no hard error).
+    /// **Legacy** per-task source pins that override [`Self::prefer`] for
+    /// specific names: `overrides = { dev = "bun", build = "turbo" }`. Superseded
+    /// by a task entry's `runner` field (`[tasks.build] runner = "turbo"`), which
+    /// carries the same meaning; both are honored and merged (a task entry wins
+    /// on conflict). A pin to a source the task doesn't have falls through to the
+    /// normal ranking (no hard error).
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Per-task pins that override `prefer` for specific names: `overrides = \
-                           { dev = \"bun\", build = \"turbo\" }`. A pin to a source the task \
-                           doesn't have falls through to the normal ranking (no hard error)."
+            description = "Legacy per-task pins that override `prefer` for specific names: \
+                           `overrides = { dev = \"bun\", build = \"turbo\" }`. Superseded by a \
+                           task entry's `runner` field. A pin to a source the task doesn't have \
+                           falls through to the normal ranking (no hard error)."
         )
     )]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, String>,
+    /// Per-task settings keyed by task name (the Cargo-`[dependencies]`-style
+    /// map). Reserved keys `prefer`/`overrides` are captured by the fields above;
+    /// every other key under `[tasks]` is a task entry.
+    #[serde(flatten)]
+    pub tasks: BTreeMap<String, TaskSpec>,
+}
+
+/// A single `[tasks]` entry, addressed by task name the way a crate is addressed
+/// under Cargo's `[dependencies]`: either a bare **string** (shorthand for the
+/// task's source/runner pin, e.g. `build = "turbo"`) or a **table** of per-task
+/// settings (`build = { runner = "turbo", verbosity = "quiet" }`, or a
+/// `[tasks.build]` sub-table).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub(crate) enum TaskSpec {
+    /// Shorthand: `build = "turbo"` pins the task's source/runner. Equivalent to
+    /// `{ runner = "turbo" }`.
+    Pin(String),
+    /// Full form: a table of per-task settings.
+    Settings(TaskSettings),
+}
+
+/// The table form of a [`TaskSpec`]: individual per-task settings, each merged
+/// over the built-in defaults so a partial table only overrides what it names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct TaskSettings {
+    /// Source/runner pin for this task, same meaning as a legacy
+    /// [`TasksSection::overrides`] entry (a runner, package manager, or source
+    /// label). A pin the task doesn't have falls through to the normal ranking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
+    /// Per-task verbosity, deep-merged over the built-in default and layered
+    /// under env/CLI. String shorthand (`"quiet"`) or a `{ level, stream }`
+    /// table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<VerbosityConfig>,
+}
+
+/// Verbosity intent as written in config: a bare level name (`verbosity =
+/// "quiet"`) or a `{ level, stream }` table. String-or-table, the same
+/// Cargo-`[dependencies]` shape as [`TaskSpec`].
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub(crate) enum VerbosityConfig {
+    /// `verbosity = "quiet"` — sets the level, leaves stream at its default.
+    Level(String),
+    /// `verbosity = { level = "quiet", stream = "stderr" }`.
+    Table(VerbosityTable),
+}
+
+/// The table form of [`VerbosityConfig`]: the two orthogonal knobs, each
+/// optional so a partial table deep-merges over the inherited default.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct VerbosityTable {
+    /// How much of the host's own logging to suppress:
+    /// `off` | `quiet` | `very-quiet` | `silent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", null]))
+    )]
+    pub level: Option<String>,
+    /// Whether to keep the host's stdout clean by diverting its diagnostics to
+    /// stderr: `inherit` | `stderr`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["inherit", "stderr", null]))
+    )]
+    pub stream: Option<String>,
 }
 
 /// `[resolution]` section, resolver policy knobs.
@@ -445,6 +537,15 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
             continue;
         };
         if let Some(body) = body.as_table() {
+            // `[tasks]` is an open map (task name → settings) with only
+            // `prefer`/`overrides` reserved, so any other key is a task entry,
+            // not an unknown field. Task names are arbitrary and can't be told
+            // apart from a typo'd reserved key, so field-level drift detection
+            // doesn't apply here (a mistyped value is still caught by the typed
+            // deserialize).
+            if section == "tasks" {
+                continue;
+            }
             for field in body.keys() {
                 if !known_fields.contains(&field.as_str()) {
                     warnings.push(DetectionWarning::UnknownConfigKey {

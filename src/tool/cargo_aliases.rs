@@ -142,8 +142,13 @@ pub(crate) fn find_anchor(root: &Path) -> Option<PathBuf> {
 
 /// Cargo emits `cargo <name> <user-args...>`; recursion expansion is cargo's
 /// own concern at execution time, so we just shell out to the literal name.
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("cargo");
+    // cargo's global `-q`/`--quiet` precedes the (alias) subcommand. cargo has
+    // no stdout-diversion primitive, so the stream axis no-ops.
+    if verbosity.silences() {
+        c.arg("-q");
+    }
     c.arg(task).args(args);
     c
 }
@@ -438,5 +443,32 @@ mod tests {
         let rendered = alias.display_command();
         let reparsed = tokenize(&AliasValue::Str(rendered.clone())).unwrap();
         assert_eq!(reparsed, alias.expansion, "rendered: {rendered}");
+    }
+}
+
+#[cfg(test)]
+mod verbosity_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_default_adds_no_verbosity_flag() {
+        let v = HostVerbosity::default();
+        assert_eq!(argv(&run_cmd("mytask", &[], v)), ["mytask"]);
+    }
+
+    #[test]
+    fn run_cmd_quiet_maps_to_host_flag() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            ..HostVerbosity::default()
+        };
+        assert_eq!(argv(&run_cmd("mytask", &[], v)), ["-q", "mytask"]);
     }
 }

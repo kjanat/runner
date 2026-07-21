@@ -9,10 +9,11 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow};
 
-use super::types::{CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolicy};
+use super::types::{CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolicy, TaskVerbosity};
 use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
-use crate::config::LoadedConfig;
+use crate::config::{LoadedConfig, TaskSpec, VerbosityConfig};
+use crate::tool::{QuietLevel, Stream};
 use crate::types::{PackageManager, TaskRunner, TaskSource};
 
 /// Treat any env-var value as truthy unless it's empty, `"0"`, or a
@@ -177,10 +178,13 @@ pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<Ta
     Ok(out)
 }
 
-/// Parse `[tasks].overrides` into per-task source pins (task name → preferred
-/// [`TaskSource`]s, most-native first). Empty/missing → empty map. A label that
-/// names no task source (e.g. `nx`) is rejected here: a pin must be
-/// actionable, unlike a `prefer` entry which may legitimately rank nothing.
+/// Parse per-task source pins (task name → preferred [`TaskSource`]s,
+/// most-native first) from both the legacy `[tasks].overrides` map and the
+/// `runner` field of a `[tasks.<name>]` entry. Empty/missing → empty map. A
+/// label that names no task source (e.g. `nx`) is rejected here: a pin must be
+/// actionable, unlike a `prefer` entry which may legitimately rank nothing. A
+/// `[tasks.<name>] runner = …` entry wins over a legacy `overrides` pin for the
+/// same task.
 pub(super) fn parse_tasks_overrides(
     config: Option<&LoadedConfig>,
 ) -> Result<BTreeMap<String, Vec<TaskSource>>> {
@@ -198,7 +202,114 @@ pub(super) fn parse_tasks_overrides(
         }
         out.insert(task.clone(), sources);
     }
+    // The Cargo-`[dependencies]`-style per-task map. A bare string entry
+    // (`build = "turbo"`) or a table's `runner` field pins the source, and
+    // supersedes any legacy `overrides` pin for the same task.
+    for (task, spec) in &loaded.config.tasks.tasks {
+        let label = match spec {
+            TaskSpec::Pin(label) => Some(label.as_str()),
+            TaskSpec::Settings(settings) => settings.runner.as_deref(),
+        };
+        let Some(label) = label.map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let sources =
+            resolve_source_label(label).map_err(|e| anyhow!("[tasks.{task}] runner: {e}"))?;
+        if sources.is_empty() {
+            return Err(anyhow!(
+                "[tasks.{task}] runner: {label:?} names no task source to pin to",
+            ));
+        }
+        out.insert(task.clone(), sources);
+    }
     Ok(out)
+}
+
+/// Parse per-task verbosity partials from `[tasks.<name>].verbosity` (the table
+/// form only; a bare-string task entry is a source pin, not verbosity). Each
+/// partial names zero or more of the two axes; the missing axis is inherited
+/// from the global CLI/env level/stream at dispatch. Empty/missing → empty map.
+pub(super) fn parse_tasks_verbosity(
+    config: Option<&LoadedConfig>,
+) -> Result<BTreeMap<String, TaskVerbosity>> {
+    let Some(loaded) = config else {
+        return Ok(BTreeMap::new());
+    };
+    let mut out = BTreeMap::new();
+    for (task, spec) in &loaded.config.tasks.tasks {
+        let TaskSpec::Settings(settings) = spec else {
+            continue;
+        };
+        let Some(verbosity) = &settings.verbosity else {
+            continue;
+        };
+        let (level, stream) = match verbosity {
+            VerbosityConfig::Level(raw) => (Some(parse_quiet_level_label(task, raw)?), None),
+            VerbosityConfig::Table(table) => {
+                let level = table
+                    .level
+                    .as_deref()
+                    .map(|raw| parse_quiet_level_label(task, raw))
+                    .transpose()?;
+                let stream = table
+                    .stream
+                    .as_deref()
+                    .map(|raw| parse_host_stream_for_task(task, raw))
+                    .transpose()?;
+                (level, stream)
+            }
+        };
+        if level.is_some() || stream.is_some() {
+            out.insert(task.clone(), TaskVerbosity { level, stream });
+        }
+    }
+    Ok(out)
+}
+
+/// Parse a `RUNNER_QUIET` env value: a numeric level (`0..3`, saturating) or a
+/// truthy/falsy boolean word (truthy → level 1, falsy → level 0). `None` for
+/// anything unrecognized so the lenient path can warn.
+pub(super) fn parse_quiet_env(raw: &str) -> Option<QuietLevel> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return Some(QuietLevel::Off);
+    }
+    if let Ok(n) = v.parse::<u8>() {
+        return Some(QuietLevel::from_count(n));
+    }
+    if ENV_BOOL_TRUTHY.iter().any(|t| v.eq_ignore_ascii_case(t)) {
+        return Some(QuietLevel::Quiet);
+    }
+    if ENV_BOOL_FALSY.iter().any(|t| v.eq_ignore_ascii_case(t)) {
+        return Some(QuietLevel::Off);
+    }
+    None
+}
+
+/// Parse a host-stream label (`inherit` | `stderr`), for `--host-stream` and
+/// `RUNNER_HOST_STREAM`.
+pub(super) fn parse_host_stream_label(raw: &str) -> Result<Stream> {
+    Stream::from_label(raw).ok_or_else(|| {
+        anyhow!(
+            "unknown host-stream {raw:?}; expected one of {}",
+            join_labels(Stream::ALL.iter().map(|s| s.label())),
+        )
+    })
+}
+
+/// Parse a `[tasks.<name>].verbosity` level label, error-prefixed with the task.
+fn parse_quiet_level_label(task: &str, raw: &str) -> Result<QuietLevel> {
+    QuietLevel::from_label(raw).ok_or_else(|| {
+        anyhow!(
+            "[tasks.{task}] verbosity level {raw:?}; expected one of {}",
+            join_labels(QuietLevel::ALL.iter().map(|l| l.label())),
+        )
+    })
+}
+
+/// Parse a `[tasks.<name>].verbosity` stream label, error-prefixed with the task.
+fn parse_host_stream_for_task(task: &str, raw: &str) -> Result<Stream> {
+    parse_host_stream_label(raw).map_err(|e| anyhow!("[tasks.{task}] {e}"))
 }
 
 pub(super) fn parse_mismatch_label(raw: &str) -> Result<MismatchPolicy> {

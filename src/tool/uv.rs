@@ -26,8 +26,13 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 /// environment first if needed, exactly the dispatch path a
 /// `[project.scripts]` task wants. This is distinct from [`exec_cmd`]
 /// (`uvx`), which fetches and runs an arbitrary tool from `PyPI`.
-pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("uv");
+    // uv's global `-q`/`--quiet` precedes the `run` subcommand. It has no
+    // stdout-diversion primitive, so the stream axis no-ops.
+    if verbosity.silences() {
+        c.arg("--quiet");
+    }
     c.arg("run").arg(script).args(args);
     c
 }
@@ -68,10 +73,14 @@ mod tests {
         // `uv run greenpy --flag`, the project-environment dispatch
         // for a `[project.scripts]` entry point, not the `uvx`
         // fetch-and-run path.
-        let built: Vec<_> = run_cmd("greenpy", &[String::from("--flag")])
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        let built: Vec<_> = run_cmd(
+            "greenpy",
+            &[String::from("--flag")],
+            crate::tool::HostVerbosity::default(),
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
 
         assert_eq!(built, ["run", "greenpy", "--flag"]);
     }

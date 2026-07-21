@@ -159,7 +159,9 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 /// rejected as an unknown flag or, worse, interpreted as a bacon option. We
 /// always insert `--` when args are present so flags and positionals reach
 /// the underlying job verbatim.
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    // bacon is an interactive TUI with no meaningful "quiet" mode and no
+    // stdout-diversion primitive, so both verbosity axes no-op here.
     let mut c = super::program::command("bacon");
     c.arg(task);
     if !args.is_empty() {
@@ -194,7 +196,7 @@ mod tests {
 
     #[test]
     fn run_cmd_omits_separator_when_no_args() {
-        let cmd = run_cmd("check", &[]);
+        let cmd = run_cmd("check", &[], crate::tool::HostVerbosity::default());
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
 
         assert_eq!(argv, ["check"]);
@@ -205,7 +207,11 @@ mod tests {
         // Bacon parses anything after the job name as its own options unless
         // separated by `--`. Without the separator, `--ignored` would error
         // out as an unknown bacon flag.
-        let cmd = run_cmd("test", &["--ignored".into(), "my_test".into()]);
+        let cmd = run_cmd(
+            "test",
+            &["--ignored".into(), "my_test".into()],
+            crate::tool::HostVerbosity::default(),
+        );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
 
         assert_eq!(argv, ["test", "--", "--ignored", "my_test"]);

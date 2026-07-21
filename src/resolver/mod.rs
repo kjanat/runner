@@ -72,7 +72,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::types::{
-        ExplainSource, OverrideSources, PmOverride, ResolutionStep, RunnerOverride, SourceValue,
+        ExplainSource, OverrideSources, PmOverride, QuietSource, ResolutionStep, RunnerOverride,
+        SourceValue,
     };
     use super::{FallbackPolicy, OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
@@ -616,8 +617,8 @@ mod tests {
                 cli: false,
                 env: Some("flase"),
             },
-            quiet: ExplainSource {
-                cli: false,
+            quiet: QuietSource {
+                cli: 0,
                 env: Some("disabled"),
             },
             ..OverrideSources::default()
@@ -626,7 +627,7 @@ mod tests {
 
         assert_eq!(overrides.failure_policy, FailurePolicy::FailFast);
         assert!(
-            !overrides.quiet,
+            !overrides.silences_runner(),
             "typo'd RUNNER_QUIET must not enable quiet"
         );
         let vars: Vec<&str> = warnings
@@ -1322,6 +1323,7 @@ mod tests {
                 ("build".to_string(), "turbo".to_string()),
                 ("dev".to_string(), "bun".to_string()),
             ]),
+            ..TasksSection::default()
         });
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             config: Some(&loaded),
@@ -1350,6 +1352,7 @@ mod tests {
         let loaded = config_with_tasks(TasksSection {
             prefer: Vec::new(),
             overrides: BTreeMap::from([("build".to_string(), "nx".to_string())]),
+            ..TasksSection::default()
         });
         let err = ResolutionOverrides::from_sources(OverrideSources {
             config: Some(&loaded),
@@ -1589,15 +1592,15 @@ mod tests {
     #[test]
     fn quiet_from_env_is_truthy() {
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
-            quiet: ExplainSource {
-                cli: false,
+            quiet: QuietSource {
+                cli: 0,
                 env: Some("1"),
             },
             ..OverrideSources::default()
         })
         .expect("structured override should parse");
 
-        assert!(overrides.quiet);
+        assert!(overrides.silences_runner());
     }
 
     #[test]

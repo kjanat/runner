@@ -188,12 +188,50 @@
       },
       "additionalProperties": false
     },
+    "TaskSettings": {
+      "description": "The table form of a [`TaskSpec`]: individual per-task settings, each merged\nover the built-in defaults so a partial table only overrides what it names.",
+      "type": "object",
+      "properties": {
+        "runner": {
+          "description": "Source/runner pin for this task, same meaning as a legacy\n[`TasksSection::overrides`] entry (a runner, package manager, or source\nlabel). A pin the task doesn't have falls through to the normal ranking.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "verbosity": {
+          "description": "Per-task verbosity, deep-merged over the built-in default and layered\nunder env/CLI. String shorthand (`\"quiet\"`) or a `{ level, stream }`\ntable.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerbosityConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskSpec": {
+      "description": "A single `[tasks]` entry, addressed by task name the way a crate is addressed\nunder Cargo's `[dependencies]`: either a bare **string** (shorthand for the\ntask's source/runner pin, e.g. `build = \"turbo\"`) or a **table** of per-task\nsettings (`build = { runner = \"turbo\", verbosity = \"quiet\" }`, or a\n`[tasks.build]` sub-table).",
+      "anyOf": [
+        {
+          "description": "Shorthand: `build = \"turbo\"` pins the task's source/runner. Equivalent to\n`{ runner = \"turbo\" }`.",
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/TaskSettings",
+          "description": "Full form: a table of per-task settings."
+        }
+      ]
+    },
     "TasksSection": {
-      "description": "`[tasks]` section, persistent task-source preference for ambiguous task\nnames (a name that exists under more than one source, e.g. a `package.json`\nscript *and* a `turbo` task).\n\nBoth knobs speak the same label vocabulary: a label is a task runner\n(`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,\n`deno`, …), or a source name (`package.json`, `deno`, …). Package-manager\nlabels map to the script source they run (`bun` → `package.json`).\nSelection here is **rank-only**: it never hard-rejects an unlisted source;\nit only reorders. An explicit CLI qualifier (`package.json:test`),\n`--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.",
+      "description": "`[tasks]` section, per-task configuration keyed by task name, plus the two\nreserved cross-task knobs `prefer` and `overrides`.\n\nA task entry works like a crate under Cargo's `[dependencies]`: the key is\nthe task name and the value is either a **string** shorthand for the task's\nsource/runner pin (`build = \"turbo\"`) or a **table** of per-task settings\n(`build = { runner = \"turbo\", verbosity = \"quiet\" }`, or a `[tasks.build]`\nsub-table). `prefer` (global rank) and `overrides` (legacy per-task pin map,\nsuperseded by a task entry's `runner`) are reserved names, so a task literally\ncalled `prefer` or `overrides` cannot use the map form.\n\nThe pin vocabulary is shared: a label is a task runner (`turbo`, `make`, …),\na package manager (`bun`, `npm`, `pnpm`, `yarn`, `deno`, …), or a source\nname (`package.json`, `deno`, …). Package-manager labels map to the script\nsource they run (`bun` → `package.json`). Selection is **rank-only**: it\nnever hard-rejects an unlisted source, only reorders. An explicit CLI\nqualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still\noutranks these file settings.",
       "type": "object",
       "properties": {
         "overrides": {
-          "description": "Per-task pins that override `prefer` for specific names: `overrides = { dev = \"bun\", build = \"turbo\" }`. A pin to a source the task doesn't have falls through to the normal ranking (no hard error).",
+          "description": "Legacy per-task pins that override `prefer` for specific names: `overrides = { dev = \"bun\", build = \"turbo\" }`. Superseded by a task entry's `runner` field. A pin to a source the task doesn't have falls through to the normal ranking (no hard error).",
           "type": "object",
           "additionalProperties": {
             "type": "string",
@@ -251,6 +289,54 @@
               "pyproject.toml"
             ]
           }
+        }
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/TaskSpec"
+      }
+    },
+    "VerbosityConfig": {
+      "description": "Verbosity intent as written in config: a bare level name (`verbosity =\n\"quiet\"`) or a `{ level, stream }` table. String-or-table, the same\nCargo-`[dependencies]` shape as [`TaskSpec`].",
+      "anyOf": [
+        {
+          "description": "`verbosity = \"quiet\"` — sets the level, leaves stream at its default.",
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/VerbosityTable",
+          "description": "`verbosity = { level = \"quiet\", stream = \"stderr\" }`."
+        }
+      ]
+    },
+    "VerbosityTable": {
+      "description": "The table form of [`VerbosityConfig`]: the two orthogonal knobs, each\noptional so a partial table deep-merges over the inherited default.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "How much of the host's own logging to suppress:\n`off` | `quiet` | `very-quiet` | `silent`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "off",
+            "quiet",
+            "very-quiet",
+            "silent",
+            null
+          ]
+        },
+        "stream": {
+          "description": "Whether to keep the host's stdout clean by diverting its diagnostics to\nstderr: `inherit` | `stderr`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "stderr",
+            null
+          ]
         }
       },
       "additionalProperties": false

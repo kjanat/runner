@@ -8,15 +8,17 @@ use anyhow::{Result, anyhow};
 
 use super::join_labels;
 use super::policies::{
-    is_env_truthy, parse_collision_label, parse_fallback_label, parse_mismatch_label,
-    parse_prefer_runners, parse_tasks_overrides, parse_tasks_prefer, resolve_failure_policy,
-    resolve_fallback_policy, resolve_mismatch_policy,
+    is_env_truthy, parse_collision_label, parse_fallback_label, parse_host_stream_label,
+    parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_tasks_overrides,
+    parse_tasks_prefer, parse_tasks_verbosity, resolve_failure_policy, resolve_fallback_policy,
+    resolve_mismatch_policy,
 };
 use super::types::{
     CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
-    ResolutionOverrides, RunnerOverride, ScriptPolicy, SourceValue,
+    QuietSource, ResolutionOverrides, RunnerOverride, ScriptPolicy, SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
+use crate::tool::{QuietLevel, Stream};
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, TaskRunner};
 
 impl ResolutionOverrides {
@@ -39,7 +41,7 @@ impl ResolutionOverrides {
         cli_runner: Option<&str>,
         cli_fallback: Option<&str>,
         cli_on_mismatch: Option<&str>,
-        diagnostics: DiagnosticFlags,
+        diagnostics: DiagnosticFlags<'_>,
         failure: crate::cli::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
@@ -73,7 +75,7 @@ impl ResolutionOverrides {
         cli_runner: Option<&str>,
         cli_fallback: Option<&str>,
         cli_on_mismatch: Option<&str>,
-        diagnostics: DiagnosticFlags,
+        diagnostics: DiagnosticFlags<'_>,
         failure: crate::cli::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<(Self, Vec<DetectionWarning>)> {
@@ -145,9 +147,39 @@ impl ResolutionOverrides {
             &mut warnings,
             |raw| parse_collision_label(raw).map(drop),
         );
+        lenient_env_bool(
+            &mut sources.no_warnings,
+            "RUNNER_NO_WARNINGS",
+            &mut warnings,
+        );
+        // `RUNNER_QUIET` accepts a numeric level (`0..3`) or a truthy word
+        // (level 1), so it validates against `parse_quiet_env` rather than the
+        // plain-bool path. A CLI `-q` count shadows the env, mirroring
+        // `lenient_env_field`. Ordered here (between no-warnings and explain)
+        // to keep warning emission in the historical env-field order.
+        if sources.quiet.cli == 0
+            && let Some(raw) = sources.quiet.env.map(str::trim).filter(|s| !s.is_empty())
+            && parse_quiet_env(raw).is_none()
+        {
+            let sanitized = sanitize_raw_label(raw);
+            warnings.push(DetectionWarning::InvalidEnvOverride {
+                var: "RUNNER_QUIET",
+                raw: sanitized.clone(),
+                message: sanitize_error_message(
+                    raw,
+                    &sanitized,
+                    "expected a level 0-3 or a boolean (1/true/yes/on)",
+                ),
+            });
+            sources.quiet.env = None;
+        }
+        lenient_env_field(
+            &mut sources.host_stream,
+            "RUNNER_HOST_STREAM",
+            &mut warnings,
+            |raw| parse_host_stream_label(raw).map(drop),
+        );
         for (field, var) in [
-            (&mut sources.no_warnings, "RUNNER_NO_WARNINGS"),
-            (&mut sources.quiet, "RUNNER_QUIET"),
             (&mut sources.explain, "RUNNER_EXPLAIN"),
             (&mut sources.keep_going, "RUNNER_KEEP_GOING"),
             (&mut sources.kill_on_fail, "RUNNER_KILL_ON_FAIL"),
@@ -209,10 +241,13 @@ impl ResolutionOverrides {
         // explicit-but-source-less `prefer` list as absent and fall through
         // to the legacy, more restrictive list.
         let tasks_section_set = sources.config.is_some_and(|c| {
-            !c.config.tasks.prefer.is_empty() || !c.config.tasks.overrides.is_empty()
+            !c.config.tasks.prefer.is_empty()
+                || !c.config.tasks.overrides.is_empty()
+                || !c.config.tasks.tasks.is_empty()
         });
         let prefer_sources = parse_tasks_prefer(sources.config)?;
         let task_source_overrides = parse_tasks_overrides(sources.config)?;
+        let task_verbosity = parse_tasks_verbosity(sources.config)?;
         let prefer_runners = if tasks_section_set {
             Vec::new()
         } else {
@@ -220,7 +255,7 @@ impl ResolutionOverrides {
         };
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
-        let quiet = sources.quiet.cli || sources.quiet.env.is_some_and(is_env_truthy);
+        let (quiet_level, host_stream) = resolve_verbosity(&sources)?;
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
@@ -276,7 +311,9 @@ impl ResolutionOverrides {
             fallback,
             on_mismatch,
             no_warnings,
-            quiet,
+            quiet_level,
+            host_stream,
+            task_verbosity,
             explain,
             failure_policy,
             group_output,
@@ -724,7 +761,7 @@ struct CliSides<'a> {
     runner: Option<&'a str>,
     fallback: Option<&'a str>,
     on_mismatch: Option<&'a str>,
-    diagnostics: DiagnosticFlags,
+    diagnostics: DiagnosticFlags<'a>,
     failure: crate::cli::ChainFailureFlags,
 }
 
@@ -738,6 +775,7 @@ struct EnvSnapshot {
     on_mismatch: Option<String>,
     no_warnings: Option<String>,
     quiet: Option<String>,
+    host_stream: Option<String>,
     explain: Option<String>,
     keep_going: Option<String>,
     kill_on_fail: Option<String>,
@@ -758,6 +796,7 @@ impl EnvSnapshot {
             on_mismatch: std::env::var("RUNNER_ON_MISMATCH").ok(),
             no_warnings: std::env::var("RUNNER_NO_WARNINGS").ok(),
             quiet: std::env::var("RUNNER_QUIET").ok(),
+            host_stream: std::env::var("RUNNER_HOST_STREAM").ok(),
             explain: std::env::var("RUNNER_EXPLAIN").ok(),
             keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
             kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
@@ -796,9 +835,13 @@ impl EnvSnapshot {
                 cli: cli.diagnostics.no_warnings,
                 env: self.no_warnings.as_deref(),
             },
-            quiet: ExplainSource {
+            quiet: QuietSource {
                 cli: cli.diagnostics.quiet,
                 env: self.quiet.as_deref(),
+            },
+            host_stream: SourceValue {
+                cli: cli.diagnostics.host_stream,
+                env: self.host_stream.as_deref(),
             },
             explain: ExplainSource {
                 cli: cli.diagnostics.explain,
@@ -828,6 +871,42 @@ impl EnvSnapshot {
             config,
         }
     }
+}
+
+/// Resolve the two global verbosity axes from CLI + env.
+///
+/// Quiet level is the strongest of the CLI repeat count (`-q`/`-qq`/`-qqq`) and
+/// the env value (`RUNNER_QUIET` numeric `0..3` or a truthy word → level 1),
+/// preserving the historical `cli || env` OR the bool used. Stream takes CLI
+/// `--host-stream` first, then `RUNNER_HOST_STREAM`, else [`Stream::Inherit`].
+/// Per-task `[tasks.<name>].verbosity` config layers under both at dispatch.
+fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Stream)> {
+    let cli_quiet = QuietLevel::from_count(sources.quiet.cli);
+    let env_quiet = sources
+        .quiet
+        .env
+        .and_then(parse_quiet_env)
+        .unwrap_or(QuietLevel::Off);
+    let quiet_level = cli_quiet.max(env_quiet);
+
+    let host_stream = match sources
+        .host_stream
+        .cli
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => parse_host_stream_label(raw)?,
+        None => match sources
+            .host_stream
+            .env
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(raw) => parse_host_stream_label(raw)?,
+            None => Stream::Inherit,
+        },
+    };
+    Ok((quiet_level, host_stream))
 }
 
 /// Pre-validate one env-sourced override field for the lenient
