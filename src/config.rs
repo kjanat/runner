@@ -1111,6 +1111,19 @@ mod tests {
             schema_props::<super::VerbosityTable>(),
             "VERBOSITY_TABLE_FIELDS must match VerbosityTable",
         );
+        // `TasksSection`'s named (non-flattened) fields ARE the reserved keys;
+        // the flattened `tasks` map is `additionalProperties`, not a property,
+        // so it never appears here. If a reserved field is added/renamed without
+        // updating TASKS_RESERVED_KEYS, `collect_unknown_task_keys` would treat
+        // it as a task entry (or vice versa) — this guard catches that.
+        assert_eq!(
+            super::TASKS_RESERVED_KEYS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<BTreeSet<_>>(),
+            schema_props::<super::TasksSection>(),
+            "TASKS_RESERVED_KEYS must match TasksSection's named fields",
+        );
     }
 
     #[test]

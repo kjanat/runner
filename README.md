@@ -228,8 +228,10 @@ Hosts with no such flag — or whose only "quiet" is a full mute that would eat
 the task's own output (`just`, `turbo`, `go run`, `bacon`, `pipenv`) — are left
 untouched, never an error. The level escalates pytest-style: `-qq` also mutes
 runner's warnings, `-qqq` is the floor. `RUNNER_QUIET` takes a number (`0`–`3`)
-or a truthy word, and the resolved level is inherited by a nested `runner` a
-task shells out to.
+or a truthy word; a falsy word (`0`, `false`, `off`) or a passed `-q` on the
+command line both override it — the former to explicitly turn inherited quieting
+off, the latter because the CLI flag wins over the env. The resolved level is
+inherited by a nested `runner` a task shells out to.
 
 Orthogonally, `--host-stream stderr` (`RUNNER_HOST_STREAM`) asks the host to
 keep **stdout** clean by routing its diagnostics to stderr. Only pnpm has the

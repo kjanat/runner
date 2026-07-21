@@ -1638,6 +1638,24 @@ mod tests {
     }
 
     #[test]
+    fn runner_quiet_env_saturates_large_numbers() {
+        // `RUNNER_QUIET=999` exceeds u8 but must still saturate to the quietest
+        // level (documented "saturating"), not fall through to invalid.
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            quiet: QuietSource {
+                cli: 0,
+                env: Some("999"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("should parse");
+        assert!(
+            overrides.silences_warnings(),
+            "RUNNER_QUIET=999 saturates to Silent",
+        );
+    }
+
+    #[test]
     fn host_stream_garbage_env_is_lenient_not_fatal() {
         // Regression (F3): a typo'd RUNNER_HOST_STREAM must not abort the run;
         // it falls back to Inherit (the doctor/lenient path warns separately).

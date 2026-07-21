@@ -31,9 +31,10 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 /// `pipenv run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
 pub(crate) fn run_cmd(script: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
-    // pipenv exposes no reliable per-run quiet flag (its `--quiet` is not a
-    // stable global) and no stdout-diversion primitive, so both verbosity axes
-    // no-op here rather than risk emitting a flag pipenv rejects.
+    // Both verbosity axes no-op here. pipenv's `--quiet`/`PIPENV_QUIET` only
+    // hushes its own "Loading .env…" line, which pipenv already writes to
+    // stderr — so it was never the stdout-contamination this feature targets,
+    // and there's no stdout-diversion primitive to honor the stream axis either.
     let mut c = super::program::command("pipenv");
     c.arg("run").arg(script).args(args);
     c

@@ -197,6 +197,30 @@
           "type": [
             "null",
             "string"
+          ],
+          "enum": [
+            "turbo",
+            "nx",
+            "make",
+            "just",
+            "task",
+            "mise",
+            "bacon",
+            "npm",
+            "yarn",
+            "pnpm",
+            "bun",
+            "cargo",
+            "deno",
+            "uv",
+            "poetry",
+            "pipenv",
+            "go",
+            "bundler",
+            "composer",
+            "package.json",
+            "pyproject.toml",
+            null
           ]
         },
         "verbosity": {
@@ -218,7 +242,30 @@
       "anyOf": [
         {
           "description": "Shorthand: `build = \"turbo\"` pins the task's source/runner. Equivalent to\n`{ runner = \"turbo\" }`.",
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "turbo",
+            "nx",
+            "make",
+            "just",
+            "task",
+            "mise",
+            "bacon",
+            "npm",
+            "yarn",
+            "pnpm",
+            "bun",
+            "cargo",
+            "deno",
+            "uv",
+            "poetry",
+            "pipenv",
+            "go",
+            "bundler",
+            "composer",
+            "package.json",
+            "pyproject.toml"
+          ]
         },
         {
           "$ref": "#/$defs/TaskSettings",
@@ -300,7 +347,13 @@
       "anyOf": [
         {
           "description": "`verbosity = \"quiet\"` — sets the level, leaves stream at its default.",
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "off",
+            "quiet",
+            "very-quiet",
+            "silent"
+          ]
         },
         {
           "$ref": "#/$defs/VerbosityTable",

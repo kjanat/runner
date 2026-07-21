@@ -976,7 +976,7 @@ mod verbosity_tests {
     }
 
     #[test]
-    fn run_cmd_quiet_maps_to_host_flag() {
+    fn run_cmd_quiet_is_intentional_noop() {
         let v = HostVerbosity {
             level: QuietLevel::Quiet,
             ..HostVerbosity::default()

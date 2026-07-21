@@ -274,8 +274,11 @@ pub(super) fn parse_quiet_env(raw: &str) -> Option<QuietLevel> {
     if v.is_empty() {
         return Some(QuietLevel::Off);
     }
-    if let Ok(n) = v.parse::<u8>() {
-        return Some(QuietLevel::from_count(n));
+    // Parse wide, then saturate: `from_count` already caps `>= 3` at the floor,
+    // so `RUNNER_QUIET=999` resolves to the quietest level rather than falling
+    // through to the word checks and reading as invalid.
+    if let Ok(n) = v.parse::<u64>() {
+        return Some(QuietLevel::from_count(u8::try_from(n).unwrap_or(u8::MAX)));
     }
     if ENV_BOOL_TRUTHY.iter().any(|t| v.eq_ignore_ascii_case(t)) {
         return Some(QuietLevel::Quiet);
