@@ -400,6 +400,32 @@ pub(crate) struct TasksSection {
     pub tasks: BTreeMap<String, TaskSpec>,
 }
 
+impl TasksSection {
+    /// True when this `[tasks]` section carries a signal that supersedes the
+    /// deprecated, *restrictive* `[task_runner].prefer` list: a global `prefer`
+    /// rank, a legacy `overrides` pin, or a task entry that contributes a
+    /// **source pin** (a bare-string [`TaskSpec::Pin`] or a table with a
+    /// `runner` field).
+    ///
+    /// A verbosity-only task entry (`[tasks.build] verbosity = "quiet"`) names
+    /// no source, so it deliberately does *not* count — otherwise adding a
+    /// per-task verbosity knob would silently drop a user's legacy runner
+    /// restriction (they resolve on entirely separate axes). Judged on the raw
+    /// fields, not the parsed result: a recognized-but-source-less label like
+    /// `"nx"` still counts as a pin here, matching `parse_tasks_overrides`.
+    pub(crate) fn supersedes_legacy_prefer(&self) -> bool {
+        !self.prefer.is_empty()
+            || !self.overrides.is_empty()
+            || self.tasks.values().any(|spec| match spec {
+                TaskSpec::Pin(label) => !label.trim().is_empty(),
+                TaskSpec::Settings(settings) => settings
+                    .runner
+                    .as_deref()
+                    .is_some_and(|runner| !runner.trim().is_empty()),
+            })
+    }
+}
+
 /// A single `[tasks]` entry, addressed by task name the way a crate is addressed
 /// under Cargo's `[dependencies]`: either a bare **string** (shorthand for the
 /// task's source/runner pin, e.g. `build = "turbo"`) or a **table** of per-task
@@ -520,6 +546,19 @@ const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("parallel", &["grouped"]),
 ];
 
+/// Reserved keys under `[tasks]` that are section fields, not task entries.
+/// Every other key is a task name; a table-valued task entry has its fields
+/// checked against [`TASK_ENTRY_FIELDS`] (see [`collect_unknown_keys`]).
+const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
+
+/// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
+/// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
+/// drift. An unrecognized field warns (forward-compat) rather than aborting.
+const TASK_ENTRY_FIELDS: &[&str] = &["runner", "verbosity"];
+
+/// Recognized fields of a `[tasks.<name>].verbosity` table ([`VerbosityTable`]).
+const VERBOSITY_TABLE_FIELDS: &[&str] = &["level", "stream"];
+
 /// Collect forward-compat warnings for sections/fields this build doesn't
 /// recognize. Walks the raw parsed table against [`KNOWN_SCHEMA`]; a
 /// non-table where a section is expected is left for the typed deserialize to
@@ -538,12 +577,14 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
         };
         if let Some(body) = body.as_table() {
             // `[tasks]` is an open map (task name → settings) with only
-            // `prefer`/`overrides` reserved, so any other key is a task entry,
-            // not an unknown field. Task names are arbitrary and can't be told
-            // apart from a typo'd reserved key, so field-level drift detection
-            // doesn't apply here (a mistyped value is still caught by the typed
-            // deserialize).
+            // `prefer`/`overrides` reserved, so a top-level key that isn't one
+            // of those is a task *name* (arbitrary — never an "unknown field").
+            // But a task's own *settings* have a fixed field set, so recurse one
+            // level to catch a typo like `[tasks.build] runer = "turbo"`, which
+            // would otherwise be silently dropped. Warnings keep forward-compat
+            // (a newer runner's field is tolerated, not fatal).
             if section == "tasks" {
+                collect_unknown_task_keys(body, &mut warnings);
                 continue;
             }
             for field in body.keys() {
@@ -556,6 +597,44 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
         }
     }
     warnings
+}
+
+/// Field-level forward-compat check for the `[tasks]` open map. A task entry is
+/// either a string shorthand (a source pin — no fields to check) or a table
+/// whose fields must be in [`TASK_ENTRY_FIELDS`], with its `verbosity` sub-table
+/// (when a table) checked against [`VERBOSITY_TABLE_FIELDS`]. Unknown fields are
+/// warned about (dotted path `tasks.<name>.<field>` /
+/// `tasks.<name>.verbosity.<sub>`), not errors, so a config from a newer runner
+/// still loads. Reserved section keys (`prefer`/`overrides`) are skipped.
+fn collect_unknown_task_keys(tasks: &toml::value::Table, warnings: &mut Vec<DetectionWarning>) {
+    for (name, entry) in tasks {
+        if TASKS_RESERVED_KEYS.contains(&name.as_str()) {
+            continue;
+        }
+        let Some(fields) = entry.as_table() else {
+            // A string-shorthand pin (`build = "turbo"`) has no fields.
+            continue;
+        };
+        for (field, value) in fields {
+            if !TASK_ENTRY_FIELDS.contains(&field.as_str()) {
+                warnings.push(DetectionWarning::UnknownConfigKey {
+                    path: format!("tasks.{name}.{field}"),
+                });
+                continue;
+            }
+            if field == "verbosity"
+                && let Some(verbosity) = value.as_table()
+            {
+                for sub in verbosity.keys() {
+                    if !VERBOSITY_TABLE_FIELDS.contains(&sub.as_str()) {
+                        warnings.push(DetectionWarning::UnknownConfigKey {
+                            path: format!("tasks.{name}.verbosity.{sub}"),
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Load the project config, searching [`CONFIG_DIRS`] × plain/dotted
@@ -648,7 +727,10 @@ pub(crate) fn deprecation_warnings(config: &RunnerConfig) -> Vec<DetectionWarnin
         out.push(DetectionWarning::DeprecatedConfigKey {
             path: "task_runner.prefer".to_string(),
             replacement,
-            superseded: prefer_set || overrides_set,
+            // Share the resolver's exact supersession predicate so the warning
+            // can never disagree with what actually happened: a task entry with
+            // a source pin supersedes too, while a verbosity-only entry does not.
+            superseded: config.tasks.supersedes_legacy_prefer(),
         });
     }
     out
@@ -865,6 +947,169 @@ mod tests {
             )),
             "expected the warning to name tasks.overrides, got: {:?}",
             loaded.warnings,
+        );
+    }
+
+    #[test]
+    fn verbosity_only_task_entry_does_not_supersede_legacy_prefer() {
+        // Regression (F1): a verbosity-only `[tasks.<name>]` entry names no
+        // source, so it must NOT flip the legacy `[task_runner].prefer`
+        // restriction off — otherwise adding a per-task verbosity knob silently
+        // changes task-source resolution.
+        let dir = TempDir::new("config-verbosity-only-not-superseding");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[task_runner]\nprefer = [\"turbo\"]\n\n[tasks.build]\nverbosity = \"quiet\"\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+
+        assert!(
+            !loaded.config.tasks.supersedes_legacy_prefer(),
+            "a verbosity-only task entry must not supersede [task_runner].prefer",
+        );
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                DetectionWarning::DeprecatedConfigKey {
+                    superseded: false,
+                    ..
+                }
+            )),
+            "deprecation warning must report superseded: false, got: {:?}",
+            loaded.warnings,
+        );
+    }
+
+    #[test]
+    fn task_pin_entry_supersedes_legacy_prefer() {
+        // A real source pin (bare string or a `runner` field) still supersedes,
+        // preserving the intended behavior of the open `[tasks]` map.
+        for body in [
+            "[task_runner]\nprefer = [\"turbo\"]\n\n[tasks]\nbuild = \"turbo\"\n",
+            "[task_runner]\nprefer = [\"turbo\"]\n\n[tasks.build]\nrunner = \"turbo\"\n",
+        ] {
+            let dir = TempDir::new("config-pin-supersedes");
+            fs::write(dir.path().join(CONFIG_FILENAME), body).expect("seed config");
+            let loaded = load(dir.path())
+                .expect("config should parse")
+                .expect("config should be present");
+            assert!(
+                loaded.config.tasks.supersedes_legacy_prefer(),
+                "a task entry with a source pin should supersede; body: {body}",
+            );
+            assert!(
+                loaded.warnings.iter().any(|w| matches!(
+                    w,
+                    DetectionWarning::DeprecatedConfigKey {
+                        superseded: true,
+                        ..
+                    }
+                )),
+                "expected superseded: true for a pin entry; body: {body}, got: {:?}",
+                loaded.warnings,
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_task_entry_field_warns_instead_of_silently_dropping() {
+        // Regression (F2): a typo'd per-task field (`runer` for `runner`) used
+        // to parse to an empty settings entry with the pin silently lost. It
+        // must now surface as an unknown-key warning (forward-compat: a warning,
+        // not a hard error).
+        let dir = TempDir::new("config-task-field-typo");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[tasks]\nbuild = { runer = \"turbo\" }\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should still load (forward-compat)")
+            .expect("config should be present");
+        assert_eq!(unknown_paths(&loaded), ["tasks.build.runer"]);
+    }
+
+    #[test]
+    fn unknown_verbosity_subfield_warns() {
+        let dir = TempDir::new("config-verbosity-subfield-typo");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[tasks.build]\nverbosity = { levl = \"quiet\" }\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should load")
+            .expect("config should be present");
+        assert!(
+            unknown_paths(&loaded).contains(&"tasks.build.verbosity.levl".to_string()),
+            "expected a tasks.build.verbosity.levl warning, got: {:?}",
+            unknown_paths(&loaded),
+        );
+    }
+
+    #[test]
+    fn valid_task_entries_produce_no_unknown_key_warnings() {
+        // No false positives: reserved keys, string shorthand, and the two real
+        // per-task fields (incl. a full verbosity table) are all recognized.
+        let dir = TempDir::new("config-task-entries-clean");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[tasks]\nprefer = [\"turbo\"]\noverrides = { dev = \"bun\" }\nbuild = \
+             \"turbo\"\n\n[tasks.test]\nrunner = \"bun\"\nverbosity = { level = \"quiet\", stream \
+             = \"stderr\" }\n\n[tasks.lint]\nverbosity = \"silent\"\n",
+        )
+        .expect("seed config");
+
+        let loaded = load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present");
+        assert!(
+            unknown_paths(&loaded).is_empty(),
+            "valid task entries must not warn, got: {:?}",
+            unknown_paths(&loaded),
+        );
+    }
+
+    #[cfg(feature = "schema")]
+    #[test]
+    fn known_task_entry_fields_match_schema() {
+        // Drift guard: the const field lists `collect_unknown_task_keys` checks
+        // against must match the real structs, or a renamed/added field would
+        // be spuriously warned about (or a typo silently tolerated).
+        use std::collections::BTreeSet;
+
+        fn schema_props<T: schemars::JsonSchema>() -> BTreeSet<String> {
+            let schema =
+                serde_json::to_value(schemars::schema_for!(T)).expect("schema should serialize");
+            schema["properties"]
+                .as_object()
+                .expect("struct schema must have properties")
+                .keys()
+                .cloned()
+                .collect()
+        }
+
+        assert_eq!(
+            super::TASK_ENTRY_FIELDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<BTreeSet<_>>(),
+            schema_props::<super::TaskSettings>(),
+            "TASK_ENTRY_FIELDS must match TaskSettings",
+        );
+        assert_eq!(
+            super::VERBOSITY_TABLE_FIELDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<BTreeSet<_>>(),
+            schema_props::<super::VerbosityTable>(),
+            "VERBOSITY_TABLE_FIELDS must match VerbosityTable",
         );
     }
 

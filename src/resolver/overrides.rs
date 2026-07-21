@@ -239,12 +239,14 @@ impl ResolutionOverrides {
         // but resolves to no `TaskSource` (see `resolve_source_label`), so
         // checking `prefer_sources.is_empty()` would wrongly treat an
         // explicit-but-source-less `prefer` list as absent and fall through
-        // to the legacy, more restrictive list.
-        let tasks_section_set = sources.config.is_some_and(|c| {
-            !c.config.tasks.prefer.is_empty()
-                || !c.config.tasks.overrides.is_empty()
-                || !c.config.tasks.tasks.is_empty()
-        });
+        // to the legacy, more restrictive list. Only signals that affect
+        // *source selection* count — a global `prefer` rank, an `overrides`
+        // pin, or a task entry with a source pin; a verbosity-only
+        // `[tasks.<name>]` entry names no source and must not supersede (see
+        // `TasksSection::supersedes_legacy_prefer`).
+        let tasks_section_set = sources
+            .config
+            .is_some_and(|c| c.config.tasks.supersedes_legacy_prefer());
         let prefer_sources = parse_tasks_prefer(sources.config)?;
         let task_source_overrides = parse_tasks_overrides(sources.config)?;
         let task_verbosity = parse_tasks_verbosity(sources.config)?;
@@ -875,19 +877,29 @@ impl EnvSnapshot {
 
 /// Resolve the two global verbosity axes from CLI + env.
 ///
-/// Quiet level is the strongest of the CLI repeat count (`-q`/`-qq`/`-qqq`) and
-/// the env value (`RUNNER_QUIET` numeric `0..3` or a truthy word → level 1),
-/// preserving the historical `cli || env` OR the bool used. Stream takes CLI
-/// `--host-stream` first, then `RUNNER_HOST_STREAM`, else [`Stream::Inherit`].
-/// Per-task `[tasks.<name>].verbosity` config layers under both at dispatch.
+/// Quiet level follows the resolver-wide **CLI > env** precedence: the CLI
+/// repeat count (`-q`/`-qq`/`-qqq`) wins whenever the flag was passed
+/// (`cli > 0`), else the env value (`RUNNER_QUIET` numeric `0..3` or a truthy
+/// word → level 1) applies. On the old `{off, on}` bool this is identical to
+/// `cli || env` (a set flag was already the ceiling); unlike a `max`, env can
+/// no longer escalate a passed `-q` up to `Silent`. Stream takes CLI
+/// `--host-stream` first, then `RUNNER_HOST_STREAM`; an unrecognized env value
+/// falls back to the default — the same leniency the quiet axis gives bad env —
+/// rather than aborting the run (the doctor/lenient path warns instead). A
+/// bad explicit `--host-stream` still errors. Per-task
+/// `[tasks.<name>].verbosity` config layers under both at dispatch.
 fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Stream)> {
-    let cli_quiet = QuietLevel::from_count(sources.quiet.cli);
-    let env_quiet = sources
-        .quiet
-        .env
-        .and_then(parse_quiet_env)
-        .unwrap_or(QuietLevel::Off);
-    let quiet_level = cli_quiet.max(env_quiet);
+    // CLI count wins outright when passed, so env can neither escalate past nor
+    // undercut an explicit `-q`; env applies only when no `-q` was given.
+    let quiet_level = if sources.quiet.cli > 0 {
+        QuietLevel::from_count(sources.quiet.cli)
+    } else {
+        sources
+            .quiet
+            .env
+            .and_then(parse_quiet_env)
+            .unwrap_or(QuietLevel::Off)
+    };
 
     let host_stream = match sources
         .host_stream
@@ -895,16 +907,18 @@ fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Strea
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
+        // An explicit `--host-stream` stays strict (clap already validated it).
         Some(raw) => parse_host_stream_label(raw)?,
-        None => match sources
+        // A typo'd `RUNNER_HOST_STREAM` env value is lenient here, mirroring the
+        // quiet axis (`parse_quiet_env(...).unwrap_or(Off)`): it falls back to
+        // the default instead of aborting every `run`. The doctor path warns.
+        None => sources
             .host_stream
             .env
             .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            Some(raw) => parse_host_stream_label(raw)?,
-            None => Stream::Inherit,
-        },
+            .and_then(|raw| parse_host_stream_label(raw).ok())
+            .unwrap_or(Stream::Inherit),
     };
     Ok((quiet_level, host_stream))
 }

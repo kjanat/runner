@@ -23,7 +23,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   Existing `-q` callers who relied on the tool staying verbose will now see it
   silenced; scope the quiet to runner alone by leaving `-q` off and configuring
   per task instead. `RUNNER_QUIET` additionally accepts a numeric level
-  (`0`–`3`) alongside the truthy words it already took.
+  (`0`–`3`) alongside the truthy words it already took, and follows the usual
+  CLI > env precedence: a passed `-q` count wins outright, so the env can no
+  longer escalate an explicit `-q` to a higher level. An unrecognized
+  `RUNNER_HOST_STREAM` env value is ignored (default `inherit`) rather than
+  aborting the run, matching how a bad `RUNNER_QUIET` is treated; `runner
+  doctor` still reports both.
 
 ### Added
 
@@ -43,7 +48,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   reserved back-compat keys. The new `verbosity` setting (string
   `off|quiet|very-quiet|silent`, or a `{ level, stream }` table) is the per-task
   form of the quiet/stream knobs, deep-merged under any global flag/env, so one
-  noisy task can be pinned quiet without a global flag.
+  noisy task can be pinned quiet without a global flag. It is scoped to that
+  task's immediate host tool and does not cross into a nested `runner` (only the
+  global `-q`/`RUNNER_QUIET` level propagates). A typo in a `[tasks.<name>]`
+  table (`runer`, or a `verbosity` sub-field) is surfaced as an unknown-key
+  warning like every other config key, instead of being silently dropped.
 
 ### Post-release checklist
 

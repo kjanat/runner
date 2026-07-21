@@ -1604,6 +1604,69 @@ mod tests {
     }
 
     #[test]
+    fn cli_quiet_count_wins_over_env_level() {
+        // Regression (F4): CLI > env — a passed `-q` (count 1) must NOT be
+        // escalated to Silent by `RUNNER_QUIET=3`. `silences_warnings` is true
+        // only at VeryQuiet+, so it discriminates level 1 from level 3.
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            quiet: QuietSource {
+                cli: 1,
+                env: Some("3"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("should parse");
+        assert!(overrides.silences_runner(), "-q still silences runner");
+        assert!(
+            !overrides.silences_warnings(),
+            "an explicit -q (level 1) must not be escalated to Silent by RUNNER_QUIET=3",
+        );
+
+        // With no CLI flag, the env level applies in full.
+        let env_only = ResolutionOverrides::from_sources(OverrideSources {
+            quiet: QuietSource {
+                cli: 0,
+                env: Some("3"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("should parse");
+        assert!(
+            env_only.silences_warnings(),
+            "RUNNER_QUIET=3 with no -q resolves to Silent",
+        );
+    }
+
+    #[test]
+    fn host_stream_garbage_env_is_lenient_not_fatal() {
+        // Regression (F3): a typo'd RUNNER_HOST_STREAM must not abort the run;
+        // it falls back to Inherit (the doctor/lenient path warns separately).
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            host_stream: SourceValue {
+                cli: None,
+                env: Some("stdrr"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect("garbage RUNNER_HOST_STREAM must not error the strict path");
+        assert_eq!(overrides.host_stream, crate::tool::Stream::Inherit);
+    }
+
+    #[test]
+    fn host_stream_bad_cli_flag_still_errors() {
+        // The explicit flag stays strict (clap normally validates it; the
+        // resolver is the backstop).
+        let result = ResolutionOverrides::from_sources(OverrideSources {
+            host_stream: SourceValue {
+                cli: Some("bogus"),
+                env: None,
+            },
+            ..OverrideSources::default()
+        });
+        assert!(result.is_err(), "a bad --host-stream value must error");
+    }
+
+    #[test]
     fn parse_override_trims_whitespace_in_env_and_cli() {
         // Whitespace in env values is common when shell-export patterns
         // leave trailing newlines or quoted values pad arguments. The

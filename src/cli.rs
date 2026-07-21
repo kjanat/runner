@@ -1439,8 +1439,9 @@ pub(crate) struct GlobalOpts {
     /// - `-qqq`: the saturating floor.
     ///
     /// Errors still surface. `RUNNER_QUIET` sets the level too: a number
-    /// (`0..3`) or a truthy word (→ `-q`). The resolved level is inherited by a
-    /// nested `runner` a task spawns. Orthogonal to `--host-stream`.
+    /// (`0..3`) or a truthy word (→ `-q`); a passed `-q` count wins over it
+    /// (CLI > env). The resolved level is inherited by a nested `runner` a task
+    /// spawns. Orthogonal to `--host-stream`.
     #[arg(
         short = 'q',
         long = "quiet",

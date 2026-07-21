@@ -61,12 +61,22 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
     // everything detection found for `dir` by the time it spawns anything, so a
     // nested runner over the same root stays quiet instead of repeating it.
     command.env(WARNED_ROOT_ENV, dir);
-    // Propagate the resolved verbosity across the process boundary so a task
-    // that shells out to `runner` again inherits it, the way `RUNNER_QUIET`
-    // already did by env inheritance but the `-q` flag did not. Exported as the
-    // numeric level and the stream label, both re-parsed by the child's env
-    // layer. Only set when non-default so we never force quiet/stderr onto a
-    // child whose own config or flags meant to leave them alone.
+    // Propagate the *global* resolved verbosity across the process boundary so
+    // a task that shells out to `runner` again inherits it, the way
+    // `RUNNER_QUIET` already did by env inheritance but the `-q` flag did not.
+    // Exported as the numeric level and the stream label, both re-parsed by the
+    // child's env layer. Only set when non-default so we never force
+    // quiet/stderr onto a child whose own config or flags meant to leave them
+    // alone.
+    //
+    // Deliberately the global level, not a per-task
+    // `[tasks.<name>].verbosity`: per-task verbosity is scoped to *this*
+    // process's immediate host tool (it only shapes the spawned tool's flags,
+    // not this runner's own output), so crossing it into a nested runner —
+    // where it would become that runner's global level and mute *its* warnings
+    // at `very-quiet`+ — would be a surprising, asymmetric blast radius. A
+    // caller who wants nested runners quiet uses `-q`/`RUNNER_QUIET`, which is
+    // global by construction.
     if overrides.quiet_level != crate::tool::QuietLevel::Off {
         command.env("RUNNER_QUIET", overrides.quiet_level.as_count().to_string());
     }

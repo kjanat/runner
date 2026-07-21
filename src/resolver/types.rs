@@ -74,8 +74,9 @@ pub(crate) struct ResolutionOverrides {
     /// only non-fatal warnings are silenced.
     pub no_warnings: bool,
     /// Global quiet level from `-q`/`-qq`/`-qqq` (repeat count) and
-    /// `RUNNER_QUIET` (numeric `0..3` or a truthy word → level 1). The
-    /// strongest of the CLI/env sides wins. Gates runner's own output (the
+    /// `RUNNER_QUIET` (numeric `0..3` or a truthy word → level 1). CLI > env: a
+    /// passed `-q` count wins outright, env applies only when no flag was given.
+    /// Gates runner's own output (the
     /// dispatch arrow, `--explain` trace, per-task timing, chain summary, GHA
     /// groups) at [`QuietLevel::Quiet`], and folds in `--no-warnings` at
     /// [`QuietLevel::VeryQuiet`]. Also the global floor for the spawned host
@@ -571,8 +572,8 @@ pub(crate) struct ExplainSource<'a> {
 }
 
 /// CLI repeat count (`-q`/`-qq`/`-qqq`) plus env-var value for the quiet
-/// level. The strongest of the two sides wins (`RUNNER_QUIET` is numeric
-/// `0..3` or a truthy word meaning level 1).
+/// level. CLI > env: a passed count (`cli > 0`) wins outright, else the env
+/// applies (`RUNNER_QUIET` is numeric `0..3` or a truthy word meaning level 1).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct QuietSource<'a> {
     /// `-q` repeat count from the CLI (`0` when not passed).
