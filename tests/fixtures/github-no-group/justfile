@@ -3,3 +3,6 @@ build:
 
 test:
     @echo "test-ran"
+
+fail-mid:
+    @exit 7

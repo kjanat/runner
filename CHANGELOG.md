@@ -16,8 +16,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   chain's own exit code attributed to the task that produced it. Fail-fast runs
   name the tasks they never started. Under GitHub Actions each failed task also
   becomes an `::error::` annotation, so a failure in a long `--keep-going` run
-  is visible without reading the log. Follows `[github].group_output` and
-  `--quiet`.
+  is visible without reading the log. The annotations follow
+  `[github].group_output`; `--quiet` silences the whole summary.
 - A token naming an installed dependency resolves to the binary that
   dependency's manifest declares. `run @typescript/native --noEmit` runs
   `node_modules/@typescript/native/bin/tsc` without touching the registry,

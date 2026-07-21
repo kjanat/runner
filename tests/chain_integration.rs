@@ -1067,3 +1067,86 @@ fn quiet_suppresses_the_chain_summary() {
         "the summary is meta-output and follows --quiet. stderr: {stderr}",
     );
 }
+
+#[test]
+fn github_actions_annotates_each_failed_chain_task() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // The Annotations panel is where a reader lands before opening the log,
+    // so a failed chain task has to reach it.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-s", "-k", "ok-one", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("::error") && stdout.contains("fail-mid"),
+        "expected an error annotation naming the task. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("exit 7"),
+        "the annotation carries the task's own exit code. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("::error title=runner%3A ok-one"),
+        "a passing task must not be annotated. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn quiet_suppresses_github_actions_annotations() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // Annotations are workflow commands, so they land on stdout. Under
+    // `--quiet` that stream belongs to the task alone (#86).
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("::error"),
+        "--quiet must keep annotations off stdout. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    // `[github].group_output` owns runner's Actions output, so it takes the
+    // annotations with it. The roll-up is plain stderr meta-output and is not
+    // Actions-specific, so it stays.
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(fixture("github-no-group"))
+        .args(["run", "-s", "-k", "build", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("::error"),
+        "group_output = false opts out of annotations. stdout: {stdout}",
+    );
+    assert!(
+        stderr.contains("summary: 2 tasks, 1 ok, 1 failed"),
+        "the roll-up does not follow group_output. stderr: {stderr}",
+    );
+}
