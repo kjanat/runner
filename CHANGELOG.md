@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.21.0] - 2026-07-21
+
 ### Added
 
 - A chain of more than one task closes with a per-task roll-up on stderr:
@@ -50,12 +58,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - The dispatch arrow names the exec primitive it actually runs (`npx`, `bunx`,
   `pnpm exec`, `yarn exec`) rather than the package manager, which read as
   though runner had run `npm <package>` as a shell command.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.20.0] - 2026-07-16
 
@@ -1838,7 +1840,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/kjanat/runner/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/kjanat/runner/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/kjanat/runner/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/kjanat/runner/compare/v0.18.1...v0.19.0
