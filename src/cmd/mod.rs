@@ -83,6 +83,12 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
     if overrides.host_stream != crate::tool::Stream::Inherit {
         command.env("RUNNER_HOST_STREAM", overrides.host_stream.label());
     }
+    // Same reasoning for the runtime axis: a script that shells out to
+    // `runner` again should keep running on the runtime the user asked for,
+    // or the nested dispatch silently drops back to the detected PM.
+    if let Some(over) = overrides.runtime.as_ref() {
+        command.env("RUNNER_RUNTIME", over.runtime.label());
+    }
 }
 
 /// Every existing `node_modules/.bin` from `dir` up to the filesystem

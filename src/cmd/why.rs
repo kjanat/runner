@@ -623,10 +623,10 @@ mod tests {
     fn why_rejects_runner_constraint_mismatch() {
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);
         let overrides = ResolutionOverrides::from_cli_and_env(
-            None,
-            Some("just"),
-            None,
-            None,
+            crate::resolver::CliOverrides {
+                runner: Some("just"),
+                ..crate::resolver::CliOverrides::default()
+            },
             DiagnosticFlags::default(),
             crate::cli::ChainFailureFlags::default(),
             None,
@@ -643,10 +643,10 @@ mod tests {
     fn why_pyproject_script_reports_python_pm_override() {
         let ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
         let overrides = ResolutionOverrides::from_cli_and_env(
-            Some("uv"),
-            None,
-            None,
-            None,
+            crate::resolver::CliOverrides {
+                pm: Some("uv"),
+                ..crate::resolver::CliOverrides::default()
+            },
             DiagnosticFlags::default(),
             crate::cli::ChainFailureFlags::default(),
             None,

@@ -300,6 +300,12 @@ const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
         "false",
         FieldHint::Static("buffer + print each task as one block on completion"),
     ),
+    (
+        "runtime",
+        "js",
+        "\"bun\"",
+        FieldHint::Static("node | bun | deno; bun implies `bun --bun run`"),
+    ),
 ];
 
 /// Render a [`FieldHint`] into the trailing `# ...` comment text (without

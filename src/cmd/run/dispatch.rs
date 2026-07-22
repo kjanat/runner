@@ -23,7 +23,7 @@ use super::select::select_task_entry;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
 use crate::tool::deno_exec::DenoTaskPlan;
-use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
+use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
 
 fn print_dispatch_arrow(
     overrides: &ResolutionOverrides,
@@ -426,6 +426,14 @@ fn build_run_command(
     Ok(match entry.source {
         TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args, hv),
         TaskSource::PackageJson => {
+            // An explicit runtime override outranks the resolved PM: which
+            // runtime the script's process tree runs on is a separate question
+            // from who installed the dependencies, and both bun and deno read
+            // `package.json` scripts whatever wrote the lockfile.
+            if let Some(over) = overrides.runtime.as_ref() {
+                print_pm_explain(overrides, &over.describe());
+                return runtime_run_command(ctx, overrides, entry, args, hv, sink, over.runtime);
+            }
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
             print_pm_explain(overrides, &decision.describe());
@@ -466,6 +474,52 @@ fn build_run_command(
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
                 PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run pyproject scripts", other.label()),
+            }
+        }
+    })
+}
+
+/// Build the command for a `package.json` script under an explicit
+/// `--runtime`.
+///
+/// Bun forces its own runtime onto the whole process tree (`bun --bun run`),
+/// which is the thing `--pm bun` could never express. Deno runs the script
+/// through `deno task`, which reads `package.json` scripts as well as
+/// `deno.json` tasks. Node has no forcing primitive of its own, so it means
+/// "whatever the PM is, do not force anything else", and falls through to the
+/// resolved node PM.
+///
+/// A runtime whose binary the project has no sign of is still dispatched: the
+/// user named it explicitly, and `bun --bun run` works regardless of which PM
+/// wrote the lockfile. A missing binary surfaces as the spawn error naming it,
+/// which is more actionable than a pre-emptive guess about what is installed.
+fn runtime_run_command(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    entry: &Task,
+    args: &[String],
+    hv: tool::HostVerbosity,
+    sink: crate::cmd::WarningSink<'_>,
+    runtime: JsRuntime,
+) -> Result<Command> {
+    Ok(match runtime {
+        JsRuntime::Bun => tool::bun::run_cmd_with_runtime(&entry.name, args, hv, true),
+        JsRuntime::Deno => tool::deno::run_cmd(&entry.name, args, hv),
+        JsRuntime::Node => {
+            let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
+            crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
+            match decision.pm {
+                PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
+                PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
+                PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args, hv),
+                // Plain `bun run`, no `--bun`: bun drives the script but a
+                // node-shebanged bin inside it still resolves to system Node.
+                PackageManager::Bun => tool::bun::run_cmd(&entry.name, args, hv),
+                other => bail!(
+                    "--runtime node needs a Node package manager to run scripts, but {} was \
+                     resolved for this project",
+                    other.label(),
+                ),
             }
         }
     })

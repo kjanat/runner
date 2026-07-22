@@ -578,10 +578,20 @@ fn js_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime 
     Runtime::Node
 }
 
-/// Resolve a JS runtime from an explicit override (`--pm`, `RUNNER_PM`, or
-/// `runner.toml` `[pm].node`/`[pm].deno`). A non-JS override (e.g.
-/// `--pm cargo`) yields `None` so detection decides instead.
+/// Resolve a JS runtime from an explicit override.
+///
+/// `--runtime`/`RUNNER_RUNTIME`/`[runtime].js` is the dedicated axis and wins
+/// outright. `--pm` is the fallback it grew out of: naming a JS package
+/// manager still implies its runtime, so `--pm bun main.ts` keeps working. A
+/// non-JS override (e.g. `--pm cargo`) yields `None` so detection decides.
 fn js_runtime_from_override(overrides: &ResolutionOverrides) -> Option<Runtime> {
+    if let Some(over) = overrides.runtime.as_ref() {
+        return Some(match over.runtime {
+            crate::types::JsRuntime::Bun => Runtime::Bun,
+            crate::types::JsRuntime::Deno => Runtime::Deno,
+            crate::types::JsRuntime::Node => Runtime::Node,
+        });
+    }
     let pm = overrides
         .pm
         .as_ref()

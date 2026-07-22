@@ -373,6 +373,26 @@ A task that resolves back to itself through a nested `runner`/`run` is
 refused with the cycle it found (`package.json:tsc -> package.json:tsc`)
 instead of spawning copies of itself.
 
+### Runtime
+
+`--pm` says who installs and who invokes a script. `--runtime` says what the
+script and the binaries it shells out to actually execute on:
+
+```sh
+run --runtime bun build   # bun --bun run build
+run --runtime deno build  # deno task build
+run --runtime node build  # the node PM's own runner, nothing forced
+```
+
+`bun run build` starts the script under bun, but a dependency bin carrying a
+`#!/usr/bin/env node` shebang still resolves to system Node. `--runtime bun`
+adds bun's `--bun`, which puts that bin on bun too. It applies whatever wrote
+the lockfile, and it selects the runtime for local files as well
+(`run --runtime bun main.ts`).
+
+Set it per project with `[runtime].js`, or per invocation with
+`RUNNER_RUNTIME`. Nested `runner`/`run` calls inherit it.
+
 The `run` binary is equivalent to `runner run`, so:
 
 ```sh

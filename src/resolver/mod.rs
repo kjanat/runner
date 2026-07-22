@@ -53,7 +53,7 @@ pub(crate) use probe::probe_in as probe_path_for_doctor;
 #[cfg(test)]
 pub(crate) use types::PmOverride;
 pub(crate) use types::{
-    CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
+    CliOverrides, CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
     ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
 };
 

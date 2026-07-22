@@ -9,6 +9,22 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- `--runtime <node|bun|deno>` (`RUNNER_RUNTIME`, `[runtime].js`), a JS-runtime
+  axis separate from `--pm`. `--runtime bun` dispatches `bun --bun run
+  <script>`, which symlinks `node` for the script's whole process tree, so a
+  dependency bin carrying a `#!/usr/bin/env node` shebang runs on bun instead
+  of system Node. Plain `bun run` never could express that, and `--pm bun`
+  conflated "bun installs here" with "use bun's runtime". `--runtime deno`
+  dispatches `deno task <script>`, which reads `package.json` scripts as well
+  as `deno.json` tasks; `--runtime node` forces nothing and falls through to
+  the resolved node package manager. The runtime applies whichever package
+  manager wrote the lockfile, selects the runtime for local files too
+  (`run --runtime bun main.ts`, previously reachable only as `--pm bun`), is
+  inherited by nested `runner`/`run` invocations, and is reported by
+  `--explain` and `runner doctor --json`.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

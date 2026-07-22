@@ -71,3 +71,11 @@
 # `[github].group_parallel` instead.)
 [parallel]
 # grouped = false   # buffer + print each task as one block on completion
+
+# `[runtime]` section, which JS runtime a task's process tree runs on.
+#
+# Separate from `[pm]`: the package manager decides who installs and who
+# invokes the script, the runtime decides what the script and the binaries
+# it shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.
+[runtime]
+# js = "bun"   # node | bun | deno; bun implies `bun --bun run`

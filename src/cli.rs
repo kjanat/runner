@@ -114,6 +114,20 @@ static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// Comma-joined, cyan-styled list of every [`JsRuntime`] label.
+/// Lazy-built for the same reason as [`PM_HELP`].
+static RUNTIME_HELP: LazyLock<String> = LazyLock::new(|| {
+    let joined = crate::types::JsRuntime::all()
+        .iter()
+        .map(|r| r.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Force JS runtime ({joined}) {}",
+        env_suffix("RUNNER_RUNTIME")
+    )
+});
+
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
 const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
@@ -128,8 +142,9 @@ mod help_order {
     pub(super) const CHAIN_FAILURE: usize = 40;
     pub(super) const PM: usize = 100;
     pub(super) const RUNNER: usize = 101;
-    pub(super) const FALLBACK: usize = 102;
-    pub(super) const ON_MISMATCH: usize = 103;
+    pub(super) const RUNTIME: usize = 102;
+    pub(super) const FALLBACK: usize = 103;
+    pub(super) const ON_MISMATCH: usize = 104;
     pub(super) const EXPLAIN: usize = 200;
     pub(super) const NO_WARNINGS: usize = 201;
     pub(super) const QUIET: usize = 202;
@@ -1354,6 +1369,20 @@ pub(crate) struct GlobalOpts {
         display_order = help_order::RUNNER,
     )]
     pub runner_override: Option<String>,
+
+    /// Force the JavaScript runtime a task's process tree runs on, an axis
+    /// distinct from `--pm`. `--runtime bun` dispatches
+    /// `bun --bun run <script>`, which puts the script *and* the
+    /// node-shebanged bins it invokes on Bun. The resolver also consults
+    /// `$RUNNER_RUNTIME` and `[runtime].js` when this flag is omitted.
+    #[arg(
+        long = "runtime",
+        global = true,
+        value_name = "NAME",
+        help = RUNTIME_HELP.as_str(),
+        display_order = help_order::RUNTIME,
+    )]
+    pub runtime_override: Option<String>,
 
     /// What to do when no detection signal matches: `probe` (default,
     /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).

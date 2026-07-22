@@ -41,7 +41,8 @@ use crate::resolver::{
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
-    DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+    DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskRunner,
+    TaskSource,
 };
 
 /// `runner doctor --json` payload.
@@ -177,6 +178,7 @@ struct Overrides {
     prefer_runners: Vec<TaskRunner>,
     prefer_sources: Vec<&'static str>,
     runner: Option<TaskRunner>,
+    runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
@@ -628,6 +630,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             .map(|&source| structured_source_label(source))
             .collect(),
         runner: overrides.runner.as_ref().map(|o| o.runner),
+        runtime: overrides.runtime.as_ref().map(|o| o.runtime),
         script_policy: overrides.script_policy,
         task_source_pins: overrides
             .task_source_overrides
@@ -1509,6 +1512,7 @@ mod tests {
             pm,
             pm_by_ecosystem,
             runner,
+            runtime,
             prefer_runners,
             prefer_sources,
             task_source_overrides,

@@ -107,6 +107,55 @@ pub(crate) enum PackageManager {
     Composer,
 }
 
+/// The JavaScript runtime a task's process tree should execute on.
+///
+/// Distinct from [`PackageManager`]: `--pm bun` says bun installs and runs
+/// scripts here, while this says which runtime the script and the binaries it
+/// invokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`
+/// bin inside the script still resolves to system Node; `bun --bun run build`
+/// is what puts that bin on bun too.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum JsRuntime {
+    /// Node.js. The default everywhere, and what a `node` shebang resolves to
+    /// unless something forces otherwise.
+    Node,
+    /// Bun, via `bun --bun run <script>` for scripts and `bun <file>` for
+    /// local files.
+    Bun,
+    /// Deno, via `deno task <script>` (which reads `package.json` scripts as
+    /// well as `deno.json` tasks) and `deno run <file>` for local files.
+    Deno,
+}
+
+impl JsRuntime {
+    /// Human-readable CLI name (e.g. `"bun"`).
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Bun => "bun",
+            Self::Deno => "deno",
+        }
+    }
+
+    /// Parse a user-supplied label (CLI flag value, env var, config field).
+    /// Surrounding whitespace is trimmed to match [`PackageManager::from_label`].
+    pub(crate) fn from_label(label: &str) -> Option<Self> {
+        match label.trim() {
+            "node" => Some(Self::Node),
+            "bun" => Some(Self::Bun),
+            "deno" => Some(Self::Deno),
+            _ => None,
+        }
+    }
+
+    /// Every variant in a fixed order, for help text and error messages.
+    pub(crate) const fn all() -> &'static [Self] {
+        &[Self::Node, Self::Bun, Self::Deno]
+    }
+}
+
 /// A task runner detected via config file presence.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]

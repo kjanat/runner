@@ -9,13 +9,14 @@ use anyhow::{Result, anyhow};
 use super::join_labels;
 use super::policies::{
     is_env_truthy, parse_collision_label, parse_fallback_label, parse_host_stream_label,
-    parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_tasks_overrides,
-    parse_tasks_prefer, parse_tasks_verbosity, resolve_failure_policy, resolve_fallback_policy,
-    resolve_mismatch_policy,
+    parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_runtime_label,
+    parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity, resolve_failure_policy,
+    resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
-    CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources, PmOverride,
-    QuietSource, ResolutionOverrides, RunnerOverride, ScriptPolicy, SourceValue,
+    CliOverrides, CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources,
+    PmOverride, QuietSource, ResolutionOverrides, RunnerOverride, RuntimeOverride, ScriptPolicy,
+    SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
 use crate::tool::{QuietLevel, Stream};
@@ -37,20 +38,14 @@ impl ResolutionOverrides {
     /// task runner, or fallback policy, or if a `runner.toml` field contains
     /// a PM that does not belong to its target ecosystem.
     pub(crate) fn from_cli_and_env(
-        cli_pm: Option<&str>,
-        cli_runner: Option<&str>,
-        cli_fallback: Option<&str>,
-        cli_on_mismatch: Option<&str>,
+        overrides: CliOverrides<'_>,
         diagnostics: DiagnosticFlags<'_>,
         failure: crate::cli::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let env = EnvSnapshot::capture();
         let cli = CliSides {
-            pm: cli_pm,
-            runner: cli_runner,
-            fallback: cli_fallback,
-            on_mismatch: cli_on_mismatch,
+            overrides,
             diagnostics,
             failure,
         };
@@ -71,20 +66,14 @@ impl ResolutionOverrides {
     /// unparseable env override values: bad CLI values, invalid
     /// `runner.toml` fields, conflicting failure-policy toggles.
     pub(crate) fn from_cli_and_env_lenient(
-        cli_pm: Option<&str>,
-        cli_runner: Option<&str>,
-        cli_fallback: Option<&str>,
-        cli_on_mismatch: Option<&str>,
+        overrides: CliOverrides<'_>,
         diagnostics: DiagnosticFlags<'_>,
         failure: crate::cli::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<(Self, Vec<DetectionWarning>)> {
         let env = EnvSnapshot::capture();
         let cli = CliSides {
-            pm: cli_pm,
-            runner: cli_runner,
-            fallback: cli_fallback,
-            on_mismatch: cli_on_mismatch,
+            overrides,
             diagnostics,
             failure,
         };
@@ -112,6 +101,12 @@ impl ResolutionOverrides {
         lenient_env_field(&mut sources.runner, "RUNNER_RUNNER", &mut warnings, |raw| {
             parse_runner_label(raw).map(drop)
         });
+        lenient_env_field(
+            &mut sources.runtime,
+            "RUNNER_RUNTIME",
+            &mut warnings,
+            |raw| parse_runtime_label(raw).map(drop),
+        );
         lenient_env_field(
             &mut sources.fallback,
             "RUNNER_FALLBACK",
@@ -222,6 +217,7 @@ impl ResolutionOverrides {
             |runner, origin| RunnerOverride { runner, origin },
         )?;
 
+        let runtime = resolve_runtime(&sources)?;
         let fallback =
             resolve_fallback_policy(sources.fallback.cli, sources.fallback.env, sources.config)?;
         let on_mismatch = resolve_mismatch_policy(
@@ -307,6 +303,7 @@ impl ResolutionOverrides {
             pm,
             pm_by_ecosystem,
             runner,
+            runtime,
             prefer_runners,
             prefer_sources,
             task_source_overrides,
@@ -338,6 +335,40 @@ impl ResolutionOverrides {
             parent_group_open: sources.group_active.is_some_and(is_env_truthy),
         })
     }
+}
+
+/// Resolve the JS-runtime override: `--runtime` / `RUNNER_RUNTIME` first,
+/// then `[runtime].js`. The config layer is folded in here rather than in
+/// [`parse_override`], which only knows the CLI and env sides.
+fn resolve_runtime(sources: &OverrideSources<'_>) -> Result<Option<RuntimeOverride>> {
+    parse_override(
+        sources.runtime.cli,
+        sources.runtime.env,
+        &RUNTIME_SOURCE_NAMES,
+        parse_runtime_label,
+        |runtime, origin| RuntimeOverride { runtime, origin },
+    )?
+    .map_or_else(
+        || resolve_config_runtime(sources.config),
+        |over| Ok(Some(over)),
+    )
+}
+
+/// `[runtime].js`, the config layer of the runtime override. Returns `None`
+/// when no config is loaded or the key is absent.
+fn resolve_config_runtime(config: Option<&LoadedConfig>) -> Result<Option<RuntimeOverride>> {
+    let Some(loaded) = config else {
+        return Ok(None);
+    };
+    let Some(raw) = loaded.config.runtime.js.as_deref() else {
+        return Ok(None);
+    };
+    Ok(Some(RuntimeOverride {
+        runtime: parse_runtime_label(raw)?,
+        origin: OverrideOrigin::ConfigFile {
+            path: loaded.path.clone(),
+        },
+    }))
 }
 
 /// Resolve the `runner install` PM allowlist: `RUNNER_INSTALL_PMS` (env,
@@ -759,10 +790,7 @@ mod tests {
 /// instead of threading seven loose parameters.
 #[derive(Clone, Copy)]
 struct CliSides<'a> {
-    pm: Option<&'a str>,
-    runner: Option<&'a str>,
-    fallback: Option<&'a str>,
-    on_mismatch: Option<&'a str>,
+    overrides: CliOverrides<'a>,
     diagnostics: DiagnosticFlags<'a>,
     failure: crate::cli::ChainFailureFlags,
 }
@@ -773,6 +801,7 @@ struct CliSides<'a> {
 struct EnvSnapshot {
     pm: Option<String>,
     runner: Option<String>,
+    runtime: Option<String>,
     fallback: Option<String>,
     on_mismatch: Option<String>,
     no_warnings: Option<String>,
@@ -794,6 +823,7 @@ impl EnvSnapshot {
         Self {
             pm: std::env::var("RUNNER_PM").ok(),
             runner: std::env::var("RUNNER_RUNNER").ok(),
+            runtime: std::env::var("RUNNER_RUNTIME").ok(),
             fallback: std::env::var("RUNNER_FALLBACK").ok(),
             on_mismatch: std::env::var("RUNNER_ON_MISMATCH").ok(),
             no_warnings: std::env::var("RUNNER_NO_WARNINGS").ok(),
@@ -818,19 +848,23 @@ impl EnvSnapshot {
     ) -> OverrideSources<'a> {
         OverrideSources {
             pm: SourceValue {
-                cli: cli.pm,
+                cli: cli.overrides.pm,
                 env: self.pm.as_deref(),
             },
             runner: SourceValue {
-                cli: cli.runner,
+                cli: cli.overrides.runner,
                 env: self.runner.as_deref(),
             },
+            runtime: SourceValue {
+                cli: cli.overrides.runtime,
+                env: self.runtime.as_deref(),
+            },
             fallback: SourceValue {
-                cli: cli.fallback,
+                cli: cli.overrides.fallback,
                 env: self.fallback.as_deref(),
             },
             on_mismatch: SourceValue {
-                cli: cli.on_mismatch,
+                cli: cli.overrides.on_mismatch,
                 env: self.on_mismatch.as_deref(),
             },
             no_warnings: ExplainSource {
@@ -1004,6 +1038,13 @@ const RUNNER_SOURCE_NAMES: SourceNames = SourceNames {
     cli: "--runner",
     env: "RUNNER_RUNNER",
     example: "just",
+};
+
+/// Source names for the JS-runtime override.
+const RUNTIME_SOURCE_NAMES: SourceNames = SourceNames {
+    cli: "--runtime",
+    env: "RUNNER_RUNTIME",
+    example: "bun",
 };
 
 /// The user-facing names of one override's sources, used to attribute

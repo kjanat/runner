@@ -403,6 +403,26 @@
       },
       "additionalProperties": false
     },
+    "JsRuntime": {
+      "description": "The JavaScript runtime a task's process tree should execute on.\n\nDistinct from [`PackageManager`]: `--pm bun` says bun installs and runs\nscripts here, while this says which runtime the script and the binaries it\ninvokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`\nbin inside the script still resolves to system Node; `bun --bun run build`\nis what puts that bin on bun too.",
+      "oneOf": [
+        {
+          "description": "Node.js. The default everywhere, and what a `node` shebang resolves to\nunless something forces otherwise.",
+          "type": "string",
+          "const": "node"
+        },
+        {
+          "description": "Bun, via `bun --bun run <script>` for scripts and `bun <file>` for\nlocal files.",
+          "type": "string",
+          "const": "bun"
+        },
+        {
+          "description": "Deno, via `deno task <script>` (which reads `package.json` scripts as\nwell as `deno.json` tasks) and `deno run <file>` for local files.",
+          "type": "string",
+          "const": "deno"
+        }
+      ]
+    },
     "MismatchPolicy": {
       "description": "How to react when manifest declaration (step 5) and lockfile (step 6)\ndisagree about which package manager the project uses.\n\nSet via `--on-mismatch` / `RUNNER_ON_MISMATCH` /\n`[resolution].on_mismatch`. Independent from\n`devEngines.packageManager` `onFail`. That policy governs whether\nthe *declared* PM can actually run; this one governs whether the\nresolver tolerates the declaration disagreeing with the install\nstate at all.",
       "oneOf": [
@@ -465,6 +485,7 @@
         "prefer_sources",
         "quiet",
         "runner",
+        "runtime",
         "script_policy",
         "task_source_pins"
       ],
@@ -552,6 +573,16 @@
           "anyOf": [
             {
               "$ref": "#/$defs/TaskRunner"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsRuntime"
             },
             {
               "type": "null"
