@@ -197,6 +197,13 @@ impl ResolutionOverrides {
         };
         HostVerbosity { level, stream }
     }
+
+    /// The JS runtime an explicit override selected, if any. The single read
+    /// of [`Self::runtime`]'s value; everything that dispatches, propagates or
+    /// reports the runtime goes through here.
+    pub(crate) fn js_runtime(&self) -> Option<JsRuntime> {
+        self.runtime.as_ref().map(|over| over.runtime)
+    }
 }
 
 /// What to do when no signal in steps 2–6 matches.
@@ -436,6 +443,15 @@ pub(crate) enum OverrideOrigin {
 }
 
 impl OverrideOrigin {
+    /// Whether an override from this source may be re-exported as an
+    /// environment variable to a nested `runner`/`run`. A CLI flag or ambient
+    /// env value is invocation-scoped and carries across; a `runner.toml` value
+    /// is repo-scoped, and an env layer outranks a nested project's own config,
+    /// so re-emitting it would force this repo's setting onto another one.
+    pub(crate) const fn propagates_to_nested(&self) -> bool {
+        matches!(self, Self::CliFlag | Self::EnvVar)
+    }
+
     /// Render the "via …" provenance fragment for a PM override from
     /// this origin: `via --pm (CLI override)`, `via RUNNER_PM
     /// (environment)`, or `via runner.toml at <path>`. Shared by

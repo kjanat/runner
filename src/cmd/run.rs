@@ -17,6 +17,10 @@
 //!   [`std::process::Command`]: warning emission, the resolver chain,
 //!   bun-test special case, PM-exec fallback, and per-source `run_cmd`
 //!   selection.
+//! - [`runtime`], the `--runtime` axis: the per-runtime script / file / exec
+//!   builders, which task sources can honour a runtime, and the warnings for
+//!   the ones that cannot. Every other module in `cmd::run` reads the
+//!   override through here.
 //!
 //! This file owns only the public entry points ([`run`] for inherited
 //! stdio, [`dispatch_task_piped`] for the parallel chain executor) and
@@ -28,6 +32,7 @@ mod dispatch;
 mod local_dep;
 mod local_file;
 mod qualify;
+mod runtime;
 mod select;
 
 pub(crate) use qualify::{
@@ -36,6 +41,11 @@ pub(crate) use qualify::{
 pub(crate) use select::{select_task_entry, source_depth, source_priority};
 
 pub(crate) use dispatch::{ResolvedPythonPm, resolve_python_pm};
+
+pub(crate) use runtime::{
+    honors as runtime_honors, lifecycle_scripts as runtime_lifecycle_scripts,
+    script_preview as runtime_script_preview,
+};
 
 use crate::resolver::ResolutionOverrides;
 use crate::types::ProjectContext;
@@ -257,6 +267,7 @@ mod tests {
         // The resolver would return Bun via Lockfile for ctx=[Bun].
         assert!(should_use_bun_test_fallback(
             &ctx,
+            &ResolutionOverrides::default(),
             Some(PackageManager::Bun),
             "test"
         ));
@@ -278,6 +289,7 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
+            &ResolutionOverrides::default(),
             Some(PackageManager::Bun),
             "test"
         ));
@@ -289,6 +301,7 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
+            &ResolutionOverrides::default(),
             Some(PackageManager::Npm),
             "test"
         ));
@@ -300,6 +313,7 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
+            &ResolutionOverrides::default(),
             Some(PackageManager::Bun),
             "build"
         ));
@@ -313,6 +327,7 @@ mod tests {
 
         assert!(!should_use_bun_test_fallback(
             &ctx,
+            &ResolutionOverrides::default(),
             Some(PackageManager::Npm),
             "test"
         ));
@@ -325,7 +340,12 @@ mod tests {
         // collapsed the error to None.
         let ctx = context(vec![PackageManager::Bun], vec![]);
 
-        assert!(!should_use_bun_test_fallback(&ctx, None, "test"));
+        assert!(!should_use_bun_test_fallback(
+            &ctx,
+            &ResolutionOverrides::default(),
+            None,
+            "test"
+        ));
     }
 
     #[test]
@@ -336,6 +356,7 @@ mod tests {
 
         assert!(should_use_bun_test_fallback(
             &ctx,
+            &ResolutionOverrides::default(),
             Some(PackageManager::Bun),
             "test"
         ));

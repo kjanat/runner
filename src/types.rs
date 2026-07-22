@@ -114,18 +114,24 @@ pub(crate) enum PackageManager {
 /// invokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`
 /// bin inside the script still resolves to system Node; `bun --bun run build`
 /// is what puts that bin on bun too.
+///
+/// Each variant brings its own script runner, file runner and package-exec
+/// primitive; no package manager is consulted on this path. Set, it also
+/// outranks a local file's `#!` line, which is the case the axis exists for.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum JsRuntime {
-    /// Node.js. The default everywhere, and what a `node` shebang resolves to
-    /// unless something forces otherwise.
+    /// Node.js, via `node --run <script>` (Node 22+), `node <file>` and `npx`.
+    ///
+    /// `node --run` deliberately skips `pre`/`post` lifecycle scripts, which
+    /// `npm run`, `bun run` and `deno task` all execute; runner warns when the
+    /// task being dispatched has one.
     Node,
-    /// Bun, via `bun --bun run <script>` for scripts and `bun <file>` for
-    /// local files.
+    /// Bun, via `bun --bun run <script>`, `bun <file>` and `bunx --bun`.
     Bun,
     /// Deno, via `deno task <script>` (which reads `package.json` scripts as
-    /// well as `deno.json` tasks) and `deno run <file>` for local files.
+    /// well as `deno.json` tasks), `deno run <file>` and `deno x`.
     Deno,
 }
 
@@ -355,6 +361,25 @@ pub(crate) enum DetectionWarning {
         /// section, `"chain.fast"` for an unknown field within a known one.
         path: String,
     },
+    /// A `--runtime` / `RUNNER_RUNTIME` / `[runtime].js` override was set but
+    /// the task that won selection dispatches through a tool with no JS
+    /// runtime to choose. Surfaced so an explicit runtime is never a silent
+    /// no-op.
+    RuntimeNotApplied {
+        /// The runtime the user asked for.
+        runtime: JsRuntime,
+        /// Label of the task source that won selection (`"just"`, `"make"`).
+        source: &'static str,
+    },
+    /// `--runtime node` dispatches `node --run`, which skips `pre`/`post`
+    /// lifecycle scripts, and this task has some. `npm run`, `bun run` and
+    /// `deno task` all run them, so the same task behaves differently here.
+    NodeRunSkipsLifecycle {
+        /// The task being dispatched.
+        task: String,
+        /// The declared `pre`/`post` scripts that will not run.
+        skipped: Vec<String>,
+    },
     /// `runner.toml` sets a key that still works but has a supported
     /// successor. The deprecated key keeps functioning (unless `superseded`,
     /// in which case the successor it conflicts with takes over) so configs
@@ -385,6 +410,7 @@ impl DetectionWarning {
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
             Self::InvalidEnvOverride { .. } => "env",
+            Self::RuntimeNotApplied { .. } | Self::NodeRunSkipsLifecycle { .. } => "runtime",
             Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
         }
     }
@@ -454,6 +480,15 @@ impl DetectionWarning {
             Self::InvalidEnvOverride { var, message, .. } => {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
             }
+            Self::RuntimeNotApplied { runtime, source } => format!(
+                "--runtime {} was not applied: this dispatches through {source}, which selects no \
+                 JS runtime",
+                runtime.label(),
+            ),
+            Self::NodeRunSkipsLifecycle { task, skipped } => format!(
+                "`node --run {task}` does not run {} (npm run, bun run and deno task do)",
+                skipped.join(" or "),
+            ),
             Self::UnknownConfigKey { path } => format!(
                 "unknown key `{path}` ignored: it may be a typo or written by a newer runner. \
                  This build doesn't recognize it; the rest of the config still applies.",

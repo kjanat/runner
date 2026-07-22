@@ -58,7 +58,7 @@ impl<'ctx> Resolver<'ctx> {
                 return Err(ResolveError::InvalidOverride {
                     value: o.pm.label().to_string(),
                     reason: "cannot dispatch package.json scripts (use a Node-ecosystem PM, or \
-                             `--pm deno` for Deno tasks)",
+                             `--runtime deno` for Deno tasks)",
                 });
             }
             return Ok(ResolvedPm {

@@ -904,6 +904,7 @@ fn tasks<'a>(
 ) -> Vec<DoctorTask<'a>> {
     let node_pm_label = node_pm.as_ref().ok().map(|d| d.pm.label());
     let python_pm_label = resolve_python_pm(ctx, overrides).map(|d| d.pm.label());
+    let runtime = overrides.js_runtime();
 
     // `anchor_file` walks the filesystem; resolve each distinct source
     // once instead of once per task.
@@ -933,7 +934,12 @@ fn tasks<'a>(
             fqn: super::labels::fqn(task.source, &task.name),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
-            resolved: super::labels::resolved_command(task, node_pm_label, python_pm_label),
+            resolved: super::labels::resolved_command(
+                task,
+                runtime,
+                node_pm_label,
+                python_pm_label,
+            ),
             self_executable: deno_task_self_executable(ctx, task),
             source: anchors.get(&task.source).cloned().flatten(),
             source_pointer: super::labels::source_pointer(task),
@@ -1404,6 +1410,34 @@ mod tests {
             tools.iter().any(|t| t["name"] == PYTHON_BIN),
             "python runtime tool must be probed when pyproject.toml tasks exist"
         );
+    }
+
+    #[test]
+    fn forced_runtime_previews_package_json_scripts_through_the_runtime() {
+        // A forced runtime dispatches package.json scripts through its own
+        // runner; `resolved` must match that, not the resolved PM's command.
+        let overrides = ResolutionOverrides::from_cli_and_env(
+            crate::resolver::CliOverrides {
+                runtime: Some("bun"),
+                ..crate::resolver::CliOverrides::default()
+            },
+            crate::resolver::DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("runtime override should parse");
+        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let report = DoctorReport::build(&ctx, &overrides, false);
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        let build = json["tasks"]
+            .as_array()
+            .expect("tasks array")
+            .iter()
+            .find(|t| t["name"] == "build")
+            .expect("build task present");
+        assert_eq!(build["resolved"], "bun --bun run build");
+        assert_eq!(json["overrides"]["runtime"], "bun");
     }
 
     #[test]

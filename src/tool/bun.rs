@@ -70,7 +70,18 @@ pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
 
 /// `bunx <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
+    exec_cmd_with_runtime(args, false)
+}
+
+/// `bunx [--bun] <args...>`
+///
+/// `--bun` is bunx's counterpart to `bun --bun run`: without it a package whose
+/// bin carries a `#!/usr/bin/env node` shebang still executes on system Node.
+pub(crate) fn exec_cmd_with_runtime(args: &[String], force_bun_runtime: bool) -> Command {
     let mut c = super::program::command("bunx");
+    if force_bun_runtime {
+        c.arg("--bun");
+    }
     c.args(args);
     c
 }

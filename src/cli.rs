@@ -128,6 +128,43 @@ static RUNTIME_HELP: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// Long-form `--runtime` help. Names each runtime's script runner and exec
+/// primitive, and the one behavioural difference between them a user cannot
+/// discover from the flag name.
+static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
+    [
+        RUNTIME_HELP.as_str(),
+        "",
+        "Selects the runtime a task's process tree executes on, separately from --pm. Each \
+         runtime brings its own script runner, file runner and package-exec primitive; no package \
+         manager is consulted:",
+        "",
+        &format!(
+            "  {}  node --run <task>     node <file>       npx",
+            cyan_str("node")
+        ),
+        &format!(
+            "  {}   bun --bun run <task>  bun <file>        bunx --bun",
+            cyan_str("bun")
+        ),
+        &format!(
+            "  {}  deno task <task>      deno run <file>   deno x",
+            cyan_str("deno")
+        ),
+        "",
+        "An explicit runtime also outranks a local file's #! line, so `--runtime bun ./cli.js` \
+         runs a node-shebanged file on bun.",
+        "",
+        "`node --run` does not execute pre/post lifecycle scripts, which npm run, bun run and \
+         deno task all do; runner warns when the dispatched task has one. Anything after `--` \
+         goes to the script and is never read as a node option.",
+        "",
+        "A task from a source that cannot select a runtime (make, just, Taskfile, turbo, cargo, \
+         …) warns instead of dropping the request silently.",
+    ]
+    .join("\n")
+});
+
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
 const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
@@ -1371,15 +1408,18 @@ pub(crate) struct GlobalOpts {
     pub runner_override: Option<String>,
 
     /// Force the JavaScript runtime a task's process tree runs on, an axis
-    /// distinct from `--pm`. `--runtime bun` dispatches
-    /// `bun --bun run <script>`, which puts the script *and* the
-    /// node-shebanged bins it invokes on Bun. The resolver also consults
-    /// `$RUNNER_RUNTIME` and `[runtime].js` when this flag is omitted.
+    /// distinct from `--pm`. Each runtime brings its own script runner
+    /// (`node --run` / `bun --bun run` / `deno task`), file runner and
+    /// package-exec primitive (`npx` / `bunx --bun` / `deno x`), and outranks
+    /// a local file's `#!` line. No package manager is consulted. The resolver
+    /// also consults `$RUNNER_RUNTIME` and `[runtime].js` when this flag is
+    /// omitted.
     #[arg(
         long = "runtime",
         global = true,
         value_name = "NAME",
         help = RUNTIME_HELP.as_str(),
+        long_help = RUNTIME_LONG_HELP.as_str(),
         display_order = help_order::RUNTIME,
     )]
     pub runtime_override: Option<String>,

@@ -4,6 +4,7 @@
   "root": "/path/to/project",
   "query": "t",
   "pm_resolution": null,
+  "runtime": null,
   "selected": {
     "task": {
       "name": "t",

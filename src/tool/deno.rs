@@ -233,19 +233,30 @@ pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
     c
 }
 
-/// `deno run -A <file> [args...]`, execute a local source file with the
+/// Permissions granted to a local file run on Deno: filesystem, network,
+/// environment, subprocess and system-info access. Deno denies all of these by
+/// default and ignores the file's shebang, so without them a file that runs
+/// unprompted under node or bun dies under deno the moment it reads a file, hits
+/// the network, or looks at an env var. Stops short of `-A`, whose extra
+/// `--allow-import` would let the file fetch and execute code from any host;
+/// node rejects a remote `http(s)` import and bun cannot resolve one, so Deno's
+/// default import allowlist is the honest match and stays in force.
+pub(crate) const RUN_FILE_PERMISSIONS: &[&str] = &[
+    "--allow-read",
+    "--allow-write",
+    "--allow-net",
+    "--allow-env",
+    "--allow-run",
+    "--allow-sys",
+];
+
+/// `deno run <perms> <file> [args...]`, execute a local source file with the
 /// Deno runtime. Distinct from [`exec_cmd`] (`deno x`), which resolves a
-/// remote `npm:`/`jsr:` package; this runs an on-disk path.
-///
-/// `-A` because the user pointed a task runner at their own file: node and
-/// bun run it with no sandbox at all, and `deno run <file>` does not honor
-/// the file's shebang, so a deny-all default would leave the same file
-/// working under `--runtime node`/`bun` and prompting or dying under
-/// `--runtime deno` the moment it reads a file, hits the network, or looks
-/// at an env var. A narrower grant would have to be guessed per file.
+/// remote `npm:`/`jsr:` package; this runs an on-disk path. See
+/// [`RUN_FILE_PERMISSIONS`] for the grant and why it is not `-A`.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("deno");
-    c.arg("run").arg("-A").arg(file).args(args);
+    c.arg("run").args(RUN_FILE_PERMISSIONS).arg(file).args(args);
     c
 }
 
@@ -323,9 +334,10 @@ mod tests {
 
     #[test]
     fn run_file_cmd_uses_deno_run_with_file() {
-        // A local `.ts`/`.js` source file dispatches as `deno run -A <file>`,
-        // never `deno x <file>` (the registry-package path). `-A` precedes the
-        // file; after it, deno forwards to the script.
+        // A local `.ts`/`.js` source file dispatches as `deno run <perms>
+        // <file>`, never `deno x <file>` (the registry-package path). The
+        // permissions precede the file; after it, deno forwards to the script.
+        use super::RUN_FILE_PERMISSIONS;
         let args = [String::from("--port"), String::from("8080")];
         let cmd = run_file_cmd(Path::new("/abs/server.ts"), &args);
         let built: Vec<_> = cmd
@@ -333,22 +345,47 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
+        let mut expected = vec![String::from("run")];
+        expected.extend(RUN_FILE_PERMISSIONS.iter().map(|p| (*p).to_string()));
+        expected.extend([
+            String::from("/abs/server.ts"),
+            String::from("--port"),
+            String::from("8080"),
+        ]);
         assert_eq!(cmd.get_program().to_string_lossy(), "deno");
-        assert_eq!(built, ["run", "-A", "/abs/server.ts", "--port", "8080"]);
+        assert_eq!(built, expected);
     }
 
     #[test]
-    fn run_file_cmd_grants_permissions_so_the_file_actually_runs() {
-        // Regression: without `-A` the same file works under node/bun and
+    fn run_file_cmd_grants_the_narrow_set_not_allow_all() {
+        // Regression: without a grant the same file works under node/bun and
         // dies under deno the moment it touches env, fs or the network, since
         // `deno run <file>` ignores the file's shebang and defaults deny-all.
-        let cmd = run_file_cmd(Path::new("/abs/main.ts"), &[]);
-        let built: Vec<_> = cmd
+        // The grant is the granular set, never `-A`: `-A` adds `--allow-import`
+        // (arbitrary-host remote code execution), which neither node nor bun
+        // permit, so Deno's default import allowlist is left in force.
+        let built: Vec<_> = run_file_cmd(Path::new("/abs/main.ts"), &[])
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        assert!(built.contains(&"-A".to_string()), "argv: {built:?}");
+        for flag in [
+            "--allow-read",
+            "--allow-write",
+            "--allow-net",
+            "--allow-env",
+            "--allow-run",
+            "--allow-sys",
+        ] {
+            assert!(built.iter().any(|a| a == flag), "{flag} in {built:?}");
+        }
+        assert!(!built.iter().any(|a| a == "-A"), "argv: {built:?}");
+        assert!(
+            !built
+                .iter()
+                .any(|a| a == "--allow-all" || a == "--allow-import"),
+            "argv: {built:?}",
+        );
     }
 
     #[test]

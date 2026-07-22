@@ -83,10 +83,14 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
     if overrides.host_stream != crate::tool::Stream::Inherit {
         command.env("RUNNER_HOST_STREAM", overrides.host_stream.label());
     }
-    // Same reasoning for the runtime axis: a script that shells out to
-    // `runner` again should keep running on the runtime the user asked for,
-    // or the nested dispatch silently drops back to the detected PM.
-    if let Some(over) = overrides.runtime.as_ref() {
+    // Same reasoning for the runtime axis, but only for a CLI flag or ambient
+    // env value: those are invocation-scoped and a nested `runner`/`run` should
+    // keep them. A `[runtime].js` value is repo-scoped; an env layer outranks a
+    // nested project's own config, so re-exporting it would force this repo's
+    // runtime onto another one that never asked for it.
+    if let Some(over) = overrides.runtime.as_ref()
+        && over.origin.propagates_to_nested()
+    {
         command.env("RUNNER_RUNTIME", over.runtime.label());
     }
 }
@@ -416,7 +420,16 @@ fn silenced(overrides: &ResolutionOverrides) -> bool {
     overrides.silences_warnings() || overrides.parent_warned
 }
 
-fn print_warning_slice(
+/// Emit one `--explain` trace line (`· runner <body>`), or nothing when
+/// explain is off or runner's own output is silenced.
+pub(crate) fn print_explain(overrides: &ResolutionOverrides, body: &str) {
+    if !overrides.explain || overrides.silences_runner() {
+        return;
+    }
+    eprintln!("{} {} {body}", "·".dimmed(), "runner".dimmed());
+}
+
+pub(crate) fn print_warning_slice(
     warnings: &[DetectionWarning],
     overrides: &ResolutionOverrides,
     sink: WarningSink<'_>,
@@ -650,6 +663,50 @@ mod tests {
         configure_command(&mut command, dir.as_path(), &ResolutionOverrides::default());
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn config_runtime_is_not_exported_to_children() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+
+        use crate::resolver::{OverrideOrigin, RuntimeOverride};
+        use crate::types::JsRuntime;
+
+        let dir = std::env::temp_dir();
+        let runtime_env = |origin| {
+            let overrides = ResolutionOverrides {
+                runtime: Some(RuntimeOverride {
+                    runtime: JsRuntime::Bun,
+                    origin,
+                }),
+                ..ResolutionOverrides::default()
+            };
+            let mut command = Command::new("runner-test-command");
+            configure_command(&mut command, dir.as_path(), &overrides);
+            command
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new("RUNNER_RUNTIME"))
+                .map(|(_, value)| value.map(ToOwned::to_owned))
+        };
+
+        assert_eq!(
+            runtime_env(OverrideOrigin::CliFlag),
+            Some(Some(OsString::from("bun"))),
+            "a --runtime flag must reach a nested runner",
+        );
+        assert_eq!(
+            runtime_env(OverrideOrigin::EnvVar),
+            Some(Some(OsString::from("bun"))),
+            "an ambient RUNNER_RUNTIME must reach a nested runner",
+        );
+        assert_eq!(
+            runtime_env(OverrideOrigin::ConfigFile {
+                path: PathBuf::from("/repo/runner.toml"),
+            }),
+            None,
+            "a repo-scoped [runtime].js must not be forced onto a nested project",
+        );
     }
 
     #[test]

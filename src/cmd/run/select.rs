@@ -75,6 +75,10 @@ pub(crate) fn select_task_entry<'a>(
 ///   biases toward what it owns; deno is one member of the rule, not a special case. A PM that
 ///   owns no modeled task source (Bundler, Composer) re-orders nothing. Fires only when a PM is
 ///   forced; with no `--pm` / `RUNNER_PM` the ranking is unchanged.
+/// - When the user forces a JS runtime via `--runtime` / `RUNNER_RUNTIME` / `[runtime].js`, the
+///   sources that runtime can dispatch (`package.json`, plus `deno.json` for deno) win the same
+///   way, and every other source is bumped below them. Otherwise `--runtime bun build` in a
+///   turborepo picks the turbo task and forces nothing.
 /// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in the list win in listed order
 ///   (`r1 = 0`, `r2 = 1`, ...). Sources for unlisted runners fall back to the default tier offset
 ///   by `prefer.len()` so they always lose to listed entries.
@@ -99,6 +103,18 @@ pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSourc
             return u16::try_from(idx).unwrap_or(u16::MAX);
         }
         let bump = u16::try_from(owned.len()).unwrap_or(u16::MAX);
+        return base_source_priority(overrides, source).saturating_add(bump);
+    }
+    if let Some(runtime) = super::runtime::overridden(overrides) {
+        // A forced runtime biases the same way a forced PM does, toward the
+        // sources that can deliver it. Without this, `--runtime bun build` in
+        // a turborepo is a guaranteed no-op: `turbo.json` outranks
+        // `package.json` at the default tier and turbo selects no runtime.
+        let honored = super::runtime::honored_sources(runtime);
+        if let Some(idx) = honored.iter().position(|honored| *honored == source) {
+            return u16::try_from(idx).unwrap_or(u16::MAX);
+        }
+        let bump = u16::try_from(honored.len()).unwrap_or(u16::MAX);
         return base_source_priority(overrides, source).saturating_add(bump);
     }
     base_source_priority(overrides, source)

@@ -404,20 +404,20 @@
       "additionalProperties": false
     },
     "JsRuntime": {
-      "description": "The JavaScript runtime a task's process tree should execute on.\n\nDistinct from [`PackageManager`]: `--pm bun` says bun installs and runs\nscripts here, while this says which runtime the script and the binaries it\ninvokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`\nbin inside the script still resolves to system Node; `bun --bun run build`\nis what puts that bin on bun too.",
+      "description": "The JavaScript runtime a task's process tree should execute on.\n\nDistinct from [`PackageManager`]: `--pm bun` says bun installs and runs\nscripts here, while this says which runtime the script and the binaries it\ninvokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`\nbin inside the script still resolves to system Node; `bun --bun run build`\nis what puts that bin on bun too.\n\nEach variant brings its own script runner, file runner and package-exec\nprimitive; no package manager is consulted on this path. Set, it also\noutranks a local file's `#!` line, which is the case the axis exists for.",
       "oneOf": [
         {
-          "description": "Node.js. The default everywhere, and what a `node` shebang resolves to\nunless something forces otherwise.",
+          "description": "Node.js, via `node --run <script>` (Node 22+), `node <file>` and `npx`.\n\n`node --run` deliberately skips `pre`/`post` lifecycle scripts, which\n`npm run`, `bun run` and `deno task` all execute; runner warns when the\ntask being dispatched has one.",
           "type": "string",
           "const": "node"
         },
         {
-          "description": "Bun, via `bun --bun run <script>` for scripts and `bun <file>` for\nlocal files.",
+          "description": "Bun, via `bun --bun run <script>`, `bun <file>` and `bunx --bun`.",
           "type": "string",
           "const": "bun"
         },
         {
-          "description": "Deno, via `deno task <script>` (which reads `package.json` scripts as\nwell as `deno.json` tasks) and `deno run <file>` for local files.",
+          "description": "Deno, via `deno task <script>` (which reads `package.json` scripts as\nwell as `deno.json` tasks), `deno run <file>` and `deno x`.",
           "type": "string",
           "const": "deno"
         }

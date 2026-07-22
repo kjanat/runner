@@ -39,6 +39,24 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     c
 }
 
+/// `node --run <task> [-- args...]` (Node 22+), Node's own `package.json`
+/// script runner.
+///
+/// The `--` is mandatory: without it node parses a leading `--flag` as one of
+/// its own CLI options and exits with `bad option`. Node forwards everything
+/// after it to the script and does **not** interpret it, so `-- --watch` is the
+/// script's argument, never node's watch mode.
+///
+/// `node --run` writes nothing of its own, so both verbosity axes no-op.
+pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    let mut c = program::command("node");
+    c.arg("--run").arg(task);
+    if !args.is_empty() {
+        c.arg("--").args(args);
+    }
+    c
+}
+
 /// Resolve the first supported package manifest path.
 pub(crate) fn find_manifest(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
@@ -1193,5 +1211,44 @@ mod tests {
         let tasks = extract_scripts_upwards(&nested).expect("nearest scripts should parse");
 
         assert_eq!(tasks, [("member".to_owned(), "1".to_owned())]);
+    }
+}
+
+#[cfg(test)]
+mod run_cmd_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel, Stream};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_separates_user_args_with_a_double_dash() {
+        // `node --run build --watch` exits with `node: bad option: --watch`.
+        let args = [String::from("--watch"), String::from("src")];
+        let cmd = run_cmd("build", &args, HostVerbosity::default());
+
+        assert_eq!(cmd.get_program().to_string_lossy(), "node");
+        assert_eq!(argv(&cmd), ["--run", "build", "--", "--watch", "src"]);
+    }
+
+    #[test]
+    fn run_cmd_without_args_emits_no_trailing_dash_dash() {
+        assert_eq!(
+            argv(&run_cmd("build", &[], HostVerbosity::default())),
+            ["--run", "build"]
+        );
+    }
+
+    #[test]
+    fn run_cmd_verbosity_axes_no_op() {
+        let v = HostVerbosity {
+            level: QuietLevel::Silent,
+            stream: Stream::Stderr,
+        };
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["--run", "build"]);
     }
 }

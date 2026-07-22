@@ -16,7 +16,7 @@ use crate::cmd::run::{
 };
 use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::schema::labels;
-use crate::types::{ProjectContext, Task, TaskSource};
+use crate::types::{JsRuntime, ProjectContext, Task, TaskSource};
 
 /// Explain how `task` would resolve in the current project.
 ///
@@ -124,12 +124,103 @@ struct WhyWarning {
     detail: String,
 }
 
+/// The forced JS runtime and whether it reaches the selected task, so a
+/// consumer can reconcile `selected.task.resolved` against the PM block.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+struct WhyRuntime {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Forced JS runtime label (`node`, `bun`, or `deno`).")
+    )]
+    runtime: &'static str,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Where the runtime override came from (CLI, env, or config).")
+    )]
+    via: String,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Whether the selected task dispatches on this runtime. Null when no \
+                           task was selected."
+        )
+    )]
+    applied: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Why the runtime did not apply, or the lifecycle scripts `node --run` \
+                           will skip."
+        )
+    )]
+    note: Option<String>,
+}
+
+/// Whether a forced runtime dispatches `source` itself, so `cmd::run` skips
+/// package-manager resolution for it.
+fn runtime_supersedes_pm(overrides: &ResolutionOverrides, source: TaskSource) -> bool {
+    overrides
+        .js_runtime()
+        .is_some_and(|rt| crate::cmd::run::runtime_honors(source, rt))
+}
+
+/// The runtime block: the override plus whether it reaches `selected`.
+fn runtime_report(
+    overrides: &ResolutionOverrides,
+    selected: Option<&Task>,
+    ctx: &ProjectContext,
+) -> Option<WhyRuntime> {
+    let over = overrides.runtime.as_ref()?;
+    let runtime = over.runtime;
+    let (applied, note) = match selected {
+        Some(task) if crate::cmd::run::runtime_honors(task.source, runtime) => {
+            let note = (runtime == JsRuntime::Node)
+                .then(|| lifecycle_note(ctx, &task.name))
+                .flatten();
+            (Some(true), note)
+        }
+        Some(task) => (
+            Some(false),
+            Some(format!(
+                "{name} dispatches through {source}; runtime not applied",
+                name = task.name,
+                source = task.source.label(),
+            )),
+        ),
+        None => (None, None),
+    };
+    Some(WhyRuntime {
+        runtime: runtime.label(),
+        via: over.describe(),
+        applied,
+        note,
+    })
+}
+
+/// `node --run` omits `pre`/`post` scripts the project defines; name them.
+fn lifecycle_note(ctx: &ProjectContext, task: &str) -> Option<String> {
+    let skipped = crate::cmd::run::runtime_lifecycle_scripts(ctx, task);
+    (!skipped.is_empty())
+        .then(|| format!("node --run skips lifecycle scripts: {}", skipped.join(", ")))
+}
+
 fn pm_decision_for_selected(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     selected: Option<&Task>,
 ) -> Option<PmDecision> {
     match selected.map(|task| task.source) {
+        // A forced runtime that dispatches the script reads it through its own
+        // runner, so `cmd::run` never resolves a node PM; reporting one here
+        // would describe a decision dispatch does not make.
+        Some(TaskSource::PackageJson)
+            if runtime_supersedes_pm(overrides, TaskSource::PackageJson) =>
+        {
+            None
+        }
         Some(TaskSource::PackageJson) => Some(PmDecision::Node(
             Resolver::new(ctx, overrides).resolve_node_pm(),
         )),
@@ -203,6 +294,7 @@ pub(super) struct WhyReport<'a> {
     )]
     query: &'a str,
     pm_resolution: Option<PmResolution>,
+    runtime: Option<WhyRuntime>,
     selected: Option<WhyCandidate<'a>>,
     candidates: Vec<WhyCandidate<'a>>,
     decision: WhyDecision,
@@ -330,8 +422,9 @@ fn build_report<'a>(
     ctx: &'a ProjectContext,
     qualifier: Option<TaskSource>,
 ) -> WhyReport<'a> {
+    let runtime = overrides.js_runtime();
     let candidate_report = |task: &'a Task| WhyCandidate {
-        task: task_report(task, ctx, pm_decision, selected),
+        task: task_report(task, ctx, runtime, pm_decision, selected),
         matched: match_report(query, task, overrides, ctx),
     };
     WhyReport {
@@ -341,6 +434,7 @@ fn build_report<'a>(
         root: ctx.root.display().to_string(),
         query,
         pm_resolution: pm_decision.map(pm_resolution),
+        runtime: runtime_report(overrides, selected, ctx),
         selected: selected.map(candidate_report),
         candidates: candidates.iter().copied().map(candidate_report).collect(),
         decision: decision_report(candidates, selected, qualifier),
@@ -350,6 +444,7 @@ fn build_report<'a>(
 fn task_report<'a>(
     task: &'a Task,
     ctx: &'a ProjectContext,
+    runtime: Option<JsRuntime>,
     pm_decision: Option<&PmDecision>,
     selected: Option<&Task>,
 ) -> WhyTask<'a> {
@@ -373,7 +468,7 @@ fn task_report<'a>(
             .map(|other| other.name.as_str())
             .collect(),
         definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
-        resolved: resolved_command(task, pm_decision.filter(|_| is_selected)),
+        resolved: resolved_command(task, runtime, pm_decision.filter(|_| is_selected)),
         cwd: ctx.root.display().to_string(),
         dependencies: Vec::new(),
     }
@@ -472,7 +567,11 @@ pub(super) const fn provider_label(source: TaskSource) -> &'static str {
 /// PM for the selected task; other candidates report null. Delegates the
 /// per-source dispatch to [`labels::resolved_command`], shared with
 /// `doctor`.
-fn resolved_command(task: &Task, pm_decision: Option<&PmDecision>) -> Option<String> {
+fn resolved_command(
+    task: &Task,
+    runtime: Option<JsRuntime>,
+    pm_decision: Option<&PmDecision>,
+) -> Option<String> {
     let node_pm = match pm_decision {
         Some(PmDecision::Node(Ok(decision))) => Some(decision.pm.label()),
         _ => None,
@@ -481,7 +580,7 @@ fn resolved_command(task: &Task, pm_decision: Option<&PmDecision>) -> Option<Str
         Some(PmDecision::Python(Ok(decision))) => Some(decision.pm.label()),
         _ => None,
     };
-    labels::resolved_command(task, node_pm, python_pm)
+    labels::resolved_command(task, runtime, node_pm, python_pm)
 }
 
 fn print_human(
@@ -565,6 +664,24 @@ fn print_human(
             }
             PmDecision::Python(Ok(decision)) => println!("  {}", decision.describe()),
             PmDecision::Python(Err(err)) => println!("  {} {err}", "error:".red().bold()),
+        }
+    }
+
+    if let Some(rt) = runtime_report(overrides, selected, ctx) {
+        println!();
+        println!("{}", "Runtime".bold());
+        println!("  {}", rt.via);
+        match rt.applied {
+            Some(true) => match &rt.note {
+                Some(note) => println!("  {} {note}", "warn:".yellow().bold()),
+                None => println!("  {}", "applied to the selected task".dimmed()),
+            },
+            Some(false) => {
+                if let Some(note) = &rt.note {
+                    println!("  {} {note}", "not applied:".yellow().bold());
+                }
+            }
+            None => {}
         }
     }
 }
@@ -821,6 +938,110 @@ mod tests {
         assert_eq!(
             json["selected"]["task"]["source_pointer"],
             "project.scripts.greenpy"
+        );
+    }
+
+    fn runtime_overrides(label: &str) -> ResolutionOverrides {
+        ResolutionOverrides::from_cli_and_env(
+            crate::resolver::CliOverrides {
+                runtime: Some(label),
+                ..crate::resolver::CliOverrides::default()
+            },
+            DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("runtime override should parse")
+    }
+
+    #[test]
+    fn forced_runtime_previews_the_runtime_command_not_the_pm_command() {
+        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let overrides = runtime_overrides("bun");
+        let selected = ctx.tasks.first();
+        // A forced runtime supersedes PM resolution, exactly as dispatch does.
+        let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected);
+        assert!(pm_decision.is_none(), "runtime must suppress PM resolution");
+
+        let report = build_report(
+            "build",
+            &[&ctx.tasks[0]],
+            selected,
+            None,
+            &overrides,
+            &ctx,
+            None,
+        );
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(json["selected"]["task"]["resolved"], "bun --bun run build");
+        assert_eq!(json["pm_resolution"], serde_json::Value::Null);
+        assert_eq!(json["runtime"]["runtime"], "bun");
+        assert_eq!(json["runtime"]["applied"], true);
+        assert!(
+            json["runtime"]["via"]
+                .as_str()
+                .is_some_and(|v| v.contains("--runtime"))
+        );
+    }
+
+    #[test]
+    fn node_runtime_preview_notes_the_skipped_lifecycle_scripts() {
+        let ctx = context(vec![
+            task("build", TaskSource::PackageJson),
+            task("prebuild", TaskSource::PackageJson),
+        ]);
+        let overrides = runtime_overrides("node");
+        let selected = ctx.tasks.first();
+
+        let report = build_report(
+            "build",
+            &[&ctx.tasks[0]],
+            selected,
+            None,
+            &overrides,
+            &ctx,
+            None,
+        );
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        assert_eq!(json["selected"]["task"]["resolved"], "node --run build");
+        assert_eq!(json["runtime"]["applied"], true);
+        assert!(
+            json["runtime"]["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("prebuild")),
+            "node runtime must name the lifecycle script it skips: {}",
+            json["runtime"]["note"]
+        );
+    }
+
+    #[test]
+    fn forced_runtime_reports_not_applied_for_a_source_it_cannot_honour() {
+        let ctx = context(vec![task("build", TaskSource::Justfile)]);
+        let overrides = runtime_overrides("bun");
+        let selected = ctx.tasks.first();
+
+        let report = build_report(
+            "build",
+            &[&ctx.tasks[0]],
+            selected,
+            None,
+            &overrides,
+            &ctx,
+            None,
+        );
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        // The justfile command is untouched; the runtime block says why.
+        assert_eq!(json["selected"]["task"]["resolved"], "just build");
+        assert_eq!(json["runtime"]["applied"], false);
+        assert!(
+            json["runtime"]["note"]
+                .as_str()
+                .is_some_and(|n| n.contains("just") && n.contains("not applied")),
+            "note must name the source that won: {}",
+            json["runtime"]["note"]
         );
     }
 

@@ -19,6 +19,7 @@ use super::qualify::{
     TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
     qualified_miss_error, reversed_qualifier_error, runner_constraint_error,
 };
+use super::runtime;
 use super::select::select_task_entry;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
 use crate::tool;
@@ -44,15 +45,7 @@ fn print_dispatch_arrow(
 }
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
-    if !overrides.explain || overrides.silences_runner() {
-        return;
-    }
-    eprintln!(
-        "{} {} resolved: {}",
-        "·".dimmed(),
-        "runner".dimmed(),
-        describe,
-    );
+    crate::cmd::print_explain(overrides, &format!("resolved: {describe}"));
 }
 
 /// Outcome of resolving a task: a spawnable process, or a deno task to
@@ -251,33 +244,7 @@ pub(super) fn resolve_dispatch(
                 return Ok(Dispatch::Spawn(command));
             }
 
-            let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
-                Ok(decision) => {
-                    crate::cmd::print_warning_slice(
-                        &decision.warnings,
-                        overrides,
-                        sink.as_deref_mut(),
-                    );
-                    print_pm_explain(overrides, &decision.describe());
-                    Some(decision.pm)
-                }
-                Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
-                Err(e) => return Err(e.into()),
-            };
-
-            // Bun-test special case: `bun test` built-in.
-            if should_use_bun_test_fallback(ctx, resolved_pm, task_name) {
-                print_dispatch_arrow(overrides, "bun", "test", args);
-                let mut cmd = tool::bun::test_cmd(args);
-                crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
-                return Ok(Dispatch::Spawn(cmd));
-            }
-
-            // PM-exec fallback: dispatch through detected PM's exec primitive.
-            let (label, mut cmd) = build_pm_exec_command(ctx, resolved_pm, task_name, args);
-            print_dispatch_arrow(overrides, label, task_name, args);
-            crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
-            return Ok(Dispatch::Spawn(cmd));
+            return dispatch_after_miss(ctx, overrides, task_name, args, sink);
         };
 
         // Qualified miss (colon or FQN syntax): the qualifier is explicit
@@ -296,6 +263,11 @@ pub(super) fn resolve_dispatch(
     } else {
         select_task_entry(ctx, overrides, &restricted)
     };
+
+    // The one place a matched task's source is known: report a `--runtime`
+    // the winning source cannot honour, so an explicit runtime is never a
+    // silent no-op on the make/just/turbo/… paths.
+    runtime::report_unhonored(overrides, entry, sink.as_deref_mut());
 
     // Refuse a task already being dispatched further up this process
     // lineage. Checked before anything is spawned or run in-process, and
@@ -318,6 +290,60 @@ pub(super) fn resolve_dispatch(
     Ok(Dispatch::Spawn(cmd))
 }
 
+/// The last two rungs of the cascade, reached once the token matched no task,
+/// no local file, and no installed dependency: the bun-test special case, then
+/// the package-exec fallback.
+fn dispatch_after_miss(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task_name: &str,
+    args: &[String],
+    mut sink: crate::cmd::WarningSink<'_>,
+) -> Result<Dispatch> {
+    let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
+        Ok(decision) => {
+            crate::cmd::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
+            print_pm_explain(overrides, &decision.describe());
+            Some(decision.pm)
+        }
+        Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
+        Err(e) => return Err(e.into()),
+    };
+
+    // Bun-test special case: `bun test` built-in.
+    if should_use_bun_test_fallback(ctx, overrides, resolved_pm, task_name) {
+        print_dispatch_arrow(overrides, "bun", "test", args);
+        let mut cmd = tool::bun::test_cmd(args);
+        crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+        return Ok(Dispatch::Spawn(cmd));
+    }
+
+    // Exec fallback: a forced runtime brings its own package-exec primitive,
+    // otherwise the detected PM's is used.
+    let (label, mut cmd) = match runtime::overridden(overrides) {
+        Some(rt) if runtime::replaces_exec(resolved_pm) => {
+            runtime::exec_cmd(rt, &exec_argv(task_name, args))
+        }
+        Some(rt) => {
+            runtime::report_unapplied_exec(overrides, rt, resolved_pm, sink);
+            build_pm_exec_command(ctx, resolved_pm, task_name, args)
+        }
+        None => build_pm_exec_command(ctx, resolved_pm, task_name, args),
+    };
+    print_dispatch_arrow(overrides, label, task_name, args);
+    crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+    Ok(Dispatch::Spawn(cmd))
+}
+
+/// The exec primitive's argument vector: the token followed by the user's
+/// args, as `npx`/`bunx`/`deno x`/`uvx` all take it.
+fn exec_argv(task_name: &str, args: &[String]) -> Vec<String> {
+    let mut v = Vec::with_capacity(args.len() + 1);
+    v.push(task_name.to_string());
+    v.extend(args.iter().cloned());
+    v
+}
+
 /// Build the command for the PM-exec fallback path. Used by both
 /// `super::run` (inherit stdio) and `super::dispatch_task_piped`
 /// (piped stdio).
@@ -327,12 +353,7 @@ fn build_pm_exec_command(
     task_name: &str,
     args: &[String],
 ) -> (&'static str, Command) {
-    let combined = || {
-        let mut v = Vec::with_capacity(args.len() + 1);
-        v.push(task_name.to_string());
-        v.extend(args.iter().cloned());
-        v
-    };
+    let combined = || exec_argv(task_name, args);
     let direct_exec = || {
         let mut c = tool::program::command(task_name);
         c.args(args);
@@ -391,19 +412,25 @@ impl ResolvedPythonPm {
 /// Bun special-case for `runner test` when the project has no
 /// `package.json` `test` script: forward to `bun test`.
 ///
-/// `resolved_pm` is the verdict from the full resolver chain, so all
-/// signals, `--pm`, `RUNNER_PM`, `runner.toml`, `packageManager`,
-/// `devEngines.packageManager`, lockfile, PATH probe, get a vote.
-/// Fires only when the resolver landed on Bun.
+/// An explicit `--runtime` decides alone: `bun test` is bun's built-in test
+/// runner, so forcing node or deno must not land on it, and forcing bun must,
+/// whatever the lockfile says. Without one, `resolved_pm` is the verdict from
+/// the full resolver chain, so all signals, `--pm`, `RUNNER_PM`,
+/// `runner.toml`, `packageManager`, `devEngines.packageManager`, lockfile,
+/// PATH probe, get a vote.
 pub(super) fn should_use_bun_test_fallback(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     resolved_pm: Option<PackageManager>,
     task: &str,
 ) -> bool {
     if task != "test" || has_package_script(ctx, task) {
         return false;
     }
-    resolved_pm.is_some_and(|pm| pm == PackageManager::Bun)
+    runtime::overridden(overrides).map_or_else(
+        || resolved_pm.is_some_and(|pm| pm == PackageManager::Bun),
+        |rt| rt == JsRuntime::Bun,
+    )
 }
 
 fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
@@ -428,11 +455,14 @@ fn build_run_command(
         TaskSource::PackageJson => {
             // An explicit runtime override outranks the resolved PM: which
             // runtime the script's process tree runs on is a separate question
-            // from who installed the dependencies, and both bun and deno read
+            // from who installed the dependencies, and all three runtimes read
             // `package.json` scripts whatever wrote the lockfile.
             if let Some(over) = overrides.runtime.as_ref() {
                 print_pm_explain(overrides, &over.describe());
-                return runtime_run_command(ctx, overrides, entry, args, hv, sink, over.runtime);
+                if over.runtime == JsRuntime::Node {
+                    runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
+                }
+                return Ok(runtime::script_cmd(over.runtime, &entry.name, args, hv));
             }
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
@@ -474,52 +504,6 @@ fn build_run_command(
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
                 PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run pyproject scripts", other.label()),
-            }
-        }
-    })
-}
-
-/// Build the command for a `package.json` script under an explicit
-/// `--runtime`.
-///
-/// Bun forces its own runtime onto the whole process tree (`bun --bun run`),
-/// which is the thing `--pm bun` could never express. Deno runs the script
-/// through `deno task`, which reads `package.json` scripts as well as
-/// `deno.json` tasks. Node has no forcing primitive of its own, so it means
-/// "whatever the PM is, do not force anything else", and falls through to the
-/// resolved node PM.
-///
-/// A runtime whose binary the project has no sign of is still dispatched: the
-/// user named it explicitly, and `bun --bun run` works regardless of which PM
-/// wrote the lockfile. A missing binary surfaces as the spawn error naming it,
-/// which is more actionable than a pre-emptive guess about what is installed.
-fn runtime_run_command(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    entry: &Task,
-    args: &[String],
-    hv: tool::HostVerbosity,
-    sink: crate::cmd::WarningSink<'_>,
-    runtime: JsRuntime,
-) -> Result<Command> {
-    Ok(match runtime {
-        JsRuntime::Bun => tool::bun::run_cmd_with_runtime(&entry.name, args, hv, true),
-        JsRuntime::Deno => tool::deno::run_cmd(&entry.name, args, hv),
-        JsRuntime::Node => {
-            let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
-            crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
-            match decision.pm {
-                PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
-                PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
-                PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args, hv),
-                // Plain `bun run`, no `--bun`: bun drives the script but a
-                // node-shebanged bin inside it still resolves to system Node.
-                PackageManager::Bun => tool::bun::run_cmd(&entry.name, args, hv),
-                other => bail!(
-                    "--runtime node needs a Node package manager to run scripts, but {} was \
-                     resolved for this project",
-                    other.label(),
-                ),
             }
         }
     })
