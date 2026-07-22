@@ -13,17 +13,24 @@
 # node = "pnpm"   # npm | yarn | pnpm | bun | deno
 # python = "uv"   # uv | poetry | pipenv
 
-# `[tasks]` section, persistent task-source preference for ambiguous task
-# names (a name that exists under more than one source, e.g. a `package.json`
-# script *and* a `turbo` task).
+# `[tasks]` section, per-task configuration keyed by task name, plus the two
+# reserved cross-task knobs `prefer` and `overrides`.
 #
-# Both knobs speak the same label vocabulary: a label is a task runner
-# (`turbo`, `make`, …), a package manager (`bun`, `npm`, `pnpm`, `yarn`,
-# `deno`, …), or a source name (`package.json`, `deno`, …). Package-manager
-# labels map to the script source they run (`bun` → `package.json`).
-# Selection here is **rank-only**: it never hard-rejects an unlisted source;
-# it only reorders. An explicit CLI qualifier (`package.json:test`),
-# `--runner`, or `--pm`/`RUNNER_PM` still outranks these file settings.
+# A task entry works like a crate under Cargo's `[dependencies]`: the key is
+# the task name and the value is either a **string** shorthand for the task's
+# source/runner pin (`build = "turbo"`) or a **table** of per-task settings
+# (`build = { runner = "turbo", verbosity = "quiet" }`, or a `[tasks.build]`
+# sub-table). `prefer` (global rank) and `overrides` (legacy per-task pin map,
+# superseded by a task entry's `runner`) are reserved names, so a task literally
+# called `prefer` or `overrides` cannot use the map form.
+#
+# The pin vocabulary is shared: a label is a task runner (`turbo`, `make`, …),
+# a package manager (`bun`, `npm`, `pnpm`, `yarn`, `deno`, …), or a source
+# name (`package.json`, `deno`, …). Package-manager labels map to the script
+# source they run (`bun` → `package.json`). Selection is **rank-only**: it
+# never hard-rejects an unlisted source, only reorders. An explicit CLI
+# qualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still
+# outranks these file settings.
 [tasks]
 # prefer = ["turbo", "bun"]   # global order: turbo, then package.json (bun)
 # overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order

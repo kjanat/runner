@@ -72,7 +72,53 @@ fn patch_tasks_label_vocab(schema: &mut Value) {
         .and_then(|f| f.get_mut("additionalProperties"))
         .and_then(Value::as_object_mut)
     {
-        overrides_values.insert("enum".to_string(), labels);
+        overrides_values.insert("enum".to_string(), labels.clone());
+    }
+
+    // The new per-task `runner` pin (a `[tasks.<name>]` table field) carries the
+    // same vocabulary as a legacy `overrides` entry, plus `null` for the
+    // `Option`, so a typo like `runner = "trubo"` is flagged in-editor instead
+    // of only at runtime by `resolve_source_label`.
+    if let Some(runner) = defs
+        .get_mut("TaskSettings")
+        .and_then(|def| def.get_mut("properties"))
+        .and_then(|props| props.get_mut("runner"))
+        .and_then(Value::as_object_mut)
+    {
+        let mut with_null: Vec<Value> = crate::types::task_source_labels()
+            .into_iter()
+            .map(Value::from)
+            .collect();
+        with_null.push(Value::Null);
+        runner.insert("enum".to_string(), Value::Array(with_null));
+    }
+    // The bare-string shorthand of a task entry (`build = "turbo"`) is the same
+    // pin vocabulary (never null).
+    if let Some(spec) = defs.get_mut("TaskSpec") {
+        set_string_branch_enum(spec, labels);
+    }
+    // The bare-string shorthand `verbosity = "quiet"` mirrors the four levels
+    // `VerbosityTable.level` already constrains (never null).
+    if let Some(config) = defs.get_mut("VerbosityConfig") {
+        set_string_branch_enum(config, json!(["off", "quiet", "very-quiet", "silent"]));
+    }
+}
+
+/// Inject `enum` into the `type: "string"` member of an untagged enum's
+/// `anyOf` — the string-shorthand branch of a string-or-table config value
+/// ([`crate::config::TaskSpec`], [`crate::config::VerbosityConfig`]) — so the
+/// shorthand is validated against the same closed vocabulary as its table form.
+fn set_string_branch_enum(def: &mut Value, values: Value) {
+    let Some(branches) = def.get_mut("anyOf").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for branch in branches {
+        if branch.get("type").and_then(Value::as_str) == Some("string")
+            && let Some(obj) = branch.as_object_mut()
+        {
+            obj.insert("enum".to_string(), values);
+            return;
+        }
     }
 }
 

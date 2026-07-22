@@ -75,6 +75,148 @@ pub(crate) mod yarn;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+/// How aggressively to silence the spawned host tool's **own** logging.
+///
+/// Ordered from loudest to quietest. Lowered from the resolved verbosity
+/// intent at the run-dispatch boundary (`cmd::run::dispatch`) and carried in
+/// [`HostVerbosity`] into each per-tool `run_cmd`. Most hosts saturate at
+/// [`QuietLevel::Quiet`] (their `--silent` is the floor), so the finer rungs
+/// only bite where a host exposes graduated loglevels (e.g. turbo's
+/// `--output-logs`); above a host's floor they are an honest no-op.
+///
+/// The `Ord` derive gives the level comparisons the builders and the
+/// runner-side gates rely on (`level >= QuietLevel::Quiet`), so the variant
+/// order below is load-bearing: loudest first, quietest last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub(crate) enum QuietLevel {
+    /// No silencing; leave the host at its built-in verbosity.
+    #[default]
+    Off,
+    /// Silence the host's own banner/log lines (`npm --silent`, `cargo -q`,
+    /// `make -s`, …). `-q` / level 1.
+    Quiet,
+    /// Everything in [`Self::Quiet`] plus the host's lowest explicit loglevel
+    /// where it distinguishes one (turbo `--output-logs=errors-only`). `-qq` /
+    /// level 2. On the runner side this also folds in `--no-warnings`.
+    VeryQuiet,
+    /// Saturating floor: everything the host can suppress (turbo
+    /// `--output-logs=none`). `-qqq` / level 3.
+    Silent,
+}
+
+/// Whether to keep the host's **stdout** clean by diverting its diagnostics to
+/// stderr. Orthogonal to [`QuietLevel`]: a caller can ask for a clean stdout
+/// pipeline without silencing, or silence without diverting.
+///
+/// Only pnpm exposes the primitive (`--use-stderr`); every other host no-ops
+/// this request silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Stream {
+    /// Leave the host's stream routing untouched (stdout stays stdout).
+    #[default]
+    Inherit,
+    /// Ask the host to write its own diagnostics to stderr, leaving stdout for
+    /// the task's output (pnpm `--use-stderr`).
+    Stderr,
+}
+
+/// The resolved, per-task verbosity intent handed to a host's `run_cmd`.
+///
+/// Combines the two orthogonal axes ([`QuietLevel`] and [`Stream`]). Each host
+/// translates the parts it can express into its own flags and ignores the
+/// rest; nothing here is an error when a host lacks a mechanism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct HostVerbosity {
+    /// How much of the host's own logging to suppress.
+    pub level: QuietLevel,
+    /// Whether to divert the host's diagnostics to stderr.
+    pub stream: Stream,
+}
+
+impl QuietLevel {
+    /// Map a repeat count (`-q` = 1, `-qq` = 2, `-qqq`+ = 3) to a level.
+    pub(crate) const fn from_count(count: u8) -> Self {
+        match count {
+            0 => Self::Off,
+            1 => Self::Quiet,
+            2 => Self::VeryQuiet,
+            _ => Self::Silent,
+        }
+    }
+
+    /// The count this level corresponds to, for round-tripping through the
+    /// `RUNNER_QUIET` env marker set on spawned children.
+    pub(crate) const fn as_count(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::Quiet => 1,
+            Self::VeryQuiet => 2,
+            Self::Silent => 3,
+        }
+    }
+
+    /// Parse a config/label spelling (`off` | `quiet` | `very-quiet` |
+    /// `silent`). Returns `None` for anything else so callers can warn.
+    pub(crate) fn from_label(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "off" => Some(Self::Off),
+            "quiet" => Some(Self::Quiet),
+            "very-quiet" => Some(Self::VeryQuiet),
+            "silent" => Some(Self::Silent),
+            _ => None,
+        }
+    }
+
+    /// The canonical label, the inverse of [`Self::from_label`].
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Quiet => "quiet",
+            Self::VeryQuiet => "very-quiet",
+            Self::Silent => "silent",
+        }
+    }
+
+    /// Every level, loudest first, for building "expected one of …" messages.
+    pub(crate) const ALL: [Self; 4] = [Self::Off, Self::Quiet, Self::VeryQuiet, Self::Silent];
+}
+
+impl Stream {
+    /// Parse a config/label spelling (`inherit` | `stderr`). `None` otherwise.
+    pub(crate) fn from_label(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "inherit" => Some(Self::Inherit),
+            "stderr" => Some(Self::Stderr),
+            _ => None,
+        }
+    }
+
+    /// The canonical label, the inverse of [`Self::from_label`].
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Stderr => "stderr",
+        }
+    }
+
+    /// Both variants, for "expected one of …" messages.
+    pub(crate) const ALL: [Self; 2] = [Self::Inherit, Self::Stderr];
+}
+
+impl HostVerbosity {
+    /// `true` once the level reaches [`QuietLevel::Quiet`]: the host should get
+    /// its silence flag. The single predicate every "does this host have just
+    /// one silence flag" builder uses.
+    pub(crate) fn silences(self) -> bool {
+        self.level >= QuietLevel::Quiet
+    }
+
+    /// `true` when stdout should be kept clean by moving diagnostics to stderr.
+    pub(crate) fn diverts_to_stderr(self) -> bool {
+        self.stream == Stream::Stderr
+    }
+}
+
 /// What an install command should do with lifecycle scripts.
 ///
 /// Lowered from `crate::resolver::ScriptPolicy` at the install dispatch

@@ -61,6 +61,28 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
     // everything detection found for `dir` by the time it spawns anything, so a
     // nested runner over the same root stays quiet instead of repeating it.
     command.env(WARNED_ROOT_ENV, dir);
+    // Propagate the *global* resolved verbosity across the process boundary so
+    // a task that shells out to `runner` again inherits it, the way
+    // `RUNNER_QUIET` already did by env inheritance but the `-q` flag did not.
+    // Exported as the numeric level and the stream label, both re-parsed by the
+    // child's env layer. Only set when non-default so we never force
+    // quiet/stderr onto a child whose own config or flags meant to leave them
+    // alone.
+    //
+    // Deliberately the global level, not a per-task
+    // `[tasks.<name>].verbosity`: per-task verbosity is scoped to *this*
+    // process's immediate host tool (it only shapes the spawned tool's flags,
+    // not this runner's own output), so crossing it into a nested runner —
+    // where it would become that runner's global level and mute *its* warnings
+    // at `very-quiet`+ — would be a surprising, asymmetric blast radius. A
+    // caller who wants nested runners quiet uses `-q`/`RUNNER_QUIET`, which is
+    // global by construction.
+    if overrides.quiet_level != crate::tool::QuietLevel::Off {
+        command.env("RUNNER_QUIET", overrides.quiet_level.as_count().to_string());
+    }
+    if overrides.host_stream != crate::tool::Stream::Inherit {
+        command.env("RUNNER_HOST_STREAM", overrides.host_stream.label());
+    }
 }
 
 /// Every existing `node_modules/.bin` from `dir` up to the filesystem
@@ -356,7 +378,7 @@ pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
     group_emission(
         overrides.group_output,
         actions_rs::env::is_github_actions(),
-        suppression(overrides.parent_group_open, overrides.quiet),
+        suppression(overrides.parent_group_open, overrides.silences_runner()),
     )
 }
 
@@ -381,10 +403,11 @@ fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides, sink: W
     print_warning_slice(&ctx.warnings, overrides, sink);
 }
 
-/// Whether detection warnings stay unsaid: the user asked for silence, or a
-/// parent runner already said them for this root.
-const fn silenced(overrides: &ResolutionOverrides) -> bool {
-    overrides.no_warnings || overrides.parent_warned
+/// Whether detection warnings stay unsaid: the user asked for silence
+/// (`--no-warnings`, or `-qq`+ which folds it in), or a parent runner already
+/// said them for this root.
+fn silenced(overrides: &ResolutionOverrides) -> bool {
+    overrides.silences_warnings() || overrides.parent_warned
 }
 
 fn print_warning_slice(
@@ -470,8 +493,8 @@ pub(crate) fn task_timing_summary(elapsed: std::time::Duration, code: i32) -> St
 /// so it follows the same mute switches as the dispatch arrow and warnings:
 /// `--quiet` / `RUNNER_QUIET` and `--no-warnings` / `RUNNER_NO_WARNINGS` each
 /// suppress it.
-pub(crate) const fn timing_enabled(overrides: &ResolutionOverrides) -> bool {
-    !overrides.quiet && !overrides.no_warnings
+pub(crate) fn timing_enabled(overrides: &ResolutionOverrides) -> bool {
+    !overrides.silences_runner() && !overrides.silences_warnings()
 }
 
 /// Print a per-task timing line to stderr for the sequential and live
@@ -884,7 +907,7 @@ mod tests {
 
         assert!(timing_enabled(&ResolutionOverrides::default()));
         assert!(!timing_enabled(&ResolutionOverrides {
-            quiet: true,
+            quiet_level: crate::tool::QuietLevel::Quiet,
             ..ResolutionOverrides::default()
         }));
         assert!(!timing_enabled(&ResolutionOverrides {

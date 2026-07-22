@@ -140,8 +140,13 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 }
 
 /// `task <task> [args...]`
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("task");
+    // go-task's `-s`/`--silent` disables task-name and command echo. It has no
+    // stdout-diversion primitive, so the stream axis no-ops.
+    if verbosity.silences() {
+        c.arg("-s");
+    }
     c.arg(task).args(args);
     c
 }
@@ -300,5 +305,32 @@ mod tests {
         let tasks = extract_tasks(dir.path()).expect("Taskfile tasks should parse");
         let names: Vec<&str> = tasks.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["build", "test"]);
+    }
+}
+
+#[cfg(test)]
+mod verbosity_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_default_adds_no_verbosity_flag() {
+        let v = HostVerbosity::default();
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
+    }
+
+    #[test]
+    fn run_cmd_quiet_maps_to_host_flag() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            ..HostVerbosity::default()
+        };
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["-s", "build"]);
     }
 }

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
 use crate::tool::node::OnFail;
+use crate::tool::{HostVerbosity, QuietLevel, Stream};
 use crate::types::{
     DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner, TaskSource,
 };
@@ -72,10 +73,25 @@ pub(crate) struct ResolutionOverrides {
     /// `--no-warnings` / `RUNNER_NO_WARNINGS`. Errors still surface;
     /// only non-fatal warnings are silenced.
     pub no_warnings: bool,
-    /// When `true`, suppress the dispatch arrow (`→ <source> <task>`) and
-    /// the dispatch-time `--explain` trace on stderr. Set via `--quiet` /
-    /// `RUNNER_QUIET`.
-    pub quiet: bool,
+    /// Global quiet level from `-q`/`-qq`/`-qqq` (repeat count) and
+    /// `RUNNER_QUIET` (numeric `0..3` or a truthy word → level 1). CLI > env: a
+    /// passed `-q` count wins outright, env applies only when no flag was given.
+    /// Gates runner's own output (the
+    /// dispatch arrow, `--explain` trace, per-task timing, chain summary, GHA
+    /// groups) at [`QuietLevel::Quiet`], and folds in `--no-warnings` at
+    /// [`QuietLevel::VeryQuiet`]. Also the global floor for the spawned host
+    /// tool's own silencing (see [`Self::host_verbosity_for`]).
+    pub quiet_level: QuietLevel,
+    /// Global stdout-clean intent from `--host-stream` / `RUNNER_HOST_STREAM`.
+    /// Orthogonal to [`Self::quiet_level`]: when [`Stream::Stderr`], hosts that
+    /// can (pnpm) divert their diagnostics to stderr so a pipeline parsing
+    /// stdout stays clean. The global floor under per-task config.
+    pub host_stream: Stream,
+    /// Per-task verbosity partials from `[tasks.<name>].verbosity`, keyed by
+    /// task name. Each is deep-merged (defu-like) under the global CLI/env
+    /// level+stream at dispatch time by [`Self::host_verbosity_for`]; a partial
+    /// only overrides the axis it names.
+    pub task_verbosity: BTreeMap<String, TaskVerbosity>,
     /// When `true`, emit a one-line trace describing which chain step
     /// produced the PM decision. Set via `--explain` / `RUNNER_EXPLAIN`.
     pub explain: bool,
@@ -129,6 +145,53 @@ pub(crate) struct ResolutionOverrides {
     /// calls `runner` again would otherwise repeat every warning at each
     /// level. Internal/runner-set, never a user override.
     pub parent_warned: bool,
+}
+
+/// A per-task verbosity partial from `[tasks.<name>].verbosity`. Each axis is
+/// optional so a config table that names only one knob leaves the other to be
+/// inherited from the global (CLI/env) level/stream during the deep-merge in
+/// [`ResolutionOverrides::host_verbosity_for`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TaskVerbosity {
+    /// Per-task quiet level, if the table set one.
+    pub level: Option<QuietLevel>,
+    /// Per-task stream routing, if the table set one.
+    pub stream: Option<Stream>,
+}
+
+impl ResolutionOverrides {
+    /// `true` when runner's own output (dispatch arrow, `--explain` trace,
+    /// timing, chain summary, GHA groups) should be suppressed. Reached at
+    /// `-q` (level 1) and above.
+    pub(crate) fn silences_runner(&self) -> bool {
+        self.quiet_level >= QuietLevel::Quiet
+    }
+
+    /// `true` when non-fatal warnings should be muted: either `--no-warnings`
+    /// was set explicitly, or the quiet level reached `-qq` (which folds in
+    /// `--no-warnings`).
+    pub(crate) fn silences_warnings(&self) -> bool {
+        self.no_warnings || self.quiet_level >= QuietLevel::VeryQuiet
+    }
+
+    /// Resolve the effective [`HostVerbosity`] for a task, deep-merging the
+    /// global CLI/env level+stream over the task's `[tasks.<name>].verbosity`
+    /// partial (defu-like, per axis). The global side wins where set; the
+    /// per-task config fills each axis the global left at its default.
+    pub(crate) fn host_verbosity_for(&self, task: &str) -> HostVerbosity {
+        let per_task = self.task_verbosity.get(task).copied().unwrap_or_default();
+        let level = if self.quiet_level == QuietLevel::Off {
+            per_task.level.unwrap_or(QuietLevel::Off)
+        } else {
+            self.quiet_level
+        };
+        let stream = if self.host_stream == Stream::Inherit {
+            per_task.stream.unwrap_or(Stream::Inherit)
+        } else {
+            self.host_stream
+        };
+        HostVerbosity { level, stream }
+    }
 }
 
 /// What to do when no signal in steps 2–6 matches.
@@ -435,8 +498,11 @@ pub(crate) struct OverrideSources<'a> {
     pub on_mismatch: SourceValue<'a>,
     /// `--no-warnings` flag presence plus `RUNNER_NO_WARNINGS` env.
     pub no_warnings: ExplainSource<'a>,
-    /// `-q`/`--quiet` flag presence plus `RUNNER_QUIET` env.
-    pub quiet: ExplainSource<'a>,
+    /// `-q`/`--quiet` repeat count plus `RUNNER_QUIET` env (numeric or truthy).
+    pub quiet: QuietSource<'a>,
+    /// `--host-stream` flag value plus `RUNNER_HOST_STREAM` env
+    /// (`inherit`|`stderr`).
+    pub host_stream: SourceValue<'a>,
     /// `--explain` flag presence plus `RUNNER_EXPLAIN` env.
     pub explain: ExplainSource<'a>,
     /// `-k`/`--keep-going` flag presence plus `RUNNER_KEEP_GOING` env.
@@ -477,16 +543,21 @@ pub(crate) struct SourceValue<'a> {
 /// bundled into a single struct so `ResolutionOverrides::from_cli_and_env`
 /// stays under clippy's argument/bool thresholds.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct DiagnosticFlags {
+pub(crate) struct DiagnosticFlags<'a> {
     /// `--no-warnings` flag presence (CLI side only, env handled inside
     /// `from_cli_and_env`).
     pub no_warnings: bool,
-    /// `-q`/`--quiet` flag presence (CLI side only, env handled inside
-    /// `from_cli_and_env`).
-    pub quiet: bool,
+    /// `-q`/`--quiet` repeat count (CLI side only, env handled inside
+    /// `from_cli_and_env`). `0` = not passed, `1` = `-q`, `2` = `-qq`, `3`+ =
+    /// `-qqq`.
+    pub quiet: u8,
     /// `--explain` flag presence (CLI side only, env handled inside
     /// `from_cli_and_env`).
     pub explain: bool,
+    /// `--host-stream` flag value (CLI side only, env handled inside
+    /// `from_cli_and_env`). Bundled here with the other diagnostic flags to
+    /// keep the constructors under clippy's argument threshold.
+    pub host_stream: Option<&'a str>,
 }
 
 /// CLI flag (presence) plus env-var value for a boolean-typed override
@@ -497,6 +568,17 @@ pub(crate) struct ExplainSource<'a> {
     /// `true` when the CLI flag was passed.
     pub cli: bool,
     /// Env-var value, if set.
+    pub env: Option<&'a str>,
+}
+
+/// CLI repeat count (`-q`/`-qq`/`-qqq`) plus env-var value for the quiet
+/// level. CLI > env: a passed count (`cli > 0`) wins outright, else the env
+/// applies (`RUNNER_QUIET` is numeric `0..3` or a truthy word meaning level 1).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct QuietSource<'a> {
+    /// `-q` repeat count from the CLI (`0` when not passed).
+    pub cli: u8,
+    /// `RUNNER_QUIET` env-var value, if set.
     pub env: Option<&'a str>,
 }
 

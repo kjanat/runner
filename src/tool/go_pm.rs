@@ -152,7 +152,9 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 }
 
 /// `go run <target> <args...>`
-pub(crate) fn run_cmd(target: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(target: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    // `go run` has no quiet flag and no stdout-diversion primitive, so both
+    // verbosity axes no-op here.
     let mut c = super::program::command("go");
     c.arg("run").arg(target).args(args);
     c
@@ -330,7 +332,7 @@ mod tests {
     #[test]
     fn run_cmd_uses_go_run_target() {
         let args = [String::from("--port"), String::from("3000")];
-        let built: Vec<_> = run_cmd("./cmd/serve", &args)
+        let built: Vec<_> = run_cmd("./cmd/serve", &args, crate::tool::HostVerbosity::default())
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();

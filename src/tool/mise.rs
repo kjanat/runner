@@ -218,8 +218,13 @@ impl MiseJsonTask {
 /// supplied args keeps forwarded flags (`--watch`, `--release`) out of
 /// mise's own argument parser. Empty arg lists drop the separator so the
 /// rendered command line stays clean.
-pub(crate) fn run_cmd(task: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("mise");
+    // mise's global `-q`/`--quiet` precedes the `run` subcommand. It has no
+    // stdout-diversion primitive, so the stream axis no-ops.
+    if verbosity.silences() {
+        c.arg("--quiet");
+    }
     c.arg("run").arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);
@@ -431,14 +436,18 @@ mod tests {
 
     #[test]
     fn run_cmd_omits_separator_when_no_args() {
-        let cmd = run_cmd("build", &[]);
+        let cmd = run_cmd("build", &[], crate::tool::HostVerbosity::default());
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["run", "build"]);
     }
 
     #[test]
     fn run_cmd_inserts_separator_before_forwarded_args() {
-        let cmd = run_cmd("test", &["--watch".into(), "unit".into()]);
+        let cmd = run_cmd(
+            "test",
+            &["--watch".into(), "unit".into()],
+            crate::tool::HostVerbosity::default(),
+        );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["run", "test", "--", "--watch", "unit"]);
     }
@@ -942,5 +951,32 @@ mod tests {
             })
             .collect();
         assert_eq!(names, ["from-mise-toml"]);
+    }
+}
+
+#[cfg(test)]
+mod verbosity_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_default_adds_no_verbosity_flag() {
+        let v = HostVerbosity::default();
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["run", "build"]);
+    }
+
+    #[test]
+    fn run_cmd_quiet_maps_to_host_flag() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            ..HostVerbosity::default()
+        };
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["--quiet", "run", "build"]);
     }
 }

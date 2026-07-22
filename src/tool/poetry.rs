@@ -55,8 +55,13 @@ pub(crate) fn install_cmd() -> Command {
 
 /// `poetry run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
-pub(crate) fn run_cmd(script: &str, args: &[String]) -> Command {
+pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("poetry");
+    // poetry's global `-q`/`--quiet` precedes the `run` subcommand. It has no
+    // stdout-diversion primitive, so the stream axis no-ops.
+    if verbosity.silences() {
+        c.arg("--quiet");
+    }
     c.arg("run").arg(script).args(args);
     c
 }
@@ -70,10 +75,14 @@ mod tests {
 
     #[test]
     fn run_cmd_forwards_script_and_args() {
-        let args: Vec<_> = run_cmd("greenpy", &["--verbose".into()])
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        let args: Vec<_> = run_cmd(
+            "greenpy",
+            &["--verbose".into()],
+            crate::tool::HostVerbosity::default(),
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
         assert_eq!(args, ["run", "greenpy", "--verbose"]);
     }
 

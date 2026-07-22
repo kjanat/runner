@@ -613,7 +613,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             github_group_parallel: overrides.github_group_parallel,
             parallel_grouped: overrides.parallel_grouped,
         },
-        quiet: overrides.quiet,
+        quiet: overrides.silences_runner(),
         on_mismatch: overrides.on_mismatch,
         pm: overrides.pm.as_ref().map(|o| o.pm),
         pm_by_ecosystem: overrides
@@ -1478,9 +1478,23 @@ mod tests {
     fn every_resolution_overrides_field_is_reported_or_excluded() {
         // Internal runner-to-runner plumbing (inherited env markers),
         // never user overrides, nothing meaningful to report.
-        const EXCLUDED: &[&str] = &["parent_group_open", "parent_warned"];
-        // resolver field name -> name it's actually reported under.
-        const RENAMED: &[(&str, &str)] = &[("task_source_overrides", "task_source_pins")];
+        // `parent_*` are internal runner-to-runner plumbing. `host_stream` and
+        // `task_verbosity` are the host-tool verbosity knobs, which affect the
+        // spawned tool's flags rather than runner's own resolution, so they're
+        // not part of the doctor resolution report (the runner-facing quiet
+        // level still is, as `quiet`).
+        const EXCLUDED: &[&str] = &[
+            "parent_group_open",
+            "parent_warned",
+            "host_stream",
+            "task_verbosity",
+        ];
+        // resolver field name -> name it's actually reported under. `quiet_level`
+        // reports as the boolean-ish `quiet` (runner's own output silenced).
+        const RENAMED: &[(&str, &str)] = &[
+            ("task_source_overrides", "task_source_pins"),
+            ("quiet_level", "quiet"),
+        ];
 
         // One list, two jobs: exhaustively destructure ResolutionOverrides
         // (a new field fails to compile until added here) and name the
@@ -1501,7 +1515,9 @@ mod tests {
             fallback,
             on_mismatch,
             no_warnings,
-            quiet,
+            quiet_level,
+            host_stream,
+            task_verbosity,
             explain,
             failure_policy,
             group_output,

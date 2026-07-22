@@ -104,7 +104,8 @@ l             -- → clippy --all-targets --all-features -- -D warnings -D clipp
 --on-mismatch     -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
 --explain         -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
 --no-warnings     -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
--q, --quiet       -- Suppress the dispatch arrow on stderr. Also enabled when RUNNER_QUIET is set to a truthy value.
+-q, --quiet       -- Quiet level, repeatable (-q/-qq/-qqq). Silences runner's own output AND passes the spawned tool's silence flag (npm --silent, cargo -q, make -s, ...). -qq also mutes warnings. Also reads RUNNER_QUIET (a number 0-3 or a truthy word); inherited by a nested runner.
+--host-stream     -- Keep the host tool's stdout clean by diverting its diagnostics to stderr: inherit (default) | stderr. Only pnpm can (via --use-stderr); other hosts no-op. Also reads RUNNER_HOST_STREAM.
 --schema-version  -- Pin JSON output schema version (currently always 1). Affects --json output of doctor/list/why only.
 --sequential      -- Run the given tasks sequentially. Conflicts with `--parallel`
 --parallel        -- Run the given tasks in parallel. Conflicts with `--sequential`
@@ -213,6 +214,32 @@ Under Actions, each failed task also lands in the Annotations panel. The
 annotations follow `[github].group_output`; the roll-up itself does not, so
 opting out of Actions decoration keeps the summary. `--quiet` silences both,
 along with everything else runner prints.
+
+### Quiet, all the way down
+
+`-q` no longer stops at runner's own output — it **crosses into the spawned
+tool**. `run -q build` both hides runner's arrow/trace/summary *and* passes the
+host its own silence flag (`npm --silent`, `pnpm --silent`, `yarn --silent`,
+`bun run --silent`, `cargo -q`, `deno task -q`, `make -s`, `task -s`, `mise
+--quiet`, and the `uv`/`poetry` `--quiet`). That matters because some hosts
+(npm on an npm project) write their lifecycle banner to **stdout**, so before
+this a `run -q <task>` piped into a parser was still corrupted one layer down.
+Hosts with no such flag — or whose only "quiet" is a full mute that would eat
+the task's own output (`just`, `turbo`, `go run`, `bacon`, `pipenv`) — are left
+untouched, never an error. The level escalates pytest-style: `-qq` also mutes
+runner's warnings, `-qqq` is the floor. `RUNNER_QUIET` takes a number (`0`–`3`)
+or a truthy word; a falsy word (`0`, `false`, `off`) or a passed `-q` on the
+command line both override it — the former to explicitly turn inherited quieting
+off, the latter because the CLI flag wins over the env. The resolved level is
+inherited by a nested `runner` a task shells out to.
+
+Orthogonally, `--host-stream stderr` (`RUNNER_HOST_STREAM`) asks the host to
+keep **stdout** clean by routing its diagnostics to stderr. Only pnpm has the
+primitive (`--use-stderr`); elsewhere it no-ops. It composes with any quiet
+level.
+
+Both knobs are configurable **per task** in `[tasks]` (see below), so a single
+noisy task can be pinned quiet without a global flag.
 
 <details>
 <summary><i>Install mechanics and outputs</i></summary>
@@ -390,14 +417,27 @@ extra setup.
 node   = "pnpm"  # npm | pnpm | yarn | bun | deno
 python = "uv"    # uv | poetry | pipenv
 
-# Prefer which source runs an ambiguous task name (one that exists under more
-# than one source, e.g. a package.json script AND a turbo task). Labels are
-# task runners, package managers (bun, npm, ... map to package.json), or source
-# names (package.json). Rank-only: unlisted sources still run. An explicit
-# qualifier (package.json:test), --runner, or --pm still outranks these.
+# Per-task configuration, keyed by task name the way Cargo's [dependencies] is
+# keyed by crate name. `prefer` (global rank) and `overrides` (legacy per-task
+# pin map) are reserved keys; every other key is a task entry. A task entry is
+# either a string (shorthand source/runner pin, like serde = "1.0") or a table
+# of settings (runner, verbosity, ... like serde = { version, features }).
+# Labels are task runners, package managers (bun, npm, ... map to package.json),
+# or source names (package.json). Rank-only: unlisted sources still run. An
+# explicit qualifier (package.json:test), --runner, or --pm still outranks these.
 [tasks]
 prefer    = ["turbo", "bun"]                  # global order: turbo, then package.json
-overrides = { dev = "bun", build = "turbo" }  # per-task pins beat the order
+overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the order
+
+# Task entries (Cargo-[dependencies] style):
+# build = "turbo"                                  # string → source/runner pin
+# test  = { runner = "bun", verbosity = "quiet" }  # table of per-task settings
+# [tasks.lint]                                      # sub-table form
+# verbosity = { level = "quiet", stream = "stderr" }  # off|quiet|very-quiet|silent
+
+# `verbosity` is the per-task form of the -q / --host-stream flags: a string
+# (off|quiet|very-quiet|silent) or a { level, stream } table, deep-merged under
+# any global flag/env. So a single noisy task can run quiet without -q.
 
 # Deprecated, superseded by [tasks] above. Legacy ranked allow-list of task
 # runners that also *restricts* candidates (a same-named task under an unlisted
