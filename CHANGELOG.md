@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   inherited by nested `runner`/`run` invocations, and is reported by
   `--explain` and `runner doctor --json`.
 
+### Fixed
+
+- A local file run through Deno gets `-A`. `deno run <file>` defaults to
+  deny-all and does not honour the file's shebang, so the same `main.ts` ran
+  fine under node and bun and died under deno the moment it read an env var,
+  a file, or the network. Affects `--pm deno <file>` too, which has always
+  taken this path.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

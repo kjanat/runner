@@ -233,15 +233,19 @@ pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
     c
 }
 
-/// `deno run <file> [args...]`, execute a local source file with the
+/// `deno run -A <file> [args...]`, execute a local source file with the
 /// Deno runtime. Distinct from [`exec_cmd`] (`deno x`), which resolves a
-/// remote `npm:`/`jsr:` package; this runs an on-disk path. No permission
-/// flags are added, so the file runs under Deno's default deny-all sandbox;
-/// `deno run <file>` does not honor the file's shebang, so any required
-/// `--allow-*` / `--deny-*` must be supplied by the caller.
+/// remote `npm:`/`jsr:` package; this runs an on-disk path.
+///
+/// `-A` because the user pointed a task runner at their own file: node and
+/// bun run it with no sandbox at all, and `deno run <file>` does not honor
+/// the file's shebang, so a deny-all default would leave the same file
+/// working under `--runtime node`/`bun` and prompting or dying under
+/// `--runtime deno` the moment it reads a file, hits the network, or looks
+/// at an env var. A narrower grant would have to be guessed per file.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("deno");
-    c.arg("run").arg(file).args(args);
+    c.arg("run").arg("-A").arg(file).args(args);
     c
 }
 
@@ -319,8 +323,9 @@ mod tests {
 
     #[test]
     fn run_file_cmd_uses_deno_run_with_file() {
-        // A local `.ts`/`.js` source file dispatches as `deno run <file>`,
-        // never `deno x <file>` (the registry-package path).
+        // A local `.ts`/`.js` source file dispatches as `deno run -A <file>`,
+        // never `deno x <file>` (the registry-package path). `-A` precedes the
+        // file; after it, deno forwards to the script.
         let args = [String::from("--port"), String::from("8080")];
         let cmd = run_file_cmd(Path::new("/abs/server.ts"), &args);
         let built: Vec<_> = cmd
@@ -329,7 +334,21 @@ mod tests {
             .collect();
 
         assert_eq!(cmd.get_program().to_string_lossy(), "deno");
-        assert_eq!(built, ["run", "/abs/server.ts", "--port", "8080"]);
+        assert_eq!(built, ["run", "-A", "/abs/server.ts", "--port", "8080"]);
+    }
+
+    #[test]
+    fn run_file_cmd_grants_permissions_so_the_file_actually_runs() {
+        // Regression: without `-A` the same file works under node/bun and
+        // dies under deno the moment it touches env, fs or the network, since
+        // `deno run <file>` ignores the file's shebang and defaults deny-all.
+        let cmd = run_file_cmd(Path::new("/abs/main.ts"), &[]);
+        let built: Vec<_> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert!(built.contains(&"-A".to_string()), "argv: {built:?}");
     }
 
     #[test]
