@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Post-release checklist
+
+- [ ] Move completed `Unreleased` items into a new version section.
+- [ ] Update the `[Unreleased]` compare link to the new tag.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.23.0] - 2026-07-23
+
 ### Added
 
 - `--runtime <node|bun|deno>` (`RUNNER_RUNTIME`, `[runtime].js`), a JS-runtime
@@ -60,12 +68,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `http(s)` import and bun cannot resolve one, so Deno's default import
   allowlist stays in force. Applies on any detected Deno project (a `deno.json`
   or `deno.lock`), not only `--pm deno <file>` / `--runtime deno <file>`.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.22.0] - 2026-07-22
 
@@ -1939,7 +1941,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/kjanat/runner/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/kjanat/runner/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/kjanat/runner/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/kjanat/runner/compare/v0.19.1...v0.20.0
