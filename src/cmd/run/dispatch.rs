@@ -460,6 +460,16 @@ fn build_run_command(
             if let Some(over) = overrides.runtime.as_ref() {
                 print_pm_explain(overrides, &over.describe());
                 if over.runtime == JsRuntime::Node {
+                    if let tool::node::NodeRunSupport::TooOld { version } =
+                        tool::node::node_run_support()
+                    {
+                        bail!(
+                            "--runtime node runs `node --run`, which needs Node 22 or newer, but \
+                             the node on PATH is {version}.\nhint: upgrade Node, use --runtime \
+                             bun / --runtime deno, or drop --runtime to run the script through \
+                             the detected package manager.",
+                        );
+                    }
                     runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
                 }
                 return Ok(runtime::script_cmd(over.runtime, &entry.name, args, hv));

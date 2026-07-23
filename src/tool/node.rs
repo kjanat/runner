@@ -57,6 +57,51 @@ pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbos
     c
 }
 
+/// Whether the `node` on `PATH` can run [`run_cmd`]'s `node --run`.
+pub(crate) enum NodeRunSupport {
+    /// Node 22+; `node --run` works.
+    Supported,
+    /// Node older than 22; `node --run` exits with `bad option`.
+    TooOld { version: String },
+    /// No `node` on `PATH`, or its `--version` did not parse. Not blocked:
+    /// the spawn surfaces its own error rather than a guessed one.
+    Unknown,
+}
+
+/// Classify the running `node` against the Node 22 floor where `--run` landed.
+///
+/// `--runtime node` dispatches `node --run <task>`; on an older Node that
+/// fails with a cryptic `bad option: --run`, so the caller turns
+/// [`NodeRunSupport::TooOld`] into a diagnostic naming the floor.
+pub(crate) fn node_run_support() -> NodeRunSupport {
+    match probe_node_version() {
+        Some(version) => classify_node_run(&version),
+        None => NodeRunSupport::Unknown,
+    }
+}
+
+/// `node --version`'s parsed token, or `None` when node is absent or its
+/// output does not parse. Split from [`node_run_support`] so the version
+/// comparison in [`classify_node_run`] is testable without a subprocess.
+fn probe_node_version() -> Option<String> {
+    let out = program::command("node").arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    parse_version_token(raw.lines().next().unwrap_or_default().trim())
+}
+
+fn classify_node_run(version: &str) -> NodeRunSupport {
+    match semver::Version::parse(&normalize_version(version)) {
+        Ok(v) if v.major >= 22 => NodeRunSupport::Supported,
+        Ok(v) => NodeRunSupport::TooOld {
+            version: v.to_string(),
+        },
+        Err(_) => NodeRunSupport::Unknown,
+    }
+}
+
 /// Resolve the first supported package manifest path.
 pub(crate) fn find_manifest(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
@@ -1182,6 +1227,33 @@ mod tests {
         assert_eq!(parse_version_token(""), None);
         assert_eq!(parse_version_token("not a version"), None);
         assert_eq!(parse_version_token("---"), None);
+    }
+
+    #[test]
+    fn classify_node_run_gates_on_the_node_22_floor() {
+        use super::{NodeRunSupport, classify_node_run};
+
+        assert!(matches!(
+            classify_node_run("22.0.0"),
+            NodeRunSupport::Supported
+        ));
+        assert!(matches!(
+            classify_node_run("26.4.0"),
+            NodeRunSupport::Supported
+        ));
+        assert!(matches!(
+            classify_node_run("20.11.1"),
+            NodeRunSupport::TooOld { version } if version == "20.11.1"
+        ));
+        assert!(matches!(
+            classify_node_run("18.20.4"),
+            NodeRunSupport::TooOld { .. }
+        ));
+        // Unparseable version never blocks; the spawn surfaces its own error.
+        assert!(matches!(
+            classify_node_run("garbage"),
+            NodeRunSupport::Unknown
+        ));
     }
 
     #[test]

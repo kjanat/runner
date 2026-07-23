@@ -39,13 +39,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   dropping the request.
 
   `--runtime node` dispatches `node --run <script>`, Node's own script runner
-  (Node 22+). Note that it deliberately **does not run `pre<task>` /
-  `post<task>` lifecycle scripts**, which `npm run`, `bun run` and `deno task`
-  all execute; runner warns when the dispatched task declares one. `node --run`
-  also needs user arguments separated by `--`, which runner injects, and Node
-  forwards everything after it to the script rather than reading it as a node
-  option (so `--runtime node build -- --watch` does not enable node's watch
-  mode).
+  (Node 22+); on an older Node it fails up front with a diagnostic naming the
+  version floor rather than Node's cryptic `bad option`. Note that `node --run`
+  deliberately **does not run `pre<task>` / `post<task>` lifecycle scripts**,
+  which `npm run`, `bun run` and `deno task` all execute; runner warns when the
+  dispatched task declares one. It also needs user arguments separated by `--`,
+  which runner injects, and Node forwards everything after it to the script
+  rather than reading it as a node option (so `--runtime node build -- --watch`
+  does not enable node's watch mode).
 
 ### Fixed
 
