@@ -163,8 +163,17 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 fn arrow_only(dir: &Path, args: &[&str]) -> Output {
     let binary = run_binary();
     let bin_dir = binary.parent().expect("binary lives in a directory");
-    Command::new(&binary)
-        .env("PATH", bin_dir)
+    let mut cmd = Command::new(&binary);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("RUNNER_")
+        {
+            cmd.env_remove(&key);
+        }
+    }
+    cmd.env("PATH", bin_dir)
         .arg("--dir")
         .arg(dir)
         .args(args)

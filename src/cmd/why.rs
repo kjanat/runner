@@ -132,7 +132,10 @@ struct WhyWarning {
 struct WhyRuntime {
     #[cfg_attr(
         feature = "schema",
-        schemars(description = "Forced JS runtime label (`node`, `bun`, or `deno`).")
+        schemars(
+            description = "Forced JS runtime label (`node`, `bun`, or `deno`).",
+            extend("enum" = ["node", "bun", "deno"])
+        )
     )]
     runtime: &'static str,
     #[cfg_attr(
@@ -294,6 +297,7 @@ pub(super) struct WhyReport<'a> {
     )]
     query: &'a str,
     pm_resolution: Option<PmResolution>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     runtime: Option<WhyRuntime>,
     selected: Option<WhyCandidate<'a>>,
     candidates: Vec<WhyCandidate<'a>>,

@@ -181,6 +181,12 @@
           "type": [
             "null",
             "string"
+          ],
+          "enum": [
+            "node",
+            "bun",
+            "deno",
+            null
           ]
         }
       },

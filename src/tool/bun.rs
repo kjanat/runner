@@ -99,12 +99,39 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
 mod tests {
     use std::path::Path;
 
-    use super::{ScriptDirective, install_cmd, run_cmd, run_file_cmd, test_cmd};
+    use super::{
+        ScriptDirective, exec_cmd, exec_cmd_with_runtime, install_cmd, run_cmd, run_file_cmd,
+        test_cmd,
+    };
 
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn exec_forced_runtime_prepends_bun_flag() {
+        // `bunx --bun`: without it a package bin with a node shebang still runs
+        // on system Node, defeating `--runtime bun`.
+        let args = [String::from("eslint"), String::from(".")];
+        assert_eq!(
+            args_of(&exec_cmd_with_runtime(&args, true)),
+            ["--bun", "eslint", "."]
+        );
+    }
+
+    #[test]
+    fn exec_unforced_is_plain_bunx() {
+        let args = [String::from("eslint"), String::from(".")];
+        assert_eq!(
+            args_of(&exec_cmd_with_runtime(&args, false)),
+            ["eslint", "."]
+        );
+        assert_eq!(
+            args_of(&exec_cmd(&args)),
+            args_of(&exec_cmd_with_runtime(&args, false))
+        );
     }
 
     #[test]

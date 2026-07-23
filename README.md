@@ -394,9 +394,9 @@ run --runtime bun eslint .   # bunx --bun eslint .
 
 `bun run build` starts the script under bun, but a dependency bin carrying a
 `#!/usr/bin/env node` shebang still resolves to system Node. `--runtime bun`
-adds bun's `--bun`, which puts that bin on bun too. It applies whatever wrote
-the lockfile, and it outranks a local file's `#!` line, which is how it reaches
-`node_modules/.bin` entries.
+adds bun's `--bun`, which puts that bin on bun too. It applies regardless of
+which package manager wrote the lockfile, and it outranks a local file's `#!`
+line, which is how it reaches `node_modules/.bin` entries.
 
 `node --run` is Node's own script runner (Node 22+). It deliberately skips
 `pre<task>` / `post<task>` lifecycle scripts, which `npm run`, `bun run` and

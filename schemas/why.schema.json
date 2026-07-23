@@ -181,7 +181,12 @@
         },
         "runtime": {
           "description": "Forced JS runtime label (`node`, `bun`, or `deno`).",
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "node",
+            "bun",
+            "deno"
+          ]
         },
         "via": {
           "description": "Where the runtime override came from (CLI, env, or config).",
@@ -300,7 +305,6 @@
     "pm_resolution",
     "query",
     "root",
-    "runtime",
     "schema_version",
     "selected"
   ],

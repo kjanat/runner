@@ -303,7 +303,7 @@ const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
     (
         "runtime",
         "js",
-        "\"bun\"",
+        r#""bun""#,
         FieldHint::Static("node | bun | deno; bun implies `bun --bun run`"),
     ),
 ];

@@ -130,6 +130,10 @@ pub(crate) struct RuntimeSection {
     /// JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the
     /// runtime to the detected package manager, the behaviour before this
     /// key existed.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["node", "bun", "deno", null]))
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub js: Option<String>,
 }
