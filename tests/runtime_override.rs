@@ -66,6 +66,22 @@ fn run_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_run"))
 }
 
+/// Assert a spawned dispatch exited cleanly and its stdout names `needle`.
+///
+/// A bare `stdout.contains(...)` check reports only empty stdout when the
+/// spawned runtime failed, hiding the real error on the child's stderr; this
+/// surfaces the exit status and both streams so a CI-only failure is
+/// diagnosable from the log alone.
+fn assert_stdout_has(output: &Output, needle: &str, context: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains(needle),
+        "{context}\n  status: {}\n  stdout: {stdout}\n  stderr: {stderr}",
+        output.status,
+    );
+}
+
 fn tool_available(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
@@ -148,19 +164,15 @@ fn runtime_bun_forces_the_scripts_process_tree_onto_bun() {
 
     // Control: an npm project runs the script's `node` on real Node.
     let plain = run_in(proj.path(), &["-q", "which"]);
-    assert!(
-        String::from_utf8_lossy(&plain.stdout).contains("NODE"),
-        "control should report NODE. stdout: {}",
-        String::from_utf8_lossy(&plain.stdout),
-    );
+    assert_stdout_has(&plain, "NODE", "control should report NODE");
 
     // #94: `bun run` alone would still hand that `node` to system Node;
     // `bun --bun run` is what moves it.
     let forced = run_in(proj.path(), &["-q", "--runtime", "bun", "which"]);
-    assert!(
-        String::from_utf8_lossy(&forced.stdout).contains("BUN"),
-        "--runtime bun must put the script's node on bun. stdout: {}",
-        String::from_utf8_lossy(&forced.stdout),
+    assert_stdout_has(
+        &forced,
+        "BUN",
+        "--runtime bun must put the script's node on bun",
     );
 }
 
@@ -175,11 +187,7 @@ fn runtime_survives_a_nested_run() {
     let proj = probe_project("nested");
     let output = run_in(proj.path(), &["-q", "--runtime", "bun", "outer"]);
 
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("BUN"),
-        "nested dispatch must inherit the runtime. stdout: {}",
-        String::from_utf8_lossy(&output.stdout),
-    );
+    assert_stdout_has(&output, "BUN", "nested dispatch must inherit the runtime");
 }
 
 #[test]
@@ -193,18 +201,10 @@ fn runtime_also_selects_the_local_file_runtime() {
     let proj = probe_project("local");
 
     let plain = run_in(proj.path(), &["-q", "probe.js"]);
-    assert!(
-        String::from_utf8_lossy(&plain.stdout).contains("NODE"),
-        "control should report NODE. stdout: {}",
-        String::from_utf8_lossy(&plain.stdout),
-    );
+    assert_stdout_has(&plain, "NODE", "control should report NODE");
 
     let forced = run_in(proj.path(), &["-q", "--runtime", "bun", "probe.js"]);
-    assert!(
-        String::from_utf8_lossy(&forced.stdout).contains("BUN"),
-        "--runtime bun must run the file on bun. stdout: {}",
-        String::from_utf8_lossy(&forced.stdout),
-    );
+    assert_stdout_has(&forced, "BUN", "--runtime bun must run the file on bun");
 }
 
 #[test]
@@ -216,11 +216,7 @@ fn config_layer_sets_the_runtime() {
     let proj = probe_project("config").file("runner.toml", "[runtime]\njs = \"bun\"\n");
     let output = run_in(proj.path(), &["-q", "which"]);
 
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("BUN"),
-        "[runtime].js must apply without a flag. stdout: {}",
-        String::from_utf8_lossy(&output.stdout),
-    );
+    assert_stdout_has(&output, "BUN", "[runtime].js must apply without a flag");
 }
 
 #[test]
@@ -269,17 +265,13 @@ fn runtime_outranks_a_files_node_shebang() {
     let proj = probe_project("shebang").executable("sheb.js", SHEBANG_PROBE);
 
     let plain = run_in(proj.path(), &["-q", "./sheb.js"]);
-    assert!(
-        String::from_utf8_lossy(&plain.stdout).contains("NODE"),
-        "control should honour the shebang. stdout: {}",
-        String::from_utf8_lossy(&plain.stdout),
-    );
+    assert_stdout_has(&plain, "NODE", "control should honour the shebang");
 
     let forced = run_in(proj.path(), &["-q", "--runtime", "bun", "./sheb.js"]);
-    assert!(
-        String::from_utf8_lossy(&forced.stdout).contains("BUN"),
-        "--runtime bun must outrank the file's shebang. stdout: {}",
-        String::from_utf8_lossy(&forced.stdout),
+    assert_stdout_has(
+        &forced,
+        "BUN",
+        "--runtime bun must outrank the file's shebang",
     );
 }
 
@@ -294,10 +286,10 @@ fn runtime_reaches_an_extensionless_executable() {
 
     let forced = run_in(proj.path(), &["-q", "--runtime", "bun", "./tool"]);
 
-    assert!(
-        String::from_utf8_lossy(&forced.stdout).contains("BUN"),
-        "--runtime bun must reach an extensionless node-shebanged file. stdout: {}",
-        String::from_utf8_lossy(&forced.stdout),
+    assert_stdout_has(
+        &forced,
+        "BUN",
+        "--runtime bun must reach an extensionless node-shebanged file",
     );
 }
 
@@ -318,11 +310,7 @@ fn runtime_reaches_a_locally_installed_dependency_bin() {
 
     let forced = run_in(proj.path(), &["-q", "--runtime", "bun", "probebin"]);
 
-    assert!(
-        String::from_utf8_lossy(&forced.stdout).contains("BUN"),
-        "--runtime bun must reach a dependency bin. stdout: {}",
-        String::from_utf8_lossy(&forced.stdout),
-    );
+    assert_stdout_has(&forced, "BUN", "--runtime bun must reach a dependency bin");
 }
 
 #[test]
@@ -342,10 +330,10 @@ fn runtime_does_not_hijack_a_non_js_file() {
 
         let output = run_in(proj.path(), &["-q", "--runtime", "bun", "./script.sh"]);
 
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("SHELL-OK"),
-            "a JS runtime must not be forced onto a shell script. stdout: {}",
-            String::from_utf8_lossy(&output.stdout),
+        assert_stdout_has(
+            &output,
+            "SHELL-OK",
+            "a JS runtime must not be forced onto a shell script",
         );
     }
 }
@@ -459,11 +447,7 @@ fn runtime_node_dispatches_node_run_instead_of_erroring() {
         "--runtime node must not need a node package manager. stderr: {}",
         String::from_utf8_lossy(&output.stderr),
     );
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("NODE-RAN"),
-        "the script should have run. stdout: {}",
-        String::from_utf8_lossy(&output.stdout),
-    );
+    assert_stdout_has(&output, "NODE-RAN", "the script should have run");
 }
 
 #[test]
@@ -494,17 +478,17 @@ fn every_runtime_forwards_user_args_identically() {
                 proj.path(),
                 &["-q", "--runtime", runtime, "echoargs", "--flag", "val"],
             );
-            assert!(
-                String::from_utf8_lossy(&with_args.stdout).contains("ARGS:[--flag val]"),
-                "{runtime} must forward args verbatim. stdout: {}",
-                String::from_utf8_lossy(&with_args.stdout),
+            assert_stdout_has(
+                &with_args,
+                "ARGS:[--flag val]",
+                &format!("{runtime} must forward args verbatim"),
             );
 
             let no_args = run_in(proj.path(), &["-q", "--runtime", runtime, "echoargs"]);
-            assert!(
-                String::from_utf8_lossy(&no_args.stdout).contains("ARGS:[]"),
-                "{runtime} must not invent an argument. stdout: {}",
-                String::from_utf8_lossy(&no_args.stdout),
+            assert_stdout_has(
+                &no_args,
+                "ARGS:[]",
+                &format!("{runtime} must not invent an argument"),
             );
         }
     }
