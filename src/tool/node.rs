@@ -74,10 +74,9 @@ pub(crate) enum NodeRunSupport {
 /// fails with a cryptic `bad option: --run`, so the caller turns
 /// [`NodeRunSupport::TooOld`] into a diagnostic naming the floor.
 pub(crate) fn node_run_support() -> NodeRunSupport {
-    match probe_node_version() {
-        Some(version) => classify_node_run(&version),
-        None => NodeRunSupport::Unknown,
-    }
+    probe_node_version().map_or(NodeRunSupport::Unknown, |version| {
+        classify_node_run(&version)
+    })
 }
 
 /// `node --version`'s parsed token, or `None` when node is absent or its
