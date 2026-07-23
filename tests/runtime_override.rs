@@ -89,17 +89,51 @@ fn tool_available(bin: &str) -> bool {
         .is_ok_and(|o| o.status.success())
 }
 
+/// The real bin directories of any mise-managed tools, resolved once where a
+/// mise config exists (the crate root) via `mise bin-paths`.
+///
+/// A mise shim resolves its version by walking up from the process's cwd for a
+/// config. These tests spawn tools with cwd set to a throwaway project outside
+/// the repo, where no config exists, so a shimmed tool (bun/deno on CI) dies
+/// with `No version is set for shim`. Putting the real bin dirs on the child
+/// `PATH` ahead of the shims makes the tool resolve independently of cwd.
+/// Empty when mise is absent, so a machine with the tools directly on `PATH`
+/// is unaffected.
+fn mise_bin_paths() -> Vec<PathBuf> {
+    Command::new("mise")
+        .arg("bin-paths")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|line| PathBuf::from(line.trim()))
+                .filter(|p| p.is_dir())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `PATH` for a spawned dispatch: the `run` binary's own dir first (so a nested
+/// `run` reaches this build), then the real mise tool dirs (so shimmed
+/// runtimes resolve outside the repo), then the inherited `PATH`.
+fn child_path(bin_dir: &Path) -> std::ffi::OsString {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let entries = std::iter::once(bin_dir.to_path_buf())
+        .chain(mise_bin_paths())
+        .chain(std::env::split_paths(&inherited));
+    std::env::join_paths(entries).expect("PATH joins")
+}
+
 /// The `run` binary aimed at `dir`, with `RUNNER_*` scrubbed and the binary's
 /// own directory on `PATH` so a nested `run` reaches this build. Callers that
 /// need extra environment build on this; the rest use [`run_in`].
 fn runner_command(dir: &Path) -> Command {
     let binary = run_binary();
     let bin_dir = binary.parent().expect("binary lives in a directory");
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let joined = std::env::join_paths(
-        std::iter::once(bin_dir.to_path_buf()).chain(std::env::split_paths(&path)),
-    )
-    .expect("PATH joins");
+    let joined = child_path(bin_dir);
 
     let mut cmd = Command::new(&binary);
     for (key, _) in std::env::vars_os() {
