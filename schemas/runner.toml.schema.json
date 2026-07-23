@@ -172,6 +172,26 @@
       },
       "additionalProperties": false
     },
+    "RuntimeSection": {
+      "description": "`[runtime]` section, which JS runtime a task's process tree runs on.\n\nSeparate from `[pm]`: the package manager decides who installs and who\ninvokes the script, the runtime decides what the script and the binaries\nit shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.",
+      "type": "object",
+      "properties": {
+        "js": {
+          "description": "JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the\nruntime to the detected package manager, the behaviour before this\nkey existed.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "node",
+            "bun",
+            "deno",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "TaskRunnerSection": {
       "description": "`[task_runner]` section, **deprecated**. Use `[tasks]` instead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor, rank-only and able to name package managers, not just\ntask runners.",
       "deprecated": true,
@@ -432,6 +452,11 @@
     "resolution": {
       "$ref": "#/$defs/ResolutionSection",
       "description": "`[resolution]`, resolver-policy knobs.",
+      "default": {}
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeSection",
+      "description": "`[runtime]`, which JS runtime executes tasks and local files.",
       "default": {}
     },
     "task_runner": {

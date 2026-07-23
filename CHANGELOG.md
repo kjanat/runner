@@ -9,6 +9,58 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- `--runtime <node|bun|deno>` (`RUNNER_RUNTIME`, `[runtime].js`), a JS-runtime
+  axis separate from `--pm`. Each runtime brings its own script runner, file
+  runner and package-exec primitive, and the package manager gets no vote:
+  `node --run`/`node <file>`/`npx`, `bun --bun run`/`bun <file>`/`bunx --bun`,
+  `deno task`/`deno run <file>`/`deno x`.
+
+  `bun --bun run <script>` symlinks `node` for the script's whole process tree,
+  so a dependency bin carrying a `#!/usr/bin/env node` shebang runs on bun
+  instead of system Node. Plain `bun run` never could express that, and
+  `--pm bun` conflated "bun installs here" with "use bun's runtime".
+
+  A forced runtime outranks a local file's `#!` line, which is what makes
+  `run --runtime bun ./cli.js` and `run --runtime bun <dependency-bin>` run on
+  bun; overriding the shebang is the case the axis exists for. It also selects
+  the runtime for source files by extension (`run --runtime bun main.ts`,
+  previously reachable only as `--pm bun`), decides the `runner test` →
+  `bun test` fallback, is inherited by nested `runner`/`run` invocations, and
+  is reported by `--explain` and `runner doctor --json`.
+
+  While a runtime is forced, `package.json` (plus `deno.json` under
+  `--runtime deno`) outranks the other task sources, the way a forced `--pm`
+  already biases toward what it owns. Without that, `--runtime bun build` in a
+  turborepo would silently dispatch the turbo task and force nothing. When the
+  winning task still comes from a source that selects no runtime (`make`,
+  `just`, `Taskfile`, `turbo`, cargo, …), runner warns and names it rather than
+  dropping the request.
+
+  `--runtime node` dispatches `node --run <script>`, Node's own script runner
+  (Node 22+); on an older Node it fails up front with a diagnostic naming the
+  version floor rather than Node's cryptic `bad option`. Note that `node --run`
+  deliberately **does not run `pre<task>` / `post<task>` lifecycle scripts**,
+  which `npm run`, `bun run` and `deno task` all execute; runner warns when the
+  dispatched task declares one. It also needs user arguments separated by `--`,
+  which runner injects, and Node forwards everything after it to the script
+  rather than reading it as a node option (so `--runtime node build -- --watch`
+  does not enable node's watch mode).
+
+### Fixed
+
+- A local file run through Deno now gets an explicit permission set
+  (`--allow-read`, `--allow-write`, `--allow-net`, `--allow-env`,
+  `--allow-run`, `--allow-sys`). `deno run <file>` defaults to deny-all and
+  does not honour the file's shebang, so the same `main.ts` ran fine under node
+  and bun and died under deno the moment it read an env var, a file, or the
+  network. The grant stops short of `-A`, whose extra `--allow-import` would let
+  the file fetch and execute code from any host; node rejects a remote
+  `http(s)` import and bun cannot resolve one, so Deno's default import
+  allowlist stays in force. Applies on any detected Deno project (a `deno.json`
+  or `deno.lock`), not only `--pm deno <file>` / `--runtime deno <file>`.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

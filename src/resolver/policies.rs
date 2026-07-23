@@ -14,7 +14,7 @@ use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
 use crate::config::{LoadedConfig, TaskSpec, VerbosityConfig};
 use crate::tool::{QuietLevel, Stream};
-use crate::types::{PackageManager, TaskRunner, TaskSource};
+use crate::types::{JsRuntime, PackageManager, TaskRunner, TaskSource};
 
 /// Treat any env-var value as truthy unless it's empty, `"0"`, or a
 /// case-insensitive variant of `false` / `no` / `off`.
@@ -296,6 +296,16 @@ pub(super) fn parse_host_stream_label(raw: &str) -> Result<Stream> {
         anyhow!(
             "unknown host-stream {raw:?}; expected one of {}",
             join_labels(Stream::ALL.iter().map(|s| s.label())),
+        )
+    })
+}
+
+/// Parse a `--runtime` / `RUNNER_RUNTIME` / `[runtime].js` label.
+pub(super) fn parse_runtime_label(raw: &str) -> Result<JsRuntime> {
+    JsRuntime::from_label(raw).ok_or_else(|| {
+        anyhow!(
+            "unknown runtime {raw:?}; expected one of {}",
+            join_labels(JsRuntime::all().iter().map(|r| r.label())),
         )
     })
 }

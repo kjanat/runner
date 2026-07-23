@@ -75,6 +75,10 @@ pub(crate) fn select_task_entry<'a>(
 ///   biases toward what it owns; deno is one member of the rule, not a special case. A PM that
 ///   owns no modeled task source (Bundler, Composer) re-orders nothing. Fires only when a PM is
 ///   forced; with no `--pm` / `RUNNER_PM` the ranking is unchanged.
+/// - When the user forces a JS runtime via `--runtime` / `RUNNER_RUNTIME` / `[runtime].js`, the
+///   sources that runtime can dispatch (`package.json`, plus `deno.json` for deno) win the same
+///   way, and every other source is bumped below them. Otherwise `--runtime bun build` in a
+///   turborepo picks the turbo task and forces nothing.
 /// - When `[task_runner].prefer = [r1, r2, ...]` is set, runners in the list win in listed order
 ///   (`r1 = 0`, `r2 = 1`, ...). Sources for unlisted runners fall back to the default tier offset
 ///   by `prefer.len()` so they always lose to listed entries.
@@ -84,6 +88,22 @@ pub(crate) fn select_task_entry<'a>(
 /// Lower is higher priority. Returns `u16` (rather than `u8`) to leave headroom for the offset
 /// arithmetic when prefer-lists grow large without overflow on the default tier.
 pub(crate) fn source_priority(overrides: &ResolutionOverrides, source: TaskSource) -> u16 {
+    // A forced runtime is checked before a forced PM: it names how the task's
+    // process tree executes, which is the more specific intent, so
+    // `--pm cargo --runtime bun` biases toward the sources bun can deliver
+    // rather than letting the PM (which owns no JS source) drop the request.
+    if let Some(runtime) = super::runtime::overridden(overrides) {
+        // A forced runtime biases the same way a forced PM does, toward the
+        // sources that can deliver it. Without this, `--runtime bun build` in
+        // a turborepo is a guaranteed no-op: `turbo.json` outranks
+        // `package.json` at the default tier and turbo selects no runtime.
+        let honored = super::runtime::honored_sources(runtime);
+        if let Some(idx) = honored.iter().position(|honored| *honored == source) {
+            return u16::try_from(idx).unwrap_or(u16::MAX);
+        }
+        let bump = u16::try_from(honored.len()).unwrap_or(u16::MAX);
+        return base_source_priority(overrides, source).saturating_add(bump);
+    }
     if let Some(forced) = forced_pm(overrides) {
         let owned = forced.owned_task_sources();
         // The forced PM's owned task source(s) win same-name conflicts,
@@ -220,8 +240,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{select_task_entry, source_priority};
-    use crate::resolver::{OverrideOrigin, PmOverride, ResolutionOverrides};
-    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+    use crate::resolver::{OverrideOrigin, PmOverride, ResolutionOverrides, RuntimeOverride};
+    use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
@@ -390,6 +410,48 @@ mod tests {
         assert_eq!(source_priority(&overrides, TaskSource::PackageJson), 0);
         assert!(
             source_priority(&overrides, TaskSource::DenoJson)
+                > source_priority(&overrides, TaskSource::PackageJson)
+        );
+    }
+
+    #[test]
+    fn forced_runtime_promotes_its_source_over_turbo() {
+        // `--runtime bun` in a turborepo: package.json (the source bun can
+        // dispatch) drops to 0 so the flag is not a silent no-op.
+        let overrides = ResolutionOverrides {
+            runtime: Some(RuntimeOverride {
+                runtime: JsRuntime::Bun,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+        assert_eq!(source_priority(&overrides, TaskSource::PackageJson), 0);
+        assert!(
+            source_priority(&overrides, TaskSource::TurboJson)
+                > source_priority(&overrides, TaskSource::PackageJson)
+        );
+    }
+
+    #[test]
+    fn forced_runtime_outranks_a_forced_pm_in_source_selection() {
+        // Both axes set: the runtime is the more specific "run the process
+        // tree on X" intent, so it wins source selection. A PM that owns no
+        // JS source (cargo) would otherwise reorder nothing and let turbo
+        // swallow the task, making `--runtime bun` a no-op.
+        let overrides = ResolutionOverrides {
+            pm: Some(PmOverride {
+                pm: PackageManager::Cargo,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            runtime: Some(RuntimeOverride {
+                runtime: JsRuntime::Bun,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+        assert_eq!(source_priority(&overrides, TaskSource::PackageJson), 0);
+        assert!(
+            source_priority(&overrides, TaskSource::TurboJson)
                 > source_priority(&overrides, TaskSource::PackageJson)
         );
     }

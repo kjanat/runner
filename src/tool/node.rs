@@ -39,6 +39,68 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     c
 }
 
+/// `node --run <task> [-- args...]` (Node 22+), Node's own `package.json`
+/// script runner.
+///
+/// The `--` is mandatory: without it node parses a leading `--flag` as one of
+/// its own CLI options and exits with `bad option`. Node forwards everything
+/// after it to the script and does **not** interpret it, so `-- --watch` is the
+/// script's argument, never node's watch mode.
+///
+/// `node --run` writes nothing of its own, so both verbosity axes no-op.
+pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    let mut c = program::command("node");
+    c.arg("--run").arg(task);
+    if !args.is_empty() {
+        c.arg("--").args(args);
+    }
+    c
+}
+
+/// Whether the `node` on `PATH` can run [`run_cmd`]'s `node --run`.
+pub(crate) enum NodeRunSupport {
+    /// Node 22+; `node --run` works.
+    Supported,
+    /// Node older than 22; `node --run` exits with `bad option`.
+    TooOld { version: String },
+    /// No `node` on `PATH`, or its `--version` did not parse. Not blocked:
+    /// the spawn surfaces its own error rather than a guessed one.
+    Unknown,
+}
+
+/// Classify the running `node` against the Node 22 floor where `--run` landed.
+///
+/// `--runtime node` dispatches `node --run <task>`; on an older Node that
+/// fails with a cryptic `bad option: --run`, so the caller turns
+/// [`NodeRunSupport::TooOld`] into a diagnostic naming the floor.
+pub(crate) fn node_run_support() -> NodeRunSupport {
+    probe_node_version().map_or(NodeRunSupport::Unknown, |version| {
+        classify_node_run(&version)
+    })
+}
+
+/// `node --version`'s parsed token, or `None` when node is absent or its
+/// output does not parse. Split from [`node_run_support`] so the version
+/// comparison in [`classify_node_run`] is testable without a subprocess.
+fn probe_node_version() -> Option<String> {
+    let out = program::command("node").arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    parse_version_token(raw.lines().next().unwrap_or_default().trim())
+}
+
+fn classify_node_run(version: &str) -> NodeRunSupport {
+    match semver::Version::parse(&normalize_version(version)) {
+        Ok(v) if v.major >= 22 => NodeRunSupport::Supported,
+        Ok(v) => NodeRunSupport::TooOld {
+            version: v.to_string(),
+        },
+        Err(_) => NodeRunSupport::Unknown,
+    }
+}
+
 /// Resolve the first supported package manifest path.
 pub(crate) fn find_manifest(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
@@ -1167,6 +1229,33 @@ mod tests {
     }
 
     #[test]
+    fn classify_node_run_gates_on_the_node_22_floor() {
+        use super::{NodeRunSupport, classify_node_run};
+
+        assert!(matches!(
+            classify_node_run("22.0.0"),
+            NodeRunSupport::Supported
+        ));
+        assert!(matches!(
+            classify_node_run("26.4.0"),
+            NodeRunSupport::Supported
+        ));
+        assert!(matches!(
+            classify_node_run("20.11.1"),
+            NodeRunSupport::TooOld { version } if version == "20.11.1"
+        ));
+        assert!(matches!(
+            classify_node_run("18.20.4"),
+            NodeRunSupport::TooOld { .. }
+        ));
+        // Unparseable version never blocks; the spawn surfaces its own error.
+        assert!(matches!(
+            classify_node_run("garbage"),
+            NodeRunSupport::Unknown
+        ));
+    }
+
+    #[test]
     fn check_version_constraint_returns_unverifiable_for_invalid_range() {
         use super::{VersionCheck, check_version_constraint};
 
@@ -1193,5 +1282,44 @@ mod tests {
         let tasks = extract_scripts_upwards(&nested).expect("nearest scripts should parse");
 
         assert_eq!(tasks, [("member".to_owned(), "1".to_owned())]);
+    }
+}
+
+#[cfg(test)]
+mod run_cmd_tests {
+    use super::run_cmd;
+    use crate::tool::{HostVerbosity, QuietLevel, Stream};
+
+    fn argv(cmd: &std::process::Command) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn run_cmd_separates_user_args_with_a_double_dash() {
+        // `node --run build --watch` exits with `node: bad option: --watch`.
+        let args = [String::from("--watch"), String::from("src")];
+        let cmd = run_cmd("build", &args, HostVerbosity::default());
+
+        assert_eq!(cmd.get_program().to_string_lossy(), "node");
+        assert_eq!(argv(&cmd), ["--run", "build", "--", "--watch", "src"]);
+    }
+
+    #[test]
+    fn run_cmd_without_args_emits_no_trailing_dash_dash() {
+        assert_eq!(
+            argv(&run_cmd("build", &[], HostVerbosity::default())),
+            ["--run", "build"]
+        );
+    }
+
+    #[test]
+    fn run_cmd_verbosity_axes_no_op() {
+        let v = HostVerbosity {
+            level: QuietLevel::Silent,
+            stream: Stream::Stderr,
+        };
+        assert_eq!(argv(&run_cmd("build", &[], v)), ["--run", "build"]);
     }
 }

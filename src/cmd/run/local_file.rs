@@ -28,11 +28,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{Ecosystem, PackageManager, ProjectContext};
+use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext};
 
 /// A resolved local-file dispatch: the spawnable command plus the short
 /// label shown in the `→` dispatch-arrow trace.
@@ -191,6 +191,17 @@ fn build_command(
     let shebang = read_shebang(path);
     let routing = routing_for_extension(ctx, overrides, path);
 
+    // 0. An explicit `--runtime` outranks the file's own `#!` line and its
+    //    exec bit. Overriding `#!/usr/bin/env node` is the whole point of the
+    //    flag, and it is what every `node_modules/.bin` entry carries. Scoped
+    //    to files that would run on a JS runtime anyway, so `--runtime bun`
+    //    never hijacks a `#!/bin/sh` script, a `.py` file, or a `.tsx` Node
+    //    cannot execute. `--pm` is deliberately not part of this: it names an
+    //    installer, and the shebang has always won over it.
+    if let Some(runtime) = js_runtime_override(overrides, &routing, shebang.as_ref()) {
+        return Ok(command_for_runtime(runtime, path, args));
+    }
+
     // 1. Directly executable → spawn directly, *unless* it is a recognized
     //    source file with no `#!` line. On Unix the kernel honors a real
     //    shebang itself; on Windows this covers native `.exe`/`.com`. A
@@ -218,15 +229,9 @@ fn build_command(
     //    Erroring is honest; `node app.tsx` would be guaranteed-broken.
     match routing {
         SourceRouting::Runtime(runtime) => {
-            let (label, command) = command_for_runtime(runtime, path, args);
-            return Ok((label.to_string(), command));
+            return Ok(command_for_runtime(runtime, path, args));
         }
-        SourceRouting::NodeCannotRunJsx => bail!(
-            "node cannot run {}: Node has no JSX/TSX transform (it type-strips only \
-             .ts/.mts/.cts).\nhint: run it with bun or deno (a Bun/Deno project, or pass `--pm \
-             bun`/`--pm deno`).",
-            path.display(),
-        ),
+        SourceRouting::NodeCannotRunJsx => return Err(node_cannot_run_jsx(overrides, path)),
         SourceRouting::Unrecognized => {}
     }
 
@@ -237,6 +242,56 @@ fn build_command(
          give it a known extension (.ts/.tsx/.js/.mjs/.cjs/.py/.go).",
         path.display(),
     );
+}
+
+/// The error for a `.jsx`/`.tsx` file that resolved to the Node runtime, which
+/// has no JSX transform. Names the axis that reaches a JSX-capable runtime
+/// (`--runtime bun`/`--runtime deno`); when a runtime override pinned Node it
+/// reveals that override and its origin, so a user who set `[runtime].js` or
+/// `--runtime node` sees why the project's own runtime did not apply.
+fn node_cannot_run_jsx(overrides: &ResolutionOverrides, path: &Path) -> anyhow::Error {
+    let head = format!(
+        "node cannot run {}: Node has no JSX/TSX transform (it type-strips only .ts/.mts/.cts)",
+        path.display(),
+    );
+    let hint = "run it on a JSX-capable runtime with `--runtime bun` or `--runtime deno`";
+    match overrides.runtime.as_ref() {
+        Some(over) if over.runtime == JsRuntime::Node => anyhow!(
+            "{head}.\nthe node runtime is in effect ({}); override it with `--runtime bun` or \
+             `--runtime deno`.",
+            over.describe(),
+        ),
+        _ => anyhow!("{head}.\nhint: {hint}."),
+    }
+}
+
+/// The runtime an explicit `--runtime` imposes on this file, if the file is
+/// one a JS runtime would run at all.
+///
+/// A recognized JS extension qualifies. So does an extensionless or
+/// unrecognized file whose `#!` names node, bun or deno, which is how every
+/// `node_modules/.bin` entry is shaped. A `.jsx`/`.tsx` routed to Node does
+/// not: it stays with the error that says Node has no JSX transform.
+fn js_runtime_override(
+    overrides: &ResolutionOverrides,
+    routing: &SourceRouting,
+    shebang: Option<&Shebang>,
+) -> Option<Runtime> {
+    let runtime = super::runtime::overridden(overrides)?;
+    let applies = match routing {
+        SourceRouting::Runtime(Runtime::Bun | Runtime::Deno | Runtime::Node) => true,
+        SourceRouting::Unrecognized => shebang.is_some_and(runs_on_a_js_runtime),
+        _ => false,
+    };
+    applies.then(|| runtime.into())
+}
+
+/// Whether a `#!` line names a JavaScript runtime.
+fn runs_on_a_js_runtime(shebang: &Shebang) -> bool {
+    Path::new(&shebang.program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "node" | "nodejs" | "bun" | "deno"))
 }
 
 /// Whether `token` carries an explicit local-path prefix. Used to decide
@@ -519,6 +574,16 @@ enum Runtime {
     WindowsScript,
 }
 
+impl From<JsRuntime> for Runtime {
+    fn from(runtime: JsRuntime) -> Self {
+        match runtime {
+            JsRuntime::Node => Self::Node,
+            JsRuntime::Bun => Self::Bun,
+            JsRuntime::Deno => Self::Deno,
+        }
+    }
+}
+
 /// How a local file's extension routes for execution.
 #[derive(Debug, PartialEq, Eq)]
 enum SourceRouting {
@@ -578,10 +643,16 @@ fn js_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime 
     Runtime::Node
 }
 
-/// Resolve a JS runtime from an explicit override (`--pm`, `RUNNER_PM`, or
-/// `runner.toml` `[pm].node`/`[pm].deno`). A non-JS override (e.g.
-/// `--pm cargo`) yields `None` so detection decides instead.
+/// Resolve a JS runtime from an explicit override.
+///
+/// `--runtime`/`RUNNER_RUNTIME`/`[runtime].js` is the dedicated axis and wins
+/// outright. `--pm` is the fallback it grew out of: naming a JS package
+/// manager still implies its runtime, so `--pm bun main.ts` keeps working. A
+/// non-JS override (e.g. `--pm cargo`) yields `None` so detection decides.
 fn js_runtime_from_override(overrides: &ResolutionOverrides) -> Option<Runtime> {
+    if let Some(runtime) = super::runtime::overridden(overrides) {
+        return Some(runtime.into());
+    }
     let pm = overrides
         .pm
         .as_ref()
@@ -631,20 +702,32 @@ fn py_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime 
     }
 }
 
-/// Build the command (and trace label) for a runtime running `file`.
-fn command_for_runtime(runtime: Runtime, file: &Path, args: &[String]) -> (&'static str, Command) {
+/// Build the command (and trace label) for a runtime running `file`. The label
+/// is the command's own argv prefix, so the printed `→` line reproduces the
+/// dispatch when copied; the Deno arm derives it from the same permission list
+/// it passes rather than a hardcoded string that could drift from the argv.
+fn command_for_runtime(runtime: Runtime, file: &Path, args: &[String]) -> (String, Command) {
     match runtime {
-        Runtime::Bun => ("bun", tool::bun::run_file_cmd(file, args)),
-        Runtime::Deno => ("deno run", tool::deno::run_file_cmd(file, args)),
-        Runtime::Node => ("node", tool::node::run_file_cmd(file, args)),
-        Runtime::Uv => ("uv run", tool::uv::run_file_cmd(file, args)),
+        Runtime::Bun => (String::from("bun"), tool::bun::run_file_cmd(file, args)),
+        Runtime::Deno => (
+            format!("deno run {}", tool::deno::RUN_FILE_PERMISSIONS.join(" ")),
+            tool::deno::run_file_cmd(file, args),
+        ),
+        Runtime::Node => (String::from("node"), tool::node::run_file_cmd(file, args)),
+        Runtime::Uv => (String::from("uv run"), tool::uv::run_file_cmd(file, args)),
         Runtime::Python => (
-            tool::python::PYTHON_BIN,
+            String::from(tool::python::PYTHON_BIN),
             tool::python::run_file_cmd(file, args),
         ),
-        Runtime::Go => ("go run", tool::go_pm::run_file_cmd(file, args)),
+        Runtime::Go => (
+            String::from("go run"),
+            tool::go_pm::run_file_cmd(file, args),
+        ),
         #[cfg(windows)]
-        Runtime::WindowsScript => windows_script_command(file, args),
+        Runtime::WindowsScript => {
+            let (label, command) = windows_script_command(file, args);
+            (String::from(label), command)
+        }
     }
 }
 
@@ -709,6 +792,41 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    fn deno_run_label() -> String {
+        format!(
+            "deno run {}",
+            crate::tool::deno::RUN_FILE_PERMISSIONS.join(" ")
+        )
+    }
+
+    #[test]
+    fn deno_dispatch_label_reproduces_the_real_argv() {
+        // Regression: the label prints on every dispatch and a user copies it,
+        // so it must be the command's own argv prefix. The Deno arm once
+        // labelled `deno run` while spawning `deno run -A <file>`, making a
+        // granted run indistinguishable from a bare one and a copied line
+        // behave differently.
+        let dir = TempDir::new("deno-label-argv");
+        let file = dir.path().join("main.ts");
+        std::fs::write(&file, "console.log(1)\n").expect("file should be written");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![PackageManager::Deno]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[String::from("--port"), String::from("8080")],
+        )
+        .expect("a deno .ts should build a command");
+
+        let label_parts: Vec<&str> = label.split(' ').collect();
+        assert_eq!(label_parts[0], command.get_program().to_string_lossy());
+        let argv = args_of(&command);
+        assert_eq!(argv[..label_parts.len() - 1], label_parts[1..]);
+        assert_eq!(argv[label_parts.len() - 1], file.to_string_lossy());
     }
 
     #[test]
@@ -1113,6 +1231,141 @@ mod tests {
         assert_eq!(command.get_program().to_string_lossy(), "bun");
     }
 
+    fn forcing(runtime: crate::types::JsRuntime) -> ResolutionOverrides {
+        ResolutionOverrides {
+            runtime: Some(crate::resolver::RuntimeOverride {
+                runtime,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_runtime_override_outranks_a_node_shebang() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // The shape every `node_modules/.bin` entry has: exec bit plus a node
+        // shebang. Both branches used to return before anything read the
+        // runtime, so `--runtime bun` dispatched `node`.
+        let dir = TempDir::new("local-shebang-override");
+        let file = dir.path().join("cli");
+        std::fs::write(&file, "#!/usr/bin/env node\nconsole.log(1)\n").expect("file written");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, command) = build_command(
+            &context(vec![]),
+            &forcing(crate::types::JsRuntime::Bun),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect("a forced runtime should build a command");
+
+        assert_eq!(label, "bun");
+        assert_eq!(command.get_program().to_string_lossy(), "bun");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_runtime_override_leaves_a_shell_script_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // A JS runtime has no business running `#!/bin/sh`.
+        let dir = TempDir::new("local-sh-override");
+        let file = dir.path().join("build.sh");
+        std::fs::write(&file, "#!/bin/sh\necho hi\n").expect("file written");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let (label, _) = build_command(
+            &context(vec![]),
+            &forcing(crate::types::JsRuntime::Bun),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect("a shell script should still spawn");
+
+        assert_eq!(label, "exec");
+    }
+
+    #[test]
+    fn build_command_runtime_override_still_refuses_tsx_on_node() {
+        // Forcing node does not make Node grow a JSX transform.
+        let dir = TempDir::new("local-tsx-override");
+        let file = dir.path().join("app.tsx");
+        std::fs::write(&file, "export default () => <div/>;\n").expect("file written");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let err = build_command(
+            &context(vec![PackageManager::Bun]),
+            &forcing(crate::types::JsRuntime::Node),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect_err("node cannot run tsx");
+
+        assert!(format!("{err:#}").contains("JSX/TSX transform"));
+    }
+
+    #[test]
+    fn jsx_error_hint_names_the_runtime_axis_not_pm() {
+        // The stale hint told the user to pass `--pm bun`/`--pm deno`, a dead
+        // end once a runtime override outranks `--pm`. The hint names the axis
+        // that actually reaches a JSX-capable runtime instead.
+        let dir = TempDir::new("jsx-hint");
+        let file = dir.path().join("app.tsx");
+        std::fs::write(&file, "export default () => <div/>;\n").expect("file written");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let err = build_command(
+            &context(vec![PackageManager::Pnpm]),
+            &ResolutionOverrides::default(),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect_err("node cannot run tsx");
+        let msg = format!("{err:#}");
+
+        assert!(msg.contains("--runtime bun"), "msg: {msg}");
+        assert!(msg.contains("--runtime deno"), "msg: {msg}");
+        assert!(!msg.contains("--pm"), "hint must not steer to --pm: {msg}");
+    }
+
+    #[test]
+    fn jsx_error_reveals_a_runtime_override_and_its_origin() {
+        // The reproduced case: a Deno project whose runtime is pinned to Node.
+        // The error names the override and where it came from, and steers to
+        // `--runtime`, never `--pm` (which cannot move the runtime off Node).
+        let dir = TempDir::new("jsx-override-origin");
+        let file = dir.path().join("app.tsx");
+        std::fs::write(&file, "export default () => <div/>;\n").expect("file written");
+        let meta = std::fs::metadata(&file).expect("metadata should read");
+
+        let err = build_command(
+            &context(vec![PackageManager::Deno]),
+            &forcing(crate::types::JsRuntime::Node),
+            &file,
+            &meta,
+            &[],
+        )
+        .expect_err("node cannot run tsx even when forced");
+        let msg = format!("{err:#}");
+
+        assert!(msg.contains("in effect"), "must reveal the override: {msg}");
+        assert!(
+            msg.contains("--runtime (CLI override)"),
+            "must attribute the override to its origin: {msg}",
+        );
+        assert!(msg.contains("--runtime deno"), "msg: {msg}");
+        assert!(!msg.contains("--pm"), "msg: {msg}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn build_command_spawns_executable_directly() {
@@ -1292,7 +1545,7 @@ mod tests {
         .expect("a runnable bare file should not error")
         .expect("a runnable bare file should dispatch");
 
-        assert_eq!(dispatch.label, "deno run");
+        assert_eq!(dispatch.label, deno_run_label());
         assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
     }
 
@@ -1415,7 +1668,7 @@ mod tests {
         .expect("a runnable relative-separator file should not error")
         .expect("a runnable relative-separator file should dispatch");
 
-        assert_eq!(dispatch.label, "deno run");
+        assert_eq!(dispatch.label, deno_run_label());
         assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
     }
 
@@ -1435,7 +1688,7 @@ mod tests {
             .expect("a runnable bare file under ctx.root should not error")
             .expect("a runnable bare file under ctx.root should dispatch");
 
-        assert_eq!(dispatch.label, "deno run");
+        assert_eq!(dispatch.label, deno_run_label());
         assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
     }
 

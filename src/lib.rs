@@ -855,10 +855,13 @@ fn build_overrides(
         _ => (false, false),
     };
     let mut overrides = resolver::ResolutionOverrides::from_cli_and_env(
-        cli.global.pm_override.as_deref(),
-        cli.global.runner_override.as_deref(),
-        cli.global.fallback.as_deref(),
-        cli.global.on_mismatch.as_deref(),
+        resolver::CliOverrides {
+            pm: cli.global.pm_override.as_deref(),
+            runner: cli.global.runner_override.as_deref(),
+            runtime: cli.global.runtime_override.as_deref(),
+            fallback: cli.global.fallback.as_deref(),
+            on_mismatch: cli.global.on_mismatch.as_deref(),
+        },
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,
             quiet: cli.global.quiet,
@@ -913,10 +916,13 @@ fn build_overrides_lenient(
         _ => (false, false),
     };
     resolver::ResolutionOverrides::from_cli_and_env_lenient(
-        cli.global.pm_override.as_deref(),
-        cli.global.runner_override.as_deref(),
-        cli.global.fallback.as_deref(),
-        cli.global.on_mismatch.as_deref(),
+        resolver::CliOverrides {
+            pm: cli.global.pm_override.as_deref(),
+            runner: cli.global.runner_override.as_deref(),
+            runtime: cli.global.runtime_override.as_deref(),
+            fallback: cli.global.fallback.as_deref(),
+            on_mismatch: cli.global.on_mismatch.as_deref(),
+        },
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,
             quiet: cli.global.quiet,

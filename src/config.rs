@@ -110,6 +110,32 @@ pub(crate) struct RunnerConfig {
     /// `[parallel]`, presentation of parallel (`-p`) chain output.
     #[serde(default)]
     pub parallel: ParallelSection,
+    /// `[runtime]`, which JS runtime executes tasks and local files.
+    #[serde(default)]
+    pub runtime: RuntimeSection,
+}
+
+/// `[runtime]` section, which JS runtime a task's process tree runs on.
+///
+/// Separate from `[pm]`: the package manager decides who installs and who
+/// invokes the script, the runtime decides what the script and the binaries
+/// it shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct RuntimeSection {
+    /// JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the
+    /// runtime to the detected package manager, the behaviour before this
+    /// key existed.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["node", "bun", "deno", null]))
+    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub js: Option<String>,
 }
 
 /// `[install]` section, restrict which detected package managers
@@ -544,6 +570,7 @@ const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("chain", &["keep_going", "kill_on_fail"]),
     ("github", &["group_output", "group_parallel"]),
     ("parallel", &["grouped"]),
+    ("runtime", &["js"]),
 ];
 
 /// Reserved keys under `[tasks]` that are section fields, not task entries.

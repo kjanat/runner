@@ -12,7 +12,7 @@ use crate::config::LoadedConfig;
 use crate::tool::node::OnFail;
 use crate::tool::{HostVerbosity, QuietLevel, Stream};
 use crate::types::{
-    DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner, TaskSource,
+    DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, TaskRunner, TaskSource,
 };
 
 /// Resolves package managers and task sources from a [`ProjectContext`]
@@ -47,6 +47,11 @@ pub(crate) struct ResolutionOverrides {
     /// [`TaskRunner::task_source`]; an empty restriction list bails with
     /// [`super::ResolveError::InvalidOverride`].
     pub runner: Option<RunnerOverride>,
+    /// JS runtime override from `--runtime` / `RUNNER_RUNTIME` /
+    /// `[runtime].js`. Selects which runtime executes a task's process tree
+    /// (`bun --bun run` vs `npm run`) and which runtime runs a local
+    /// `.ts`/`.js` file, an axis `--pm` conflated with "who installs here".
+    pub runtime: Option<RuntimeOverride>,
     /// Ranked preference list from the **deprecated** `[task_runner].prefer`.
     /// Empty when no config is loaded, the section is empty, or `[tasks]`
     /// supersedes it. When non-empty, the source selector restricts candidates
@@ -191,6 +196,13 @@ impl ResolutionOverrides {
             self.host_stream
         };
         HostVerbosity { level, stream }
+    }
+
+    /// The JS runtime an explicit override selected, if any. The single read
+    /// of [`Self::runtime`]'s value; everything that dispatches, propagates or
+    /// reports the runtime goes through here.
+    pub(crate) fn js_runtime(&self) -> Option<JsRuntime> {
+        self.runtime.as_ref().map(|over| over.runtime)
     }
 }
 
@@ -373,6 +385,30 @@ pub(crate) struct PmOverride {
     pub origin: OverrideOrigin,
 }
 
+/// A JS-runtime override plus the source the user set it from.
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeOverride {
+    /// The chosen runtime.
+    pub runtime: JsRuntime,
+    /// Where the override came from. Surfaced by `--explain` so the user can
+    /// attribute the runtime decision to its origin.
+    pub origin: OverrideOrigin,
+}
+
+impl RuntimeOverride {
+    /// `--explain` trace body, e.g. `bun via --runtime (CLI override)`.
+    pub(crate) fn describe(&self) -> String {
+        let source = match &self.origin {
+            OverrideOrigin::CliFlag => String::from("--runtime (CLI override)"),
+            OverrideOrigin::EnvVar => String::from("RUNNER_RUNTIME (environment)"),
+            OverrideOrigin::ConfigFile { path } => {
+                format!("runner.toml at {}", path.display())
+            }
+        };
+        format!("{} via {source}", self.runtime.label())
+    }
+}
+
 /// A task-runner override plus the source the user set it from.
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerOverride {
@@ -407,6 +443,15 @@ pub(crate) enum OverrideOrigin {
 }
 
 impl OverrideOrigin {
+    /// Whether an override from this source may be re-exported as an
+    /// environment variable to a nested `runner`/`run`. A CLI flag or ambient
+    /// env value is invocation-scoped and carries across; a `runner.toml` value
+    /// is repo-scoped, and an env layer outranks a nested project's own config,
+    /// so re-emitting it would force this repo's setting onto another one.
+    pub(crate) const fn propagates_to_nested(&self) -> bool {
+        matches!(self, Self::CliFlag | Self::EnvVar)
+    }
+
     /// Render the "via …" provenance fragment for a PM override from
     /// this origin: `via --pm (CLI override)`, `via RUNNER_PM
     /// (environment)`, or `via runner.toml at <path>`. Shared by
@@ -492,6 +537,9 @@ pub(crate) struct OverrideSources<'a> {
     pub pm: SourceValue<'a>,
     /// `--runner` flag value plus `RUNNER_RUNNER` env.
     pub runner: SourceValue<'a>,
+    /// `--runtime` flag value plus `RUNNER_RUNTIME` env. The `[runtime].js`
+    /// config layer is read from `config` rather than carried here.
+    pub runtime: SourceValue<'a>,
     /// `--fallback` flag value plus `RUNNER_FALLBACK` env.
     pub fallback: SourceValue<'a>,
     /// `--on-mismatch` flag value plus `RUNNER_ON_MISMATCH` env.
@@ -537,6 +585,24 @@ pub(crate) struct SourceValue<'a> {
     pub cli: Option<&'a str>,
     /// Env-var value, if set.
     pub env: Option<&'a str>,
+}
+
+/// CLI-side resolution overrides (`--pm`, `--runner`, `--runtime`,
+/// `--fallback`, `--on-mismatch`) bundled into a single struct, for the same
+/// reason [`DiagnosticFlags`] exists: the constructors take one value per
+/// axis and would otherwise pass clippy's argument threshold.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct CliOverrides<'a> {
+    /// `--pm` flag value (env handled inside `from_cli_and_env`).
+    pub pm: Option<&'a str>,
+    /// `--runner` flag value.
+    pub runner: Option<&'a str>,
+    /// `--runtime` flag value.
+    pub runtime: Option<&'a str>,
+    /// `--fallback` flag value.
+    pub fallback: Option<&'a str>,
+    /// `--on-mismatch` flag value.
+    pub on_mismatch: Option<&'a str>,
 }
 
 /// CLI-side diagnostic flags (`--no-warnings`, `--quiet`, `--explain`)

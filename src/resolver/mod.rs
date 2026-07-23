@@ -52,8 +52,10 @@ pub(crate) use probe::probe_in as probe_path_for_doctor;
 /// overrides fully built by [`ResolutionOverrides::from_cli_and_env`].
 #[cfg(test)]
 pub(crate) use types::PmOverride;
+#[cfg(test)]
+pub(crate) use types::RuntimeOverride;
 pub(crate) use types::{
-    CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
+    CliOverrides, CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
     ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
 };
 

@@ -156,6 +156,45 @@
       },
       "additionalProperties": false
     },
+    "WhyRuntime": {
+      "description": "The forced JS runtime and whether it reaches the selected task, so a\nconsumer can reconcile `selected.task.resolved` against the PM block.",
+      "type": "object",
+      "required": [
+        "applied",
+        "runtime",
+        "via"
+      ],
+      "properties": {
+        "applied": {
+          "description": "Whether the selected task dispatches on this runtime. Null when no task was selected.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "note": {
+          "description": "Why the runtime did not apply, or the lifecycle scripts `node --run` will skip.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "runtime": {
+          "description": "Forced JS runtime label (`node`, `bun`, or `deno`).",
+          "type": "string",
+          "enum": [
+            "node",
+            "bun",
+            "deno"
+          ]
+        },
+        "via": {
+          "description": "Where the runtime override came from (CLI, env, or config).",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
     "WhyTask": {
       "type": "object",
       "required": [
@@ -304,6 +343,16 @@
     "root": {
       "description": "Project root the query ran against.",
       "type": "string"
+    },
+    "runtime": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WhyRuntime"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",

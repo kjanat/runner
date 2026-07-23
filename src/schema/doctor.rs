@@ -41,7 +41,8 @@ use crate::resolver::{
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
-    DetectionWarning, Ecosystem, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+    DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskRunner,
+    TaskSource,
 };
 
 /// `runner doctor --json` payload.
@@ -177,6 +178,7 @@ struct Overrides {
     prefer_runners: Vec<TaskRunner>,
     prefer_sources: Vec<&'static str>,
     runner: Option<TaskRunner>,
+    runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
@@ -628,6 +630,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             .map(|&source| structured_source_label(source))
             .collect(),
         runner: overrides.runner.as_ref().map(|o| o.runner),
+        runtime: overrides.runtime.as_ref().map(|o| o.runtime),
         script_policy: overrides.script_policy,
         task_source_pins: overrides
             .task_source_overrides
@@ -901,6 +904,7 @@ fn tasks<'a>(
 ) -> Vec<DoctorTask<'a>> {
     let node_pm_label = node_pm.as_ref().ok().map(|d| d.pm.label());
     let python_pm_label = resolve_python_pm(ctx, overrides).map(|d| d.pm.label());
+    let runtime = overrides.js_runtime();
 
     // `anchor_file` walks the filesystem; resolve each distinct source
     // once instead of once per task.
@@ -930,7 +934,12 @@ fn tasks<'a>(
             fqn: super::labels::fqn(task.source, &task.name),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
-            resolved: super::labels::resolved_command(task, node_pm_label, python_pm_label),
+            resolved: super::labels::resolved_command(
+                task,
+                runtime,
+                node_pm_label,
+                python_pm_label,
+            ),
             self_executable: deno_task_self_executable(ctx, task),
             source: anchors.get(&task.source).cloned().flatten(),
             source_pointer: super::labels::source_pointer(task),
@@ -1404,6 +1413,34 @@ mod tests {
     }
 
     #[test]
+    fn forced_runtime_previews_package_json_scripts_through_the_runtime() {
+        // A forced runtime dispatches package.json scripts through its own
+        // runner; `resolved` must match that, not the resolved PM's command.
+        let overrides = ResolutionOverrides::from_cli_and_env(
+            crate::resolver::CliOverrides {
+                runtime: Some("bun"),
+                ..crate::resolver::CliOverrides::default()
+            },
+            crate::resolver::DiagnosticFlags::default(),
+            crate::cli::ChainFailureFlags::default(),
+            None,
+        )
+        .expect("runtime override should parse");
+        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let report = DoctorReport::build(&ctx, &overrides, false);
+        let json = serde_json::to_value(&report).expect("report should serialize");
+
+        let build = json["tasks"]
+            .as_array()
+            .expect("tasks array")
+            .iter()
+            .find(|t| t["name"] == "build")
+            .expect("build task present");
+        assert_eq!(build["resolved"], "bun --bun run build");
+        assert_eq!(json["overrides"]["runtime"], "bun");
+    }
+
+    #[test]
     fn v3_report_probes_detected_pms_as_tools() {
         let ctx = context(vec![]);
         let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
@@ -1509,6 +1546,7 @@ mod tests {
             pm,
             pm_by_ecosystem,
             runner,
+            runtime,
             prefer_runners,
             prefer_sources,
             task_source_overrides,

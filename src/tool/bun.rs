@@ -12,7 +12,25 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `bun run <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
+    run_cmd_with_runtime(task, args, verbosity, false)
+}
+
+/// `bun [--bun] run <task> [args...]`
+///
+/// `--bun` symlinks `node` to bun for the script's process tree, so a
+/// dependency bin carrying a `#!/usr/bin/env node` shebang also runs on bun
+/// instead of the system Node. It goes before `run`: as a subcommand flag it
+/// would be forwarded to the script.
+pub(crate) fn run_cmd_with_runtime(
+    task: &str,
+    args: &[String],
+    verbosity: super::HostVerbosity,
+    force_bun_runtime: bool,
+) -> Command {
     let mut c = super::program::command("bun");
+    if force_bun_runtime {
+        c.arg("--bun");
+    }
     c.arg("run");
     // `bun run --silent` skips the command echo bun prints before the script.
     // bun has no stdout-diversion primitive, so the stream axis no-ops.
@@ -52,7 +70,18 @@ pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
 
 /// `bunx <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
+    exec_cmd_with_runtime(args, false)
+}
+
+/// `bunx [--bun] <args...>`
+///
+/// `--bun` is bunx's counterpart to `bun --bun run`: without it a package whose
+/// bin carries a `#!/usr/bin/env node` shebang still executes on system Node.
+pub(crate) fn exec_cmd_with_runtime(args: &[String], force_bun_runtime: bool) -> Command {
     let mut c = super::program::command("bunx");
+    if force_bun_runtime {
+        c.arg("--bun");
+    }
     c.args(args);
     c
 }
@@ -70,12 +99,39 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
 mod tests {
     use std::path::Path;
 
-    use super::{ScriptDirective, install_cmd, run_cmd, run_file_cmd, test_cmd};
+    use super::{
+        ScriptDirective, exec_cmd, exec_cmd_with_runtime, install_cmd, run_cmd, run_file_cmd,
+        test_cmd,
+    };
 
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn exec_forced_runtime_prepends_bun_flag() {
+        // `bunx --bun`: without it a package bin with a node shebang still runs
+        // on system Node, defeating `--runtime bun`.
+        let args = [String::from("eslint"), String::from(".")];
+        assert_eq!(
+            args_of(&exec_cmd_with_runtime(&args, true)),
+            ["--bun", "eslint", "."]
+        );
+    }
+
+    #[test]
+    fn exec_unforced_is_plain_bunx() {
+        let args = [String::from("eslint"), String::from(".")];
+        assert_eq!(
+            args_of(&exec_cmd_with_runtime(&args, false)),
+            ["eslint", "."]
+        );
+        assert_eq!(
+            args_of(&exec_cmd(&args)),
+            args_of(&exec_cmd_with_runtime(&args, false))
+        );
     }
 
     #[test]
@@ -142,6 +198,7 @@ mod tests {
 #[cfg(test)]
 mod verbosity_tests {
     use super::run_cmd;
+    use super::run_cmd_with_runtime;
     use crate::tool::{HostVerbosity, QuietLevel};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
@@ -154,6 +211,38 @@ mod verbosity_tests {
     fn run_cmd_default_adds_no_verbosity_flag() {
         let v = HostVerbosity::default();
         assert_eq!(argv(&run_cmd("build", &[], v)), ["run", "build"]);
+    }
+
+    #[test]
+    fn force_bun_runtime_puts_the_flag_before_run() {
+        // `bun --bun run x`, not `bun run --bun x`: after the subcommand the
+        // flag is forwarded to the script instead of switching the runtime.
+        let v = HostVerbosity::default();
+        assert_eq!(
+            argv(&run_cmd_with_runtime("build", &[], v, true)),
+            ["--bun", "run", "build"]
+        );
+    }
+
+    #[test]
+    fn force_bun_runtime_composes_with_quiet() {
+        let v = HostVerbosity {
+            level: QuietLevel::Quiet,
+            ..HostVerbosity::default()
+        };
+        assert_eq!(
+            argv(&run_cmd_with_runtime("build", &[], v, true)),
+            ["--bun", "run", "--silent", "build"]
+        );
+    }
+
+    #[test]
+    fn run_cmd_is_the_unforced_form() {
+        let v = HostVerbosity::default();
+        assert_eq!(
+            argv(&run_cmd("build", &[], v)),
+            argv(&run_cmd_with_runtime("build", &[], v, false))
+        );
     }
 
     #[test]

@@ -373,6 +373,53 @@ A task that resolves back to itself through a nested `runner`/`run` is
 refused with the cycle it found (`package.json:tsc -> package.json:tsc`)
 instead of spawning copies of itself.
 
+### Runtime
+
+`--pm` says who installs and who invokes a script. `--runtime` says what the
+script and the binaries it shells out to actually execute on. Each runtime uses
+its own script runner, file runner and package-exec primitive; the package
+manager gets no vote:
+
+| `--runtime` | `package.json` script  | local file        | ad-hoc binary |
+| ----------- | ---------------------- | ----------------- | ------------- |
+| `node`      | `node --run <task>`    | `node <file>`     | `npx`         |
+| `bun`       | `bun --bun run <task>` | `bun <file>`      | `bunx --bun`  |
+| `deno`      | `deno task <task>`     | `deno run <file>` | `deno x`      |
+
+```sh
+run --runtime bun build      # bun --bun run build
+run --runtime bun ./cli.js   # bun ./cli.js, even with a #!/usr/bin/env node line
+run --runtime bun eslint .   # bunx --bun eslint .
+```
+
+`bun run build` starts the script under bun, but a dependency bin carrying a
+`#!/usr/bin/env node` shebang still resolves to system Node. `--runtime bun`
+adds bun's `--bun`, which puts that bin on bun too. It applies regardless of
+which package manager wrote the lockfile, and it outranks a local file's `#!`
+line, which is how it reaches `node_modules/.bin` entries.
+
+`node --run` is Node's own script runner (Node 22+). It deliberately skips
+`pre<task>` / `post<task>` lifecycle scripts, which `npm run`, `bun run` and
+`deno task` all execute; runner warns when the task you dispatch has one.
+
+A local file on `deno` runs with filesystem, network, environment, subprocess
+and system-info permissions granted (`--allow-read`, `--allow-write`,
+`--allow-net`, `--allow-env`, `--allow-run`, `--allow-sys`), since `deno run
+<file>` denies these by default and ignores the file's shebang. Deno's default
+remote-import allowlist is left in place, so a file cannot import and execute
+code from an arbitrary host, matching how node and bun already refuse remote
+imports. This applies to any detected Deno project, not only `--runtime deno`.
+
+A runtime you set never applies silently to nothing. When the task that wins
+selection comes from a source with no runtime to choose (`make`, `just`,
+`Taskfile`, `turbo`, cargo, …), runner says so. `package.json` (and `deno.json`
+under `--runtime deno`) outranks the other sources while a runtime is forced,
+so `--runtime bun build` in a turborepo runs the script rather than the turbo
+task.
+
+Set it per project with `[runtime].js`, or per invocation with
+`RUNNER_RUNTIME`. Nested `runner`/`run` calls inherit it.
+
 The `run` binary is equivalent to `runner run`, so:
 
 ```sh
