@@ -18,6 +18,25 @@ fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
 
+/// The `runner` binary with every `RUNNER_*` variable scrubbed, so grouping
+/// assertions do not depend on how the suite was launched. Running the tests
+/// through `runner` under GitHub Actions inherits `RUNNER_GROUP_ACTIVE=1`
+/// (the "a parent already opened a group" marker), which makes a spawned
+/// runner suppress its own grouping and fall back to the live muxer.
+fn runner_command() -> Command {
+    let mut cmd = Command::new(runner_binary());
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("RUNNER_")
+        {
+            cmd.env_remove(&key);
+        }
+    }
+    cmd
+}
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -61,7 +80,7 @@ fn sequential_chain_runs_in_order() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test", "lint"])
@@ -93,7 +112,7 @@ fn sequential_chain_emits_per_task_timing_on_stderr() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args([
@@ -137,7 +156,7 @@ fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
     // both the CI and non-CI paths, so this deterministically exercises the
     // streaming timing emission. fail-mid exits 7; the default FailFast policy
     // lets the already-spawned siblings finish, so all three report timing.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-p", "ok-one", "fail-mid", "ok-two"])
@@ -176,7 +195,7 @@ fn streaming_parallel_chain_returns_despite_stdio_holding_descendant() {
         return;
     }
     let started = Instant::now();
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-p", "ok-one", "daemon"])
@@ -212,7 +231,7 @@ fn streaming_parallel_spawn_failure_returns_despite_stdio_holding_descendant() {
         return;
     }
     let started = Instant::now();
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-p", "daemon", "definitely-not-a-binary-xyz"])
@@ -242,7 +261,7 @@ fn parallel_install_chain_times_the_install_step() {
     // head gets; otherwise `runner install -p ...` would time the tasks but
     // not the install step, while `-s` times both.
     let project = isolated_install_project();
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(&project)
         .args(["install", "-p", "build"])
@@ -289,7 +308,7 @@ fn grouped_parallel_chain_folds_timing_into_block_footer() {
     // `parallel-grouped`'s runner.toml opts into grouped output outside GitHub
     // Actions, so each task's duration is folded into its block footer on
     // stdout (not a stderr meta-line).
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "test"])
@@ -325,7 +344,7 @@ fn grouped_parallel_chain_folds_timing_into_group_footer_under_actions() {
     // footer *inside* the group, before `::endgroup::` (see `flush_task_group`'s
     // `gha_syntax` path in src/chain/exec.rs; the footer is written before the
     // GroupGuard's Drop emits `::endgroup::`).
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "test"])
@@ -390,7 +409,7 @@ fn quiet_suppresses_chain_timing() {
         return;
     }
     // `RUNNER_QUIET` mutes diagnostic meta-output (dispatch arrow, timing).
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test"])
@@ -423,7 +442,7 @@ fn parallel_chain_exit_code_reflects_first_failure() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-p", "ok-one", "fail-mid", "ok-two"])
@@ -454,7 +473,7 @@ fn parallel_chain_exit_code_reflects_first_failure() {
 
 #[test]
 fn chain_rejects_mutually_exclusive_mode_flags() {
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "-p", "build"])
@@ -477,7 +496,7 @@ fn chain_rejects_whitespace_positional_in_v1() {
     // No `just_available()` gate: the parser rejects the whitespace
     // positional before any task is dispatched, so the test runs
     // regardless of whether `just` is on PATH.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build --release"])
@@ -502,7 +521,7 @@ fn install_completion_includes_tasks_and_options() {
         return;
     }
 
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .env("COMPLETE", "zsh")
         .env("_CLAP_COMPLETE_INDEX", "4")
         .args(["--", "runner", "--dir"])
@@ -537,7 +556,7 @@ fn chain_mode_completion_offers_tasks_after_first_task() {
 
     // `run -s build <TAB>`, the trailing words are extra task names in
     // chain mode, so the second position must offer task candidates.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .env("COMPLETE", "zsh")
         .env("_CLAP_COMPLETE_INDEX", "6")
         .args(["--", "runner", "--dir"])
@@ -559,7 +578,7 @@ fn chain_mode_completion_offers_tasks_after_first_task() {
 
     // Without a chain flag the trailing words are the task's own args, so
     // task names would be noise there.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .env("COMPLETE", "zsh")
         .env("_CLAP_COMPLETE_INDEX", "5")
         .args(["--", "runner", "--dir"])
@@ -592,7 +611,7 @@ fn chain_prevalidates_all_tokens_before_running_any_task() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test", "lint:cargo"])
@@ -629,7 +648,7 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test"])
@@ -684,7 +703,7 @@ fn single_task_is_grouped_under_github_actions() {
     }
     // A bare single task (no `-s`) still gets one group under GitHub Actions.
     // Grouping covers every task run, not just multi-step chains.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "build"])
@@ -716,7 +735,7 @@ fn no_groups_emitted_outside_github_actions() {
     }
     // Scrub GITHUB_ACTIONS so this is deterministic even when the test host
     // itself runs under GitHub Actions (mirrors info_deprecation.rs).
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build", "test"])
@@ -748,7 +767,7 @@ fn config_opt_out_disables_grouping_under_github_actions() {
     // The `github-no-group` fixture ships a runner.toml with
     // `[github] group_output = false`, so even under GitHub Actions no
     // groups are emitted.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
         .args(["run", "build"])
@@ -773,7 +792,7 @@ fn github_group_output_false_restores_live_parallel_muxer() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
         .args(["run", "-p", "build", "test"])
@@ -804,7 +823,7 @@ fn parallel_chain_grouped_under_github_actions() {
     }
     // Default `[github].group_parallel` buffers each task and emits it as its
     // own ::group:: block under GitHub Actions, no live `[task]` prefixes.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-p", "build", "test"])
@@ -858,7 +877,7 @@ fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
     }
     // Grouping is not GitHub-specific: outside Actions each block gets a plain
     // `runner: <task>` header and no ::group:: workflow-command bloat.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "test"])
@@ -903,7 +922,7 @@ fn parallel_grouped_preserves_child_stderr_stream() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "build", "err"])
@@ -933,7 +952,7 @@ fn parallel_grouped_does_not_wait_forever_on_inherited_stdout() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let mut child = Command::new(runner_binary())
+    let mut child = runner_command()
         .arg("--dir")
         .arg(fixture("parallel-grouped"))
         .args(["run", "-p", "hold-open", "build"])
@@ -982,7 +1001,7 @@ fn a_failed_chain_closes_with_a_summary_naming_the_failing_task() {
     }
     // #87: with `--keep-going` the only signal was one error line buried in
     // the interleaved logs, and the aggregate exit code explained nothing.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-s", "-k", "ok-one", "fail-mid", "ok-two"])
@@ -1011,7 +1030,7 @@ fn a_fail_fast_chain_reports_the_tasks_it_never_started() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-s", "ok-one", "fail-mid", "ok-two"])
@@ -1037,7 +1056,7 @@ fn a_single_task_chain_gets_no_summary() {
     }
     // The per-task timing line already says everything a one-row roll-up
     // would; a summary here is pure noise.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-sequential"))
         .args(["run", "-s", "build"])
@@ -1054,7 +1073,7 @@ fn quiet_suppresses_the_chain_summary() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
@@ -1076,7 +1095,7 @@ fn github_actions_annotates_each_failed_chain_task() {
     }
     // The Annotations panel is where a reader lands before opening the log,
     // so a failed chain task has to reach it.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-s", "-k", "ok-one", "fail-mid"])
@@ -1107,7 +1126,7 @@ fn quiet_suppresses_github_actions_annotations() {
     }
     // Annotations are workflow commands, so they land on stdout. Under
     // `--quiet` that stream belongs to the task alone (#86).
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
         .args(["run", "-q", "-s", "-k", "ok-one", "fail-mid"])
@@ -1131,7 +1150,7 @@ fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
     // `[github].group_output` owns runner's Actions output, so it takes the
     // annotations with it. The roll-up is plain stderr meta-output and is not
     // Actions-specific, so it stays.
-    let output = Command::new(runner_binary())
+    let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
         .args(["run", "-s", "-k", "build", "fail-mid"])
