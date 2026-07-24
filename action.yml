@@ -4,11 +4,15 @@ author: Kaj Kowalski
 branding: { icon: play, color: blue }
 
 inputs:
-  version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver/tag (`1`, `0.10`, `v0.10`).", default: latest }
+  version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver prefix (`1`, `0.10`, `v0.10`).", default: latest }
+  cache: { description: "Reuse a matching binary from the tool cache instead of re-downloading (set to `false` to force a download).", default: "true" }
 
 outputs:
   version: { description: "Concrete installed version (e.g. `0.10.0`), resolved post-install." }
-  bin-dir: { description: npm global bin directory containing `runner` / `run` (added to PATH). }
+  bin-dir: { description: Directory containing the `runner` / `run` binaries (added to PATH). }
+  runner-bin: { description: Full path to the `runner` binary. }
+  run-bin: { description: Full path to the `run` binary. }
+  cache-hit: { description: "`true` when the binary was reused from the tool cache." }
 
 runs:
   using: node24

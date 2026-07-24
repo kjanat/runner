@@ -244,19 +244,25 @@ noisy task can be pinned quiet without a global flag.
 <details>
 <summary><i>Install mechanics and outputs</i></summary>
 
-The action installs the `runner-run` npm package into the runner tool cache with
-`npm install --global --ignore-scripts --prefix`, verifies the installed
-`runner` shim by running `runner --version`, and adds the npm bin directory to
-`PATH` for later steps.
+The action resolves the platform's `@runner-run/*` package, downloads its
+tarball from the npm registry, verifies the `sha512` integrity npm publishes for
+it, and extracts the `runner` / `run` binaries into the tool cache. Fetching the
+tarball directly avoids the node startup and dependency-tree resolution of
+`npm install`. The install dir is added to `PATH` and the binary is smoke-tested
+with `runner --version`.
 
-| I/O    | name      | description                                                                           |
-| ------ | --------- | ------------------------------------------------------------------------------------- |
-| Input  | `version` | npm version spec for `runner-run`; defaults to `latest`; accepts numeric `v?` forms   |
-| Output | `version` | Concrete version reported by the installed `runner --version` smoke test              |
-| Output | `bin-dir` | npm global bin directory containing `runner` / `run`; added to `PATH` for later steps |
+| I/O    | name         | description                                                                    |
+| ------ | ------------ | ------------------------------------------------------------------------------ |
+| Input  | `version`    | Version to install; defaults to `latest`; accepts exact pins and `v?` prefixes |
+| Input  | `cache`      | Reuse a matching binary from the tool cache; `false` forces a download         |
+| Output | `version`    | Concrete version reported by the installed `runner --version` smoke test       |
+| Output | `bin-dir`    | Directory holding the `runner` / `run` binaries; added to `PATH`               |
+| Output | `runner-bin` | Full path to the `runner` binary                                               |
+| Output | `run-bin`    | Full path to the `run` binary                                                  |
+| Output | `cache-hit`  | `true` when the binary was reused from the tool cache                          |
 
-Exact `X.Y.Z` pins are checked against the executed CLI version; a mismatch
-fails the action.
+A cached exact `X.Y.Z` pin resolves without any network call. Exact pins are
+checked against the executed CLI version; a mismatch fails the action.
 
 ---
 

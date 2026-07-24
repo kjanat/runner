@@ -15,6 +15,24 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+### Added
+
+- Action input `cache` (default `true`) reuses a tool-cached binary across steps
+  and jobs on a self-hosted runner; set it to `false` to force a fresh download.
+- Action output `cache-hit`, `true` when the binary was reused from the tool
+  cache rather than downloaded.
+
+### Changed
+
+- The `kjanat/runner` action installs the CLI by downloading the platform's
+  `@runner-run/*` package tarball straight from the npm registry and extracting
+  it, instead of shelling out to `npm install`. This skips the node startup and
+  dependency-tree resolution that dominated the old install, cutting a cold
+  `latest` install from roughly 8s to under 1s on Linux and Windows hosted
+  runners. The `sha512` integrity npm publishes for the tarball is now verified
+  before extraction, and a cached exact `X.Y.Z` pin resolves with no network
+  call.
+
 ## [0.23.0] - 2026-07-23
 
 ### Added

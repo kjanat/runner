@@ -1,10 +1,12 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
 import { join } from "node:path";
 import { arch, env, exit, platform, stdout } from "node:process";
+
+const REGISTRY = env.RUNNER_NPM_REGISTRY || "https://registry.npmjs.org";
 
 /**
  * @param {"GITHUB_PATH" | "GITHUB_OUTPUT"} name
@@ -64,11 +66,10 @@ function debug(msg) {
  * @param {string} file
  * @param {string[]} args
  * @param {"inherit" | "pipe"} stdio
- * @param {boolean} [shell]
  * @returns {import("node:child_process").SpawnSyncReturns<string>}
  */
-function run(file, args, stdio, shell = false) {
-	const res = spawnSync(file, args, { encoding: "utf8", shell, stdio });
+function run(file, args, stdio) {
+	const res = spawnSync(file, args, { encoding: "utf8", stdio });
 	if (res.error) throw res.error;
 	if (res.status !== 0) {
 		throw new Error(`\`${file} ${args.join(" ")}\` exited with ${res.status ?? "signal"}`);
@@ -76,26 +77,22 @@ function run(file, args, stdio, shell = false) {
 	return res;
 }
 
-/** @param {number} ms */
-function sleep(ms) {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 /**
- * @param {() => void} fn
+ * @template T
+ * @param {() => Promise<T>} fn
  * @param {number[]} backoffsMs
+ * @returns {Promise<T>}
  */
-function withRetry(fn, backoffsMs) {
+async function withRetry(fn, backoffsMs) {
 	for (let attempt = 0;; attempt++) {
 		try {
-			fn();
-			return;
+			return await fn();
 		} catch (err) {
 			if (attempt >= backoffsMs.length) throw err;
 			const wait = backoffsMs[attempt];
 			const msg = err instanceof Error ? err.message : String(err);
 			debug(`attempt ${attempt + 1} failed (${msg}), retrying in ${wait}ms`);
-			sleep(wait);
+			await new Promise((resolve) => setTimeout(resolve, wait));
 		}
 	}
 }
@@ -117,23 +114,10 @@ function resolveSpec() {
 	return m[1];
 }
 
-/** @returns {string} */
-function installPrefix() {
-	const toolCache = env.RUNNER_TOOL_CACHE;
-	if (!toolCache) throw new Error("RUNNER_TOOL_CACHE is not set, not running inside a GitHub Action?");
-	const prefix = join(toolCache, "runner-cli");
-	mkdirSync(prefix, { recursive: true });
-	return prefix;
-}
-
 /**
- * Resolve the `@runner-run/<pkg>` platform package matching this runner,
- * so install can skip the facade's optionalDependencies resolution
- * (13 extra registry metadata fetches for packages that'll never be used).
- * Returns null on anything unexpected, unmapped platform, unreadable
- * manifest, undetectable libc, so the caller falls back to the facade,
- * which covers every platform npm's own optionalDependencies resolution
- * covers.
+ * Resolve the `@runner-run/<pkg>` platform package matching this runner.
+ * Returns null on any unexpected, unmapped platform, unreadable manifest, or
+ * undetectable libc.
  * @returns {{ scope: string, pkg: string } | null}
  */
 function resolvePlatformTarget() {
@@ -142,7 +126,7 @@ function resolvePlatformTarget() {
 	try {
 		manifest = JSON.parse(readFileSync(join(import.meta.dirname, "npm", "targets.json"), "utf8"));
 	} catch (err) {
-		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)}), using facade`);
+		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)})`);
 		return null;
 	}
 
@@ -150,8 +134,6 @@ function resolvePlatformTarget() {
 	let libc;
 	if (platform === "linux") {
 		try {
-			// Node's own signal for glibc vs musl, the same mechanism npm's
-			// optionalDependencies resolution relies on for the `libc` field.
 			const report = /** @type {{ header?: { glibcVersionRuntime?: string } }} */ (process.report?.getReport?.());
 			libc = report?.header?.glibcVersionRuntime ? "glibc" : "musl";
 		} catch {
@@ -165,7 +147,7 @@ function resolvePlatformTarget() {
 		&& (t.libc == null || (libc !== undefined && t.libc.includes(libc)))
 	);
 	if (!match) {
-		debug(`no npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""}, using facade`);
+		debug(`no npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""}`);
 		return null;
 	}
 	return { scope: manifest.scope, pkg: match.pkg };
@@ -180,12 +162,111 @@ function isExactPin(spec) {
 }
 
 /**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+function compareVersions(a, b) {
+	const pa = a.split(/[.+-]/, 3).map(Number);
+	const pb = b.split(/[.+-]/, 3).map(Number);
+	for (let i = 0; i < 3; i++) {
+		if (pa[i] !== pb[i]) return (pa[i] || 0) - (pb[i] || 0);
+	}
+	const preA = a.includes("-");
+	const preB = b.includes("-");
+	if (preA !== preB) return preA ? -1 : 1;
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * @param {string} url
+ * @returns {Promise<unknown>}
+ */
+async function getJson(url) {
+	const res = await fetch(url);
+	if (!res.ok) throw new Error(`GET ${url} responded ${res.status}`);
+	return res.json();
+}
+
+/**
+ * Resolve a version spec to the concrete npm dist for the platform package.
+ * @param {string} pkgName
+ * @param {string} spec
+ * @returns {Promise<{ version: string, tarball: string, integrity: string | undefined }>}
+ */
+async function resolveDist(pkgName, spec) {
+	if (spec === "latest" || isExactPin(spec)) {
+		const manifest = /** @type {{ version: string, dist: { tarball: string, integrity?: string } }} */ (
+			await withRetry(() => getJson(`${REGISTRY}/${pkgName}/${encodeURIComponent(spec)}`), [1000, 3000])
+		);
+		return { version: manifest.version, tarball: manifest.dist.tarball, integrity: manifest.dist.integrity };
+	}
+	const doc = /** @type {{ versions: Record<string, { dist: { tarball: string, integrity?: string } }> }} */ (
+		await withRetry(() => getJson(`${REGISTRY}/${pkgName}`), [1000, 3000])
+	);
+	const prefix = `${spec}.`;
+	const matches = Object.keys(doc.versions ?? {}).filter((v) => v === spec || v.startsWith(prefix));
+	if (matches.length === 0) throw new Error(`no ${pkgName} version matching '${spec}'`);
+	matches.sort(compareVersions);
+	const version = matches[matches.length - 1];
+	const dist = doc.versions[version].dist;
+	return { version, tarball: dist.tarball, integrity: dist.integrity };
+}
+
+/**
+ * @param {Buffer} buf
+ * @param {string | undefined} integrity
+ * @param {string} label
+ */
+function verifyIntegrity(buf, integrity, label) {
+	if (!integrity) {
+		warn(`no integrity metadata for ${label}, skipping checksum`);
+		return;
+	}
+	const dash = integrity.indexOf("-");
+	const algo = integrity.slice(0, dash);
+	const expected = integrity.slice(dash + 1);
+	const actual = createHash(algo).update(buf).digest("base64");
+	if (actual !== expected) {
+		throw new Error(`integrity mismatch for ${label}: expected ${algo}-${expected}, got ${algo}-${actual}`);
+	}
+}
+
+/**
+ * @param {string} tarball
+ * @param {string | undefined} integrity
+ * @param {string} label
+ * @param {string} binDir
+ */
+async function downloadExtract(tarball, integrity, label, binDir) {
+	startGroup(`download ${tarball}`);
+	try {
+		const buf = await withRetry(async () => {
+			const res = await fetch(tarball);
+			if (!res.ok) throw new Error(`GET ${tarball} responded ${res.status}`);
+			return Buffer.from(await res.arrayBuffer());
+		}, [1000, 3000]);
+		verifyIntegrity(buf, integrity, label);
+		mkdirSync(binDir, { recursive: true });
+		const tgz = join(binDir, ".pkg.tgz");
+		writeFileSync(tgz, buf);
+		run("tar", ["-xzf", tgz, "-C", binDir, "--strip-components=2", "package/bin"], "inherit");
+		rmSync(tgz, { force: true });
+		if (platform !== "win32") {
+			for (const b of ["runner", "run"]) chmodSync(join(binDir, b), 0o755);
+		}
+	} finally {
+		endGroup();
+	}
+}
+
+/**
  * @param {string} binDir
  * @returns {string}
  */
 function verifyVersion(binDir) {
-	const runner = platform === "win32" ? join(binDir, "runner.cmd") : join(binDir, "runner");
-	const res = run(runner, ["--version"], "pipe", platform === "win32");
+	const runner = join(binDir, platform === "win32" ? "runner.exe" : "runner");
+	const res = run(runner, ["--version"], "pipe");
 	const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
 	stdout.write(out.endsWith("\n") ? out : `${out}${EOL}`);
 	const m = /\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b/.exec(out);
@@ -193,67 +274,73 @@ function verifyVersion(binDir) {
 	return m[1];
 }
 
+/** @returns {string} */
+function toolCacheRoot() {
+	const toolCache = env.RUNNER_TOOL_CACHE;
+	if (!toolCache) throw new Error("RUNNER_TOOL_CACHE is not set, not running inside a GitHub Action?");
+	return toolCache;
+}
+
 /**
- * @param {string} pkgName
+ * @param {string} binDir
+ * @param {boolean} cacheHit
+ * @param {string} label
  * @param {string} spec
- * @param {string} prefix
  */
-function installPackage(pkgName, spec, prefix) {
-	startGroup(`npm install --global --ignore-scripts --prefix ${prefix} ${pkgName}@${spec}`);
-	try {
-		withRetry(
-			() =>
-				run(
-					"npm",
-					["install", "--global", "--ignore-scripts", "--prefix", prefix, `${pkgName}@${spec}`],
-					"inherit",
-					platform === "win32",
-				),
-			[2000, 4000],
-		);
-	} finally {
-		endGroup();
+function finish(binDir, cacheHit, label, spec) {
+	const verified = verifyVersion(binDir);
+	if (isExactPin(spec) && verified !== spec) {
+		throw new Error(`requested ${label}@${spec} but runner --version reported ${verified}`);
 	}
+	const suffix = platform === "win32" ? ".exe" : "";
+	const runnerBin = join(binDir, `runner${suffix}`);
+	const runBin = join(binDir, `run${suffix}`);
+	addPath(binDir);
+	console.log(`version: ${verified}`);
+	console.log(`bin-dir: ${binDir}`);
+	console.log(`runner-bin: ${runnerBin}`);
+	console.log(`run-bin: ${runBin}`);
+	console.log(`cache-hit: ${cacheHit}`);
+	setOutput("version", verified);
+	setOutput("bin-dir", binDir);
+	setOutput("runner-bin", runnerBin);
+	setOutput("run-bin", runBin);
+	setOutput("cache-hit", String(cacheHit));
+}
+
+async function main() {
+	const spec = resolveSpec();
+	const target = resolvePlatformTarget();
+	if (!target) throw new Error(`no prebuilt runner binary for ${platform}/${arch}`);
+	const label = `${target.scope}/${target.pkg}`;
+	const cache = (env.INPUT_CACHE ?? "true") !== "false";
+	const exe = platform === "win32" ? "runner.exe" : "runner";
+	const root = toolCacheRoot();
+
+	// Exact pin already in the tool cache: skip the registry entirely.
+	if (cache && isExactPin(spec)) {
+		const binDir = join(root, "runner-cli", spec, target.pkg);
+		if (existsSync(join(binDir, exe))) {
+			console.log(`cache hit: ${label}@${spec}`);
+			finish(binDir, true, label, spec);
+			return;
+		}
+	}
+
+	const dist = await resolveDist(label, spec);
+	const binDir = join(root, "runner-cli", dist.version, target.pkg);
+	let cacheHit = false;
+	if (cache && existsSync(join(binDir, exe))) {
+		console.log(`cache hit: ${label}@${dist.version}`);
+		cacheHit = true;
+	} else {
+		await downloadExtract(dist.tarball, dist.integrity, `${label}@${dist.version}`, binDir);
+	}
+	finish(binDir, cacheHit, label, spec);
 }
 
 try {
-	const spec = resolveSpec();
-	const prefix = installPrefix();
-	const binDir = platform === "win32" ? prefix : join(prefix, "bin");
-	const facade = "runner-run";
-
-	// Installing the platform package directly skips the facade's
-	// optionalDependencies resolution (a registry metadata fetch per
-	// sibling platform package that will never be used). Any failure,
-	// including a genuinely unpublished experimental-platform version,
-	// falls back to the facade, which is what every platform used before.
-	let installedPkg = facade;
-	const target = resolvePlatformTarget();
-	if (target) {
-		const fastPkg = `${target.scope}/${target.pkg}`;
-		try {
-			installPackage(fastPkg, spec, prefix);
-			installedPkg = fastPkg;
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			warn(`fast install of ${fastPkg}@${spec} failed (${msg}), falling back to ${facade}`);
-			installPackage(facade, spec, prefix);
-		}
-	} else {
-		installPackage(facade, spec, prefix);
-	}
-
-	const version = verifyVersion(binDir);
-	if (isExactPin(spec) && version !== spec) {
-		throw new Error(`requested ${installedPkg}@${spec} but runner --version reported ${version}`);
-	}
-
-	addPath(binDir);
-	console.log(`version: ${version}`);
-	console.log(`bin-dir: ${binDir}`);
-
-	setOutput("version", version);
-	setOutput("bin-dir", binDir);
+	await main();
 } catch (err) {
 	const msg = err instanceof Error ? err.message : String(err);
 	stdout.write(`::error::${escapeData(msg)}${EOL}`);
