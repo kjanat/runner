@@ -17,10 +17,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- Action input `cache` (default `true`) reuses a tool-cached binary across steps
-  and jobs on a self-hosted runner; set it to `false` to force a fresh download.
-- Action output `cache-hit`, `true` when the binary was reused from the tool
-  cache rather than downloaded.
+- Action outputs `runner-bin` and `run-bin` (full paths to each installed
+  binary).
 
 ### Changed
 
@@ -29,9 +27,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   it, instead of shelling out to `npm install`. This skips the node startup and
   dependency-tree resolution that dominated the old install, cutting a cold
   `latest` install from roughly 8s to under 1s on Linux and Windows hosted
-  runners. The `sha512` integrity npm publishes for the tarball is now verified
-  before extraction, and a cached exact `X.Y.Z` pin resolves with no network
-  call.
+  runners. The `sha512` integrity npm publishes for the tarball is verified
+  before extraction, and network fetches time out at 3s and retry twice.
 
 ## [0.23.0] - 2026-07-23
 

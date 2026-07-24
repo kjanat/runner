@@ -246,23 +246,22 @@ noisy task can be pinned quiet without a global flag.
 
 The action resolves the platform's `@runner-run/*` package, downloads its
 tarball from the npm registry, verifies the `sha512` integrity npm publishes for
-it, and extracts the `runner` / `run` binaries into the tool cache. Fetching the
-tarball directly avoids the node startup and dependency-tree resolution of
-`npm install`. The install dir is added to `PATH` and the binary is smoke-tested
+it, and extracts the `runner` / `run` binaries. Fetching the tarball directly
+avoids the node startup and dependency-tree resolution of `npm install`, and the
+sub-second download beats any cross-job cache restore, so the action always
+fetches fresh. The install dir is added to `PATH` and the binary is smoke-tested
 with `runner --version`.
 
 | I/O    | name         | description                                                                    |
 | ------ | ------------ | ------------------------------------------------------------------------------ |
 | Input  | `version`    | Version to install; defaults to `latest`; accepts exact pins and `v?` prefixes |
-| Input  | `cache`      | Reuse a matching binary from the tool cache; `false` forces a download         |
 | Output | `version`    | Concrete version reported by the installed `runner --version` smoke test       |
 | Output | `bin-dir`    | Directory holding the `runner` / `run` binaries; added to `PATH`               |
 | Output | `runner-bin` | Full path to the `runner` binary                                               |
 | Output | `run-bin`    | Full path to the `run` binary                                                  |
-| Output | `cache-hit`  | `true` when the binary was reused from the tool cache                          |
 
-A cached exact `X.Y.Z` pin resolves without any network call. Exact pins are
-checked against the executed CLI version; a mismatch fails the action.
+Network fetches retry twice on failure or stall. Exact `X.Y.Z` pins are checked
+against the executed CLI version; a mismatch fails the action.
 
 ---
 

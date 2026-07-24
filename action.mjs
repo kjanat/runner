@@ -1,12 +1,14 @@
 // @ts-check
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
 import { join } from "node:path";
 import { arch, env, exit, platform, stdout } from "node:process";
 
 const REGISTRY = env.RUNNER_NPM_REGISTRY || "https://registry.npmjs.org";
+const FETCH_TIMEOUT_MS = 3000;
+const RETRY_BACKOFFS_MS = [250, 750];
 
 /**
  * @param {"GITHUB_PATH" | "GITHUB_OUTPUT"} name
@@ -183,7 +185,7 @@ function compareVersions(a, b) {
  * @returns {Promise<unknown>}
  */
 async function getJson(url) {
-	const res = await fetch(url);
+	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 	if (!res.ok) throw new Error(`GET ${url} responded ${res.status}`);
 	return res.json();
 }
@@ -197,12 +199,12 @@ async function getJson(url) {
 async function resolveDist(pkgName, spec) {
 	if (spec === "latest" || isExactPin(spec)) {
 		const manifest = /** @type {{ version: string, dist: { tarball: string, integrity?: string } }} */ (
-			await withRetry(() => getJson(`${REGISTRY}/${pkgName}/${encodeURIComponent(spec)}`), [1000, 3000])
+			await withRetry(() => getJson(`${REGISTRY}/${pkgName}/${encodeURIComponent(spec)}`), RETRY_BACKOFFS_MS)
 		);
 		return { version: manifest.version, tarball: manifest.dist.tarball, integrity: manifest.dist.integrity };
 	}
 	const doc = /** @type {{ versions: Record<string, { dist: { tarball: string, integrity?: string } }> }} */ (
-		await withRetry(() => getJson(`${REGISTRY}/${pkgName}`), [1000, 3000])
+		await withRetry(() => getJson(`${REGISTRY}/${pkgName}`), RETRY_BACKOFFS_MS)
 	);
 	const prefix = `${spec}.`;
 	const matches = Object.keys(doc.versions ?? {}).filter((v) => v === spec || v.startsWith(prefix));
@@ -242,10 +244,10 @@ async function downloadExtract(tarball, integrity, label, binDir) {
 	startGroup(`download ${tarball}`);
 	try {
 		const buf = await withRetry(async () => {
-			const res = await fetch(tarball);
+			const res = await fetch(tarball, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
 			if (!res.ok) throw new Error(`GET ${tarball} responded ${res.status}`);
 			return Buffer.from(await res.arrayBuffer());
-		}, [1000, 3000]);
+		}, RETRY_BACKOFFS_MS);
 		verifyIntegrity(buf, integrity, label);
 		mkdirSync(binDir, { recursive: true });
 		const tgz = join(binDir, ".pkg.tgz");
@@ -283,11 +285,10 @@ function toolCacheRoot() {
 
 /**
  * @param {string} binDir
- * @param {boolean} cacheHit
  * @param {string} label
  * @param {string} spec
  */
-function finish(binDir, cacheHit, label, spec) {
+function finish(binDir, label, spec) {
 	const verified = verifyVersion(binDir);
 	if (isExactPin(spec) && verified !== spec) {
 		throw new Error(`requested ${label}@${spec} but runner --version reported ${verified}`);
@@ -300,12 +301,10 @@ function finish(binDir, cacheHit, label, spec) {
 	console.log(`bin-dir: ${binDir}`);
 	console.log(`runner-bin: ${runnerBin}`);
 	console.log(`run-bin: ${runBin}`);
-	console.log(`cache-hit: ${cacheHit}`);
 	setOutput("version", verified);
 	setOutput("bin-dir", binDir);
 	setOutput("runner-bin", runnerBin);
 	setOutput("run-bin", runBin);
-	setOutput("cache-hit", String(cacheHit));
 }
 
 async function main() {
@@ -313,30 +312,11 @@ async function main() {
 	const target = resolvePlatformTarget();
 	if (!target) throw new Error(`no prebuilt runner binary for ${platform}/${arch}`);
 	const label = `${target.scope}/${target.pkg}`;
-	const cache = (env.INPUT_CACHE ?? "true") !== "false";
-	const exe = platform === "win32" ? "runner.exe" : "runner";
 	const root = toolCacheRoot();
-
-	// Exact pin already in the tool cache: skip the registry entirely.
-	if (cache && isExactPin(spec)) {
-		const binDir = join(root, "runner-cli", spec, target.pkg);
-		if (existsSync(join(binDir, exe))) {
-			console.log(`cache hit: ${label}@${spec}`);
-			finish(binDir, true, label, spec);
-			return;
-		}
-	}
-
 	const dist = await resolveDist(label, spec);
 	const binDir = join(root, "runner-cli", dist.version, target.pkg);
-	let cacheHit = false;
-	if (cache && existsSync(join(binDir, exe))) {
-		console.log(`cache hit: ${label}@${dist.version}`);
-		cacheHit = true;
-	} else {
-		await downloadExtract(dist.tarball, dist.integrity, `${label}@${dist.version}`, binDir);
-	}
-	finish(binDir, cacheHit, label, spec);
+	await downloadExtract(dist.tarball, dist.integrity, `${label}@${dist.version}`, binDir);
+	finish(binDir, label, spec);
 }
 
 try {
