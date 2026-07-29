@@ -8,6 +8,7 @@ import { arch, env, exit, platform, stdout } from "node:process";
 
 const REGISTRY = env.RUNNER_NPM_REGISTRY || "https://registry.npmjs.org";
 const FETCH_TIMEOUT_MS = 3000;
+const DOWNLOAD_TIMEOUT_MS = 15000;
 const RETRY_BACKOFFS_MS = [250, 750];
 
 /**
@@ -81,14 +82,14 @@ function run(file, args, stdio) {
 
 /**
  * @template T
- * @param {() => Promise<T>} fn
+ * @param {(attempt: number) => Promise<T>} fn
  * @param {number[]} backoffsMs
  * @returns {Promise<T>}
  */
 async function withRetry(fn, backoffsMs) {
 	for (let attempt = 0;; attempt++) {
 		try {
-			return await fn();
+			return await fn(attempt);
 		} catch (err) {
 			if (attempt >= backoffsMs.length) throw err;
 			const wait = backoffsMs[attempt];
@@ -182,10 +183,11 @@ function compareVersions(a, b) {
 
 /**
  * @param {string} url
+ * @param {number} timeoutMs
  * @returns {Promise<unknown>}
  */
-async function getJson(url) {
-	const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+async function getJson(url, timeoutMs) {
+	const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
 	if (!res.ok) throw new Error(`GET ${url} responded ${res.status}`);
 	return res.json();
 }
@@ -199,12 +201,18 @@ async function getJson(url) {
 async function resolveDist(pkgName, spec) {
 	if (spec === "latest" || isExactPin(spec)) {
 		const manifest = /** @type {{ version: string, dist: { tarball: string, integrity?: string } }} */ (
-			await withRetry(() => getJson(`${REGISTRY}/${pkgName}/${encodeURIComponent(spec)}`), RETRY_BACKOFFS_MS)
+			await withRetry(
+				(attempt) => getJson(`${REGISTRY}/${pkgName}/${encodeURIComponent(spec)}`, FETCH_TIMEOUT_MS * 2 ** attempt),
+				RETRY_BACKOFFS_MS,
+			)
 		);
 		return { version: manifest.version, tarball: manifest.dist.tarball, integrity: manifest.dist.integrity };
 	}
 	const doc = /** @type {{ versions: Record<string, { dist: { tarball: string, integrity?: string } }> }} */ (
-		await withRetry(() => getJson(`${REGISTRY}/${pkgName}`), RETRY_BACKOFFS_MS)
+		await withRetry(
+			(attempt) => getJson(`${REGISTRY}/${pkgName}`, FETCH_TIMEOUT_MS * 2 ** attempt),
+			RETRY_BACKOFFS_MS,
+		)
 	);
 	const prefix = `${spec}.`;
 	const matches = Object.keys(doc.versions ?? {}).filter((v) => v === spec || v.startsWith(prefix));
@@ -243,8 +251,8 @@ function verifyIntegrity(buf, integrity, label) {
 async function downloadExtract(tarball, integrity, label, binDir) {
 	startGroup(`download ${tarball}`);
 	try {
-		const buf = await withRetry(async () => {
-			const res = await fetch(tarball, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+		const buf = await withRetry(async (attempt) => {
+			const res = await fetch(tarball, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS * 2 ** attempt) });
 			if (!res.ok) throw new Error(`GET ${tarball} responded ${res.status}`);
 			return Buffer.from(await res.arrayBuffer());
 		}, RETRY_BACKOFFS_MS);
