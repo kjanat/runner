@@ -322,6 +322,9 @@ async function main() {
 	const label = `${target.scope}/${target.pkg}`;
 	const root = toolCacheRoot();
 	const dist = await resolveDist(label, spec);
+	if (!isExactPin(dist.version)) {
+		throw new Error(`registry returned non-semver version '${dist.version}' for ${label}`);
+	}
 	const binDir = join(root, "runner-cli", dist.version, target.pkg);
 	await downloadExtract(dist.tarball, dist.integrity, `${label}@${dist.version}`, binDir);
 	finish(binDir, label, spec);
