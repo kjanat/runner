@@ -165,14 +165,14 @@ Useful consequences:
 
 ## Supported npm Targets
 
-| OS      | Architectures                                |
-| ------- | -------------------------------------------- |
-| Linux   | x64/arm64 glibc, x64/arm64 musl, armv7 glibc |
-| macOS   | x64, arm64                                   |
-| Windows | x64, arm64, ia32                             |
-| Android | arm64 best-effort (Termux, >= 0.24.0)        |
-| FreeBSD | x64, arm64 experimental                      |
-| NetBSD  | x64 experimental                             |
+| OS      | Architectures                                                |
+| ------- | ------------------------------------------------------------ |
+| Linux   | x64/arm64 glibc, x64/arm64 musl, armv7 glibc                 |
+| macOS   | x64, arm64                                                   |
+| Windows | x64, arm64, ia32                                             |
+| Android | arm64 best-effort (Termux; runner release v0.24.0 and later) |
+| FreeBSD | x64, arm64 experimental                                      |
+| NetBSD  | x64 experimental                                             |
 
 If your platform is not listed, use Cargo:
 
