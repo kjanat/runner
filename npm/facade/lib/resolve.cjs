@@ -84,7 +84,10 @@ ${indent}- reinstall without: ${cyan("--no-optional")} / ${cyan("--omit=optional
 ${indent}- bun + ${cyan("minimumReleaseAge")}: add the ${cyan("@runner-run/*")} platform packages (not just ${
 		cyan(pkgName)
 	}) to ${cyan("minimumReleaseAgeExcludes")}; a fresh release is otherwise age-gated
-${indent}- install from source: ${cyan(`cargo install --git=${repo}/ runner`)}
+${indent}- prebuilt via cargo: ${cyan("cargo binstall runner-run")} (GitHub release binaries)
+${indent}- build via cargo: ${cyan("cargo install runner-run --locked")} (crates.io) or ${
+		cyan(`cargo install --git=${repo}/ runner`)
+	}
 ${indent}- file an issue if your platform is unsupported: ${link(`${repo}/issues`)}${detail}
 `;
 
