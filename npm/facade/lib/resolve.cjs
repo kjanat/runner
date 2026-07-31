@@ -20,9 +20,7 @@ const { red, yellow, cyan, link, space } = (() => {
 	} catch {
 		/** @param {unknown} value */
 		const plain = (value) => String(value);
-		/** @param {number} [count] */
-		const spaces = (count = 1) => " ".repeat(count);
-		return { red: plain, yellow: plain, cyan: plain, link: plain, space: spaces };
+		return { red: plain, yellow: plain, cyan: plain, link: plain, space: () => "  " };
 	}
 })();
 
