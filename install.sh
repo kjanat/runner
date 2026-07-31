@@ -119,7 +119,8 @@ is_android() {
 }
 
 # version_ge A B: "yes" when dotted version A >= B (numeric per component;
-# a leading "v" and any pre-release suffix on a component are ignored).
+# a leading "v" is ignored). On equal numeric components a pre-release
+# (X.Y.Z-pre) sorts below the stable release it points at.
 version_ge() {
 	a="${1#v}" b="${2#v}" i=1
 	while [ "${i}" -le 3 ]; do
@@ -136,7 +137,15 @@ version_ge() {
 		fi
 		i=$((i + 1))
 	done
-	printf 'yes\n'
+	case "${a}" in
+		*-*)
+			case "${b}" in
+				*-*) printf 'yes\n' ;;
+				*) printf 'no\n' ;;
+			esac
+			;;
+		*) printf 'yes\n' ;;
+	esac
 }
 
 # Prints "yes" only when the given path is one of OUR binaries, identified by
