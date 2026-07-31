@@ -10,9 +10,10 @@ const repo = "https://github.com/kjanat/runner";
 const subPackages = Object.keys(optionalDependencies || {});
 
 // ansispeck handles color and OSC 8 hyperlink capability detection (NO_COLOR,
-// TTY, terminal support). It is ESM-only and require(esm) needs Node >= 20.19;
-// the facade declares no engines floor, so on runtimes that can't load it (or
-// installs that skipped it) fall back to plain text.
+// TTY, terminal support). It is ESM-only and require(esm) needs Node >= 20.19,
+// while this package's engines contract is node >= 18: on Node 18 and Node 20
+// before 20.19 (or when the install skipped the dependency) the require throws
+// and diagnostics degrade to plain text without colors or OSC 8 links.
 const { red, yellow, cyan, link, space } = (() => {
 	try {
 		return require("ansispeck");
