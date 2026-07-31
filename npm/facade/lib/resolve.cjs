@@ -13,13 +13,15 @@ const subPackages = Object.keys(optionalDependencies || {});
 // TTY, terminal support). It is ESM-only and require(esm) needs Node >= 20.19;
 // the facade declares no engines floor, so on runtimes that can't load it (or
 // installs that skipped it) fall back to plain text.
-const { red, yellow, cyan, link } = (() => {
+const { red, yellow, cyan, link, space } = (() => {
 	try {
 		return require("ansispeck");
 	} catch {
 		/** @param {unknown} value */
 		const plain = (value) => String(value);
-		return { red: plain, yellow: plain, cyan: plain, link: plain };
+		/** @param {number} [count] */
+		const spaces = (count = 1) => " ".repeat(count);
+		return { red: plain, yellow: plain, cyan: plain, link: plain, space: spaces };
 	}
 })();
 
@@ -71,7 +73,7 @@ function resolveBinary(name) {
 		? "\n\nDetails of attempted resolutions:\n  - " + errors.join("\n  - ")
 		: "";
 
-	const indent = "  ";
+	const indent = space(2);
 
 	const errorText = `${red(pkgName)}: no prebuilt binary found for ${yellow(`${platform}-${arch}`)}.
 
