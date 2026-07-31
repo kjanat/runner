@@ -186,6 +186,38 @@ jobs:
           include: README.md,LICENSE
           locked: true
 
+      # Android's linker only executes ET_DYN with /system/bin/linker64 as
+      # interpreter; guard the artifact against regressing into something
+      # Termux can't run.
+      - name: assert Android binaries are bionic-loadable
+        if: matrix.target == 'aarch64-linux-android'
+        shell: bash
+        env:
+          BIN_DIR: target/aarch64-linux-android/release
+        run: |
+          set -euo pipefail
+
+          for bin in runner run; do
+            path="${BIN_DIR}/${bin}"
+
+            test -x "${path}"
+
+            type="$(
+              readelf -hW "${path}" |
+                awk '$1 == "Type:" { print $2; exit }'
+            )"
+            test "${type}" = DYN || {
+              echo "::error file=${path}::expected ELF ET_DYN, got ${type:-unknown}"
+              exit 1
+            }
+
+            readelf -lW "${path}" |
+              grep -Fq '[Requesting program interpreter: /system/bin/linker64]' || {
+                echo "::error file=${path}::missing Android /system/bin/linker64 interpreter"
+                exit 1
+              }
+          done
+
       # Tier-3: build/archive/upload manually since upload-rust-binary-action
       # can't inject `-Z build-std`.
       - name: build (cargo + -Z build-std)

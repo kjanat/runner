@@ -45,6 +45,15 @@
 			"tier": 1
 		},
 		{
+			"pkg": "android-arm64",
+			"rust": "aarch64-linux-android",
+			"os": ["android"],
+			"cpu": ["arm64"],
+			"runner": "ubuntu-latest",
+			"build": "cross",
+			"tier": 2
+		},
+		{
 			"pkg": "linux-armv7-gnueabihf",
 			"rust": "armv7-unknown-linux-gnueabihf",
 			"os": ["linux"],
