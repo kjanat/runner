@@ -47,5 +47,8 @@
 		"README.md",
 		"LICENSE"
 	],
+	"dependencies": {
+		"ansispeck": "^0.4.1"
+	},
 	"optionalDependencies": {}
 }

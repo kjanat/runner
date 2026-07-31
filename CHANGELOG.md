@@ -22,10 +22,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Best-effort Android/Termux support (aarch64): a native
   `aarch64-linux-android` release target built via `cross`, a matching
   `@runner-run/android-arm64` npm package, and installer routing that selects
-  the Android asset on Termux. Earlier releases shipped only non-PIE musl
-  binaries there, which Android's loader rejects with `unexpected e_type: 2`;
-  the release job now asserts the Android binaries are `ET_DYN` with
-  `/system/bin/linker64` as interpreter.
+  the Android asset on Termux. Earlier releases lack that asset, and their
+  aarch64 musl binaries fail on Android's loader with `unexpected e_type: 2`
+  (reproduced on v0.23.0); the release job now asserts the Android binaries
+  are `ET_DYN` with `/system/bin/linker64` as interpreter.
 
 ### Changed
 
