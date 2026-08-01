@@ -179,6 +179,10 @@ sh install.sh 0.12.2
 sh install.sh v0.12.2
 ```
 
+The installer also works on Termux/Android (aarch64, best-effort) from runner
+release v0.24.0, where it selects a native `aarch64-linux-android` binary.
+Earlier releases lack that asset, so the installer refuses them on Android.
+
 ---
 
 </details>

@@ -136,6 +136,7 @@ jobs:
           DIST_TAG: ${{ needs.setup.outputs.dist-tag }}
           DRY_RUN: ${{ needs.setup.outputs.dry-run }}
           ONLY_PACKAGE: ${{ matrix.pkg }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash .github/scripts/npm.sh publish
 
   # Facade last so its optionalDependencies resolve on install.

@@ -9,12 +9,20 @@ const { existsSync } = require("node:fs");
 const repo = "https://github.com/kjanat/runner";
 const subPackages = Object.keys(optionalDependencies || {});
 
-/** Formats text as a clickable hyperlink in supported terminals using OSC 8 escape sequences.
- * @param {string} url - The URL that the hyperlink points to.
- * @param {string} text - The display text for the hyperlink. Defaults to the URL if not provided.
- * @returns {string} The formatted string with OSC 8 escape sequences.
- */
-const osc8 = (url, text = url) => `\u001B]8;;${url}\u0007${text}\u001B]8;;\u0007`;
+// ansispeck handles color and OSC 8 hyperlink capability detection (NO_COLOR,
+// TTY, terminal support). It is ESM-only and require(esm) needs Node >= 20.19,
+// while this package's engines contract is node >= 18: on Node 18 and Node 20
+// before 20.19 (or when the install skipped the dependency) the require throws
+// and diagnostics degrade to plain text without colors or OSC 8 links.
+const { red, yellow, cyan, link, space } = (() => {
+	try {
+		return require("ansispeck");
+	} catch {
+		/** @param {unknown} value */
+		const plain = (value) => String(value);
+		return { red: plain, yellow: plain, cyan: plain, link: plain, space: () => "  " };
+	}
+})();
 
 /**
  * Locate the prebuilt executable matching the current platform and architecture.
@@ -28,13 +36,21 @@ const osc8 = (url, text = url) => `\u001B]8;;${url}\u0007${text}\u001B]8;;\u0007
  */
 function resolveBinary(name) {
 	const exe = platform === "win32" ? `${name}.exe` : name;
+	const missing = [];
 	const errors = [];
 	for (const subPkg of subPackages) {
 		let pkgJsonPath;
 		try {
 			pkgJsonPath = require.resolve(`${subPkg}/package.json`);
 		} catch (err) {
-			errors.push(`${subPkg}: ${err instanceof Error ? err.message : String(err)}`);
+			// MODULE_NOT_FOUND is the expected miss for every platform package
+			// npm skipped; a require stack per package is pure noise. Only an
+			// unexpected error deserves its message, and only the first line.
+			if (err && err.code === "MODULE_NOT_FOUND") {
+				missing.push(subPkg);
+			} else {
+				errors.push(`${subPkg}: ${String(err instanceof Error ? err.message : err).split("\n")[0]}`);
+			}
 			continue;
 		}
 		const binPath = join(dirname(pkgJsonPath), "bin", exe);
@@ -49,23 +65,28 @@ function resolveBinary(name) {
 		return binPath;
 	}
 
+	if (missing.length > 0) {
+		errors.push(`not installed (${missing.length}): ${missing.join(", ")}`);
+	}
 	const detail = errors.length > 0
 		? "\n\nDetails of attempted resolutions:\n  - " + errors.join("\n  - ")
 		: "";
 
-	const [indent, blueText, redText, yellowText, reset] = ["  ", "\x1b[36m", "\x1b[31m", "\x1b[33m", "\x1b[0m"];
+	const indent = space(2);
 
-	const errorText =
-		`${redText}${pkgName}${reset}: no prebuilt binary found for ${yellowText}${platform}-${arch}${reset}.
+	const errorText = `${red(pkgName)}: no prebuilt binary found for ${yellow(`${platform}-${arch}`)}.
 
-This usually means your package manager skipped ${blueText}optionalDependencies${reset}
-(common with ${blueText}--no-optional${reset}, ${blueText}--omit=optional${reset}, or some Docker/CI setups).
+This usually means your package manager skipped ${cyan("optionalDependencies")}
+(common with ${cyan("--no-optional")}, ${cyan("--omit=optional")}, or some Docker/CI setups).
 
 Workarounds:
-${indent}- reinstall without: ${blueText}--no-optional${reset} / ${blueText}--omit=optional${reset}
-${indent}- bun + ${blueText}minimumReleaseAge${reset}: add the ${blueText}@runner-run/*${reset} platform packages (not just ${blueText}${pkgName}${reset}) to ${blueText}minimumReleaseAgeExcludes${reset}; a fresh release is otherwise age-gated
-${indent}- install from source: ${blueText}cargo install --git=${repo}/ runner${reset}
-${indent}- file an issue if your platform is unsupported: ${osc8(`${repo}/issues`)}${detail}
+${indent}- reinstall without: ${cyan("--no-optional")} / ${cyan("--omit=optional")}
+${indent}- bun + ${cyan("minimumReleaseAge")}: add the ${cyan("@runner-run/*")} platform packages (not just ${
+		cyan(pkgName)
+	}) to ${cyan("minimumReleaseAgeExcludes")}; a fresh release is otherwise age-gated
+${indent}- prebuilt release binary: ${cyan("cargo binstall runner-run")}
+${indent}- build from source: ${cyan("cargo install runner-run --locked")}
+${indent}- file an issue if your platform is unsupported: ${link(`${repo}/issues`)}${detail}
 `;
 
 	console.error(errorText);

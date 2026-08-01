@@ -81,6 +81,7 @@
             "type": "string",
             "enum": [
               "aix",
+              "android",
               "darwin",
               "freebsd",
               "linux",

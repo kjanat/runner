@@ -55,8 +55,26 @@ resolve_latest_version() {
 	printf '%s\n' "${version}"
 }
 
+# First release that ships the aarch64-linux-android asset. Older releases
+# only have ET_EXEC musl binaries, which Android's bionic loader rejects
+# with "unexpected e_type: 2".
+ANDROID_MIN_VERSION="0.24.0"
+
+# $1: "yes" when running on Android/Termux (see is_android). Android needs
+# the bionic PIE binary; the non-PIE static musl binaries don't load there.
 resolve_target() {
 	arch="$(uname -m)"
+
+	if [ "${1}" = yes ]; then
+		case "${arch}" in
+			aarch64 | arm64) printf 'aarch64-linux-android\n' ;;
+			*)
+				printf 'error: unsupported architecture on Android: %s\n' "${arch}" >&2
+				exit 1
+				;;
+		esac
+		return
+	fi
 
 	case "${arch}" in
 		x86_64) printf 'x86_64-unknown-linux-musl\n' ;;
@@ -76,6 +94,57 @@ dir_on_path() {
 	case ":${PATH:-}:" in
 		*:"$1":*) printf 'yes\n' ;;
 		*) printf 'no\n' ;;
+	esac
+}
+
+# Kernel/userspace signal first (`uname -o` = Android), then Termux-specific
+# fallbacks. A bare ANDROID_ROOT is deliberately not enough: Linux dev
+# machines carry Android SDK env vars, so it only counts alongside the real
+# bionic linker path.
+is_android() {
+	case "$(uname -o 2>/dev/null || true)" in
+		Android)
+			printf 'yes\n'
+			;;
+		*)
+			if [ -n "${TERMUX_VERSION:-}" ] \
+				|| [ "${PREFIX:-}" = "/data/data/com.termux/files/usr" ] \
+				|| { [ "${ANDROID_ROOT:-}" = "/system" ] && [ -x /system/bin/linker64 ]; }; then
+				printf 'yes\n'
+			else
+				printf 'no\n'
+			fi
+			;;
+	esac
+}
+
+# version_ge A B: "yes" when dotted version A >= B (numeric per component;
+# a leading "v" is ignored). On equal numeric components a pre-release
+# (X.Y.Z-pre) sorts below the stable release it points at.
+version_ge() {
+	a="${1#v}" b="${2#v}" i=1
+	while [ "${i}" -le 3 ]; do
+		ai="$(printf '%s\n' "${a}" | cut -d. -f"${i}")"
+		bi="$(printf '%s\n' "${b}" | cut -d. -f"${i}")"
+		ai="${ai%%[!0-9]*}" bi="${bi%%[!0-9]*}"
+		if [ "${ai:-0}" -gt "${bi:-0}" ]; then
+			printf 'yes\n'
+			return
+		fi
+		if [ "${ai:-0}" -lt "${bi:-0}" ]; then
+			printf 'no\n'
+			return
+		fi
+		i=$((i + 1))
+	done
+	case "${a}" in
+		*-*)
+			case "${b}" in
+				*-*) printf 'yes\n' ;;
+				*) printf 'no\n' ;;
+			esac
+			;;
+		*) printf 'yes\n' ;;
 	esac
 }
 
@@ -177,7 +246,18 @@ main() {
 		*) version="v${version}" ;;
 	esac
 
-	target="$(resolve_target)"
+	on_android="$(is_android)"
+	if [ "${on_android}" = yes ]; then
+		android_ok="$(version_ge "${version}" "v${ANDROID_MIN_VERSION}")"
+		if [ "${android_ok}" = no ]; then
+			printf 'error: %s predates Android/Termux support\n' "${version}" >&2
+			printf 'error: Android needs the aarch64-linux-android asset first shipped in v%s\n' "${ANDROID_MIN_VERSION}" >&2
+			printf 'hint: rerun without a version pin, or: cargo install runner-run --locked\n' >&2
+			exit 1
+		fi
+	fi
+
+	target="$(resolve_target "${on_android}")"
 
 	asset="runner-${version}-${target}.tar.gz"
 	checksum_asset="runner-${version}-${target}.sha256"
@@ -214,11 +294,31 @@ main() {
 	expected_runner="${INSTALL_DIR}/runner"
 	resolved_runner="$(command -v runner || true)"
 
-	if installed_version="$("${expected_runner}" -V)"; then
-		print_item "version: ${installed_version}"
-	else
-		print_item "warning: failed to execute ${expected_runner} -V"
-	fi
+	# The version banner is the success criterion, not the exit status: on
+	# Android a loader failure surfaces as garbage on stderr with an
+	# unreliable exit code, so match the banner like is_our_runner does.
+	installed_status=0
+	installed_output="$("${expected_runner}" -V 2>&1)" || installed_status=$?
+
+	case "${installed_output}" in
+		"runner "[0-9]*.[0-9]*.[0-9]*)
+			print_item "version: ${installed_output}"
+			;;
+		*)
+			if [ "${on_android}" = yes ]; then
+				printf 'error: installed runner could not execute on Android (exit %s)\n' "${installed_status}" >&2
+				printf '  %s\n' "${installed_output:-no output}" >&2
+				printf 'error: this should not happen on release >= v%s; please report it:\n' "${ANDROID_MIN_VERSION}" >&2
+				printf 'error:   https://github.com/kjanat/runner/issues\n' >&2
+				exit 1
+			fi
+
+			print_item "warning: failed to execute ${expected_runner} -V"
+			if [ -n "${installed_output}" ]; then
+				print_item "output: ${installed_output}"
+			fi
+			;;
+	esac
 
 	# Man pages from the release archive, into the XDG user man path. Verified like the binaries above.
 	# Best-effort: a read-only $HOME, a missing asset, or a checksum mismatch must not fail the install.
