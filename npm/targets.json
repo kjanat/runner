@@ -50,7 +50,7 @@
 			"os": ["android"],
 			"cpu": ["arm64"],
 			"runner": "ubuntu-latest",
-			"build": "cross",
+			"build": "cargo-cross-toolchain",
 			"tier": 2
 		},
 		{

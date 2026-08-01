@@ -15,12 +15,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Update the `[Unreleased]` compare link to the new tag.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
+## [0.24.0] - 2026-08-01
+
 ### Added
 
 - Action outputs `runner-bin` and `run-bin` (full paths to each installed
   binary).
 - Best-effort Android/Termux support (aarch64): a native
-  `aarch64-linux-android` release target built via `cross`, a matching
+  `aarch64-linux-android` release target cross-compiled with the Android NDK
+  via `setup-cross-toolchain-action`, a matching
   `@runner-run/android-arm64` npm package, and installer routing that selects
   the Android asset on Termux. Earlier releases lack that asset, and their
   aarch64 musl binaries fail on Android's loader with `unexpected e_type: 2`
@@ -1963,7 +1966,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/kjanat/runner/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/kjanat/runner/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/kjanat/runner/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/kjanat/runner/compare/v0.20.0...v0.21.0
