@@ -524,14 +524,22 @@ fn kill_grouped_sibling(
     flush_grouped_task(task, style, in_gha, colorize, footer.as_deref());
 }
 
-/// The exit code of a just-killed sibling that beat the SIGKILL to a natural
+/// The exit code of a just-killed sibling that beat the SIGKILL to its own
 /// exit, or `None` when the kill (or a `wait` failure) took it down. On Unix
-/// a signal death has no exit code, which separates the two exactly; Windows
-/// `TerminateProcess` reports exit code 1, indistinguishable from a real
-/// failure, so only a clean exit counts as natural there.
+/// only a SIGKILL death reads as the kill; a crash under another signal
+/// keeps its 128+n code. Windows `TerminateProcess` reports exit code 1,
+/// indistinguishable from a real failure, so only a clean exit counts as
+/// natural there.
 #[cfg(unix)]
 fn natural_exit_code(status: std::process::ExitStatus) -> Option<i32> {
-    status.code()
+    use std::os::unix::process::ExitStatusExt as _;
+
+    const SIGKILL: i32 = 9;
+    match status.signal() {
+        Some(SIGKILL) => None,
+        Some(_) => Some(crate::cmd::exit_code(status)),
+        None => status.code(),
+    }
 }
 
 #[cfg(not(unix))]
