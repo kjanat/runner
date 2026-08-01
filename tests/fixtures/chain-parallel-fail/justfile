@@ -10,3 +10,6 @@ ok-two:
 
 daemon:
     @sh -c 'sleep 30 & exit 0'
+
+slow:
+    @sleep 5

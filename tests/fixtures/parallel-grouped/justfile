@@ -9,3 +9,9 @@ err:
 
 hold-open:
     @sh -c 'sleep 3 & echo "foreground-ran"'
+
+slow:
+    @sleep 5
+
+fail:
+    @exit 7

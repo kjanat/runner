@@ -508,6 +508,13 @@ pub(crate) fn task_timing_summary(elapsed: std::time::Duration, code: i32) -> St
     format!("finished in {} (exit {code})", format_duration(elapsed))
 }
 
+/// Counterpart of [`task_timing_summary`] for a sibling that got runner's
+/// SIGKILL under kill-on-fail, so its line never reads as the task's own
+/// failure.
+pub(crate) fn task_killed_summary(elapsed: std::time::Duration) -> String {
+    format!("killed after {} (sibling failed)", format_duration(elapsed))
+}
+
 /// Whether per-task chain timing is shown. Timing is diagnostic meta-output,
 /// so it follows the same mute switches as the dispatch arrow and warnings:
 /// `--quiet` / `RUNNER_QUIET` and `--no-warnings` / `RUNNER_NO_WARNINGS` each
@@ -535,6 +542,24 @@ pub(crate) fn emit_task_timing(
         "·".dimmed(),
         name.bold(),
         task_timing_summary(elapsed, code).dimmed(),
+    );
+}
+
+/// Counterpart of [`emit_task_timing`] for a sibling that got runner's
+/// SIGKILL under kill-on-fail.
+pub(crate) fn emit_task_killed(
+    overrides: &ResolutionOverrides,
+    name: &str,
+    elapsed: std::time::Duration,
+) {
+    if !timing_enabled(overrides) {
+        return;
+    }
+    eprintln!(
+        "{} {} {}",
+        "·".dimmed(),
+        name.bold(),
+        task_killed_summary(elapsed).dimmed(),
     );
 }
 
