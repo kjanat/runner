@@ -76,6 +76,8 @@ enum ItemStatus {
     },
     /// Never started: an earlier task failed and the policy is fail-fast.
     Skipped,
+    /// Got runner's own SIGKILL: a sibling failed under kill-on-fail.
+    Killed { elapsed: std::time::Duration },
 }
 
 fn run_sequential(
@@ -265,9 +267,13 @@ fn run_parallel_streaming(
                         let _ = child.kill();
                         // Wait so stdio drains fully; a killed sibling still
                         // reports timing for the work it managed before SIGKILL.
-                        if let Ok(status) = child.wait() {
-                            let code = crate::cmd::exit_code(status);
-                            record_finished(overrides, outcomes, name, started.elapsed(), code);
+                        // An exit that raced the kill stays a real result.
+                        let elapsed = started.elapsed();
+                        match child.wait().ok().and_then(natural_exit_code) {
+                            Some(code) => {
+                                record_finished(overrides, outcomes, name, elapsed, code);
+                            }
+                            None => record_killed(overrides, outcomes, name, elapsed),
                         }
                     } else {
                         next.push((name, started, child));
@@ -317,6 +323,21 @@ fn record_finished(
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Ran { code, elapsed },
+    });
+}
+
+/// Emit a killed streaming-chain sibling's timing line and record it for the
+/// end-of-chain summary, distinct from a real failure.
+fn record_killed(
+    overrides: &ResolutionOverrides,
+    outcomes: &mut Vec<ItemOutcome>,
+    name: String,
+    elapsed: std::time::Duration,
+) {
+    crate::cmd::emit_task_killed(overrides, &name, elapsed);
+    outcomes.push(ItemOutcome {
+        name,
+        status: ItemStatus::Killed { elapsed },
     });
 }
 
@@ -438,13 +459,7 @@ fn run_parallel_grouped(
                 }
                 Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
-                        let _ = t.child.kill();
-                        // A killed sibling still reports timing for the work it
-                        // completed before SIGKILL.
-                        let footer = t.child.wait().ok().and_then(|status| {
-                            record_grouped(overrides, outcomes, &t, crate::cmd::exit_code(status))
-                        });
-                        flush_grouped_task(t, style, in_gha, colorize, footer.as_deref());
+                        kill_grouped_sibling(overrides, outcomes, t, style, in_gha, colorize);
                     } else {
                         next.push(t);
                     }
@@ -486,6 +501,57 @@ fn record_grouped(
         status: ItemStatus::Ran { code, elapsed },
     });
     timing_footer(overrides, elapsed, code)
+}
+
+/// Kill a still-running grouped sibling after a chain failure, record it,
+/// and flush its block. A killed sibling still reports timing for the work
+/// it completed before SIGKILL; a clean exit that raced the kill stays a
+/// real result. Split out to keep the supervisor poll loop under the
+/// per-function line budget, like [`flush_grouped_task`].
+fn kill_grouped_sibling(
+    overrides: &ResolutionOverrides,
+    outcomes: &mut Vec<ItemOutcome>,
+    mut task: GroupedTask,
+    style: BlockStyle,
+    in_gha: bool,
+    colorize: bool,
+) {
+    let _ = task.child.kill();
+    let footer = match task.child.wait().ok().and_then(natural_exit_code) {
+        Some(code) => record_grouped(overrides, outcomes, &task, code),
+        None => record_grouped_killed(overrides, outcomes, &task),
+    };
+    flush_grouped_task(task, style, in_gha, colorize, footer.as_deref());
+}
+
+/// The exit code of a just-killed sibling that beat the SIGKILL to a natural
+/// exit, or `None` when the kill (or a `wait` failure) took it down. On Unix
+/// a signal death has no exit code, which separates the two exactly; Windows
+/// `TerminateProcess` reports exit code 1, indistinguishable from a real
+/// failure, so only a clean exit counts as natural there.
+#[cfg(unix)]
+fn natural_exit_code(status: std::process::ExitStatus) -> Option<i32> {
+    status.code()
+}
+
+#[cfg(not(unix))]
+fn natural_exit_code(status: std::process::ExitStatus) -> Option<i32> {
+    Some(crate::cmd::exit_code(status)).filter(|&code| code == 0)
+}
+
+/// Record a killed grouped sibling for the end-of-chain summary, distinct
+/// from a real failure, and return its block footer.
+fn record_grouped_killed(
+    overrides: &ResolutionOverrides,
+    outcomes: &mut Vec<ItemOutcome>,
+    task: &GroupedTask,
+) -> Option<String> {
+    let elapsed = task.started.elapsed();
+    outcomes.push(ItemOutcome {
+        name: task.name.clone(),
+        status: ItemStatus::Killed { elapsed },
+    });
+    crate::cmd::timing_enabled(overrides).then(|| crate::cmd::task_killed_summary(elapsed))
 }
 
 /// Flush a completed grouped task's block, moving its reader handles into
@@ -645,7 +711,8 @@ fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome],
     }
 }
 
-/// `3 tasks, 1 ok, 1 failed, 1 skipped`, with the zero buckets left out.
+/// `4 tasks, 1 ok, 1 failed, 1 killed, 1 skipped`, with the zero buckets
+/// left out.
 fn summary_counts(outcomes: &[ItemOutcome], failed: usize) -> String {
     use std::fmt::Write as _;
 
@@ -653,13 +720,20 @@ fn summary_counts(outcomes: &[ItemOutcome], failed: usize) -> String {
         .iter()
         .filter(|o| matches!(o.status, ItemStatus::Skipped))
         .count();
+    let killed = outcomes
+        .iter()
+        .filter(|o| matches!(o.status, ItemStatus::Killed { .. }))
+        .count();
     let mut counts = format!(
         "{} tasks, {} ok",
         outcomes.len(),
-        outcomes.len() - failed - skipped
+        outcomes.len() - failed - killed - skipped
     );
     if failed > 0 {
         let _ = write!(counts, ", {failed} failed");
+    }
+    if killed > 0 {
+        let _ = write!(counts, ", {killed} killed");
     }
     if skipped > 0 {
         let _ = write!(counts, ", {skipped} skipped");
@@ -685,6 +759,9 @@ impl ItemOutcome {
                 "✗".red(),
                 format!("{} (exit {code})", crate::cmd::format_duration(elapsed)),
             ),
+            ItemStatus::Killed { elapsed } => {
+                ("–".dimmed(), crate::cmd::task_killed_summary(elapsed))
+            }
             ItemStatus::Skipped => ("–".dimmed(), String::from("skipped")),
         };
         format!(

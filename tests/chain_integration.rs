@@ -1024,6 +1024,64 @@ fn a_failed_chain_closes_with_a_summary_naming_the_failing_task() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_kill_on_fail_chain_reports_killed_siblings_as_killed_not_failed() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = runner_command()
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-p", "-K", "slow", "fail-mid"])
+        .output()
+        .expect("runner binary spawns");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(7), "stderr: {stderr}");
+    assert!(
+        stderr.contains("summary: 2 tasks, 0 ok, 1 failed, 1 killed"),
+        "a runner-killed sibling is not a failure. stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("slow") && stderr.contains("killed after"),
+        "the killed task must say runner killed it. stderr: {stderr}",
+    );
+    assert!(
+        !stderr.contains("exit 137"),
+        "the SIGKILL runner delivered must not surface as an exit code. stderr: {stderr}",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_grouped_kill_on_fail_chain_reports_killed_siblings_as_killed() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let output = runner_command()
+        .arg("--dir")
+        .arg(fixture("parallel-grouped"))
+        .args(["run", "-p", "-K", "slow", "fail"])
+        .env_remove("GITHUB_ACTIONS")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(7), "stderr: {stderr}");
+    assert!(
+        stderr.contains("summary: 2 tasks, 0 ok, 1 failed, 1 killed"),
+        "stderr: {stderr}",
+    );
+    assert!(
+        stdout.contains("killed after"),
+        "the killed task's block footer must say runner killed it. stdout: {stdout}",
+    );
+}
+
 #[test]
 fn a_fail_fast_chain_reports_the_tasks_it_never_started() {
     if !just_available() {
