@@ -18,7 +18,6 @@ on:
 permissions: { contents: read }
 
 env:
-  RELEASE_TAG: ${{ inputs.tag }}
   DRY_RUN: ${{ inputs.dry-run || 'false' }}
 
 jobs:
