@@ -60,6 +60,7 @@ jobs:
 
       - id: meta
         uses: docker/metadata-action@v5
+        env: { DOCKER_METADATA_ANNOTATIONS_LEVELS: "index,manifest" }
         with:
           images: |
             docker.io/kjanat/runner
@@ -72,6 +73,7 @@ jobs:
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
           LABELS: ${{ steps.meta.outputs.labels }}
+          ANNOTATIONS: ${{ steps.meta.outputs.annotations }}
           PUSH: ${{ env.DRY_RUN != 'true' }}
         run: bash .github/scripts/docker.sh build
 

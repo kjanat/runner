@@ -48,8 +48,8 @@ cmd_prepare() {
 # Build (and optionally push) the image.
 #
 # Required env: TAGS (newline-separated image refs).
-# Optional env: LABELS (newline-separated), PUSH (true pushes), PLATFORMS
-# (comma-separated; empty builds for the host arch only).
+# Optional env: LABELS and ANNOTATIONS (newline-separated), PUSH (true pushes),
+# PLATFORMS (comma-separated; empty builds for the host arch only).
 #
 # Multi-platform builds need a container-driver builder; the default docker
 # driver rejects them. --load is the docker exporter and cannot take a manifest
@@ -73,6 +73,12 @@ cmd_build() {
 	while IFS= read -r label; do
 		[[ -n "${label}" ]] && args+=(--label "${label}")
 	done <<<"${LABELS:-}"
+
+	# GHCR reads the description off the index annotation, not the config label.
+	local annotation
+	while IFS= read -r annotation; do
+		[[ -n "${annotation}" ]] && args+=(--annotation "${annotation}")
+	done <<<"${ANNOTATIONS:-}"
 
 	if [[ "${PUSH:-false}" == "true" ]]; then
 		args+=(--push)
