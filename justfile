@@ -24,6 +24,12 @@ runner *args:
 ls:
     @just --list
 
+# Shell lint at the strictest level, matching CI. -o all enables the optional
+# checks; default severity misses SC231x entirely.
+[group('lint')]
+lint-sh:
+    shellcheck -x -o all .github/scripts/*.sh install.sh
+
 # Regenerate the committed JSON Schemas.
 # Drift guard: just gen-schema && git diff --exit-code schemas/
 [group('schema')]

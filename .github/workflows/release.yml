@@ -54,11 +54,12 @@ jobs:
       # php+composer already ship on the ubuntu-latest image; cargo from the
       # toolchain above.
       - uses: taiki-e/install-action@v2
-        with: { tool: "just,uv,bacon,tombi,dprint" }
+        with: { tool: "just,uv,bacon,tombi,dprint,shellcheck" }
       - run: printf 'MISE_TOML<<TOML\n%s\nTOML\n' "$(yq -o toml -p json <<<"$MISE" | dprint fmt --stdin toml)" | tee -a "${GITHUB_ENV}"
       - uses: jdx/mise-action@v4
         with: { mise_toml: "${{ env.MISE_TOML }}" }
       - run: dprint check
+      - run: just lint-sh
       - run: cargo lint
       - run: cargo test
 

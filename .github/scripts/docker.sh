@@ -114,10 +114,11 @@ cmd_verify() {
 			--format '{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{"\n"}}{{end}}'
 	)"
 
-	local platform wanted=() missing=()
-	while IFS= read -r platform; do
+	local platform raw=() wanted=() missing=()
+	IFS=',' read -r -a raw <<<"${platforms}"
+	for platform in "${raw[@]}"; do
 		[[ -n "${platform}" ]] && wanted+=("${platform}")
-	done < <(tr ',' '\n' <<<"${platforms}")
+	done
 
 	for platform in "${wanted[@]}"; do
 		grep -qxF "${platform}" <<<"${published}" || missing+=("${platform}")
