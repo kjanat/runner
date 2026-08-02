@@ -46,7 +46,7 @@ function resolveBinary(name) {
 			// MODULE_NOT_FOUND is the expected miss for every platform package
 			// npm skipped; a require stack per package is pure noise. Only an
 			// unexpected error deserves its message, and only the first line.
-			if (err && err.code === "MODULE_NOT_FOUND") {
+			if (typeof err === "object" && err !== null && "code" in err && err.code === "MODULE_NOT_FOUND") {
 				missing.push(subPkg);
 			} else {
 				errors.push(`${subPkg}: ${String(err instanceof Error ? err.message : err).split("\n")[0]}`);

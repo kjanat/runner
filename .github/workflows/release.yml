@@ -13,6 +13,8 @@
 #     ├─ call-npm-release ──→ npm-release.yml: setup (npm.sh smoke|derive)
 #     │                        → per-package publish matrix → facade (npm.sh publish)
 #     ├─ call-aur-release ──→ aur-release.yml: aur.sh prepare → AUR push
+#     ├─ call-docker-release → docker-release.yml: docker.sh prepare|build|verify
+#     │                        → Docker Hub + GHCR multi-arch manifest
 #     └─ call-crates-release → crates-release.yml: `man-pages` artifact → cargo publish
 ---
 name: release
@@ -302,7 +304,6 @@ jobs:
     permissions: { contents: read, id-token: write, actions: read }
     uses: ./.github/workflows/npm-release.yml
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
-    secrets: inherit
 
   call-aur-release:
     name: aur publish
@@ -311,7 +312,14 @@ jobs:
     permissions: { contents: read }
     uses: ./.github/workflows/aur-release.yml
     with: { tag: "${{ github.ref_name }}" }
-    secrets: inherit
+
+  call-docker-release:
+    name: docker publish
+    needs: [publish-release]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions: { contents: read, packages: write, actions: read }
+    uses: ./.github/workflows/docker-release.yml
+    with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
 
   call-crates-release:
     name: crates publish

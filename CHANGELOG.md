@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- Container images on GHCR (`ghcr.io/kjanat/runner`) and Docker Hub
+  (`kjanat/runner`), published per release for `linux/amd64` and `linux/arm64`.
+  The image is `scratch` holding only `/runner` and `/run`, so a build stage
+  pulls the binaries with `COPY --from=ghcr.io/kjanat/runner:<version> /run
+  /usr/local/bin/run` instead of downloading an installer on every cache bust
+  (https://github.com/kjanat/runner/issues/99). The binaries are musl-static,
+  so one tag serves Alpine and Debian stages alike.
+
 ### Fixed
 
 - `install.sh` now completes on Alpine and other busybox userlands. Checksum
