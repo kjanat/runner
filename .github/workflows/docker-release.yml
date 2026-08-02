@@ -1,6 +1,6 @@
 ---
 name: docker-release
-run-name: ${{ format('docker publish {0}', inputs.tag) }}
+run-name: ${{ format('docker {0} {1}', case(inputs.dry-run, 'dry-run', 'publish'), inputs.tag) }}
 
 on:
   workflow_call: { inputs: { tag: { required: true, type: string }, run-id: { required: true, type: string } } }
@@ -84,11 +84,15 @@ jobs:
         env: { TAGS: "${{ steps.meta.outputs.tags }}" }
         run: bash .github/scripts/docker.sh verify
 
+      - name: render the Docker Hub overview
+        env: { RELEASE_TAG: "${{ inputs.tag }}" }
+        run: bash .github/scripts/docker.sh readme
+
       - if: env.DRY_RUN != 'true'
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: kjanat/runner
-          readme-filepath: .github/docker/README.md
+          readme-filepath: .github/docker/README.rendered.md
           short-description: Universal project task runner. Tab-completes (almost) everything.

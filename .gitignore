@@ -3,6 +3,7 @@ dist/
 downloads/
 # Docker build context, staged from npm/dist.
 /.github/docker/context/
+/.github/docker/README.rendered.md
 # Generated man pages.
 /man/
 package-lock.json

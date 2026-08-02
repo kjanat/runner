@@ -5,6 +5,8 @@ set -euo pipefail
 
 readonly DOCKERFILE=.github/docker/Dockerfile
 readonly CONTEXT=.github/docker/context
+readonly README=.github/docker/README.md
+readonly README_RENDERED=.github/docker/README.rendered.md
 
 # npm package dir -> buildx TARGETARCH. musl-static serves Alpine and Debian
 # stages alike, so the gnu builds have no place in the image.
@@ -138,12 +140,35 @@ cmd_verify() {
 	done
 }
 
+# Substitute the release version into the Docker Hub overview.
+#
+# Required env: RELEASE_TAG.
+cmd_readme() {
+	: "${RELEASE_TAG:?RELEASE_TAG required}"
+
+	local version="${RELEASE_TAG#v}"
+	local minor="${version%.*}"
+
+	sed -e "s/{{version}}/${version}/g" -e "s/{{minor}}/${minor}/g" "${README}" >"${README_RENDERED}"
+
+	if grep -q '{{' "${README_RENDERED}"; then
+		echo "error: unsubstituted placeholder left in ${README_RENDERED}:" >&2
+		grep -n '{{' "${README_RENDERED}" >&2
+		exit 1
+	fi
+
+	group "rendered ${README_RENDERED}"
+	cat "${README_RENDERED}"
+	endgroup
+}
+
 case "${1-}" in
 	prepare) cmd_prepare ;;
 	build) cmd_build ;;
 	verify) cmd_verify ;;
+	readme) cmd_readme ;;
 	*)
-		echo "usage: ${0##*/} <prepare|build|verify>" >&2
+		echo "usage: ${0##*/} <prepare|build|verify|readme>" >&2
 		exit 2
 		;;
 esac

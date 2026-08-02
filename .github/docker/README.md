@@ -12,14 +12,14 @@ This image is a file carrier, not a service. Copy the binaries into a build
 stage:
 
 ```dockerfile
-COPY --from=kjanat/runner:0.24.0 /run /usr/local/bin/run
-COPY --from=kjanat/runner:0.24.0 /runner /usr/local/bin/runner
+COPY --from=kjanat/runner:{{version}} /run /usr/local/bin/run
+COPY --from=kjanat/runner:{{version}} /runner /usr/local/bin/runner
 ```
 
 Same image on GHCR, if you prefer to pull from there:
 
 ```dockerfile
-COPY --from=ghcr.io/kjanat/runner:0.24.0 /run /usr/local/bin/run
+COPY --from=ghcr.io/kjanat/runner:{{version}} /run /usr/local/bin/run
 ```
 
 The binaries are musl-static, so one tag serves Alpine and Debian stages alike.
@@ -28,8 +28,8 @@ Nothing else is required in the target stage.
 It also runs directly, though that is the secondary use:
 
 ```sh
-docker run --rm kjanat/runner:0.24.0 --version
-docker run --rm --entrypoint /run -v "$PWD:/w" -w /w kjanat/runner:0.24.0 build
+docker run --rm kjanat/runner:{{version}} --version
+docker run --rm --entrypoint /run -v "$PWD:/w" -w /w kjanat/runner:{{version}} build
 ```
 
 ## Why
@@ -53,7 +53,7 @@ artifact.
 
 ## Tags and platforms
 
-Semver tags track releases: `0.24.0`, `0.24`, and `latest`. Prereleases never
+Semver tags track releases: `{{version}}`, `{{minor}}`, and `latest`. Prereleases never
 take `latest`.
 
 Platforms: `linux/amd64`, `linux/arm64`.
