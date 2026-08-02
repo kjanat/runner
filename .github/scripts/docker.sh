@@ -50,7 +50,8 @@ cmd_prepare() {
 # (comma-separated; empty builds for the host arch only).
 #
 # Multi-platform builds need a container-driver builder; the default docker
-# driver rejects them. Not pushing implies --load, which is single-platform.
+# driver rejects them. --load is the docker exporter and cannot take a manifest
+# list, so a multi-platform build that is not pushing exports nothing.
 cmd_build() {
 	: "${TAGS:?TAGS required}"
 
@@ -73,6 +74,8 @@ cmd_build() {
 
 	if [[ "${PUSH:-false}" == "true" ]]; then
 		args+=(--push)
+	elif [[ "${platforms}" == *,* ]]; then
+		args+=(--output type=cacheonly)
 	else
 		args+=(--load)
 	fi
