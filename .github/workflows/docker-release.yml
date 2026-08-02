@@ -86,3 +86,12 @@ jobs:
         if: env.DRY_RUN != 'true'
         env: { TAGS: "${{ steps.meta.outputs.tags }}" }
         run: bash .github/scripts/docker.sh verify
+
+      - if: env.DRY_RUN != 'true'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: kjanat/runner
+          readme-filepath: .github/docker/README.md
+          short-description: runner and run binaries for COPY --from build stages
