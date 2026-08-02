@@ -304,7 +304,6 @@ jobs:
     permissions: { contents: read, id-token: write, actions: read }
     uses: ./.github/workflows/npm-release.yml
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
-    secrets: inherit
 
   call-aur-release:
     name: aur publish
@@ -313,7 +312,6 @@ jobs:
     permissions: { contents: read }
     uses: ./.github/workflows/aur-release.yml
     with: { tag: "${{ github.ref_name }}" }
-    secrets: inherit
 
   call-docker-release:
     name: docker publish
@@ -322,7 +320,6 @@ jobs:
     permissions: { contents: read, packages: write, actions: read }
     uses: ./.github/workflows/docker-release.yml
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
-    secrets: inherit
 
   call-crates-release:
     name: crates publish
