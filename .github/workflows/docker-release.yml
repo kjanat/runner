@@ -67,9 +67,6 @@ jobs:
           tags: |
             type=semver,pattern={{version}},value=${{ inputs.tag }}
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
-          labels: |
-            org.opencontainers.image.title=runner
-            org.opencontainers.image.description=runner and run binaries for COPY --from build stages
 
       - name: build and push
         env:
@@ -94,4 +91,4 @@ jobs:
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: kjanat/runner
           readme-filepath: .github/docker/README.md
-          short-description: runner and run binaries for COPY --from build stages
+          short-description: Universal project task runner. Tab-completes (almost) everything.
