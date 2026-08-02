@@ -52,6 +52,12 @@
 						<span class="cmd">cargo install {{cratesName}}</span>
 						<span class="toast" aria-hidden="true">copied</span>
 					</button>
+					<button class="copy" type="button" data-cmd="COPY --from={{ghcrImage}}:{{version}} /run /usr/local/bin/run">
+						<span class="label">docker · copy into a build stage</span>
+						<span class="cmd cmd-split"><span>COPY --from=</span><span class="cmd-shrink">{{ghcrImage}}:{{version}}</span><span>
+								/run /usr/local/bin/run</span></span>
+						<span class="toast" aria-hidden="true">copied</span>
+					</button>
 					<button class="copy" type="button" data-cmd="curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh">
 						<span class="label">linux installer</span>
 						<span class="cmd cmd-split"><span>curl -fsSL&nbsp;</span><span class="cmd-shrink"

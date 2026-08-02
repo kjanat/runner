@@ -42,6 +42,20 @@ build-packages only="" skip="false" version=`cargo read-manifest | jq -r .versio
     node {{ build-pkgscript }} "${args[@]}"
     echo "✓ built packages for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
 
+# Build the distribution image locally. Never pushes; needs npm/dist populated
+# by `just build-packages` or a downloaded dist artifact. Defaults to the host
+# arch; passing several needs a container-driver buildx builder.
+[group('docker')]
+docker-image version=`cargo read-manifest | jq -r .version` platforms="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "→ preparing context for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
+    bash .github/scripts/docker.sh prepare
+    echo "→ building {{ BLUE }}{{ platforms }}{{ NORMAL }}"
+    TAGS="runner:{{ version }}" PLATFORMS="{{ platforms }}" PUSH=false \
+        bash .github/scripts/docker.sh build
+    echo "✓ built {{ MAGENTA }}runner:{{ version }}{{ NORMAL }}"
+
 # Build release bin, pack the npm artifacts, and smoke-test them like CI.
 [group('npm')]
 test-release version=`cargo read-manifest | jq -r .version` host-triple=`rustc --print host-tuple`:

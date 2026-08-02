@@ -23,6 +23,7 @@ const tokens: Record<string, string> = {
 	description: pkg.description,
 	npmName: pkg.metadata.npm.name,
 	cratesName: pkg.name,
+	ghcrImage: `ghcr.io/${repo.replace(/^https?:\/\/github\.com\//, "")}`,
 	authorName: author.name,
 	authorEmail: author.email,
 };

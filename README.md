@@ -168,6 +168,15 @@ cargo install --path .
 yay -S runner-run
 ```
 
+```dockerfile
+# Container image, for build stages that run `run`-form package scripts:
+COPY --from=ghcr.io/kjanat/runner:0.24.0 /run /usr/local/bin/run
+COPY --from=ghcr.io/kjanat/runner:0.24.0 /runner /usr/local/bin/runner
+```
+
+Also on Docker Hub as `kjanat/runner`. The image is `scratch` plus two
+musl-static binaries, so one tag serves Alpine and Debian stages alike.
+
 ```sh
 # One-liner (latest):
 curl -fsSL https://raw.githubusercontent.com/kjanat/runner/master/install.sh | sh
@@ -650,6 +659,7 @@ turbo tasks first, then package manifest scripts, then other matching sources.
 - npm: [`runner-run`][npm]
 - crates.io: [`runner-run`][crates]
 - aur: [`runner-run`][aur:runner-run], [`runner-run-bin`][aur:runner-run-bin]
+- docker: [`ghcr.io/kjanat/runner`][ghcr], [`kjanat/runner`][dockerhub]
 
 ## License
 
@@ -659,6 +669,8 @@ turbo tasks first, then package manifest scripts, then other matching sources.
 [aur:runner-run-bin]: https://aur.archlinux.org/packages/runner-run-bin
 [aur:runner-run]: https://aur.archlinux.org/packages/runner-run
 [crates]: https://crates.io/crates/runner-run
+[dockerhub]: https://hub.docker.com/r/kjanat/runner
+[ghcr]: https://github.com/kjanat/runner/pkgs/container/runner
 [npm]: https://npm.im/runner-run
 [runner.kjanat.dev]: https://runner.kjanat.dev "Site for runner"
 [socket]: https://socket.dev/npm/package/runner-run

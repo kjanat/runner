@@ -1,0 +1,100 @@
+---
+name: docker-release
+run-name: ${{ format('docker publish {0}', inputs.tag) }}
+
+on:
+  workflow_call: { inputs: { tag: { required: true, type: string }, run-id: { required: true, type: string } } }
+  workflow_dispatch:
+    inputs:
+      tag: { description: Release tag to publish (e.g. v0.25.0), required: true, type: string }
+      run-id:
+        description: |-
+          release.yml run ID that produced the dist artifact for this tag.
+          Find it via `gh run list --workflow=release.yml --branch=<tag> --status=success`.
+        required: true
+        type: string
+      dry-run: { description: Build the images but do not push, required: true, default: false, type: boolean }
+
+permissions: { contents: read }
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  DRY_RUN: ${{ inputs.dry-run || 'false' }}
+
+jobs:
+  publish:
+    name: publish image
+    runs-on: ubuntu-latest
+    if: startsWith(inputs.tag, 'v')
+    # Serialize so dispatch and the release pipeline can't race the same tag.
+    concurrency: { group: "docker-publish-${{ inputs.tag }}", cancel-in-progress: false }
+    permissions: { contents: read, packages: write, actions: read }
+    environment: { name: docker, url: "https://github.com/kjanat/runner/pkgs/container/runner" }
+    steps:
+      # Sparse-checkout from default branch, no tag-supplied code on disk.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: ".github/scripts\n.github/docker"
+          sparse-checkout-cone-mode: false
+
+      - name: download dist artifact
+        uses: ./.github/actions/dist-artifact
+        with: { run-id: "${{ inputs.run-id }}", token: "${{ secrets.GITHUB_TOKEN }}" }
+
+      - name: prepare build context
+        run: bash .github/scripts/docker.sh prepare
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to Docker Hub
+        if: env.DRY_RUN != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: log in to GHCR
+        if: env.DRY_RUN != 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            docker.io/kjanat/runner
+            ghcr.io/kjanat/runner
+          # `value:` is mandatory here; the trigger is a workflow_call, so
+          # metadata-action sees no tag ref to read the version from.
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
+            type=raw,value=latest,enable=${{ !contains(inputs.tag, '-') }}
+          labels: |
+            org.opencontainers.image.title=runner
+            org.opencontainers.image.description=runner and run binaries for COPY --from build stages
+
+      - name: build and push
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          LABELS: ${{ steps.meta.outputs.labels }}
+          PUSH: ${{ env.DRY_RUN != 'true' }}
+        run: bash .github/scripts/docker.sh build
+
+      # The build needs no emulation (COPY only); executing the arm64 image on
+      # an amd64 runner does.
+      - name: set up qemu
+        if: env.DRY_RUN != 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: verify published manifest
+        if: env.DRY_RUN != 'true'
+        env: { TAGS: "${{ steps.meta.outputs.tags }}" }
+        run: bash .github/scripts/docker.sh verify
