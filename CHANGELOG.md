@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Fixed
+
+- `install.sh` now completes on Alpine and other busybox userlands. Checksum
+  verification called `sha256sum -c --status`, and `--status` is GNU-only, so
+  busybox aborted the install right after downloading the archive
+  (https://github.com/kjanat/runner/issues/101). The `require_command
+  sha256sum` guard passes on busybox, which is why the failure surfaced
+  mid-install rather than up front.
+
 ### Post-release checklist
 
 - [ ] Move completed `Unreleased` items into a new version section.

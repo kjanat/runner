@@ -273,7 +273,8 @@ main() {
 
 	(
 		cd "${tmp_dir}"
-		sha256sum -c --status "${checksum_asset}"
+		# busybox sha256sum has no --status.
+		sha256sum -c "${checksum_asset}" >/dev/null 2>&1
 	)
 
 	tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
@@ -327,7 +328,7 @@ main() {
 	man_checksum="runner-${version}-man.sha256"
 	if curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_asset}" "${base_url}/${man_asset}" 2>/dev/null \
 		&& curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_checksum}" "${base_url}/${man_checksum}" 2>/dev/null \
-		&& (cd "${tmp_dir}" && sha256sum -c --status "${man_checksum}") \
+		&& (cd "${tmp_dir}" && sha256sum -c "${man_checksum}" >/dev/null 2>&1) \
 		&& mkdir -p "${man_dir}" \
 		&& tar -xzf "${tmp_dir}/${man_asset}" -C "${man_dir}"; then
 		print_item "man pages: ${man_dir}"
