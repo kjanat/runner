@@ -412,7 +412,7 @@
           "const": "node"
         },
         {
-          "description": "Bun, via `bun --bun run <script>`, `bun <file>` and `bunx --bun`.",
+          "description": "Bun, via `bun --bun run <script>`, `bun <file>` and `bun x --bun`.",
           "type": "string",
           "const": "bun"
         },

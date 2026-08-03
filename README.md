@@ -19,7 +19,7 @@ And re-read/review the readme...
 **runner** is for people who bounce between codebases and refuse to memorize
 each repo’s private little task-running religion.
 
-Instead of guessing whether this one wants `npm run`, `pnpm exec`, `bunx`,
+Instead of guessing whether this one wants `npm run`, `pnpm exec`, `bun x`,
 `cargo`, `uv run`, `deno task`, `turbo`, `make`, `just`, etc. type:
 
 ```sh
@@ -380,7 +380,7 @@ Failing that, it executes `<target>` through the detected toolchain where
 appropriate, such as:
 
 ```text
-npm exec / npx, yarn run / yarn exec, pnpm exec, bun x / bunx,
+npm exec / npx, yarn run / yarn exec, pnpm exec, bun x,
 deno x, uvx, go run
 ```
 
@@ -401,13 +401,13 @@ manager gets no vote:
 | `--runtime` | `package.json` script  | local file        | ad-hoc binary |
 | ----------- | ---------------------- | ----------------- | ------------- |
 | `node`      | `node --run <task>`    | `node <file>`     | `npx`         |
-| `bun`       | `bun --bun run <task>` | `bun <file>`      | `bunx --bun`  |
+| `bun`       | `bun --bun run <task>` | `bun <file>`      | `bun x --bun` |
 | `deno`      | `deno task <task>`     | `deno run <file>` | `deno x`      |
 
 ```sh
 run --runtime bun build      # bun --bun run build
 run --runtime bun ./cli.js   # bun ./cli.js, even with a #!/usr/bin/env node line
-run --runtime bun eslint .   # bunx --bun eslint .
+run --runtime bun eslint .   # bun x --bun eslint .
 ```
 
 `bun run build` starts the script under bun, but a dependency bin carrying a

@@ -53,7 +53,7 @@ use crate::types::ProjectContext;
 /// Resolve `task` and run it with inherited stdio, returning the exit
 /// code. Bun special case: when `task == "test"` and no package-manifest
 /// `test` script exists, falls back to `bun test`. PM-exec fallback for
-/// unqualified misses runs the target through `npx`/`bunx`/`pnpm exec`/
+/// unqualified misses runs the target through `npx`/`bun x`/`pnpm exec`/
 /// `deno x`/`uvx`, plus `go run` for Go module/path-shaped targets;
 /// otherwise spawns the binary directly from `PATH`.
 pub(crate) fn run(

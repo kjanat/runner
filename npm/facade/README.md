@@ -15,7 +15,7 @@ runner install --frozen test build
 ```
 
 Instead of remembering whether this project wants `npm run`, `pnpm exec`,
-`bunx`, `cargo`, `uv run`, `deno task`, `make`, `just`, `go-task`, or a monorepo
+`bun x`, `cargo`, `uv run`, `deno task`, `make`, `just`, `go-task`, or a monorepo
 wrapper, use the same shape everywhere.
 
 ## What You Get

@@ -21,6 +21,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Bun package-exec fallback now invokes the explicit `bun x` subcommand instead
+  of the `bunx` hard-link alias. On Windows, runner resolves bare executables
+  through `PATH` and `PATHEXT`; the stock uppercase `.EXE` produced `bunx.EXE`,
+  which Bun's case-sensitive invocation-name detection misclassified as plain
+  `bun` and reported `Script not found` for the requested package
+  (https://github.com/kjanat/runner/issues/103,
+  https://github.com/oven-sh/bun/issues/36826).
 - `install.sh` now completes on Alpine and other busybox userlands. Checksum
   verification called `sha256sum -c --status`, and `--status` is GNU-only, so
   busybox aborted the install right after downloading the archive
