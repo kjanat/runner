@@ -1678,7 +1678,7 @@ mod tests {
         // dir / `--dir` target), not the live process cwd; a `main.ts` under
         // the project root runs even when the shell cwd is elsewhere. This is
         // what stops a `--dir`-set run from missing the file and mis-routing
-        // into the `bun x main.ts` 404 fallback (issue #69).
+        // into the package-manager exec fallback (issue #69).
         let dir = TempDir::new("bare-root");
         std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")
             .expect("file should be written");
