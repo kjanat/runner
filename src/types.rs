@@ -128,7 +128,7 @@ pub(crate) enum JsRuntime {
     /// `npm run`, `bun run` and `deno task` all execute; runner warns when the
     /// task being dispatched has one.
     Node,
-    /// Bun, via `bun --bun run <script>`, `bun <file>` and `bunx --bun`.
+    /// Bun, via `bun --bun run <script>`, `bun <file>` and `bun x --bun`.
     Bun,
     /// Deno, via `deno task <script>` (which reads `package.json` scripts as
     /// well as `deno.json` tasks), `deno run <file>` and `deno x`.

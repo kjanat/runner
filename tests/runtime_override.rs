@@ -387,7 +387,7 @@ fn runtime_selects_the_exec_fallback_primitive() {
     // exec primitive, which used to be the resolved PM's regardless.
     let proj = probe_project("exec");
 
-    for (runtime, expected) in [("node", "npx"), ("bun", "bunx"), ("deno", "deno x")] {
+    for (runtime, expected) in [("node", "npx"), ("bun", "bun x"), ("deno", "deno x")] {
         let output = arrow_only(
             proj.path(),
             &["--runtime", runtime, "definitely-not-a-real-tool-xyz"],

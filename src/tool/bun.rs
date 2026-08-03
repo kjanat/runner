@@ -68,17 +68,23 @@ pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
     c
 }
 
-/// `bunx <args...>`
+/// `bun x <args...>`
 pub(crate) fn exec_cmd(args: &[String]) -> Command {
     exec_cmd_with_runtime(args, false)
 }
 
-/// `bunx [--bun] <args...>`
+/// `bun x [--bun] <args...>`
 ///
-/// `--bun` is bunx's counterpart to `bun --bun run`: without it a package whose
+/// `--bun` is bun x's counterpart to `bun --bun run`: without it a package whose
 /// bin carries a `#!/usr/bin/env node` shebang still executes on system Node.
 pub(crate) fn exec_cmd_with_runtime(args: &[String], force_bun_runtime: bool) -> Command {
-    let mut c = super::program::command("bunx");
+    // Use bun's explicit subcommand instead of the `bunx` hard-link alias.
+    // Bun selects alias mode from its invoked filename case-sensitively;
+    // Windows' stock uppercase `.EXE` in PATHEXT made runner resolve the alias
+    // as `bunx.EXE`, which Bun misclassified as plain `bun` (issues #103 and
+    // oven-sh/bun#36826).
+    let mut c = super::program::command("bun");
+    c.arg("x");
     if force_bun_runtime {
         c.arg("--bun");
     }
@@ -87,7 +93,7 @@ pub(crate) fn exec_cmd_with_runtime(args: &[String], force_bun_runtime: bool) ->
 }
 
 /// `bun <file> [args...]`, execute a local script file with the Bun
-/// runtime. Distinct from [`exec_cmd`] (`bunx`), which fetches and runs a
+/// runtime. Distinct from [`exec_cmd`] (`bun x`), which fetches and runs a
 /// remote package; this runs an on-disk path the caller already resolved.
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("bun");
@@ -110,28 +116,35 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn exec_forced_runtime_prepends_bun_flag() {
-        // `bunx --bun`: without it a package bin with a node shebang still runs
-        // on system Node, defeating `--runtime bun`.
-        let args = [String::from("eslint"), String::from(".")];
-        assert_eq!(
-            args_of(&exec_cmd_with_runtime(&args, true)),
-            ["--bun", "eslint", "."]
+    fn assert_bun_program(cmd: &std::process::Command) {
+        let stem = Path::new(cmd.get_program())
+            .file_stem()
+            .expect("bun command should have a file stem")
+            .to_string_lossy();
+        assert!(
+            stem.eq_ignore_ascii_case("bun"),
+            "expected bun executable, got {:?}",
+            cmd.get_program()
         );
     }
 
     #[test]
-    fn exec_unforced_is_plain_bunx() {
+    fn exec_forced_runtime_prepends_bun_flag() {
+        // `bun x --bun`: without it a package bin with a node shebang still runs
+        // on system Node, defeating `--runtime bun`.
         let args = [String::from("eslint"), String::from(".")];
-        assert_eq!(
-            args_of(&exec_cmd_with_runtime(&args, false)),
-            ["eslint", "."]
-        );
-        assert_eq!(
-            args_of(&exec_cmd(&args)),
-            args_of(&exec_cmd_with_runtime(&args, false))
-        );
+        let cmd = exec_cmd_with_runtime(&args, true);
+        assert_bun_program(&cmd);
+        assert_eq!(args_of(&cmd), ["x", "--bun", "eslint", "."]);
+    }
+
+    #[test]
+    fn exec_unforced_is_bun_x() {
+        let args = [String::from("eslint"), String::from(".")];
+        let cmd = exec_cmd_with_runtime(&args, false);
+        assert_bun_program(&cmd);
+        assert_eq!(args_of(&cmd), ["x", "eslint", "."]);
+        assert_eq!(args_of(&exec_cmd(&args)), args_of(&cmd));
     }
 
     #[test]
@@ -190,7 +203,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        assert_eq!(cmd.get_program().to_string_lossy(), "bun");
+        assert_bun_program(&cmd);
         assert_eq!(built, ["/abs/script.ts", "--flag"]);
     }
 }

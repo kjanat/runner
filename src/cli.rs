@@ -144,7 +144,7 @@ static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
             cyan_str("node")
         ),
         &format!(
-            "  {}   bun --bun run <task>  bun <file>        bunx --bun",
+            "  {}   bun --bun run <task>  bun <file>        bun x --bun",
             cyan_str("bun")
         ),
         &format!(
@@ -1410,7 +1410,7 @@ pub(crate) struct GlobalOpts {
     /// Force the JavaScript runtime a task's process tree runs on, an axis
     /// distinct from `--pm`. Each runtime brings its own script runner
     /// (`node --run` / `bun --bun run` / `deno task`), file runner and
-    /// package-exec primitive (`npx` / `bunx --bun` / `deno x`), and outranks
+    /// package-exec primitive (`npx` / `bun x --bun` / `deno x`), and outranks
     /// a local file's `#!` line. No package manager is consulted. The resolver
     /// also consults `$RUNNER_RUNTIME` and `[runtime].js` when this flag is
     /// omitted.

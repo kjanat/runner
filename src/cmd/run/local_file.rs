@@ -1,7 +1,7 @@
 //! Local-file execution for `run <path>`.
 //!
 //! A token that points at a local file should be *run as that file*, never
-//! handed to a package manager's package-exec primitive (`bunx`/`npx`/
+//! handed to a package manager's package-exec primitive (`bun x`/`npx`/
 //! `pnpm dlx`/`deno x`/`uvx`), which would resolve a local path as a remote
 //! package spec and fail with a registry 404 or a `git clone` error.
 //!
@@ -1208,9 +1208,9 @@ mod tests {
 
         // A recognized source file at mode 0111 (execute-only). The shebang
         // probe hits EACCES, but that must NOT propagate as an error (which
-        // `bare_file_in`'s `.ok()` would swallow into a `bunx main.ts` 404).
+        // `bare_file_in`'s `.ok()` would swallow into a `bun x main.ts` 404).
         // It routes through the detected runtime instead, upholding the
-        // no-bunx-on-a-local-file invariant.
+        // no-bun-x-on-a-local-file invariant.
         let dir = TempDir::new("local-exec-only-ts");
         let file = dir.path().join("main.ts");
         std::fs::write(&file, "console.log(1)\n").expect("file should be written");
@@ -1227,7 +1227,7 @@ mod tests {
         )
         .expect("an execute-only source file should route to its runtime");
 
-        assert_eq!(label, "bun", "a 0111 .ts routes to bun, never bunx");
+        assert_eq!(label, "bun", "a 0111 .ts routes to bun, never bun x");
         assert_eq!(command.get_program().to_string_lossy(), "bun");
     }
 
@@ -1552,7 +1552,7 @@ mod tests {
     #[test]
     fn bare_file_missing_token_falls_through_to_pm_exec() {
         // A bare token with no matching file on disk is a real package-spec
-        // candidate (`runner biome` → `bunx biome`), so it keeps falling
+        // candidate (`runner biome` → `bun x biome`), so it keeps falling
         // through to the PM-exec fallback rather than erroring.
         let dir = TempDir::new("bare-file-miss");
         let ctx = context(vec![PackageManager::Bun]);
@@ -1571,7 +1571,7 @@ mod tests {
         // Once the token names an existing regular file it is a local file: an
         // unsupported one (`data.bin`, no extension we run, no shebang, not
         // executable) surfaces the clear local-file error instead of falling
-        // through to `bunx data.bin` and a registry 404, matching the explicit
+        // through to `bun x data.bin` and a registry 404, matching the explicit
         // `./data.bin` form (#69).
         let dir = TempDir::new("bare-file-unsupported");
         std::fs::write(dir.path().join("data.bin"), [0u8, 1, 2]).expect("file should be written");
@@ -1678,7 +1678,7 @@ mod tests {
         // dir / `--dir` target), not the live process cwd; a `main.ts` under
         // the project root runs even when the shell cwd is elsewhere. This is
         // what stops a `--dir`-set run from missing the file and mis-routing
-        // into the `bunx main.ts` 404 fallback (issue #69).
+        // into the package-manager exec fallback (issue #69).
         let dir = TempDir::new("bare-root");
         std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")
             .expect("file should be written");

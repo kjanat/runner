@@ -11,7 +11,7 @@
 //! | runtime | script                  | file            | exec         |
 //! |---------|-------------------------|-----------------|--------------|
 //! | node    | `node --run <task> --`  | `node <file>`   | `npx`        |
-//! | bun     | `bun --bun run <task>`  | `bun <file>`    | `bunx --bun` |
+//! | bun     | `bun --bun run <task>`  | `bun <file>`    | `bun x --bun` |
 //! | deno    | `deno task <task>`      | `deno run <file>` | `deno x`   |
 //!
 //! Argument forwarding differs per runtime and is not interchangeable.
@@ -50,14 +50,14 @@ pub(super) fn script_cmd(
 pub(super) fn exec_cmd(runtime: JsRuntime, argv: &[String]) -> (&'static str, Command) {
     match runtime {
         JsRuntime::Node => ("npx", tool::npm::exec_cmd(argv)),
-        JsRuntime::Bun => ("bunx", tool::bun::exec_cmd_with_runtime(argv, true)),
+        JsRuntime::Bun => ("bun x", tool::bun::exec_cmd_with_runtime(argv, true)),
         JsRuntime::Deno => ("deno x", tool::deno::exec_cmd(argv)),
     }
 }
 
 /// Whether the runtime axis replaces the exec primitive the resolver picked.
 ///
-/// It replaces a JS one (`npx`, `yarn exec`, `pnpm exec`, `bunx`, `deno x`)
+/// It replaces a JS one (`npx`, `yarn exec`, `pnpm exec`, `bun x`, `deno x`)
 /// and a resolver that found nothing at all. A Python/Go/Rust/Ruby/PHP
 /// project's exec primitive is left alone: there is no JS process to move.
 pub(super) fn replaces_exec(resolved_pm: Option<PackageManager>) -> bool {
@@ -205,6 +205,18 @@ mod tests {
             .collect()
     }
 
+    fn assert_program(cmd: &std::process::Command, expected: &str) {
+        let stem = std::path::Path::new(cmd.get_program())
+            .file_stem()
+            .expect("runtime command should have a file stem")
+            .to_string_lossy();
+        assert!(
+            stem.eq_ignore_ascii_case(expected),
+            "expected {expected} executable, got {:?}",
+            cmd.get_program()
+        );
+    }
+
     fn script(runtime: JsRuntime, args: &[String]) -> (String, Vec<String>) {
         let cmd = script_cmd(runtime, "build", args, HostVerbosity::default());
         (cmd.get_program().to_string_lossy().into_owned(), argv(&cmd))
@@ -245,17 +257,17 @@ mod tests {
 
         let (label, cmd) = exec_cmd(JsRuntime::Node, &argv_in);
         assert_eq!(label, "npx");
-        assert_eq!(cmd.get_program().to_string_lossy(), "npx");
+        assert_program(&cmd, "npx");
         assert_eq!(argv(&cmd), ["eslint", "."]);
 
         let (label, cmd) = exec_cmd(JsRuntime::Bun, &argv_in);
-        assert_eq!(label, "bunx");
-        assert_eq!(cmd.get_program().to_string_lossy(), "bunx");
-        assert_eq!(argv(&cmd), ["--bun", "eslint", "."]);
+        assert_eq!(label, "bun x");
+        assert_program(&cmd, "bun");
+        assert_eq!(argv(&cmd), ["x", "--bun", "eslint", "."]);
 
         let (label, cmd) = exec_cmd(JsRuntime::Deno, &argv_in);
         assert_eq!(label, "deno x");
-        assert_eq!(cmd.get_program().to_string_lossy(), "deno");
+        assert_program(&cmd, "deno");
         assert_eq!(argv(&cmd), ["x", "eslint", "."]);
     }
 

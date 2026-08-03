@@ -7,7 +7,7 @@
 //! - bun-test special case: `runner test` with no `package.json` script
 //!   forwards to `bun test` directly;
 //! - PM-exec fallback: no task matched, so the token is run through
-//!   `npx`/`bunx`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
+//!   `npx`/`bun x`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
 //!   directly when the resolver landed on a PM without an exec primitive.
 
 use std::process::Command;
@@ -219,7 +219,7 @@ pub(super) fn resolve_dispatch(
             // strict devEngines/`packageManager` mismatch, an incompatible
             // `--pm`); running `main.ts` via its runtime doesn't need the
             // package.json PM. Tasks already matched above (`restricted` is empty
-            // here), so this never shadows a same-named task, and `bunx`/`npx`
+            // here), so this never shadows a same-named task, and `bun x`/`npx`
             // never sees a local file.
             if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
             {
@@ -249,7 +249,7 @@ pub(super) fn resolve_dispatch(
 
         // Qualified miss (colon or FQN syntax): the qualifier is explicit
         // task-lookup intent, so error here, never fall through to
-        // PM-exec, which would hand the token to bunx/npx as a package
+        // PM-exec, which would hand the token to bun x/npx as a package
         // spec and resolve it off the network.
         return Err(qualified_miss_error(ctx, missed_source, task_name));
     }
@@ -336,7 +336,7 @@ fn dispatch_after_miss(
 }
 
 /// The exec primitive's argument vector: the token followed by the user's
-/// args, as `npx`/`bunx`/`deno x`/`uvx` all take it.
+/// args, as `npx`/`bun x`/`deno x`/`uvx` all take it.
 fn exec_argv(task_name: &str, args: &[String]) -> Vec<String> {
     let mut v = Vec::with_capacity(args.len() + 1);
     v.push(task_name.to_string());
@@ -363,7 +363,7 @@ fn build_pm_exec_command(
         Some(PackageManager::Npm) => ("npx", tool::npm::exec_cmd(&combined())),
         Some(PackageManager::Yarn) => ("yarn exec", tool::yarn::exec_cmd(&ctx.root, &combined())),
         Some(PackageManager::Pnpm) => ("pnpm exec", tool::pnpm::exec_cmd(&combined())),
-        Some(PackageManager::Bun) => ("bunx", tool::bun::exec_cmd(&combined())),
+        Some(PackageManager::Bun) => ("bun x", tool::bun::exec_cmd(&combined())),
         Some(PackageManager::Deno) => ("deno x", tool::deno::exec_cmd(&combined())),
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
         Some(PackageManager::Go) => {
@@ -682,7 +682,7 @@ mod tests {
     #[test]
     fn resolve_dispatch_fqn_miss_errors_instead_of_pm_exec() {
         // Previously `run root:package.json#nope` fell through to
-        // PM-exec and bunx tried to resolve it as a GitHub package spec
+        // PM-exec and bun x tried to resolve it as a GitHub package spec
         // off the network. A `#` FQN miss must be a hard error.
         let err = resolve_dispatch(
             &context(),
@@ -699,7 +699,7 @@ mod tests {
 
     #[test]
     fn resolve_dispatch_github_spec_still_reaches_pm_exec() {
-        // `user/repo#ref` is a legit bunx/npx package spec; its prefix
+        // `user/repo#ref` is a legit bun x/npx package spec; its prefix
         // is not a source label, so it must keep flowing to PM-exec.
         let dispatch = resolve_dispatch(
             &context(),

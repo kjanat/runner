@@ -44,7 +44,7 @@ pub(super) fn parse_fqn_task(input: &str) -> Option<(TaskSource, &str)> {
 /// A `Some` qualifier, whether from colon or FQN syntax, pins the
 /// lookup to that source; the caller errors on a miss instead of
 /// falling through to PM-exec. That property is what keeps an FQN typo
-/// (`root:package.json#nope`) from being handed to bunx/npx as a
+/// (`root:package.json#nope`) from being handed to bun x/npx as a
 /// package spec and resolved off the network.
 pub(crate) struct TokenLookup<'a> {
     /// Pinned source from `source:task` or FQN (`root:source#task`) syntax.
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn parse_fqn_task_leaves_package_specs_alone() {
-        // bunx/npx GitHub specs share the `#` separator; anything whose
+        // bun x/npx GitHub specs share the `#` separator; anything whose
         // prefix isn't a source label must keep flowing to PM-exec.
         assert_eq!(parse_fqn_task("user/repo#ref"), None);
         assert_eq!(parse_fqn_task("root:unknown#x"), None);

@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Release checklist
+
+- [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
+- [ ] Update current-version references in `schemas/`, both AUR `PKGBUILD`s, and `README.md` container-image tags.
+- [ ] Search repository-wide for the old version; account for every match.
+- [ ] Move `Unreleased` entries into the new version section and rotate links.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+
+## [0.24.1] - 2026-08-03
+
 ### Added
 
 - Container images on GHCR (`ghcr.io/kjanat/runner`) and Docker Hub
@@ -21,18 +31,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Bun package-exec fallback now invokes the explicit `bun x` subcommand instead
+  of the `bunx` hard-link alias. On Windows, runner resolves bare executables
+  through `PATH` and `PATHEXT`; the stock uppercase `.EXE` produced `bunx.EXE`,
+  which Bun's case-sensitive invocation-name detection misclassified as plain
+  `bun` and reported `Script not found` for the requested package
+  (https://github.com/kjanat/runner/issues/103,
+  https://github.com/oven-sh/bun/issues/36826).
 - `install.sh` now completes on Alpine and other busybox userlands. Checksum
   verification called `sha256sum -c --status`, and `--status` is GNU-only, so
   busybox aborted the install right after downloading the archive
   (https://github.com/kjanat/runner/issues/101). The `require_command
   sha256sum` guard passes on busybox, which is why the failure surfaced
   mid-install rather than up front.
-
-### Post-release checklist
-
-- [ ] Move completed `Unreleased` items into a new version section.
-- [ ] Update the `[Unreleased]` compare link to the new tag.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 
 ## [0.24.0] - 2026-08-01
 
@@ -1985,7 +1996,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/kjanat/runner/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/kjanat/runner/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/kjanat/runner/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/kjanat/runner/compare/v0.21.0...v0.22.0
