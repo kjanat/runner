@@ -32,6 +32,9 @@ docker run --rm kjanat/runner:{{version}} --version
 docker run --rm --entrypoint /run -v "$PWD:/w" -w /w kjanat/runner:{{version}} build
 ```
 
+Without `-v`/`--volume`, the container sees no project — only `--version` or `--help`
+are meaningful without a mount.
+
 ## Why
 
 Projects whose package scripts call `run` break inside build containers. The
