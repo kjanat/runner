@@ -29,7 +29,7 @@ It also runs directly, though that is the secondary use:
 
 ```sh
 docker run --rm kjanat/runner:{{version}} --version
-docker run --rm --entrypoint /run -v "$PWD:/w" -w /w kjanat/runner:{{version}} build
+docker run --rm --entrypoint /run -v "$PWD:/w" kjanat/runner:{{version}} build
 ```
 
 Without `-v`/`--volume`, the container sees no project — only `--version` or `--help`

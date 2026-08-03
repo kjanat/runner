@@ -7,4 +7,5 @@ ARG TARGETARCH
 COPY --chmod=0755 ${TARGETARCH}/runner /runner
 COPY --chmod=0755 ${TARGETARCH}/run /run
 
+WORKDIR /w
 ENTRYPOINT ["/runner"]
