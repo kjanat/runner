@@ -145,10 +145,10 @@ test("musl host with only the GNU sibling installed fails with a libc diagnostic
 	const { error, output } = captureStderr(() => resolveBinary("run", context));
 
 	assert.ok(error instanceof Error, "expected resolveBinary to throw");
-	assert.match(error.message, /No musl binary installed for linux-x64/);
+	assert.match(error.message, /No usable musl binary for linux-x64/);
 	assert.match(error.message, /linux-x64-gnu/);
 	assert.match(output, /Detected libc: musl \(\/etc\/alpine-release\)/);
-	assert.match(output, new RegExp(`Expected package: ${SCOPE}/linux-x64-musl`));
+	assert.match(output, new RegExp(`Expected package: ${SCOPE}/linux-x64-musl — not installed`));
 	assert.doesNotMatch(output, /no prebuilt binary found/);
 });
 
@@ -159,7 +159,7 @@ test("glibc host with only the musl sibling installed fails with a libc diagnost
 	const { error } = captureStderr(() => resolveBinary("runner", context));
 
 	assert.ok(error instanceof Error, "expected resolveBinary to throw");
-	assert.match(error.message, /No glibc binary installed for linux-arm64/);
+	assert.match(error.message, /No usable glibc binary for linux-arm64/);
 	assert.match(error.message, /linux-arm64-musl/);
 });
 
@@ -177,10 +177,14 @@ test("a matching package whose bin is missing does not fall through to the sibli
 		resolvePackageJson: resolve,
 	};
 
-	const { error } = captureStderr(() => resolveBinary("run", context));
+	const { error, output } = captureStderr(() => resolveBinary("run", context));
 
 	assert.ok(error instanceof Error, "expected resolveBinary to throw");
 	assert.match(error.message, /refusing to spawn the glibc build/);
+	// The package IS installed, only its bin is gone. Telling the user to
+	// install what they already have would send them in a circle.
+	assert.match(output, /package present but bin missing at/);
+	assert.doesNotMatch(output, /not installed/);
 });
 
 test("neither variant installed keeps the generic optionalDependencies diagnostic", () => {

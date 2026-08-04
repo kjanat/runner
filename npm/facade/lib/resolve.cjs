@@ -125,16 +125,29 @@ function scopeOf(packages) {
  * and is complete. Absent on musl builds of Node, and on runtimes whose Node
  * compatibility layer does not implement diagnostic reports at all.
  *
+ * `getReport()` otherwise enumerates network interfaces and can issue reverse
+ * DNS lookups for them, which is unbounded latency on the launch path for a
+ * field we do not read. `excludeNetwork` suppresses that; it is restored only
+ * when it was a boolean to begin with, because the setter rejects `undefined`
+ * and a blind restore would throw wherever the property does not exist.
+ *
  * @returns {string | null}
  */
 function glibcVersionFromReport() {
+	// `excludeNetwork` predates its @types/node declaration and is missing
+	// entirely on runtimes that only approximate `process.report`.
+	const api = /** @type {{ excludeNetwork?: boolean, getReport?: () => unknown } | undefined} */ (report);
+	const previous = api?.excludeNetwork;
 	try {
-		const raw = report?.getReport?.();
+		if (api && typeof previous === "boolean") api.excludeNetwork = true;
+		const raw = api?.getReport?.();
 		const header = /** @type {{ header?: { glibcVersionRuntime?: unknown } } | undefined} */ (raw)?.header;
 		const version = header?.glibcVersionRuntime;
 		return typeof version === "string" && version.length > 0 ? version : null;
 	} catch {
 		return null;
+	} finally {
+		if (api && typeof previous === "boolean") api.excludeNetwork = previous;
 	}
 }
 
@@ -351,21 +364,33 @@ const isModuleNotFound = (err) =>
  * @param {string} info.libcSource - The signal that detected it.
  * @param {string} info.expected - The package that should have been installed.
  * @param {string[]} info.installed - Incompatible siblings found instead.
+ * @param {string[]} info.errors - Why the expected package was unusable, when it resolved at all.
  * @returns {never}
  * @throws {Error} Always.
  */
-function failLibcMismatch({ arch, libc, libcSource, expected, installed }) {
+function failLibcMismatch({ arch, libc, libcSource, expected, installed, errors }) {
 	const other = libc === "musl" ? "glibc" : "musl";
 	const indent = space(2);
+	// The expected package is usually absent, but it can also be present and
+	// broken — a half-finished install leaves the package.json without the bin.
+	// Saying "not installed" there sends people off to reinstall what they
+	// already have, so report the reason the loop actually recorded.
+	const broken = errors.length > 0;
+	const why = broken ? `\n${indent}- ${errors.join(`\n${indent}- `)}` : ` — not installed`;
+	// Reinstalling is the fix for a present-but-broken package; installing it
+	// is the fix for an absent one. Leading with the wrong one wastes a round.
+	const repair = broken
+		? `reinstall so the platform packages are unpacked in full`
+		: `install the matching package: ${cyan(`npm install ${expected}`)}`;
 
-	console.error(`${red(pkgName)}: no ${yellow(libc)} binary installed for ${yellow(`linux-${arch}`)}.
+	console.error(`${red(pkgName)}: no usable ${yellow(libc)} binary for ${yellow(`linux-${arch}`)}.
 
 Detected libc: ${yellow(libc)} (${libcSource})
-Expected package: ${cyan(expected)} — not installed
+Expected package: ${cyan(expected)}${why}
 Installed instead: ${cyan(installed.join(", "))} — built for ${yellow(other)}
 
-That package was skipped deliberately: its ELF interpreter does not exist on a
-${yellow(libc)} host, so spawning it would fail with a bare ${cyan("ENOENT")} from inside
+The ${yellow(other)} package was skipped deliberately: its ELF interpreter does not exist
+on a ${yellow(libc)} host, so spawning it would fail with a bare ${cyan("ENOENT")} from inside
 ${cyan("child_process")} instead of the message you are reading now.
 
 Package managers that honour the ${cyan("libc")} field (npm, pnpm, Yarn) install only the
@@ -373,8 +398,7 @@ matching variant. Bun and Deno currently install both, and a ${cyan("node_module
 copied from another machine can carry either one.
 
 Workarounds:
-${indent}- install the matching package: ${cyan(`npm install ${expected}`)}
-${indent}- reinstall from scratch so the platform packages are refetched
+${indent}- ${repair}
 ${indent}- prebuilt release binary: ${cyan("cargo binstall runner-run")}
 ${indent}- build from source: ${cyan("cargo install runner-run --locked")}
 ${indent}- if this host can genuinely run ${yellow(other)} binaries: ${cyan(`RUNNER_LIBC=${other}`)}
@@ -382,7 +406,7 @@ ${indent}- file an issue: ${link(`${repo}/issues`)}
 `);
 
 	throw new Error(
-		`No ${libc} binary installed for linux-${arch}; refusing to spawn the ${other} build (${installed.join(", ")}).`,
+		`No usable ${libc} binary for linux-${arch}; refusing to spawn the ${other} build (${installed.join(", ")}).`,
 	);
 }
 
@@ -519,6 +543,7 @@ function resolveBinary(name, context = {}) {
 				libcSource: plan.libcSource,
 				expected: plan.expected,
 				installed,
+				errors,
 			});
 		}
 	}

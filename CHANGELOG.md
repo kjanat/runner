@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - The npm facade now selects the Linux platform package by libc instead of by
   `optionalDependencies` order (https://github.com/kjanat/runner/issues/106).
-  `lib/resolve.cjs` detects the host libc — `RUNNER_LIBC`, then
+  `npm/facade/lib/resolve.cjs` detects the host libc — `RUNNER_LIBC`, then
   `process.report`'s `glibcVersionRuntime`, then musl and glibc markers on the
   filesystem — derives the matching `@runner-run/linux-<arch>-<gnu|musl>` name,
   and resolves it directly. Package managers that ignore the `libc` field (Bun,

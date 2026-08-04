@@ -215,16 +215,19 @@ If optional dependencies are disabled on purpose, use Cargo:
 cargo install runner-run
 ```
 
-### `no musl binary installed` / `no glibc binary installed`
+### `no usable musl binary` / `no usable glibc binary`
 
-The wrong libc build is installed for this machine. The shim refuses to spawn
-it: a glibc binary on a musl host dies with a bare `ENOENT` from
-`child_process`, because the ELF interpreter it asks for is not there.
+The wrong libc build is installed for this machine, so the shim stops before
+spawning anything and names both packages. Older releases had no such check:
+they spawned whatever was installed, and a glibc binary on a musl host died
+with a bare `ENOENT` from `child_process` because its ELF interpreter was
+missing.
 
-Install the package the message names, or reinstall from scratch:
+The message names the exact package to install for this machine's
+architecture and libc. Install that one, or reinstall from scratch:
 
 ```sh
-npm install @runner-run/linux-x64-musl   # whichever the message asked for
+npm install @runner-run/linux-arm64-musl   # example; use the name in the message
 ```
 
 If the host genuinely runs both libcs — Alpine with `gcompat`, or a glibc
