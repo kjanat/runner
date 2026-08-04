@@ -1,33 +1,34 @@
-/// <reference types="node" />
+// tsconfig pins `typeRoots`, so the reference `@types/bun` makes to
+// `bun-types` is not picked up on its own.
 /// <reference types="bun" />
-"use strict";
+import { expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const { test, expect, spyOn } = require("bun:test");
-const { mkdirSync, mkdtempSync, writeFileSync } = require("node:fs");
-const { tmpdir } = require("node:os");
-const { join } = require("node:path");
+import { detectLibc, resolveBinary } from "#resolve";
+import type { Libc, LibcDetection, LibcSignals } from "#resolve";
+import matrix from "../../targets.json";
 
-const { resolveBinary, detectLibc } = require("#resolve");
+interface Target {
+	pkg: string;
+	os: string[];
+	cpu: string[];
+	libc?: string[];
+}
 
-/** @typedef {{ pkg: string, os: string[], cpu: string[], libc?: string[] }} Target */
-const { scope, binaries, targets } = /** @type {{ scope: string, binaries: string[], targets: Target[] }} */ (
-	require("../../targets.json")
-);
+const { scope, binaries, targets } = matrix as { scope: string; binaries: string[]; targets: Target[] };
 
 /** Every platform package the facade declares, in generated manifest order. */
 const declared = targets.map((target) => `${scope}/${target.pkg}`);
 
-/** @param {Target} target */
-const libcOf = (target) => target.libc?.[0] ?? null;
+const libcOf = (target: Target): Libc | null => (target.libc?.[0] as Libc | undefined) ?? null;
 
 /**
  * The same-arch package built for the other libc, when the matrix ships one.
  * `linux-armv7-gnueabihf` has none, and must not have one invented for it.
- *
- * @param {Target} target
- * @returns {Target | undefined}
  */
-const siblingOf = (target) =>
+const siblingOf = (target: Target): Target | undefined =>
 	targets.find((other) =>
 		other !== target
 		&& other.os[0] === target.os[0]
@@ -38,12 +39,8 @@ const siblingOf = (target) =>
 /**
  * Materialize `packages` as a `node_modules`-shaped tree and return a resolver
  * over it that misses the way Node's does.
- *
- * @param {readonly string[]} packages
- * @param {readonly string[]} files - Binary names to create under each `bin/`.
- * @returns {{ root: string, resolvePackageJson: (pkg: string) => string }}
  */
-function installFixture(packages, files) {
+function installFixture(packages: readonly string[], files: readonly string[]) {
 	const root = mkdtempSync(join(tmpdir(), "runner-resolve-"));
 	for (const pkg of packages) {
 		mkdirSync(join(root, pkg, "bin"), { recursive: true });
@@ -52,7 +49,7 @@ function installFixture(packages, files) {
 	}
 	return {
 		root,
-		resolvePackageJson: (pkg) => {
+		resolvePackageJson: (pkg: string): string => {
 			if (packages.includes(pkg)) return join(root, pkg, "package.json");
 			throw Object.assign(new Error(`Cannot find module '${pkg}'`), { code: "MODULE_NOT_FOUND" });
 		},
@@ -62,14 +59,11 @@ function installFixture(packages, files) {
 /**
  * The real detector with every signal stubbed, so no property of the machine
  * running the tests leaks into the result.
- *
- * @param {import("#resolve").LibcSignals} [signals]
  */
-const detectWith = (signals = {}) => () =>
+const detectWith = (signals: LibcSignals = {}) => (): LibcDetection =>
 	detectLibc({ env: {}, glibcVersion: () => null, fileExists: () => false, readDir: () => [], ...signals });
 
-/** @type {Record<string, () => import("#resolve").LibcDetection>} */
-const HOSTS = {
+const HOSTS: Record<string, () => LibcDetection> = {
 	glibc: detectWith({ glibcVersion: () => "2.39" }),
 	musl: detectWith({ fileExists: (path) => path === "/etc/alpine-release" }),
 	undecided: detectWith(),
@@ -78,8 +72,7 @@ const HOSTS = {
 /** SGR colors and OSC 8 hyperlinks, which ansispeck emits on a capable terminal. */
 const ANSI = /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u001B\[[0-9;]*[A-Za-z]/g;
 
-/** @param {() => unknown} fn */
-function captureStderr(fn) {
+function captureStderr(fn: () => unknown): { error: unknown; output: string } {
 	const spy = spyOn(console, "error").mockImplementation(() => {});
 	const output = () => spy.mock.calls.map((args) => args.map(String).join(" ")).join("\n").replace(ANSI, "");
 	try {
@@ -95,9 +88,9 @@ function captureStderr(fn) {
 // Every target in the matrix, against a host that matches it and an install
 // carrying its libc sibling where one exists — the tree Bun and Deno produce.
 // Asserting the exact package means no case can pass on manifest order.
-test.each(targets.map((target) => [target.pkg, target]))(
+test.each(targets.map((target) => [target.pkg, target] as const))(
 	"%s resolves the package built for its own platform",
-	(_pkg, /** @type {Target} */ target) => {
+	(_pkg, target) => {
 		const sibling = siblingOf(target);
 		const files = binaries.map((name) => (target.os[0] === "win32" ? `${name}.exe` : name));
 		const installed = [target, ...(sibling ? [sibling] : [])].map((each) => `${scope}/${each.pkg}`);
@@ -111,7 +104,7 @@ test.each(targets.map((target) => [target.pkg, target]))(
 		};
 
 		for (const [index, name] of binaries.entries()) {
-			expect(resolveBinary(name, context)).toBe(join(root, `${scope}/${target.pkg}`, "bin", files[index]));
+			expect(resolveBinary(name, context)).toBe(join(root, `${scope}/${target.pkg}`, "bin", files[index]!));
 		}
 	},
 );
@@ -129,7 +122,7 @@ test("only the wrong-libc sibling installed fails without spawning it", () => {
 test("the matching package installed without its bin reports that, not a missing install", () => {
 	const musl = installFixture([`${scope}/linux-x64-musl`], []);
 	const gnu = installFixture([`${scope}/linux-x64-gnu`], binaries);
-	const resolvePackageJson = (/** @type {string} */ pkg) =>
+	const resolvePackageJson = (pkg: string) =>
 		pkg.endsWith("-musl") ? musl.resolvePackageJson(pkg) : gnu.resolvePackageJson(pkg);
 	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
 
@@ -153,8 +146,7 @@ test("an undecided libc keeps the declared order and says so", () => {
 });
 
 // Each layer is a positive proof; none may be inferred from another's absence.
-/** @type {[string, import("#resolve").LibcSignals, import("#resolve").Libc | null][]} */
-const LAYERS = [
+const LAYERS: [string, LibcSignals, Libc | null][] = [
 	["RUNNER_LIBC outranks every signal", { env: { RUNNER_LIBC: "musl" }, glibcVersion: () => "2.39" }, "musl"],
 	["gnu is accepted for glibc", { env: { RUNNER_LIBC: "gnu" } }, "glibc"],
 	["an unknown override falls through", { env: { RUNNER_LIBC: "uclibc" }, glibcVersion: () => "2.39" }, "glibc"],

@@ -66,7 +66,7 @@ docker build --network=host -f tests/docker/musl-libc-select.Dockerfile \
 ```
 
 The libc selection logic itself is also covered by
-[`npm/facade/test/resolve.test.cjs`](../../npm/facade/test/resolve.test.cjs),
+[`npm/facade/test/resolve.test.mts`](../../npm/facade/test/resolve.test.mts),
 which stubs the host signals and needs no container. This test is what proves
 the detection layers agree with a real musl root filesystem.
 
