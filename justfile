@@ -37,6 +37,11 @@ gen-schema:
     @echo "→ regenerating {{ BLUE }}{{ schema-dir }}{{ NORMAL }}"
     @cargo schema --all --output {{ schema-dir }}
 
+# Unit-test the facade's binary resolution. Needs nothing built or installed.
+[group('npm')]
+test-facade:
+    node --test npm/facade/test/*.test.cjs
+
 [group('npm')]
 build-packages only="" skip="false" version=`cargo read-manifest | jq -r .version`:
     #!/usr/bin/env bash

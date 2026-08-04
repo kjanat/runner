@@ -156,6 +156,12 @@ At publish time, `runner-run` declares packages like `@runner-run/linux-x64-gnu`
 as `optionalDependencies`. Your package manager picks the one matching your
 OS/CPU/libc, then the `runner` and `run` shims exec the local binary.
 
+On Linux the shims re-check that choice instead of trusting whatever is
+installed: they detect the host libc and load the matching `-gnu` or `-musl`
+package by name. Bun and Deno currently ignore the `libc` field and install
+both, and a `node_modules` directory copied off another machine can carry
+either one.
+
 Useful consequences:
 
 - no `postinstall` script
@@ -208,6 +214,29 @@ If optional dependencies are disabled on purpose, use Cargo:
 ```sh
 cargo install runner-run
 ```
+
+### `no musl binary installed` / `no glibc binary installed`
+
+The wrong libc build is installed for this machine. The shim refuses to spawn
+it: a glibc binary on a musl host dies with a bare `ENOENT` from
+`child_process`, because the ELF interpreter it asks for is not there.
+
+Install the package the message names, or reinstall from scratch:
+
+```sh
+npm install @runner-run/linux-x64-musl   # whichever the message asked for
+```
+
+If the host genuinely runs both libcs — Alpine with `gcompat`, or a glibc
+runtime on a musl userspace — override the detection:
+
+```sh
+RUNNER_LIBC=glibc runner --version
+```
+
+`RUNNER_LIBC` accepts `glibc` (or `gnu`) and `musl`, and outranks every
+detection signal. It only picks between installed platform packages; it cannot
+make an incompatible binary runnable.
 
 ### `runner` works but `run` does not complete
 

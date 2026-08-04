@@ -12,13 +12,13 @@
 # Override registry version with --build-arg VER=<x.y.z>.
 # `--network=host` only needed where Docker's bridge/veth setup is blocked.
 #
-# What this actually probes: facade `lib/resolve.cjs` does NOT inspect
-# platform/arch/libc itself; it walks `optionalDependencies` key order and
-# returns the FIRST sub-package whose bin exists. So correctness on Alpine
-# hinges entirely on npm having installed ONLY the musl sub-package (npm
-# filtering by the `libc` field). If npm also keeps the -gnu package, the
-# shim can hand back a glibc binary on musl. Steps 3-6 below make that
-# visible instead of letting cargo-binstall mask it.
+# What this actually probes: the PUBLISHED package as installed by npm, which
+# filters `optionalDependencies` by the `libc` field and should keep ONLY the
+# musl sub-package. Steps 3-6 make the installed set and the resolved paths
+# visible instead of letting cargo-binstall mask a broken npm path.
+#
+# The other half — the facade's own libc selection when BOTH variants are
+# installed anyway, as Bun and Deno do — is musl-libc-select.Dockerfile.
 FROM alpine:3.22@sha256:310c62b5e7ca5b08167e4384c68db0fd2905dd9c7493756d356e893909057601
 
 ARG VER=0.10.0
@@ -61,7 +61,7 @@ RUN set -eux; \
     COUNT=$(ls -1 "${DIR}" | wc -l); \
     echo "sub-package count: ${COUNT}"; \
     if ls -1 "${DIR}" | grep -q -- '-gnu' && ls -1 "${DIR}" | grep -q -- 'musl'; then \
-        echo "WARN: BOTH -gnu and -musl present, npm did NOT libc-filter; resolve order now decides correctness"; \
+        echo "WARN: BOTH -gnu and -musl present, npm did NOT libc-filter; the facade's libc detection is now the only thing keeping this correct"; \
     fi
 
 # ── 4. what does the resolve shim hand back? (correct API: resolveBinary) ──
