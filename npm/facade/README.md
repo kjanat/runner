@@ -217,18 +217,25 @@ cargo install runner-run
 
 ### `no usable musl binary` / `no usable glibc binary`
 
-The wrong libc build is installed for this machine, so the shim stops before
-spawning anything and names both packages. Older releases had no such check:
-they spawned whatever was installed, and a glibc binary on a musl host died
-with a bare `ENOENT` from `child_process` because its ELF interpreter was
-missing.
+The package built for this machine's libc is not usable, and the one built for
+the *other* libc is installed. The shim stops there instead of spawning the
+incompatible binary, and names both packages. Two ways to land here:
 
-The message names the exact package to install for this machine's
-architecture and libc. Install that one, or reinstall from scratch:
+- **The matching package is missing.** Install the one the message names — it
+  already carries the right architecture and libc:
 
-```sh
-npm install @runner-run/linux-arm64-musl   # example; use the name in the message
-```
+  ```sh
+  npm install @runner-run/linux-arm64-musl   # example; use the name in the message
+  ```
+
+- **The matching package is installed but incomplete**, usually a half-unpacked
+  install. The message says `package present but bin missing at …` and points at
+  the path it looked for. Reinstalling is the fix; installing it again is not,
+  since it is already there.
+
+Older releases had no such check. They spawned whatever was installed first, and
+a glibc binary on a musl host died with a bare `ENOENT` from `child_process`
+because its ELF interpreter was missing.
 
 If the host genuinely runs both libcs — Alpine with `gcompat`, or a glibc
 runtime on a musl userspace — override the detection:
