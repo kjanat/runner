@@ -563,7 +563,8 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 ///
 /// # Returns
 ///
-/// `true` if `args` has exactly two elements and the second element is `--version` or `-V`, `false` otherwise.
+/// `true` if a supported version flag follows only valid global options,
+/// `false` otherwise.
 ///
 /// # Examples
 ///
@@ -595,14 +596,26 @@ enum VersionRequest {
 }
 
 fn version_request(args: &[OsString]) -> Option<VersionRequest> {
-    (args.len() == 2)
-        .then(|| args[1].to_string_lossy())
-        .and_then(|flag| match flag.as_ref() {
-            "-v" | "-V" => Some(VersionRequest::Short),
-            "--version" | "--build-options" => Some(VersionRequest::Detailed),
-            "--revision" => Some(VersionRequest::Revision),
-            _ => None,
-        })
+    let (flag, leading) = args.split_last()?;
+    if leading.is_empty() || leading.iter().any(|arg| arg == "--") {
+        return None;
+    }
+
+    let request = match flag.to_str()? {
+        "-v" | "-V" => VersionRequest::Short,
+        "--version" | "--build-options" => VersionRequest::Detailed,
+        "--revision" => VersionRequest::Revision,
+        _ => return None,
+    };
+
+    <cli::GlobalOpts as clap::Args>::augment_args(
+        clap::Command::new("runner-version-prefix")
+            .disable_help_flag(true)
+            .disable_version_flag(true),
+    )
+    .try_get_matches_from(leading.iter().cloned())
+    .ok()
+    .map(|_| request)
 }
 
 fn version_output(args: &[OsString], request: VersionRequest, stdout_is_terminal: bool) -> String {
@@ -1187,16 +1200,40 @@ mod tests {
     }
 
     #[test]
-    fn requests_version_detects_top_level_version_flags() {
-        for flag in ["-v", "-V", "--version", "--revision", "--build-options"] {
-            assert!(requests_version(&[
-                OsString::from("runner"),
-                OsString::from(flag),
-            ]));
+    fn version_request_preserves_mappings_and_accepts_global_options() {
+        for flag in ["-v", "-V"] {
+            assert!(matches!(
+                super::version_request(&[OsString::from("runner"), OsString::from(flag),]),
+                Some(super::VersionRequest::Short),
+            ));
         }
+        for flag in ["--version", "--build-options"] {
+            assert!(matches!(
+                super::version_request(&[OsString::from("runner"), OsString::from(flag),]),
+                Some(super::VersionRequest::Detailed),
+            ));
+        }
+        assert!(matches!(
+            super::version_request(&[OsString::from("runner"), OsString::from("--revision"),]),
+            Some(super::VersionRequest::Revision),
+        ));
         assert!(!requests_version(&[
             OsString::from("runner"),
             OsString::from("info"),
+            OsString::from("--version"),
+        ]));
+        assert!(matches!(
+            super::version_request(&[
+                OsString::from("run"),
+                OsString::from("--pm"),
+                OsString::from("npm"),
+                OsString::from("--version"),
+            ]),
+            Some(super::VersionRequest::Detailed),
+        ));
+        assert!(!requests_version(&[
+            OsString::from("run"),
+            OsString::from("--bogus"),
             OsString::from("--version"),
         ]));
     }

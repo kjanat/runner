@@ -56,11 +56,14 @@ struct Author {
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-env-changed=RUNNER_BUILD_REVISION");
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    if let Ok(head) = fs::read_to_string(".git/HEAD")
-        && let Some(reference) = head.strip_prefix("ref: ")
-    {
-        println!("cargo:rerun-if-changed=.git/{}", reference.trim());
+    if let Some(head_path) = git_path("HEAD") {
+        println!("cargo:rerun-if-changed={head_path}");
+        if let Ok(head) = fs::read_to_string(&head_path)
+            && let Some(reference) = head.strip_prefix("ref: ")
+            && let Some(reference_path) = git_path(reference.trim())
+        {
+            println!("cargo:rerun-if-changed={reference_path}");
+        }
     }
     println!(
         "cargo:rustc-env=RUNNER_BUILD_TARGET={}",
@@ -114,4 +117,15 @@ fn main() {
     if let Some(email) = primary.email.filter(|e| !e.is_empty()) {
         println!("cargo:rustc-env=RUNNER_AUTHOR_EMAIL={email}");
     }
+}
+
+fn git_path(path: &str) -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "--git-path", path])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|path| path.trim().to_owned())
+        .filter(|path| !path.is_empty())
 }
