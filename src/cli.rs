@@ -1348,6 +1348,12 @@ mod tests {
     about = clap::crate_description!(),
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
     version,
+    after_help = concat!(
+        "\nVersion output:\n  ", cyan!("-v"), ", ", cyan!("-V"), "             Print the short version\n  ",
+        cyan!("--version"), "           Print detailed build information\n  ",
+        cyan!("--revision"), "          Print version and source revision\n  ",
+        cyan!("--build-options"), "     Alias for --version",
+    ),
     styles = HELP_STYLES,
     arg_required_else_help = false,
     add = SubcommandCandidates::new(task_candidates)
@@ -1781,8 +1787,9 @@ pub(crate) enum ConfigAction {
     // list, and flag the forwarding rule that distinguishes this binary
     // from `runner run`.
     after_help = concat!(
-        "\nUse ", cyan!("-h"), "/", cyan!("--help"), " or ", cyan!("-V"), "/", cyan!("--version"),
-        " before a task for this binary's own help and version.\n",
+        "\nUse ", cyan!("-h"), "/", cyan!("--help"), " or a version flag before a task for this binary's own output.\n",
+        "Version flags: ", cyan!("-v"), ", ", cyan!("-V"), " (short); ", cyan!("--version"), ", ",
+        cyan!("--build-options"), " (detailed); ", cyan!("--revision"), " (source revision).\n",
         "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
     ),
     styles = HELP_STYLES,

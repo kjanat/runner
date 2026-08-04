@@ -112,6 +112,8 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = clap::crate_version!();
+const BUILD_REVISION: &str = env!("RUNNER_BUILD_REVISION");
+const BUILD_RUSTC: &str = env!("RUNNER_BUILD_RUSTC");
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
@@ -177,8 +179,11 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    if requests_version(&args) {
-        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+    if let Some(request) = version_request(&args) {
+        println!(
+            "{}",
+            version_output(&args, request, std::io::stdout().is_terminal())
+        );
         return Ok(0);
     }
 
@@ -306,8 +311,11 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    if requests_version(&args) {
-        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+    if let Some(request) = version_request(&args) {
+        println!(
+            "{}",
+            version_output(&args, request, std::io::stdout().is_terminal())
+        );
         return Ok(0);
     }
 
@@ -576,12 +584,38 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 /// ```
 #[must_use]
 pub fn requests_version(args: &[OsString]) -> bool {
-    if args.len() != 2 {
-        return false;
-    }
+    version_request(args).is_some()
+}
 
-    let flag = args[1].to_string_lossy();
-    flag == "--version" || flag == "-V"
+#[derive(Clone, Copy)]
+enum VersionRequest {
+    Short,
+    Detailed,
+    Revision,
+}
+
+fn version_request(args: &[OsString]) -> Option<VersionRequest> {
+    (args.len() == 2)
+        .then(|| args[1].to_string_lossy())
+        .and_then(|flag| match flag.as_ref() {
+            "-v" | "-V" => Some(VersionRequest::Short),
+            "--version" | "--build-options" => Some(VersionRequest::Detailed),
+            "--revision" => Some(VersionRequest::Revision),
+            _ => None,
+        })
+}
+
+fn version_output(args: &[OsString], request: VersionRequest, stdout_is_terminal: bool) -> String {
+    match request {
+        VersionRequest::Short => version_line(args, stdout_is_terminal),
+        VersionRequest::Revision => format!("{VERSION}+{BUILD_REVISION}"),
+        VersionRequest::Detailed => format!(
+            "{}\nrevision: {BUILD_REVISION}\ntarget: {}\nprofile: {}\nrustc: {BUILD_RUSTC}",
+            version_line(args, stdout_is_terminal),
+            env!("RUNNER_BUILD_TARGET"),
+            env!("RUNNER_BUILD_PROFILE"),
+        ),
+    }
 }
 
 fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
@@ -1100,10 +1134,10 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AliasBuiltin, VERSION, alias_builtin_request, bin_name_from_arg0, configured_project_dir,
-        exit_code_for_error, expand_tilde_with, has_task, parse_cli, parse_run_alias_cli,
-        release_url, requests_version, resolve_project_dir, run_alias_in_dir, run_in_dir,
-        version_line,
+        AliasBuiltin, BUILD_REVISION, VERSION, alias_builtin_request, bin_name_from_arg0,
+        configured_project_dir, exit_code_for_error, expand_tilde_with, has_task, parse_cli,
+        parse_run_alias_cli, release_url, requests_version, resolve_project_dir, run_alias_in_dir,
+        run_in_dir, version_line, version_output,
     };
     use crate::cli;
     use crate::resolver::ResolveError;
@@ -1154,14 +1188,12 @@ mod tests {
 
     #[test]
     fn requests_version_detects_top_level_version_flags() {
-        assert!(requests_version(&[
-            OsString::from("runner"),
-            OsString::from("--version")
-        ]));
-        assert!(requests_version(&[
-            OsString::from("runner"),
-            OsString::from("-V")
-        ]));
+        for flag in ["-v", "-V", "--version", "--revision", "--build-options"] {
+            assert!(requests_version(&[
+                OsString::from("runner"),
+                OsString::from(flag),
+            ]));
+        }
         assert!(!requests_version(&[
             OsString::from("runner"),
             OsString::from("info"),
@@ -1187,6 +1219,32 @@ mod tests {
         assert!(line.contains(&format!(
             "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
         )));
+    }
+
+    #[test]
+    fn detailed_version_identifies_the_build() {
+        let output = version_output(
+            &[OsString::from("runner")],
+            super::VersionRequest::Detailed,
+            false,
+        );
+
+        assert!(output.starts_with(&format!("runner {VERSION}\n")));
+        for label in ["revision: ", "target: ", "profile: ", "rustc: "] {
+            assert!(output.contains(label), "missing {label:?} in {output:?}");
+        }
+    }
+
+    #[test]
+    fn revision_version_uses_bun_style_separator() {
+        assert_eq!(
+            version_output(
+                &[OsString::from("run")],
+                super::VersionRequest::Revision,
+                false,
+            ),
+            format!("{VERSION}+{BUILD_REVISION}"),
+        );
     }
 
     #[test]

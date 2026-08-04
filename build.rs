@@ -3,9 +3,11 @@
 //! crate otherwise). Emits `RUNNER_AUTHOR_NAME` (always), `RUNNER_AUTHOR_EMAIL`
 //! (when present and non-empty), and `RUNNER_SCHEMA_BASE` (the base URL the
 //! schema `$id`s and the scaffolded `#:schema` directive hang off). Consumers
-//! read these via `env!` / `option_env!`.
+//! read these via `env!` / `option_env!`. It also captures the source
+//! revision, compilation target/profile, and compiler version used by the
+//! detailed CLI version output.
 
-use std::{env, fs, path::Path};
+use std::{env, fs, path::Path, process::Command};
 
 use serde::Deserialize;
 
@@ -53,6 +55,43 @@ struct Author {
 /// ```
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-env-changed=RUNNER_BUILD_REVISION");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    if let Ok(head) = fs::read_to_string(".git/HEAD")
+        && let Some(reference) = head.strip_prefix("ref: ")
+    {
+        println!("cargo:rerun-if-changed=.git/{}", reference.trim());
+    }
+    println!(
+        "cargo:rustc-env=RUNNER_BUILD_TARGET={}",
+        env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    println!(
+        "cargo:rustc-env=RUNNER_BUILD_PROFILE={}",
+        env::var("PROFILE").unwrap_or_else(|_| "unknown".to_owned())
+    );
+
+    let revision = env::var("RUNNER_BUILD_REVISION").ok().or_else(|| {
+        Command::new("git")
+            .args(["rev-parse", "--short=9", "HEAD"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|revision| revision.trim().to_owned())
+            .filter(|revision| !revision.is_empty())
+    });
+    println!(
+        "cargo:rustc-env=RUNNER_BUILD_REVISION={}",
+        revision.as_deref().unwrap_or("unknown")
+    );
+
+    let rustc = env::var_os("RUSTC")
+        .and_then(|rustc| Command::new(rustc).arg("--version").output().ok())
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |version| version.trim().to_owned());
+    println!("cargo:rustc-env=RUNNER_BUILD_RUSTC={rustc}");
 
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo");
     let manifest_path = Path::new(&manifest_dir).join("Cargo.toml");

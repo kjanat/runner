@@ -9,6 +9,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- Expanded version reporting for both `runner` and `run`: `-v` and `-V` print
+  the concise version, `--version`/`--build-options` include the source
+  revision, target, profile, and Rust compiler, and `--revision` prints a
+  Bun-style `version+revision` identifier.
+
 ### Release checklist
 
 - [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
