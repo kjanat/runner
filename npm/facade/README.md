@@ -156,12 +156,6 @@ At publish time, `runner-run` declares packages like `@runner-run/linux-x64-gnu`
 as `optionalDependencies`. Your package manager picks the one matching your
 OS/CPU/libc, then the `runner` and `run` shims exec the local binary.
 
-On Linux the shims re-check that choice instead of trusting whatever is
-installed: they detect the host libc and load the matching `-gnu` or `-musl`
-package by name. Bun and Deno currently ignore the `libc` field and install
-both, and a `node_modules` directory copied off another machine can carry
-either one.
-
 Useful consequences:
 
 - no `postinstall` script
@@ -217,36 +211,12 @@ cargo install runner-run
 
 ### `no usable musl binary` / `no usable glibc binary`
 
-The package built for this machine's libc is not usable, and the one built for
-the *other* libc is installed. The shim stops there instead of spawning the
-incompatible binary, and names both packages. Two ways to land here:
+Only the wrong-libc build is installed. Do what the message says: it names the
+package to install, or reports the matching package as present but incomplete,
+in which case reinstall.
 
-- **The matching package is missing.** Install the one the message names — it
-  already carries the right architecture and libc:
-
-  ```sh
-  npm install @runner-run/linux-arm64-musl   # example; use the name in the message
-  ```
-
-- **The matching package is installed but incomplete**, usually a half-unpacked
-  install. The message says `package present but bin missing at …` and points at
-  the path it looked for. Reinstalling is the fix; installing it again is not,
-  since it is already there.
-
-Older releases had no such check. They spawned whatever was installed first, and
-a glibc binary on a musl host died with a bare `ENOENT` from `child_process`
-because its ELF interpreter was missing.
-
-If the host genuinely runs both libcs — Alpine with `gcompat`, or a glibc
-runtime on a musl userspace — override the detection:
-
-```sh
-RUNNER_LIBC=glibc runner --version
-```
-
-`RUNNER_LIBC` accepts `glibc` (or `gnu`) and `musl`, and outranks every
-detection signal. It only picks between installed platform packages; it cannot
-make an incompatible binary runnable.
+On a host that genuinely runs both libcs (Alpine with `gcompat`), override
+detection with `RUNNER_LIBC=glibc` or `RUNNER_LIBC=musl`.
 
 ### `runner` works but `run` does not complete
 

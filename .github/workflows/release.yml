@@ -1,6 +1,6 @@
 # Tag-push (v*) pipeline. Scripts: .github/scripts/<workflow>.sh <subcommand>.
 #
-#   verify (also PRs/master) ── dprint, facade tests, cargo lint, cargo test
+#   verify (also PRs/master) ── dprint, cargo lint, cargo test, facade tests
 #     ├─ create-release ─────── draft GH release + notes
 #     │    ├─ man ───────────── release assets + artifact `man-pages`
 #     │    └─ upload-assets ─── per-target build matrix (needs: matrix);
@@ -60,11 +60,9 @@ jobs:
         with: { mise_toml: "${{ env.MISE_TOML }}" }
       - run: dprint check
       - run: just lint-sh
-      # The npm facade picks the platform package; its libc selection has no
-      # Rust coverage. Node ships the runner, so this needs no install step.
-      - run: node --test npm/facade/test/*.test.cjs
       - run: cargo lint
       - run: cargo test
+      - run: cargo run --quiet --bin run -- test:facade
 
   create-release:
     name: create draft release

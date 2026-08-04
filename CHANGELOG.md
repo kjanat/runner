@@ -19,19 +19,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
-- The npm facade now selects the Linux platform package by libc instead of by
-  `optionalDependencies` order (https://github.com/kjanat/runner/issues/106).
-  `npm/facade/lib/resolve.cjs` detects the host libc — `RUNNER_LIBC`, then
-  `process.report`'s `glibcVersionRuntime`, then musl and glibc markers on the
-  filesystem — derives the matching `@runner-run/linux-<arch>-<gnu|musl>` name,
-  and resolves it directly. Package managers that ignore the `libc` field (Bun,
-  Deno) install both variants, and the GNU package came first, so it won: on a
-  musl-only host the shim handed back a glibc binary that `spawnSync` could only
-  report as `ENOENT`. If just the wrong-libc sibling is installed, the facade now
-  fails with a diagnostic naming both packages rather than spawning it. Targets
-  without a libc pair, `linux-armv7-gnueabihf` included, keep their previous
-  resolution. `RUNNER_LIBC=glibc|musl` overrides detection for hosts that can run
-  both.
+- The npm facade selects the Linux platform package by detected libc instead of
+  `optionalDependencies` order, so installs carrying both variants (Bun, Deno)
+  no longer get a glibc binary on musl. Only the wrong-libc sibling installed is
+  now a facade error, not a `spawnSync` `ENOENT`. `RUNNER_LIBC=glibc|musl`
+  overrides detection (https://github.com/kjanat/runner/issues/106).
 
 ## [0.24.1] - 2026-08-03
 

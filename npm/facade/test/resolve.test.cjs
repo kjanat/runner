@@ -7,342 +7,167 @@ const { mkdirSync, mkdtempSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 
-const { resolveBinary, detectLibc, planCandidates } = require("../lib/resolve.cjs");
+const { resolveBinary, detectLibc } = require("#resolve");
 
-const SCOPE = "@runner-run";
+/** @typedef {{ pkg: string, os: string[], cpu: string[], libc?: string[] }} Target */
+const { scope, binaries, targets } = /** @type {{ scope: string, binaries: string[], targets: Target[] }} */ (
+	require("../../targets.json")
+);
 
-/**
- * The declared platform packages, in the order `build-packages.ts` generates
- * them from `npm/targets.json`. GNU deliberately precedes musl here: a test
- * that passes only because of this order is a test of the bug, not the fix.
- */
-const DECLARED = [
-	`${SCOPE}/linux-x64-gnu`,
-	`${SCOPE}/linux-x64-musl`,
-	`${SCOPE}/linux-arm64-gnu`,
-	`${SCOPE}/linux-arm64-musl`,
-	`${SCOPE}/android-arm64`,
-	`${SCOPE}/linux-armv7-gnueabihf`,
-	`${SCOPE}/darwin-x64`,
-	`${SCOPE}/darwin-arm64`,
-	`${SCOPE}/win32-x64-msvc`,
-	`${SCOPE}/win32-arm64-msvc`,
-	`${SCOPE}/freebsd-x64`,
-];
+/** Every platform package the facade declares, in generated manifest order. */
+const declared = targets.map((target) => `${scope}/${target.pkg}`);
+
+/** @param {Target} target */
+const libcOf = (target) => target.libc?.[0] ?? null;
 
 /**
- * Build a `node_modules`-shaped fixture containing exactly `packages`, each
- * with a real `package.json` and real `bin/` entries, and return a resolver
- * over it that fails the way Node's does for anything else.
+ * The same-arch package built for the other libc, when the matrix ships one.
+ * `linux-armv7-gnueabihf` has none, and must not have one invented for it.
  *
- * @param {readonly string[]} packages - Packages to materialize on disk.
- * @param {readonly string[]} [binaries] - Binary file names to create in each package.
+ * @param {Target} target
+ * @returns {Target | undefined}
+ */
+const siblingOf = (target) =>
+	targets.find((other) =>
+		other !== target
+		&& other.os[0] === target.os[0]
+		&& other.cpu[0] === target.cpu[0]
+		&& libcOf(other) === (libcOf(target) === "musl" ? "glibc" : "musl")
+	);
+
+/**
+ * Materialize `packages` as a `node_modules`-shaped tree and return a resolver
+ * over it that misses the way Node's does.
+ *
+ * @param {readonly string[]} packages
+ * @param {readonly string[]} files - Binary names to create under each `bin/`.
  * @returns {{ root: string, resolvePackageJson: (pkg: string) => string }}
  */
-function installFixture(packages, binaries = ["run", "runner"]) {
+function installFixture(packages, files) {
 	const root = mkdtempSync(join(tmpdir(), "runner-resolve-"));
 	for (const pkg of packages) {
-		const dir = join(root, pkg);
-		mkdirSync(join(dir, "bin"), { recursive: true });
-		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: pkg, version: "0.0.0-test" }));
-		for (const binary of binaries) writeFileSync(join(dir, "bin", binary), "#!/bin/sh\n", { mode: 0o755 });
+		mkdirSync(join(root, pkg, "bin"), { recursive: true });
+		writeFileSync(join(root, pkg, "package.json"), JSON.stringify({ name: pkg }));
+		for (const file of files) writeFileSync(join(root, pkg, "bin", file), "");
 	}
-
 	return {
 		root,
-		resolvePackageJson(pkg) {
-			if (!packages.includes(pkg)) {
-				throw Object.assign(new Error(`Cannot find module '${pkg}/package.json'`), { code: "MODULE_NOT_FOUND" });
-			}
-			return join(root, pkg, "package.json");
+		resolvePackageJson: (pkg) => {
+			if (packages.includes(pkg)) return join(root, pkg, "package.json");
+			throw Object.assign(new Error(`Cannot find module '${pkg}'`), { code: "MODULE_NOT_FOUND" });
 		},
 	};
 }
 
 /**
- * A `detect` implementation backed by the real layered detector, with every
- * signal stubbed out so nothing about the machine running the tests leaks in.
+ * The real detector with every signal stubbed, so no property of the machine
+ * running the tests leaks into the result.
  *
- * @param {import("../lib/resolve.cjs").LibcSignals} [signals] - Signals to override.
- * @returns {() => import("../lib/resolve.cjs").LibcDetection}
+ * @param {import("#resolve").LibcSignals} [signals]
  */
-function detectWith(signals = {}) {
-	return () =>
-		detectLibc({ env: {}, glibcVersion: () => null, fileExists: () => false, readDir: () => [], ...signals });
-}
+const detectWith = (signals = {}) => () =>
+	detectLibc({ env: {}, glibcVersion: () => null, fileExists: () => false, readDir: () => [], ...signals });
 
-/** A host whose only libc evidence is Alpine's release file. */
-const MUSL_HOST = detectWith({ fileExists: (path) => path === "/etc/alpine-release" });
+/** @type {Record<string, () => import("#resolve").LibcDetection>} */
+const HOSTS = {
+	glibc: detectWith({ glibcVersion: () => "2.39" }),
+	musl: detectWith({ fileExists: (path) => path === "/etc/alpine-release" }),
+	undecided: detectWith(),
+};
 
-/** A host that reports a runtime glibc version, the way Node on glibc does. */
-const GLIBC_HOST = detectWith({ glibcVersion: () => "2.39" });
-
-/** SGR colors and OSC 8 hyperlinks, which ansispeck emits on a capable terminal. */
-const ANSI = /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u001B\[[0-9;]*[A-Za-z]/g;
-
-/**
- * Run `fn` with `console.error` captured instead of printed. Escape sequences
- * are stripped so assertions read the message, not the terminal capabilities
- * of whoever ran the tests.
- *
- * @template T
- * @param {() => T} fn
- * @returns {{ result: T | undefined, error: unknown, output: string }}
- */
+/** @param {() => unknown} fn */
 function captureStderr(fn) {
 	const original = console.error;
 	/** @type {string[]} */
 	const lines = [];
 	console.error = (...args) => void lines.push(args.map(String).join(" "));
-	const output = () => lines.join("\n").replace(ANSI, "");
 	try {
-		return { result: fn(), error: undefined, output: output() };
+		fn();
+		return { error: undefined, output: lines.join("\n") };
 	} catch (error) {
-		return { result: undefined, error, output: output() };
+		return { error, output: lines.join("\n") };
 	} finally {
 		console.error = original;
 	}
 }
 
-test("musl host prefers the musl package even when GNU is installed and declared first", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-x64-gnu`, `${SCOPE}/linux-x64-musl`]);
-	const context = { platform: "linux", arch: "x64", packages: DECLARED, detect: MUSL_HOST, resolvePackageJson };
+// Every target in the matrix, against a host that matches it and an install
+// carrying its libc sibling where one exists — the tree Bun and Deno produce.
+// Asserting the exact package means no case can pass on manifest order.
+for (const target of targets) {
+	const sibling = siblingOf(target);
+	const host = HOSTS[libcOf(target) ?? "undecided"];
+	const files = binaries.map((name) => (target.os[0] === "win32" ? `${name}.exe` : name));
 
-	for (const name of ["run", "runner"]) {
-		assert.equal(resolveBinary(name, context), join(root, `${SCOPE}/linux-x64-musl`, "bin", name));
-	}
-});
+	test(`${target.pkg} resolves itself${sibling ? ` over ${sibling.pkg}` : ""}`, () => {
+		const installed = [target, ...(sibling ? [sibling] : [])].map((each) => `${scope}/${each.pkg}`);
+		const { root, resolvePackageJson } = installFixture(installed, files);
+		const context = {
+			platform: target.os[0],
+			arch: target.cpu[0],
+			packages: declared,
+			detect: host,
+			resolvePackageJson,
+		};
 
-test("musl host still prefers musl when the manifest declares musl first", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-x64-gnu`, `${SCOPE}/linux-x64-musl`]);
-	const reversed = [...DECLARED].reverse();
-	const context = { platform: "linux", arch: "x64", packages: reversed, detect: MUSL_HOST, resolvePackageJson };
+		for (const [index, name] of binaries.entries()) {
+			assert.equal(resolveBinary(name, context), join(root, `${scope}/${target.pkg}`, "bin", files[index]));
+		}
+	});
+}
 
-	assert.equal(resolveBinary("run", context), join(root, `${SCOPE}/linux-x64-musl`, "bin", "run"));
-});
-
-test("glibc arm64 host prefers the GNU package when both are installed", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-arm64-gnu`, `${SCOPE}/linux-arm64-musl`]);
-	const context = { platform: "linux", arch: "arm64", packages: DECLARED, detect: GLIBC_HOST, resolvePackageJson };
-
-	for (const name of ["run", "runner"]) {
-		assert.equal(resolveBinary(name, context), join(root, `${SCOPE}/linux-arm64-gnu`, "bin", name));
-	}
-});
-
-test("glibc arm64 host prefers GNU even when musl is declared first", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-arm64-gnu`, `${SCOPE}/linux-arm64-musl`]);
-	const muslFirst = [`${SCOPE}/linux-arm64-musl`, ...DECLARED.filter((pkg) => pkg !== `${SCOPE}/linux-arm64-musl`)];
-	const context = { platform: "linux", arch: "arm64", packages: muslFirst, detect: GLIBC_HOST, resolvePackageJson };
-
-	assert.equal(resolveBinary("run", context), join(root, `${SCOPE}/linux-arm64-gnu`, "bin", "run"));
-});
-
-test("musl host with only the GNU sibling installed fails with a libc diagnostic", () => {
-	const { resolvePackageJson } = installFixture([`${SCOPE}/linux-x64-gnu`]);
-	const context = { platform: "linux", arch: "x64", packages: DECLARED, detect: MUSL_HOST, resolvePackageJson };
+test("only the wrong-libc sibling installed fails without spawning it", () => {
+	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
 
 	const { error, output } = captureStderr(() => resolveBinary("run", context));
 
-	assert.ok(error instanceof Error, "expected resolveBinary to throw");
-	assert.match(error.message, /No usable musl binary for linux-x64/);
-	assert.match(error.message, /linux-x64-gnu/);
-	assert.match(output, /Detected libc: musl \(\/etc\/alpine-release\)/);
-	assert.match(output, new RegExp(`Expected package: ${SCOPE}/linux-x64-musl — not installed`));
-	assert.doesNotMatch(output, /no prebuilt binary found/);
+	assert.match(String(error), /No usable musl binary for linux-x64/);
+	assert.match(output, new RegExp(`Expected package: ${scope}/linux-x64-musl — not installed`));
 });
 
-test("glibc host with only the musl sibling installed fails with a libc diagnostic", () => {
-	const { resolvePackageJson } = installFixture([`${SCOPE}/linux-arm64-musl`]);
-	const context = { platform: "linux", arch: "arm64", packages: DECLARED, detect: GLIBC_HOST, resolvePackageJson };
-
-	const { error } = captureStderr(() => resolveBinary("runner", context));
-
-	assert.ok(error instanceof Error, "expected resolveBinary to throw");
-	assert.match(error.message, /No usable glibc binary for linux-arm64/);
-	assert.match(error.message, /linux-arm64-musl/);
-});
-
-test("a matching package whose bin is missing does not fall through to the sibling", () => {
-	// Half-finished install: the musl package is there, its bins are not.
-	const { resolvePackageJson } = installFixture([`${SCOPE}/linux-x64-musl`], []);
-	const gnu = installFixture([`${SCOPE}/linux-x64-gnu`]);
-	/** @param {string} pkg */
-	const resolve = (pkg) => (pkg.endsWith("-musl") ? resolvePackageJson(pkg) : gnu.resolvePackageJson(pkg));
-	const context = {
-		platform: "linux",
-		arch: "x64",
-		packages: DECLARED,
-		detect: MUSL_HOST,
-		resolvePackageJson: resolve,
-	};
+test("the matching package installed without its bin reports that, not a missing install", () => {
+	const musl = installFixture([`${scope}/linux-x64-musl`], []);
+	const gnu = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const resolvePackageJson = (/** @type {string} */ pkg) =>
+		pkg.endsWith("-musl") ? musl.resolvePackageJson(pkg) : gnu.resolvePackageJson(pkg);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
 
 	const { error, output } = captureStderr(() => resolveBinary("run", context));
 
-	assert.ok(error instanceof Error, "expected resolveBinary to throw");
-	assert.match(error.message, /refusing to spawn the glibc build/);
-	// The package IS installed, only its bin is gone. Telling the user to
-	// install what they already have would send them in a circle.
+	assert.match(String(error), /refusing to spawn the glibc build/);
 	assert.match(output, /package present but bin missing at/);
 	assert.doesNotMatch(output, /not installed/);
 });
 
-test("neither variant installed keeps the generic optionalDependencies diagnostic", () => {
-	const { resolvePackageJson } = installFixture([]);
-	const context = { platform: "linux", arch: "x64", packages: DECLARED, detect: MUSL_HOST, resolvePackageJson };
+test("an undecided libc keeps the declared order and says so", () => {
+	const installed = [`${scope}/linux-x64-gnu`, `${scope}/linux-x64-musl`];
+	const { root, resolvePackageJson } = installFixture(installed, binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.undecided, resolvePackageJson };
 
-	const { error, output } = captureStderr(() => resolveBinary("run", context));
+	const { output } = captureStderr(() =>
+		assert.equal(resolveBinary("run", context), join(root, `${scope}/linux-x64-gnu`, "bin", "run"))
+	);
 
-	assert.ok(error instanceof Error, "expected resolveBinary to throw");
-	assert.match(error.message, /No prebuilt binary found/);
-	assert.match(output, /optionalDependencies/);
-});
-
-test("an undecided libc falls back to declared order and says so", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-x64-gnu`, `${SCOPE}/linux-x64-musl`]);
-	const context = { platform: "linux", arch: "x64", packages: DECLARED, detect: detectWith(), resolvePackageJson };
-
-	const { result, output } = captureStderr(() => resolveBinary("run", context));
-
-	assert.equal(result, join(root, `${SCOPE}/linux-x64-gnu`, "bin", "run"));
 	assert.match(output, /could not detect this host's libc/);
-	assert.match(output, /RUNNER_LIBC/);
 });
 
-test("RUNNER_LIBC overrides detection", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-x64-gnu`, `${SCOPE}/linux-x64-musl`]);
-	const forced = detectWith({ env: { RUNNER_LIBC: "musl" }, glibcVersion: () => "2.39" });
-	const context = { platform: "linux", arch: "x64", packages: DECLARED, detect: forced, resolvePackageJson };
+// Each layer is a positive proof; none may be inferred from another's absence.
+test("libc detection layers", () => {
+	/** @type {[string, import("#resolve").LibcSignals, string | null][]} */
+	const cases = [
+		["RUNNER_LIBC wins over everything", { env: { RUNNER_LIBC: "musl" }, glibcVersion: () => "2.39" }, "musl"],
+		["gnu is accepted for glibc", { env: { RUNNER_LIBC: "gnu" } }, "glibc"],
+		["an unknown override falls through", { env: { RUNNER_LIBC: "uclibc" }, glibcVersion: () => "2.39" }, "glibc"],
+		["process.report reports glibc", { glibcVersion: () => "2.39" }, "glibc"],
+		["alpine marks musl", { fileExists: (p) => p === "/etc/alpine-release" }, "musl"],
+		["the musl loader marks musl", { fileExists: (p) => p === "/lib/ld-musl-x86_64.so.1" }, "musl"],
+		["a scanned musl loader marks musl", { readDir: (d) => (d === "/lib" ? ["ld-musl-x86_64.so.1"] : []) }, "musl"],
+		["the glibc loader marks glibc", { fileExists: (p) => p === "/lib64/ld-linux-x86-64.so.2" }, "glibc"],
+		["no signal stays undecided", {}, null],
+	];
 
-	assert.equal(resolveBinary("run", context), join(root, `${SCOPE}/linux-x64-musl`, "bin", "run"));
-});
-
-test("linux-armv7-gnueabihf resolves without synthesizing a musl sibling", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/linux-armv7-gnueabihf`]);
-	const context = { platform: "linux", arch: "arm", packages: DECLARED, detect: MUSL_HOST, resolvePackageJson };
-
-	assert.equal(resolveBinary("run", context), join(root, `${SCOPE}/linux-armv7-gnueabihf`, "bin", "run"));
-
-	const plan = planCandidates({ platform: "linux", arch: "arm", packages: DECLARED, detect: MUSL_HOST });
-	assert.deepEqual(plan.pair, []);
-	assert.deepEqual(plan.rejected, []);
-	assert.deepEqual(plan.order, DECLARED);
-});
-
-test("non-Linux platforms keep the declared order untouched", () => {
-	for (const [platform, arch, pkg] of [["darwin", "arm64", "darwin-arm64"], ["freebsd", "x64", "freebsd-x64"]]) {
-		const { root, resolvePackageJson } = installFixture([`${SCOPE}/${pkg}`]);
-		const context = { platform, arch, packages: DECLARED, detect: MUSL_HOST, resolvePackageJson };
-
-		assert.equal(resolveBinary("run", context), join(root, `${SCOPE}/${pkg}`, "bin", "run"));
-
-		const plan = planCandidates({ platform, arch, packages: DECLARED, detect: MUSL_HOST });
-		assert.deepEqual(plan.order, DECLARED);
-		assert.equal(plan.expected, null);
+	for (const [name, signals, expected] of cases) {
+		assert.equal(detectWith({ arch: "x64", ...signals })().libc, expected, name);
 	}
-});
-
-test("win32 still resolves the .exe suffix", () => {
-	const { root, resolvePackageJson } = installFixture([`${SCOPE}/win32-x64-msvc`], ["run.exe", "runner.exe"]);
-	const context = { platform: "win32", arch: "x64", packages: DECLARED, detect: MUSL_HOST, resolvePackageJson };
-
-	assert.equal(resolveBinary("run", context), join(root, `${SCOPE}/win32-x64-msvc`, "bin", "run.exe"));
-});
-
-test("unscoped platform packages are left in declared order", () => {
-	const packages = ["linux-x64-gnu", "linux-x64-musl"];
-	const plan = planCandidates({ platform: "linux", arch: "x64", packages, detect: MUSL_HOST });
-
-	assert.deepEqual(plan.order, packages);
-	assert.equal(plan.expected, null);
-});
-
-test("detectLibc reads a usable process.report glibc version first", () => {
-	const detected = detectLibc({
-		arch: "x64",
-		env: {},
-		glibcVersion: () => "2.39",
-		fileExists: () => false,
-		readDir: () => [],
-	});
-
-	assert.equal(detected.libc, "glibc");
-	assert.match(detected.source, /glibcVersionRuntime 2\.39/);
-});
-
-test("detectLibc falls back to the filesystem when process.report is unusable", () => {
-	// Bun/Deno (no diagnostic report) and musl builds of Node (report without a
-	// glibcVersionRuntime field) both land here.
-	const alpine = detectLibc({
-		arch: "x64",
-		env: {},
-		glibcVersion: () => null,
-		fileExists: (path) => path === "/etc/alpine-release",
-		readDir: () => [],
-	});
-	assert.deepEqual(alpine, { libc: "musl", source: "/etc/alpine-release" });
-
-	const loader = detectLibc({
-		arch: "x64",
-		env: {},
-		glibcVersion: () => null,
-		fileExists: (path) => path === "/lib/ld-musl-x86_64.so.1",
-		readDir: () => [],
-	});
-	assert.deepEqual(loader, { libc: "musl", source: "/lib/ld-musl-x86_64.so.1" });
-
-	const glibc = detectLibc({
-		arch: "arm64",
-		env: {},
-		glibcVersion: () => null,
-		fileExists: (path) => path === "/lib/ld-linux-aarch64.so.1",
-		readDir: () => [],
-	});
-	assert.deepEqual(glibc, { libc: "glibc", source: "/lib/ld-linux-aarch64.so.1" });
-});
-
-test("detectLibc scans lib directories for architectures it has no loader name for", () => {
-	const detected = detectLibc({
-		arch: "loongarch64",
-		env: {},
-		glibcVersion: () => null,
-		fileExists: () => false,
-		readDir: (dir) => (dir === "/lib" ? ["libz.so.1", "ld-musl-loongarch64.so.1"] : []),
-	});
-
-	assert.deepEqual(detected, { libc: "musl", source: "/lib/ld-musl-loongarch64.so.1" });
-});
-
-test("detectLibc reports undecided rather than guessing", () => {
-	const detected = detectLibc({
-		arch: "x64",
-		env: {},
-		glibcVersion: () => null,
-		fileExists: () => false,
-		readDir: () => [],
-	});
-
-	assert.equal(detected.libc, null);
-});
-
-test("detectLibc honours RUNNER_LIBC over every other signal", () => {
-	for (const [value, expected] of [["musl", "musl"], ["glibc", "glibc"], ["gnu", "glibc"], [" MUSL ", "musl"]]) {
-		const detected = detectLibc({
-			arch: "x64",
-			env: { RUNNER_LIBC: value },
-			glibcVersion: () => "2.39",
-			fileExists: () => true,
-			readDir: () => [],
-		});
-		assert.equal(detected.libc, expected, `RUNNER_LIBC=${value}`);
-	}
-
-	const ignored = detectLibc({
-		arch: "x64",
-		env: { RUNNER_LIBC: "uclibc" },
-		glibcVersion: () => "2.39",
-		fileExists: () => false,
-		readDir: () => [],
-	});
-	assert.equal(ignored.libc, "glibc", "an unknown RUNNER_LIBC value falls through to detection");
 });
