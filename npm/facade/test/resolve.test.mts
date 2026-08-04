@@ -1,15 +1,14 @@
-// tsconfig pins `typeRoots`, so the reference `@types/bun` makes to
-// `bun-types` is not picked up on its own.
+// tsconfig pins `typeRoots`, so `@types/bun`'s own reference is not followed.
 /// <reference types="bun" />
 import { expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { strip } from "ansispeck";
+
 import { detectLibc, resolveBinary } from "#resolve";
 import type { LibcDetection, LibcSignals } from "#resolve";
-// The build script owns the shape `targets.schema.json` describes; the tests
-// read the same matrix, so they read the same types.
 import type { Matrix, Target } from "../../scripts/build-packages.ts";
 import matrix from "../../targets.json" with { type: "json" };
 
@@ -65,12 +64,9 @@ const HOSTS: Record<string, () => LibcDetection> = {
 	undecided: detectWith(),
 };
 
-/** SGR colors and OSC 8 hyperlinks, which ansispeck emits on a capable terminal. */
-const ANSI = /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u001B\[[0-9;]*[A-Za-z]/g;
-
 function captureStderr(fn: () => unknown): { error: unknown; output: string } {
 	const spy = spyOn(console, "error").mockImplementation(() => {});
-	const output = () => spy.mock.calls.map((args) => args.map(String).join(" ")).join("\n").replace(ANSI, "");
+	const output = () => strip(spy.mock.calls.map((args) => args.map(String).join(" ")).join("\n"));
 	try {
 		fn();
 		return { error: undefined, output: output() };

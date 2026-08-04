@@ -8,6 +8,7 @@
 	],
 	"scripts": {
 		"fmt": "bunx dprint fmt",
+		"fmt:check": "bunx dprint check",
 		"fmt:update": "bunx dprint config update --yes",
 		"test:facade": "bun test npm/facade/test/",
 		"typecheck": "tsc --noEmit"

@@ -1,6 +1,6 @@
 # Tag-push (v*) pipeline. Scripts: .github/scripts/<workflow>.sh <subcommand>.
 #
-#   verify (also PRs/master) ── dprint, cargo lint, cargo test, runner install
+#   verify (also PRs/master) ── one `runner install` chain: fmt, lint, test
 #     ├─ create-release ─────── draft GH release + notes
 #     │    ├─ man ───────────── release assets + artifact `man-pages`
 #     │    └─ upload-assets ─── per-target build matrix (needs: matrix);
@@ -58,12 +58,8 @@ jobs:
       - run: printf 'MISE_TOML<<TOML\n%s\nTOML\n' "$(yq -o toml -p json <<<"$MISE" | dprint fmt --stdin toml)" | tee -a "${GITHUB_ENV}"
       - uses: jdx/mise-action@v4
         with: { mise_toml: "${{ env.MISE_TOML }}" }
-      - run: dprint check
-      - run: just lint-sh
-      - run: cargo lint
-      - run: cargo test
       - uses: ./
-      - run: runner --pm bun install --frozen typecheck test:facade
+      - run: runner --pm bun install --frozen -sk fmt:check just:lint-sh cargo:lint cargo:test typecheck test:facade
 
   create-release:
     name: create draft release
