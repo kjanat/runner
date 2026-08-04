@@ -9,7 +9,7 @@
 	"scripts": {
 		"fmt": "bunx dprint fmt",
 		"fmt:update": "bunx dprint config update --yes",
-		"test": "node --test npm/facade/test/*.test.cjs",
+		"test:facade": "node --test npm/facade/test/*.test.cjs",
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
