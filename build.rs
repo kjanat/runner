@@ -55,46 +55,8 @@ struct Author {
 /// ```
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-env-changed=RUNNER_BUILD_REVISION");
-    if let Some(head_path) = git_path("HEAD") {
-        println!("cargo:rerun-if-changed={head_path}");
-        if let Ok(head) = fs::read_to_string(&head_path)
-            && let Some(reference) = head.strip_prefix("ref: ")
-            && let Some(reference_path) = git_path(reference.trim())
-        {
-            println!("cargo:rerun-if-changed={reference_path}");
-        }
-    }
-    println!(
-        "cargo:rustc-env=RUNNER_BUILD_TARGET={}",
-        env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned())
-    );
-    println!(
-        "cargo:rustc-env=RUNNER_BUILD_PROFILE={}",
-        env::var("PROFILE").unwrap_or_else(|_| "unknown".to_owned())
-    );
-
-    let revision = env::var("RUNNER_BUILD_REVISION").ok().or_else(|| {
-        Command::new("git")
-            .args(["rev-parse", "--short=9", "HEAD"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|revision| revision.trim().to_owned())
-            .filter(|revision| !revision.is_empty())
-    });
-    println!(
-        "cargo:rustc-env=RUNNER_BUILD_REVISION={}",
-        revision.as_deref().unwrap_or("unknown")
-    );
-
-    let rustc = env::var_os("RUSTC")
-        .and_then(|rustc| Command::new(rustc).arg("--version").output().ok())
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(|| "unknown".to_owned(), |version| version.trim().to_owned());
-    println!("cargo:rustc-env=RUNNER_BUILD_RUSTC={rustc}");
+    emit_target_metadata();
+    emit_provenance();
 
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo");
     let manifest_path = Path::new(&manifest_dir).join("Cargo.toml");
@@ -117,6 +79,125 @@ fn main() {
     if let Some(email) = primary.email.filter(|e| !e.is_empty()) {
         println!("cargo:rustc-env=RUNNER_AUTHOR_EMAIL={email}");
     }
+}
+
+fn emit_target_metadata() {
+    println!("cargo:rerun-if-env-changed=RUNNER_BUILD_REVISION");
+    println!("cargo:rerun-if-env-changed=RUNNER_BUILD_CHANNEL");
+    println!("cargo:rerun-if-env-changed=RUNNER_BUILD_DIRTY");
+    if let Some(head_path) = git_path("HEAD") {
+        println!("cargo:rerun-if-changed={head_path}");
+        if let Ok(head) = fs::read_to_string(&head_path)
+            && let Some(reference) = head.strip_prefix("ref: ")
+            && let Some(reference_path) = git_path(reference.trim())
+        {
+            println!("cargo:rerun-if-changed={reference_path}");
+        }
+    }
+    println!(
+        "cargo:rustc-env=RUNNER_BUILD_TARGET={}",
+        env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    println!(
+        "cargo:rustc-env=RUNNER_BUILD_PROFILE={}",
+        env::var("PROFILE").unwrap_or_else(|_| "unknown".to_owned())
+    );
+    for (source, destination) in [
+        ("HOST", "RUNNER_BUILD_HOST"),
+        ("OPT_LEVEL", "RUNNER_BUILD_OPT_LEVEL"),
+        ("DEBUG", "RUNNER_BUILD_DEBUG"),
+        ("CARGO_CFG_TARGET_ARCH", "RUNNER_BUILD_TARGET_ARCH"),
+        ("CARGO_CFG_TARGET_OS", "RUNNER_BUILD_TARGET_OS"),
+        ("CARGO_CFG_TARGET_ENV", "RUNNER_BUILD_TARGET_ENV"),
+        ("CARGO_CFG_TARGET_FAMILY", "RUNNER_BUILD_TARGET_FAMILY"),
+        (
+            "CARGO_CFG_TARGET_POINTER_WIDTH",
+            "RUNNER_BUILD_TARGET_POINTER_WIDTH",
+        ),
+        ("CARGO_CFG_TARGET_ENDIAN", "RUNNER_BUILD_TARGET_ENDIAN"),
+        ("CARGO_CFG_TARGET_FEATURE", "RUNNER_BUILD_TARGET_FEATURES"),
+    ] {
+        println!(
+            "cargo:rustc-env={destination}={}",
+            env::var(source).unwrap_or_else(|_| "unknown".to_owned())
+        );
+    }
+}
+
+fn emit_provenance() {
+    let revision_override = env::var("RUNNER_BUILD_REVISION")
+        .ok()
+        .filter(|revision| !revision.is_empty());
+    let revision = revision_override.or_else(|| {
+        Command::new("git")
+            .args(["rev-parse", "--short=9", "HEAD"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .map(|revision| revision.trim().to_owned())
+            .filter(|revision| !revision.is_empty())
+    });
+    println!(
+        "cargo:rustc-env=RUNNER_BUILD_REVISION={}",
+        revision.as_deref().unwrap_or("unknown")
+    );
+
+    let dirty_override = env::var("RUNNER_BUILD_DIRTY")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let dirty = dirty_override.map_or_else(
+        || {
+            Command::new("git")
+                .args(["status", "--porcelain", "--untracked-files=no"])
+                .output()
+                .is_ok_and(|output| output.status.success() && !output.stdout.is_empty())
+        },
+        |value| value == "1" || value.eq_ignore_ascii_case("true"),
+    );
+    println!("cargo:rustc-env=RUNNER_BUILD_DIRTY={dirty}");
+
+    let package_version = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION set by cargo");
+    let release_tag = format!("v{package_version}");
+    let exact_release_tag = Command::new("git")
+        .args(["tag", "--points-at", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .is_some_and(|tags| tags.lines().any(|tag| tag == release_tag));
+    let channel_override = env::var("RUNNER_BUILD_CHANNEL")
+        .ok()
+        .filter(|channel| !channel.is_empty());
+    let channel = channel_override.unwrap_or_else(|| {
+        if (revision.is_none() || exact_release_tag) && !dirty {
+            "stable".to_owned()
+        } else {
+            let count = Command::new("git")
+                .args(["rev-list", "--count", "HEAD"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map_or_else(|| "unknown".to_owned(), |count| count.trim().to_owned());
+            format!("dev.{count}")
+        }
+    });
+    assert!(
+        channel == "stable"
+            || channel
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-'),
+        "RUNNER_BUILD_CHANNEL must be `stable` or a SemVer-compatible prerelease identifier"
+    );
+    println!("cargo:rustc-env=RUNNER_BUILD_CHANNEL={channel}");
+
+    let rustc = env::var_os("RUSTC")
+        .and_then(|rustc| Command::new(rustc).arg("--version").output().ok())
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |version| version.trim().to_owned());
+    println!("cargo:rustc-env=RUNNER_BUILD_RUSTC={rustc}");
 }
 
 fn git_path(path: &str) -> Option<String> {

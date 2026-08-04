@@ -720,6 +720,27 @@ mod tests {
     }
 
     #[test]
+    fn version_help_is_a_styled_clap_section() {
+        let mut command = Cli::command().color(clap::ColorChoice::Always);
+        let help = command.render_long_help().ansi().to_string();
+
+        assert!(help.contains("\x1b[1m\x1b[4m\x1b[33mVersion output:\x1b[0m"));
+        for flag in [
+            "-v",
+            "-V",
+            "--version",
+            "--build-options",
+            "--revision",
+            "--json",
+        ] {
+            assert!(
+                help.contains(&format!("\x1b[1m\x1b[36m{flag}\x1b[0m")),
+                "{flag} was not rendered with clap's literal style: {help:?}",
+            );
+        }
+    }
+
+    #[test]
     fn chain_flag_detected_before_first_task() {
         // `runner run -s build <TAB>`, chain mode, trailing words are tasks.
         assert!(chain_flag_precedes_first_task(&osv(&[
@@ -1347,13 +1368,7 @@ mod tests {
     name = "runner",
     about = clap::crate_description!(),
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
-    version,
-    after_help = concat!(
-        "\nVersion output:\n  ", cyan!("-v"), ", ", cyan!("-V"), "             Print the short version\n  ",
-        cyan!("--version"), "           Print detailed build information\n  ",
-        cyan!("--revision"), "          Print version and source revision\n  ",
-        cyan!("--build-options"), "     Alias for --version",
-    ),
+    disable_version_flag = true,
     styles = HELP_STYLES,
     arg_required_else_help = false,
     add = SubcommandCandidates::new(task_candidates)
@@ -1363,9 +1378,58 @@ pub(crate) struct Cli {
     #[command(flatten)]
     pub global: GlobalOpts,
 
+    /// Build and version output selectors.
+    #[command(flatten, next_help_heading = "Version output")]
+    pub version: VersionOpts,
+
     /// Subcommand to execute. Defaults to [`Command::Info`] when absent.
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+/// Root-level build and version output selectors shared by both binaries.
+///
+/// These are ordinary clap arguments so clap owns their spelling, grouping,
+/// conflicts, requirements, usage, and help rendering. They deliberately are
+/// not global: a selector after a task or subcommand belongs to that command.
+#[derive(Debug, Args)]
+#[group(skip)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independently rendered and validated clap flag"
+)]
+pub(crate) struct VersionOpts {
+    /// Print the concise version.
+    #[arg(short = 'v', group = "version-selector", conflicts_with = "json")]
+    pub short_lower: bool,
+
+    /// Print the concise version.
+    #[arg(short = 'V', group = "version-selector", conflicts_with = "json")]
+    pub short_upper: bool,
+
+    /// Print detailed build information.
+    #[arg(
+        long = "version",
+        group = "version-selector",
+        group = "detailed-version"
+    )]
+    pub detailed: bool,
+
+    /// Print detailed build information (alias for `--version`).
+    #[arg(
+        long = "build-options",
+        group = "version-selector",
+        group = "detailed-version"
+    )]
+    pub build_options: bool,
+
+    /// Print the version, build channel, revision, and dirty state.
+    #[arg(long, group = "version-selector", conflicts_with = "json")]
+    pub revision: bool,
+
+    /// Emit detailed build information as JSON.
+    #[arg(long, requires = "detailed-version")]
+    pub json: bool,
 }
 
 /// Flags shared by both `runner` and `run`. Carried inline via
@@ -1782,35 +1846,26 @@ pub(crate) enum ConfigAction {
     name = "run",
     about = "Run or exec a task via the detected package manager",
     help_template = "{about-with-newline}{before-help}{usage-heading} {usage}\n\n{all-args}{after-help}",
-    // `-h`/`--help`/`-V`/`--version` are no longer clap args (see the
-    // disable note below), so document them here instead of in the options
-    // list, and flag the forwarding rule that distinguishes this binary
-    // from `runner run`.
     after_help = concat!(
-        "\nUse ", cyan!("-h"), "/", cyan!("--help"), " or a version flag before a task for this binary's own output.\n",
-        "Version flags: ", cyan!("-v"), ", ", cyan!("-V"), " (short); ", cyan!("--version"), ", ",
-        cyan!("--build-options"), " (detailed); ", cyan!("--revision"), " (source revision).\n",
+        "\nUse a help or version flag before a task for this binary's own output.\n",
+        "Combining a version selector with ", cyan!("-q"), "/", cyan!("--quiet"), " selects concise output.\n",
         "After a task name they are forwarded to the task instead (use ", cyan!("--"), " to force forwarding).",
     ),
     styles = HELP_STYLES,
     arg_required_else_help = false,
-    // clap's built-in `--help`/`--version` short-circuit parsing wherever
-    // they appear, so `run <task> --help` printed *our* help instead of the
-    // task's. We disable them and leave `--help`/`--version` undefined: a
-    // *defined* flag would be consumed by clap even after the task (like
-    // `-k`), but an *undefined* hyphen token after the first positional is
-    // swallowed by `args` (`trailing_var_arg`) and forwarded to the task.
-    // A leading `--help`/`--version` (before any task) instead surfaces as
-    // an `UnknownArgument` error; `task` takes no hyphen values, which
-    // `run_alias_in_dir` recognises as this binary's own help/version
-    // request. `run <task> -- --help` keeps forwarding literally.
-    disable_help_flag = true,
+    // Version output is implemented by [`VersionOpts`], not clap's immediate
+    // built-in version action. Help remains clap-owned. The forwarding
+    // delimiter inserted before parsing protects both after a task.
     disable_version_flag = true,
 )]
 pub(crate) struct RunAliasCli {
     /// Global options shared with [`Cli`].
     #[command(flatten)]
     pub global: GlobalOpts,
+
+    /// Build and version output selectors.
+    #[command(flatten, next_help_heading = "Version output")]
+    pub version: VersionOpts,
 
     /// Task name or command. When omitted, prints project info.
     #[arg(add = ArgValueCandidates::new(task_candidates))]
