@@ -1,8 +1,8 @@
 /// <reference types="node" />
+/// <reference types="bun" />
 "use strict";
 
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
+const { test, expect, spyOn } = require("bun:test");
 const { mkdirSync, mkdtempSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
@@ -75,46 +75,46 @@ const HOSTS = {
 	undecided: detectWith(),
 };
 
+/** SGR colors and OSC 8 hyperlinks, which ansispeck emits on a capable terminal. */
+const ANSI = /\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u001B\[[0-9;]*[A-Za-z]/g;
+
 /** @param {() => unknown} fn */
 function captureStderr(fn) {
-	const original = console.error;
-	/** @type {string[]} */
-	const lines = [];
-	console.error = (...args) => void lines.push(args.map(String).join(" "));
+	const spy = spyOn(console, "error").mockImplementation(() => {});
+	const output = () => spy.mock.calls.map((args) => args.map(String).join(" ")).join("\n").replace(ANSI, "");
 	try {
 		fn();
-		return { error: undefined, output: lines.join("\n") };
+		return { error: undefined, output: output() };
 	} catch (error) {
-		return { error, output: lines.join("\n") };
+		return { error, output: output() };
 	} finally {
-		console.error = original;
+		spy.mockRestore();
 	}
 }
 
 // Every target in the matrix, against a host that matches it and an install
 // carrying its libc sibling where one exists — the tree Bun and Deno produce.
 // Asserting the exact package means no case can pass on manifest order.
-for (const target of targets) {
-	const sibling = siblingOf(target);
-	const host = HOSTS[libcOf(target) ?? "undecided"];
-	const files = binaries.map((name) => (target.os[0] === "win32" ? `${name}.exe` : name));
-
-	test(`${target.pkg} resolves itself${sibling ? ` over ${sibling.pkg}` : ""}`, () => {
+test.each(targets.map((target) => [target.pkg, target]))(
+	"%s resolves the package built for its own platform",
+	(_pkg, /** @type {Target} */ target) => {
+		const sibling = siblingOf(target);
+		const files = binaries.map((name) => (target.os[0] === "win32" ? `${name}.exe` : name));
 		const installed = [target, ...(sibling ? [sibling] : [])].map((each) => `${scope}/${each.pkg}`);
 		const { root, resolvePackageJson } = installFixture(installed, files);
 		const context = {
 			platform: target.os[0],
 			arch: target.cpu[0],
 			packages: declared,
-			detect: host,
+			detect: HOSTS[libcOf(target) ?? "undecided"],
 			resolvePackageJson,
 		};
 
 		for (const [index, name] of binaries.entries()) {
-			assert.equal(resolveBinary(name, context), join(root, `${scope}/${target.pkg}`, "bin", files[index]));
+			expect(resolveBinary(name, context)).toBe(join(root, `${scope}/${target.pkg}`, "bin", files[index]));
 		}
-	});
-}
+	},
+);
 
 test("only the wrong-libc sibling installed fails without spawning it", () => {
 	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
@@ -122,8 +122,8 @@ test("only the wrong-libc sibling installed fails without spawning it", () => {
 
 	const { error, output } = captureStderr(() => resolveBinary("run", context));
 
-	assert.match(String(error), /No usable musl binary for linux-x64/);
-	assert.match(output, new RegExp(`Expected package: ${scope}/linux-x64-musl — not installed`));
+	expect(String(error)).toMatch(/No usable musl binary for linux-x64/);
+	expect(output).toContain(`Expected package: ${scope}/linux-x64-musl — not installed`);
 });
 
 test("the matching package installed without its bin reports that, not a missing install", () => {
@@ -135,9 +135,9 @@ test("the matching package installed without its bin reports that, not a missing
 
 	const { error, output } = captureStderr(() => resolveBinary("run", context));
 
-	assert.match(String(error), /refusing to spawn the glibc build/);
-	assert.match(output, /package present but bin missing at/);
-	assert.doesNotMatch(output, /not installed/);
+	expect(String(error)).toMatch(/refusing to spawn the glibc build/);
+	expect(output).toContain("package present but bin missing at");
+	expect(output).not.toContain("not installed");
 });
 
 test("an undecided libc keeps the declared order and says so", () => {
@@ -146,28 +146,26 @@ test("an undecided libc keeps the declared order and says so", () => {
 	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.undecided, resolvePackageJson };
 
 	const { output } = captureStderr(() =>
-		assert.equal(resolveBinary("run", context), join(root, `${scope}/linux-x64-gnu`, "bin", "run"))
+		expect(resolveBinary("run", context)).toBe(join(root, `${scope}/linux-x64-gnu`, "bin", "run"))
 	);
 
-	assert.match(output, /could not detect this host's libc/);
+	expect(output).toContain("could not detect this host's libc");
 });
 
 // Each layer is a positive proof; none may be inferred from another's absence.
-test("libc detection layers", () => {
-	/** @type {[string, import("#resolve").LibcSignals, string | null][]} */
-	const cases = [
-		["RUNNER_LIBC wins over everything", { env: { RUNNER_LIBC: "musl" }, glibcVersion: () => "2.39" }, "musl"],
-		["gnu is accepted for glibc", { env: { RUNNER_LIBC: "gnu" } }, "glibc"],
-		["an unknown override falls through", { env: { RUNNER_LIBC: "uclibc" }, glibcVersion: () => "2.39" }, "glibc"],
-		["process.report reports glibc", { glibcVersion: () => "2.39" }, "glibc"],
-		["alpine marks musl", { fileExists: (p) => p === "/etc/alpine-release" }, "musl"],
-		["the musl loader marks musl", { fileExists: (p) => p === "/lib/ld-musl-x86_64.so.1" }, "musl"],
-		["a scanned musl loader marks musl", { readDir: (d) => (d === "/lib" ? ["ld-musl-x86_64.so.1"] : []) }, "musl"],
-		["the glibc loader marks glibc", { fileExists: (p) => p === "/lib64/ld-linux-x86-64.so.2" }, "glibc"],
-		["no signal stays undecided", {}, null],
-	];
+/** @type {[string, import("#resolve").LibcSignals, import("#resolve").Libc | null][]} */
+const LAYERS = [
+	["RUNNER_LIBC outranks every signal", { env: { RUNNER_LIBC: "musl" }, glibcVersion: () => "2.39" }, "musl"],
+	["gnu is accepted for glibc", { env: { RUNNER_LIBC: "gnu" } }, "glibc"],
+	["an unknown override falls through", { env: { RUNNER_LIBC: "uclibc" }, glibcVersion: () => "2.39" }, "glibc"],
+	["process.report reports glibc", { glibcVersion: () => "2.39" }, "glibc"],
+	["alpine marks musl", { fileExists: (p) => p === "/etc/alpine-release" }, "musl"],
+	["the musl loader marks musl", { fileExists: (p) => p === "/lib/ld-musl-x86_64.so.1" }, "musl"],
+	["a scanned musl loader marks musl", { readDir: (d) => (d === "/lib" ? ["ld-musl-x86_64.so.1"] : []) }, "musl"],
+	["the glibc loader marks glibc", { fileExists: (p) => p === "/lib64/ld-linux-x86-64.so.2" }, "glibc"],
+	["no signal stays undecided", {}, null],
+];
 
-	for (const [name, signals, expected] of cases) {
-		assert.equal(detectWith({ arch: "x64", ...signals })().libc, expected, name);
-	}
+test.each(LAYERS)("libc detection: %s", (_name, signals, expected) => {
+	expect(detectWith({ arch: "x64", ...signals })().libc).toBe(expected);
 });

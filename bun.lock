@@ -5,6 +5,7 @@
     "": {
       "name": "workspace",
       "devDependencies": {
+        "@types/bun": "catalog:",
         "@types/node": "catalog:",
         "runner-run": "catalog:",
         "typescript": "catalog:",
