@@ -1,6 +1,6 @@
 # Tag-push (v*) pipeline. Scripts: .github/scripts/<workflow>.sh <subcommand>.
 #
-#   verify (also PRs/master) ── dprint, cargo lint, cargo test, facade tests
+#   verify (also PRs/master) ── dprint, cargo lint, cargo test, runner install
 #     ├─ create-release ─────── draft GH release + notes
 #     │    ├─ man ───────────── release assets + artifact `man-pages`
 #     │    └─ upload-assets ─── per-target build matrix (needs: matrix);
@@ -62,7 +62,8 @@ jobs:
       - run: just lint-sh
       - run: cargo lint
       - run: cargo test
-      - run: cargo run --quiet --bin run -- test:facade
+      - uses: ./
+      - run: runner --pm bun install --frozen typecheck test:facade
 
   create-release:
     name: create draft release

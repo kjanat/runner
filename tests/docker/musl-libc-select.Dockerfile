@@ -4,7 +4,7 @@
 #
 #   docker build -f tests/docker/musl-libc-select.Dockerfile \
 #     --build-arg VER=0.24.1 --progress=plain --no-cache -t runner-musl-libc-test .
-FROM alpine:3.22@sha256:310c62b5e7ca5b08167e4384c68db0fd2905dd9c7493756d356e893909057601
+FROM alpine:latest@sha256:6f5908cdf811d574b30ec394e405ef74ee293bed5af1620a5187d604604a90a8
 
 ARG VER=0.24.1
 ENV RR_ROOT=/usr/local/lib/node_modules/runner-run

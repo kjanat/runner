@@ -7,22 +7,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { detectLibc, resolveBinary } from "#resolve";
-import type { Libc, LibcDetection, LibcSignals } from "#resolve";
-import matrix from "../../targets.json";
+import type { LibcDetection, LibcSignals } from "#resolve";
+// The build script owns the shape `targets.schema.json` describes; the tests
+// read the same matrix, so they read the same types.
+import type { Matrix, Target } from "../../scripts/build-packages.ts";
+import matrix from "../../targets.json" with { type: "json" };
 
-interface Target {
-	pkg: string;
-	os: string[];
-	cpu: string[];
-	libc?: string[];
-}
-
-const { scope, binaries, targets } = matrix as { scope: string; binaries: string[]; targets: Target[] };
+const { scope, binaries, targets } = matrix as Matrix;
 
 /** Every platform package the facade declares, in generated manifest order. */
 const declared = targets.map((target) => `${scope}/${target.pkg}`);
 
-const libcOf = (target: Target): Libc | null => (target.libc?.[0] as Libc | undefined) ?? null;
+const libcOf = (target: Target) => target.libc?.[0] ?? null;
 
 /**
  * The same-arch package built for the other libc, when the matrix ships one.
@@ -146,7 +142,7 @@ test("an undecided libc keeps the declared order and says so", () => {
 });
 
 // Each layer is a positive proof; none may be inferred from another's absence.
-const LAYERS: [string, LibcSignals, Libc | null][] = [
+const LAYERS: [string, LibcSignals, LibcDetection["libc"]][] = [
 	["RUNNER_LIBC outranks every signal", { env: { RUNNER_LIBC: "musl" }, glibcVersion: () => "2.39" }, "musl"],
 	["gnu is accepted for glibc", { env: { RUNNER_LIBC: "gnu" } }, "glibc"],
 	["an unknown override falls through", { env: { RUNNER_LIBC: "uclibc" }, glibcVersion: () => "2.39" }, "glibc"],

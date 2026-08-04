@@ -325,9 +325,9 @@ const ansi = stdout.isTTY
 		reset: "",
 	};
 
-type Libc = "glibc" | "musl";
+export type Libc = "glibc" | "musl";
 
-interface Target {
+export interface Target {
 	pkg: string;
 	rust: string;
 	os: NodeJS.Platform[];
@@ -339,7 +339,7 @@ interface Target {
 	experimental?: boolean;
 }
 
-interface Matrix {
+export interface Matrix {
 	facade: string;
 	scope: string;
 	binaries: string[];
