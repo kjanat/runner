@@ -47,15 +47,29 @@ cmd_prepare() {
 
 # Build (and optionally push) the image.
 #
-# Required env: TAGS (newline-separated image refs).
-# Optional env: LABELS and ANNOTATIONS (newline-separated), PUSH (true pushes),
-# PLATFORMS (comma-separated; empty builds for the host arch only).
+# Required env: META (JSON object from docker/metadata-action), DRY_RUN (true does not push).
+# Optional env: PLATFORMS (comma-separated; empty builds for the host arch only).
 #
 # Multi-platform builds need a container-driver builder; the default docker
 # driver rejects them. --load is the docker exporter and cannot take a manifest
 # list, so a multi-platform build that is not pushing exports nothing.
 cmd_build() {
-	: "${TAGS:?TAGS required}"
+	: "${META:?META required}"
+	: "${DRY_RUN:?DRY_RUN required}"
+
+	case "${DRY_RUN}" in
+		true | false) ;;
+		*)
+			echo "error: DRY_RUN '${DRY_RUN}' must be 'true' or 'false'" >&2
+			exit 1
+			;;
+	esac
+
+	local tags labels annotations
+	tags="$(jq -r '.tags // empty' <<<"${META}")"
+	labels="$(jq -r '.labels // empty' <<<"${META}")"
+	annotations="$(jq -r '.annotations // empty' <<<"${META}")"
+	: "${tags:?META.tags required}"
 
 	local args=(buildx build --file "${DOCKERFILE}")
 
@@ -67,20 +81,20 @@ cmd_build() {
 	local tag
 	while IFS= read -r tag; do
 		[[ -n "${tag}" ]] && args+=(--tag "${tag}")
-	done <<<"${TAGS}"
+	done <<<"${tags}"
 
 	local label
 	while IFS= read -r label; do
 		[[ -n "${label}" ]] && args+=(--label "${label}")
-	done <<<"${LABELS:-}"
+	done <<<"${labels}"
 
 	# GHCR reads the description off the index annotation, not the config label.
 	local annotation
 	while IFS= read -r annotation; do
 		[[ -n "${annotation}" ]] && args+=(--annotation "${annotation}")
-	done <<<"${ANNOTATIONS:-}"
+	done <<<"${annotations}"
 
-	if [[ "${PUSH:-false}" == "true" ]]; then
+	if [[ "${DRY_RUN}" == "false" ]]; then
 		args+=(--push)
 	elif [[ "${platforms}" == *,* ]]; then
 		args+=(--output type=cacheonly)
