@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Added
+
+- Expanded version reporting for both `runner` and `run`: `-v` and `-V` print
+  the concise version, `--version`/`--build-options` include the source
+  revision, build channel, target, profile, and Rust compiler. `--revision`
+  prints a Bun-style SemVer identifier; untagged builds receive an automatic
+  `dev.<commit-count>` prerelease and modified worktrees a `.dirty` marker.
+  Revision output names the invoked binary, quiet modifiers select concise
+  output, and detailed modes accept `--json` for structured build metadata.
+
 ### Release checklist
 
 - [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.

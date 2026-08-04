@@ -6,6 +6,9 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_PROJECT: AtomicU64 = AtomicU64::new(0);
 
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
@@ -21,7 +24,8 @@ fn just_available() -> bool {
 /// A project whose `runner.toml` carries an unknown key (a warning every
 /// command prints) and whose `outer` task invokes `runner` again.
 fn nesting_project() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("runner-nested-{}", std::process::id()));
+    let unique = NEXT_PROJECT.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("runner-nested-{}-{unique}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create project dir");
     std::fs::write(dir.join("runner.toml"), "[bogus]\nkey = 1\n").expect("runner.toml");

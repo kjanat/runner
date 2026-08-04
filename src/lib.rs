@@ -112,6 +112,10 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = clap::crate_version!();
+const BUILD_REVISION: &str = env!("RUNNER_BUILD_REVISION");
+const BUILD_RUSTC: &str = env!("RUNNER_BUILD_RUSTC");
+const BUILD_CHANNEL: &str = env!("RUNNER_BUILD_CHANNEL");
+const BUILD_DIRTY: bool = matches!(env!("RUNNER_BUILD_DIRTY").as_bytes(), b"true");
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
@@ -177,8 +181,11 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    if requests_version(&args) {
-        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+    if let Some(request) = version_request(&args) {
+        println!(
+            "{}",
+            version_output(&args, request, std::io::stdout().is_terminal())
+        );
         return Ok(0);
     }
 
@@ -306,8 +313,11 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    if requests_version(&args) {
-        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+    if let Some(request) = version_request(&args) {
+        println!(
+            "{}",
+            version_output(&args, request, std::io::stdout().is_terminal())
+        );
         return Ok(0);
     }
 
@@ -555,7 +565,8 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 ///
 /// # Returns
 ///
-/// `true` if `args` has exactly two elements and the second element is `--version` or `-V`, `false` otherwise.
+/// `true` for a top-level version selector, optionally combined with
+/// `--json` or quiet flags; `false` otherwise.
 ///
 /// # Examples
 ///
@@ -576,19 +587,126 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 /// ```
 #[must_use]
 pub fn requests_version(args: &[OsString]) -> bool {
-    if args.len() != 2 {
-        return false;
+    version_request(args).is_some()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionKind {
+    Short,
+    Detailed,
+    Revision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VersionRequest {
+    kind: VersionKind,
+    json: bool,
+}
+
+fn version_request(args: &[OsString]) -> Option<VersionRequest> {
+    let mut kind = None;
+    let mut json = false;
+    let mut quiet = false;
+
+    for arg in args.get(1..)? {
+        match arg.to_string_lossy().as_ref() {
+            "-v" | "-V" if kind.is_none() => kind = Some(VersionKind::Short),
+            "--version" | "--build-options" if kind.is_none() => {
+                kind = Some(VersionKind::Detailed);
+            }
+            "--revision" if kind.is_none() => kind = Some(VersionKind::Revision),
+            "--json" if !json => json = true,
+            "--quiet" | "-q" | "-qq" | "-qqq" => quiet = true,
+            _ => return None,
+        }
     }
 
-    let flag = args[1].to_string_lossy();
-    flag == "--version" || flag == "-V"
+    let mut kind = kind?;
+    if quiet {
+        kind = VersionKind::Short;
+        json = false;
+    }
+    Some(VersionRequest { kind, json })
+}
+
+fn version_output(args: &[OsString], request: VersionRequest, stdout_is_terminal: bool) -> String {
+    if request.json {
+        return version_json(args);
+    }
+
+    match request.kind {
+        VersionKind::Short => version_line(args, stdout_is_terminal),
+        VersionKind::Revision => format!("{} {}", version_bin(args), revision_version()),
+        VersionKind::Detailed => format!(
+            "{}\nchannel: {BUILD_CHANNEL}\nrevision: {}\ntarget: {}\nprofile: {}\nrustc: \
+             {BUILD_RUSTC}\nhost: {}\nopt-level: {}\ndebug: {}\ntarget-features: {}",
+            version_line(args, stdout_is_terminal),
+            revision_id(),
+            env!("RUNNER_BUILD_TARGET"),
+            env!("RUNNER_BUILD_PROFILE"),
+            env!("RUNNER_BUILD_HOST"),
+            env!("RUNNER_BUILD_OPT_LEVEL"),
+            env!("RUNNER_BUILD_DEBUG"),
+            env!("RUNNER_BUILD_TARGET_FEATURES"),
+        ),
+    }
+}
+
+fn version_json(args: &[OsString]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "program": version_bin(args),
+        "version": VERSION,
+        "version_with_revision": revision_version(),
+        "channel": BUILD_CHANNEL,
+        "revision": BUILD_REVISION,
+        "dirty": BUILD_DIRTY,
+        "target": env!("RUNNER_BUILD_TARGET"),
+        "host": env!("RUNNER_BUILD_HOST"),
+        "profile": env!("RUNNER_BUILD_PROFILE"),
+        "opt_level": env!("RUNNER_BUILD_OPT_LEVEL"),
+        "debug": env!("RUNNER_BUILD_DEBUG") == "true",
+        "rustc": BUILD_RUSTC,
+        "rust_version": env!("CARGO_PKG_RUST_VERSION"),
+        "target_config": {
+            "arch": env!("RUNNER_BUILD_TARGET_ARCH"),
+            "os": env!("RUNNER_BUILD_TARGET_OS"),
+            "env": env!("RUNNER_BUILD_TARGET_ENV"),
+            "family": env!("RUNNER_BUILD_TARGET_FAMILY"),
+            "pointer_width": env!("RUNNER_BUILD_TARGET_POINTER_WIDTH"),
+            "endian": env!("RUNNER_BUILD_TARGET_ENDIAN"),
+            "features": env!("RUNNER_BUILD_TARGET_FEATURES")
+                .split(',')
+                .filter(|feature| !feature.is_empty())
+                .collect::<Vec<_>>(),
+        },
+    }))
+    .expect("version metadata only contains JSON-compatible values")
+}
+
+fn revision_id() -> String {
+    let dirty = if BUILD_DIRTY { "-dirty" } else { "" };
+    format!("{BUILD_REVISION}{dirty}")
+}
+
+fn revision_version() -> String {
+    let prerelease = if BUILD_CHANNEL == "stable" {
+        String::new()
+    } else {
+        format!("-{BUILD_CHANNEL}")
+    };
+    let metadata = if BUILD_REVISION == "unknown" {
+        String::new()
+    } else if BUILD_DIRTY {
+        format!("+{BUILD_REVISION}.dirty")
+    } else {
+        format!("+{BUILD_REVISION}")
+    };
+    format!("{VERSION}{prerelease}{metadata}")
 }
 
 fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
-    let bin = args
-        .first()
-        .and_then(bin_name_from_arg0)
-        .unwrap_or_else(|| "runner".to_string());
+    let bin = version_bin(args);
 
     if !stdout_is_terminal {
         return format!("{bin} {VERSION}");
@@ -599,6 +717,12 @@ fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
         osc8_link(&bin, REPOSITORY_URL),
         osc8_link(VERSION, &release_url(VERSION))
     )
+}
+
+fn version_bin(args: &[OsString]) -> String {
+    args.first()
+        .and_then(bin_name_from_arg0)
+        .unwrap_or_else(|| "runner".to_string())
 }
 
 fn release_url(version: &str) -> String {
@@ -1100,10 +1224,11 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AliasBuiltin, VERSION, alias_builtin_request, bin_name_from_arg0, configured_project_dir,
-        exit_code_for_error, expand_tilde_with, has_task, parse_cli, parse_run_alias_cli,
-        release_url, requests_version, resolve_project_dir, run_alias_in_dir, run_in_dir,
-        version_line,
+        AliasBuiltin, BUILD_CHANNEL, BUILD_DIRTY, VERSION, alias_builtin_request,
+        bin_name_from_arg0, configured_project_dir, exit_code_for_error, expand_tilde_with,
+        has_task, parse_cli, parse_run_alias_cli, release_url, requests_version,
+        resolve_project_dir, revision_version, run_alias_in_dir, run_in_dir, version_line,
+        version_output, version_request,
     };
     use crate::cli;
     use crate::resolver::ResolveError;
@@ -1154,19 +1279,26 @@ mod tests {
 
     #[test]
     fn requests_version_detects_top_level_version_flags() {
-        assert!(requests_version(&[
-            OsString::from("runner"),
-            OsString::from("--version")
-        ]));
-        assert!(requests_version(&[
-            OsString::from("runner"),
-            OsString::from("-V")
-        ]));
+        for flag in ["-v", "-V", "--version", "--revision", "--build-options"] {
+            assert!(requests_version(&[
+                OsString::from("runner"),
+                OsString::from(flag),
+            ]));
+        }
         assert!(!requests_version(&[
             OsString::from("runner"),
             OsString::from("info"),
             OsString::from("--version"),
         ]));
+        for args in [
+            vec!["runner", "--version", "-q"],
+            vec!["runner", "--quiet", "--build-options"],
+            vec!["runner", "--json", "--version"],
+        ] {
+            assert!(requests_version(
+                &args.into_iter().map(OsString::from).collect::<Vec<_>>()
+            ));
+        }
     }
 
     #[test]
@@ -1187,6 +1319,89 @@ mod tests {
         assert!(line.contains(&format!(
             "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
         )));
+    }
+
+    #[test]
+    fn detailed_version_identifies_the_build() {
+        let output = version_output(
+            &[OsString::from("runner")],
+            super::VersionRequest {
+                kind: super::VersionKind::Detailed,
+                json: false,
+            },
+            false,
+        );
+
+        assert!(output.starts_with(&format!("runner {VERSION}\n")));
+        for label in [
+            "channel: ",
+            "revision: ",
+            "target: ",
+            "profile: ",
+            "rustc: ",
+        ] {
+            assert!(output.contains(label), "missing {label:?} in {output:?}");
+        }
+    }
+
+    #[test]
+    fn revision_version_uses_bun_style_separator() {
+        assert_eq!(
+            version_output(
+                &[OsString::from("run")],
+                super::VersionRequest {
+                    kind: super::VersionKind::Revision,
+                    json: false,
+                },
+                false,
+            ),
+            format!("run {}", revision_version()),
+        );
+    }
+
+    #[test]
+    fn quiet_makes_every_version_selector_concise() {
+        for selector in ["--version", "--build-options", "--revision"] {
+            let args = [
+                OsString::from("run"),
+                OsString::from(selector),
+                OsString::from("-q"),
+            ];
+            let request = version_request(&args).expect("version request");
+            assert_eq!(request.kind, super::VersionKind::Short);
+            assert_eq!(
+                version_output(&args, request, false),
+                format!("run {VERSION}")
+            );
+        }
+    }
+
+    #[test]
+    fn detailed_version_json_is_structured_and_names_the_binary() {
+        let args = [
+            OsString::from("runner"),
+            OsString::from("--version"),
+            OsString::from("--json"),
+        ];
+        let output = version_output(&args, version_request(&args).expect("request"), false);
+        let value: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
+
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["program"], "runner");
+        assert_eq!(value["version"], VERSION);
+        assert!(value["target_config"]["features"].is_array());
+    }
+
+    #[test]
+    fn revision_version_marks_development_and_dirty_builds() {
+        let output = revision_version();
+
+        if BUILD_CHANNEL == "stable" {
+            assert!(!output.contains("-dev."));
+        } else {
+            assert!(output.contains(&format!("-{BUILD_CHANNEL}")));
+        }
+        assert_eq!(output.contains(".dirty"), BUILD_DIRTY);
     }
 
     #[test]
