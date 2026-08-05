@@ -279,8 +279,10 @@ function detectLibc(signals = {}) {
  * Order the declared platform packages for the current host.
  *
  * Only Linux targets that declare a GNU/musl pair for this architecture are
- * reordered, and only when both names are present in the manifest. Everything
- * else — macOS, Windows, Android, and single-variant Linux targets such as
+ * reordered, and only when both names are present in the manifest. A musl host
+ * rejects the dynamically linked GNU sibling; a glibc host prefers GNU but
+ * keeps the static musl build as a compatible fallback. Everything else —
+ * macOS, Windows, Android, and single-variant Linux targets such as
  * `linux-armv7-gnueabihf` — keeps the declared order, so a package name is
  * never synthesized for a target that has no libc sibling.
  *
@@ -312,8 +314,8 @@ function planCandidates({ platform, arch, packages, detect }) {
 	const expected = libc === "musl" ? musl : gnu;
 	const sibling = libc === "musl" ? gnu : musl;
 	return {
-		order: [expected, ...order.filter((pkg) => pkg !== expected && pkg !== sibling)],
-		rejected: [sibling],
+		order: [expected, ...(libc === "glibc" ? [sibling] : []), ...order.filter((pkg) => !pair.includes(pkg))],
+		rejected: libc === "musl" ? [sibling] : [],
 		pair,
 		expected,
 		libc,
@@ -356,11 +358,10 @@ const isModuleNotFound = (err) =>
 	typeof err === "object" && err !== null && "code" in err && err.code === "MODULE_NOT_FOUND";
 
 /**
- * Report an installed-but-incompatible libc sibling, then throw.
+ * Report an installed GNU sibling that cannot run on a musl host, then throw.
  *
  * @param {object} info
  * @param {string} info.arch - Node `arch` string.
- * @param {Libc} info.libc - The detected host libc.
  * @param {string} info.libcSource - The signal that detected it.
  * @param {string} info.expected - The package that should have been installed.
  * @param {string[]} info.installed - Incompatible siblings found instead.
@@ -368,8 +369,9 @@ const isModuleNotFound = (err) =>
  * @returns {never}
  * @throws {Error} Always.
  */
-function failLibcMismatch({ arch, libc, libcSource, expected, installed, errors }) {
-	const other = libc === "musl" ? "glibc" : "musl";
+function failMuslMismatch({ arch, libcSource, expected, installed, errors }) {
+	const libc = "musl";
+	const other = "glibc";
 	const indent = space(2);
 	// The expected package is usually absent, but it can also be present and
 	// broken — a half-finished install leaves the package.json without the bin.
@@ -468,10 +470,10 @@ ${indent}- file an issue if your platform is unsupported: ${link(`${repo}/issues
  *
  * Package presence is not proof of compatibility. On Linux targets that ship
  * both a GNU and a musl build, the package name for the detected libc is
- * derived and resolved directly, and the sibling is dropped from the search
- * instead of staying reachable through manifest order. If only that sibling is
- * installed, this fails here with a libc diagnostic rather than letting
- * `spawnSync` fail later with an unexplained `ENOENT`.
+ * derived and resolved directly. A musl host drops the incompatible GNU
+ * sibling; a glibc host retains the static musl build as a fallback. If only
+ * GNU is installed on musl, this fails here with a libc diagnostic rather than
+ * letting `spawnSync` fail later with an unexplained `ENOENT`.
  *
  * @param {string} name - Base name of the executable (without platform-specific extension).
  * @param {ResolveContext} [context] - Host details to resolve against; defaults to this process.
@@ -534,12 +536,11 @@ function resolveBinary(name, context = {}) {
 
 	// The libc-matched package is unusable. If its sibling is sitting right
 	// there, that mismatch is the real failure, not a skipped install.
-	if (plan.expected !== null && plan.libc !== null) {
+	if (plan.expected !== null && plan.libc === "musl") {
 		const installed = plan.rejected.filter((subPkg) => isInstalled(subPkg, resolve));
 		if (installed.length > 0) {
-			failLibcMismatch({
+			failMuslMismatch({
 				arch: hostArch,
-				libc: plan.libc,
 				libcSource: plan.libcSource,
 				expected: plan.expected,
 				installed,

@@ -22,9 +22,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - The npm facade selects the Linux platform package by detected libc instead of
   `optionalDependencies` order, so installs carrying both variants (Bun, Deno)
-  no longer get a glibc binary on musl. Only the wrong-libc sibling installed is
-  now a facade error, not a `spawnSync` `ENOENT`. `RUNNER_LIBC=glibc|musl`
-  overrides detection (https://github.com/kjanat/runner/issues/106).
+  no longer get a glibc binary on musl. Only the GNU sibling installed on musl
+  is now a facade error, not a `spawnSync` `ENOENT`; the static musl build stays
+  a fallback on glibc. `RUNNER_LIBC=glibc|musl` overrides detection
+  (https://github.com/kjanat/runner/issues/106).
 
 ## [0.24.1] - 2026-08-03
 

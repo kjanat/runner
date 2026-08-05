@@ -209,11 +209,12 @@ If optional dependencies are disabled on purpose, use Cargo:
 cargo install runner-run
 ```
 
-### `no usable musl binary` / `no usable glibc binary`
+### `no usable musl binary`
 
-Only the wrong-libc build is installed. Do what the message says: it names the
-package to install, or reports the matching package as present but incomplete,
-in which case reinstall.
+Only the dynamically linked GNU build is installed on a musl host. Do what the
+message says: it names the musl package to install, or reports that package as
+present but incomplete, in which case reinstall. On a glibc host, the GNU build
+is preferred but the static musl build remains a compatible fallback.
 
 On a host that genuinely runs both libcs (Alpine with `gcompat`), override
 detection with `RUNNER_LIBC=glibc` or `RUNNER_LIBC=musl`.

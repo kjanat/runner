@@ -101,7 +101,7 @@ test.each(targets.map((target) => [target.pkg, target] as const))(
 	},
 );
 
-test("only the wrong-libc sibling installed fails without spawning it", () => {
+test("only the GNU sibling installed on musl fails without spawning it", () => {
 	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
 	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
 
@@ -109,6 +109,14 @@ test("only the wrong-libc sibling installed fails without spawning it", () => {
 
 	expect(String(error)).toMatch(/No usable musl binary for linux-x64/);
 	expect(output).toContain(`Expected package: ${scope}/linux-x64-musl — not installed`);
+});
+
+test("a glibc host falls back to the static musl package", () => {
+	const musl = `${scope}/linux-x64-musl`;
+	const { root, resolvePackageJson } = installFixture([musl], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.glibc, resolvePackageJson };
+
+	expect(resolveBinary("run", context)).toBe(join(root, musl, "bin", "run"));
 });
 
 test("the matching package installed without its bin reports that, not a missing install", () => {
