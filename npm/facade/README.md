@@ -9,7 +9,7 @@ each repo's private little task-running religion.
 Install it from npm, then stop guessing:
 
 ```sh
-npm install -g runner-run
+npm i -g runner-run
 run <TAB>
 runner install --frozen test build
 ```
@@ -32,7 +32,7 @@ wrapper, use the same shape everywhere.
 ## Install
 
 ```sh
-npm install -g runner-run
+npm i -g runner-run
 ```
 
 Other package managers work too:
@@ -40,7 +40,7 @@ Other package managers work too:
 ```sh
 pnpm add -g runner-run
 yarn global add runner-run
-bun add -g runner-run
+bun i -g runner-run
 ```
 
 Or pin it per project for CI/dev shells:
@@ -48,6 +48,9 @@ Or pin it per project for CI/dev shells:
 ```sh
 npm install --save-dev runner-run
 ```
+
+For `cargo-binstall`, source builds, Arch packages, container images, and the
+shell installer, see [all installation methods][install].
 
 ## Use It
 
@@ -108,16 +111,13 @@ in 2021.
 
 ## Man Pages
 
-Unix-like npm installs include man pages:
+Unix-like installs include man pages:
 
 ```sh
 man runner
 man run
 man runner-list
 ```
-
-They are generated from the CLI definition at release time and shipped in the
-npm package. Nothing gets generated during install.
 
 ## What Runner Understands
 
@@ -147,67 +147,22 @@ Workspace context:
 turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces
 ```
 
-## The npm Package Bit
+## Supported Platforms
 
-This package is a tiny shim plus platform packages. It does not build Rust on
-your machine and it does not fetch binaries in a `postinstall` script.
+| OS      | Architectures                                |
+| ------- | -------------------------------------------- |
+| Linux   | x64/arm64 glibc, x64/arm64 musl, armv7 glibc |
+| macOS   | x64, arm64                                   |
+| Windows | x64, arm64, ia32                             |
+| Android | arm64 best-effort (Termux)                   |
+| FreeBSD | x64, arm64 experimental                      |
+| NetBSD  | x64 experimental                             |
 
-At publish time, `runner-run` declares packages like `@runner-run/linux-x64-gnu`
-as `optionalDependencies`. Your package manager picks the one matching your
-OS/CPU/libc, then the `runner` and `run` shims exec the local binary.
-
-Useful consequences:
-
-- no `postinstall` script
-- no install-time network fetch
-- no local Rust toolchain needed
-- lockfiles can pin the main package and platform package together
-
-## Supported npm Targets
-
-| OS      | Architectures                                                |
-| ------- | ------------------------------------------------------------ |
-| Linux   | x64/arm64 glibc, x64/arm64 musl, armv7 glibc                 |
-| macOS   | x64, arm64                                                   |
-| Windows | x64, arm64, ia32                                             |
-| Android | arm64 best-effort (Termux; runner release v0.24.0 and later) |
-| FreeBSD | x64, arm64 experimental                                      |
-| NetBSD  | x64 experimental                                             |
-
-If your platform is not listed, use Cargo:
-
-```sh
-cargo install runner-run
-```
-
-Or poke the issue cave: <https://github.com/kjanat/runner/issues>
+If your platform is not listed, a source build may still work. See the
+[installation methods][install] or poke the issue cave:
+<https://github.com/kjanat/runner/issues>.
 
 ## Troubleshooting
-
-### `no prebuilt binary found`
-
-Your package manager probably skipped `optionalDependencies`, or your lockfile
-came from a different platform.
-
-Common causes:
-
-- `npm install --omit=optional` or `npm install --no-optional`
-- `yarn install --ignore-optional`
-- pnpm configured with `optional=false`
-- a lockfile committed from another OS/CPU/libc target
-
-Reinstall with optional dependencies enabled. If the lockfile is stale for your
-target, regenerate it there or force a reinstall:
-
-```sh
-npm install --force
-```
-
-If optional dependencies are disabled on purpose, use Cargo:
-
-```sh
-cargo install runner-run
-```
 
 ### `runner` works but `run` does not complete
 
@@ -232,3 +187,4 @@ registration to cover both.
 
 [npm]: https://npm.im/runner-run
 [socket]: https://socket.dev/npm/package/runner-run
+[install]: https://github.com/kjanat/runner#install

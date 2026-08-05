@@ -8,10 +8,13 @@
 	],
 	"scripts": {
 		"fmt": "bunx dprint fmt",
+		"fmt:check": "bunx dprint check",
 		"fmt:update": "bunx dprint config update --yes",
+		"test:facade": "bun test npm/facade/test/",
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {
+		"@types/bun": "catalog:",
 		"@types/node": "catalog:",
 		"runner-run": "catalog:",
 		"typescript": "catalog:"
@@ -25,7 +28,7 @@
 		"@biomejs/biome": "^2",
 		"@types/bun": "^1.3",
 		"@types/node": ">=22.18.0",
-		"runner-run": "npm:runner-run@^0",
+		"runner-run": "npm:runner-run@^0.24",
 		"typescript": "^6",
 		"wrangler": "^4"
 	}

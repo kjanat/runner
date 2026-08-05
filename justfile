@@ -38,6 +38,10 @@ gen-schema:
     @cargo schema --all --output {{ schema-dir }}
 
 [group('npm')]
+test-facade:
+    bun run test:facade
+
+[group('npm')]
 build-packages only="" skip="false" version=`cargo read-manifest | jq -r .version`:
     #!/usr/bin/env bash
     set -euo pipefail

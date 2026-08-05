@@ -16,6 +16,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Search repository-wide for the old version; account for every match.
 - [ ] Move `Unreleased` entries into the new version section and rotate links.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
+
+### Fixed
+
+- The npm facade selects the Linux platform package by detected libc instead of
+  `optionalDependencies` order, so installs carrying both variants (Bun, Deno)
+  no longer get a glibc binary on musl. Only the GNU sibling installed on musl
+  is now a facade error, not a `spawnSync` `ENOENT`; the static musl build stays
+  a fallback on glibc. `RUNNER_LIBC=glibc|musl` overrides detection
+  (https://github.com/kjanat/runner/issues/106).
 
 ## [0.24.1] - 2026-08-03
 
