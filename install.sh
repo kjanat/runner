@@ -76,14 +76,33 @@ resolve_target() {
 		return
 	fi
 
-	case "${arch}" in
-		x86_64) printf 'x86_64-unknown-linux-musl\n' ;;
-		aarch64 | arm64) printf 'aarch64-unknown-linux-musl\n' ;;
+	os="$(uname -s)"
+	case "${os}" in
+		Linux)
+			case "${arch}" in
+				x86_64) printf 'x86_64-unknown-linux-musl\n' ;;
+				aarch64 | arm64) printf 'aarch64-unknown-linux-musl\n' ;;
+				*) unsupported_arch "${os}" "${arch}" ;;
+			esac
+			;;
+		FreeBSD)
+			# FreeBSD's `uname -m` reports amd64/arm64, not x86_64/aarch64.
+			case "${arch}" in
+				x86_64 | amd64) printf 'x86_64-unknown-freebsd\n' ;;
+				aarch64 | arm64) printf 'aarch64-unknown-freebsd\n' ;;
+				*) unsupported_arch "${os}" "${arch}" ;;
+			esac
+			;;
 		*)
-			printf 'error: unsupported architecture: %s\n' "${arch}" >&2
+			printf 'error: unsupported operating system: %s\n' "${os}" >&2
 			exit 1
 			;;
 	esac
+}
+
+unsupported_arch() {
+	printf 'error: unsupported architecture on %s: %s\n' "${1}" "${2}" >&2
+	exit 1
 }
 
 # These predicates print "yes"/"no" rather than returning an exit status:
@@ -225,10 +244,13 @@ main() {
 
 	os_name="$(uname -s)"
 
-	if [ "${os_name}" != "Linux" ]; then
-		printf 'error: install.sh currently supports Linux only\n' >&2
-		exit 1
-	fi
+	case "${os_name}" in
+		Linux | FreeBSD) ;;
+		*)
+			printf 'error: install.sh does not support this OS: %s\n' "${os_name}" >&2
+			exit 1
+			;;
+	esac
 
 	require_command curl
 	require_command tar
