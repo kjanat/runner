@@ -4,7 +4,10 @@
 #
 #   docker build -f tests/docker/musl-libc-select.Dockerfile \
 #     --build-arg VER=0.24.1 --progress=plain --no-cache -t runner-musl-libc-test .
-FROM alpine:latest@sha256:6f5908cdf811d574b30ec394e405ef74ee293bed5af1620a5187d604604a90a8
+# Index digest, not a per-platform one: the build has to resolve to the host's
+# architecture. A `linux/386` manifest digest here makes `process.arch` report
+# `ia32`, and no Linux GNU/musl pair is published for it.
+FROM alpine:latest@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 ARG VER=0.24.1
 ENV RR_ROOT=/usr/local/lib/node_modules/runner-run
@@ -22,8 +25,14 @@ COPY npm/facade/lib/resolve.cjs /usr/local/lib/node_modules/runner-run/lib/resol
 RUN set -eux; \
     DIR="${RR_ROOT}/node_modules/@runner-run"; \
     [ -d "${DIR}" ] || DIR="/usr/local/lib/node_modules/@runner-run"; \
-    GNU="linux-$(node -p 'process.arch')-gnu"; \
-    wget -qO /tmp/gnu.tgz "$(npm view "@runner-run/${GNU}@${VER}" dist.tarball)"; \
+    ARCH="$(node -p 'process.arch')"; \
+    case "${ARCH}" in x64 | arm64) ;; \
+        *) echo "FAIL: no GNU/musl pair is published for linux-${ARCH}; build this on x64 or arm64"; exit 1 ;; \
+    esac; \
+    GNU="linux-${ARCH}-gnu"; \
+    TARBALL="$(npm view "@runner-run/${GNU}@${VER}" dist.tarball)"; \
+    [ -n "${TARBALL}" ] || { echo "FAIL: no tarball for @runner-run/${GNU}@${VER}"; exit 1; }; \
+    wget -qO /tmp/gnu.tgz "${TARBALL}"; \
     mkdir -p "${DIR}/${GNU}"; \
     tar -xzf /tmp/gnu.tgz -C "${DIR}/${GNU}" --strip-components=1; \
     ls -1 "${DIR}"
