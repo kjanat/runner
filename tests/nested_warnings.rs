@@ -20,8 +20,13 @@ fn just_available() -> bool {
 
 /// A project whose `runner.toml` carries an unknown key (a warning every
 /// command prints) and whose `outer` task invokes `runner` again.
-fn nesting_project() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("runner-nested-{}", std::process::id()));
+///
+/// `tag` keeps each test on its own directory. These run on parallel threads
+/// and every one of them deletes its project when it is done, so a shared path
+/// means one test can delete the justfile another is still dispatching
+/// through — which surfaces as an `exec` fallback and a bare `ENOENT`.
+fn nesting_project(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("runner-nested-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create project dir");
     std::fs::write(dir.join("runner.toml"), "[bogus]\nkey = 1\n").expect("runner.toml");
@@ -39,7 +44,7 @@ fn a_nested_runner_does_not_repeat_the_warnings_its_parent_printed() {
         eprintln!("skipping: `just` not on PATH");
         return;
     }
-    let dir = nesting_project();
+    let dir = nesting_project("same-root");
     let bin_dir = runner_binary()
         .parent()
         .expect("binary lives in a directory")
@@ -79,7 +84,7 @@ fn a_nested_runner_does_not_repeat_the_warnings_its_parent_printed() {
 fn a_nested_runner_over_a_different_root_still_warns() {
     // The marker is keyed on the root: a runner pointed somewhere else has its
     // own detection to report, and silence there would be a bug of its own.
-    let dir = nesting_project();
+    let dir = nesting_project("other-root");
     let elsewhere =
         std::env::temp_dir().join(format!("runner-nested-other-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&elsewhere);
