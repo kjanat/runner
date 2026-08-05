@@ -12,10 +12,11 @@ pub(crate) fn detect(dir: &Path) -> bool {
 
 /// `npm [--silent] run <task> [-- args...]`
 ///
-/// `--silent` (an alias for `--loglevel=silent`) is npm's own quiet switch. npm
-/// 11 writes lifecycle banners to stdout; npm 12, via `@npmcli/run-script` 11,
-/// emits them as notice logs on stderr. `--silent` suppresses both forms so a
-/// `-q` pipeline stays clean. npm has no stdout-diversion primitive, so
+/// runner's `-q` maps to npm's `--silent` (`--loglevel=silent`), while npm's
+/// own `-q`/`--quiet` maps to `--loglevel=warn`. npm 11 writes lifecycle banners
+/// to stdout; npm 12, via `@npmcli/run-script` 11, emits them as notice logs on
+/// stderr. `--silent` suppresses both forms so a `-q` pipeline stays clean. npm
+/// has no stdout-diversion primitive, so
 /// [`HostVerbosity::diverts_to_stderr`] is a no-op here.
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: HostVerbosity) -> Command {
     let mut c = super::program::command("npm");

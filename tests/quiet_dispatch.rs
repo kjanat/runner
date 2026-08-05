@@ -241,7 +241,11 @@ fn quiet_silences_npm_host_banner_across_streams() {
 
     // Positive control: npm 11 writes the banner to stdout; npm 12 writes it
     // as notice logs to stderr.
-    let loud = run_in(proj.path(), &[], &["greet"]);
+    let loud = run_in(
+        proj.path(),
+        &[("NPM_CONFIG_LOGLEVEL", "notice")],
+        &["greet"],
+    );
     let loud_out = String::from_utf8_lossy(&loud.stdout);
     let loud_err = String::from_utf8_lossy(&loud.stderr);
     assert!(
@@ -260,7 +264,11 @@ fn quiet_silences_npm_host_banner_across_streams() {
          stderr: {loud_err}",
     );
 
-    let quiet = run_in(proj.path(), &[], &["-q", "greet"]);
+    let quiet = run_in(
+        proj.path(),
+        &[("NPM_CONFIG_LOGLEVEL", "notice")],
+        &["-q", "greet"],
+    );
     let quiet_out = String::from_utf8_lossy(&quiet.stdout);
     let quiet_err = String::from_utf8_lossy(&quiet.stderr);
     assert!(
