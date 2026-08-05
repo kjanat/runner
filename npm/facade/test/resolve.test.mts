@@ -1,7 +1,7 @@
 // tsconfig pins `typeRoots`, so `@types/bun`'s own reference is not followed.
 /// <reference types="bun" />
-import { expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterAll, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,12 @@ import type { Matrix, Target } from "../../scripts/build-packages.ts";
 import matrix from "../../targets.json" with { type: "json" };
 
 const { scope, binaries, targets } = matrix as Matrix;
+const fixtureRoots = new Set<string>();
+
+afterAll(() => {
+	for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
+	fixtureRoots.clear();
+});
 
 /** Every platform package the facade declares, in generated manifest order. */
 const declared = targets.map((target) => `${scope}/${target.pkg}`);
@@ -37,6 +43,7 @@ const siblingOf = (target: Target): Target | undefined =>
  */
 function installFixture(packages: readonly string[], files: readonly string[]) {
 	const root = mkdtempSync(join(tmpdir(), "runner-resolve-"));
+	fixtureRoots.add(root);
 	for (const pkg of packages) {
 		mkdirSync(join(root, pkg, "bin"), { recursive: true });
 		writeFileSync(join(root, pkg, "package.json"), JSON.stringify({ name: pkg }));

@@ -61,7 +61,7 @@ Stages, each fatal on regression:
 Run from the repo root:
 
 ```sh
-docker build --network=host -f tests/docker/musl-libc-select.Dockerfile \
+docker build -f tests/docker/musl-libc-select.Dockerfile \
   --build-arg VER=0.24.1 --progress=plain --no-cache -t runner-musl-libc-test .
 ```
 
