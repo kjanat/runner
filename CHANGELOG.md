@@ -20,6 +20,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `install.sh` now recognizes FreeBSD hosts and selects the published native
+  x86_64 or aarch64 FreeBSD archive instead of rejecting every non-Linux OS
+  (https://github.com/kjanat/runner/issues/117).
 - The npm facade selects the Linux platform package by detected libc instead of
   `optionalDependencies` order, so installs carrying both variants (Bun, Deno)
   no longer get a glibc binary on musl. Only the GNU sibling installed on musl
