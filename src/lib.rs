@@ -112,6 +112,10 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = clap::crate_version!();
+const BUILD_REVISION: &str = env!("RUNNER_BUILD_REVISION");
+const BUILD_RUSTC: &str = env!("RUNNER_BUILD_RUSTC");
+const BUILD_CHANNEL: &str = env!("RUNNER_BUILD_CHANNEL");
+const BUILD_DIRTY: bool = matches!(env!("RUNNER_BUILD_DIRTY").as_bytes(), b"true");
 
 /// Parse process args, detect current dir, dispatch, return exit code.
 ///
@@ -175,19 +179,18 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-
-    if requests_version(&args) {
-        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
-        return Ok(0);
-    }
-
-    let args =
-        cli::forward_args_after_task(&args, cli::TaskPosition::AfterRunSubcommand).unwrap_or(args);
-    let cli = match parse_cli(args) {
+    let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let cli = match parse_cli(original_args.clone()) {
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err),
     };
+    if let Some(request) = version_request(&cli.version, cli.global.quiet) {
+        println!(
+            "{}",
+            version_output(&original_args, request, std::io::stdout().is_terminal())
+        );
+        return Ok(0);
+    }
     // The language server parses each editor buffer itself and needs neither a
     // resolved project dir nor detection; handle it before either can bail.
     #[cfg(feature = "lsp")]
@@ -211,15 +214,71 @@ where
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args =
+        cli::forward_args_after_task(&args, cli::TaskPosition::AfterRunSubcommand).unwrap_or(args);
 
     let mut command = configure_cli_command(cli::Cli::command(), std::io::stdout().is_terminal());
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
+    let args = prioritize_top_level_help(args, &command);
     command = shorten_help_subcommand(command);
 
-    let matches = command.try_get_matches_from(args)?;
-    cli::Cli::from_arg_matches(&matches)
+    let matches = command.try_get_matches_from_mut(args)?;
+    let parsed = cli::Cli::from_arg_matches(&matches)?;
+    if version_request(&parsed.version, parsed.global.quiet).is_some() && parsed.command.is_some() {
+        return Err(command.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "a version selector cannot be used with a command",
+        ));
+    }
+    Ok(parsed)
+}
+
+/// Move a leading top-level help request ahead of earlier options so help wins
+/// over an error in those options.
+///
+/// clap intentionally parses left-to-right and returns an unknown-argument
+/// error before it can reach a later `--help`. This is the sole precedence
+/// policy applied before clap: it recognizes only clap's own help spellings,
+/// stops at the first positional or forwarding delimiter, and derives the
+/// value-taking option spellings from the same [`clap::Command`]. All other
+/// argument recognition and validation remains clap-owned.
+fn prioritize_top_level_help(args: Vec<OsString>, command: &clap::Command) -> Vec<OsString> {
+    let value_flags = command
+        .get_arguments()
+        .filter(|arg| !arg.is_positional() && arg.get_action().takes_values())
+        .flat_map(|arg| {
+            arg.get_long()
+                .map(|long| format!("--{long}"))
+                .into_iter()
+                .chain(arg.get_short().map(|short| format!("-{short}")))
+        })
+        .collect::<Vec<_>>();
+    let mut index = 1;
+
+    while index < args.len() {
+        let Some(word) = args[index].to_str() else {
+            return args;
+        };
+        if word == "--" || !word.starts_with('-') {
+            return args;
+        }
+        if matches!(word, "-h" | "--help") {
+            return vec![args[0].clone(), args[index].clone()];
+        }
+        let takes_value = value_flags.iter().any(|flag| flag == word);
+        index += 1;
+        if takes_value
+            && args
+                .get(index)
+                .is_some_and(|value| !matches!(value.to_str(), Some("-h" | "--help")))
+        {
+            index += 1;
+        }
+    }
+
+    args
 }
 
 /// Replace clap's verbose default `help` subcommand description
@@ -304,34 +363,19 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    if requests_version(&args) {
-        println!("{}", version_line(&args, std::io::stdout().is_terminal()));
+    let cli = match parse_run_alias_cli(original_args.clone()) {
+        Ok(cli) => cli,
+        Err(err) => return render_clap_error(&err),
+    };
+    if let Some(request) = version_request(&cli.version, cli.global.quiet) {
+        println!(
+            "{}",
+            version_output(&original_args, request, std::io::stdout().is_terminal())
+        );
         return Ok(0);
     }
-
-    let args = cli::forward_args_after_task(&args, cli::TaskPosition::First).unwrap_or(args);
-
-    let cli = match parse_run_alias_cli(args.clone()) {
-        Ok(cli) => cli,
-        // A `--help`/`--version` *before* any task is this binary's own:
-        // clap's built-ins are disabled and the flag is undefined, so it
-        // can't fill the hyphen-rejecting `task` positional and surfaces as
-        // `UnknownArgument`. (A *trailing* one is swallowed by `args` and
-        // forwarded instead, see `cli::RunAliasCli`.) Covers the bare
-        // `run --help` as well as `run --pm npm --help`, `run --dir … -V`.
-        Err(err) => {
-            return match alias_builtin_request(&err) {
-                Some(AliasBuiltin::Help) => print_run_alias_help(&args),
-                Some(AliasBuiltin::Version) => {
-                    println!("{}", version_line(&args, std::io::stdout().is_terminal()));
-                    Ok(0)
-                }
-                None => render_clap_error(&err),
-            };
-        }
-    };
 
     let project_dir = resolve_project_dir(
         configured_project_dir(
@@ -344,69 +388,36 @@ where
     dispatch_run_alias(cli, &project_dir)
 }
 
-/// This binary's own help/version, requested *before* any task.
-enum AliasBuiltin {
-    Help,
-    Version,
-}
-
-/// Classify a `run`-alias parse failure as a request for this binary's own
-/// help/version, or `None` for an unrelated error to surface verbatim.
-///
-/// With clap's built-in `--help`/`--version` disabled and undefined, a
-/// leading `-h`/`--help`/`-V`/`--version` cannot fill the hyphen-rejecting
-/// `task` positional, so clap reports [`ErrorKind::UnknownArgument`] naming
-/// the offending flag. A *trailing* one never reaches here; it is captured
-/// by `args` and forwarded, so an `UnknownArgument` naming a help/version
-/// flag unambiguously means "before any task", i.e. ours to handle.
-fn alias_builtin_request(err: &clap::Error) -> Option<AliasBuiltin> {
-    use clap::error::{ContextKind, ContextValue, ErrorKind};
-
-    if err.kind() != ErrorKind::UnknownArgument {
-        return None;
-    }
-    match err.get(ContextKind::InvalidArg) {
-        Some(ContextValue::String(arg)) => match arg.as_str() {
-            "--help" | "-h" => Some(AliasBuiltin::Help),
-            "--version" | "-V" => Some(AliasBuiltin::Version),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Render the `run` alias binary's own help to stdout, returning exit 0.
-///
-/// Invoked when `-h`/`--help` precedes any task. A help flag that *follows*
-/// a task is forwarded to that task instead (see [`cli::RunAliasCli`]), so
-/// this path is only reached for `run`'s own help. The bin name is taken
-/// from `argv[0]` so the `Usage:` line reads `run`, matching how clap's
-/// built-in help rendered before it was disabled.
-fn print_run_alias_help(args: &[OsString]) -> Result<i32> {
-    let mut command =
-        configure_cli_command(cli::RunAliasCli::command(), std::io::stdout().is_terminal());
-    if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
-        command = command.name(bin_name.clone()).bin_name(bin_name);
-    }
-    command.print_help()?;
-    Ok(0)
-}
-
 fn parse_run_alias_cli<I, T>(args: I) -> Result<cli::RunAliasCli, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args = cli::forward_args_after_task(&args, cli::TaskPosition::First).unwrap_or(args);
 
     let mut command =
         configure_cli_command(cli::RunAliasCli::command(), std::io::stdout().is_terminal());
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
+    let args = prioritize_top_level_help(args, &command);
 
-    let matches = command.try_get_matches_from(args)?;
-    cli::RunAliasCli::from_arg_matches(&matches)
+    let matches = command.try_get_matches_from_mut(args)?;
+    let parsed = cli::RunAliasCli::from_arg_matches(&matches)?;
+    let has_task_action = parsed.task.is_some()
+        || !parsed.args.is_empty()
+        || parsed.mode.sequential
+        || parsed.mode.parallel
+        || parsed.failure.keep_going
+        || parsed.failure.kill_on_fail;
+    if version_request(&parsed.version, parsed.global.quiet).is_some() && has_task_action {
+        return Err(command.error(
+            clap::error::ErrorKind::ArgumentConflict,
+            "a version selector cannot be used with a task or chain option",
+        ));
+    }
+    Ok(parsed)
 }
 
 /// Dispatch a parsed `run`-alias CLI by funnelling it through the same
@@ -428,12 +439,9 @@ where
 ///
 /// Building a typed [`cli::Cli`] here, rather than rewriting argv to
 /// `["runner", "run", …]` and re-parsing through clap, keeps the mapping
-/// total and compiler-checked and, crucially, leaves the alias's bespoke
-/// help/version forwarding untouched. That forwarding lives in the parse
-/// layer ([`cli::RunAliasCli`] disables clap's `--help`/`--version` so a
-/// *trailing* one reaches the task); re-parsing through [`cli::Command::Run`],
-/// which inherits the `runner` binary's enabled global help/version, would
-/// short-circuit and print clap help instead of forwarding it.
+/// total and compiler-checked and, crucially, leaves the alias's task-argument
+/// forwarding untouched. Re-parsing through [`cli::Command::Run`] would lose
+/// the delimiter placement already established by the alias parse layer.
 fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     let bare = cli.task.is_none() && !cli.mode.sequential && !cli.mode.parallel;
     let command = if bare {
@@ -449,6 +457,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
     dispatch(
         cli::Cli {
             global: cli.global,
+            version: cli.version,
             command,
         },
         dir,
@@ -555,7 +564,8 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 ///
 /// # Returns
 ///
-/// `true` if `args` has exactly two elements and the second element is `--version` or `-V`, `false` otherwise.
+/// `true` for a valid top-level version request, optionally combined with
+/// global options, `--json`, or quiet modifiers; `false` otherwise.
 ///
 /// # Examples
 ///
@@ -576,19 +586,125 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 /// ```
 #[must_use]
 pub fn requests_version(args: &[OsString]) -> bool {
-    if args.len() != 2 {
-        return false;
+    parse_cli(args.iter().cloned())
+        .is_ok_and(|parsed| version_request(&parsed.version, parsed.global.quiet).is_some())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VersionKind {
+    Short,
+    Detailed,
+    Revision,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct VersionRequest {
+    kind: VersionKind,
+    json: bool,
+}
+
+const fn version_request(options: &cli::VersionOpts, quiet: u8) -> Option<VersionRequest> {
+    let kind = if options.short_lower || options.short_upper {
+        VersionKind::Short
+    } else if options.detailed || options.build_options {
+        VersionKind::Detailed
+    } else if options.revision {
+        VersionKind::Revision
+    } else {
+        return None;
+    };
+
+    if quiet > 0 {
+        Some(VersionRequest {
+            kind: VersionKind::Short,
+            json: false,
+        })
+    } else {
+        Some(VersionRequest {
+            kind,
+            json: options.json,
+        })
+    }
+}
+
+fn version_output(args: &[OsString], request: VersionRequest, stdout_is_terminal: bool) -> String {
+    if request.json {
+        return version_json(args);
     }
 
-    let flag = args[1].to_string_lossy();
-    flag == "--version" || flag == "-V"
+    match request.kind {
+        VersionKind::Short => version_line(args, stdout_is_terminal),
+        VersionKind::Revision => format!("{} {}", version_bin(args), revision_version()),
+        VersionKind::Detailed => format!(
+            "{}\nchannel: {BUILD_CHANNEL}\nrevision: {}\ntarget: {}\nprofile: {}\nrustc: \
+             {BUILD_RUSTC}\nhost: {}\nopt-level: {}\ndebug: {}\ntarget-features: {}",
+            version_line(args, stdout_is_terminal),
+            revision_id(),
+            env!("RUNNER_BUILD_TARGET"),
+            env!("RUNNER_BUILD_PROFILE"),
+            env!("RUNNER_BUILD_HOST"),
+            env!("RUNNER_BUILD_OPT_LEVEL"),
+            env!("RUNNER_BUILD_DEBUG"),
+            env!("RUNNER_BUILD_TARGET_FEATURES"),
+        ),
+    }
+}
+
+fn version_json(args: &[OsString]) -> String {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "program": version_bin(args),
+        "version": VERSION,
+        "version_with_revision": revision_version(),
+        "channel": BUILD_CHANNEL,
+        "revision": BUILD_REVISION,
+        "dirty": BUILD_DIRTY,
+        "target": env!("RUNNER_BUILD_TARGET"),
+        "host": env!("RUNNER_BUILD_HOST"),
+        "profile": env!("RUNNER_BUILD_PROFILE"),
+        "opt_level": env!("RUNNER_BUILD_OPT_LEVEL"),
+        "debug": env!("RUNNER_BUILD_DEBUG") == "true",
+        "rustc": BUILD_RUSTC,
+        "rust_version": env!("CARGO_PKG_RUST_VERSION"),
+        "target_config": {
+            "arch": env!("RUNNER_BUILD_TARGET_ARCH"),
+            "os": env!("RUNNER_BUILD_TARGET_OS"),
+            "env": env!("RUNNER_BUILD_TARGET_ENV"),
+            "family": env!("RUNNER_BUILD_TARGET_FAMILY"),
+            "pointer_width": env!("RUNNER_BUILD_TARGET_POINTER_WIDTH"),
+            "endian": env!("RUNNER_BUILD_TARGET_ENDIAN"),
+            "features": env!("RUNNER_BUILD_TARGET_FEATURES")
+                .split(',')
+                .filter(|feature| !feature.is_empty())
+                .collect::<Vec<_>>(),
+        },
+    }))
+    .expect("version metadata only contains JSON-compatible values")
+}
+
+fn revision_id() -> String {
+    let dirty = if BUILD_DIRTY { "-dirty" } else { "" };
+    format!("{BUILD_REVISION}{dirty}")
+}
+
+fn revision_version() -> String {
+    let prerelease = if BUILD_CHANNEL == "stable" {
+        String::new()
+    } else {
+        format!("-{BUILD_CHANNEL}")
+    };
+    let metadata = if BUILD_REVISION == "unknown" {
+        String::new()
+    } else if BUILD_DIRTY {
+        format!("+{BUILD_REVISION}.dirty")
+    } else {
+        format!("+{BUILD_REVISION}")
+    };
+    format!("{VERSION}{prerelease}{metadata}")
 }
 
 fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
-    let bin = args
-        .first()
-        .and_then(bin_name_from_arg0)
-        .unwrap_or_else(|| "runner".to_string());
+    let bin = version_bin(args);
 
     if !stdout_is_terminal {
         return format!("{bin} {VERSION}");
@@ -599,6 +715,12 @@ fn version_line(args: &[OsString], stdout_is_terminal: bool) -> String {
         osc8_link(&bin, REPOSITORY_URL),
         osc8_link(VERSION, &release_url(VERSION))
     )
+}
+
+fn version_bin(args: &[OsString]) -> String {
+    args.first()
+        .and_then(bin_name_from_arg0)
+        .unwrap_or_else(|| "runner".to_string())
 }
 
 fn release_url(version: &str) -> String {
@@ -1100,15 +1222,20 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        AliasBuiltin, VERSION, alias_builtin_request, bin_name_from_arg0, configured_project_dir,
+        BUILD_CHANNEL, BUILD_DIRTY, VERSION, bin_name_from_arg0, configured_project_dir,
         exit_code_for_error, expand_tilde_with, has_task, parse_cli, parse_run_alias_cli,
-        release_url, requests_version, resolve_project_dir, run_alias_in_dir, run_in_dir,
-        version_line,
+        release_url, requests_version, resolve_project_dir, revision_version, run_alias_in_dir,
+        run_in_dir, version_line, version_output, version_request,
     };
     use crate::cli;
     use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
     use crate::types::{Ecosystem, ProjectContext, Task, TaskSource};
+
+    fn parsed_version(args: &[&str]) -> super::VersionRequest {
+        let parsed = parse_cli(args.iter().copied()).expect("valid CLI arguments");
+        version_request(&parsed.version, parsed.global.quiet).expect("version request")
+    }
 
     #[test]
     fn exit_code_for_resolve_error_is_two() {
@@ -1153,18 +1280,47 @@ mod tests {
     }
 
     #[test]
-    fn requests_version_detects_top_level_version_flags() {
-        assert!(requests_version(&[
-            OsString::from("runner"),
-            OsString::from("--version")
-        ]));
-        assert!(requests_version(&[
-            OsString::from("runner"),
-            OsString::from("-V")
-        ]));
+    fn version_request_preserves_mappings_and_accepts_global_options() {
+        for flag in ["-v", "-V"] {
+            assert!(matches!(
+                parsed_version(&["runner", flag]),
+                super::VersionRequest {
+                    kind: super::VersionKind::Short,
+                    json: false,
+                },
+            ));
+        }
+        for flag in ["--version", "--build-options"] {
+            assert!(matches!(
+                parsed_version(&["runner", flag]),
+                super::VersionRequest {
+                    kind: super::VersionKind::Detailed,
+                    json: false,
+                },
+            ));
+        }
+        assert!(matches!(
+            parsed_version(&["runner", "--revision"]),
+            super::VersionRequest {
+                kind: super::VersionKind::Revision,
+                json: false,
+            },
+        ));
         assert!(!requests_version(&[
             OsString::from("runner"),
             OsString::from("info"),
+            OsString::from("--version"),
+        ]));
+        assert!(matches!(
+            parsed_version(&["run", "--pm", "npm", "--version"]),
+            super::VersionRequest {
+                kind: super::VersionKind::Detailed,
+                json: false,
+            },
+        ));
+        assert!(!requests_version(&[
+            OsString::from("run"),
+            OsString::from("--bogus"),
             OsString::from("--version"),
         ]));
     }
@@ -1187,6 +1343,94 @@ mod tests {
         assert!(line.contains(&format!(
             "\u{1b}]8;;https://github.com/kjanat/runner/releases/tag/v{VERSION}\u{1b}\\{VERSION}\u{1b}]8;;\u{1b}\\"
         )));
+    }
+
+    #[test]
+    fn detailed_version_identifies_the_build() {
+        let output = version_output(
+            &[OsString::from("runner")],
+            super::VersionRequest {
+                kind: super::VersionKind::Detailed,
+                json: false,
+            },
+            false,
+        );
+
+        assert!(output.starts_with(&format!("runner {VERSION}\n")));
+        for label in [
+            "channel: ",
+            "revision: ",
+            "target: ",
+            "profile: ",
+            "rustc: ",
+        ] {
+            assert!(output.contains(label), "missing {label:?} in {output:?}");
+        }
+    }
+
+    #[test]
+    fn revision_version_uses_bun_style_separator() {
+        assert_eq!(
+            version_output(
+                &[OsString::from("run")],
+                super::VersionRequest {
+                    kind: super::VersionKind::Revision,
+                    json: false,
+                },
+                false,
+            ),
+            format!("run {}", revision_version()),
+        );
+    }
+
+    #[test]
+    fn quiet_makes_every_version_selector_concise() {
+        for selector in ["--version", "--build-options", "--revision"] {
+            let args = [
+                OsString::from("run"),
+                OsString::from(selector),
+                OsString::from("-q"),
+            ];
+            let parsed = parse_cli(args.clone()).expect("valid version arguments");
+            let request =
+                version_request(&parsed.version, parsed.global.quiet).expect("version request");
+            assert_eq!(request.kind, super::VersionKind::Short);
+            assert_eq!(
+                version_output(&args, request, false),
+                format!("run {VERSION}")
+            );
+        }
+    }
+
+    #[test]
+    fn detailed_version_json_is_structured_and_names_the_binary() {
+        let args = [
+            OsString::from("runner"),
+            OsString::from("--version"),
+            OsString::from("--json"),
+        ];
+        let parsed = parse_cli(args.clone()).expect("valid version arguments");
+        let request =
+            version_request(&parsed.version, parsed.global.quiet).expect("version request");
+        let output = version_output(&args, request, false);
+        let value: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
+
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["program"], "runner");
+        assert_eq!(value["version"], VERSION);
+        assert!(value["target_config"]["features"].is_array());
+    }
+
+    #[test]
+    fn revision_version_marks_development_and_dirty_builds() {
+        let output = revision_version();
+
+        if BUILD_CHANNEL == "stable" {
+            assert!(!output.contains("-dev."));
+        } else {
+            assert!(output.contains(&format!("-{BUILD_CHANNEL}")));
+        }
+        assert_eq!(output.contains(".dirty"), BUILD_DIRTY);
     }
 
     #[test]
@@ -1521,55 +1765,41 @@ mod tests {
     }
 
     #[test]
-    fn run_alias_leading_builtins_classified_as_own_request() {
-        // Before any task, a help/version flag can't fill the
-        // hyphen-rejecting `task` positional (clap built-ins are disabled),
-        // so it surfaces as UnknownArgument and is recognised as ours.
+    fn run_alias_leading_help_is_clap_owned_and_versions_parse() {
         for flag in ["--help", "-h"] {
             let err = parse_run_alias_cli(["run", flag])
-                .expect_err("leading help flag should not parse as a task");
-            assert!(
-                matches!(alias_builtin_request(&err), Some(AliasBuiltin::Help)),
-                "{flag} before a task should be classified as a help request",
-            );
+                .expect_err("leading help should return clap's display-help flow");
+            assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
         }
-        for flag in ["--version", "-V"] {
-            let err = parse_run_alias_cli(["run", flag])
-                .expect_err("leading version flag should not parse as a task");
-            assert!(
-                matches!(alias_builtin_request(&err), Some(AliasBuiltin::Version)),
-                "{flag} before a task should be classified as a version request",
-            );
+        for (flag, kind) in [
+            ("--version", super::VersionKind::Detailed),
+            ("-V", super::VersionKind::Short),
+        ] {
+            let parsed = parse_run_alias_cli(["run", flag]).expect("version selector parses");
+            let request =
+                version_request(&parsed.version, parsed.global.quiet).expect("version request");
+            assert_eq!(request.kind, kind);
         }
     }
 
     #[test]
-    fn run_alias_global_flag_before_help_still_classified_as_help() {
-        // `run --pm npm --help`: the value-taking global flag is consumed,
-        // then --help still lands before any task → run's own help.
+    fn run_alias_global_flag_before_help_still_displays_help() {
         let err = parse_run_alias_cli(["run", "--pm", "npm", "--help"])
-            .expect_err("--pm npm --help should not parse as a task");
-        assert!(matches!(
-            alias_builtin_request(&err),
-            Some(AliasBuiltin::Help)
-        ));
+            .expect_err("clap returns help as a display error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     }
 
     #[test]
-    fn run_alias_unknown_flag_is_not_a_builtin_request() {
-        // A genuine unknown flag must surface as an error, never be
-        // mistaken for a help/version request.
+    fn run_alias_unknown_flag_remains_an_error() {
         let err = parse_run_alias_cli(["run", "--bogus"])
             .expect_err("unknown leading flag should not parse");
-        assert!(alias_builtin_request(&err).is_none());
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn run_alias_own_help_and_version_return_zero() {
         // End-to-end through dispatch: own help/version exit 0 without
-        // needing a real project. `--pm npm --version` is len > 2 so it
-        // bypasses the `requests_version` fast-path and exercises the
-        // parse-error classification.
+        // needing a real project.
         let dir = TempDir::new("runner-run-builtin");
         assert_eq!(
             run_alias_in_dir(["run", "--help"], dir.path()).expect("run --help should succeed"),

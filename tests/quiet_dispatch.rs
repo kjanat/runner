@@ -222,12 +222,12 @@ fn quiet_suppresses_explain_trace() {
     );
 }
 
-/// #93: `--quiet` now crosses into the host tool. On an npm project npm's
-/// lifecycle banner (`> greet` / `> <cmd>`) is on **stdout**; `-q` must pass
-/// `npm --silent` so that banner is gone and stdout carries only the task's
-/// own output, the machine-readable pipeline the issue asked for.
+/// #93: `--quiet` now crosses into the host tool. npm 11 prints its lifecycle
+/// banner (`> greet` / `> <cmd>`) on stdout. npm 12's `@npmcli/run-script` 11
+/// emits the same information as `npm notice run` logs on stderr. `-q` must
+/// suppress either form so only the task's own output remains.
 #[test]
-fn quiet_silences_npm_host_banner_on_stdout() {
+fn quiet_silences_npm_host_banner_across_streams() {
     if !tool_available("npm") {
         eprintln!("skipping: `npm` not found on PATH");
         return;
@@ -239,28 +239,53 @@ fn quiet_silences_npm_host_banner_on_stdout() {
         )
         .file("package-lock.json", "{}\n");
 
-    // Positive control: without -q npm prints its banner to stdout.
-    let loud = run_in(proj.path(), &[], &["greet"]);
+    // Positive control: npm 11 writes the banner to stdout; npm 12 writes it
+    // as notice logs to stderr.
+    let loud = run_in(
+        proj.path(),
+        &[("NPM_CONFIG_LOGLEVEL", "notice")],
+        &["greet"],
+    );
     let loud_out = String::from_utf8_lossy(&loud.stdout);
+    let loud_err = String::from_utf8_lossy(&loud.stderr);
     assert!(
-        loud_out.contains("> greet"),
-        "npm banner expected on stdout without -q. stdout: {loud_out}",
+        loud.status.success(),
+        "run greet should succeed. stderr: {}",
+        String::from_utf8_lossy(&loud.stderr),
+    );
+    assert!(
+        loud_out.lines().any(|line| line == "SENTINEL-OUT"),
+        "the task's own output must survive without -q. stdout: {loud_out}",
+    );
+    assert!(
+        (loud_out.contains("> greet") && loud_out.contains("> echo SENTINEL-OUT"))
+            || loud_err.contains("npm notice run"),
+        "npm host banner expected on stdout (npm 11) or stderr (npm 12). stdout: {loud_out}; \
+         stderr: {loud_err}",
     );
 
-    let quiet = run_in(proj.path(), &[], &["-q", "greet"]);
+    let quiet = run_in(
+        proj.path(),
+        &[("NPM_CONFIG_LOGLEVEL", "notice")],
+        &["-q", "greet"],
+    );
     let quiet_out = String::from_utf8_lossy(&quiet.stdout);
+    let quiet_err = String::from_utf8_lossy(&quiet.stderr);
     assert!(
         quiet.status.success(),
         "run -q greet should succeed. stderr: {}",
         String::from_utf8_lossy(&quiet.stderr),
     );
     assert!(
-        quiet_out.contains("SENTINEL-OUT"),
+        quiet_out.lines().any(|line| line == "SENTINEL-OUT"),
         "the task's own output must survive -q. stdout: {quiet_out}",
     );
     assert!(
-        !quiet_out.contains("> greet"),
-        "-q must silence npm's host banner on stdout (#93). stdout: {quiet_out}",
+        !quiet_out.contains("> greet")
+            && !quiet_out.contains("> echo SENTINEL-OUT")
+            && !quiet_err.contains("npm notice run"),
+        "-q must silence npm's host banner on either stream (#93). stdout: {quiet_out}; stderr: \
+         {quiet_err}",
     );
 }
 
