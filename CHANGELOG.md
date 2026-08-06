@@ -30,6 +30,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `install.sh` now selects the published native archives on FreeBSD, NetBSD,
+  and macOS instead of rejecting every non-Linux OS. It supports each system's
+  base checksum command and marks the unverified NetBSD/macOS paths with a link
+  for reporting failures (https://github.com/kjanat/runner/issues/117).
 - The npm facade selects the Linux platform package by detected libc instead of
   `optionalDependencies` order, so installs carrying both variants (Bun, Deno)
   no longer get a glibc binary on musl. Only the GNU sibling installed on musl
