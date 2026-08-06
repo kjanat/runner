@@ -39,7 +39,7 @@ jobs:
             exit 1
           fi
           echo "ok: tag ${RELEASE_TAG} matches Cargo.toml version ${manifest_version}"
-          echo "url=https://crates.io/crates/runner-run/${manifest_version}" >> "$GITHUB_OUTPUT"
+          echo "url=https://crates.io/crates/runner-run/${manifest_version}" >> "${GITHUB_OUTPUT}"
 
       - name: download man pages
         if: inputs.run-id != ''

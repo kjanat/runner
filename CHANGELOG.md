@@ -9,6 +9,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ## [Unreleased]
 
+### Release checklist
+
+- [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
+- [ ] Update current-version references in `schemas/`, both AUR `PKGBUILD`s, and `README.md` container-image tags.
+- [ ] Search repository-wide for the old version; account for every match.
+- [ ] Move `Unreleased` entries into the new version section and rotate links.
+- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
+- [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
+
+## [0.25.0] - 2026-08-06
+
 ### Added
 
 - Expanded version reporting for both `runner` and `run`: `-v` and `-V` print
@@ -18,15 +29,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `dev.<commit-count>` prerelease and modified worktrees a `.dirty` marker.
   Revision output names the invoked binary, quiet modifiers select concise
   output, and detailed modes accept `--json` for structured build metadata.
-
-### Release checklist
-
-- [ ] Bump `Cargo.toml`; MUST run `cargo check` without `--locked` to update `Cargo.lock`.
-- [ ] Update current-version references in `schemas/`, both AUR `PKGBUILD`s, and `README.md` container-image tags.
-- [ ] Search repository-wide for the old version; account for every match.
-- [ ] Move `Unreleased` entries into the new version section and rotate links.
-- [ ] Create and push a signed `vX.Y.Z` tag from `master`.
-- [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
 ### Fixed
 
@@ -2020,7 +2022,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/kjanat/runner/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/kjanat/runner/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/kjanat/runner/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/kjanat/runner/compare/v0.22.0...v0.23.0

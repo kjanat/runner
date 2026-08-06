@@ -56,7 +56,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with: { tool: "just,uv,bacon,tombi,shellcheck" }
       - uses: kjanat/install-dprint@v2
-      - run: printf 'MISE_TOML<<TOML\n%s\nTOML\n' "$(yq -o toml -p json <<<"$MISE" | dprint fmt --stdin toml)" | tee -a "${GITHUB_ENV}"
+      - run: |
+          mise_toml="$(yq -o toml -p json <<<"${MISE}")"
+          mise_toml="$(dprint fmt --stdin toml <<<"${mise_toml}")"
+          printf 'MISE_TOML<<TOML\n%s\nTOML\n' "${mise_toml}" | tee -a "${GITHUB_ENV}"
       - uses: jdx/mise-action@v4
         with: { mise_toml: "${{ env.MISE_TOML }}" }
       - uses: ./
@@ -308,7 +311,7 @@ jobs:
   call-aur-release:
     name: aur publish
     needs: [publish-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.AUR_BLOCKED == 'false'
     permissions: { contents: read }
     uses: ./.github/workflows/aur-release.yml
     secrets: inherit
