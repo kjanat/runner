@@ -2,6 +2,7 @@
 set -eu
 
 REPO="kjanat/runner"
+ISSUES_URL="https://github.com/${REPO}/issues"
 
 usage() {
 	cat <<'EOF'
@@ -39,6 +40,36 @@ require_command() {
 	if ! command -v "${cmd}" >/dev/null 2>&1; then
 		printf 'error: required command not found: %s\n' "${cmd}" >&2
 		exit 1
+	fi
+}
+
+resolve_checksum_tool() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		printf 'sha256sum\n'
+	elif command -v shasum >/dev/null 2>&1; then
+		printf 'shasum\n'
+	elif command -v cksum >/dev/null 2>&1; then
+		printf 'cksum\n'
+	else
+		printf 'error: required checksum command not found: sha256sum, shasum, or cksum\n' >&2
+		printf 'error: report installation problems at %s\n' "${ISSUES_URL}" >&2
+		exit 1
+	fi
+}
+
+verify_checksum() {
+	checksum_status=0
+	case "${1}" in
+		sha256sum) sha256sum -c "${2}" >/dev/null 2>&1 || checksum_status=$? ;;
+		shasum) shasum -a 256 -c "${2}" >/dev/null 2>&1 || checksum_status=$? ;;
+		cksum) cksum -a SHA256 -c "${2}" >/dev/null 2>&1 || checksum_status=$? ;;
+		*) checksum_status=1 ;;
+	esac
+
+	if [ "${checksum_status}" -eq 0 ]; then
+		printf 'yes\n'
+	else
+		printf 'no\n'
 	fi
 }
 
@@ -90,6 +121,19 @@ resolve_target() {
 			case "${arch}" in
 				x86_64 | amd64) printf 'x86_64-unknown-freebsd\n' ;;
 				aarch64 | arm64) printf 'aarch64-unknown-freebsd\n' ;;
+				*) unsupported_arch "${os}" "${arch}" ;;
+			esac
+			;;
+		NetBSD)
+			case "${arch}" in
+				x86_64 | amd64) printf 'x86_64-unknown-netbsd\n' ;;
+				*) unsupported_arch "${os}" "${arch}" ;;
+			esac
+			;;
+		Darwin)
+			case "${arch}" in
+				x86_64) printf 'x86_64-apple-darwin\n' ;;
+				aarch64 | arm64) printf 'aarch64-apple-darwin\n' ;;
 				*) unsupported_arch "${os}" "${arch}" ;;
 			esac
 			;;
@@ -245,7 +289,7 @@ main() {
 	os_name="$(uname -s)"
 
 	case "${os_name}" in
-		Linux | FreeBSD) ;;
+		Linux | FreeBSD | NetBSD | Darwin) ;;
 		*)
 			printf 'error: install.sh does not support this OS: %s\n' "${os_name}" >&2
 			exit 1
@@ -254,8 +298,16 @@ main() {
 
 	require_command curl
 	require_command tar
-	require_command sha256sum
 	require_command install
+	checksum_tool="$(resolve_checksum_tool)"
+
+	case "${os_name}" in
+		NetBSD | Darwin)
+			printf 'note: %s support is not yet verified; report failures at:\n' "${os_name}"
+			printf '  %s\n' "${ISSUES_URL}"
+			;;
+		*) ;;
+	esac
 
 	INSTALL_DIR="$(resolve_install_dir)"
 
@@ -295,8 +347,12 @@ main() {
 
 	(
 		cd "${tmp_dir}"
-		# busybox sha256sum has no --status.
-		sha256sum -c "${checksum_asset}" >/dev/null 2>&1
+		checksum_ok="$(verify_checksum "${checksum_tool}" "${checksum_asset}")"
+		if [ "${checksum_ok}" = no ]; then
+			printf 'error: checksum verification failed for %s\n' "${asset}" >&2
+			printf 'error: report installation problems at %s\n' "${ISSUES_URL}" >&2
+			exit 1
+		fi
 	)
 
 	tar -xzf "${tmp_dir}/${asset}" -C "${tmp_dir}"
@@ -348,9 +404,15 @@ main() {
 	man_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/man/man1"
 	man_asset="runner-${version}-man.tar.gz"
 	man_checksum="runner-${version}-man.sha256"
+	man_checksum_ok=no
 	if curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_asset}" "${base_url}/${man_asset}" 2>/dev/null \
-		&& curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_checksum}" "${base_url}/${man_checksum}" 2>/dev/null \
-		&& (cd "${tmp_dir}" && sha256sum -c "${man_checksum}" >/dev/null 2>&1) \
+		&& curl -fsSL --retry 3 --retry-delay 1 -o "${tmp_dir}/${man_checksum}" "${base_url}/${man_checksum}" 2>/dev/null; then
+		man_checksum_ok="$(
+			cd "${tmp_dir}"
+			verify_checksum "${checksum_tool}" "${man_checksum}"
+		)"
+	fi
+	if [ "${man_checksum_ok}" = yes ] \
 		&& mkdir -p "${man_dir}" \
 		&& tar -xzf "${tmp_dir}/${man_asset}" -C "${man_dir}"; then
 		print_item "man pages: ${man_dir}"
