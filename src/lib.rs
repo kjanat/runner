@@ -110,6 +110,65 @@ pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
     }
 }
 
+/// Whether a fatal error from the `runner` invocation should be muted.
+#[must_use]
+pub fn runner_error_is_muted() -> bool {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    parse_cli(args.clone()).map_or_else(
+        |_| {
+            quiet_level_from_args(args, cli::TaskPosition::AfterRunSubcommand)
+                == tool::QuietLevel::Mute
+        },
+        |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
+    )
+}
+
+/// Whether a fatal error from the `run` alias invocation should be muted.
+#[must_use]
+pub fn run_alias_error_is_muted() -> bool {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    parse_run_alias_cli(args.clone()).map_or_else(
+        |_| quiet_level_from_args(args, cli::TaskPosition::First) == tool::QuietLevel::Mute,
+        |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
+    )
+}
+
+fn quiet_level_for_error(cli_count: u8) -> tool::QuietLevel {
+    if cli_count > 0 {
+        return tool::QuietLevel::from_count(cli_count);
+    }
+    std::env::var("RUNNER_QUIET")
+        .ok()
+        .as_deref()
+        .and_then(resolver::parse_quiet_env)
+        .unwrap_or_default()
+}
+
+fn quiet_level_from_args<I, T>(args: I, task_position: cli::TaskPosition) -> tool::QuietLevel
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args = cli::forward_args_after_task(&args, task_position).unwrap_or(args);
+    let mut count = 0_u8;
+    for arg in args.into_iter().skip(1) {
+        let Some(word) = arg.to_str() else { continue };
+        if word == "--" {
+            break;
+        }
+        let increment = if word == "--quiet" {
+            1
+        } else if let Some(shorts) = word.strip_prefix('-').filter(|shorts| !shorts.is_empty()) {
+            shorts.bytes().take_while(|byte| *byte == b'q').count()
+        } else {
+            0
+        };
+        count = count.saturating_add(u8::try_from(increment).unwrap_or(u8::MAX));
+    }
+    quiet_level_for_error(count)
+}
+
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = clap::crate_version!();
 const BUILD_REVISION: &str = env!("RUNNER_BUILD_REVISION");
@@ -180,9 +239,11 @@ where
     T: Into<OsString> + Clone,
 {
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let quiet_level =
+        quiet_level_from_args(original_args.clone(), cli::TaskPosition::AfterRunSubcommand);
     let cli = match parse_cli(original_args.clone()) {
         Ok(cli) => cli,
-        Err(err) => return render_clap_error(&err),
+        Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
     };
     if let Some(request) = version_request(&cli.version, cli.global.quiet) {
         println!(
@@ -365,9 +426,10 @@ where
 {
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
+    let quiet_level = quiet_level_from_args(original_args.clone(), cli::TaskPosition::First);
     let cli = match parse_run_alias_cli(original_args.clone()) {
         Ok(cli) => cli,
-        Err(err) => return render_clap_error(&err),
+        Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
     };
     if let Some(request) = version_request(&cli.version, cli.global.quiet) {
         println!(
@@ -790,9 +852,16 @@ fn resolve_project_dir(project_dir: Option<&Path>, cwd: &Path) -> Result<PathBuf
     Ok(dir)
 }
 
-fn render_clap_error(err: &clap::Error) -> Result<i32> {
+fn render_clap_error(err: &clap::Error, muted: bool) -> Result<i32> {
     let exit_code = err.exit_code();
-    err.print()?;
+    if !muted
+        || matches!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        err.print()?;
+    }
     Ok(exit_code)
 }
 
@@ -1107,19 +1176,22 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         // `None` arm above) keeps the dashboard; only the explicit verb
         // is deprecated.
         Some(cli::Command::Info { json }) => {
-            eprintln!(
-                "{} `runner info` is deprecated; use `runner list`",
-                "warn:".yellow().bold(),
-            );
-            // Under GitHub Actions, also emit a workflow-command
-            // annotation so the deprecation surfaces in the run summary
-            // / inline, not just buried in the step log. Kept on stderr
-            // so `runner info --json` stdout stays a clean pipe; the
-            // runner scans both streams for `::` commands.
-            if actions_rs::env::is_github_actions() {
+            if overrides.shows_warnings() {
                 eprintln!(
-                    "::warning title=Deprecation::`runner info` is deprecated; use `runner list`"
+                    "{} `runner info` is deprecated; use `runner list`",
+                    "warn:".yellow().bold(),
                 );
+                // Under GitHub Actions, also emit a workflow-command
+                // annotation so the deprecation surfaces in the run summary
+                // / inline, not just buried in the step log. Kept on stderr
+                // so `runner info --json` stdout stays a clean pipe; the
+                // runner scans both streams for `::` commands.
+                if actions_rs::env::is_github_actions() {
+                    eprintln!(
+                        "::warning title=Deprecation::`runner info` is deprecated; use `runner \
+                         list`"
+                    );
+                }
             }
             schema_version_for_json(json, cli.global.schema_version)?;
             cmd::list(&ctx, &overrides, false, json, None)?;
@@ -1151,7 +1223,9 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             // No post-install tasks, so the chain flags govern nothing; say so
             // rather than silently swallowing a `-p`/`-k` the user expected to
             // matter.
-            if mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail {
+            if overrides.shows_progress()
+                && (mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail)
+            {
                 eprintln!(
                     "{} chain flags (-s/-p/-k/-K) have no effect without post-install task names",
                     "note:".dimmed(),

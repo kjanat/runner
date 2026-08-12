@@ -10,6 +10,14 @@ pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("yarn.lock").exists()
 }
 
+pub(crate) fn quiet_capabilities(dir: &Path) -> super::HostQuietCapabilities {
+    if detect_major_version(dir) == Some(1) {
+        super::HostQuietCapabilities::quiet("yarn-classic", &["--silent"])
+    } else {
+        super::HostQuietCapabilities::unsupported("yarn-berry", "--silent is Yarn Classic-only")
+    }
+}
+
 /// `yarn <task> [args...]` (yarn infers `run`).
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("yarn");
@@ -308,7 +316,7 @@ mod tests {
 #[cfg(test)]
 mod verbosity_tests {
     use super::run_cmd;
-    use crate::tool::{HostVerbosity, QuietLevel};
+    use crate::tool::{HostDiagnostics, HostVerbosity};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -325,7 +333,7 @@ mod verbosity_tests {
     #[test]
     fn run_cmd_quiet_maps_to_host_flag() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             ..HostVerbosity::default()
         };
         assert_eq!(argv(&run_cmd("build", &[], v)), ["--silent", "build"]);

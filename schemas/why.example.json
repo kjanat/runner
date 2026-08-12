@@ -5,6 +5,17 @@
   "query": "t",
   "pm_resolution": null,
   "runtime": null,
+  "output": {
+    "level": "off",
+    "progress": true,
+    "warnings": true,
+    "errors": true,
+    "groups": true,
+    "timing": true,
+    "host_diagnostics": "normal",
+    "task_stdout": "inherit",
+    "task_stderr": "inherit"
+  },
   "selected": {
     "task": {
       "name": "t",

@@ -40,6 +40,7 @@ pub(crate) use error::{DevEnginesFailReason, ResolveError};
 /// Re-export of the standalone `runner.toml` validator backing
 /// `cmd::config::validate`; see [`overrides::validate_config`].
 pub(crate) use overrides::validate_config;
+pub(crate) use policies::parse_quiet_env;
 /// Re-export of the canonical Node PATH-probe order so the doctor's
 /// schema layer doesn't carry its own copy.
 pub(crate) use probe::NODE_PROBE_ORDER;
@@ -1641,8 +1642,8 @@ mod tests {
 
     #[test]
     fn runner_quiet_env_saturates_large_numbers() {
-        // `RUNNER_QUIET=999` exceeds u8 but must still saturate to the quietest
-        // level (documented "saturating"), not fall through to invalid.
+        // `RUNNER_QUIET=999` exceeds u8 but must clamp to the named maximum,
+        // not fall through to invalid.
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             quiet: QuietSource {
                 cli: 0,
@@ -1653,8 +1654,9 @@ mod tests {
         .expect("should parse");
         assert!(
             overrides.silences_warnings(),
-            "RUNNER_QUIET=999 saturates to Silent",
+            "RUNNER_QUIET=999 clamps to Mute",
         );
+        assert_eq!(overrides.quiet_level, crate::tool::QuietLevel::Mute);
     }
 
     #[test]

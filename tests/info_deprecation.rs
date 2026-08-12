@@ -101,6 +101,20 @@ fn info_emits_github_actions_annotation_under_ci() {
 }
 
 #[test]
+fn very_quiet_hides_info_deprecation() {
+    let dir = fixture("info-deprecated");
+    let output = Command::new(runner_binary())
+        .arg("--dir")
+        .arg(dir)
+        .args(["-qq", "info"])
+        .output()
+        .expect("runner binary spawns");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(!stderr.contains("deprecated"), "stderr: {stderr}");
+}
+
+#[test]
 fn info_omits_github_annotation_outside_ci() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");

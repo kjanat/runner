@@ -3,6 +3,10 @@
 use std::path::Path;
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("bun", &["--silent"])
+}
+
 use super::ScriptDirective;
 
 /// Detected via `bun.lockb` (binary) or `bun.lock` (text).
@@ -212,7 +216,7 @@ mod tests {
 mod verbosity_tests {
     use super::run_cmd;
     use super::run_cmd_with_runtime;
-    use crate::tool::{HostVerbosity, QuietLevel};
+    use crate::tool::{HostDiagnostics, HostVerbosity};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -240,7 +244,7 @@ mod verbosity_tests {
     #[test]
     fn force_bun_runtime_composes_with_quiet() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             ..HostVerbosity::default()
         };
         assert_eq!(
@@ -261,7 +265,7 @@ mod verbosity_tests {
     #[test]
     fn run_cmd_quiet_maps_to_host_flag() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             ..HostVerbosity::default()
         };
         assert_eq!(

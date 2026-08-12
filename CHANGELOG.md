@@ -18,6 +18,21 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Added
+
+- Add independent `[runner]` output categories, `[host].diagnostics`, and
+  per-task stdout/stderr preservation controls. `--explain` reports the
+  effective policy, applied host arguments, and unsupported reductions.
+
+### Changed
+
+- Redesign `-q` through `-qqqq` as distinct output-policy levels. `-q` now
+  affects runner progress only, `-qq` requests safe host quieting, `-qqq`
+  suppresses recoverable runner error decoration, and `-qqqq` mutes all runner
+  text while preserving task streams and exit status. Larger counts clamp to
+  mute. Host adapters now apply only audited controls that preserve task output
+  (https://github.com/kjanat/runner/issues/116).
+
 ## [0.25.1] - 2026-08-12
 
 ### Fixed

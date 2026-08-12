@@ -206,6 +206,42 @@ enum FieldHint {
 /// `field_template_values_use_real_accepted_labels`.
 const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
     (
+        "runner",
+        "progress",
+        "true",
+        FieldHint::Static("dispatch and status text"),
+    ),
+    (
+        "runner",
+        "warnings",
+        "true",
+        FieldHint::Static("non-fatal warnings"),
+    ),
+    (
+        "runner",
+        "errors",
+        "true",
+        FieldHint::Static("recoverable error decoration"),
+    ),
+    (
+        "runner",
+        "groups",
+        "true",
+        FieldHint::Static("task headers and GitHub groups"),
+    ),
+    (
+        "runner",
+        "timing",
+        "true",
+        FieldHint::Static("timing and chain summary"),
+    ),
+    (
+        "host",
+        "diagnostics",
+        r#""normal""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
         "pm",
         "node",
         r#""pnpm""#,
@@ -384,6 +420,7 @@ fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
         ("resolution", "on_mismatch") => {
             Some(MismatchPolicy::ALL.iter().map(|p| p.label()).collect())
         }
+        ("host", "diagnostics") => Some(vec!["normal", "quiet", "reduced"]),
         _ => None,
     }
 }

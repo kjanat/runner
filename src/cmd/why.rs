@@ -299,9 +299,29 @@ pub(super) struct WhyReport<'a> {
     pm_resolution: Option<PmResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime: Option<WhyRuntime>,
+    output: WhyOutput,
     selected: Option<WhyCandidate<'a>>,
     candidates: Vec<WhyCandidate<'a>>,
     decision: WhyDecision,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "serialized independent output axes"
+)]
+struct WhyOutput {
+    level: &'static str,
+    progress: bool,
+    warnings: bool,
+    errors: bool,
+    groups: bool,
+    timing: bool,
+    host_diagnostics: &'static str,
+    task_stdout: &'static str,
+    task_stderr: &'static str,
 }
 
 /// One candidate: the task's identity plus how it matched the query.
@@ -439,9 +459,34 @@ fn build_report<'a>(
         query,
         pm_resolution: pm_decision.map(pm_resolution),
         runtime: runtime_report(overrides, selected, ctx),
+        output: output_report(overrides, selected),
         selected: selected.map(candidate_report),
         candidates: candidates.iter().copied().map(candidate_report).collect(),
         decision: decision_report(candidates, selected, qualifier),
+    }
+}
+
+fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> WhyOutput {
+    let (stdout, stderr) = selected.map_or(
+        (
+            crate::tool::TaskStream::Inherit,
+            crate::tool::TaskStream::Inherit,
+        ),
+        |task| overrides.task_streams_for(&task.name),
+    );
+    let diagnostics = selected.map_or(overrides.output_policy.host_diagnostics, |task| {
+        overrides.host_verbosity_for(&task.name).diagnostics
+    });
+    WhyOutput {
+        level: overrides.quiet_level.label(),
+        progress: overrides.shows_progress(),
+        warnings: overrides.shows_warnings(),
+        errors: overrides.shows_errors(),
+        groups: overrides.emits_groups(),
+        timing: overrides.shows_timing(),
+        host_diagnostics: diagnostics.label(),
+        task_stdout: stdout.label(),
+        task_stderr: stderr.label(),
     }
 }
 
@@ -587,6 +632,10 @@ fn resolved_command(
     labels::resolved_command(task, runtime, node_pm, python_pm)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear human report renderer mirrors the structured report sections"
+)]
 fn print_human(
     task: &str,
     candidates: &[&Task],
@@ -688,6 +737,22 @@ fn print_human(
             None => {}
         }
     }
+    let output = output_report(overrides, selected);
+    println!();
+    println!("{}", "Output policy".bold());
+    println!(
+        "  level={} progress={} warnings={} errors={} groups={} timing={} host={} stdout={} \
+         stderr={}",
+        output.level,
+        output.progress,
+        output.warnings,
+        output.errors,
+        output.groups,
+        output.timing,
+        output.host_diagnostics,
+        output.task_stdout,
+        output.task_stderr,
+    );
 }
 
 #[cfg(test)]

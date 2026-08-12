@@ -120,6 +120,22 @@ fn no_warnings_keeps_the_shadowed_installer_notice() {
 }
 
 #[test]
+fn quiet_hides_runner_install_text_but_runs_installer() {
+    let dir = colliding_project("quiet", &[]);
+    let (output, log) = install_in(&dir, &[("RUNNER_QUIET", "4")]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "install failed: {stderr}");
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        vec!["bun start", "bun end"]
+    );
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty(), "stderr: {stderr}");
+}
+
+#[test]
 fn naming_both_writers_runs_them_one_after_another() {
     let dir = colliding_project("consent", &[]);
     let (output, log) = install_in(&dir, &[("RUNNER_INSTALL_PMS", "bun,deno")]);

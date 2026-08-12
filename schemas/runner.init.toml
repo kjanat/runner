@@ -8,6 +8,21 @@
 # Precedence, highest first:
 #   CLI flags  >  RUNNER_* env vars  >  this file  >  manifest declarations.
 
+# `[runner]` output categories. An absent field inherits the selected quiet
+# preset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was
+# selected for the invocation.
+[runner]
+# progress = true   # dispatch and status text
+# warnings = true   # non-fatal warnings
+# errors = true   # recoverable error decoration
+# groups = true   # task headers and GitHub groups
+# timing = true   # timing and chain summary
+
+# `[host]` host-tool output policy. Diagnostics never controls task streams;
+# adapters clamp unsupported requests to their strongest safe mode.
+[host]
+# diagnostics = "normal"   # normal | quiet | reduced
+
 # `[pm]` section, per-ecosystem package manager overrides.
 [pm]
 # node = "pnpm"   # npm | yarn | pnpm | bun | deno

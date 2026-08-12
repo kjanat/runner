@@ -138,7 +138,7 @@ fn run_parallel(
         // `::group::` workflow-command syntax is GitHub-only; elsewhere
         // grouped blocks get plain headers. Both land on stdout, so
         // `--quiet` drops the delimiter and keeps the buffered blocks.
-        let style = if overrides.silences_runner() {
+        let style = if !overrides.emits_groups() {
             BlockStyle::Bare
         } else if in_gha {
             BlockStyle::Gha
@@ -162,6 +162,10 @@ enum BlockStyle {
     Bare,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "single supervisor loop keeps child cleanup and reader lifecycle auditable"
+)]
 fn run_parallel_streaming(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -183,7 +187,7 @@ fn run_parallel_streaming(
     // stdout/stderr, taking the lock per line. Bounding lock duration to
     // one `writeln!` avoids deadlocking against `eprintln!` on the main
     // thread (the `→ <source> <task>` arrow in `dispatch_task_piped`).
-    let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
+    let base: Arc<dyn LineSink> = Arc::new(StdioSink);
 
     // Spawn each task with piped stdio and start reader threads. The
     // `Instant` recorded at spawn anchors the per-task wall-clock duration
@@ -199,7 +203,11 @@ fn run_parallel_streaming(
     // reaped, so the threads exit on their own).
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
-            let prefix = render_prefix(item.display_name(), width, colorize);
+            let prefix = if overrides.shows_progress() {
+                render_prefix(item.display_name(), width, colorize)
+            } else {
+                String::new()
+            };
             let started = Instant::now();
             let mut child = match &item.kind {
                 ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
@@ -220,6 +228,13 @@ fn run_parallel_streaming(
                 Box::new(child.stdout.take().expect("stdout piped"));
             let stderr: Box<dyn std::io::Read + Send> =
                 Box::new(child.stderr.take().expect("stderr piped"));
+            let (stdout_policy, stderr_policy) =
+                crate::cmd::run::task_streams_for_token(ctx, overrides, item.display_name());
+            let sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
+                Arc::clone(&base),
+                stdout_policy == crate::tool::TaskStream::Inherit,
+                stderr_policy == crate::tool::TaskStream::Inherit,
+            ));
             reader_handles.extend(spawn_readers(
                 vec![
                     (prefix.clone(), false, stdout),
@@ -358,6 +373,10 @@ const READER_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis
 /// contiguous block the moment that task finishes (completion order, first
 /// done, first shown). Under GitHub Actions each block is a `::group::`
 /// section; elsewhere it gets a plain header. See [`run_parallel`].
+#[allow(
+    clippy::too_many_lines,
+    reason = "single supervisor loop keeps grouped child cleanup and replay lifecycle auditable"
+)]
 fn run_parallel_grouped(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -401,7 +420,14 @@ fn run_parallel_grouped(
             // `.clone()` resolves on the concrete `Arc<BufferSink>` then
             // unsizes to the trait object; `Arc::clone(&sink)` would instead
             // infer its generic from the annotation and fail to coerce.
-            let dyn_sink: Arc<dyn LineSink> = sink.clone();
+            let base: Arc<dyn LineSink> = sink.clone();
+            let (stdout_policy, stderr_policy) =
+                crate::cmd::run::task_streams_for_token(ctx, overrides, item.display_name());
+            let dyn_sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
+                base,
+                stdout_policy == crate::tool::TaskStream::Inherit,
+                stderr_policy == crate::tool::TaskStream::Inherit,
+            ));
             // No prefix: the group title identifies the task, while the sink
             // preserves stdout/stderr identity for replay.
             let readers = spawn_readers(
@@ -678,36 +704,38 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
 fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome], code: i32) {
     use colored::Colorize as _;
 
-    if outcomes.len() < 2 || !crate::cmd::timing_enabled(overrides) {
+    if outcomes.len() < 2 {
         return;
     }
 
     let failed: Vec<&ItemOutcome> = outcomes.iter().filter(|o| o.failed()).collect();
-    let counts = summary_counts(outcomes, failed.len());
-    // The aggregate is the first failure the chain observed, in detection
-    // order; say so rather than leaving a bare number to interpret.
-    let verdict = if failed.is_empty() {
-        format!("exit {code}")
-    } else {
-        format!("exit {code}, first failure")
-    };
-    eprintln!(
-        "{} {} {}",
-        "·".dimmed(),
-        format!("summary: {counts}").bold(),
-        format!("({verdict})").dimmed(),
-    );
+    if crate::cmd::timing_enabled(overrides) {
+        let counts = summary_counts(outcomes, failed.len());
+        // The aggregate is the first failure the chain observed, in detection
+        // order; say so rather than leaving a bare number to interpret.
+        let verdict = if failed.is_empty() {
+            format!("exit {code}")
+        } else {
+            format!("exit {code}, first failure")
+        };
+        eprintln!(
+            "{} {} {}",
+            "·".dimmed(),
+            format!("summary: {counts}").bold(),
+            format!("({verdict})").dimmed(),
+        );
 
-    let names: Vec<&str> = outcomes.iter().map(|o| o.name.as_str()).collect();
-    let width = crate::chain::mux::prefix_width(&names);
-    for outcome in outcomes {
-        eprintln!("{}   {}", "·".dimmed(), outcome.render(width));
+        let names: Vec<&str> = outcomes.iter().map(|o| o.name.as_str()).collect();
+        let width = crate::chain::mux::prefix_width(&names);
+        for outcome in outcomes {
+            eprintln!("{}   {}", "·".dimmed(), outcome.render(width));
+        }
     }
 
     // Failure attribution in the Annotations panel, where a reader lands
     // before they ever open the log. Suppressed with the broad
     // `[github].group_output` opt-out, which owns runner's Actions output.
-    if overrides.group_output && actions_rs::env::is_github_actions() {
+    if overrides.shows_errors() && overrides.group_output && actions_rs::env::is_github_actions() {
         for outcome in failed {
             let ItemStatus::Ran { code, .. } = outcome.status else {
                 continue;

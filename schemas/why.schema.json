@@ -156,6 +156,50 @@
       },
       "additionalProperties": false
     },
+    "WhyOutput": {
+      "type": "object",
+      "required": [
+        "errors",
+        "groups",
+        "host_diagnostics",
+        "level",
+        "progress",
+        "task_stderr",
+        "task_stdout",
+        "timing",
+        "warnings"
+      ],
+      "properties": {
+        "errors": {
+          "type": "boolean"
+        },
+        "groups": {
+          "type": "boolean"
+        },
+        "host_diagnostics": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "progress": {
+          "type": "boolean"
+        },
+        "task_stderr": {
+          "type": "string"
+        },
+        "task_stdout": {
+          "type": "string"
+        },
+        "timing": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "WhyRuntime": {
       "description": "The forced JS runtime and whether it reaches the selected task, so a\nconsumer can reconcile `selected.task.resolved` against the PM block.",
       "type": "object",
@@ -302,6 +346,7 @@
     "candidates",
     "decision",
     "kind",
+    "output",
     "pm_resolution",
     "query",
     "root",
@@ -325,6 +370,9 @@
     "kind": {
       "description": "Payload discriminator; always \"runner.why\".",
       "type": "string"
+    },
+    "output": {
+      "$ref": "#/$defs/WhyOutput"
     },
     "pm_resolution": {
       "anyOf": [

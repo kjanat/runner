@@ -54,6 +54,26 @@
       },
       "additionalProperties": false
     },
+    "HostOutputSection": {
+      "description": "`[host]` host-tool output policy. Diagnostics never controls task streams;\nadapters clamp unsupported requests to their strongest safe mode.",
+      "type": "object",
+      "properties": {
+        "diagnostics": {
+          "description": "`normal`, `quiet`, or `reduced`. Unsupported reductions are safely\nclamped by each adapter and reported by `--explain`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "InstallSection": {
       "description": "`[install]` section, restrict which detected package managers\n`runner install` runs with. Absent or empty installs every detected\nPM (the default). Overridden by `RUNNER_INSTALL_PMS`.\n\nUnlike `[pm]` (which scopes *script dispatch* per ecosystem), this\nscopes the *install fan-out*: in a polyglot repo where both `bun` and\n`deno` would write `node_modules`, `pms = [\"bun\"]` keeps install to bun.",
       "type": "object",
@@ -172,6 +192,43 @@
       },
       "additionalProperties": false
     },
+    "RunnerOutputSection": {
+      "description": "`[runner]` output categories. An absent field inherits the selected quiet\npreset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was\nselected for the invocation.",
+      "type": "object",
+      "properties": {
+        "errors": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "groups": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timing": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "warnings": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "RuntimeSection": {
       "description": "`[runtime]` section, which JS runtime a task's process tree runs on.\n\nSeparate from `[pm]`: the package manager decides who installs and who\ninvokes the script, the runtime decides what the script and the binaries\nit shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.",
       "type": "object",
@@ -240,6 +297,30 @@
             "composer",
             "package.json",
             "pyproject.toml",
+            null
+          ]
+        },
+        "stderr": {
+          "description": "Preserve or discard this task's stderr independently of quiet presets.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "discard",
+            null
+          ]
+        },
+        "stdout": {
+          "description": "Preserve or discard this task's stdout independently of quiet presets.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "discard",
             null
           ]
         },
@@ -386,7 +467,7 @@
       "type": "object",
       "properties": {
         "level": {
-          "description": "How much of the host's own logging to suppress:\n`off` | `quiet` | `very-quiet` | `silent`.",
+          "description": "How much of the host's own logging to suppress:\n`off` | `quiet` | `very-quiet` | `silent` | `mute`.",
           "type": [
             "null",
             "string"
@@ -396,6 +477,7 @@
             "quiet",
             "very-quiet",
             "silent",
+            "mute",
             null
           ]
         },
@@ -432,6 +514,11 @@
         "group_parallel": true
       }
     },
+    "host": {
+      "$ref": "#/$defs/HostOutputSection",
+      "description": "`[host]`, host-tool diagnostic policy.",
+      "default": {}
+    },
     "install": {
       "$ref": "#/$defs/InstallSection",
       "description": "`[install]`, restrict which detected PMs `runner install` runs.",
@@ -452,6 +539,11 @@
     "resolution": {
       "$ref": "#/$defs/ResolutionSection",
       "description": "`[resolution]`, resolver-policy knobs.",
+      "default": {}
+    },
+    "runner": {
+      "$ref": "#/$defs/RunnerOutputSection",
+      "description": "`[runner]`, independent runner-authored output categories.",
       "default": {}
     },
     "runtime": {

@@ -147,7 +147,7 @@ impl ResolutionOverrides {
             "RUNNER_NO_WARNINGS",
             &mut warnings,
         );
-        // `RUNNER_QUIET` accepts a numeric level (`0..3`) or a truthy word
+        // `RUNNER_QUIET` accepts a numeric level (`0..4`, clamped) or a truthy word
         // (level 1), so it validates against `parse_quiet_env` rather than the
         // plain-bool path. A CLI `-q` count shadows the env, mirroring
         // `lenient_env_field`. Ordered here (between no-warnings and explain)
@@ -163,7 +163,7 @@ impl ResolutionOverrides {
                 message: sanitize_error_message(
                     raw,
                     &sanitized,
-                    "expected a level 0-3 or a boolean (1/true/yes/on)",
+                    "expected a level 0-4 or a boolean (1/true/yes/on)",
                 ),
             });
             sources.quiet.env = None;
@@ -200,6 +200,10 @@ impl ResolutionOverrides {
         clippy::needless_pass_by_value,
         reason = "OverrideSources is a single-use builder; taking by value keeps the call sites \
                   moveable"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pure constructor preserves cross-axis precedence in one auditable place"
     )]
     pub(crate) fn from_sources(sources: OverrideSources<'_>) -> Result<Self> {
         let pm = parse_override(
@@ -254,6 +258,37 @@ impl ResolutionOverrides {
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
         let (quiet_level, host_stream) = resolve_verbosity(&sources)?;
+        let quiet_explicit =
+            sources.quiet.cli > 0 || sources.quiet.env.and_then(parse_quiet_env).is_some();
+        let host_diagnostics_explicit = quiet_explicit
+            || sources
+                .config
+                .is_some_and(|config| config.config.host.diagnostics.is_some());
+        let mut output_policy = crate::tool::OutputPolicy::default();
+        if let Some(config) = sources.config {
+            let runner = &config.config.runner;
+            output_policy.runner.progress =
+                runner.progress.unwrap_or(output_policy.runner.progress);
+            output_policy.runner.warnings =
+                runner.warnings.unwrap_or(output_policy.runner.warnings);
+            output_policy.runner.errors = runner.errors.unwrap_or(output_policy.runner.errors);
+            output_policy.runner.groups = runner.groups.unwrap_or(output_policy.runner.groups);
+            output_policy.runner.timing = runner.timing.unwrap_or(output_policy.runner.timing);
+            if let Some(raw) = config.config.host.diagnostics.as_deref() {
+                output_policy.host_diagnostics = crate::tool::HostDiagnostics::from_label(raw)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "[host] diagnostics {raw:?}; expected one of normal, quiet, reduced"
+                        )
+                    })?;
+            }
+        }
+        if quiet_explicit {
+            output_policy = crate::tool::OutputPolicy::from_quiet(quiet_level);
+        }
+        if no_warnings {
+            output_policy.runner.warnings = false;
+        }
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
@@ -311,6 +346,8 @@ impl ResolutionOverrides {
             on_mismatch,
             no_warnings,
             quiet_level,
+            host_diagnostics_explicit,
+            output_policy,
             host_stream,
             task_verbosity,
             explain,
@@ -913,7 +950,7 @@ impl EnvSnapshot {
 ///
 /// Quiet level follows the resolver-wide **CLI > env** precedence: the CLI
 /// repeat count (`-q`/`-qq`/`-qqq`) wins whenever the flag was passed
-/// (`cli > 0`), else the env value (`RUNNER_QUIET` numeric `0..3` or a truthy
+/// (`cli > 0`), else the env value (`RUNNER_QUIET` numeric `0..4`, clamped, or a truthy
 /// word → level 1) applies. On the old `{off, on}` bool this is identical to
 /// `cli || env` (a set flag was already the ceiling); unlike a `max`, env can
 /// no longer escalate a passed `-q` up to `Silent`. Stream takes CLI

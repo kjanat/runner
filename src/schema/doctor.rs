@@ -1525,6 +1525,8 @@ mod tests {
             "parent_warned",
             "host_stream",
             "task_verbosity",
+            "output_policy",
+            "host_diagnostics_explicit",
         ];
         // resolver field name -> name it's actually reported under. `quiet_level`
         // reports as the boolean-ish `quiet` (runner's own output silenced).
@@ -1554,6 +1556,8 @@ mod tests {
             on_mismatch,
             no_warnings,
             quiet_level,
+            host_diagnostics_explicit,
+            output_policy,
             host_stream,
             task_verbosity,
             explain,

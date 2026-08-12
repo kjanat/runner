@@ -5,6 +5,10 @@ use std::process::Command;
 
 use super::{HostVerbosity, ScriptDirective};
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("npm", &["--silent"])
+}
+
 /// Detected via `package-lock.json`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("package-lock.json").exists()
@@ -65,7 +69,7 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 #[cfg(test)]
 mod tests {
     use super::{HostVerbosity, ScriptDirective, exec_cmd, install_cmd, run_cmd};
-    use crate::tool::{QuietLevel, Stream};
+    use crate::tool::{HostDiagnostics, Stream};
 
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -84,7 +88,7 @@ mod tests {
     #[test]
     fn run_quiet_prepends_silent_before_run() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             stream: Stream::Inherit,
         };
         assert_eq!(
@@ -97,7 +101,7 @@ mod tests {
     fn run_stderr_stream_is_noop_for_npm() {
         // npm has no stdout-diversion primitive; the stream axis no-ops.
         let v = HostVerbosity {
-            level: QuietLevel::Off,
+            diagnostics: HostDiagnostics::Normal,
             stream: Stream::Stderr,
         };
         assert_eq!(args_of(&run_cmd("build", &[], v)), ["run", "build"]);

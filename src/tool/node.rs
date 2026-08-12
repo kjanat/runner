@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::unsupported("node", "node --run has no host diagnostic switch")
+}
+
 use anyhow::Context as _;
 use serde::Deserialize;
 use yaml_rust2::YamlLoader;
@@ -1288,7 +1292,7 @@ mod tests {
 #[cfg(test)]
 mod run_cmd_tests {
     use super::run_cmd;
-    use crate::tool::{HostVerbosity, QuietLevel, Stream};
+    use crate::tool::{HostDiagnostics, HostVerbosity, Stream};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -1317,7 +1321,7 @@ mod run_cmd_tests {
     #[test]
     fn run_cmd_verbosity_axes_no_op() {
         let v = HostVerbosity {
-            level: QuietLevel::Silent,
+            diagnostics: HostDiagnostics::Reduced,
             stream: Stream::Stderr,
         };
         assert_eq!(argv(&run_cmd("build", &[], v)), ["--run", "build"]);
