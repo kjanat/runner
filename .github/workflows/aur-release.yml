@@ -1,6 +1,6 @@
 ---
 name: aur-release
-run-name: ${{ format('aur publish {0}', case(github.event_name == 'release', github.event.release.tag_name, inputs.tag)) }}
+run-name: ${{ format('aur {0} {1}', case(github.event_name == 'workflow_dispatch' && inputs.dry-run, 'dry-run', 'publish'), case(github.event_name == 'release', github.event.release.tag_name, inputs.tag)) }}
 
 on:
   workflow_call: { inputs: { tag: { required: true, type: string } } }
@@ -11,8 +11,8 @@ on:
       dry-run: { description: Prepare + validate PKGBUILDs but do not push to AUR, required: true, default: false, type: boolean }
 
 jobs:
-  publish:
-    name: publish ${{ matrix.pkgname }}
+  aur:
+    name: ${{ format('{0} {1}', case(github.event_name == 'workflow_dispatch' && inputs.dry-run, 'dry-run', 'publish'), matrix.pkgname) }}
     runs-on: ubuntu-latest
     # Serialize per-pkg so dispatch + release-published can't race the AUR push.
     concurrency: { group: "aur-publish-${{ matrix.pkgname }}", cancel-in-progress: false }
@@ -34,7 +34,7 @@ jobs:
           version="${RELEASE_TAG#v}"
           bash .github/scripts/aur.sh prepare "${PKG}" "${version}"
 
-      - name: publish to AUR
+      - name: push to AUR
         if: env.DRY_RUN != 'true'
         uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
