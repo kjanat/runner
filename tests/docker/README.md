@@ -62,7 +62,7 @@ Run from the repo root:
 
 ```sh
 docker build -f tests/docker/musl-libc-select.Dockerfile \
-  --build-arg VER=0.25.0 --progress=plain --no-cache -t runner-musl-libc-test .
+  --build-arg VER=0.25.1 --progress=plain --no-cache -t runner-musl-libc-test .
 ```
 
 The libc selection logic itself is also covered by

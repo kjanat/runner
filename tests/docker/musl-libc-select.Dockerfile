@@ -3,13 +3,13 @@
 # the test. Uses the working-tree resolver against registry platform packages.
 #
 #   docker build -f tests/docker/musl-libc-select.Dockerfile \
-#     --build-arg VER=0.25.0 --progress=plain --no-cache -t runner-musl-libc-test .
+#     --build-arg VER=0.25.1 --progress=plain --no-cache -t runner-musl-libc-test .
 # Index digest, not a per-platform one: the build has to resolve to the host's
 # architecture. A `linux/386` manifest digest here makes `process.arch` report
 # `ia32`, and no Linux GNU/musl pair is published for it.
 FROM alpine:latest@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
-ARG VER=0.25.0
+ARG VER=0.25.1
 ENV RR_ROOT=/usr/local/lib/node_modules/runner-run
 
 RUN set -eux; \
