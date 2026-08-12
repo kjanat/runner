@@ -70,6 +70,7 @@ pub(super) struct SpawnDispatch {
 enum SpawnDiagnostic {
     Passthrough,
     ResolvedPackageManager(ResolvedPm),
+    ResolvedPythonPackageManager(ResolvedPythonPm),
 }
 
 impl SpawnDispatch {
@@ -84,6 +85,13 @@ impl SpawnDispatch {
         Self {
             command,
             diagnostic: SpawnDiagnostic::ResolvedPackageManager(decision),
+        }
+    }
+
+    const fn python_package_manager(command: Command, decision: ResolvedPythonPm) -> Self {
+        Self {
+            command,
+            diagnostic: SpawnDiagnostic::ResolvedPythonPackageManager(decision),
         }
     }
 
@@ -106,6 +114,15 @@ impl SpawnDispatch {
     fn spawn_error(&self, error: io::Error) -> anyhow::Error {
         let selected_pm_present = match &self.diagnostic {
             SpawnDiagnostic::ResolvedPackageManager(decision) => std::env::var_os("PATH")
+                .and_then(|path| {
+                    crate::resolver::probe_path_for_doctor(
+                        decision.pm.label(),
+                        &path,
+                        std::env::var_os("PATHEXT").as_deref(),
+                    )
+                })
+                .is_some(),
+            SpawnDiagnostic::ResolvedPythonPackageManager(decision) => std::env::var_os("PATH")
                 .and_then(|path| {
                     crate::resolver::probe_path_for_doctor(
                         decision.pm.label(),
@@ -137,6 +154,20 @@ impl SpawnDispatch {
                 anyhow::Error::new(error).context(format!(
                     "{} was selected, but failed to launch",
                     decision.describe()
+                ))
+            }
+            (SpawnDiagnostic::ResolvedPythonPackageManager(decision), io::ErrorKind::NotFound)
+                if !selected_pm_present =>
+            {
+                anyhow::Error::new(error).context(format!(
+                    "{} was selected, but its executable was not found on PATH",
+                    decision.describe(),
+                ))
+            }
+            (SpawnDiagnostic::ResolvedPythonPackageManager(decision), io::ErrorKind::NotFound) => {
+                anyhow::Error::new(error).context(format!(
+                    "{} was selected, but failed to launch",
+                    decision.describe(),
                 ))
             }
             _ => error.into(),
@@ -601,13 +632,13 @@ fn build_run_command(
                 );
             };
             print_pm_explain(overrides, &decision.describe());
-            let pm = decision.pm;
-            match pm {
+            let command = match decision.pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
                 PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run pyproject scripts", other.label()),
-            }
+            };
+            return Ok(SpawnDispatch::python_package_manager(command, decision));
         }
     };
     Ok(SpawnDispatch::passthrough(command))

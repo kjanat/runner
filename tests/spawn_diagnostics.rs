@@ -79,6 +79,21 @@ fn bun_project(tag: &str) -> TempProject {
     )
 }
 
+fn uv_project(tag: &str) -> TempProject {
+    TempProject::new(tag)
+        .file(
+            "pyproject.toml",
+            r#"[project]
+name = "spawn-diagnostic"
+version = "0.0.0"
+
+[project.scripts]
+hello = "spawn_diagnostic:main"
+"#,
+        )
+        .file("uv.lock", "")
+}
+
 fn assert_manifest_bun_diagnostic(output: &Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
@@ -113,6 +128,21 @@ fn parallel_manifest_selected_missing_pm_reports_provenance() {
     let output = run_in(&project, &["run", "-p", "build", "test"]);
 
     assert_manifest_bun_diagnostic(&output);
+}
+
+#[test]
+fn pyproject_script_missing_pm_reports_provenance() {
+    let project = uv_project("python");
+    let output = run_in(&project, &["run", "hello"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains(
+            "uv via detected Python project was selected, but its executable was not found on PATH",
+        ),
+        "missing actionable Python package-manager diagnostic. stderr: {stderr}",
+    );
 }
 
 #[test]
