@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Fixed
+
+- Package and `pyproject.toml` script dispatch now identifies a missing selected
+  package manager and why it was chosen instead of reporting an opaque spawn
+  error (https://github.com/kjanat/runner/issues/109).
+
 ## [0.25.0] - 2026-08-06
 
 ### Added

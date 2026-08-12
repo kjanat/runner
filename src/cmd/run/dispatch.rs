@@ -10,7 +10,9 @@
 //!   `npx`/`bun x`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
 //!   directly when the resolver landed on a PM without an exec primitive.
 
-use std::process::Command;
+use std::ffi::{OsStr, OsString};
+use std::io;
+use std::process::{Child, Command, ExitStatus};
 
 use anyhow::{Result, bail};
 use colored::Colorize;
@@ -21,7 +23,7 @@ use super::qualify::{
 };
 use super::runtime;
 use super::select::select_task_entry;
-use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
+use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::tool;
 use crate::tool::deno_exec::DenoTaskPlan;
 use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
@@ -53,9 +55,153 @@ fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
 #[derive(Debug)]
 pub(super) enum Dispatch {
     /// A configured process to spawn (`.status()` / `.spawn()`).
-    Spawn(Command),
+    Spawn(SpawnDispatch),
     /// A deno task resolved for in-process execution (no `deno` binary).
     DenoSelfExec(DenoSelfExec),
+}
+
+/// A command plus any resolver decision needed to diagnose spawn failure.
+#[derive(Debug)]
+pub(super) struct SpawnDispatch {
+    command: Command,
+    diagnostic: SpawnDiagnostic,
+}
+
+#[derive(Debug)]
+enum SpawnDiagnostic {
+    Passthrough,
+    ResolvedPackageManager(ResolvedPm),
+    ResolvedPythonPackageManager(ResolvedPythonPm),
+}
+
+impl SpawnDispatch {
+    const fn passthrough(command: Command) -> Self {
+        Self {
+            command,
+            diagnostic: SpawnDiagnostic::Passthrough,
+        }
+    }
+
+    const fn package_manager(command: Command, decision: ResolvedPm) -> Self {
+        Self {
+            command,
+            diagnostic: SpawnDiagnostic::ResolvedPackageManager(decision),
+        }
+    }
+
+    const fn python_package_manager(command: Command, decision: ResolvedPythonPm) -> Self {
+        Self {
+            command,
+            diagnostic: SpawnDiagnostic::ResolvedPythonPackageManager(decision),
+        }
+    }
+
+    pub(super) const fn command_mut(&mut self) -> &mut Command {
+        &mut self.command
+    }
+
+    pub(super) fn status(&mut self) -> Result<ExitStatus> {
+        self.command
+            .status()
+            .map_err(|error| self.spawn_error(error))
+    }
+
+    pub(super) fn spawn(&mut self) -> Result<Child> {
+        self.command
+            .spawn()
+            .map_err(|error| self.spawn_error(error))
+    }
+
+    fn spawn_error(&self, error: io::Error) -> anyhow::Error {
+        let path = self.effective_env("PATH");
+        let pathext = self.effective_env("PATHEXT");
+        let selected_pm_present = match &self.diagnostic {
+            SpawnDiagnostic::ResolvedPackageManager(decision) => path
+                .as_deref()
+                .and_then(|path| {
+                    crate::resolver::probe_path_for_doctor(
+                        decision.pm.label(),
+                        path,
+                        pathext.as_deref(),
+                    )
+                })
+                .is_some(),
+            SpawnDiagnostic::ResolvedPythonPackageManager(decision) => path
+                .as_deref()
+                .and_then(|path| {
+                    crate::resolver::probe_path_for_doctor(
+                        decision.pm.label(),
+                        path,
+                        pathext.as_deref(),
+                    )
+                })
+                .is_some(),
+            SpawnDiagnostic::Passthrough => false,
+        };
+        self.spawn_error_with_presence(error, selected_pm_present)
+    }
+
+    /// Resolve an environment variable exactly as this command will see it:
+    /// an explicit command override/removal wins, otherwise inherit it.
+    fn effective_env(&self, expected: &str) -> Option<OsString> {
+        match self
+            .command
+            .get_envs()
+            .find(|(key, _)| env_key_matches(key, expected))
+        {
+            Some((_, value)) => value.map(OsStr::to_owned),
+            None => std::env::var_os(expected),
+        }
+    }
+
+    fn spawn_error_with_presence(
+        &self,
+        error: io::Error,
+        selected_pm_present: bool,
+    ) -> anyhow::Error {
+        match (&self.diagnostic, error.kind()) {
+            (SpawnDiagnostic::ResolvedPackageManager(decision), io::ErrorKind::NotFound)
+                if !selected_pm_present =>
+            {
+                anyhow::Error::new(error).context(format!(
+                    "{} was selected, but its executable was not found on PATH",
+                    decision.describe(),
+                ))
+            }
+            (SpawnDiagnostic::ResolvedPackageManager(decision), io::ErrorKind::NotFound) => {
+                anyhow::Error::new(error).context(format!(
+                    "{} was selected, but failed to launch",
+                    decision.describe()
+                ))
+            }
+            (SpawnDiagnostic::ResolvedPythonPackageManager(decision), io::ErrorKind::NotFound)
+                if !selected_pm_present =>
+            {
+                anyhow::Error::new(error).context(format!(
+                    "{} was selected, but its executable was not found on PATH",
+                    decision.describe(),
+                ))
+            }
+            (SpawnDiagnostic::ResolvedPythonPackageManager(decision), io::ErrorKind::NotFound) => {
+                anyhow::Error::new(error).context(format!(
+                    "{} was selected, but failed to launch",
+                    decision.describe(),
+                ))
+            }
+            _ => error.into(),
+        }
+    }
+}
+
+fn env_key_matches(actual: &OsStr, expected: &str) -> bool {
+    #[cfg(windows)]
+    {
+        actual.to_string_lossy().eq_ignore_ascii_case(expected)
+    }
+    #[cfg(not(windows))]
+    {
+        actual == OsStr::new(expected)
+    }
 }
 
 /// A deno task resolved for in-process execution.
@@ -120,14 +266,14 @@ fn decide_deno_self_exec(
     }
 }
 
-/// Resolve `task` to a fully-configured [`Command`] without spawning it.
+/// Resolve `task` to a fully-configured command without spawning it.
 ///
 /// Walks the same cascade for every caller, warning emission, qualified
 /// vs unqualified lookup, runner constraint check, resolver chain,
 /// bun-test special case, PM-exec fallback, or a normal task entry,
-/// and returns a [`Command`] whose working directory + env have already
-/// been set via [`crate::cmd::configure_command`]. Callers attach stdio +
-/// `.status()` / `.spawn()` according to their needs.
+/// and returns a [`SpawnDispatch`] whose command working directory + env have
+/// already been set via [`crate::cmd::configure_command`]. Callers attach
+/// stdio and invoke `.status()` / `.spawn()` according to their needs.
 ///
 /// Fallbacks (resolver + bun-test + PM-exec) are scoped to unqualified
 /// lookups so a qualified miss like `runner run justfile:test` bails on
@@ -161,7 +307,7 @@ pub(super) fn resolve_dispatch(
         let mut command = local.command;
         print_dispatch_arrow(overrides, &local.label, task, args);
         crate::cmd::configure_command(&mut command, &ctx.root, overrides);
-        return Ok(Dispatch::Spawn(command));
+        return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
     }
 
     let (lookup, found) = lookup_token(ctx, task);
@@ -226,7 +372,7 @@ pub(super) fn resolve_dispatch(
                 let mut command = local.command;
                 print_dispatch_arrow(overrides, &local.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.root, overrides);
-                return Ok(Dispatch::Spawn(command));
+                return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
             // Locally installed dependency: run the binary its manifest
@@ -241,7 +387,7 @@ pub(super) fn resolve_dispatch(
                 print_pm_explain(overrides, &dep.describe);
                 print_dispatch_arrow(overrides, &dep.dispatch.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.root, overrides);
-                return Ok(Dispatch::Spawn(command));
+                return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
             return dispatch_after_miss(ctx, overrides, task_name, args, sink);
@@ -284,10 +430,12 @@ pub(super) fn resolve_dispatch(
 
     print_dispatch_arrow(overrides, entry.source.label(), task_name, args);
 
-    let mut cmd = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
-    cmd.env(crate::cmd::TASK_STACK_ENV, task_stack);
-    Ok(Dispatch::Spawn(cmd))
+    let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
+    crate::cmd::configure_command(spawn.command_mut(), &ctx.root, overrides);
+    spawn
+        .command_mut()
+        .env(crate::cmd::TASK_STACK_ENV, task_stack);
+    Ok(Dispatch::Spawn(spawn))
 }
 
 /// The last two rungs of the cascade, reached once the token matched no task,
@@ -315,7 +463,7 @@ fn dispatch_after_miss(
         print_dispatch_arrow(overrides, "bun", "test", args);
         let mut cmd = tool::bun::test_cmd(args);
         crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
-        return Ok(Dispatch::Spawn(cmd));
+        return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
     }
 
     // Exec fallback: a forced runtime brings its own package-exec primitive,
@@ -332,7 +480,7 @@ fn dispatch_after_miss(
     };
     print_dispatch_arrow(overrides, label, task_name, args);
     crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
-    Ok(Dispatch::Spawn(cmd))
+    Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
 }
 
 /// The exec primitive's argument vector: the token followed by the user's
@@ -446,11 +594,11 @@ fn build_run_command(
     entry: &Task,
     args: &[String],
     sink: crate::cmd::WarningSink<'_>,
-) -> Result<Command> {
+) -> Result<SpawnDispatch> {
     // Deep-merge the global (CLI/env) quiet level + stream over this task's
     // `[tasks.<name>].verbosity` config into the flags the host tool gets.
     let hv = overrides.host_verbosity_for(&entry.name);
-    Ok(match entry.source {
+    let command = match entry.source {
         TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args, hv),
         TaskSource::PackageJson => {
             // An explicit runtime override outranks the resolved PM: which
@@ -472,20 +620,25 @@ fn build_run_command(
                     }
                     runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
                 }
-                return Ok(runtime::script_cmd(over.runtime, &entry.name, args, hv));
+                return Ok(SpawnDispatch::passthrough(runtime::script_cmd(
+                    over.runtime,
+                    &entry.name,
+                    args,
+                    hv,
+                )));
             }
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
             print_pm_explain(overrides, &decision.describe());
-            let pm = decision.pm;
-            match pm {
+            let command = match decision.pm {
                 PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
                 PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
                 PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args, hv),
                 PackageManager::Bun => tool::bun::run_cmd(&entry.name, args, hv),
                 PackageManager::Deno => tool::deno::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run scripts", other.label()),
-            }
+            };
+            return Ok(SpawnDispatch::package_manager(command, decision));
         }
         TaskSource::Makefile => tool::make::run_cmd(&entry.name, args, hv),
         TaskSource::Justfile => tool::just::run_cmd(&entry.name, args, hv),
@@ -508,15 +661,16 @@ fn build_run_command(
                 );
             };
             print_pm_explain(overrides, &decision.describe());
-            let pm = decision.pm;
-            match pm {
+            let command = match decision.pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
                 PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args, hv),
                 other => bail!("{} cannot run pyproject scripts", other.label()),
-            }
+            };
+            return Ok(SpawnDispatch::python_package_manager(command, decision));
         }
-    })
+    };
+    Ok(SpawnDispatch::passthrough(command))
 }
 
 /// Pick the Python package manager that dispatches a `[project.scripts]`
@@ -559,8 +713,8 @@ mod tests {
 
     use std::process::Command;
 
-    use super::{Dispatch, build_pm_exec_command, resolve_dispatch};
-    use crate::resolver::ResolutionOverrides;
+    use super::{Dispatch, SpawnDispatch, build_pm_exec_command, resolve_dispatch};
+    use crate::resolver::{ResolutionOverrides, ResolutionStep, ResolvedPm};
     use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     fn context() -> ProjectContext {
@@ -579,7 +733,7 @@ mod tests {
 
     fn expect_command(dispatch: Dispatch) -> Command {
         match dispatch {
-            Dispatch::Spawn(command) => command,
+            Dispatch::Spawn(spawn) => spawn.command,
             Dispatch::DenoSelfExec(_) => panic!("expected a spawnable command, got deno self-exec"),
         }
     }
@@ -589,6 +743,92 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn resolved_pm_not_found_includes_selection_provenance() {
+        let spawn = SpawnDispatch::package_manager(
+            Command::new("bun"),
+            ResolvedPm {
+                pm: PackageManager::Bun,
+                via: ResolutionStep::ManifestPackageManager,
+                warnings: Vec::new(),
+            },
+        );
+        let error = spawn
+            .spawn_error_with_presence(std::io::Error::from(std::io::ErrorKind::NotFound), false);
+        let message = format!("{error:#}");
+
+        assert!(message.contains(
+            "bun via package.json \"packageManager\" was selected, but its executable was not \
+             found on PATH",
+        ));
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound),
+        );
+    }
+
+    #[test]
+    fn resolved_pm_present_avoids_false_path_diagnosis() {
+        let spawn = SpawnDispatch::package_manager(
+            Command::new("bun"),
+            ResolvedPm {
+                pm: PackageManager::Bun,
+                via: ResolutionStep::ManifestPackageManager,
+                warnings: Vec::new(),
+            },
+        );
+        let error = spawn
+            .spawn_error_with_presence(std::io::Error::from(std::io::ErrorKind::NotFound), true);
+        let message = format!("{error:#}");
+
+        assert!(message.contains(
+            "bun via package.json \"packageManager\" was selected, but failed to launch",
+        ));
+        assert!(!message.contains("executable was not found on PATH"));
+    }
+
+    #[test]
+    fn resolved_pm_non_not_found_preserves_io_error() {
+        let spawn = SpawnDispatch::package_manager(
+            Command::new("bun"),
+            ResolvedPm {
+                pm: PackageManager::Bun,
+                via: ResolutionStep::ManifestPackageManager,
+                warnings: Vec::new(),
+            },
+        );
+        let error = spawn.spawn_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let message = format!("{error:#}");
+
+        assert!(!message.contains("was selected"));
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::PermissionDenied),
+        );
+    }
+
+    #[test]
+    fn passthrough_not_found_preserves_io_error() {
+        let spawn = SpawnDispatch::passthrough(Command::new("missing"));
+        let error = spawn.spawn_error(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let message = format!("{error:#}");
+
+        assert!(!message.contains("was selected"));
+        assert_eq!(
+            error
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound),
+        );
     }
 
     fn justfile_task(name: &str) -> Task {

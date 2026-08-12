@@ -70,7 +70,7 @@ pub(crate) fn run(
     // never leaves an empty group; the guard closes the group on drop.
     let _group = super::task_group(overrides, task);
     match dispatch {
-        dispatch::Dispatch::Spawn(mut cmd) => Ok(super::exit_code(cmd.status()?)),
+        dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
         dispatch::Dispatch::DenoSelfExec(self_exec) => self_exec.run(),
     }
 }
@@ -92,11 +92,13 @@ pub(crate) fn dispatch_task_piped(
     // Chain mode disables deno self-exec (in-process execution can't be
     // piped/spawned as a child), so resolution always yields a Command.
     match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, false)? {
-        dispatch::Dispatch::Spawn(mut cmd) => {
-            cmd.stdin(Stdio::null())
+        dispatch::Dispatch::Spawn(mut spawn) => {
+            spawn
+                .command_mut()
+                .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            Ok(cmd.spawn()?)
+            spawn.spawn()
         }
         dispatch::Dispatch::DenoSelfExec(_) => {
             anyhow::bail!("internal: deno self-exec is not available in chain mode")
