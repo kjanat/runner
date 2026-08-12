@@ -23,7 +23,25 @@ impl TempProject {
     }
 
     fn file(self, name: &str, contents: &str) -> Self {
-        std::fs::write(self.path.join(name), contents).expect("write project file");
+        let path = self.path.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create project file parent");
+        }
+        std::fs::write(path, contents).expect("write project file");
+        self
+    }
+
+    #[cfg(unix)]
+    fn executable(self, name: &str, contents: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = self.path.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create executable parent");
+        }
+        std::fs::write(&path, contents).expect("write executable");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+            .expect("mark executable");
         self
     }
 
@@ -128,6 +146,29 @@ fn parallel_manifest_selected_missing_pm_reports_provenance() {
     let output = run_in(&project, &["run", "-p", "build", "test"]);
 
     assert_manifest_bun_diagnostic(&output);
+}
+
+#[cfg(unix)]
+#[test]
+fn project_local_pm_uses_effective_child_path_for_diagnostics() {
+    let project = bun_project("local-path").executable(
+        "node_modules/.bin/bun",
+        "#!/definitely/missing/interpreter\n",
+    );
+    let output = run_in(&project, &["run", "build"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains(
+            "bun via package.json \"packageManager\" was selected, but failed to launch",
+        ),
+        "local bun should be found on the configured child PATH. stderr: {stderr}",
+    );
+    assert!(
+        !stderr.contains("executable was not found on PATH"),
+        "diagnostic must not ignore the configured child PATH. stderr: {stderr}",
+    );
 }
 
 #[test]

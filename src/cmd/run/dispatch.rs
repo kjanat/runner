@@ -10,6 +10,7 @@
 //!   `npx`/`bun x`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
 //!   directly when the resolver landed on a PM without an exec primitive.
 
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::process::{Child, Command, ExitStatus};
 
@@ -112,28 +113,45 @@ impl SpawnDispatch {
     }
 
     fn spawn_error(&self, error: io::Error) -> anyhow::Error {
+        let path = self.effective_env("PATH");
+        let pathext = self.effective_env("PATHEXT");
         let selected_pm_present = match &self.diagnostic {
-            SpawnDiagnostic::ResolvedPackageManager(decision) => std::env::var_os("PATH")
+            SpawnDiagnostic::ResolvedPackageManager(decision) => path
+                .as_deref()
                 .and_then(|path| {
                     crate::resolver::probe_path_for_doctor(
                         decision.pm.label(),
-                        &path,
-                        std::env::var_os("PATHEXT").as_deref(),
+                        path,
+                        pathext.as_deref(),
                     )
                 })
                 .is_some(),
-            SpawnDiagnostic::ResolvedPythonPackageManager(decision) => std::env::var_os("PATH")
+            SpawnDiagnostic::ResolvedPythonPackageManager(decision) => path
+                .as_deref()
                 .and_then(|path| {
                     crate::resolver::probe_path_for_doctor(
                         decision.pm.label(),
-                        &path,
-                        std::env::var_os("PATHEXT").as_deref(),
+                        path,
+                        pathext.as_deref(),
                     )
                 })
                 .is_some(),
             SpawnDiagnostic::Passthrough => false,
         };
         self.spawn_error_with_presence(error, selected_pm_present)
+    }
+
+    /// Resolve an environment variable exactly as this command will see it:
+    /// an explicit command override/removal wins, otherwise inherit it.
+    fn effective_env(&self, expected: &str) -> Option<OsString> {
+        match self
+            .command
+            .get_envs()
+            .find(|(key, _)| env_key_matches(key, expected))
+        {
+            Some((_, value)) => value.map(OsStr::to_owned),
+            None => std::env::var_os(expected),
+        }
     }
 
     fn spawn_error_with_presence(
@@ -172,6 +190,17 @@ impl SpawnDispatch {
             }
             _ => error.into(),
         }
+    }
+}
+
+fn env_key_matches(actual: &OsStr, expected: &str) -> bool {
+    #[cfg(windows)]
+    {
+        actual.to_string_lossy().eq_ignore_ascii_case(expected)
+    }
+    #[cfg(not(windows))]
+    {
+        actual == OsStr::new(expected)
     }
 }
 
