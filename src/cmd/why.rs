@@ -318,7 +318,8 @@ struct WhyOutput {
     warnings: bool,
     errors: bool,
     groups: bool,
-    timing: bool,
+    task_timing: bool,
+    summary: bool,
     host_diagnostics: &'static str,
     task_stdout: &'static str,
     task_stderr: &'static str,
@@ -483,7 +484,8 @@ fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> Wh
         warnings: overrides.shows_warnings(),
         errors: overrides.shows_errors(),
         groups: overrides.emits_groups(),
-        timing: overrides.shows_timing(),
+        task_timing: overrides.shows_task_timing(),
+        summary: overrides.shows_summary(),
         host_diagnostics: diagnostics.label(),
         task_stdout: stdout.label(),
         task_stderr: stderr.label(),
@@ -741,14 +743,15 @@ fn print_human(
     println!();
     println!("{}", "Output policy".bold());
     println!(
-        "  level={} progress={} warnings={} errors={} groups={} timing={} host={} stdout={} \
-         stderr={}",
+        "  level={} progress={} warnings={} errors={} groups={} task_timing={} summary={} host={} \
+         stdout={} stderr={}",
         output.level,
         output.progress,
         output.warnings,
         output.errors,
         output.groups,
-        output.timing,
+        output.task_timing,
+        output.summary,
         output.host_diagnostics,
         output.task_stdout,
         output.task_stderr,

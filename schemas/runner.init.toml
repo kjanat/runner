@@ -16,7 +16,8 @@
 # warnings = true   # non-fatal warnings
 # errors = true   # recoverable error decoration
 # groups = true   # task headers and GitHub groups
-# timing = true   # timing and chain summary
+# task_timing = true   # per-task timing and grouped footers
+# summary = true   # final multi-task chain roll-up
 
 # `[host]` host-tool output policy. Diagnostics never controls task streams;
 # adapters clamp unsupported requests to their strongest safe mode.

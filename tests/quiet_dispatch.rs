@@ -584,3 +584,31 @@ fn qualified_parallel_task_uses_resolved_stream_policy() {
     assert!(!stdout.contains("ONE-OUT"), "stdout: {stdout}");
     assert!(stdout.contains("TWO-OUT"), "stdout: {stdout}");
 }
+
+#[test]
+fn summary_can_be_the_only_runner_output() {
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("summary-only")
+        .file("Makefile", "one:\n\t@true\ntwo:\n\t@true\n")
+        .file(
+            "runner.toml",
+            "[runner]\nprogress = false\nwarnings = false\nerrors = false\ngroups = \
+             false\ntask_timing = false\nsummary = true\n[tasks.one]\nstdout = \
+             \"discard\"\nstderr = \"discard\"\n[tasks.two]\nstdout = \"discard\"\nstderr = \
+             \"discard\"\n",
+        );
+    let output = run_in(proj.path(), &[], &["-s", "one", "two"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(stdout.is_empty(), "stdout: {stdout}");
+    assert!(
+        stderr.contains("summary: 2 tasks, 2 ok"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("finished in"), "stderr: {stderr}");
+    assert!(!stderr.contains('→'), "stderr: {stderr}");
+}

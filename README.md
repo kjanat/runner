@@ -242,12 +242,12 @@ along with everything else runner prints.
 
 Quiet is a four-rung output policy:
 
-| Level   | Runner output                                        | Host diagnostics                         |
-| ------- | ---------------------------------------------------- | ---------------------------------------- |
-| `-q`    | Hide progress, groups, timing, and parallel prefixes | unchanged                                |
-| `-qq`   | Also hide non-fatal warnings                         | safe host quiet mode                     |
-| `-qqq`  | Also hide recoverable error decoration               | stronger reduction when safely supported |
-| `-qqqq` | No runner-authored text; preserve exit status        | strongest safe reduction                 |
+| Level   | Runner output                                                      | Host diagnostics                         |
+| ------- | ------------------------------------------------------------------ | ---------------------------------------- |
+| `-q`    | Hide progress, groups, task timing, summary, and parallel prefixes | unchanged                                |
+| `-qq`   | Also hide non-fatal warnings                                       | safe host quiet mode                     |
+| `-qqq`  | Also hide recoverable error decoration                             | stronger reduction when safely supported |
+| `-qqqq` | No runner-authored text; preserve exit status                      | strongest safe reduction                 |
 
 Larger counts clamp to `mute`. Task stdout and stderr survive every rung.
 Suppressing either requires explicit per-task `stdout = "discard"` or `stderr =
@@ -267,6 +267,25 @@ level.
 Runner categories and host diagnostics are independently configurable in
 `[runner]` and `[host]`; host level, host stream, and task streams can also be
 configured per task.
+
+For example, keep only the final chain summary while suppressing all other
+runner-authored output:
+
+```toml
+[runner]
+progress    = false
+warnings    = false
+errors      = false
+groups      = false
+task_timing = false
+summary     = true
+
+[host]
+diagnostics = "reduced"
+```
+
+Task process output remains inherited. Set each task's `stdout`/`stderr` to
+`"discard"` when those streams should also be silent.
 
 <details>
 <summary><i>Install mechanics and outputs</i></summary>
@@ -497,11 +516,12 @@ node   = "pnpm"  # npm | pnpm | yarn | bun | deno
 python = "uv"    # uv | poetry | pipenv
 
 [runner]
-progress = true
-warnings = true
-errors   = true
-groups   = true
-timing   = true
+progress    = true
+warnings    = true
+errors      = true
+groups      = true
+task_timing = true
+summary     = true
 
 [host]
 diagnostics = "normal"  # normal | quiet | reduced

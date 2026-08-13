@@ -11,7 +11,8 @@
     "warnings": true,
     "errors": true,
     "groups": true,
-    "timing": true,
+    "task_timing": true,
+    "summary": true,
     "host_diagnostics": "normal",
     "task_stdout": "inherit",
     "task_stderr": "inherit"

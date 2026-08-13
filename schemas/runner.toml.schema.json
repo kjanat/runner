@@ -214,7 +214,13 @@
             "null"
           ]
         },
-        "timing": {
+        "summary": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "task_timing": {
           "type": [
             "boolean",
             "null"

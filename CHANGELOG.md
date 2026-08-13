@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Add independent `[runner]` output categories, `[host].diagnostics`, and
   per-task stdout/stderr preservation controls. `--explain` reports the
   effective policy, applied host arguments, and unsupported reductions.
+  Per-task timing and the final chain summary are separate categories, allowing
+  summary-only output.
 
 ### Changed
 

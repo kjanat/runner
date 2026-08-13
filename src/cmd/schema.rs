@@ -231,9 +231,15 @@ const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
     ),
     (
         "runner",
-        "timing",
+        "task_timing",
         "true",
-        FieldHint::Static("timing and chain summary"),
+        FieldHint::Static("per-task timing and grouped footers"),
+    ),
+    (
+        "runner",
+        "summary",
+        "true",
+        FieldHint::Static("final multi-task chain roll-up"),
     ),
     (
         "host",

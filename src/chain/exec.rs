@@ -28,8 +28,43 @@ pub(crate) fn run_chain(
     overrides: &ResolutionOverrides,
     chain: &Chain,
 ) -> Result<i32> {
+    run_chain_with_head(ctx, overrides, chain, None)
+}
+
+/// Run a chain after an imperative prerequisite already completed. Parallel
+/// install chains use this because install must finish before task fan-out, but
+/// still belongs in failure policy, timing attribution, and the final summary.
+pub(crate) fn run_chain_after_completed(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    chain: &Chain,
+    name: &str,
+    elapsed: std::time::Duration,
+    code: i32,
+) -> Result<i32> {
+    run_chain_with_head(
+        ctx,
+        overrides,
+        chain,
+        Some(ItemOutcome {
+            name: name.to_string(),
+            status: ItemStatus::Ran { code, elapsed },
+        }),
+    )
+}
+
+fn run_chain_with_head(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    chain: &Chain,
+    head: Option<ItemOutcome>,
+) -> Result<i32> {
     let mut warnings: HashSet<DetectionWarning> = HashSet::new();
-    let mut outcomes: Vec<ItemOutcome> = Vec::new();
+    let head_code = head.as_ref().and_then(|outcome| match outcome.status {
+        ItemStatus::Ran { code, .. } if code != 0 => Some(code),
+        _ => None,
+    });
+    let mut outcomes: Vec<ItemOutcome> = head.into_iter().collect();
 
     // Pre-flight every task token before *any* sibling runs. Catches
     // the common UX trap where `runner run -s bb t lint:cargo` would
@@ -47,6 +82,17 @@ pub(crate) fn run_chain(
         }
     }
 
+    if let Some(code) = head_code
+        && !matches!(chain.failure, FailurePolicy::KeepGoing)
+    {
+        outcomes.extend(chain.items.iter().map(|item| ItemOutcome {
+            name: item.display_name().to_string(),
+            status: ItemStatus::Skipped,
+        }));
+        emit_chain_summary(overrides, &outcomes, code);
+        return Ok(code);
+    }
+
     // Emit warnings on both success and error paths: a chain that
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.
@@ -57,10 +103,14 @@ pub(crate) fn run_chain(
         ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings, &mut outcomes),
     };
     crate::cmd::emit_collected_warnings(&warnings, overrides);
-    if let Ok(code) = result {
-        emit_chain_summary(overrides, &outcomes, code);
+    match result {
+        Ok(task_code) => {
+            let code = head_code.unwrap_or(task_code);
+            emit_chain_summary(overrides, &outcomes, code);
+            Ok(code)
+        }
+        Err(error) => Err(error),
     }
-    result
 }
 
 /// What one chain item did, for the end-of-run summary.
@@ -699,8 +749,8 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
 /// attributed to the task that produced it.
 ///
 /// Single-task chains get nothing: the per-task timing line already says
-/// everything a summary would. Follows the same mute switches as the rest
-/// of runner's meta-output ([`crate::cmd::timing_enabled`]).
+/// everything a summary would. The independent summary category allows a
+/// final roll-up without per-task timing, and vice versa.
 fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome], code: i32) {
     use colored::Colorize as _;
 
@@ -709,7 +759,7 @@ fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome],
     }
 
     let failed: Vec<&ItemOutcome> = outcomes.iter().filter(|o| o.failed()).collect();
-    if crate::cmd::timing_enabled(overrides) {
+    if overrides.shows_summary() {
         let counts = summary_counts(outcomes, failed.len());
         // The aggregate is the first failure the chain observed, in detection
         // order; say so rather than leaving a bare number to interpret.

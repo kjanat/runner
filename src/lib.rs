@@ -907,15 +907,12 @@ fn dispatch_install_chain(
     // imperative parallel pre-install bypasses the timing path, so
     // `runner install -p ...` would print per-task timing but none for install
     // while `-s` does. "install" matches ChainItem::install(..).display_name();
-    // emit_task_timing self-gates via timing_enabled (--quiet/--no-warnings).
+    // emit_task_timing self-gates via the task-timing output category.
     let started = std::time::Instant::now();
     let install_code = cmd::install(ctx, overrides, frozen)?;
-    cmd::emit_task_timing(overrides, "install", started.elapsed(), install_code);
-    let keep_going = matches!(overrides.failure_policy, chain::FailurePolicy::KeepGoing);
-    if install_code != 0 && !keep_going {
-        return Ok(install_code);
-    }
-    let task_code = chain::exec::run_chain(
+    let install_elapsed = started.elapsed();
+    cmd::emit_task_timing(overrides, "install", install_elapsed, install_code);
+    chain::exec::run_chain_after_completed(
         ctx,
         overrides,
         &chain::Chain {
@@ -923,14 +920,10 @@ fn dispatch_install_chain(
             items,
             failure: overrides.failure_policy,
         },
-    )?;
-    // First failure wins, mirroring chain semantics: a failed install is the
-    // first failure even if a later task also fails.
-    Ok(if install_code != 0 {
-        install_code
-    } else {
-        task_code
-    })
+        "install",
+        install_elapsed,
+        install_code,
+    )
 }
 
 fn dispatch_run(

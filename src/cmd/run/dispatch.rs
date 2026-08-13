@@ -68,14 +68,15 @@ fn host_verbosity(
     crate::cmd::print_explain(
         overrides,
         &format!(
-            "output: level={} progress={} warnings={} errors={} groups={} timing={} \
-             task.stdout={} task.stderr={}",
+            "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
+             summary={} task.stdout={} task.stderr={}",
             overrides.quiet_level.label(),
             show_hide(overrides.shows_progress()),
             show_hide(overrides.shows_warnings()),
             show_hide(overrides.shows_errors()),
             show_hide(overrides.emits_groups()),
-            show_hide(overrides.shows_timing()),
+            show_hide(overrides.shows_task_timing()),
+            show_hide(overrides.shows_summary()),
             stdout.label(),
             stderr.label(),
         ),

@@ -273,7 +273,10 @@ impl ResolutionOverrides {
                 runner.warnings.unwrap_or(output_policy.runner.warnings);
             output_policy.runner.errors = runner.errors.unwrap_or(output_policy.runner.errors);
             output_policy.runner.groups = runner.groups.unwrap_or(output_policy.runner.groups);
-            output_policy.runner.timing = runner.timing.unwrap_or(output_policy.runner.timing);
+            output_policy.runner.task_timing = runner
+                .task_timing
+                .unwrap_or(output_policy.runner.task_timing);
+            output_policy.runner.summary = runner.summary.unwrap_or(output_policy.runner.summary);
             if let Some(raw) = config.config.host.diagnostics.as_deref() {
                 output_policy.host_diagnostics = crate::tool::HostDiagnostics::from_label(raw)
                     .ok_or_else(|| {

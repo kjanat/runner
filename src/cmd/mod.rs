@@ -533,7 +533,7 @@ pub(crate) fn task_killed_summary(elapsed: std::time::Duration) -> String {
 /// `--quiet` / `RUNNER_QUIET` and `--no-warnings` / `RUNNER_NO_WARNINGS` each
 /// suppress it.
 pub(crate) const fn timing_enabled(overrides: &ResolutionOverrides) -> bool {
-    overrides.shows_timing()
+    overrides.shows_task_timing()
 }
 
 /// Print a per-task timing line to stderr for the sequential and live
@@ -1002,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn timing_enabled_reads_the_timing_category() {
+    fn timing_enabled_reads_the_task_timing_category() {
         use super::timing_enabled;
         use crate::resolver::ResolutionOverrides;
 
@@ -1014,7 +1014,7 @@ mod tests {
         assert!(!timing_enabled(&ResolutionOverrides {
             output_policy: crate::tool::OutputPolicy {
                 runner: crate::tool::RunnerOutputPolicy {
-                    timing: false,
+                    task_timing: false,
                     ..crate::tool::OutputPolicy::default().runner
                 },
                 ..crate::tool::OutputPolicy::default()

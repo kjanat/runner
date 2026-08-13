@@ -172,7 +172,7 @@ pub(crate) struct TaskVerbosity {
 
 impl ResolutionOverrides {
     /// `true` when runner's own output (dispatch arrow, `--explain` trace,
-    /// timing, chain summary, GHA groups) should be suppressed. Reached at
+    /// task timing, chain summary, GHA groups) should be suppressed. Reached at
     /// `-q` (level 1) and above.
     pub(crate) const fn silences_runner(&self) -> bool {
         !self.output_policy.runner.progress
@@ -201,8 +201,12 @@ impl ResolutionOverrides {
         self.output_policy.runner.groups
     }
 
-    pub(crate) const fn shows_timing(&self) -> bool {
-        self.output_policy.runner.timing
+    pub(crate) const fn shows_task_timing(&self) -> bool {
+        self.output_policy.runner.task_timing
+    }
+
+    pub(crate) const fn shows_summary(&self) -> bool {
+        self.output_policy.runner.summary
     }
 
     /// Resolve the effective [`HostVerbosity`] for a task, deep-merging the

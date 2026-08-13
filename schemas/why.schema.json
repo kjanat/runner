@@ -164,9 +164,10 @@
         "host_diagnostics",
         "level",
         "progress",
+        "summary",
         "task_stderr",
         "task_stdout",
-        "timing",
+        "task_timing",
         "warnings"
       ],
       "properties": {
@@ -185,13 +186,16 @@
         "progress": {
           "type": "boolean"
         },
+        "summary": {
+          "type": "boolean"
+        },
         "task_stderr": {
           "type": "string"
         },
         "task_stdout": {
           "type": "string"
         },
-        "timing": {
+        "task_timing": {
           "type": "boolean"
         },
         "warnings": {

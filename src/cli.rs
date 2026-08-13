@@ -1564,7 +1564,8 @@ pub(crate) struct GlobalOpts {
 
     /// Graduated output policy, repeatable pytest-style.
     ///
-    /// - `-q`: hide runner progress, groups, and timing; host unchanged.
+    /// - `-q`: hide runner progress, groups, task timing, and summary; host
+    ///   unchanged.
     /// - `-qq`: also hide warnings and request the host's safe quiet mode.
     /// - `-qqq`: also hide recoverable runner error decoration and request a
     ///   stronger safe host reduction.

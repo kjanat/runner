@@ -140,7 +140,9 @@ pub(crate) struct RunnerOutputSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub groups: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timing: Option<bool>,
+    pub task_timing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<bool>,
 }
 
 /// `[host]` host-tool output policy. Diagnostics never controls task streams;
@@ -625,7 +627,14 @@ pub(crate) struct ResolutionSection {
 const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     (
         "runner",
-        &["progress", "warnings", "errors", "groups", "timing"],
+        &[
+            "progress",
+            "warnings",
+            "errors",
+            "groups",
+            "task_timing",
+            "summary",
+        ],
     ),
     ("host", &["diagnostics"]),
     ("pm", &["node", "python"]),

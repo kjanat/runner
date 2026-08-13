@@ -297,6 +297,10 @@ fn parallel_install_chain_times_the_install_step() {
         stderr.matches("finished in").count() >= 2,
         "expected timing for both the install step and the task. stderr: {stderr}",
     );
+    assert!(
+        stderr.contains("summary: 2 tasks, 2 ok"),
+        "install and its one post-task must share one summary. stderr: {stderr}",
+    );
 }
 
 #[test]
