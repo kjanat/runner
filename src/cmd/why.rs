@@ -320,7 +320,9 @@ struct WhyOutput {
     groups: bool,
     task_timing: bool,
     summary: bool,
+    fatal_errors: bool,
     host_diagnostics: &'static str,
+    host_stream: &'static str,
     task_stdout: &'static str,
     task_stderr: &'static str,
 }
@@ -468,16 +470,32 @@ fn build_report<'a>(
 }
 
 fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> WhyOutput {
+    let task_key = selected.map(super::run::task_output_key);
+    let global_host_stream = if overrides.host_stream_invocation_explicit {
+        overrides.host_stream
+    } else {
+        overrides.host_stream_config
+    };
     let (stdout, stderr) = selected.map_or(
         (
             crate::tool::TaskStream::Inherit,
             crate::tool::TaskStream::Inherit,
         ),
-        |task| overrides.task_streams_for(&task.name),
+        |_| {
+            task_key.as_deref().map_or(
+                (
+                    crate::tool::TaskStream::Inherit,
+                    crate::tool::TaskStream::Inherit,
+                ),
+                |key| overrides.task_streams_for(key),
+            )
+        },
     );
-    let diagnostics = selected.map_or(overrides.output_policy.host_diagnostics, |task| {
-        overrides.host_verbosity_for(&task.name).diagnostics
-    });
+    let diagnostics = task_key
+        .as_deref()
+        .map_or(overrides.output_policy.host_diagnostics, |key| {
+            overrides.host_verbosity_for(key).diagnostics
+        });
     WhyOutput {
         level: overrides.quiet_level.label(),
         progress: overrides.shows_progress(),
@@ -486,7 +504,14 @@ fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> Wh
         groups: overrides.emits_groups(),
         task_timing: overrides.shows_task_timing(),
         summary: overrides.shows_summary(),
+        fatal_errors: overrides.shows_fatal_errors(),
         host_diagnostics: diagnostics.label(),
+        host_stream: task_key
+            .as_deref()
+            .map_or(global_host_stream, |key| {
+                overrides.host_verbosity_for(key).stream
+            })
+            .label(),
         task_stdout: stdout.label(),
         task_stderr: stderr.label(),
     }
@@ -743,8 +768,8 @@ fn print_human(
     println!();
     println!("{}", "Output policy".bold());
     println!(
-        "  level={} progress={} warnings={} errors={} groups={} task_timing={} summary={} host={} \
-         stdout={} stderr={}",
+        "  level={} progress={} warnings={} errors={} groups={} task_timing={} summary={} \
+         fatal_errors={} host={} host_stream={} stdout={} stderr={}",
         output.level,
         output.progress,
         output.warnings,
@@ -752,7 +777,9 @@ fn print_human(
         output.groups,
         output.task_timing,
         output.summary,
+        output.fatal_errors,
         output.host_diagnostics,
+        output.host_stream,
         output.task_stdout,
         output.task_stderr,
     );
@@ -874,7 +901,7 @@ mod tests {
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         assert_eq!(json["kind"], "runner.why");
         assert_eq!(json["query"], "t");
         assert_eq!(json["pm_resolution"], serde_json::Value::Null);

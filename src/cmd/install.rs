@@ -349,6 +349,7 @@ fn install_single(
     }
     let mut cmd = build_install_command(ctx, pm, frozen, script_directive(overrides));
     super::configure_command(&mut cmd, &ctx.root, overrides);
+    super::configure_task_streams(&mut cmd, overrides, "install");
     let status = cmd.status()?;
     Ok(if status.success() {
         0
@@ -462,23 +463,30 @@ fn run_lane(
         }
         let mut cmd = build_install_command(ctx, *pm, frozen, directive);
         super::configure_command(&mut cmd, &ctx.root, overrides);
+        let (stdout_policy, stderr_policy) = overrides.task_streams_for("install");
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(match stdout_policy {
+                tool::TaskStream::Inherit => Stdio::piped(),
+                tool::TaskStream::Discard => Stdio::null(),
+            })
+            .stderr(match stderr_policy {
+                tool::TaskStream::Inherit => Stdio::piped(),
+                tool::TaskStream::Discard => Stdio::null(),
+            });
         let mut child = cmd.spawn()?;
-        let prefix = if overrides.shows_progress() {
+        let prefix = if overrides.emits_groups() {
             render_prefix(pm.label(), width, colorize)
         } else {
             String::new()
         };
-        let stdout: Box<dyn std::io::Read + Send> =
-            Box::new(child.stdout.take().expect("stdout piped"));
-        let stderr: Box<dyn std::io::Read + Send> =
-            Box::new(child.stderr.take().expect("stderr piped"));
-        let readers = spawn_readers(
-            vec![(prefix.clone(), false, stdout), (prefix, true, stderr)],
-            sink,
-        );
+        let mut streams: Vec<(String, bool, Box<dyn std::io::Read + Send>)> = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            streams.push((prefix.clone(), false, Box::new(stdout)));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            streams.push((prefix, true, Box::new(stderr)));
+        }
+        let readers = spawn_readers(streams, sink);
 
         let waited = match child.wait() {
             Ok(status) => Ok(status),

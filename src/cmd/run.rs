@@ -48,7 +48,11 @@ pub(crate) use runtime::{
 };
 
 use crate::resolver::ResolutionOverrides;
-use crate::types::ProjectContext;
+use crate::types::{ProjectContext, Task};
+
+pub(crate) fn task_output_key(task: &Task) -> String {
+    format!("{}:{}", task.source.label(), task.name)
+}
 
 /// Resolve `task` and run it with inherited stdio, returning the exit
 /// code. Bun special case: when `task == "test"` and no package-manifest
@@ -100,7 +104,7 @@ pub(crate) fn task_streams_for_token(
     };
     task.map_or_else(
         || overrides.task_streams_for(lookup.task_name),
-        |task| overrides.task_streams_for(&task.name),
+        |task| overrides.task_streams_for(&task_output_key(task)),
     )
 }
 

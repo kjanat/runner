@@ -34,6 +34,9 @@ pub(crate) fn info(
     }
 
     super::print_warnings(ctx, overrides, None);
+    if !overrides.shows_progress() {
+        return Ok(());
+    }
 
     println!(
         "{}",

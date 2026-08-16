@@ -1611,15 +1611,15 @@ pub(crate) struct GlobalOpts {
     )]
     pub host_stream: Option<String>,
 
-    /// Pin the `--json` output schema version. Currently always `2`; any other
+    /// Pin the `--json` output schema version. Currently always `3`; any other
     /// value is rejected.
     #[arg(
         long = "schema-version",
         global = true,
-        value_parser = clap::value_parser!(u32).range(2..=2),
+        value_parser = clap::value_parser!(u32).range(3..=3),
         value_name = "N",
         display_order = help_order::SCHEMA_VERSION,
-        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("2"), ")"),
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("3"), ")"),
     )]
     pub schema_version: Option<u32>,
 }

@@ -35,6 +35,11 @@ impl TempProject {
         self
     }
 
+    fn dir(self, name: &str) -> Self {
+        std::fs::create_dir_all(self.path.join(name)).expect("create project subdirectory");
+        self
+    }
+
     fn path(&self) -> &Path {
         &self.path
     }
@@ -50,6 +55,10 @@ fn run_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_run"))
 }
 
+fn runner_binary() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_runner"))
+}
+
 fn tool_available(bin: &str) -> bool {
     Command::new(bin)
         .arg("--version")
@@ -61,7 +70,15 @@ fn tool_available(bin: &str) -> bool {
 /// `extra_env` applied. Globals (`--dir`, `--quiet`, `--explain`) must precede
 /// the task positional, since `trailing_var_arg` consumes everything after it.
 fn run_in(dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
-    let mut cmd = Command::new(run_binary());
+    command_in(run_binary(), dir, extra_env, args)
+}
+
+fn runner_in(dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
+    command_in(runner_binary(), dir, extra_env, args)
+}
+
+fn command_in(binary: PathBuf, dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut cmd = Command::new(binary);
     for (key, _) in std::env::vars_os() {
         if key
             .to_string_lossy()
@@ -384,6 +401,52 @@ fn mute_hides_fatal_text_but_preserves_exit_status() {
 }
 
 #[test]
+fn configured_fatal_errors_false_hides_post_resolution_failure() {
+    let proj =
+        npm_project("configured-fatal").file("runner.toml", "[runner]\nfatal_errors = false\n");
+    let output = run_in(proj.path(), &[], &["package.json:missing"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        output.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn quiet_dashboard_emits_no_operational_output() {
+    let proj = make_project("quiet-dashboard");
+    let output = run_in(proj.path(), &[], &["-q"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn quiet_clean_emits_no_operational_output() {
+    let proj = npm_project("quiet-clean").dir("node_modules");
+    let output = runner_in(proj.path(), &[], &["-q", "clean"]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("requires --yes"));
+
+    let confirmed = runner_in(proj.path(), &[], &["-q", "clean", "--yes"]);
+    assert!(confirmed.status.success());
+    assert!(confirmed.stdout.is_empty());
+    assert!(confirmed.stderr.is_empty());
+}
+
+#[test]
+fn quiet_clean_without_targets_emits_no_operational_output() {
+    let proj = make_project("quiet-clean-empty");
+    let output = run_in(proj.path(), &[], &["-q", "clean"]);
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn task_streams_require_explicit_discard_config() {
     if !tool_available("make") {
         eprintln!("skipping: `make` not found on PATH");
@@ -402,6 +465,45 @@ fn task_streams_require_explicit_discard_config() {
     assert!(output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("TASK-OUT"));
     assert!(String::from_utf8_lossy(&output.stderr).contains("TASK-ERR"));
+}
+
+#[test]
+fn qualified_task_settings_override_bare_task_settings_per_axis() {
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("qualified-settings")
+        .file(
+            "Makefile",
+            "greet:\n\t@printf 'TASK-OUT\\n'\n\t@printf 'TASK-ERR\\n' >&2\n",
+        )
+        .file(
+            "runner.toml",
+            "[tasks.greet]\nstdout = \"discard\"\nstderr = \
+             \"discard\"\n[tasks.\"make:greet\"]\nstdout = \"inherit\"\n",
+        );
+    let output = run_in(proj.path(), &[], &["-q", "make:greet"]);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("TASK-OUT"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("TASK-ERR"));
+}
+
+#[test]
+fn fqn_task_uses_qualified_stream_settings() {
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("fqn-settings")
+        .file("Makefile", "greet:\n\t@printf 'TASK-OUT\\n'\n")
+        .file(
+            "runner.toml",
+            "[tasks.\"root:make#greet\"]\nstdout = \"discard\"\n",
+        );
+    let output = run_in(proj.path(), &[], &["-q", "root:make#greet"]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("TASK-OUT"));
 }
 
 #[test]

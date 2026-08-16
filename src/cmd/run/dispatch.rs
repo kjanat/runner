@@ -38,11 +38,11 @@ fn print_dispatch_arrow(
         return;
     }
     eprintln!(
-        "{} {} {} {}",
+        "{} {} {}{}",
         "→".dimmed(),
         label.dimmed(),
         task_name.bold(),
-        args.join(" ").dimmed(),
+        if args.is_empty() { "" } else { " [args]" }.dimmed(),
     );
 }
 
@@ -51,20 +51,20 @@ fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
 }
 
 fn host_verbosity(
-    ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-    task: &str,
+    task: &Task,
     host: &str,
     capabilities: tool::HostQuietCapabilities,
 ) -> tool::HostVerbosity {
-    let requested = overrides.host_verbosity_for(task);
+    let task_key = super::task_output_key(task);
+    let requested = overrides.host_verbosity_for(&task_key);
     let applied = requested.diagnostics.min(capabilities.max_diagnostics);
     let stream = if capabilities.diverts_to_stderr {
         requested.stream
     } else {
         tool::Stream::Inherit
     };
-    let (stdout, stderr) = overrides.task_streams_for(task);
+    let (stdout, stderr) = overrides.task_streams_for(&task_key);
     crate::cmd::print_explain(
         overrides,
         &format!(
@@ -106,7 +106,6 @@ fn host_verbosity(
             limitation,
         ),
     );
-    let _ = ctx;
     tool::HostVerbosity {
         diagnostics: applied,
         stream,
@@ -502,7 +501,11 @@ pub(super) fn resolve_dispatch(
 
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(spawn.command_mut(), &ctx.root, overrides);
-    crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &entry.name);
+    crate::cmd::configure_task_streams(
+        spawn.command_mut(),
+        overrides,
+        &super::task_output_key(entry),
+    );
     spawn
         .command_mut()
         .env(crate::cmd::TASK_STACK_ENV, task_stack);
@@ -677,13 +680,7 @@ fn build_run_command(
     let unsupported = |id, reason| tool::HostQuietCapabilities::unsupported(id, reason);
     let command = match entry.source {
         TaskSource::TurboJson => {
-            let hv = host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "turbo",
-                tool::turbo::quiet_capabilities(),
-            );
+            let hv = host_verbosity(overrides, entry, "turbo", tool::turbo::quiet_capabilities());
             tool::turbo::run_cmd(&entry.name, args, hv)
         }
         TaskSource::PackageJson => {
@@ -711,13 +708,7 @@ fn build_run_command(
                     JsRuntime::Bun => tool::bun::quiet_capabilities(),
                     JsRuntime::Deno => tool::deno::quiet_capabilities(),
                 };
-                let hv = host_verbosity(
-                    ctx,
-                    overrides,
-                    &entry.name,
-                    over.runtime.label(),
-                    capabilities,
-                );
+                let hv = host_verbosity(overrides, entry, over.runtime.label(), capabilities);
                 return Ok(SpawnDispatch::passthrough(runtime::script_cmd(
                     over.runtime,
                     &entry.name,
@@ -736,13 +727,7 @@ fn build_run_command(
                 PackageManager::Deno => tool::deno::quiet_capabilities(),
                 other => unsupported(other.label(), "not a script-dispatch adapter"),
             };
-            let hv = host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                decision.pm.label(),
-                capabilities,
-            );
+            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
             let command = match decision.pm {
                 PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
                 PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
@@ -756,32 +741,19 @@ fn build_run_command(
         TaskSource::Makefile => tool::make::run_cmd(
             &entry.name,
             args,
-            host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "make",
-                tool::make::quiet_capabilities(),
-            ),
+            host_verbosity(overrides, entry, "make", tool::make::quiet_capabilities()),
         ),
         TaskSource::Justfile => tool::just::run_cmd(
             &entry.name,
             args,
-            host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "just",
-                tool::just::quiet_capabilities(),
-            ),
+            host_verbosity(overrides, entry, "just", tool::just::quiet_capabilities()),
         ),
         TaskSource::Taskfile => tool::go_task::run_cmd(
             &entry.name,
             args,
             host_verbosity(
-                ctx,
                 overrides,
-                &entry.name,
+                entry,
                 "go-task",
                 tool::go_task::quiet_capabilities(),
             ),
@@ -789,21 +761,14 @@ fn build_run_command(
         TaskSource::DenoJson => tool::deno::run_cmd(
             &entry.name,
             args,
-            host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "deno",
-                tool::deno::quiet_capabilities(),
-            ),
+            host_verbosity(overrides, entry, "deno", tool::deno::quiet_capabilities()),
         ),
         TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(
             &entry.name,
             args,
             host_verbosity(
-                ctx,
                 overrides,
-                &entry.name,
+                entry,
                 "cargo",
                 tool::cargo_aliases::quiet_capabilities(),
             ),
@@ -812,36 +777,18 @@ fn build_run_command(
             let Some(run_target) = entry.run_target.as_deref() else {
                 bail!("go task {:?} is missing its run target", entry.name);
             };
-            let hv = host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "go",
-                tool::go_pm::quiet_capabilities(),
-            );
+            let hv = host_verbosity(overrides, entry, "go", tool::go_pm::quiet_capabilities());
             tool::go_pm::run_cmd(run_target, args, hv)
         }
         TaskSource::BaconToml => tool::bacon::run_cmd(
             &entry.name,
             args,
-            host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "bacon",
-                tool::bacon::quiet_capabilities(),
-            ),
+            host_verbosity(overrides, entry, "bacon", tool::bacon::quiet_capabilities()),
         ),
         TaskSource::MiseToml => tool::mise::run_cmd(
             &entry.name,
             args,
-            host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                "mise",
-                tool::mise::quiet_capabilities(),
-            ),
+            host_verbosity(overrides, entry, "mise", tool::mise::quiet_capabilities()),
         ),
         TaskSource::PyprojectScripts => {
             let Some(decision) = resolve_python_pm(ctx, overrides) else {
@@ -857,13 +804,7 @@ fn build_run_command(
                 PackageManager::Pipenv => tool::pipenv::quiet_capabilities(),
                 other => unsupported(other.label(), "not a pyproject script adapter"),
             };
-            let hv = host_verbosity(
-                ctx,
-                overrides,
-                &entry.name,
-                decision.pm.label(),
-                capabilities,
-            );
+            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
             let command = match decision.pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),

@@ -70,6 +70,18 @@
             "reduced",
             null
           ]
+        },
+        "stream": {
+          "description": "`inherit` or `stderr`. Per-task stream settings override this global\ndefault; CLI/env still outrank both.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "stderr",
+            null
+          ]
         }
       },
       "additionalProperties": false
@@ -197,6 +209,12 @@
       "type": "object",
       "properties": {
         "errors": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fatal_errors": {
           "type": [
             "boolean",
             "null"

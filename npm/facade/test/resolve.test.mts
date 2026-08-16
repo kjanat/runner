@@ -1,6 +1,6 @@
 // tsconfig pins `typeRoots`, so `@types/bun`'s own reference is not followed.
 /// <reference types="bun" />
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,10 +14,17 @@ import matrix from "../../targets.json" with { type: "json" };
 
 const { scope, binaries, targets } = matrix as Matrix;
 const fixtureRoots = new Set<string>();
+const originalArgv1 = process.argv[1];
 
 afterAll(() => {
 	for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true });
 	fixtureRoots.clear();
+});
+
+afterEach(() => {
+	delete process.env.RUNNER_QUIET;
+	process.argv[1] = originalArgv1;
+	process.argv.splice(2);
 });
 
 /** Every platform package the facade declares, in generated manifest order. */
@@ -118,6 +125,75 @@ test("only the GNU sibling installed on musl fails without spawning it", () => {
 	expect(output).toContain(`Expected package: ${scope}/linux-x64-musl — not installed`);
 });
 
+test("mute suppresses facade fatal details", () => {
+	process.env.RUNNER_QUIET = "4";
+	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
+
+	const { error, output } = captureStderr(() => resolveBinary("run", context));
+
+	expect(String(error)).toMatch(/No usable musl binary for linux-x64/);
+	expect(output).toBe("");
+});
+
+test("mute CLI suppresses facade fatal details", () => {
+	process.argv.push("-qqqq", "missing");
+	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
+
+	const { error, output } = captureStderr(() => resolveBinary("run", context));
+
+	expect(String(error)).toMatch(/No usable musl binary for linux-x64/);
+	expect(output).toBe("");
+});
+
+test("runner run mute CLI suppresses facade fatal details", () => {
+	process.argv[1] = "/tmp/runner.cjs";
+	process.argv.push("run", "-qqqq", "missing");
+	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
+
+	const { error, output } = captureStderr(() => resolveBinary("runner", context));
+
+	expect(String(error)).toMatch(/No usable musl binary for linux-x64/);
+	expect(output).toBe("");
+});
+
+test.each(
+	[
+		["runner run with value flag", ["run", "--dir", "/tmp", "-qqqq", "missing"]],
+		["runner alias subcommand", ["r", "-qqqq", "missing"]],
+		["runner builtin with trailing global", ["clean", "-qqqq"]],
+		["why task then global", ["why", "missing", "-qqqq"]],
+		["config action then global", ["config", "path", "-qqqq"]],
+		["completions then global", ["completions", "-qqqq"]],
+		["install task then global", ["install", "build", "-qqqq"]],
+		["install alias then global", ["i", "build", "-qqqq"]],
+		["list alias then global", ["ls", "-qqqq"]],
+		["feature-gated man then global", ["man", "-qqqq"]],
+	] as const,
+)("%s suppresses facade fatal details", (_name, args) => {
+	process.argv[1] = "/tmp/runner.cjs";
+	process.argv.push(...args);
+	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
+
+	const { output } = captureStderr(() => resolveBinary("runner", context));
+
+	expect(output).toBe("");
+});
+
+test("explicit CLI quiet outranks mute environment", () => {
+	process.argv.push("-q", "missing");
+	process.env.RUNNER_QUIET = "4";
+	const { resolvePackageJson } = installFixture([`${scope}/linux-x64-gnu`], binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.musl, resolvePackageJson };
+
+	const { output } = captureStderr(() => resolveBinary("run", context));
+
+	expect(output).toContain("no usable musl binary");
+});
+
 test("a glibc host falls back to the static musl package", () => {
 	const musl = `${scope}/linux-x64-musl`;
 	const { root, resolvePackageJson } = installFixture([musl], binaries);
@@ -150,6 +226,19 @@ test("an undecided libc keeps the declared order and says so", () => {
 	);
 
 	expect(output).toContain("could not detect this host's libc");
+});
+
+test("mute suppresses undecided-libc fallback warning", () => {
+	process.env.RUNNER_QUIET = "4";
+	const installed = [`${scope}/linux-x64-gnu`, `${scope}/linux-x64-musl`];
+	const { root, resolvePackageJson } = installFixture(installed, binaries);
+	const context = { platform: "linux", arch: "x64", packages: declared, detect: HOSTS.undecided, resolvePackageJson };
+
+	const { output } = captureStderr(() =>
+		expect(resolveBinary("run", context)).toBe(join(root, `${scope}/linux-x64-gnu`, "bin", "run"))
+	);
+
+	expect(output).toBe("");
 });
 
 // Each layer is a positive proof; none may be inferred from another's absence.

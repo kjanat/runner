@@ -257,7 +257,8 @@ impl ResolutionOverrides {
         };
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
-        let (quiet_level, host_stream) = resolve_verbosity(&sources)?;
+        let (quiet_level, host_stream, host_stream_invocation_explicit) =
+            resolve_verbosity(&sources)?;
         let quiet_explicit =
             sources.quiet.cli > 0 || sources.quiet.env.and_then(parse_quiet_env).is_some();
         let host_diagnostics_explicit = quiet_explicit
@@ -277,6 +278,9 @@ impl ResolutionOverrides {
                 .task_timing
                 .unwrap_or(output_policy.runner.task_timing);
             output_policy.runner.summary = runner.summary.unwrap_or(output_policy.runner.summary);
+            output_policy.runner.fatal_errors = runner
+                .fatal_errors
+                .unwrap_or(output_policy.runner.fatal_errors);
             if let Some(raw) = config.config.host.diagnostics.as_deref() {
                 output_policy.host_diagnostics = crate::tool::HostDiagnostics::from_label(raw)
                     .ok_or_else(|| {
@@ -286,6 +290,12 @@ impl ResolutionOverrides {
                     })?;
             }
         }
+        let host_stream_config = sources
+            .config
+            .and_then(|config| config.config.host.stream.as_deref())
+            .map(parse_host_stream_label)
+            .transpose()?
+            .unwrap_or(Stream::Inherit);
         if quiet_explicit {
             output_policy = crate::tool::OutputPolicy::from_quiet(quiet_level);
         }
@@ -352,6 +362,8 @@ impl ResolutionOverrides {
             host_diagnostics_explicit,
             output_policy,
             host_stream,
+            host_stream_invocation_explicit,
+            host_stream_config,
             task_verbosity,
             explain,
             failure_policy,
@@ -962,7 +974,7 @@ impl EnvSnapshot {
 /// rather than aborting the run (the doctor/lenient path warns instead). A
 /// bad explicit `--host-stream` still errors. Per-task
 /// `[tasks.<name>].verbosity` config layers under both at dispatch.
-fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Stream)> {
+fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Stream, bool)> {
     // CLI count wins outright when passed, so env can neither escalate past nor
     // undercut an explicit `-q`; env applies only when no `-q` was given.
     let quiet_level = if sources.quiet.cli > 0 {
@@ -975,26 +987,27 @@ fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Strea
             .unwrap_or(QuietLevel::Off)
     };
 
-    let host_stream = match sources
+    let cli_host_stream = sources
         .host_stream
         .cli
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+        .filter(|s| !s.is_empty());
+    let env_host_stream = sources
+        .host_stream
+        .env
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let (host_stream, host_stream_invocation_explicit) = match cli_host_stream {
         // An explicit `--host-stream` stays strict (clap already validated it).
-        Some(raw) => parse_host_stream_label(raw)?,
+        Some(raw) => (parse_host_stream_label(raw)?, true),
         // A typo'd `RUNNER_HOST_STREAM` env value is lenient here, mirroring the
         // quiet axis (`parse_quiet_env(...).unwrap_or(Off)`): it falls back to
         // the default instead of aborting every `run`. The doctor path warns.
-        None => sources
-            .host_stream
-            .env
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
+        None => env_host_stream
             .and_then(|raw| parse_host_stream_label(raw).ok())
-            .unwrap_or(Stream::Inherit),
+            .map_or((Stream::Inherit, false), |stream| (stream, true)),
     };
-    Ok((quiet_level, host_stream))
+    Ok((quiet_level, host_stream, host_stream_invocation_explicit))
 }
 
 /// Pre-validate one env-sourced override field for the lenient

@@ -143,6 +143,8 @@ pub(crate) struct RunnerOutputSection {
     pub task_timing: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fatal_errors: Option<bool>,
 }
 
 /// `[host]` host-tool output policy. Diagnostics never controls task streams;
@@ -162,6 +164,14 @@ pub(crate) struct HostOutputSection {
         schemars(extend("enum" = ["normal", "quiet", "reduced", null]))
     )]
     pub diagnostics: Option<String>,
+    /// `inherit` or `stderr`. Per-task stream settings override this global
+    /// default; CLI/env still outrank both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["inherit", "stderr", null]))
+    )]
+    pub stream: Option<String>,
 }
 
 /// `[runtime]` section, which JS runtime a task's process tree runs on.
@@ -634,9 +644,10 @@ const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
             "groups",
             "task_timing",
             "summary",
+            "fatal_errors",
         ],
     ),
-    ("host", &["diagnostics"]),
+    ("host", &["diagnostics", "stream"]),
     ("pm", &["node", "python"]),
     ("task_runner", &["prefer"]),
     ("tasks", &["prefer", "overrides"]),

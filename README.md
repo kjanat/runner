@@ -516,15 +516,17 @@ node   = "pnpm"  # npm | pnpm | yarn | bun | deno
 python = "uv"    # uv | poetry | pipenv
 
 [runner]
-progress    = true
-warnings    = true
-errors      = true
-groups      = true
-task_timing = true
-summary     = true
+progress     = true
+warnings     = true
+errors       = true
+groups       = true
+task_timing  = true
+summary      = true
+fatal_errors = true
 
 [host]
-diagnostics = "normal"  # normal | quiet | reduced
+diagnostics = "normal"   # normal | quiet | reduced
+stream      = "inherit"  # inherit | stderr
 
 # Per-task configuration, keyed by task name the way Cargo's [dependencies] is
 # keyed by crate name. `prefer` (global rank) and `overrides` (legacy per-task

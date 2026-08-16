@@ -83,6 +83,24 @@ use colored::Colorize;
 
 use resolver::ResolveError;
 
+#[derive(Debug)]
+struct FatalOutputSuppressed {
+    error: anyhow::Error,
+    exit_code: i32,
+}
+
+impl std::fmt::Display for FatalOutputSuppressed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for FatalOutputSuppressed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+
 /// JSON Schema for `runner.toml`. Built under the `schema` feature;
 /// `runner schema` renders it.
 #[cfg(feature = "schema")]
@@ -103,6 +121,9 @@ pub fn config_schema() -> schemars::Schema {
 /// library's public surface.
 #[must_use]
 pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    if let Some(suppressed) = err.downcast_ref::<FatalOutputSuppressed>() {
+        return suppressed.exit_code;
+    }
     if err.downcast_ref::<ResolveError>().is_some() {
         2
     } else {
@@ -121,6 +142,12 @@ pub fn runner_error_is_muted() -> bool {
         },
         |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
     )
+}
+
+/// Whether resolved policy suppressed this failure's fatal diagnostic.
+#[must_use]
+pub fn error_suppresses_fatal_output(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<FatalOutputSuppressed>().is_some()
 }
 
 /// Whether a fatal error from the `run` alias invocation should be muted.
@@ -993,7 +1020,7 @@ fn run_path_builtin_fallback(
     let code = match name {
         "install" => cmd::install(ctx, overrides, false)?,
         "clean" => {
-            cmd::clean(ctx, false, false)?;
+            cmd::clean(ctx, overrides, false, false)?;
             0
         }
         // `info` maps to a plain `list`: the deprecation warning is specific
@@ -1163,7 +1190,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     // in hand, so it is where the nesting question gets answered.
     overrides.parent_warned = cmd::parent_warned_about(&ctx.root);
 
-    match cli.command {
+    let result = match cli.command {
         None => cmd::info(&ctx, &overrides, false).map(|()| 0),
         // `info` is a deprecated alias for `list`. Bare `runner` (the
         // `None` arm above) keeps the dashboard; only the explicit verb
@@ -1230,7 +1257,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             yes,
             include_framework,
         }) => {
-            cmd::clean(&ctx, yes, include_framework)?;
+            cmd::clean(&ctx, &overrides, yes, include_framework)?;
             Ok(0)
         }
         Some(cli::Command::List { raw, json, source }) => {
@@ -1259,7 +1286,21 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::why(&ctx, &overrides, &task, json)?;
             Ok(0)
         }
+    };
+    apply_fatal_output_policy(result, &overrides)
+}
+
+fn apply_fatal_output_policy(
+    result: Result<i32>,
+    overrides: &resolver::ResolutionOverrides,
+) -> Result<i32> {
+    if overrides.shows_fatal_errors() {
+        return result;
     }
+    result.map_err(|error| {
+        let exit_code = exit_code_for_error(&error);
+        anyhow::Error::new(FatalOutputSuppressed { error, exit_code })
+    })
 }
 
 #[cfg(feature = "man")]

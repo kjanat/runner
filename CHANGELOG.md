@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   text while preserving task streams and exit status. Larger counts clamp to
   mute. Host adapters now apply only audited controls that preserve task output
   (https://github.com/kjanat/runner/issues/116).
+- Bump the unified `doctor`/`list`/`why` JSON contract to schema version 3 for
+  the expanded output-policy report.
 
 ## [0.25.1] - 2026-08-12
 

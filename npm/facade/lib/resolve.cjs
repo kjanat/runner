@@ -5,8 +5,10 @@ const { optionalDependencies, name: pkgName } = require("#pkg");
 const { platform, arch, env, report } = require("node:process");
 const { dirname, join } = require("node:path");
 const { existsSync, readdirSync } = require("node:fs");
+const { fatalOutputEnabled } = require("#quiet");
+const { bugs } = require("#pkg");
 
-const repo = "https://github.com/kjanat/runner";
+const repo = bugs.replace(/\/issues$/, "");
 const subPackages = Object.keys(optionalDependencies || {});
 
 // ansispeck handles color and OSC 8 hyperlink capability detection (NO_COLOR,
@@ -69,13 +71,7 @@ const LIB_DIRS = ["/lib", "/usr/lib"];
  * @param {string} path
  * @returns {boolean}
  */
-const exists = (path) => {
-	try {
-		return existsSync(path);
-	} catch {
-		return false;
-	}
-};
+const exists = (path) => existsSync(path);
 
 /**
  * `readdirSync` that reports an unreadable or absent directory as empty.
@@ -83,13 +79,7 @@ const exists = (path) => {
  * @param {string} dir
  * @returns {string[]}
  */
-const listDir = (dir) => {
-	try {
-		return readdirSync(dir);
-	} catch {
-		return [];
-	}
-};
+const listDir = (dir) => readdirSync(dir);
 
 /**
  * Name of the platform package holding the `libc` build for this architecture.
@@ -357,6 +347,12 @@ function isInstalled(pkg, resolve) {
 const isModuleNotFound = (err) =>
 	typeof err === "object" && err !== null && "code" in err && err.code === "MODULE_NOT_FOUND";
 
+/** @param {string} message */
+const reportFatal = (message) => {
+	const name = process.argv[1]?.endsWith("runner.cjs") ? "runner" : "run";
+	if (fatalOutputEnabled(name, process.argv.slice(2))) console.error(message);
+};
+
 /**
  * Report an installed GNU sibling that cannot run on a musl host, then throw.
  *
@@ -385,7 +381,7 @@ function failMuslMismatch({ arch, libcSource, expected, installed, errors }) {
 		? `reinstall so the platform packages are unpacked in full`
 		: `install the matching package: ${cyan(`npm install ${expected}`)}`;
 
-	console.error(`${red(pkgName)}: no usable ${yellow(libc)} binary for ${yellow(`linux-${arch}`)}.
+	reportFatal(`${red(pkgName)}: no usable ${yellow(libc)} binary for ${yellow(`linux-${arch}`)}.
 
 Detected libc: ${yellow(libc)} (${libcSource})
 Expected package: ${cyan(expected)}${why}
@@ -434,7 +430,7 @@ function failUnresolved({ platform, arch, missing, errors }) {
 
 	const indent = space(2);
 
-	console.error(`${red(pkgName)}: no prebuilt binary found for ${yellow(`${platform}-${arch}`)}.
+	reportFatal(`${red(pkgName)}: no prebuilt binary found for ${yellow(`${platform}-${arch}`)}.
 
 This usually means your package manager skipped ${cyan("optionalDependencies")}
 (common with ${cyan("--no-optional")}, ${cyan("--omit=optional")}, or some Docker/CI setups).
@@ -525,7 +521,7 @@ function resolveBinary(name, context = {}) {
 		// Manifest order picked one; say so rather than let a coin flip pass
 		// for a decision.
 		if (plan.libc === null && plan.pair.includes(subPkg)) {
-			console.error(
+			reportFatal(
 				`${yellow(pkgName)}: could not detect this host's libc (${plan.libcSource}); using ${cyan(subPkg)}. Set ${
 					cyan("RUNNER_LIBC=glibc")
 				} or ${cyan("RUNNER_LIBC=musl")} to choose.`,

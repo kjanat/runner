@@ -135,6 +135,7 @@ pub(crate) struct RunnerOutputPolicy {
     pub groups: bool,
     pub task_timing: bool,
     pub summary: bool,
+    pub fatal_errors: bool,
 }
 
 /// Effective output policy. Quiet levels are presets over these axes; task
@@ -162,6 +163,7 @@ impl OutputPolicy {
                     groups: true,
                     task_timing: true,
                     summary: true,
+                    fatal_errors: true,
                 },
                 host_diagnostics: HostDiagnostics::Normal,
             },
@@ -173,6 +175,7 @@ impl OutputPolicy {
                     groups: false,
                     task_timing: false,
                     summary: false,
+                    fatal_errors: true,
                 },
                 host_diagnostics: HostDiagnostics::Normal,
             },
@@ -184,10 +187,11 @@ impl OutputPolicy {
                     groups: false,
                     task_timing: false,
                     summary: false,
+                    fatal_errors: true,
                 },
                 host_diagnostics: HostDiagnostics::Quiet,
             },
-            QuietLevel::Silent | QuietLevel::Mute => Self {
+            QuietLevel::Silent => Self {
                 runner: RunnerOutputPolicy {
                     progress: false,
                     warnings: false,
@@ -195,6 +199,19 @@ impl OutputPolicy {
                     groups: false,
                     task_timing: false,
                     summary: false,
+                    fatal_errors: true,
+                },
+                host_diagnostics: HostDiagnostics::Reduced,
+            },
+            QuietLevel::Mute => Self {
+                runner: RunnerOutputPolicy {
+                    progress: false,
+                    warnings: false,
+                    errors: false,
+                    groups: false,
+                    task_timing: false,
+                    summary: false,
+                    fatal_errors: false,
                 },
                 host_diagnostics: HostDiagnostics::Reduced,
             },

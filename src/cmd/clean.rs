@@ -5,9 +5,10 @@ use std::io::Write as _;
 use std::path::Path;
 use std::{fs, io};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use colored::Colorize;
 
+use crate::resolver::ResolutionOverrides;
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner};
 
@@ -15,19 +16,28 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner};
 /// prompt for confirmation (unless `skip_confirm`), then delete them.
 pub(crate) fn clean(
     ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
     skip_confirm: bool,
     include_framework: bool,
 ) -> Result<()> {
     let targets = collect_targets(ctx, include_framework);
 
     if targets.is_empty() {
-        println!("{}", "Nothing to clean.".dimmed());
+        if overrides.shows_progress() {
+            println!("{}", "Nothing to clean.".dimmed());
+        }
         return Ok(());
     }
 
-    println!("Will remove:");
-    for t in &targets {
-        println!("  {t}");
+    if !skip_confirm && !overrides.shows_progress() {
+        bail!("clean requires --yes when runner progress is hidden");
+    }
+
+    if overrides.shows_progress() {
+        println!("Will remove:");
+        for t in &targets {
+            println!("  {t}");
+        }
     }
 
     if !skip_confirm {
@@ -45,11 +55,12 @@ pub(crate) fn clean(
         let path = ctx.root.join(t);
         if path.is_dir() {
             match fs::remove_dir_all(&path) {
-                Ok(()) => println!("  {} {}", "removed".red(), t),
+                Ok(()) if overrides.shows_progress() => println!("  {} {}", "removed".red(), t),
+                Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e.into()),
             }
-        } else if path.exists() {
+        } else if path.exists() && overrides.shows_warnings() {
             eprintln!("  {} {} (not a dir)", "skipped".yellow(), t);
         }
     }

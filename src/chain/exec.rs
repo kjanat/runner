@@ -253,7 +253,7 @@ fn run_parallel_streaming(
     // reaped, so the threads exit on their own).
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
-            let prefix = if overrides.shows_progress() {
+            let prefix = if overrides.emits_groups() {
                 render_prefix(item.display_name(), width, colorize)
             } else {
                 String::new()
