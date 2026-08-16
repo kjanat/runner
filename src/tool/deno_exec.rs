@@ -80,12 +80,18 @@ pub(crate) fn plan(config_path: &Path, task: &str) -> Option<DenoTaskPlan> {
 /// `args` are appended to the command, matching `deno task <name>
 /// <args...>`. The per-task `cwd` resolves relative to `cwd` (the
 /// invocation root).
-pub(crate) fn run(plan: &DenoTaskPlan, args: &[String], cwd: &Path) -> Result<i32> {
+pub(crate) fn run(
+    plan: &DenoTaskPlan,
+    args: &[String],
+    cwd: &Path,
+    stdout: crate::tool::TaskStream,
+    stderr: crate::tool::TaskStream,
+) -> Result<i32> {
     let effective_cwd = plan
         .cwd
         .as_ref()
         .map_or_else(|| cwd.to_path_buf(), |rel| cwd.join(rel));
-    super::shell::run(&plan.command, args, &effective_cwd)
+    super::shell::run(&plan.command, args, &effective_cwd, stdout, stderr)
 }
 
 #[cfg(test)]
@@ -144,7 +150,14 @@ mod tests {
         let path = write_config(&dir, r#"{ "tasks": { "ok": "exit 0" } }"#);
 
         let plan = plan(&path, "ok").expect("task should plan");
-        let code = run(&plan, &[], dir.path()).expect("self-exec should run");
+        let code = run(
+            &plan,
+            &[],
+            dir.path(),
+            crate::tool::TaskStream::Inherit,
+            crate::tool::TaskStream::Inherit,
+        )
+        .expect("self-exec should run");
         assert_eq!(code, 0);
     }
 }

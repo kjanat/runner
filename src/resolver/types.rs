@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
 use crate::tool::node::OnFail;
-use crate::tool::{HostVerbosity, QuietLevel, Stream};
+use crate::tool::{HostDiagnostics, HostVerbosity, OutputPolicy, QuietLevel, Stream, TaskStream};
 use crate::types::{
     DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, TaskRunner, TaskSource,
 };
@@ -78,20 +78,26 @@ pub(crate) struct ResolutionOverrides {
     /// `--no-warnings` / `RUNNER_NO_WARNINGS`. Errors still surface;
     /// only non-fatal warnings are silenced.
     pub no_warnings: bool,
-    /// Global quiet level from `-q`/`-qq`/`-qqq` (repeat count) and
-    /// `RUNNER_QUIET` (numeric `0..3` or a truthy word → level 1). CLI > env: a
+    /// Global quiet level from `-q` through `-qqqq` (repeat count) and
+    /// `RUNNER_QUIET` (numeric `0..4`, clamped, or a truthy word → level 1). CLI > env: a
     /// passed `-q` count wins outright, env applies only when no flag was given.
-    /// Gates runner's own output (the
-    /// dispatch arrow, `--explain` trace, per-task timing, chain summary, GHA
-    /// groups) at [`QuietLevel::Quiet`], and folds in `--no-warnings` at
-    /// [`QuietLevel::VeryQuiet`]. Also the global floor for the spawned host
-    /// tool's own silencing (see [`Self::host_verbosity_for`]).
+    /// The level selects an explicit [`OutputPolicy`] preset; it is not itself
+    /// used as a collection of category thresholds.
     pub quiet_level: QuietLevel,
+    /// Whether the global host diagnostic axis was selected by a quiet preset
+    /// or `[host].diagnostics`, including an explicit `normal` value.
+    pub host_diagnostics_explicit: bool,
+    /// Effective independent category policy after preset + config resolution.
+    pub output_policy: OutputPolicy,
     /// Global stdout-clean intent from `--host-stream` / `RUNNER_HOST_STREAM`.
     /// Orthogonal to [`Self::quiet_level`]: when [`Stream::Stderr`], hosts that
     /// can (pnpm) divert their diagnostics to stderr so a pipeline parsing
     /// stdout stays clean. The global floor under per-task config.
     pub host_stream: Stream,
+    /// Whether CLI/env explicitly selected host stream, including `inherit`.
+    pub host_stream_invocation_explicit: bool,
+    /// Global `[host].stream` value; per-task config may override it.
+    pub host_stream_config: Stream,
     /// Per-task verbosity partials from `[tasks.<name>].verbosity`, keyed by
     /// task name. Each is deep-merged (defu-like) under the global CLI/env
     /// level+stream at dispatch time by [`Self::host_verbosity_for`]; a partial
@@ -162,21 +168,46 @@ pub(crate) struct TaskVerbosity {
     pub level: Option<QuietLevel>,
     /// Per-task stream routing, if the table set one.
     pub stream: Option<Stream>,
+    /// Explicit task stdout policy.
+    pub stdout: Option<TaskStream>,
+    /// Explicit task stderr policy.
+    pub stderr: Option<TaskStream>,
 }
 
 impl ResolutionOverrides {
-    /// `true` when runner's own output (dispatch arrow, `--explain` trace,
-    /// timing, chain summary, GHA groups) should be suppressed. Reached at
-    /// `-q` (level 1) and above.
-    pub(crate) fn silences_runner(&self) -> bool {
-        self.quiet_level >= QuietLevel::Quiet
-    }
-
     /// `true` when non-fatal warnings should be muted: either `--no-warnings`
     /// was set explicitly, or the quiet level reached `-qq` (which folds in
     /// `--no-warnings`).
-    pub(crate) fn silences_warnings(&self) -> bool {
-        self.no_warnings || self.quiet_level >= QuietLevel::VeryQuiet
+    pub(crate) const fn silences_warnings(&self) -> bool {
+        !self.output_policy.runner.warnings
+    }
+
+    pub(crate) const fn shows_progress(&self) -> bool {
+        self.output_policy.runner.progress
+    }
+
+    pub(crate) const fn shows_warnings(&self) -> bool {
+        self.output_policy.runner.warnings
+    }
+
+    pub(crate) const fn shows_errors(&self) -> bool {
+        self.output_policy.runner.errors
+    }
+
+    pub(crate) const fn emits_groups(&self) -> bool {
+        self.output_policy.runner.groups
+    }
+
+    pub(crate) const fn shows_task_timing(&self) -> bool {
+        self.output_policy.runner.task_timing
+    }
+
+    pub(crate) const fn shows_summary(&self) -> bool {
+        self.output_policy.runner.summary
+    }
+
+    pub(crate) const fn shows_fatal_errors(&self) -> bool {
+        self.output_policy.runner.fatal_errors
     }
 
     /// Resolve the effective [`HostVerbosity`] for a task, deep-merging the
@@ -184,18 +215,67 @@ impl ResolutionOverrides {
     /// partial (defu-like, per axis). The global side wins where set; the
     /// per-task config fills each axis the global left at its default.
     pub(crate) fn host_verbosity_for(&self, task: &str) -> HostVerbosity {
-        let per_task = self.task_verbosity.get(task).copied().unwrap_or_default();
-        let level = if self.quiet_level == QuietLevel::Off {
-            per_task.level.unwrap_or(QuietLevel::Off)
+        let per_task = self.task_verbosity_for(task);
+        let diagnostics = if self.host_diagnostics_explicit {
+            self.output_policy.host_diagnostics
         } else {
-            self.quiet_level
+            per_task
+                .level
+                .map_or(HostDiagnostics::Normal, HostDiagnostics::from_legacy_quiet)
         };
-        let stream = if self.host_stream == Stream::Inherit {
-            per_task.stream.unwrap_or(Stream::Inherit)
-        } else {
+        let stream = if self.host_stream_invocation_explicit {
             self.host_stream
+        } else {
+            per_task.stream.unwrap_or(self.host_stream_config)
         };
-        HostVerbosity { level, stream }
+        HostVerbosity {
+            diagnostics,
+            stream,
+        }
+    }
+
+    pub(crate) fn task_streams_for(&self, task: &str) -> (TaskStream, TaskStream) {
+        let per_task = self.task_verbosity_for(task);
+        (
+            per_task.stdout.unwrap_or(TaskStream::Inherit),
+            per_task.stderr.unwrap_or(TaskStream::Inherit),
+        )
+    }
+
+    /// Resolve a task's settings by exact key, then fill missing axes from its
+    /// bare name when the caller supplied a qualified CLI identity.
+    fn task_verbosity_for(&self, task: &str) -> TaskVerbosity {
+        let qualified = task.split_once('#').map_or_else(
+            || {
+                task.split_once(':')
+                    .filter(|(source, _)| TaskSource::from_label(source).is_some())
+            },
+            |(prefix, name)| prefix.rsplit_once(':').map(|(_, source)| (source, name)),
+        );
+        let base = qualified
+            .and_then(|(_, name)| self.task_verbosity.get(name))
+            .copied()
+            .unwrap_or_default();
+        let shorthand = qualified
+            .and_then(|(source, name)| {
+                TaskSource::from_label(source).map(|source| format!("{}:{name}", source.label()))
+            })
+            .and_then(|key| self.task_verbosity.get(&key))
+            .copied()
+            .unwrap_or_default();
+        let fqn = qualified
+            .and_then(|(source, name)| {
+                TaskSource::from_label(source)
+                    .map(|source| crate::schema::labels::fqn(source, name))
+            })
+            .and_then(|key| self.task_verbosity.get(&key))
+            .copied()
+            .unwrap_or_default();
+        let exact = self.task_verbosity.get(task).copied().unwrap_or_default();
+        merge_task_verbosity(
+            merge_task_verbosity(merge_task_verbosity(base, shorthand), fqn),
+            exact,
+        )
     }
 
     /// The JS runtime an explicit override selected, if any. The single read
@@ -203,6 +283,31 @@ impl ResolutionOverrides {
     /// reports the runtime goes through here.
     pub(crate) fn js_runtime(&self) -> Option<JsRuntime> {
         self.runtime.as_ref().map(|over| over.runtime)
+    }
+}
+
+const fn merge_task_verbosity(base: TaskVerbosity, overlay: TaskVerbosity) -> TaskVerbosity {
+    TaskVerbosity {
+        level: if overlay.level.is_some() {
+            overlay.level
+        } else {
+            base.level
+        },
+        stream: if overlay.stream.is_some() {
+            overlay.stream
+        } else {
+            base.stream
+        },
+        stdout: if overlay.stdout.is_some() {
+            overlay.stdout
+        } else {
+            base.stdout
+        },
+        stderr: if overlay.stderr.is_some() {
+            overlay.stderr
+        } else {
+            base.stderr
+        },
     }
 }
 
@@ -639,7 +744,7 @@ pub(crate) struct ExplainSource<'a> {
 
 /// CLI repeat count (`-q`/`-qq`/`-qqq`) plus env-var value for the quiet
 /// level. CLI > env: a passed count (`cli > 0`) wins outright, else the env
-/// applies (`RUNNER_QUIET` is numeric `0..3` or a truthy word meaning level 1).
+/// applies (`RUNNER_QUIET` is numeric `0..4`, clamped, or a truthy word meaning level 1).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct QuietSource<'a> {
     /// `-q` repeat count from the CLI (`0` when not passed).

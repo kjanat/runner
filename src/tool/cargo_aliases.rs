@@ -16,6 +16,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("cargo", &["-q"])
+}
+
 use anyhow::Context as _;
 use serde::Deserialize;
 
@@ -449,7 +453,7 @@ mod tests {
 #[cfg(test)]
 mod verbosity_tests {
     use super::run_cmd;
-    use crate::tool::{HostVerbosity, QuietLevel};
+    use crate::tool::{HostDiagnostics, HostVerbosity};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -466,7 +470,7 @@ mod verbosity_tests {
     #[test]
     fn run_cmd_quiet_maps_to_host_flag() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             ..HostVerbosity::default()
         };
         assert_eq!(argv(&run_cmd("mytask", &[], v)), ["-q", "mytask"]);

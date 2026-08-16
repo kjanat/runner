@@ -83,6 +83,24 @@ use colored::Colorize;
 
 use resolver::ResolveError;
 
+#[derive(Debug)]
+struct FatalOutputSuppressed {
+    error: anyhow::Error,
+    exit_code: i32,
+}
+
+impl std::fmt::Display for FatalOutputSuppressed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for FatalOutputSuppressed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.error.as_ref())
+    }
+}
+
 /// JSON Schema for `runner.toml`. Built under the `schema` feature;
 /// `runner schema` renders it.
 #[cfg(feature = "schema")]
@@ -103,11 +121,79 @@ pub fn config_schema() -> schemars::Schema {
 /// library's public surface.
 #[must_use]
 pub fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    if let Some(suppressed) = err.downcast_ref::<FatalOutputSuppressed>() {
+        return suppressed.exit_code;
+    }
     if err.downcast_ref::<ResolveError>().is_some() {
         2
     } else {
         1
     }
+}
+
+/// Whether a fatal error from the `runner` invocation should be muted.
+#[must_use]
+pub fn runner_error_is_muted() -> bool {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    parse_cli(args.clone()).map_or_else(
+        |_| {
+            quiet_level_from_args(args, cli::TaskPosition::AfterRunSubcommand)
+                == tool::QuietLevel::Mute
+        },
+        |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
+    )
+}
+
+/// Whether resolved policy suppressed this failure's fatal diagnostic.
+#[must_use]
+pub fn error_suppresses_fatal_output(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<FatalOutputSuppressed>().is_some()
+}
+
+/// Whether a fatal error from the `run` alias invocation should be muted.
+#[must_use]
+pub fn run_alias_error_is_muted() -> bool {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    parse_run_alias_cli(args.clone()).map_or_else(
+        |_| quiet_level_from_args(args, cli::TaskPosition::First) == tool::QuietLevel::Mute,
+        |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
+    )
+}
+
+fn quiet_level_for_error(cli_count: u8) -> tool::QuietLevel {
+    if cli_count > 0 {
+        return tool::QuietLevel::from_count(cli_count);
+    }
+    std::env::var("RUNNER_QUIET")
+        .ok()
+        .as_deref()
+        .and_then(resolver::parse_quiet_env)
+        .unwrap_or_default()
+}
+
+fn quiet_level_from_args<I, T>(args: I, task_position: cli::TaskPosition) -> tool::QuietLevel
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let args = cli::forward_args_after_task(&args, task_position).unwrap_or(args);
+    let mut count = 0_u8;
+    for arg in args.into_iter().skip(1) {
+        let Some(word) = arg.to_str() else { continue };
+        if word == "--" {
+            break;
+        }
+        let increment = if word == "--quiet" {
+            1
+        } else if let Some(shorts) = word.strip_prefix('-').filter(|shorts| !shorts.is_empty()) {
+            shorts.bytes().take_while(|byte| *byte == b'q').count()
+        } else {
+            0
+        };
+        count = count.saturating_add(u8::try_from(increment).unwrap_or(u8::MAX));
+    }
+    quiet_level_for_error(count)
 }
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
@@ -180,9 +266,11 @@ where
     T: Into<OsString> + Clone,
 {
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let quiet_level =
+        quiet_level_from_args(original_args.clone(), cli::TaskPosition::AfterRunSubcommand);
     let cli = match parse_cli(original_args.clone()) {
         Ok(cli) => cli,
-        Err(err) => return render_clap_error(&err),
+        Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
     };
     if let Some(request) = version_request(&cli.version, cli.global.quiet) {
         println!(
@@ -365,9 +453,10 @@ where
 {
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
+    let quiet_level = quiet_level_from_args(original_args.clone(), cli::TaskPosition::First);
     let cli = match parse_run_alias_cli(original_args.clone()) {
         Ok(cli) => cli,
-        Err(err) => return render_clap_error(&err),
+        Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
     };
     if let Some(request) = version_request(&cli.version, cli.global.quiet) {
         println!(
@@ -790,9 +879,16 @@ fn resolve_project_dir(project_dir: Option<&Path>, cwd: &Path) -> Result<PathBuf
     Ok(dir)
 }
 
-fn render_clap_error(err: &clap::Error) -> Result<i32> {
+fn render_clap_error(err: &clap::Error, muted: bool) -> Result<i32> {
     let exit_code = err.exit_code();
-    err.print()?;
+    if !muted
+        || matches!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        err.print()?;
+    }
     Ok(exit_code)
 }
 
@@ -838,15 +934,12 @@ fn dispatch_install_chain(
     // imperative parallel pre-install bypasses the timing path, so
     // `runner install -p ...` would print per-task timing but none for install
     // while `-s` does. "install" matches ChainItem::install(..).display_name();
-    // emit_task_timing self-gates via timing_enabled (--quiet/--no-warnings).
+    // emit_task_timing self-gates via the task-timing output category.
     let started = std::time::Instant::now();
     let install_code = cmd::install(ctx, overrides, frozen)?;
-    cmd::emit_task_timing(overrides, "install", started.elapsed(), install_code);
-    let keep_going = matches!(overrides.failure_policy, chain::FailurePolicy::KeepGoing);
-    if install_code != 0 && !keep_going {
-        return Ok(install_code);
-    }
-    let task_code = chain::exec::run_chain(
+    let install_elapsed = started.elapsed();
+    cmd::emit_task_timing(overrides, "install", install_elapsed, install_code);
+    chain::exec::run_chain_after_completed(
         ctx,
         overrides,
         &chain::Chain {
@@ -854,14 +947,10 @@ fn dispatch_install_chain(
             items,
             failure: overrides.failure_policy,
         },
-    )?;
-    // First failure wins, mirroring chain semantics: a failed install is the
-    // first failure even if a later task also fails.
-    Ok(if install_code != 0 {
-        install_code
-    } else {
-        task_code
-    })
+        "install",
+        install_elapsed,
+        install_code,
+    )
 }
 
 fn dispatch_run(
@@ -931,7 +1020,7 @@ fn run_path_builtin_fallback(
     let code = match name {
         "install" => cmd::install(ctx, overrides, false)?,
         "clean" => {
-            cmd::clean(ctx, false, false)?;
+            cmd::clean(ctx, overrides, false, false)?;
             0
         }
         // `info` maps to a plain `list`: the deprecation warning is specific
@@ -1101,25 +1190,28 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     // in hand, so it is where the nesting question gets answered.
     overrides.parent_warned = cmd::parent_warned_about(&ctx.root);
 
-    match cli.command {
+    let result = match cli.command {
         None => cmd::info(&ctx, &overrides, false).map(|()| 0),
         // `info` is a deprecated alias for `list`. Bare `runner` (the
         // `None` arm above) keeps the dashboard; only the explicit verb
         // is deprecated.
         Some(cli::Command::Info { json }) => {
-            eprintln!(
-                "{} `runner info` is deprecated; use `runner list`",
-                "warn:".yellow().bold(),
-            );
-            // Under GitHub Actions, also emit a workflow-command
-            // annotation so the deprecation surfaces in the run summary
-            // / inline, not just buried in the step log. Kept on stderr
-            // so `runner info --json` stdout stays a clean pipe; the
-            // runner scans both streams for `::` commands.
-            if actions_rs::env::is_github_actions() {
+            if overrides.shows_warnings() {
                 eprintln!(
-                    "::warning title=Deprecation::`runner info` is deprecated; use `runner list`"
+                    "{} `runner info` is deprecated; use `runner list`",
+                    "warn:".yellow().bold(),
                 );
+                // Under GitHub Actions, also emit a workflow-command
+                // annotation so the deprecation surfaces in the run summary
+                // / inline, not just buried in the step log. Kept on stderr
+                // so `runner info --json` stdout stays a clean pipe; the
+                // runner scans both streams for `::` commands.
+                if actions_rs::env::is_github_actions() {
+                    eprintln!(
+                        "::warning title=Deprecation::`runner info` is deprecated; use `runner \
+                         list`"
+                    );
+                }
             }
             schema_version_for_json(json, cli.global.schema_version)?;
             cmd::list(&ctx, &overrides, false, json, None)?;
@@ -1151,7 +1243,9 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             // No post-install tasks, so the chain flags govern nothing; say so
             // rather than silently swallowing a `-p`/`-k` the user expected to
             // matter.
-            if mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail {
+            if overrides.shows_progress()
+                && (mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail)
+            {
                 eprintln!(
                     "{} chain flags (-s/-p/-k/-K) have no effect without post-install task names",
                     "note:".dimmed(),
@@ -1163,7 +1257,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             yes,
             include_framework,
         }) => {
-            cmd::clean(&ctx, yes, include_framework)?;
+            cmd::clean(&ctx, &overrides, yes, include_framework)?;
             Ok(0)
         }
         Some(cli::Command::List { raw, json, source }) => {
@@ -1192,7 +1286,21 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
             cmd::why(&ctx, &overrides, &task, json)?;
             Ok(0)
         }
+    };
+    apply_fatal_output_policy(result, &overrides)
+}
+
+fn apply_fatal_output_policy(
+    result: Result<i32>,
+    overrides: &resolver::ResolutionOverrides,
+) -> Result<i32> {
+    if overrides.shows_fatal_errors() {
+        return result;
     }
+    result.map_err(|error| {
+        let exit_code = exit_code_for_error(&error);
+        anyhow::Error::new(FatalOutputSuppressed { error, exit_code })
+    })
 }
 
 #[cfg(feature = "man")]

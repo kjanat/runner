@@ -39,7 +39,7 @@ const distDir = join(npmDir, "dist");
 const BLOCK_SIZE = 512;
 
 const FACADE_BIN_FILES = ["runner.cjs", "run.cjs"] as const;
-const FACADE_LIB_FILES = ["resolve.cjs", "launch.cjs"] as const;
+const FACADE_LIB_FILES = ["resolve.cjs", "launch.cjs", "quiet.cjs"] as const;
 
 // npm allows multiple shapes for several `package.json` fields. Cargo's
 // `package.metadata` is user-defined freeform JSON; the user could put any

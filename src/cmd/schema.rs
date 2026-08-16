@@ -206,6 +206,60 @@ enum FieldHint {
 /// `field_template_values_use_real_accepted_labels`.
 const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
     (
+        "runner",
+        "progress",
+        "true",
+        FieldHint::Static("dispatch and status text"),
+    ),
+    (
+        "runner",
+        "warnings",
+        "true",
+        FieldHint::Static("non-fatal warnings"),
+    ),
+    (
+        "runner",
+        "errors",
+        "true",
+        FieldHint::Static("recoverable error decoration"),
+    ),
+    (
+        "runner",
+        "groups",
+        "true",
+        FieldHint::Static("task headers and GitHub groups"),
+    ),
+    (
+        "runner",
+        "task_timing",
+        "true",
+        FieldHint::Static("per-task timing and grouped footers"),
+    ),
+    (
+        "runner",
+        "summary",
+        "true",
+        FieldHint::Static("final multi-task chain roll-up"),
+    ),
+    (
+        "runner",
+        "fatal_errors",
+        "true",
+        FieldHint::Static("fatal diagnostics; exit status is unchanged"),
+    ),
+    (
+        "host",
+        "diagnostics",
+        r#""normal""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "host",
+        "stream",
+        r#""inherit""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
         "pm",
         "node",
         r#""pnpm""#,
@@ -384,6 +438,8 @@ fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
         ("resolution", "on_mismatch") => {
             Some(MismatchPolicy::ALL.iter().map(|p| p.label()).collect())
         }
+        ("host", "diagnostics") => Some(vec!["normal", "quiet", "reduced"]),
+        ("host", "stream") => Some(crate::tool::Stream::ALL.iter().map(|s| s.label()).collect()),
         _ => None,
     }
 }
@@ -860,6 +916,19 @@ mod tests {
         let example: Value = serde_json::from_str(&raw).expect("example should parse as JSON");
 
         assert_eq!(example["overrides"]["quiet"], serde_json::json!(false));
+        let required =
+            super::output_schema::<crate::schema::doctor::DoctorReport<'static>>("doctor")
+                .expect("doctor schema should generate")["$defs"]["Overrides"]["required"]
+                .as_array()
+                .expect("Overrides.required should be an array")
+                .clone();
+        for field in required {
+            let field = field.as_str().expect("required field should be a string");
+            assert!(
+                example["overrides"].get(field).is_some(),
+                "committed doctor example misses required overrides.{field}"
+            );
+        }
     }
 
     /// Every committed schema file that carries a `TaskSourceLabel` def,

@@ -14,7 +14,9 @@ fn main() {
     let code = match runner::run_from_env() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("Error: {err:#}");
+            if !runner::runner_error_is_muted() && !runner::error_suppresses_fatal_output(&err) {
+                eprintln!("Error: {err:#}");
+            }
             runner::exit_code_for_error(&err)
         }
     };

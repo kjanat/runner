@@ -467,6 +467,54 @@
       },
       "additionalProperties": false
     },
+    "OutputPolicyReport": {
+      "type": "object",
+      "required": [
+        "errors",
+        "fatal_errors",
+        "groups",
+        "host_diagnostics",
+        "host_stream",
+        "level",
+        "progress",
+        "summary",
+        "task_timing",
+        "warnings"
+      ],
+      "properties": {
+        "errors": {
+          "type": "boolean"
+        },
+        "fatal_errors": {
+          "type": "boolean"
+        },
+        "groups": {
+          "type": "boolean"
+        },
+        "host_diagnostics": {
+          "type": "string"
+        },
+        "host_stream": {
+          "type": "string"
+        },
+        "level": {
+          "type": "string"
+        },
+        "progress": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "boolean"
+        },
+        "task_timing": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Overrides": {
       "description": "The overrides in effect for this run: `--pm`, `--fallback`, the\n`RUNNER_*` env vars, and the `runner.toml` policy sections, reported by\ntheir labels. Where each came from (CLI, env, or config) is on the\n`list`/`info` surface instead.",
       "type": "object",
@@ -478,6 +526,7 @@
         "no_warnings",
         "on_collision",
         "on_mismatch",
+        "output",
         "output_grouping",
         "pm",
         "pm_by_ecosystem",
@@ -513,6 +562,9 @@
         },
         "on_mismatch": {
           "$ref": "#/$defs/MismatchPolicy"
+        },
+        "output": {
+          "$ref": "#/$defs/OutputPolicyReport"
         },
         "output_grouping": {
           "$ref": "#/$defs/OutputGrouping"
@@ -1044,7 +1096,7 @@
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",
       "type": "integer",
-      "const": 2,
+      "const": 3,
       "minimum": 0,
       "format": "uint32"
     },

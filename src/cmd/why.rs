@@ -299,9 +299,32 @@ pub(super) struct WhyReport<'a> {
     pm_resolution: Option<PmResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime: Option<WhyRuntime>,
+    output: WhyOutput,
     selected: Option<WhyCandidate<'a>>,
     candidates: Vec<WhyCandidate<'a>>,
     decision: WhyDecision,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "serialized independent output axes"
+)]
+struct WhyOutput {
+    level: &'static str,
+    progress: bool,
+    warnings: bool,
+    errors: bool,
+    groups: bool,
+    task_timing: bool,
+    summary: bool,
+    fatal_errors: bool,
+    host_diagnostics: &'static str,
+    host_stream: &'static str,
+    task_stdout: &'static str,
+    task_stderr: &'static str,
 }
 
 /// One candidate: the task's identity plus how it matched the query.
@@ -439,9 +462,58 @@ fn build_report<'a>(
         query,
         pm_resolution: pm_decision.map(pm_resolution),
         runtime: runtime_report(overrides, selected, ctx),
+        output: output_report(overrides, selected),
         selected: selected.map(candidate_report),
         candidates: candidates.iter().copied().map(candidate_report).collect(),
         decision: decision_report(candidates, selected, qualifier),
+    }
+}
+
+fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> WhyOutput {
+    let task_key = selected.map(super::run::task_output_key);
+    let global_host_stream = if overrides.host_stream_invocation_explicit {
+        overrides.host_stream
+    } else {
+        overrides.host_stream_config
+    };
+    let (stdout, stderr) = selected.map_or(
+        (
+            crate::tool::TaskStream::Inherit,
+            crate::tool::TaskStream::Inherit,
+        ),
+        |_| {
+            task_key.as_deref().map_or(
+                (
+                    crate::tool::TaskStream::Inherit,
+                    crate::tool::TaskStream::Inherit,
+                ),
+                |key| overrides.task_streams_for(key),
+            )
+        },
+    );
+    let diagnostics = task_key
+        .as_deref()
+        .map_or(overrides.output_policy.host_diagnostics, |key| {
+            overrides.host_verbosity_for(key).diagnostics
+        });
+    WhyOutput {
+        level: overrides.quiet_level.label(),
+        progress: overrides.shows_progress(),
+        warnings: overrides.shows_warnings(),
+        errors: overrides.shows_errors(),
+        groups: overrides.emits_groups(),
+        task_timing: overrides.shows_task_timing(),
+        summary: overrides.shows_summary(),
+        fatal_errors: overrides.shows_fatal_errors(),
+        host_diagnostics: diagnostics.label(),
+        host_stream: task_key
+            .as_deref()
+            .map_or(global_host_stream, |key| {
+                overrides.host_verbosity_for(key).stream
+            })
+            .label(),
+        task_stdout: stdout.label(),
+        task_stderr: stderr.label(),
     }
 }
 
@@ -587,6 +659,10 @@ fn resolved_command(
     labels::resolved_command(task, runtime, node_pm, python_pm)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear human report renderer mirrors the structured report sections"
+)]
 fn print_human(
     task: &str,
     candidates: &[&Task],
@@ -688,6 +764,25 @@ fn print_human(
             None => {}
         }
     }
+    let output = output_report(overrides, selected);
+    println!();
+    println!("{}", "Output policy".bold());
+    println!(
+        "  level={} progress={} warnings={} errors={} groups={} task_timing={} summary={} \
+         fatal_errors={} host={} host_stream={} stdout={} stderr={}",
+        output.level,
+        output.progress,
+        output.warnings,
+        output.errors,
+        output.groups,
+        output.task_timing,
+        output.summary,
+        output.fatal_errors,
+        output.host_diagnostics,
+        output.host_stream,
+        output.task_stdout,
+        output.task_stderr,
+    );
 }
 
 #[cfg(test)]
@@ -806,7 +901,7 @@ mod tests {
         );
         let json = serde_json::to_value(&report).expect("report should serialize");
 
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         assert_eq!(json["kind"], "runner.why");
         assert_eq!(json["query"], "t");
         assert_eq!(json["pm_resolution"], serde_json::Value::Null);

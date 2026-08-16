@@ -172,6 +172,7 @@ struct Overrides {
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
     quiet: bool,
+    output: OutputPolicyReport,
     on_mismatch: MismatchPolicy,
     pm: Option<PackageManager>,
     pm_by_ecosystem: BTreeMap<Ecosystem, PackageManager>,
@@ -181,6 +182,26 @@ struct Overrides {
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "serialized independent output axes"
+)]
+struct OutputPolicyReport {
+    level: &'static str,
+    progress: bool,
+    warnings: bool,
+    errors: bool,
+    groups: bool,
+    task_timing: bool,
+    summary: bool,
+    fatal_errors: bool,
+    host_diagnostics: &'static str,
+    host_stream: &'static str,
 }
 
 /// The three grouping toggles bundled so [`Overrides`] doesn't tip
@@ -615,7 +636,24 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             github_group_parallel: overrides.github_group_parallel,
             parallel_grouped: overrides.parallel_grouped,
         },
-        quiet: overrides.silences_runner(),
+        quiet: overrides.quiet_level != crate::tool::QuietLevel::Off,
+        output: OutputPolicyReport {
+            level: overrides.quiet_level.label(),
+            progress: overrides.shows_progress(),
+            warnings: overrides.shows_warnings(),
+            errors: overrides.shows_errors(),
+            groups: overrides.emits_groups(),
+            task_timing: overrides.shows_task_timing(),
+            summary: overrides.shows_summary(),
+            fatal_errors: overrides.shows_fatal_errors(),
+            host_diagnostics: overrides.output_policy.host_diagnostics.label(),
+            host_stream: if overrides.host_stream_invocation_explicit {
+                overrides.host_stream
+            } else {
+                overrides.host_stream_config
+            }
+            .label(),
+        },
         on_mismatch: overrides.on_mismatch,
         pm: overrides.pm.as_ref().map(|o| o.pm),
         pm_by_ecosystem: overrides
@@ -1288,8 +1326,10 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["kind"], "runner.doctor");
-        assert_eq!(json["schema_version"], 2);
-        assert_eq!(json["overrides"]["quiet"], serde_json::json!(false));
+        assert_eq!(json["schema_version"], 3);
+        assert_eq!(json["overrides"]["output"]["level"], "off");
+        assert_eq!(json["overrides"]["output"]["fatal_errors"], true);
+        assert_eq!(json["overrides"]["quiet"], false);
         assert!(
             json["$schema"]
                 .as_str()
@@ -1524,13 +1564,16 @@ mod tests {
             "parent_group_open",
             "parent_warned",
             "host_stream",
+            "host_stream_invocation_explicit",
             "task_verbosity",
+            "host_diagnostics_explicit",
         ];
-        // resolver field name -> name it's actually reported under. `quiet_level`
-        // reports as the boolean-ish `quiet` (runner's own output silenced).
+        // Resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[
             ("task_source_overrides", "task_source_pins"),
             ("quiet_level", "quiet"),
+            ("output_policy", "output"),
+            ("host_stream_config", "output"),
         ];
 
         // One list, two jobs: exhaustively destructure ResolutionOverrides
@@ -1554,7 +1597,11 @@ mod tests {
             on_mismatch,
             no_warnings,
             quiet_level,
+            host_diagnostics_explicit,
+            output_policy,
             host_stream,
+            host_stream_invocation_explicit,
+            host_stream_config,
             task_verbosity,
             explain,
             failure_policy,

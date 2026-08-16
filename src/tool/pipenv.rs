@@ -3,6 +3,10 @@
 use std::path::Path;
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("pipenv", &["--quiet"])
+}
+
 /// Detected via `Pipfile` or `Pipfile.lock`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("Pipfile").exists() || dir.join("Pipfile.lock").exists()
@@ -30,12 +34,11 @@ pub(crate) fn install_cmd(frozen: bool) -> Command {
 
 /// `pipenv run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
-pub(crate) fn run_cmd(script: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
-    // Both verbosity axes no-op here. pipenv's `--quiet`/`PIPENV_QUIET` only
-    // hushes its own "Loading .env…" line, which pipenv already writes to
-    // stderr — so it was never the stdout-contamination this feature targets,
-    // and there's no stdout-diversion primitive to honor the stream axis either.
+pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("pipenv");
+    if verbosity.silences() {
+        c.arg("--quiet");
+    }
     c.arg("run").arg(script).args(args);
     c
 }

@@ -59,7 +59,8 @@ pub(crate) fn install_pms(
     // `runner: install` GitHub Actions group when enabled.
     let _group = super::task_group(overrides, "install");
 
-    if let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)
+    if overrides.shows_warnings()
+        && let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)
         && !version_matches(&nv.expected, cur)
     {
         eprintln!(
@@ -308,7 +309,7 @@ fn dir_winner(
 /// writers that lost a directory. A skipped install is never silent; that is
 /// how a lockfile goes stale without anyone noticing.
 fn report_plan(plan: &InstallPlan, overrides: &ResolutionOverrides) {
-    if !overrides.no_warnings {
+    if overrides.shows_warnings() {
         for collision in &plan.collisions {
             eprintln!(
                 "{} install: {}",
@@ -317,20 +318,22 @@ fn report_plan(plan: &InstallPlan, overrides: &ResolutionOverrides) {
             );
         }
     }
-    for shadow in &plan.shadowed {
-        eprintln!(
-            "{}",
-            format!(
-                "{}/: {} installs it, {} shadowed (run both with `[install].pms = [\"{}\", \
-                 \"{}\"]`)",
-                shadow.dir,
-                shadow.winner.label(),
-                shadow.loser.label(),
-                shadow.winner.label(),
-                shadow.loser.label(),
-            )
-            .dimmed(),
-        );
+    if overrides.shows_progress() {
+        for shadow in &plan.shadowed {
+            eprintln!(
+                "{}",
+                format!(
+                    "{}/: {} installs it, {} shadowed (run both with `[install].pms = [\"{}\", \
+                     \"{}\"]`)",
+                    shadow.dir,
+                    shadow.winner.label(),
+                    shadow.loser.label(),
+                    shadow.winner.label(),
+                    shadow.loser.label(),
+                )
+                .dimmed(),
+            );
+        }
     }
 }
 
@@ -341,9 +344,12 @@ fn install_single(
     frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
-    eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+    if overrides.shows_progress() {
+        eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+    }
     let mut cmd = build_install_command(ctx, pm, frozen, script_directive(overrides));
     super::configure_command(&mut cmd, &ctx.root, overrides);
+    super::configure_task_streams(&mut cmd, overrides, "install");
     let status = cmd.status()?;
     Ok(if status.success() {
         0
@@ -452,22 +458,35 @@ fn run_lane(
     directive: tool::ScriptDirective,
 ) -> Result<Option<(PackageManager, i32)>> {
     for pm in lane {
-        eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+        if overrides.shows_progress() {
+            eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
+        }
         let mut cmd = build_install_command(ctx, *pm, frozen, directive);
         super::configure_command(&mut cmd, &ctx.root, overrides);
+        let (stdout_policy, stderr_policy) = overrides.task_streams_for("install");
         cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdout(match stdout_policy {
+                tool::TaskStream::Inherit => Stdio::piped(),
+                tool::TaskStream::Discard => Stdio::null(),
+            })
+            .stderr(match stderr_policy {
+                tool::TaskStream::Inherit => Stdio::piped(),
+                tool::TaskStream::Discard => Stdio::null(),
+            });
         let mut child = cmd.spawn()?;
-        let prefix = render_prefix(pm.label(), width, colorize);
-        let stdout: Box<dyn std::io::Read + Send> =
-            Box::new(child.stdout.take().expect("stdout piped"));
-        let stderr: Box<dyn std::io::Read + Send> =
-            Box::new(child.stderr.take().expect("stderr piped"));
-        let readers = spawn_readers(
-            vec![(prefix.clone(), false, stdout), (prefix, true, stderr)],
-            sink,
-        );
+        let prefix = if overrides.emits_groups() {
+            render_prefix(pm.label(), width, colorize)
+        } else {
+            String::new()
+        };
+        let mut streams: Vec<(String, bool, Box<dyn std::io::Read + Send>)> = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            streams.push((prefix.clone(), false, Box::new(stdout)));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            streams.push((prefix, true, Box::new(stderr)));
+        }
+        let readers = spawn_readers(streams, sink);
 
         let waited = match child.wait() {
             Ok(status) => Ok(status),
@@ -654,6 +673,11 @@ const fn force_support(pm: PackageManager) -> ForceSupport {
 ///   won't write re-enables them, so the user learns their `--scripts` couldn't
 ///   be applied rather than assuming it was.
 fn warn_unsupported_script_policy(pms: &[PackageManager], overrides: &ResolutionOverrides) {
+    if !(overrides.shows_warnings()
+        || overrides.no_warnings && overrides.quiet_level <= tool::QuietLevel::Quiet)
+    {
+        return;
+    }
     for pm in unsupported_deny_managers(pms, overrides) {
         eprintln!(
             "{} {} cannot skip install scripts; deny policy not applied to it",

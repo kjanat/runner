@@ -48,7 +48,11 @@ pub(crate) use runtime::{
 };
 
 use crate::resolver::ResolutionOverrides;
-use crate::types::ProjectContext;
+use crate::types::{ProjectContext, Task};
+
+pub(crate) fn task_output_key(task: &Task) -> String {
+    format!("{}:{}", task.source.label(), task.name)
+}
 
 /// Resolve `task` and run it with inherited stdio, returning the exit
 /// code. Bun special case: when `task == "test"` and no package-manifest
@@ -71,8 +75,37 @@ pub(crate) fn run(
     let _group = super::task_group(overrides, task);
     match dispatch {
         dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
-        dispatch::Dispatch::DenoSelfExec(self_exec) => self_exec.run(),
+        dispatch::Dispatch::DenoSelfExec(self_exec) => {
+            let (stdout, stderr) = task_streams_for_token(ctx, overrides, task);
+            self_exec.run(stdout, stderr)
+        }
     }
+}
+
+pub(crate) fn task_streams_for_token(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> (crate::tool::TaskStream, crate::tool::TaskStream) {
+    let (lookup, found) = lookup_token(ctx, token);
+    let task = if found.is_empty() {
+        None
+    } else {
+        Some(lookup.qualifier.map_or_else(
+            || select_task_entry(ctx, overrides, &found),
+            |source| {
+                found
+                    .iter()
+                    .find(|task| task.source == source)
+                    .copied()
+                    .unwrap_or_else(|| select_task_entry(ctx, overrides, &found))
+            },
+        ))
+    };
+    task.map_or_else(
+        || overrides.task_streams_for(lookup.task_name),
+        |task| overrides.task_streams_for(&task_output_key(task)),
+    )
 }
 
 /// Resolve `task` and spawn it with piped stdout/stderr (so the caller

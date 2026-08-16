@@ -34,20 +34,86 @@ fn print_dispatch_arrow(
     task_name: &str,
     args: &[String],
 ) {
-    if overrides.silences_runner() {
+    if !overrides.shows_progress() {
         return;
     }
     eprintln!(
-        "{} {} {} {}",
+        "{} {} {}{}",
         "→".dimmed(),
         label.dimmed(),
         task_name.bold(),
-        args.join(" ").dimmed(),
+        if args.is_empty() { "" } else { " [args]" }.dimmed(),
     );
 }
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::cmd::print_explain(overrides, &format!("resolved: {describe}"));
+}
+
+fn host_verbosity(
+    overrides: &ResolutionOverrides,
+    task: &Task,
+    host: &str,
+    capabilities: tool::HostQuietCapabilities,
+) -> tool::HostVerbosity {
+    let task_key = super::task_output_key(task);
+    let requested = overrides.host_verbosity_for(&task_key);
+    let applied = requested.diagnostics.min(capabilities.max_diagnostics);
+    let stream = if capabilities.diverts_to_stderr {
+        requested.stream
+    } else {
+        tool::Stream::Inherit
+    };
+    let (stdout, stderr) = overrides.task_streams_for(&task_key);
+    crate::cmd::print_explain(
+        overrides,
+        &format!(
+            "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
+             summary={} task.stdout={} task.stderr={}",
+            overrides.quiet_level.label(),
+            show_hide(overrides.shows_progress()),
+            show_hide(overrides.shows_warnings()),
+            show_hide(overrides.shows_errors()),
+            show_hide(overrides.emits_groups()),
+            show_hide(overrides.shows_task_timing()),
+            show_hide(overrides.shows_summary()),
+            stdout.label(),
+            stderr.label(),
+        ),
+    );
+    let mut args = if applied >= tool::HostDiagnostics::Quiet {
+        capabilities.quiet_args.to_vec()
+    } else {
+        Vec::new()
+    };
+    if stream == tool::Stream::Stderr {
+        args.push("--use-stderr");
+    }
+    let limitation = if requested.diagnostics > applied {
+        format!(" limitation={:?}", capabilities.limitation)
+    } else {
+        String::new()
+    };
+    crate::cmd::print_explain(
+        overrides,
+        &format!(
+            "host: {host} diagnostics={} applied={} args=[{}] stream={} matrix={}{}",
+            requested.diagnostics.label(),
+            applied.label(),
+            args.join(" "),
+            stream.label(),
+            capabilities.matrix_id,
+            limitation,
+        ),
+    );
+    tool::HostVerbosity {
+        diagnostics: applied,
+        stream,
+    }
+}
+
+const fn show_hide(show: bool) -> &'static str {
+    if show { "show" } else { "hide" }
 }
 
 /// Outcome of resolving a task: a spawnable process, or a deno task to
@@ -214,8 +280,8 @@ pub(super) struct DenoSelfExec {
 
 impl DenoSelfExec {
     /// Run the task in-process, returning its exit code.
-    pub(super) fn run(&self) -> Result<i32> {
-        tool::deno_exec::run(&self.plan, &self.args, &self.cwd)
+    pub(super) fn run(&self, stdout: tool::TaskStream, stderr: tool::TaskStream) -> Result<i32> {
+        tool::deno_exec::run(&self.plan, &self.args, &self.cwd, stdout, stderr)
     }
 }
 
@@ -307,6 +373,7 @@ pub(super) fn resolve_dispatch(
         let mut command = local.command;
         print_dispatch_arrow(overrides, &local.label, task, args);
         crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+        crate::cmd::configure_task_streams(&mut command, overrides, task);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
     }
 
@@ -372,6 +439,7 @@ pub(super) fn resolve_dispatch(
                 let mut command = local.command;
                 print_dispatch_arrow(overrides, &local.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
@@ -387,6 +455,7 @@ pub(super) fn resolve_dispatch(
                 print_pm_explain(overrides, &dep.describe);
                 print_dispatch_arrow(overrides, &dep.dispatch.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
@@ -432,6 +501,11 @@ pub(super) fn resolve_dispatch(
 
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(spawn.command_mut(), &ctx.root, overrides);
+    crate::cmd::configure_task_streams(
+        spawn.command_mut(),
+        overrides,
+        &super::task_output_key(entry),
+    );
     spawn
         .command_mut()
         .env(crate::cmd::TASK_STACK_ENV, task_stack);
@@ -463,6 +537,7 @@ fn dispatch_after_miss(
         print_dispatch_arrow(overrides, "bun", "test", args);
         let mut cmd = tool::bun::test_cmd(args);
         crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+        crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
     }
 
@@ -480,6 +555,7 @@ fn dispatch_after_miss(
     };
     print_dispatch_arrow(overrides, label, task_name, args);
     crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+    crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
 }
 
@@ -588,6 +664,10 @@ fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
 }
 
 /// Build a [`Command`] for the given task source and package manager.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive task-source dispatch keeps host capability and command selection together"
+)]
 fn build_run_command(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -597,9 +677,12 @@ fn build_run_command(
 ) -> Result<SpawnDispatch> {
     // Deep-merge the global (CLI/env) quiet level + stream over this task's
     // `[tasks.<name>].verbosity` config into the flags the host tool gets.
-    let hv = overrides.host_verbosity_for(&entry.name);
+    let unsupported = |id, reason| tool::HostQuietCapabilities::unsupported(id, reason);
     let command = match entry.source {
-        TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args, hv),
+        TaskSource::TurboJson => {
+            let hv = host_verbosity(overrides, entry, "turbo", tool::turbo::quiet_capabilities());
+            tool::turbo::run_cmd(&entry.name, args, hv)
+        }
         TaskSource::PackageJson => {
             // An explicit runtime override outranks the resolved PM: which
             // runtime the script's process tree runs on is a separate question
@@ -620,6 +703,12 @@ fn build_run_command(
                     }
                     runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
                 }
+                let capabilities = match over.runtime {
+                    JsRuntime::Node => tool::node::quiet_capabilities(),
+                    JsRuntime::Bun => tool::bun::quiet_capabilities(),
+                    JsRuntime::Deno => tool::deno::quiet_capabilities(),
+                };
+                let hv = host_verbosity(overrides, entry, over.runtime.label(), capabilities);
                 return Ok(SpawnDispatch::passthrough(runtime::script_cmd(
                     over.runtime,
                     &entry.name,
@@ -630,6 +719,15 @@ fn build_run_command(
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
             print_pm_explain(overrides, &decision.describe());
+            let capabilities = match decision.pm {
+                PackageManager::Npm => tool::npm::quiet_capabilities(),
+                PackageManager::Yarn => tool::yarn::quiet_capabilities(&ctx.root),
+                PackageManager::Pnpm => tool::pnpm::quiet_capabilities(),
+                PackageManager::Bun => tool::bun::quiet_capabilities(),
+                PackageManager::Deno => tool::deno::quiet_capabilities(),
+                other => unsupported(other.label(), "not a script-dispatch adapter"),
+            };
+            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
             let command = match decision.pm {
                 PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
                 PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
@@ -640,19 +738,58 @@ fn build_run_command(
             };
             return Ok(SpawnDispatch::package_manager(command, decision));
         }
-        TaskSource::Makefile => tool::make::run_cmd(&entry.name, args, hv),
-        TaskSource::Justfile => tool::just::run_cmd(&entry.name, args, hv),
-        TaskSource::Taskfile => tool::go_task::run_cmd(&entry.name, args, hv),
-        TaskSource::DenoJson => tool::deno::run_cmd(&entry.name, args, hv),
-        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(&entry.name, args, hv),
+        TaskSource::Makefile => tool::make::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "make", tool::make::quiet_capabilities()),
+        ),
+        TaskSource::Justfile => tool::just::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "just", tool::just::quiet_capabilities()),
+        ),
+        TaskSource::Taskfile => tool::go_task::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(
+                overrides,
+                entry,
+                "go-task",
+                tool::go_task::quiet_capabilities(),
+            ),
+        ),
+        TaskSource::DenoJson => tool::deno::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "deno", tool::deno::quiet_capabilities()),
+        ),
+        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(
+                overrides,
+                entry,
+                "cargo",
+                tool::cargo_aliases::quiet_capabilities(),
+            ),
+        ),
         TaskSource::GoPackage => {
             let Some(run_target) = entry.run_target.as_deref() else {
                 bail!("go task {:?} is missing its run target", entry.name);
             };
+            let hv = host_verbosity(overrides, entry, "go", tool::go_pm::quiet_capabilities());
             tool::go_pm::run_cmd(run_target, args, hv)
         }
-        TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args, hv),
-        TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args, hv),
+        TaskSource::BaconToml => tool::bacon::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "bacon", tool::bacon::quiet_capabilities()),
+        ),
+        TaskSource::MiseToml => tool::mise::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "mise", tool::mise::quiet_capabilities()),
+        ),
         TaskSource::PyprojectScripts => {
             let Some(decision) = resolve_python_pm(ctx, overrides) else {
                 bail!(
@@ -661,6 +798,13 @@ fn build_run_command(
                 );
             };
             print_pm_explain(overrides, &decision.describe());
+            let capabilities = match decision.pm {
+                PackageManager::Uv => tool::uv::quiet_capabilities(),
+                PackageManager::Poetry => tool::poetry::quiet_capabilities(),
+                PackageManager::Pipenv => tool::pipenv::quiet_capabilities(),
+                other => unsupported(other.label(), "not a pyproject script adapter"),
+            };
+            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
             let command = match decision.pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),

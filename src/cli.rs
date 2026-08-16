@@ -1562,23 +1562,21 @@ pub(crate) struct GlobalOpts {
     )]
     pub no_warnings: bool,
 
-    /// Quiet level, repeatable pytest-style: `-q`, `-qq`, `-qqq`.
+    /// Graduated output policy, repeatable pytest-style.
     ///
-    /// Unlike a runner-only switch, quiet now **crosses the process boundary**
-    /// into the spawned host tool:
-    /// - `-q`: suppress runner's own output (the dispatch arrow
-    ///   `→ <source> <task>`, the `--explain` trace, per-task timing, the chain
-    ///   summary, GitHub Actions `::group::` markers) **and** pass the host's
-    ///   own silence flag (`npm --silent`, `cargo -q`, `make -s`, …). What
-    ///   remains on stdout/stderr is what the task itself wrote, which is what
-    ///   makes `run -q <task>` safe inside a pipeline whose output a parent
-    ///   parses.
-    /// - `-qq`: also mute runner's non-fatal warnings (as `--no-warnings`) and
-    ///   push hosts with graduated loglevels to their quietest.
-    /// - `-qqq`: the saturating floor.
+    /// - `-q`: hide runner progress, groups, task timing, and summary; host
+    ///   unchanged.
+    /// - `-qq`: also hide warnings and request the host's safe quiet mode.
+    /// - `-qqq`: also hide recoverable runner error decoration and request a
+    ///   stronger safe host reduction.
+    /// - `-qqqq`: no runner-authored text. Larger counts clamp to this `mute`
+    ///   level.
     ///
-    /// Errors still surface. `RUNNER_QUIET` sets the level too: a number
-    /// (`0..3`) or a truthy word (→ `-q`); a passed `-q` count wins over it
+    /// Task stdout/stderr survive every level unless explicitly configured as
+    /// `discard`. Fatal errors surface through `-qqq`; `mute` preserves only
+    /// their exit status. Explicit `--explain` overrides presentation silence.
+    /// `RUNNER_QUIET` accepts a number (`0..4`, larger clamps) or a truthy word
+    /// (→ `-q`); a passed `-q` count wins over it
     /// (CLI > env). The resolved level is inherited by a nested `runner` a task
     /// spawns. Orthogonal to `--host-stream`.
     #[arg(
@@ -1588,8 +1586,8 @@ pub(crate) struct GlobalOpts {
         action = clap::ArgAction::Count,
         display_order = help_order::QUIET,
         help = concat!(
-            "Quiet level, repeatable: runner + host tool (", cyan!("-q"), "/", cyan!("-qq"), "/",
-            cyan!("-qqq"), ") [env: ", cyan!("RUNNER_QUIET"), "]"
+            "Output policy, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq"),
+            " [env: ", cyan!("RUNNER_QUIET"), "]"
         ),
     )]
     pub quiet: u8,
@@ -1613,15 +1611,15 @@ pub(crate) struct GlobalOpts {
     )]
     pub host_stream: Option<String>,
 
-    /// Pin the `--json` output schema version. Currently always `2`; any other
+    /// Pin the `--json` output schema version. Currently always `3`; any other
     /// value is rejected.
     #[arg(
         long = "schema-version",
         global = true,
-        value_parser = clap::value_parser!(u32).range(2..=2),
+        value_parser = clap::value_parser!(u32).range(3..=3),
         value_name = "N",
         display_order = help_order::SCHEMA_VERSION,
-        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("2"), ")"),
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("3"), ")"),
     )]
     pub schema_version: Option<u32>,
 }

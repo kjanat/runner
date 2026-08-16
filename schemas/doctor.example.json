@@ -1,6 +1,6 @@
 {
   "$schema": "https://kjanat.github.io/runner/schemas/doctor.schema.json",
-  "schema_version": 2,
+  "schema_version": 3,
   "kind": "runner.doctor",
   "invocation": {
     "argv": [
@@ -25,9 +25,9 @@
     "name": "runner",
     "version": "0.25.1",
     "schema_versions": {
-      "doctor": 2,
-      "list": 2,
-      "why": 2
+      "doctor": 3,
+      "list": 3,
+      "why": 3
     }
   },
   "project": {
@@ -42,6 +42,7 @@
     "fallback": "probe",
     "install_pms": [],
     "no_warnings": false,
+    "on_collision": "resolve",
     "on_mismatch": "warn",
     "output_grouping": {
       "github_group_parallel": true,
@@ -53,7 +54,20 @@
     "prefer_runners": [],
     "prefer_sources": [],
     "quiet": false,
+    "output": {
+      "level": "off",
+      "progress": true,
+      "warnings": true,
+      "errors": true,
+      "groups": true,
+      "task_timing": true,
+      "summary": true,
+      "fatal_errors": true,
+      "host_diagnostics": "normal",
+      "host_stream": "inherit"
+    },
     "runner": null,
+    "runtime": null,
     "script_policy": "default",
     "task_source_pins": {}
   },
