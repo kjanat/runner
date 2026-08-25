@@ -3,9 +3,9 @@
 //! When no manifest, lockfile, or override signal points the resolver at a
 //! package manager, this module walks `$PATH` (and `PATHEXT` on Windows)
 //! to discover what is actually installed. The Node ecosystem returns the
-//! first match in canonical order, `bun > pnpm > yarn > npm`, matching
-//! the priority used elsewhere in detection. This replaces the silent
-//! `npm` fallback the resolver used to default to.
+//! first match in canonical order, `npm > bun > pnpm > yarn`: a bare
+//! `package.json` is an npm project, and an alternate manager is picked
+//! only when npm itself is missing from `$PATH`.
 //!
 //! ## Caching
 //!
@@ -92,14 +92,15 @@ pub(crate) fn probe_in(
 }
 
 /// Canonical PATH-probe order for the package managers that can dispatch
-/// Node `package.json` scripts. Matches the lockfile priority used in
-/// `detect::detect_package_managers` so that the implicit pick lines up
-/// with what the user would see if any one of them had created a lockfile.
+/// Node `package.json` scripts. npm leads: with no lockfile, manifest, or
+/// override signal, a `package.json` is an npm project, and the alternates
+/// only apply when npm is not installed. Lockfile priority in
+/// `detect::detect_local_node_pm` is a separate, signal-driven order.
 pub(crate) const NODE_PROBE_ORDER: &[PackageManager] = &[
+    PackageManager::Npm,
     PackageManager::Bun,
     PackageManager::Pnpm,
     PackageManager::Yarn,
-    PackageManager::Npm,
 ];
 
 /// Probe every entry of `order` and return all installed matches in order.
@@ -190,19 +191,16 @@ mod tests {
     }
 
     #[test]
-    fn node_probe_order_is_bun_first() {
-        // The probe order has to match the lockfile-priority order used in
-        // detect::detect_package_managers so the implicit pick lines up
-        // with what the user would see if any of them had created a
-        // lockfile. Lockfile priority is bun > pnpm > yarn > npm; assert
-        // the probe matches.
+    fn node_probe_order_is_npm_first() {
+        // A signal-less package.json defaults to npm; bun/pnpm/yarn are
+        // reached only when npm is absent from PATH.
         assert_eq!(
             NODE_PROBE_ORDER,
             &[
+                crate::types::PackageManager::Npm,
                 crate::types::PackageManager::Bun,
                 crate::types::PackageManager::Pnpm,
                 crate::types::PackageManager::Yarn,
-                crate::types::PackageManager::Npm,
             ]
         );
     }

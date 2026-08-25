@@ -88,10 +88,19 @@ fn detect_install_dirs(dir: &Path, ctx: &mut ProjectContext) {
 
 // Package managers
 
-/// Filesystem detector for a Node-ecosystem PM, keyed by the same
-/// [`crate::resolver::NODE_PROBE_ORDER`] the resolver's PATH probe and the
-/// doctor's signals section use, one priority list instead of a third
-/// copy encoded as if-else order. Only ever called with a PM drawn from
+/// Priority among Node PMs whose filesystem signal (lockfile or config
+/// file) is present in the directory: `bun > pnpm > yarn > npm`. Distinct
+/// from [`crate::resolver::NODE_PROBE_ORDER`], the signal-less PATH
+/// fallback, where npm leads.
+const NODE_SIGNAL_PRIORITY: &[PackageManager] = &[
+    PackageManager::Bun,
+    PackageManager::Pnpm,
+    PackageManager::Yarn,
+    PackageManager::Npm,
+];
+
+/// Filesystem detector for a Node-ecosystem PM, keyed by
+/// [`NODE_SIGNAL_PRIORITY`]. Only ever called with a PM drawn from
 /// that array, so the wildcard is unreachable in practice, not a
 /// silently-accepted gap.
 fn node_pm_detector(pm: PackageManager) -> fn(&Path) -> bool {
@@ -113,10 +122,10 @@ fn node_pm_detector(pm: PackageManager) -> fn(&Path) -> bool {
 /// gitignored `bun.lock` can mean "we never commit lockfiles", which is
 /// evidence the project *does* use bun).
 ///
-/// [`crate::resolver::NODE_PROBE_ORDER`] decides only when git can't: no
+/// [`NODE_SIGNAL_PRIORITY`] decides only when git can't: no
 /// repository, no git, nothing committed, or several lockfiles committed.
 fn detect_local_node_pm(dir: &Path) -> Option<PackageManager> {
-    let present: Vec<PackageManager> = crate::resolver::NODE_PROBE_ORDER
+    let present: Vec<PackageManager> = NODE_SIGNAL_PRIORITY
         .iter()
         .copied()
         .filter(|&pm| node_pm_detector(pm)(dir))
@@ -1070,7 +1079,7 @@ mod tests {
     #[test]
     fn the_committed_lockfile_wins_over_the_preference_order() {
         // npm's lockfile is committed and bun's is not, so this is an npm
-        // project, even though bun outranks npm in NODE_PROBE_ORDER.
+        // project, even though bun outranks npm in NODE_SIGNAL_PRIORITY.
         let dir = two_lockfiles("detect-committed-npm");
         fs::write(dir.path().join(".gitignore"), "bun.lock\n").expect(".gitignore");
         if !commit_in(
