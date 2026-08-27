@@ -31,7 +31,7 @@ impl<'ctx> Resolver<'ctx> {
     ///   (honoring `onFail` when the declared PM is missing from PATH).
     /// - Step 6, lockfile (via [`ProjectContext::primary_node_pm`]).
     /// - Step 7, `$PATH` probe in canonical Node order
-    ///   (`bun > pnpm > yarn > npm`). Active by default; replaced by
+    ///   (`npm > bun > pnpm > yarn`). Active by default; replaced by
     ///   step 8 when `--fallback npm` is set.
     /// - Step 8, error or legacy `npm` (depending on
     ///   [`FallbackPolicy`]).
