@@ -242,40 +242,37 @@ impl ResolutionOverrides {
         )
     }
 
-    /// Resolve a task's settings by exact key, then fill missing axes from its
-    /// bare name when the caller supplied a qualified CLI identity.
+    /// Resolve a task's settings by exact key, then fill missing axes from
+    /// the less specific spellings of the same identity, least specific
+    /// first: bare name, `source:name`, `member:name` (member tasks),
+    /// `scope:source#name`, exact key.
     fn task_verbosity_for(&self, task: &str) -> TaskVerbosity {
-        let qualified = task.split_once('#').map_or_else(
-            || {
-                task.split_once(':')
-                    .filter(|(source, _)| TaskSource::from_label(source).is_some())
-            },
-            |(prefix, name)| prefix.rsplit_once(':').map(|(_, source)| (source, name)),
+        let identity = TaskIdentity::parse(task);
+        let lookup = |key: Option<String>| {
+            key.and_then(|key| self.task_verbosity.get(&key))
+                .copied()
+                .unwrap_or_default()
+        };
+        let base = lookup(identity.as_ref().map(|id| id.name.to_string()));
+        let shorthand = lookup(
+            identity
+                .as_ref()
+                .map(|id| format!("{}:{}", id.source.label(), id.name)),
         );
-        let base = qualified
-            .and_then(|(_, name)| self.task_verbosity.get(name))
-            .copied()
-            .unwrap_or_default();
-        let shorthand = qualified
-            .and_then(|(source, name)| {
-                TaskSource::from_label(source).map(|source| format!("{}:{name}", source.label()))
-            })
-            .and_then(|key| self.task_verbosity.get(&key))
-            .copied()
-            .unwrap_or_default();
-        let fqn = qualified
-            .and_then(|(source, name)| {
-                TaskSource::from_label(source)
-                    .map(|source| crate::schema::labels::fqn(source, name))
-            })
-            .and_then(|key| self.task_verbosity.get(&key))
-            .copied()
-            .unwrap_or_default();
+        let member = lookup(
+            identity
+                .as_ref()
+                .and_then(|id| (id.scope != "root").then(|| format!("{}:{}", id.scope, id.name))),
+        );
+        let fqn = lookup(
+            identity
+                .as_ref()
+                .map(|id| crate::schema::labels::fqn_of(id.scope, id.source, id.name)),
+        );
         let exact = self.task_verbosity.get(task).copied().unwrap_or_default();
-        merge_task_verbosity(
-            merge_task_verbosity(merge_task_verbosity(base, shorthand), fqn),
-            exact,
-        )
+        [shorthand, member, fqn, exact]
+            .into_iter()
+            .fold(base, merge_task_verbosity)
     }
 
     /// The JS runtime an explicit override selected, if any. The single read
@@ -283,6 +280,35 @@ impl ResolutionOverrides {
     /// reports the runtime goes through here.
     pub(crate) fn js_runtime(&self) -> Option<JsRuntime> {
         self.runtime.as_ref().map(|over| over.runtime)
+    }
+}
+
+/// A qualified task identity as `task_output_key` spells it:
+/// `source:name` (root scope) or `scope:source#name`.
+struct TaskIdentity<'a> {
+    scope: &'a str,
+    source: TaskSource,
+    name: &'a str,
+}
+
+impl<'a> TaskIdentity<'a> {
+    fn parse(task: &'a str) -> Option<Self> {
+        if let Some((prefix, name)) = task.split_once('#') {
+            let (scope, source) = prefix
+                .rsplit_once(':')
+                .map_or(("root", prefix), |(scope, source)| (scope, source));
+            return TaskSource::from_label(source).map(|source| Self {
+                scope,
+                source,
+                name,
+            });
+        }
+        let (source, name) = task.split_once(':')?;
+        TaskSource::from_label(source).map(|source| Self {
+            scope: "root",
+            source,
+            name,
+        })
     }
 }
 

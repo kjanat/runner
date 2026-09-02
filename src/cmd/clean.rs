@@ -172,6 +172,7 @@ mod tests {
 
     fn context(root: &std::path::Path) -> ProjectContext {
         ProjectContext {
+            cwd: root.to_path_buf(),
             root: root.to_path_buf(),
             package_managers: vec![PackageManager::Npm],
             task_runners: Vec::new(),
@@ -179,6 +180,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }

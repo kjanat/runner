@@ -10,7 +10,7 @@ use colored::Colorize;
 use super::list::{print_conflicts, print_tasks_grouped};
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
-use crate::types::{ProjectContext, version_matches};
+use crate::types::{ProjectContext, Workspace, version_matches};
 
 const REPOSITORY_URL: &str = env!("CARGO_PKG_REPOSITORY");
 const VERSION: &str = clap::crate_version!();
@@ -77,6 +77,14 @@ pub(crate) fn info(
         println!("  {:<20}{}", "Monorepo".dimmed(), "yes".green());
     }
 
+    if let Some(workspace) = &ctx.workspace {
+        println!(
+            "  {:<20}{}",
+            "Workspace".dimmed(),
+            workspace_line(workspace)
+        );
+    }
+
     if !ctx.tasks.is_empty() {
         println!();
         // Rows already printed above the task list: title line + the
@@ -88,12 +96,50 @@ pub(crate) fn info(
             + usize::from(!ctx.task_runners.is_empty())
             + usize::from(ctx.node_version.is_some() || ctx.current_node.is_some())
             + usize::from(ctx.is_monorepo)
+            + usize::from(ctx.workspace.is_some())
             + 1; // blank separator before the task list
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
-        print_tasks_grouped(&refs, &ctx.root, banner_rows);
+        print_tasks_grouped(
+            &refs,
+            &ctx.root,
+            ctx.current_member().map(std::sync::Arc::as_ref),
+            banner_rows,
+        );
         print_conflicts(ctx, overrides);
     }
     Ok(())
+}
+
+fn workspace_line(workspace: &Workspace) -> String {
+    let count = workspace.members.len();
+    let noun = if count == 1 { "member" } else { "members" };
+    let names: Vec<&str> = workspace
+        .members
+        .iter()
+        .map(|member| member.name.as_str())
+        .collect();
+    let current = workspace
+        .current
+        .as_ref()
+        .map_or(String::new(), |member| format!(", in {}", member.name));
+    if names.is_empty() {
+        format!("{} ({count} {noun}{current})", workspace_kinds(workspace))
+    } else {
+        format!(
+            "{} ({count} {noun}: {}{current})",
+            workspace_kinds(workspace),
+            names.join(", ")
+        )
+    }
+}
+
+fn workspace_kinds(workspace: &Workspace) -> String {
+    workspace
+        .kinds
+        .iter()
+        .map(|kind| kind.label())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn title_line(arg0: Option<OsString>, stdout_is_terminal: bool) -> String {

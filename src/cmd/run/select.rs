@@ -19,13 +19,13 @@ use std::path::{Path, PathBuf};
 
 use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{PackageManager, ProjectContext, TaskSource};
+use crate::types::{PackageManager, ProjectContext, Task, TaskSource, WorkspaceMember};
 
 pub(crate) fn select_task_entry<'a>(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-    found: &[&'a crate::types::Task],
-) -> &'a crate::types::Task {
+    found: &[&'a Task],
+) -> &'a Task {
     // A `[tasks.overrides]` pin wins a same-name conflict, but only when the
     // user hasn't forced a PM/runner on the CLI/env, which outrank the config
     // file. The pin lists sources most-native first; the first candidate under
@@ -170,6 +170,34 @@ fn forced_pm(overrides: &ResolutionOverrides) -> Option<PackageManager> {
     overrides.pm.as_ref().map(|forced| forced.pm)
 }
 
+/// Keep the candidates of the nearest scope only: the current member's
+/// when any exist, else the root's, else every other member's. A bare name
+/// never silently dispatches into another scope while a nearer one defines
+/// it (see [`ProjectContext::scope_rank`]).
+pub(crate) fn narrow_scope<'a>(ctx: &ProjectContext, found: Vec<&'a Task>) -> Vec<&'a Task> {
+    let Some(nearest) = found.iter().map(|task| ctx.scope_rank(task)).min() else {
+        return found;
+    };
+    found
+        .into_iter()
+        .filter(|task| ctx.scope_rank(task) == nearest)
+        .collect()
+}
+
+/// The distinct workspace members among `found` when they are all member
+/// tasks from more than one member, i.e. a bare name that cannot be
+/// dispatched without a member qualifier.
+pub(crate) fn ambiguous_members<'a>(found: &[&'a Task]) -> Option<Vec<&'a WorkspaceMember>> {
+    let mut members: Vec<&WorkspaceMember> = Vec::new();
+    for task in found {
+        let member = task.member.as_deref()?;
+        if !members.iter().any(|seen| seen.dir == member.dir) {
+            members.push(member);
+        }
+    }
+    (members.len() > 1).then_some(members)
+}
+
 /// Distance from `ctx.root` to the directory holding `source`'s config
 /// file. Smaller values are closer; configs that don't resolve return
 /// [`usize::MAX`] so they lose the tiebreak.
@@ -245,6 +273,7 @@ mod tests {
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -252,6 +281,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -265,6 +295,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 

@@ -71,15 +71,15 @@ pub(super) fn try_path_token(
     if !has_local_prefix(token) {
         return Ok(None);
     }
-    let path = resolve_path(&ctx.root, token);
+    let path = resolve_path(&ctx.cwd, token);
     dispatch_for_path(ctx, overrides, token, &path, args)
 }
 
 /// Try to interpret a `token` *without* an explicit local-path prefix, a
 /// bare name (`main.ts`) or a relative path bearing a separator
-/// (`bin/tool`), as a runnable file under the project root (`ctx.root`).
-/// Used as a
-/// fallback *after* task lookup misses but before the PM-exec fallback, so a
+/// (`bin/tool`), as a runnable file under the invocation directory
+/// (`ctx.cwd`). Used as a fallback *after* task lookup misses but before
+/// the PM-exec fallback, so a
 /// matching task always wins first (a bare name or a `make bin/tool` target
 /// never collides) yet a local script such as `main.ts` still runs instead
 /// of being mistaken for a remote package.
@@ -110,7 +110,7 @@ pub(super) fn try_bare_file(
     if has_local_prefix(token) {
         return Ok(None);
     }
-    bare_file_in(ctx, overrides, &ctx.root, token, args)
+    bare_file_in(ctx, overrides, &ctx.cwd, token, args)
 }
 
 /// Resolve a bare `token` against an explicit `base` directory. Split from
@@ -324,7 +324,7 @@ const fn is_windows_drive_abs(token: &str) -> bool {
 }
 
 /// Resolve `token` to an absolute path: expand a leading `~`, then anchor a
-/// relative path on `base`, the detected project root (`ctx.root`), which
+/// relative path on `base`, the invocation directory (`ctx.cwd`), which
 /// also becomes the spawned child's working directory and is what task
 /// detection runs against. Anchoring here (rather than on the live process
 /// cwd) keeps local-file lookup consistent with every other dispatch step,
@@ -768,6 +768,7 @@ mod tests {
 
     fn context(pms: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: pms,
             task_runners: Vec::new(),
@@ -775,6 +776,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -782,6 +784,7 @@ mod tests {
 
     fn context_rooted(pms: Vec<PackageManager>, root: PathBuf) -> ProjectContext {
         ProjectContext {
+            cwd: root.clone(),
             root,
             ..context(pms)
         }

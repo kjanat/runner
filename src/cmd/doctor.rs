@@ -337,6 +337,7 @@ mod tests {
 
     fn context() -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("/tmp/test"),
             root: PathBuf::from("/tmp/test"),
             package_managers: vec![PackageManager::Pnpm, PackageManager::Cargo],
             task_runners: Vec::new(),
@@ -344,6 +345,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }

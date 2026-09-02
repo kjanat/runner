@@ -85,6 +85,7 @@ mod tests {
 
     fn context(package_managers: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers,
             task_runners: Vec::new(),
@@ -92,6 +93,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -1735,6 +1737,58 @@ mod tests {
             (
                 crate::tool::TaskStream::Inherit,
                 crate::tool::TaskStream::Discard
+            )
+        );
+    }
+
+    #[test]
+    fn member_task_keys_layer_over_bare_and_source_keys() {
+        // A member task dispatches under its FQN (`rfc:package.json#site`);
+        // config may address it by bare name, `package.json:site`,
+        // `rfc:site`, or that FQN, most specific winning per axis.
+        let mut overrides = ResolutionOverrides::default();
+        let entry = |stdout, stderr| TaskVerbosity {
+            stdout,
+            stderr,
+            ..TaskVerbosity::default()
+        };
+        overrides.task_verbosity.insert(
+            "site".to_string(),
+            entry(
+                Some(crate::tool::TaskStream::Discard),
+                Some(crate::tool::TaskStream::Discard),
+            ),
+        );
+        overrides.task_verbosity.insert(
+            "rfc:site".to_string(),
+            entry(Some(crate::tool::TaskStream::Inherit), None),
+        );
+
+        assert_eq!(
+            overrides.task_streams_for("rfc:package.json#site"),
+            (
+                crate::tool::TaskStream::Inherit,
+                crate::tool::TaskStream::Discard
+            )
+        );
+        assert_eq!(
+            overrides.task_streams_for("web:package.json#site"),
+            (
+                crate::tool::TaskStream::Discard,
+                crate::tool::TaskStream::Discard
+            ),
+            "another member only inherits the bare-name entry",
+        );
+
+        overrides.task_verbosity.insert(
+            "rfc:package.json#site".to_string(),
+            entry(None, Some(crate::tool::TaskStream::Inherit)),
+        );
+        assert_eq!(
+            overrides.task_streams_for("rfc:package.json#site"),
+            (
+                crate::tool::TaskStream::Inherit,
+                crate::tool::TaskStream::Inherit
             )
         );
     }

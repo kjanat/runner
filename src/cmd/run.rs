@@ -36,9 +36,10 @@ mod runtime;
 mod select;
 
 pub(crate) use qualify::{
-    TokenLookup, allowed_runner_sources, lookup_token, precheck_task, runner_constraint_error,
+    ScopeQuery, TokenLookup, allowed_runner_sources, lookup_token, precheck_task,
+    qualified_miss_error, runner_constraint_error,
 };
-pub(crate) use select::{select_task_entry, source_depth, source_priority};
+pub(crate) use select::{ambiguous_members, select_task_entry, source_depth, source_priority};
 
 pub(crate) use dispatch::{ResolvedPythonPm, resolve_python_pm};
 
@@ -50,8 +51,14 @@ pub(crate) use runtime::{
 use crate::resolver::ResolutionOverrides;
 use crate::types::{ProjectContext, Task};
 
+/// The identity `[tasks.<key>]` config is matched against: `source:name`
+/// for root tasks, the full `member:source#name` FQN for member tasks.
 pub(crate) fn task_output_key(task: &Task) -> String {
-    format!("{}:{}", task.source.label(), task.name)
+    if task.member.is_some() {
+        crate::schema::labels::fqn(task)
+    } else {
+        format!("{}:{}", task.source.label(), task.name)
+    }
 }
 
 /// Resolve `task` and run it with inherited stdio, returning the exit
@@ -263,6 +270,7 @@ mod tests {
         // `resolve_dispatch` skips the empty-branch entirely and
         // `detect_reversed_qualifier` is never reached.
         let ctx = ProjectContext {
+            cwd: PathBuf::from("/tmp/has-quirky-task-name"),
             root: PathBuf::from("/tmp/has-quirky-task-name"),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -273,10 +281,12 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                member: None,
             }],
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
@@ -319,6 +329,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                member: None,
             }],
         );
 
@@ -409,6 +420,7 @@ mod tests {
             .expect("root Makefile should be written");
 
         let ctx = ProjectContext {
+            cwd: nested.clone(),
             root: nested,
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -416,6 +428,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
@@ -443,6 +456,7 @@ mod tests {
         .expect("config.toml should be written");
 
         let ctx = ProjectContext {
+            cwd: dir.path().to_path_buf(),
             root: dir.path().to_path_buf(),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -450,6 +464,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
@@ -491,6 +506,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                member: None,
             },
             Task {
                 name: "lint".to_string(),
@@ -499,9 +515,11 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                member: None,
             },
         ];
         let ctx = ProjectContext {
+            cwd: dir.path().to_path_buf(),
             root: dir.path().to_path_buf(),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -509,6 +527,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
@@ -538,6 +557,7 @@ mod tests {
         )
         .expect("member package.json should be written");
         let ctx = ProjectContext {
+            cwd: nested.clone(),
             root: nested,
             package_managers: vec![PackageManager::Deno],
             task_runners: Vec::new(),
@@ -549,6 +569,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    member: None,
                 },
                 Task {
                     name: "build".to_string(),
@@ -557,11 +578,13 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    member: None,
                 },
             ],
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
@@ -575,6 +598,7 @@ mod tests {
 
     fn context(package_managers: Vec<PackageManager>, tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers,
             task_runners: Vec::new(),
@@ -582,6 +606,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -595,6 +620,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 

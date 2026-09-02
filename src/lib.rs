@@ -1705,6 +1705,7 @@ mod tests {
 
     fn stub_context(tasks: &[&str]) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -1717,11 +1718,13 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    member: None,
                 })
                 .collect(),
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }

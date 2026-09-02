@@ -24,6 +24,13 @@
             "string"
           ]
         },
+        "member": {
+          "description": "Workspace member the task belongs to; absent for root tasks.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
         "name": {
           "description": "Task name as it appears in the config.",
           "type": "string"

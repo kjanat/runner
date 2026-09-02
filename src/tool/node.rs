@@ -557,6 +557,8 @@ pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String,
 
 #[derive(Deserialize)]
 struct PackageJson {
+    #[serde(default)]
+    name: Option<String>,
     #[serde(rename = "packageManager")]
     package_manager: Option<String>,
     #[serde(
@@ -566,6 +568,39 @@ struct PackageJson {
     )]
     dev_engines: Option<DevEngines>,
     scripts: Option<HashMap<String, String>>,
+    #[serde(default, deserialize_with = "lenient_workspaces")]
+    workspaces: Option<Vec<String>>,
+}
+
+/// `"workspaces"` as the npm/bun array form or the yarn v1 object form
+/// (`{ "packages": [...] }`). Unrecognised shapes degrade to `None`.
+fn lenient_workspaces<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Workspaces {
+        Globs(Vec<String>),
+        Config { packages: Vec<String> },
+    }
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<Option<Workspaces>>(value)
+        .ok()
+        .flatten()
+        .map(|field| match field {
+            Workspaces::Globs(globs) | Workspaces::Config { packages: globs } => globs,
+        }))
+}
+
+/// The `"workspaces"` globs declared by the manifest in `dir`, if any.
+pub(crate) fn workspace_globs(dir: &Path) -> Option<Vec<String>> {
+    parse_package_json(dir)?.workspaces
+}
+
+/// The `"name"` declared by the manifest in `dir`, if any.
+pub(crate) fn manifest_name(dir: &Path) -> Option<String> {
+    parse_package_json(dir)?.name
 }
 
 /// Deserialize `devEngines` without letting a malformed value poison the
@@ -675,10 +710,40 @@ fn parse_package_yaml(content: &str) -> Option<PackageJson> {
         })
         .filter(|table| !table.is_empty());
 
+    let name = root
+        .iter()
+        .find_map(|(key, value)| (key.as_str() == Some("name")).then_some(value))
+        .and_then(yaml_rust2::Yaml::as_str)
+        .map(ToOwned::to_owned);
+
+    let workspaces = root
+        .iter()
+        .find_map(|(key, value)| (key.as_str() == Some("workspaces")).then_some(value))
+        .and_then(|value| {
+            let globs = value.as_vec().or_else(|| {
+                value
+                    .as_hash()?
+                    .iter()
+                    .find_map(|(key, packages)| {
+                        (key.as_str() == Some("packages")).then_some(packages)
+                    })?
+                    .as_vec()
+            })?;
+            Some(
+                globs
+                    .iter()
+                    .filter_map(yaml_rust2::Yaml::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect(),
+            )
+        });
+
     Some(PackageJson {
+        name,
         package_manager,
         dev_engines: None,
         scripts,
+        workspaces,
     })
 }
 

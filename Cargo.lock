@@ -783,6 +783,7 @@ dependencies = [
  "clap_mangen",
  "colored",
  "deno_task_shell",
+ "glob",
  "json-schema-sort",
  "json5",
  "lsp-server",

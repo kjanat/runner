@@ -551,6 +551,12 @@ overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the or
 # `verbosity` is the per-task form of the -q / --host-stream flags: a string
 # (off|quiet|very-quiet|silent|mute) or a { level, stream } table, deep-merged under
 # any global flag/env. So a single noisy task can run quiet without -q.
+#
+# Keys layer from least to most specific, per axis: `site` (every task by that
+# name), `package.json:site` (that source), `rfc:site` (workspace member `rfc`),
+# `rfc:package.json#site` (the FQN `doctor --json` prints).
+# [tasks."rfc:site"]
+# stdout = "discard"
 
 # Deprecated, superseded by [tasks] above. Legacy ranked allow-list of task
 # runners that also *restricts* candidates (a same-named task under an unlisted
@@ -672,8 +678,47 @@ pyproject.toml [project.scripts] (run via uv / poetry / pipenv)
 It also understands monorepo/workspace context from:
 
 ```text
-turbo, nx, pnpm, npm/yarn workspaces, Cargo workspaces
+turbo, nx, pnpm-workspace.yaml, npm/yarn/bun workspaces, lerna.json,
+deno.json workspace, Cargo workspaces
 ```
+
+From the workspace root, every member's `package.json` scripts and `deno.json`
+tasks are listed and runnable:
+
+```console
+$ runner list
+  package.json    rfc:site
+  package.json    rfc:typecheck
+  package.json    @acme/web:site
+  cargo           test
+
+$ run rfc:site            # member by manifest name, path, or directory name
+$ run apps/web:site
+$ run typecheck           # bare name: only `rfc` defines it, so it runs there
+$ run site                # error: `rfc` and `@acme/web` both define it
+```
+
+Every directory beneath the workspace root sees the whole workspace. Inside a
+member, that member's tasks come first and complete bare; the root's tasks are
+next; other members stay `member:task`. A root task a member shadows is
+reachable as `root:task`. Local-file tokens (`./gen.sh`) and package-manager
+exec fallbacks still resolve against the directory you are in.
+
+```console
+$ cd rfc
+$ runner list
+  package.json    site                # rfc's
+  package.json    typecheck
+  package.json    @acme/web:site
+  cargo           test                # the root's
+```
+
+A root task always wins a bare name over another member's same-named task. A
+bare name that several members define is refused with the qualified spellings.
+Member tasks run in the member's directory through the package manager the
+root resolves to. `doctor --json` and `why --json` address every task as
+`<scope>:<source>#<task>` with `scope` being `root` or the member name, and
+that form works from any directory in the workspace.
 
 <details>
 <summary><i>Support notes</i></summary>
@@ -683,6 +728,12 @@ not extract Nx tasks as direct task entries yet.
 
 When multiple sources define the same task, runner chooses deterministically:
 turbo tasks first, then package manifest scripts, then other matching sources.
+
+Workspace members contribute their own manifest scripts (`package.json`,
+`package.json5`, `package.yaml`) and `deno.json` tasks. Other sources
+(`Makefile`, `justfile`, …) are read from the root only. A member whose name
+collides with a source label (`just`, `make`, `deno`, …) must be addressed by
+path.
 
 ---
 

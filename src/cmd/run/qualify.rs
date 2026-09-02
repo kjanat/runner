@@ -1,18 +1,20 @@
 //! Task-token qualification + pre-flight validation.
 //!
 //! Pure structural checks on a task string (the qualifier `source:task`
-//! syntax, reversed-qualifier detection, runner-constraint matching).
-//! No subprocess spawning, no `→` arrow printed, no resolver state
-//! consulted, so the chain executor can run [`precheck_task`] on every
-//! item *before* any sibling dispatches.
+//! and `member:task` syntax, reversed-qualifier detection, runner-constraint
+//! matching). No subprocess spawning, no `→` arrow printed, no resolver
+//! state consulted, so the chain executor can run [`precheck_task`] on
+//! every item *before* any sibling dispatches.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 
+use super::select::{ambiguous_members, narrow_scope};
 use crate::resolver::{ResolutionOverrides, ResolveError};
-use crate::types::{DetectionWarning, ProjectContext, Task, TaskSource};
+use crate::types::{DetectionWarning, ProjectContext, Task, TaskSource, WorkspaceMember};
 
 /// Parse `"source:task"` syntax. Returns `(Some(source), task_name)` if the
 /// prefix before the first `:` is a known source label, or `(None, original)`
@@ -28,27 +30,150 @@ pub(super) fn parse_qualified_task(input: &str) -> (Option<TaskSource>, &str) {
 }
 
 /// Parse the `#`-separated FQN form that `doctor --json` / `why --json`
-/// print as a task's identity: `root:<source>#<name>` (the `root:` scope
-/// prefix is optional on input). Returns `None` for anything whose part
-/// before the `#` doesn't name a source. `user/repo#ref` package specs
-/// keep flowing to the PM-exec fallback untouched.
-pub(super) fn parse_fqn_task(input: &str) -> Option<(TaskSource, &str)> {
+/// print as a task's identity: `<scope>:<source>#<name>`, where `scope` is
+/// `root` or a workspace member name and is optional on input. Returns
+/// `(scope, source, name)`, or `None` for anything whose part before the
+/// `#` doesn't name a source. `user/repo#ref` package specs keep flowing to
+/// the PM-exec fallback untouched.
+pub(super) fn parse_fqn_task(input: &str) -> Option<(Option<&str>, TaskSource, &str)> {
     let (prefix, name) = input.split_once('#')?;
-    let kind = prefix.strip_prefix("root:").unwrap_or(prefix);
+    let (scope, kind) = prefix
+        .split_once(':')
+        .map_or((None, prefix), |(scope, kind)| (Some(scope), kind));
     let source = TaskSource::from_label(kind)?;
-    Some((source, name))
+    Some((scope, source, name))
+}
+
+/// The scope a token pins its lookup to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScopeQuery {
+    /// No scope given: root tasks win, members are searched when the root
+    /// has no match.
+    Any,
+    /// `root:` FQN prefix: root tasks only.
+    Root,
+    /// A workspace member named in the token.
+    Member(Arc<WorkspaceMember>),
+    /// A scope that named no member, or several by directory name.
+    Unresolved {
+        scope: String,
+        candidates: Vec<String>,
+    },
+}
+
+impl ScopeQuery {
+    pub(crate) const fn is_pinned(&self) -> bool {
+        !matches!(self, Self::Any)
+    }
+
+    fn admits(&self, task: &Task) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Root => task.member.is_none(),
+            Self::Member(member) => task
+                .member
+                .as_ref()
+                .is_some_and(|task_member| task_member.dir == member.dir),
+            Self::Unresolved { .. } => false,
+        }
+    }
+}
+
+fn resolve_scope(ctx: &ProjectContext, scope: &str) -> ScopeQuery {
+    if scope == "root" {
+        return ScopeQuery::Root;
+    }
+    let matches = ctx
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.resolve(scope))
+        .unwrap_or_default();
+    match matches.as_slice() {
+        [member] => ScopeQuery::Member(Arc::clone(member)),
+        [] => ScopeQuery::Unresolved {
+            scope: scope.to_string(),
+            candidates: Vec::new(),
+        },
+        several => ScopeQuery::Unresolved {
+            scope: scope.to_string(),
+            candidates: several.iter().map(|member| member.path.clone()).collect(),
+        },
+    }
+}
+
+/// A member prefix in colon syntax, when `prefix` addresses at least one
+/// member. `root` is only meaningful in FQN syntax, so a bare `root:` prefix
+/// stays a task name.
+fn member_scope(ctx: &ProjectContext, prefix: &str) -> Option<ScopeQuery> {
+    let workspace = ctx.workspace.as_ref()?;
+    if prefix == "root" {
+        return Some(ScopeQuery::Root);
+    }
+    if workspace.resolve(prefix).is_empty() {
+        return None;
+    }
+    Some(resolve_scope(ctx, prefix))
+}
+
+struct ParsedToken<'a> {
+    scope: ScopeQuery,
+    source: Option<TaskSource>,
+    name: &'a str,
+    fqn: bool,
+}
+
+/// Interpret a token: FQN (`rfc:package.json#site`), member-qualified
+/// (`rfc:site`, `rfc:package.json:site`), source-qualified (`just:fmt`), or
+/// bare. A source label wins over a same-named member as the first
+/// segment, matching the pre-workspace grammar.
+fn parse_token<'a>(ctx: &ProjectContext, token: &'a str) -> ParsedToken<'a> {
+    if let Some((scope, source, name)) = parse_fqn_task(token) {
+        return ParsedToken {
+            scope: scope.map_or(ScopeQuery::Any, |scope| resolve_scope(ctx, scope)),
+            source: Some(source),
+            name,
+            fqn: true,
+        };
+    }
+    if let Some((prefix, rest)) = token.split_once(':') {
+        if let Some(source) = TaskSource::from_label(prefix) {
+            return ParsedToken {
+                scope: ScopeQuery::Any,
+                source: Some(source),
+                name: rest,
+                fqn: false,
+            };
+        }
+        if let Some(scope) = member_scope(ctx, prefix) {
+            let (source, name) = parse_qualified_task(rest);
+            return ParsedToken {
+                scope,
+                source,
+                name,
+                fqn: false,
+            };
+        }
+    }
+    ParsedToken {
+        scope: ScopeQuery::Any,
+        source: None,
+        name: token,
+        fqn: false,
+    }
 }
 
 /// How a task token was interpreted by [`lookup_token`].
 ///
-/// A `Some` qualifier, whether from colon or FQN syntax, pins the
-/// lookup to that source; the caller errors on a miss instead of
-/// falling through to PM-exec. That property is what keeps an FQN typo
+/// A `Some` qualifier or a pinned scope, whether from colon or FQN syntax,
+/// pins the lookup; the caller errors on a miss instead of falling through
+/// to PM-exec. That property is what keeps an FQN typo
 /// (`root:package.json#nope`) from being handed to bun x/npx as a
 /// package spec and resolved off the network.
 pub(crate) struct TokenLookup<'a> {
     /// Pinned source from `source:task` or FQN (`root:source#task`) syntax.
     pub qualifier: Option<TaskSource>,
+    /// Pinned scope from `member:task` or FQN (`member:source#task`) syntax.
+    pub scope: ScopeQuery,
     /// Task name after stripping any qualifier.
     pub task_name: &'a str,
 }
@@ -57,33 +182,41 @@ pub(crate) struct TokenLookup<'a> {
 ///
 /// Single source of truth for dispatch and precheck so both agree on:
 /// - FQN (`root:package.json#deno:importsmap`) → qualified lookup,
-/// - colon-qualified (`deno:lint`) → qualified lookup,
+/// - colon-qualified (`deno:lint`, `rfc:site`) → qualified lookup,
 /// - qualified *miss* whose raw token exactly names an existing task
 ///   (a `package.json` script literally called `deno:importsmap` is
-///   otherwise shadowed by the `deno` source label) → bare exact match.
+///   otherwise shadowed by the `deno` source label) → bare exact match,
+/// - unscoped lookups keep root tasks when the root defines the name and
+///   only fall through to workspace members otherwise.
 pub(crate) fn lookup_token<'a>(
     ctx: &'a ProjectContext,
     token: &'a str,
 ) -> (TokenLookup<'a>, Vec<&'a Task>) {
-    let (qualifier, task_name, fqn) = if let Some((source, name)) = parse_fqn_task(token) {
-        (Some(source), name, true)
+    let parsed = parse_token(ctx, token);
+    let found: Vec<&Task> = ctx
+        .tasks
+        .iter()
+        .filter(|task| task.name == parsed.name && parsed.scope.admits(task))
+        .collect();
+    let found = if parsed.scope.is_pinned() {
+        found
     } else {
-        let (q, n) = parse_qualified_task(token);
-        (q, n, false)
+        narrow_scope(ctx, found)
     };
-    let found: Vec<_> = ctx.tasks.iter().filter(|t| t.name == task_name).collect();
 
     // Colon-form only: FQN syntax is explicit enough that a miss should
     // stay a miss rather than match a pathological `#`-bearing name.
-    if !fqn
-        && let Some(source) = qualifier
-        && !found.iter().any(|t| t.source == source)
-    {
-        let exact: Vec<_> = ctx.tasks.iter().filter(|t| t.name == token).collect();
+    let qualified = parsed.source.is_some() || parsed.scope.is_pinned();
+    let satisfied = found
+        .iter()
+        .any(|task| parsed.source.is_none_or(|source| task.source == source));
+    if !parsed.fqn && qualified && !satisfied {
+        let exact = narrow_scope(ctx, ctx.tasks.iter().filter(|t| t.name == token).collect());
         if !exact.is_empty() {
             return (
                 TokenLookup {
                     qualifier: None,
+                    scope: ScopeQuery::Any,
                     task_name: token,
                 },
                 exact,
@@ -93,8 +226,9 @@ pub(crate) fn lookup_token<'a>(
 
     (
         TokenLookup {
-            qualifier,
-            task_name,
+            qualifier: parsed.source,
+            scope: parsed.scope,
+            task_name: parsed.name,
         },
         found,
     )
@@ -105,17 +239,75 @@ pub(crate) fn lookup_token<'a>(
 /// when a source's task list failed to load; a miss caused by a broken
 /// `package.json` should say so instead of leaving the user chasing the
 /// task name.
-pub(super) fn qualified_miss_error(
+pub(crate) fn qualified_miss_error(
     ctx: &ProjectContext,
-    source: TaskSource,
+    scope: &ScopeQuery,
+    source: Option<TaskSource>,
     task_name: &str,
 ) -> anyhow::Error {
-    let mut msg = format!(
-        "task {task_name:?} not found in {}. Run `runner list` to see available tasks.",
-        source.label(),
-    );
+    let mut msg = match (scope, source) {
+        (ScopeQuery::Unresolved { scope, candidates }, _) if !candidates.is_empty() => format!(
+            "workspace member {scope:?} is ambiguous: {}. Address it by package name or path.",
+            candidates.join(", "),
+        ),
+        (ScopeQuery::Unresolved { scope, .. }, _) => {
+            let known = ctx.workspace.as_ref().map_or_else(
+                || "this project declares no workspace".to_string(),
+                |workspace| {
+                    let names: Vec<&str> = workspace
+                        .members
+                        .iter()
+                        .map(|member| member.name.as_str())
+                        .collect();
+                    if names.is_empty() {
+                        "the workspace has no members".to_string()
+                    } else {
+                        format!("members: {}", names.join(", "))
+                    }
+                },
+            );
+            format!("no workspace member named {scope:?} ({known}).")
+        }
+        (ScopeQuery::Member(member), Some(source)) => format!(
+            "task {task_name:?} not found in {} of workspace member {}. Run `runner list` to see \
+             available tasks.",
+            source.label(),
+            member.name,
+        ),
+        (ScopeQuery::Member(member), None) => format!(
+            "task {task_name:?} not found in workspace member {}. Run `runner list` to see \
+             available tasks.",
+            member.name,
+        ),
+        (_, Some(source)) => format!(
+            "task {task_name:?} not found in {}. Run `runner list` to see available tasks.",
+            source.label(),
+        ),
+        (_, None) => {
+            format!("task {task_name:?} not found. Run `runner list` to see available tasks.")
+        }
+    };
     append_unreadable_note(ctx, &mut msg);
     anyhow!(msg)
+}
+
+/// The one spelling of a bare name that several workspace members define
+/// while the root defines none, shared by dispatch, precheck, and `why`.
+pub(crate) fn member_ambiguity_error(
+    task_name: &str,
+    members: &[&WorkspaceMember],
+) -> anyhow::Error {
+    let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
+    let spellings: Vec<String> = names
+        .iter()
+        .map(|name| format!("`{name}:{task_name}`"))
+        .collect();
+    anyhow!(
+        "task {task_name:?} is defined in {} workspace members: {}\nhint: qualify it: {}",
+        members.len(),
+        names.join(", "),
+        spellings.join(", "),
+    )
 }
 
 /// The one spelling of the reversed-qualifier error (`lint:deno` instead
@@ -186,7 +378,10 @@ pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str
 ///   skip here; they get their proper error at dispatch time.
 ///
 /// Returns `Err` on:
-/// - qualified miss (`justfile:nonexistent`),
+/// - qualified miss (`justfile:nonexistent`, `rfc:nonexistent`),
+/// - a scope naming no member (`nope:build`) or several (`web:build`
+///   with `apps/web` and `tools/web`),
+/// - a bare name several members define while the root defines none,
 /// - reversed qualifier (`lint:cargo`),
 /// - runner-constraint mismatch (`--runner just` with no justfile task).
 pub(crate) fn precheck_task(
@@ -208,10 +403,15 @@ pub(crate) fn precheck_task(
     let (lookup, found) = lookup_token(ctx, task);
     let TokenLookup {
         qualifier,
+        scope,
         task_name,
     } = lookup;
 
-    let restricted: Vec<_> = if qualifier.is_some() {
+    if matches!(scope, ScopeQuery::Unresolved { .. }) {
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+    }
+
+    let restricted: Vec<_> = if qualifier.is_some() || scope.is_pinned() {
         found.clone()
     } else if let Some(allowed) = allowed_runner_sources(overrides) {
         found
@@ -230,13 +430,18 @@ pub(crate) fn precheck_task(
         if let Some(source) = qualifier
             && !restricted.iter().any(|t| t.source == source)
         {
-            return Err(qualified_miss_error(ctx, source, task_name));
+            return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+        }
+        if !scope.is_pinned()
+            && let Some(members) = ambiguous_members(&restricted)
+        {
+            return Err(member_ambiguity_error(task_name, &members));
         }
         return Ok(());
     }
 
-    if let Some(source) = qualifier {
-        return Err(qualified_miss_error(ctx, source, task_name));
+    if qualifier.is_some() || scope.is_pinned() {
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
     }
 
     if let Some((src, task_part)) = detect_reversed_qualifier(task) {
@@ -338,13 +543,18 @@ pub(crate) fn runner_constraint_error(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
-    use super::{lookup_token, parse_fqn_task, precheck_task};
+    use super::{ScopeQuery, lookup_token, parse_fqn_task, precheck_task};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{DetectionWarning, ProjectContext, Task, TaskRunner, TaskSource};
+    use crate::types::{
+        DetectionWarning, ProjectContext, Task, TaskRunner, TaskSource, Workspace, WorkspaceKind,
+        WorkspaceMember,
+    };
 
     fn context() -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -352,6 +562,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -365,7 +576,43 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
+    }
+
+    fn member(name: &str, path: &str) -> Arc<WorkspaceMember> {
+        Arc::new(WorkspaceMember {
+            name: name.to_string(),
+            path: path.to_string(),
+            dir: PathBuf::from("/tmp/ws").join(path),
+        })
+    }
+
+    fn member_task(name: &str, member: &Arc<WorkspaceMember>) -> Task {
+        Task {
+            member: Some(Arc::clone(member)),
+            ..task(name, TaskSource::PackageJson)
+        }
+    }
+
+    /// Root with two members, `rfc` and `@acme/web` (at `apps/web`), both
+    /// defining `site`; only `rfc` defines `check`.
+    fn workspace_context() -> ProjectContext {
+        let rfc = member("rfc", "rfc");
+        let web = member("@acme/web", "apps/web");
+        let mut ctx = context();
+        ctx.workspace = Some(Workspace {
+            root: PathBuf::from("/tmp/ws"),
+            kinds: vec![WorkspaceKind::PackageJson],
+            members: vec![Arc::clone(&rfc), Arc::clone(&web)],
+            current: None,
+        });
+        ctx.tasks.push(task("test", TaskSource::CargoAliases));
+        ctx.tasks.push(member_task("site", &rfc));
+        ctx.tasks.push(member_task("check", &rfc));
+        ctx.tasks.push(member_task("site", &web));
+        ctx.tasks.push(member_task("test", &web));
+        ctx
     }
 
     #[test]
@@ -373,16 +620,20 @@ mod tests {
         // The exact string doctor/why print as a task's identity.
         assert_eq!(
             parse_fqn_task("root:package.json#deno:importsmap"),
-            Some((TaskSource::PackageJson, "deno:importsmap")),
+            Some((Some("root"), TaskSource::PackageJson, "deno:importsmap")),
         );
         // Scope prefix optional on input.
         assert_eq!(
             parse_fqn_task("package.json#deno:importsmap"),
-            Some((TaskSource::PackageJson, "deno:importsmap")),
+            Some((None, TaskSource::PackageJson, "deno:importsmap")),
         );
         assert_eq!(
             parse_fqn_task("just#fmt"),
-            Some((TaskSource::Justfile, "fmt"))
+            Some((None, TaskSource::Justfile, "fmt"))
+        );
+        assert_eq!(
+            parse_fqn_task("rfc:package.json#site"),
+            Some((Some("rfc"), TaskSource::PackageJson, "site"))
         );
     }
 
@@ -424,6 +675,214 @@ mod tests {
         assert_eq!(lookup.qualifier, Some(TaskSource::DenoJson));
         assert_eq!(lookup.task_name, "importsmap");
         assert!(found.iter().any(|t| t.source == TaskSource::DenoJson));
+    }
+
+    /// [`workspace_context`] as seen from inside `rfc`, with a root `site`
+    /// added so every scope defines it.
+    fn inside_rfc_context() -> ProjectContext {
+        let mut ctx = workspace_context();
+        ctx.tasks.push(task("site", TaskSource::PackageJson));
+        let workspace = ctx.workspace.as_mut().expect("workspace");
+        workspace.current = workspace
+            .members
+            .iter()
+            .find(|member| member.name == "rfc")
+            .cloned();
+        ctx
+    }
+
+    #[test]
+    fn lookup_token_inside_a_member_prefers_that_member() {
+        let ctx = inside_rfc_context();
+
+        let (_, found) = lookup_token(&ctx, "site");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].scope(), "rfc");
+
+        // Root still beats other members when the current member is silent.
+        let (_, found) = lookup_token(&ctx, "test");
+        assert_eq!(found.len(), 1);
+        assert!(found[0].member.is_none());
+
+        precheck_task(&ctx, &ResolutionOverrides::default(), "site")
+            .expect("the current member resolves a name every scope defines");
+    }
+
+    #[test]
+    fn lookup_token_root_prefix_reaches_a_shadowed_root_task() {
+        let ctx = inside_rfc_context();
+
+        for token in [
+            "root:site",
+            "root:package.json:site",
+            "root:package.json#site",
+        ] {
+            let (lookup, found) = lookup_token(&ctx, token);
+            assert_eq!(lookup.scope, ScopeQuery::Root, "{token}");
+            assert_eq!(found.len(), 1, "{token}");
+            assert!(found[0].member.is_none(), "{token}");
+        }
+    }
+
+    #[test]
+    fn lookup_token_bare_name_prefers_root_over_members() {
+        let ctx = workspace_context();
+
+        let (lookup, found) = lookup_token(&ctx, "test");
+        assert_eq!(lookup.scope, ScopeQuery::Any);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].member.is_none());
+    }
+
+    #[test]
+    fn lookup_token_bare_name_falls_through_to_members() {
+        let ctx = workspace_context();
+
+        let (_, found) = lookup_token(&ctx, "check");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].scope(), "rfc");
+
+        let (_, found) = lookup_token(&ctx, "site");
+        assert_eq!(found.len(), 2, "both members surface until qualified");
+    }
+
+    #[test]
+    fn lookup_token_member_prefix_pins_the_scope() {
+        let ctx = workspace_context();
+
+        for token in ["rfc:site", "rfc:package.json:site", "rfc:package.json#site"] {
+            let (lookup, found) = lookup_token(&ctx, token);
+            assert!(
+                matches!(&lookup.scope, ScopeQuery::Member(m) if m.name == "rfc"),
+                "{token}: expected the rfc scope",
+            );
+            assert_eq!(lookup.task_name, "site", "{token}");
+            assert_eq!(found.len(), 1, "{token}");
+            assert_eq!(found[0].scope(), "rfc", "{token}");
+        }
+    }
+
+    #[test]
+    fn lookup_token_addresses_members_by_path_and_directory_name() {
+        let ctx = workspace_context();
+
+        for token in ["@acme/web:site", "apps/web:site", "web:site"] {
+            let (lookup, found) = lookup_token(&ctx, token);
+            assert!(
+                matches!(&lookup.scope, ScopeQuery::Member(m) if m.path == "apps/web"),
+                "{token}: expected the apps/web scope",
+            );
+            assert_eq!(found.len(), 1, "{token}");
+        }
+    }
+
+    #[test]
+    fn lookup_token_root_scope_excludes_members() {
+        let ctx = workspace_context();
+
+        let (lookup, found) = lookup_token(&ctx, "root:package.json#site");
+        assert_eq!(lookup.scope, ScopeQuery::Root);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn lookup_token_source_label_beats_member_name() {
+        // A member literally named `just` cannot hijack `just:fmt`.
+        let mut ctx = workspace_context();
+        let just = member("just", "tools/just");
+        ctx.workspace
+            .as_mut()
+            .expect("workspace")
+            .members
+            .push(Arc::clone(&just));
+        ctx.tasks.push(member_task("fmt", &just));
+        ctx.tasks.push(task("fmt", TaskSource::Justfile));
+
+        let (lookup, found) = lookup_token(&ctx, "just:fmt");
+        assert_eq!(lookup.qualifier, Some(TaskSource::Justfile));
+        assert_eq!(lookup.scope, ScopeQuery::Any);
+        assert!(found.iter().all(|t| t.member.is_none()));
+    }
+
+    #[test]
+    fn lookup_token_unknown_member_is_reported_not_guessed() {
+        let ctx = workspace_context();
+
+        let (lookup, found) = lookup_token(&ctx, "nope:package.json#site");
+        assert!(matches!(lookup.scope, ScopeQuery::Unresolved { .. }));
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn lookup_token_colon_prefix_that_is_no_member_stays_a_task_name() {
+        let mut ctx = workspace_context();
+        ctx.tasks.push(task("fmt:update", TaskSource::PackageJson));
+
+        let (lookup, found) = lookup_token(&ctx, "fmt:update");
+        assert_eq!(lookup.scope, ScopeQuery::Any);
+        assert_eq!(lookup.task_name, "fmt:update");
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn precheck_rejects_ambiguous_member_task() {
+        let ctx = workspace_context();
+
+        let err = precheck_task(&ctx, &ResolutionOverrides::default(), "site")
+            .expect_err("two members define site");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("2 workspace members"), "{msg}");
+        assert!(msg.contains("`rfc:site`"), "{msg}");
+        assert!(msg.contains("`@acme/web:site`"), "{msg}");
+
+        precheck_task(&ctx, &ResolutionOverrides::default(), "rfc:site")
+            .expect("a qualified member task passes");
+        precheck_task(&ctx, &ResolutionOverrides::default(), "check")
+            .expect("a name only one member defines passes");
+    }
+
+    #[test]
+    fn precheck_rejects_member_miss_and_unknown_member() {
+        let ctx = workspace_context();
+
+        let err = precheck_task(&ctx, &ResolutionOverrides::default(), "rfc:nope")
+            .expect_err("rfc has no nope task");
+        assert!(
+            format!("{err:#}").contains("not found in workspace member rfc"),
+            "{err:#}",
+        );
+
+        let err = precheck_task(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "nope:package.json#site",
+        )
+        .expect_err("no member is called nope");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no workspace member named \"nope\""), "{msg}");
+        assert!(msg.contains("rfc, @acme/web"), "{msg}");
+    }
+
+    #[test]
+    fn precheck_rejects_ambiguous_directory_name() {
+        let mut ctx = workspace_context();
+        let other = member("@acme/tool-web", "tools/web");
+        ctx.workspace
+            .as_mut()
+            .expect("workspace")
+            .members
+            .push(Arc::clone(&other));
+        ctx.tasks.push(member_task("site", &other));
+
+        let err = precheck_task(&ctx, &ResolutionOverrides::default(), "web:site")
+            .expect_err("two members share the directory name web");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("ambiguous"), "{msg}");
+        assert!(msg.contains("apps/web"), "{msg}");
+        assert!(msg.contains("tools/web"), "{msg}");
+
+        precheck_task(&ctx, &ResolutionOverrides::default(), "tools/web:site")
+            .expect("the path form is unambiguous");
     }
 
     #[test]

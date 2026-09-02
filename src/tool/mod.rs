@@ -71,6 +71,8 @@ pub(crate) mod turbo;
 pub(crate) mod uv;
 /// Volta toolchain manager, shim classification and `volta which` resolution.
 pub(crate) mod volta;
+/// Workspace member discovery from root declarations.
+pub(crate) mod workspace;
 /// Yarn, a Node.js package manager (`yarn.lock`).
 pub(crate) mod yarn;
 

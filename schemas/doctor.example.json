@@ -161,6 +161,7 @@
       "is_alias": false,
       "name": "fmt",
       "resolved": "bun run fmt",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/package.json",
       "source_pointer": "scripts.fmt"
@@ -175,6 +176,7 @@
       "is_alias": false,
       "name": "fmt:update",
       "resolved": "bun run fmt:update",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/package.json",
       "source_pointer": "scripts.fmt:update"
@@ -189,6 +191,7 @@
       "is_alias": false,
       "name": "typecheck",
       "resolved": "bun run typecheck",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/package.json",
       "source_pointer": "scripts.typecheck"
@@ -203,6 +206,7 @@
       "is_alias": false,
       "name": "build-packages",
       "resolved": "just build-packages",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "build-packages"
@@ -217,6 +221,7 @@
       "is_alias": false,
       "name": "default",
       "resolved": "just default",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "default"
@@ -231,6 +236,7 @@
       "is_alias": false,
       "name": "gen-schema",
       "resolved": "just gen-schema",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "gen-schema"
@@ -245,6 +251,7 @@
       "is_alias": false,
       "name": "ls",
       "resolved": "just ls",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "ls"
@@ -259,6 +266,7 @@
       "is_alias": false,
       "name": "run",
       "resolved": "just run",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "run"
@@ -273,6 +281,7 @@
       "is_alias": false,
       "name": "runner",
       "resolved": "just runner",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "runner"
@@ -287,6 +296,7 @@
       "is_alias": false,
       "name": "test-release",
       "resolved": "just test-release",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "test-release"
@@ -301,6 +311,7 @@
       "is_alias": true,
       "name": "b",
       "resolved": "cargo build",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.b"
@@ -315,6 +326,7 @@
       "is_alias": true,
       "name": "bb",
       "resolved": "cargo build --bin run --bin runner",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.bb"
@@ -329,6 +341,7 @@
       "is_alias": true,
       "name": "bbr",
       "resolved": "cargo build --bin run --bin runner --release",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.bbr"
@@ -343,6 +356,7 @@
       "is_alias": true,
       "name": "bin-run",
       "resolved": "cargo run --quiet --bin run",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.bin-run"
@@ -357,6 +371,7 @@
       "is_alias": true,
       "name": "bin-runner",
       "resolved": "cargo run --quiet --bin runner",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.bin-runner"
@@ -373,6 +388,7 @@
       "is_alias": false,
       "name": "build",
       "resolved": "cargo build",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.build"
@@ -387,6 +403,7 @@
       "is_alias": true,
       "name": "c",
       "resolved": "cargo check",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.c"
@@ -403,6 +420,7 @@
       "is_alias": false,
       "name": "check",
       "resolved": "cargo check",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.check"
@@ -417,6 +435,7 @@
       "is_alias": true,
       "name": "cl",
       "resolved": "cargo clippy --all-targets --all-features",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.cl"
@@ -431,6 +450,7 @@
       "is_alias": true,
       "name": "comp",
       "resolved": "cargo run --quiet --bin runner -- completions",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.comp"
@@ -445,6 +465,7 @@
       "is_alias": true,
       "name": "d",
       "resolved": "cargo doc",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.d"
@@ -461,6 +482,7 @@
       "is_alias": false,
       "name": "doc",
       "resolved": "cargo doc",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.doc"
@@ -475,6 +497,7 @@
       "is_alias": true,
       "name": "f",
       "resolved": "cargo run --quiet --bin run -- --pm npm dprint fmt",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.f"
@@ -489,6 +512,7 @@
       "is_alias": true,
       "name": "format",
       "resolved": "cargo run --quiet --bin run -- --pm npm dprint fmt",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.format"
@@ -503,6 +527,7 @@
       "is_alias": true,
       "name": "i",
       "resolved": "cargo install --path .",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.i"
@@ -517,6 +542,7 @@
       "is_alias": true,
       "name": "l",
       "resolved": "cargo clippy --all-targets --all-features -- -D warnings -D clippy::all",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.l"
@@ -531,6 +557,7 @@
       "is_alias": true,
       "name": "lint",
       "resolved": "cargo clippy --all-targets --all-features -- -D warnings -D clippy::all",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.lint"
@@ -545,6 +572,7 @@
       "is_alias": true,
       "name": "man",
       "resolved": "cargo run --quiet --features man -- man",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.man"
@@ -559,6 +587,7 @@
       "is_alias": true,
       "name": "meta",
       "resolved": "cargo metadata --format-version 1",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.meta"
@@ -573,6 +602,7 @@
       "is_alias": true,
       "name": "r",
       "resolved": "cargo run",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.r"
@@ -587,6 +617,7 @@
       "is_alias": true,
       "name": "rbin-run",
       "resolved": "cargo run --quiet --bin run --release",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.rbin-run"
@@ -601,6 +632,7 @@
       "is_alias": true,
       "name": "rbin-runner",
       "resolved": "cargo run --quiet --bin runner --release",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.rbin-runner"
@@ -617,6 +649,7 @@
       "is_alias": false,
       "name": "remove",
       "resolved": "cargo remove",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.remove"
@@ -631,6 +664,7 @@
       "is_alias": true,
       "name": "rm",
       "resolved": "cargo remove",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.rm"
@@ -645,6 +679,7 @@
       "is_alias": true,
       "name": "rq",
       "resolved": "cargo run --quiet",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.rq"
@@ -659,6 +694,7 @@
       "is_alias": true,
       "name": "rr",
       "resolved": "cargo run --release",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.rr"
@@ -675,6 +711,7 @@
       "is_alias": false,
       "name": "run",
       "resolved": "cargo run",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.run"
@@ -689,6 +726,7 @@
       "is_alias": true,
       "name": "runner",
       "resolved": "cargo run --quiet --bin runner",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.runner"
@@ -703,6 +741,7 @@
       "is_alias": true,
       "name": "schema",
       "resolved": "cargo run --quiet --features schema -- schema",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.schema"
@@ -717,6 +756,7 @@
       "is_alias": true,
       "name": "t",
       "resolved": "cargo test",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.t"
@@ -733,6 +773,7 @@
       "is_alias": false,
       "name": "test",
       "resolved": "cargo test",
+      "scope": "root",
       "self_executable": false,
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.test"

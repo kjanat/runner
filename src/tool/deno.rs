@@ -112,7 +112,8 @@ fn workspace_includes_dir(config_path: &Path, dir: &Path) -> bool {
         })
 }
 
-fn workspace_patterns(config_path: &Path) -> Option<Vec<String>> {
+/// The `"workspace"` member globs declared by the config at `config_path`.
+pub(crate) fn workspace_patterns(config_path: &Path) -> Option<Vec<String>> {
     let content = std::fs::read_to_string(config_path).ok()?;
     let config = json5::from_str::<WorkspaceConfig>(&content).ok()?;
 
@@ -168,14 +169,37 @@ fn within_boundary(path: &Path, boundary: Option<&Path>) -> bool {
 /// by name for deterministic output. The self-exec path re-parses the
 /// config for `command` / `dependencies` when it needs them.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let Some(path) = find_config_upwards(dir) else {
+        return Ok(vec![]);
+    };
+    extract_tasks_from(&path)
+}
+
+/// Like [`extract_tasks`], reading only a config located in `dir` itself.
+pub(crate) fn extract_tasks_in(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let Some(path) = files::find_first(dir, FILENAMES).filter(|path| path.is_file()) else {
+        return Ok(vec![]);
+    };
+    extract_tasks_from(&path)
+}
+
+/// The `"name"` declared by the config in `dir`, if any.
+pub(crate) fn config_name(dir: &Path) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Partial {
+        name: Option<String>,
+    }
+    let path = files::find_first(dir, FILENAMES).filter(|path| path.is_file())?;
+    let content = std::fs::read_to_string(path).ok()?;
+    json5::from_str::<Partial>(&content).ok()?.name
+}
+
+fn extract_tasks_from(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
     }
-    let Some(path) = find_config_upwards(dir) else {
-        return Ok(vec![]);
-    };
-    let content = std::fs::read_to_string(&path)
+    let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let d = json5::from_str::<Partial>(&content)
         .with_context(|| format!("{} is not valid JSON/JSONC", path.display()))?;

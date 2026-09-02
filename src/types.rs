@@ -1,6 +1,8 @@
 //! Shared types used across detection, commands, and tool modules.
 
-use std::path::PathBuf;
+use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// A language/runtime ecosystem that owns one or more package managers.
 ///
@@ -216,6 +218,130 @@ pub(crate) struct Task {
     /// completion to avoid emitting a redundant `package.json:build`
     /// candidate alongside the underlying runner's `build` task.
     pub passthrough_to: Option<TaskRunner>,
+    /// The workspace member this task belongs to; `None` for root tasks.
+    pub member: Option<Arc<WorkspaceMember>>,
+}
+
+impl Task {
+    /// Directory the task runs in: the member's directory, or `root`.
+    pub(crate) fn dir<'a>(&'a self, root: &'a Path) -> &'a Path {
+        self.member
+            .as_ref()
+            .map_or(root, |member| member.dir.as_path())
+    }
+
+    /// FQN scope segment: the member name, or `root`.
+    pub(crate) fn scope(&self) -> &str {
+        self.member
+            .as_ref()
+            .map_or("root", |member| member.name.as_str())
+    }
+
+    /// The spelling `run` accepts for this task: `member:name` for member
+    /// tasks, the bare name otherwise.
+    pub(crate) fn display_name(&self) -> Cow<'_, str> {
+        self.member.as_ref().map_or_else(
+            || Cow::Borrowed(self.name.as_str()),
+            |member| Cow::Owned(format!("{}:{}", member.name, self.name)),
+        )
+    }
+
+    /// Whether `other` lives in the same scope (root or the same member).
+    pub(crate) fn same_scope(&self, other: &Self) -> bool {
+        match (&self.member, &other.member) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.dir == b.dir,
+            _ => false,
+        }
+    }
+}
+
+/// A package inside a workspace, discovered from the root's workspace
+/// declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct WorkspaceMember {
+    /// Manifest `name`, or the directory name when the manifest has none.
+    pub name: String,
+    /// Directory relative to the workspace root, forward slashes.
+    pub path: String,
+    /// Absolute directory.
+    pub dir: PathBuf,
+}
+
+impl WorkspaceMember {
+    /// Whether `scope` addresses this member: its name, its relative path,
+    /// or its directory name.
+    pub(crate) fn addressed_by(&self, scope: &str) -> bool {
+        self.name == scope
+            || self.path == scope
+            || self
+                .dir
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy() == scope)
+    }
+}
+
+/// The file at the workspace root that declares its members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum WorkspaceKind {
+    /// `package.json` / `package.json5` / `package.yaml` `"workspaces"`.
+    PackageJson,
+    /// `pnpm-workspace.yaml` `packages`.
+    PnpmWorkspace,
+    /// `lerna.json` `packages`.
+    Lerna,
+    /// `deno.json` / `deno.jsonc` `"workspace"`.
+    DenoJson,
+    /// `Cargo.toml` `[workspace].members`.
+    Cargo,
+}
+
+impl WorkspaceKind {
+    /// Human-readable declaration label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::PackageJson => "package.json workspaces",
+            Self::PnpmWorkspace => "pnpm-workspace.yaml",
+            Self::Lerna => "lerna.json",
+            Self::DenoJson => "deno.json workspace",
+            Self::Cargo => "Cargo.toml workspace",
+        }
+    }
+}
+
+/// Workspace declarations found at the workspace root and the members they
+/// expand to, deduplicated by directory and sorted by path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Workspace {
+    /// Directory holding the declarations.
+    pub root: PathBuf,
+    /// Every declaration found, in detection order.
+    pub kinds: Vec<WorkspaceKind>,
+    /// Members in path order.
+    pub members: Vec<Arc<WorkspaceMember>>,
+    /// The member containing the invocation directory, when runner was
+    /// started inside one.
+    pub current: Option<Arc<WorkspaceMember>>,
+}
+
+impl Workspace {
+    /// Members addressed by `scope` (see [`WorkspaceMember::addressed_by`]).
+    /// An exact name or path match wins over a bare directory name, so
+    /// `apps/web` and `tools/web` are only ambiguous when addressed as `web`.
+    pub(crate) fn resolve(&self, scope: &str) -> Vec<&Arc<WorkspaceMember>> {
+        let exact: Vec<_> = self
+            .members
+            .iter()
+            .filter(|member| member.name == scope || member.path == scope)
+            .collect();
+        if !exact.is_empty() {
+            return exact;
+        }
+        self.members
+            .iter()
+            .filter(|member| member.addressed_by(scope))
+            .collect()
+    }
 }
 
 /// Identifies the config file a [`Task`] was extracted from.
@@ -522,7 +648,11 @@ impl std::fmt::Display for DetectionWarning {
 
 /// Everything detected about the current project directory.
 pub(crate) struct ProjectContext {
-    /// Absolute path to the project root that was scanned.
+    /// Directory runner was invoked for (cwd or `--dir`). Local-file tokens
+    /// and package-manager exec fallbacks resolve against it.
+    pub cwd: PathBuf,
+    /// Absolute path to the project root that was scanned: the workspace
+    /// root when `cwd` sits inside a declared workspace, else `cwd`.
     pub root: PathBuf,
     /// Detected package managers, ordered by detection priority.
     pub package_managers: Vec<PackageManager>,
@@ -536,6 +666,8 @@ pub(crate) struct ProjectContext {
     pub current_node: Option<String>,
     /// Whether the project appears to be a monorepo.
     pub is_monorepo: bool,
+    /// Workspace declarations at the root and their expanded members.
+    pub workspace: Option<Workspace>,
     /// Which package managers materialize which install directory. A fact,
     /// not a verdict: whether two writers sharing one directory is a problem
     /// depends on the install set, which detection cannot know.
@@ -554,6 +686,38 @@ pub(crate) struct InstallDir {
 }
 
 impl ProjectContext {
+    /// The workspace member the invocation directory sits in, if any.
+    pub(crate) fn current_member(&self) -> Option<&Arc<WorkspaceMember>> {
+        self.workspace.as_ref()?.current.as_ref()
+    }
+
+    /// Bare-name precedence of a task's scope from the invocation
+    /// directory: the current member first, then the root, then every other
+    /// member.
+    pub(crate) fn scope_rank(&self, task: &Task) -> u8 {
+        match (&task.member, self.current_member()) {
+            (Some(member), Some(current)) if member.dir == current.dir => 0,
+            (None, _) => 1,
+            (Some(_), _) => 2,
+        }
+    }
+
+    /// Whether a bare name spells this task from the invocation directory:
+    /// root tasks and tasks of the current member.
+    pub(crate) fn is_local(&self, task: &Task) -> bool {
+        self.scope_rank(task) < 2
+    }
+
+    /// The shortest token that runs `task` from the invocation directory:
+    /// the bare name for local tasks, `member:name` for other members.
+    pub(crate) fn spelling<'a>(&self, task: &'a Task) -> Cow<'a, str> {
+        if self.is_local(task) {
+            Cow::Borrowed(task.name.as_str())
+        } else {
+            task.display_name()
+        }
+    }
+
     /// Returns the first Node-ecosystem package manager, if any.
     pub(crate) fn primary_node_pm(&self) -> Option<PackageManager> {
         self.package_managers

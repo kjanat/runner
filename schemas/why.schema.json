@@ -99,7 +99,7 @@
           "type": "string"
         },
         "strategy": {
-          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, or `exec-fallback`.",
+          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, `ambiguous`, or `exec-fallback`.",
           "type": "string"
         }
       },

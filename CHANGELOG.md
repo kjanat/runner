@@ -20,6 +20,26 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- List and run workspace member tasks from the workspace root. Members are
+  read from `package.json` `workspaces`, `pnpm-workspace.yaml`, `lerna.json`,
+  `deno.json` `workspace`, and `Cargo.toml` `[workspace]`; each member's
+  manifest scripts and `deno.json` tasks appear as `<member>:<task>` and run in
+  the member's directory. A bare name resolves to the root first, then to the
+  single member defining it; a name several members define is refused with the
+  qualified spellings. `doctor --json` reports `project.workspace` and scopes
+  every task and source by member; `list --json` gains `tasks[].member`;
+  completions offer `<member>:<task>`.
+- Anchor detection on the workspace root from any directory beneath it.
+  Inside a member, that member's tasks win bare names and lead completions,
+  the root's follow, and a shadowed root task stays reachable as
+  `root:<task>`; `<scope>:<source>#<task>` forms resolve from anywhere.
+  Local-file tokens and package-manager exec fallbacks keep resolving against
+  the invocation directory.
+- Per-task `[tasks.<key>]` settings address workspace member tasks as
+  `member:task` or `member:source#task`, layered over the bare name and
+  `source:task` keys per axis. `--explain` reports the scope a task was picked
+  from (current member, root, or member), the scopes it outranked, and the
+  directory it runs in.
 - Add independent `[runner]` output categories, `[host].diagnostics`, and
   per-task stdout/stderr preservation controls. `--explain` reports the
   effective policy, applied host arguments, and unsupported reductions.

@@ -18,11 +18,12 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use super::qualify::{
-    TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
-    qualified_miss_error, reversed_qualifier_error, runner_constraint_error,
+    ScopeQuery, TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
+    member_ambiguity_error, qualified_miss_error, reversed_qualifier_error,
+    runner_constraint_error,
 };
 use super::runtime;
-use super::select::select_task_entry;
+use super::select::{ambiguous_members, select_task_entry};
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::tool;
 use crate::tool::deno_exec::DenoTaskPlan;
@@ -48,6 +49,47 @@ fn print_dispatch_arrow(
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::cmd::print_explain(overrides, &format!("resolved: {describe}"));
+}
+
+/// `--explain` line for the workspace scope a task was picked from: which
+/// scope won, why it outranked the others, and the directory it runs in.
+fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, entry: &Task) {
+    let Some(workspace) = ctx.workspace.as_ref() else {
+        return;
+    };
+    let candidates: Vec<&Task> = ctx
+        .tasks
+        .iter()
+        .filter(|task| task.name == entry.name)
+        .collect();
+    let scope = match (&entry.member, workspace.current.as_ref()) {
+        (Some(member), Some(current)) if member.dir == current.dir => {
+            format!("{} (current member)", member.name)
+        }
+        (Some(member), _) => format!("{} (member)", member.name),
+        (None, _) => "root".to_string(),
+    };
+    let mut others: Vec<&str> = candidates
+        .iter()
+        .filter(|candidate| !candidate.same_scope(entry))
+        .map(|candidate| candidate.scope())
+        .collect();
+    others.sort_unstable();
+    others.dedup();
+    let outranked = if others.is_empty() {
+        String::new()
+    } else {
+        format!(", outranks {}", others.join(", "))
+    };
+    crate::cmd::print_explain(
+        overrides,
+        &format!(
+            "scope: {scope}{outranked}; cwd={} root={} dir={}",
+            ctx.cwd.display(),
+            ctx.root.display(),
+            entry.dir(&ctx.root).display(),
+        ),
+    );
 }
 
 fn host_verbosity(
@@ -314,13 +356,14 @@ fn decide_deno_self_exec(
         return Ok(None);
     }
 
-    let plan = tool::deno::find_config_upwards(&ctx.root)
+    let dir = entry.dir(&ctx.root);
+    let plan = tool::deno::find_config_upwards(dir)
         .and_then(|path| tool::deno_exec::plan(&path, &entry.name));
     match plan {
         Some(plan) if plan.self_executable() => Ok(Some(DenoSelfExec {
             plan,
             args: args.to_vec(),
-            cwd: ctx.root.clone(),
+            cwd: dir.to_path_buf(),
         })),
         // Not self-executable: real deno can still run it; otherwise bail.
         _ if deno => Ok(None),
@@ -372,7 +415,7 @@ pub(super) fn resolve_dispatch(
     if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
         let mut command = local.command;
         print_dispatch_arrow(overrides, &local.label, task, args);
-        crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+        crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
         crate::cmd::configure_task_streams(&mut command, overrides, task);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
     }
@@ -380,15 +423,20 @@ pub(super) fn resolve_dispatch(
     let (lookup, found) = lookup_token(ctx, task);
     let TokenLookup {
         qualifier,
+        scope,
         task_name,
     } = lookup;
 
+    if matches!(scope, ScopeQuery::Unresolved { .. }) {
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+    }
+
     // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
     // candidate that isn't under one of the allowed sources is treated
-    // as non-existent. A qualifier (`runner.json:task`) is the user
-    // narrowing *to* a source explicitly and outranks the runner
-    // constraint; the qualified branch below applies its own match.
-    let restricted: Vec<_> = if qualifier.is_some() {
+    // as non-existent. A qualifier (`runner.json:task`, `member:task`) is
+    // the user narrowing explicitly and outranks the runner constraint;
+    // the qualified branch below applies its own match.
+    let restricted: Vec<_> = if qualifier.is_some() || scope.is_pinned() {
         found.clone()
     } else if let Some(allowed) = allowed_runner_sources(overrides) {
         found
@@ -404,11 +452,11 @@ pub(super) fn resolve_dispatch(
         // Restrictive override active but no candidate matched: hard
         // error per the resolved design decision (explicit intent
         // never silently downgrades). Skipped for qualified misses,
-        // the qualifier (`justfile:foo`) is stronger user intent than
-        // `--runner` / `[task_runner].prefer`, so report the qualified
-        // miss directly instead of surfacing a runner-constraint error
-        // the user can't act on.
-        let Some(missed_source) = qualifier else {
+        // the qualifier (`justfile:foo`, `rfc:foo`) is stronger user
+        // intent than `--runner` / `[task_runner].prefer`, so report the
+        // qualified miss directly instead of surfacing a runner-constraint
+        // error the user can't act on.
+        if qualifier.is_none() && !scope.is_pinned() {
             // Fast-fail on the reversed qualifier shape (`task:source`).
             // Without this guard, `lint:cargo` slips through as an
             // unqualified bare name, hits the PM-exec fallback below,
@@ -438,7 +486,7 @@ pub(super) fn resolve_dispatch(
             {
                 let mut command = local.command;
                 print_dispatch_arrow(overrides, &local.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
                 crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
@@ -454,19 +502,19 @@ pub(super) fn resolve_dispatch(
                 let mut command = dep.dispatch.command;
                 print_pm_explain(overrides, &dep.describe);
                 print_dispatch_arrow(overrides, &dep.dispatch.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
                 crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
             return dispatch_after_miss(ctx, overrides, task_name, args, sink);
-        };
+        }
 
         // Qualified miss (colon or FQN syntax): the qualifier is explicit
         // task-lookup intent, so error here, never fall through to
         // PM-exec, which would hand the token to bun x/npx as a package
         // spec and resolve it off the network.
-        return Err(qualified_miss_error(ctx, missed_source, task_name));
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
     }
 
     let entry = if let Some(source) = qualifier {
@@ -474,10 +522,17 @@ pub(super) fn resolve_dispatch(
             .iter()
             .find(|t| t.source == source)
             .copied()
-            .ok_or_else(|| qualified_miss_error(ctx, source, task_name))?
+            .ok_or_else(|| qualified_miss_error(ctx, &scope, qualifier, task_name))?
     } else {
+        if !scope.is_pinned()
+            && let Some(members) = ambiguous_members(&restricted)
+        {
+            return Err(member_ambiguity_error(task_name, &members));
+        }
         select_task_entry(ctx, overrides, &restricted)
     };
+    let dir = entry.dir(&ctx.root);
+    print_scope_explain(ctx, overrides, entry);
 
     // The one place a matched task's source is known: report a `--runtime`
     // the winning source cannot honour, so an explicit runtime is never a
@@ -488,19 +543,19 @@ pub(super) fn resolve_dispatch(
     // lineage. Checked before anything is spawned or run in-process, and
     // before the arrow, so the diagnostic is the only output a cycle
     // produces.
-    let task_stack = crate::cmd::push_task_frame(&ctx.root, entry.source, &entry.name)?;
+    let task_stack = crate::cmd::push_task_frame(dir, entry.source, &entry.name)?;
 
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
     if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
-        print_dispatch_arrow(overrides, "deno-shell", task_name, args);
+        print_dispatch_arrow(overrides, "deno-shell", &ctx.spelling(entry), args);
         return Ok(Dispatch::DenoSelfExec(self_exec));
     }
 
-    print_dispatch_arrow(overrides, entry.source.label(), task_name, args);
+    print_dispatch_arrow(overrides, entry.source.label(), &ctx.spelling(entry), args);
 
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::cmd::configure_command(spawn.command_mut(), &ctx.root, overrides);
+    crate::cmd::configure_command(spawn.command_mut(), dir, overrides);
     crate::cmd::configure_task_streams(
         spawn.command_mut(),
         overrides,
@@ -536,7 +591,7 @@ fn dispatch_after_miss(
     if should_use_bun_test_fallback(ctx, overrides, resolved_pm, task_name) {
         print_dispatch_arrow(overrides, "bun", "test", args);
         let mut cmd = tool::bun::test_cmd(args);
-        crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+        crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
         crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
     }
@@ -554,7 +609,7 @@ fn dispatch_after_miss(
         None => build_pm_exec_command(ctx, resolved_pm, task_name, args),
     };
     print_dispatch_arrow(overrides, label, task_name, args);
-    crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+    crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
     crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
 }
@@ -658,9 +713,9 @@ pub(super) fn should_use_bun_test_fallback(
 }
 
 fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
-    ctx.tasks
-        .iter()
-        .any(|entry| entry.source == TaskSource::PackageJson && entry.name == task)
+    ctx.tasks.iter().any(|entry| {
+        entry.source == TaskSource::PackageJson && entry.member.is_none() && entry.name == task
+    })
 }
 
 /// Build a [`Command`] for the given task source and package manager.
@@ -863,6 +918,7 @@ mod tests {
 
     fn context() -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -870,6 +926,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -983,6 +1040,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 
@@ -1046,6 +1104,7 @@ mod tests {
             description: None,
             alias_of: Some("build".to_string()),
             passthrough_to: None,
+            member: None,
         });
 
         let command = expect_command(
@@ -1128,6 +1187,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         let args = [String::from("--port"), String::from("3000")];
 
@@ -1161,6 +1221,7 @@ mod tests {
             description: Some("greenpy.main:main".to_string()),
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         let args = [String::from("--flag")];
 
@@ -1191,6 +1252,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
 
         let command = expect_command(

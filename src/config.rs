@@ -449,6 +449,10 @@ pub(crate) struct TaskRunnerSection {
 /// never hard-rejects an unlisted source, only reorders. An explicit CLI
 /// qualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still
 /// outranks these file settings.
+///
+/// Keys layer from least to most specific: `site`, `package.json:site`,
+/// `rfc:site` (workspace member `rfc`), `rfc:package.json#site` (the FQN
+/// `doctor --json` prints).
 // No `schemars(deny_unknown_fields)`: the flattened `tasks` map makes this an
 // open object (task-name keys become `additionalProperties`), which is
 // mutually exclusive with denying unknown fields.

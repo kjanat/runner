@@ -26,15 +26,25 @@ pub(crate) const fn structured_source_label(source: TaskSource) -> &'static str 
     }
 }
 
-/// Build a task's fully-qualified name: `<scope>:<kind>#<name>`.
+/// Build a task's fully-qualified name: `<scope>:<kind>#<name>`, where
+/// `scope` is `root` or the workspace member's name.
 ///
 /// The `#` boundary separates the colon-joined structured prefix
 /// (`scope:kind`, both colon-free) from the verbatim task name, which may
 /// itself contain `:` (e.g. an npm script `fmt:update`). Consumers split
 /// once on `#`: everything after is the name, unescaped. Centralised here
 /// so `why` and `doctor` can't drift apart on the format.
-pub(crate) fn fqn(source: TaskSource, name: &str) -> String {
-    format!("root:{kind}#{name}", kind = structured_source_label(source))
+pub(crate) fn fqn(task: &Task) -> String {
+    fqn_of(task.scope(), task.source, &task.name)
+}
+
+/// [`fqn`] for a `(scope, source, name)` triple that has no [`Task`] yet,
+/// e.g. when matching `[tasks."root:just#fmt"]` config keys.
+pub(crate) fn fqn_of(scope: &str, source: TaskSource, name: &str) -> String {
+    format!(
+        "{scope}:{kind}#{name}",
+        kind = structured_source_label(source)
+    )
 }
 
 /// Key path (structured configs) or target name (flat files) locating the

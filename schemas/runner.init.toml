@@ -49,6 +49,10 @@
 # never hard-rejects an unlisted source, only reorders. An explicit CLI
 # qualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still
 # outranks these file settings.
+#
+# Keys layer from least to most specific: `site`, `package.json:site`,
+# `rfc:site` (workspace member `rfc`), `rfc:package.json#site` (the FQN
+# `doctor --json` prints).
 [tasks]
 # prefer = ["turbo", "bun"]   # global order: turbo, then package.json (bun)
 # overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order

@@ -11,12 +11,13 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::cmd::run::{
-    ResolvedPythonPm, TokenLookup, allowed_runner_sources, lookup_token, resolve_python_pm,
-    runner_constraint_error, select_task_entry, source_depth, source_priority,
+    ResolvedPythonPm, ScopeQuery, TokenLookup, allowed_runner_sources, ambiguous_members,
+    lookup_token, qualified_miss_error, resolve_python_pm, runner_constraint_error,
+    select_task_entry, source_depth, source_priority,
 };
 use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::schema::labels;
-use crate::types::{JsRuntime, ProjectContext, Task, TaskSource};
+use crate::types::{JsRuntime, ProjectContext, Task, TaskSource, WorkspaceMember};
 
 /// Explain how `task` would resolve in the current project.
 ///
@@ -36,12 +37,23 @@ pub(crate) fn why(
     // fallback for colon-named scripts all resolve here, so `why` can
     // explain the very dispatch `run` would perform for the same token.
     let (lookup, candidates) = lookup_token(ctx, task);
-    let TokenLookup { qualifier, .. } = lookup;
+    let TokenLookup {
+        qualifier,
+        scope,
+        task_name,
+    } = lookup;
+
+    if matches!(scope, ScopeQuery::Unresolved { .. }) {
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+    }
 
     // A qualifier pins the source and outranks the runner constraint,
     // mirroring `resolve_dispatch`.
     let restricted: Vec<&Task> = qualifier.map_or_else(
         || {
+            if scope.is_pinned() {
+                return candidates.clone();
+            }
             allowed_runner_sources(overrides).map_or_else(
                 || candidates.clone(),
                 |allowed| {
@@ -64,16 +76,24 @@ pub(crate) fn why(
 
     if restricted.is_empty()
         && qualifier.is_none()
+        && !scope.is_pinned()
         && let Some(reason) = runner_constraint_error(overrides, &candidates)
     {
         return Err(reason.into());
     }
 
-    let selected = (!restricted.is_empty()).then(|| select_task_entry(ctx, overrides, &restricted));
+    // A bare name several members define (and the root does not) has no
+    // winner: `run` refuses it, so `why` reports the tie instead of ranking.
+    let ambiguous = (!scope.is_pinned())
+        .then(|| ambiguous_members(&restricted))
+        .flatten();
+    let selected = (!restricted.is_empty() && ambiguous.is_none())
+        .then(|| select_task_entry(ctx, overrides, &restricted));
 
     let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
 
     if json {
+        let decision = decision_report(&candidates, selected, qualifier, ambiguous.as_deref());
         let report = build_report(
             task,
             &candidates,
@@ -81,7 +101,7 @@ pub(crate) fn why(
             pm_decision.as_ref(),
             overrides,
             ctx,
-            qualifier,
+            decision,
         );
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -92,6 +112,7 @@ pub(crate) fn why(
             pm_decision.as_ref(),
             overrides,
             ctx,
+            ambiguous.as_deref(),
         );
     }
 
@@ -434,7 +455,7 @@ struct WhyDecision {
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Selection branch taken: `single-candidate`, `ranked`, \
-                                `filtered`, or `exec-fallback`.")
+                                `filtered`, `ambiguous`, or `exec-fallback`.")
     )]
     strategy: &'static str,
     reason: String,
@@ -447,7 +468,7 @@ fn build_report<'a>(
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &'a ProjectContext,
-    qualifier: Option<TaskSource>,
+    decision: WhyDecision,
 ) -> WhyReport<'a> {
     let runtime = overrides.js_runtime();
     let candidate_report = |task: &'a Task| WhyCandidate {
@@ -465,7 +486,7 @@ fn build_report<'a>(
         output: output_report(overrides, selected),
         selected: selected.map(candidate_report),
         candidates: candidates.iter().copied().map(candidate_report).collect(),
-        decision: decision_report(candidates, selected, qualifier),
+        decision,
     }
 }
 
@@ -528,10 +549,10 @@ fn task_report<'a>(
     let is_selected = selected.is_some_and(|sel| std::ptr::eq(sel, task));
     WhyTask {
         name: &task.name,
-        fqn: labels::fqn(task.source, &task.name),
+        fqn: labels::fqn(task),
         provider: provider_label(task.source),
         kind,
-        source: labels::source_anchor(task.source, &ctx.root)
+        source: labels::source_anchor(task.source, task.dir(&ctx.root))
             .map(|path| path.display().to_string()),
         source_pointer: labels::source_pointer(task),
         description: task.description.as_deref(),
@@ -545,7 +566,7 @@ fn task_report<'a>(
             .collect(),
         definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
         resolved: resolved_command(task, runtime, pm_decision.filter(|_| is_selected)),
-        cwd: ctx.root.display().to_string(),
+        cwd: task.dir(&ctx.root).display().to_string(),
         dependencies: Vec::new(),
     }
 }
@@ -572,6 +593,7 @@ fn decision_report(
     candidates: &[&Task],
     selected: Option<&Task>,
     qualifier: Option<TaskSource>,
+    ambiguous: Option<&[&WorkspaceMember]>,
 ) -> WhyDecision {
     if candidates.is_empty() {
         return WhyDecision {
@@ -579,6 +601,18 @@ fn decision_report(
             reason: "no task matched; `runner run` would route the name through the primary \
                      package manager's exec primitive"
                 .to_string(),
+        };
+    }
+    if let Some(members) = ambiguous {
+        let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
+        return WhyDecision {
+            strategy: "ambiguous",
+            reason: format!(
+                "{} workspace members define this name and the root does not; `runner run` \
+                 refuses it until qualified as `<member>:<task>` ({})",
+                members.len(),
+                names.join(", "),
+            ),
         };
     }
     if selected.is_none() {
@@ -670,9 +704,28 @@ fn print_human(
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
+    ambiguous: Option<&[&WorkspaceMember]>,
 ) {
     println!("{} {}", "runner why".bold(), task.bold());
     println!();
+
+    if let Some(members) = ambiguous {
+        let spellings: Vec<String> = members
+            .iter()
+            .map(|member| format!("{}:{task}", member.name))
+            .collect();
+        println!(
+            "  {}",
+            format!(
+                "{} workspace members define this name and the root does not; `runner run` \
+                 refuses it until qualified: {}",
+                members.len(),
+                spellings.join(", "),
+            )
+            .yellow()
+        );
+        println!();
+    }
 
     if candidates.is_empty() {
         println!(
@@ -703,10 +756,15 @@ fn print_human(
         let passthrough_tag = c.passthrough_to.map_or(String::new(), |r| {
             format!(" (passthrough to {})", r.label())
         });
+        let scope_tag = c
+            .member
+            .as_ref()
+            .map_or(String::new(), |member| format!(" ({})", member.name));
         println!(
-            "  {} {} [priority={}, depth={}, order={}]{}{}",
+            "  {} {}{} [priority={}, depth={}, order={}]{}{}",
             "·".dimmed(),
             c.source.label().bold(),
+            scope_tag,
             source_priority(overrides, c.source),
             depth_label,
             c.source.display_order(),
@@ -789,12 +847,15 @@ fn print_human(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{PmDecision, build_report, pm_decision_for_selected, why};
+    use super::{
+        PmDecision, WhyReport, build_report, decision_report, pm_decision_for_selected, why,
+    };
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("/tmp/test"),
             root: PathBuf::from("/tmp/test"),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -802,6 +863,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -815,7 +877,29 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
+    }
+
+    fn report<'a>(
+        query: &'a str,
+        candidates: &[&'a Task],
+        selected: Option<&'a Task>,
+        pm_decision: Option<&PmDecision>,
+        overrides: &ResolutionOverrides,
+        ctx: &'a ProjectContext,
+        qualifier: Option<TaskSource>,
+    ) -> WhyReport<'a> {
+        let decision = decision_report(candidates, selected, qualifier, None);
+        build_report(
+            query,
+            candidates,
+            selected,
+            pm_decision,
+            overrides,
+            ctx,
+            decision,
+        )
     }
 
     #[test]
@@ -890,7 +974,7 @@ mod tests {
         let candidates = vec![&ctx.tasks[0]];
         let selected = ctx.tasks.first();
 
-        let report = build_report(
+        let report = report(
             "t",
             &candidates,
             selected,
@@ -932,7 +1016,7 @@ mod tests {
     #[test]
     fn report_uses_exec_fallback_decision_when_nothing_matches() {
         let ctx = context(vec![]);
-        let report = build_report(
+        let report = report(
             "nope",
             &[],
             None,
@@ -963,7 +1047,7 @@ mod tests {
         ]);
         let candidates: Vec<&Task> = ctx.tasks.iter().collect();
 
-        let report = build_report(
+        let report = report(
             "deno:build",
             &candidates,
             None,
@@ -990,7 +1074,7 @@ mod tests {
             task("build", TaskSource::Justfile),
         ]);
         let candidates: Vec<&Task> = ctx.tasks.iter().collect();
-        let report = build_report(
+        let report = report(
             "build",
             &candidates,
             ctx.tasks.first(),
@@ -1021,7 +1105,7 @@ mod tests {
             .expect("pyproject task should resolve PM diagnostics");
         let candidates = vec![&ctx.tasks[0]];
 
-        let report = build_report(
+        let report = report(
             "greenpy",
             &candidates,
             selected,
@@ -1062,7 +1146,7 @@ mod tests {
         let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected);
         assert!(pm_decision.is_none(), "runtime must suppress PM resolution");
 
-        let report = build_report(
+        let report = report(
             "build",
             &[&ctx.tasks[0]],
             selected,
@@ -1093,7 +1177,7 @@ mod tests {
         let overrides = runtime_overrides("node");
         let selected = ctx.tasks.first();
 
-        let report = build_report(
+        let report = report(
             "build",
             &[&ctx.tasks[0]],
             selected,
@@ -1121,7 +1205,7 @@ mod tests {
         let overrides = runtime_overrides("bun");
         let selected = ctx.tasks.first();
 
-        let report = build_report(
+        let report = report(
             "build",
             &[&ctx.tasks[0]],
             selected,
@@ -1151,7 +1235,7 @@ mod tests {
         let ctx = context(vec![task("fmt", TaskSource::Justfile), shortcut]);
         let candidates = vec![&ctx.tasks[0]];
 
-        let report = build_report(
+        let report = report(
             "fmt",
             &candidates,
             ctx.tasks.first(),

@@ -3,13 +3,14 @@
 
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::tool;
 use crate::types::{
     DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner,
-    TaskSource,
+    TaskSource, WorkspaceMember,
 };
 
 /// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
@@ -21,17 +22,25 @@ use crate::types::{
 /// 4. Monorepo indicators
 /// 5. Task extraction (conditional on detected tools)
 pub(crate) fn detect(dir: &Path) -> ProjectContext {
+    let workspace = tool::workspace::anchor(dir);
+    let root = workspace
+        .as_ref()
+        .map_or(dir, |workspace| workspace.root.as_path())
+        .to_path_buf();
     let mut ctx = ProjectContext {
-        root: dir.to_path_buf(),
+        cwd: dir.to_path_buf(),
+        root: root.clone(),
         package_managers: Vec::new(),
         task_runners: Vec::new(),
         tasks: Vec::new(),
         node_version: None,
         current_node: None,
-        is_monorepo: false,
+        is_monorepo: workspace.is_some(),
+        workspace,
         install_dirs: Vec::new(),
         warnings: Vec::new(),
     };
+    let dir = root.as_path();
 
     detect_package_managers(dir, &mut ctx);
     detect_install_dirs(dir, &mut ctx);
@@ -40,12 +49,17 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     detect_monorepo(dir, &mut ctx);
     extract_tasks(dir, &mut ctx);
 
-    ctx.tasks.sort_by(|a, b| {
+    let mut tasks = std::mem::take(&mut ctx.tasks);
+    tasks.sort_by(|a, b| {
+        let member_path = |task: &Task| task.member.as_ref().map(|member| member.path.clone());
         a.source
             .display_order()
             .cmp(&b.source.display_order())
+            .then_with(|| ctx.scope_rank(a).cmp(&ctx.scope_rank(b)))
+            .then_with(|| member_path(a).cmp(&member_path(b)))
             .then_with(|| a.name.cmp(&b.name))
     });
+    ctx.tasks = tasks;
 
     ctx
 }
@@ -380,12 +394,6 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
     if tool::cargo_pm::detect_workspace(dir) {
         ctx.is_monorepo = true;
     }
-    if let Ok(content) = std::fs::read_to_string(dir.join("package.json"))
-        && let Ok(p) = serde_json::from_str::<serde_json::Value>(&content)
-        && p.get("workspaces").is_some()
-    {
-        ctx.is_monorepo = true;
-    }
 }
 
 // Task extraction
@@ -427,6 +435,7 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
     // needs the manifest; PM choice is resolved later, so `--pm uv` or
     // `[pm].python` can dispatch even without a lockfile.
     let want_pyproject_scripts = tool::python::find_pyproject_upwards(dir).is_some();
+    let members = workspace_members(ctx);
 
     thread::scope(|s| {
         let pkg_json_h = want_pkg_json.then(|| {
@@ -438,6 +447,8 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
                 }
             })
         });
+        let members_h =
+            (!members.is_empty()).then(|| s.spawn(move || extract_member_tasks(&members)));
         let turbo_h = want_turbo.then(|| s.spawn(move || tool::turbo::extract_tasks(dir)));
         let make_h = want_make.then(|| s.spawn(move || tool::make::extract_tasks(dir)));
         let just_h = want_just.then(|| s.spawn(move || tool::just::extract_tasks(dir)));
@@ -507,7 +518,89 @@ fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
                 h.join().expect("extractor thread panicked"),
             );
         }
+        if let Some(h) = members_h {
+            push_member_extractions(ctx, h.join().expect("extractor thread panicked"));
+        }
     });
+}
+
+fn workspace_members(ctx: &ProjectContext) -> Vec<Arc<WorkspaceMember>> {
+    ctx.workspace
+        .as_ref()
+        .map(|workspace| workspace.members.clone())
+        .unwrap_or_default()
+}
+
+fn push_member_extractions(ctx: &mut ProjectContext, extractions: Vec<MemberExtraction>) {
+    for extraction in extractions {
+        push_member_tasks(ctx, extraction);
+    }
+}
+
+/// Manifest scripts and deno tasks read from one workspace member's own
+/// directory.
+struct MemberExtraction {
+    member: Arc<WorkspaceMember>,
+    scripts: anyhow::Result<Vec<(String, String)>>,
+    deno_tasks: anyhow::Result<Vec<(String, Option<String>)>>,
+}
+
+fn extract_member_tasks(members: &[Arc<WorkspaceMember>]) -> Vec<MemberExtraction> {
+    members
+        .iter()
+        .map(|member| MemberExtraction {
+            member: Arc::clone(member),
+            scripts: tool::node::extract_scripts(&member.dir),
+            deno_tasks: tool::deno::extract_tasks_in(&member.dir),
+        })
+        .collect()
+}
+
+fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
+    let MemberExtraction {
+        member,
+        scripts,
+        deno_tasks,
+    } = extraction;
+    match scripts {
+        Ok(entries) => {
+            for (name, command) in entries {
+                let passthrough_to = tool::passthrough::detect_target(&name, &command);
+                ctx.tasks.push(Task {
+                    name,
+                    source: TaskSource::PackageJson,
+                    run_target: None,
+                    description: None,
+                    alias_of: None,
+                    passthrough_to,
+                    member: Some(Arc::clone(&member)),
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::PackageJson.label(),
+            error: format!("{}: {err:#}", member.path),
+        }),
+    }
+    match deno_tasks {
+        Ok(entries) => {
+            for (name, description) in entries {
+                ctx.tasks.push(Task {
+                    name,
+                    source: TaskSource::DenoJson,
+                    run_target: None,
+                    description,
+                    alias_of: None,
+                    passthrough_to: None,
+                    member: Some(Arc::clone(&member)),
+                });
+            }
+        }
+        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::DenoJson.label(),
+            error: format!("{}: {err:#}", member.path),
+        }),
+    }
 }
 
 fn push_go_tasks(
@@ -524,6 +617,7 @@ fn push_go_tasks(
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    member: None,
                 });
             }
         }
@@ -574,6 +668,7 @@ fn push_cargo_aliases(
                     description: None,
                     alias_of,
                     passthrough_to: None,
+                    member: None,
                 });
             }
         }
@@ -613,6 +708,7 @@ fn push_described_tasks(
                     description,
                     alias_of: None,
                     passthrough_to: None,
+                    member: None,
                 });
             }
         }
@@ -645,6 +741,7 @@ fn push_package_json_tasks(
                     description: None,
                     alias_of: None,
                     passthrough_to,
+                    member: None,
                 });
             }
         }
@@ -698,6 +795,7 @@ fn push_recipe_alias_tasks(
                     description,
                     alias_of,
                     passthrough_to: None,
+                    member: None,
                 });
             }
         }
