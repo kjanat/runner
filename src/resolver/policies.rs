@@ -267,16 +267,17 @@ pub(super) fn parse_tasks_verbosity(
             .as_deref()
             .map(|raw| parse_task_stream(task, "stderr", raw))
             .transpose()?;
-        if level.is_some() || stream.is_some() || stdout.is_some() || stderr.is_some() {
-            out.insert(
-                task.clone(),
-                TaskVerbosity {
-                    level,
-                    stream,
-                    stdout,
-                    stderr,
-                },
-            );
+        let verbosity = TaskVerbosity {
+            level,
+            stream,
+            stdout,
+            stderr,
+            progress: settings.progress,
+            groups: settings.groups,
+            task_timing: settings.task_timing,
+        };
+        if verbosity != TaskVerbosity::default() {
+            out.insert(task.clone(), verbosity);
         }
     }
     Ok(out)

@@ -57,7 +57,7 @@ pub(crate) fn install_pms(
 
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
-    let _group = super::task_group(overrides, "install");
+    let _group = super::task_group(overrides, "install", "install");
 
     if overrides.shows_warnings()
         && let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)

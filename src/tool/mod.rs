@@ -140,6 +140,20 @@ pub(crate) struct RunnerOutputPolicy {
     pub fatal_errors: bool,
 }
 
+impl RunnerOutputPolicy {
+    pub(crate) const fn and(self, other: Self) -> Self {
+        Self {
+            progress: self.progress && other.progress,
+            warnings: self.warnings && other.warnings,
+            errors: self.errors && other.errors,
+            groups: self.groups && other.groups,
+            task_timing: self.task_timing && other.task_timing,
+            summary: self.summary && other.summary,
+            fatal_errors: self.fatal_errors && other.fatal_errors,
+        }
+    }
+}
+
 /// Effective output policy. Quiet levels are presets over these axes; task
 /// streams never change from a quiet preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

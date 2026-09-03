@@ -564,6 +564,18 @@ pub(crate) struct TaskSettings {
         schemars(extend("enum" = ["inherit", "discard", null]))
     )]
     pub stderr: Option<String>,
+    /// Print this task's dispatch arrow. `false` hides it for this task only;
+    /// a quiet preset or `[runner].progress = false` hides it regardless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<bool>,
+    /// Wrap this task's output in a GitHub Actions group. `false` opts this
+    /// task out; `[runner].groups = false` or a quiet preset wins over `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<bool>,
+    /// Print this task's chain timing line. `false` hides it for this task
+    /// only; `[runner].task_timing = false` or a quiet preset wins over `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_timing: Option<bool>,
 }
 
 /// Verbosity intent as written in config: a bare level name (`verbosity =
@@ -671,7 +683,15 @@ const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
 /// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
 /// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
 /// drift. An unrecognized field warns (forward-compat) rather than aborting.
-const TASK_ENTRY_FIELDS: &[&str] = &["runner", "verbosity", "stdout", "stderr"];
+const TASK_ENTRY_FIELDS: &[&str] = &[
+    "runner",
+    "verbosity",
+    "stdout",
+    "stderr",
+    "progress",
+    "groups",
+    "task_timing",
+];
 
 /// Recognized fields of a `[tasks.<name>].verbosity` table ([`VerbosityTable`]).
 const VERBOSITY_TABLE_FIELDS: &[&str] = &["level", "stream"];

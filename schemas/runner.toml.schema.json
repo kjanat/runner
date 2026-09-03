@@ -293,6 +293,20 @@
       "description": "The table form of a [`TaskSpec`]: individual per-task settings, each merged\nover the built-in defaults so a partial table only overrides what it names.",
       "type": "object",
       "properties": {
+        "groups": {
+          "description": "Wrap this task's output in a GitHub Actions group. `false` opts this\ntask out; `[runner].groups = false` or a quiet preset wins over `true`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "description": "Print this task's dispatch arrow. `false` hides it for this task only;\na quiet preset or `[runner].progress = false` hides it regardless.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "runner": {
           "description": "Source/runner pin for this task, same meaning as a legacy\n[`TasksSection::overrides`] entry (a runner, package manager, or source\nlabel). A pin the task doesn't have falls through to the normal ranking.",
           "type": [
@@ -346,6 +360,13 @@
             "inherit",
             "discard",
             null
+          ]
+        },
+        "task_timing": {
+          "description": "Print this task's chain timing line. `false` hides it for this task\nonly; `[runner].task_timing = false` or a quiet preset wins over `true`.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "verbosity": {

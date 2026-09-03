@@ -1692,6 +1692,83 @@ mod tests {
     }
 
     #[test]
+    fn explicit_quiet_merges_with_runner_config_quietest_wins() {
+        use crate::config::{HostOutputSection, RunnerOutputSection};
+        let loaded = LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
+            config: RunnerConfig {
+                runner: RunnerOutputSection {
+                    warnings: Some(false),
+                    progress: Some(true),
+                    ..RunnerOutputSection::default()
+                },
+                host: HostOutputSection {
+                    diagnostics: Some("reduced".to_string()),
+                    stream: None,
+                },
+                ..RunnerConfig::default()
+            },
+        };
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            quiet: QuietSource { cli: 1, env: None },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+
+        assert!(
+            !overrides.shows_warnings(),
+            "config hides warnings under -q"
+        );
+        assert!(
+            !overrides.shows_progress(),
+            "-q hides progress despite config"
+        );
+        assert!(overrides.shows_errors());
+        assert_eq!(
+            overrides.output_policy.host_diagnostics,
+            crate::tool::HostDiagnostics::Reduced,
+            "config host reduction survives -q",
+        );
+    }
+
+    #[test]
+    fn per_task_runner_switches_layer_under_the_global_policy() {
+        let mut overrides = ResolutionOverrides::default();
+        overrides.task_verbosity.insert(
+            "greet".to_string(),
+            TaskVerbosity {
+                progress: Some(false),
+                task_timing: Some(false),
+                ..TaskVerbosity::default()
+            },
+        );
+        overrides.task_verbosity.insert(
+            "make:greet".to_string(),
+            TaskVerbosity {
+                task_timing: Some(true),
+                ..TaskVerbosity::default()
+            },
+        );
+
+        assert!(!overrides.shows_progress_for("root:make#greet"));
+        assert!(overrides.shows_task_timing_for("root:make#greet"));
+        assert!(overrides.emits_groups_for("root:make#greet"));
+        assert!(overrides.shows_progress_for("root:make#other"));
+
+        let quiet = ResolutionOverrides {
+            output_policy: crate::tool::OutputPolicy::from_quiet(crate::tool::QuietLevel::Quiet),
+            task_verbosity: overrides.task_verbosity.clone(),
+            ..ResolutionOverrides::default()
+        };
+        assert!(
+            !quiet.shows_task_timing_for("root:make#greet"),
+            "a per-task true never re-enables what -q hides",
+        );
+    }
+
+    #[test]
     fn explicit_inherit_host_stream_outranks_config_and_task_streams() {
         let mut overrides = ResolutionOverrides {
             host_stream_invocation_explicit: true,

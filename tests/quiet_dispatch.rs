@@ -676,6 +676,93 @@ fn explain_reports_output_policy_for_local_files() {
 }
 
 #[test]
+fn explicit_quiet_keeps_config_warning_suppression() {
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let loud = make_project("quiet-config-warn-control").file("runner.toml", "[bogus]\nx = 1\n");
+    let control = run_in(loud.path(), &[], &["-q", "greet"]);
+    let control_err = String::from_utf8_lossy(&control.stderr);
+    assert!(control.status.success(), "stderr: {control_err}");
+    assert!(
+        control_err.contains("unknown key `bogus`"),
+        "-q alone keeps non-fatal warnings. stderr: {control_err}",
+    );
+
+    let proj = make_project("quiet-config-warn").file(
+        "runner.toml",
+        "[runner]\nwarnings = false\n\n[bogus]\nx = 1\n",
+    );
+    let output = run_in(proj.path(), &[], &["-q", "greet"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        !stderr.contains("unknown key `bogus`"),
+        "[runner] warnings = false must survive an explicit -q. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn per_task_progress_switch_hides_only_that_tasks_arrow() {
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("per-task-progress")
+        .file("Makefile", "greet:\n\t@true\nother:\n\t@true\n")
+        .file("runner.toml", "[tasks.greet]\nprogress = false\n");
+
+    let hidden = run_in(proj.path(), &[], &["greet"]);
+    let hidden_err = String::from_utf8_lossy(&hidden.stderr);
+    assert!(hidden.status.success(), "stderr: {hidden_err}");
+    assert!(
+        !hidden_err.contains("→"),
+        "greet's arrow must be hidden by its own setting. stderr: {hidden_err}",
+    );
+
+    let shown = run_in(proj.path(), &[], &["other"]);
+    let shown_err = String::from_utf8_lossy(&shown.stderr);
+    assert!(shown.status.success(), "stderr: {shown_err}");
+    assert!(
+        shown_err.contains("→ make other"),
+        "other's arrow is untouched. stderr: {shown_err}",
+    );
+
+    let explain = run_in(proj.path(), &[], &["--explain", "greet"]);
+    let explain_err = String::from_utf8_lossy(&explain.stderr);
+    assert!(
+        explain_err.contains("output: level=off progress=hide"),
+        "--explain reports the per-task effective value. stderr: {explain_err}",
+    );
+}
+
+#[test]
+fn per_task_timing_switch_hides_only_that_tasks_chain_line() {
+    if !tool_available("make") {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("per-task-timing")
+        .file("Makefile", "greet:\n\t@true\nother:\n\t@true\n")
+        .file("runner.toml", "[tasks.greet]\ntask_timing = false\n");
+    let output = command_in(
+        runner_binary(),
+        proj.path(),
+        &[("GITHUB_ACTIONS", "")],
+        &["run", "-s", "greet", "other"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert_eq!(
+        stderr.matches("finished in").count(),
+        1,
+        "only `other` reports timing. stderr: {stderr}",
+    );
+    assert!(stderr.contains("other finished in"), "stderr: {stderr}");
+}
+
+#[test]
 fn mute_hides_clap_parse_errors() {
     let proj = make_project("mute-clap");
     let output = run_in(proj.path(), &[], &["-qqqq", "--definitely-invalid"]);

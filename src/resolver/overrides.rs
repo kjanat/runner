@@ -297,7 +297,10 @@ impl ResolutionOverrides {
             .transpose()?
             .unwrap_or(Stream::Inherit);
         if quiet_explicit {
-            output_policy = crate::tool::OutputPolicy::from_quiet(quiet_level);
+            let preset = crate::tool::OutputPolicy::from_quiet(quiet_level);
+            output_policy.runner = output_policy.runner.and(preset.runner);
+            output_policy.host_diagnostics =
+                output_policy.host_diagnostics.max(preset.host_diagnostics);
         }
         if no_warnings {
             output_policy.runner.warnings = false;

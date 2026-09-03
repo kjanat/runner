@@ -79,12 +79,13 @@ pub(crate) fn run(
     // (`runner: <task>`) when enabled. Opened after resolution so the `→`
     // dispatch arrow stays visible above the fold and a resolver error
     // never leaves an empty group; the guard closes the group on drop.
-    let _group = super::task_group(overrides, task);
+    let key = task_key_for_token(ctx, overrides, task);
+    let _group = super::task_group(overrides, task, &key);
     match dispatch {
         dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
         dispatch::Dispatch::DenoSelfExec(self_exec) => {
-            let (stdout, stderr) = task_streams_for_token(ctx, overrides, task);
-            super::print_output_explain(overrides, stdout, stderr);
+            let (stdout, stderr) = overrides.task_streams_for(&key);
+            super::print_output_explain(overrides, &key);
             self_exec.run(stdout, stderr)
         }
     }
@@ -95,6 +96,16 @@ pub(crate) fn task_streams_for_token(
     overrides: &ResolutionOverrides,
     token: &str,
 ) -> (crate::tool::TaskStream, crate::tool::TaskStream) {
+    overrides.task_streams_for(&task_key_for_token(ctx, overrides, token))
+}
+
+/// The `[tasks.<key>]` identity a CLI token resolves to: the selected task's
+/// `task_output_key`, or the bare token when nothing matches.
+pub(crate) fn task_key_for_token(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> String {
     let (lookup, found) = lookup_token(ctx, token);
     let task = if found.is_empty() {
         None
@@ -110,10 +121,7 @@ pub(crate) fn task_streams_for_token(
             },
         ))
     };
-    task.map_or_else(
-        || overrides.task_streams_for(lookup.task_name),
-        |task| overrides.task_streams_for(&task_output_key(task)),
-    )
+    task.map_or_else(|| lookup.task_name.to_string(), task_output_key)
 }
 
 /// Resolve `task` and spawn it with piped stdout/stderr (so the caller

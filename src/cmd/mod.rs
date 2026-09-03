@@ -97,7 +97,10 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
 
 fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides, task: &str) {
     let (stdout, stderr) = overrides.task_streams_for(task);
-    print_output_explain(overrides, stdout, stderr);
+    print_output_explain(overrides, task);
+    if emits_group(overrides) && !overrides.emits_groups_for(task) {
+        command.env_remove(GROUP_ACTIVE_ENV);
+    }
     command.stdout(match stdout {
         crate::tool::TaskStream::Inherit => Stdio::inherit(),
         crate::tool::TaskStream::Discard => Stdio::null(),
@@ -412,8 +415,13 @@ pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
 /// is dropped, including on the `?` error path and on panic, so callers
 /// just bind it for the duration of the run. Returns `None` (emitting
 /// nothing) when grouping is off, which lets callers hold it unconditionally.
-fn task_group(overrides: &ResolutionOverrides, name: &str) -> Option<actions_rs::log::GroupGuard> {
-    emits_group(overrides).then(|| actions_rs::log::group_guard(format!("runner: {name}")))
+fn task_group(
+    overrides: &ResolutionOverrides,
+    name: &str,
+    task: &str,
+) -> Option<actions_rs::log::GroupGuard> {
+    (emits_group(overrides) && overrides.emits_groups_for(task))
+        .then(|| actions_rs::log::group_guard(format!("runner: {name}")))
 }
 
 /// Optional warning collector. `None` means "emit warnings to stderr
@@ -443,22 +451,19 @@ pub(crate) fn print_explain(overrides: &ResolutionOverrides, body: &str) {
     eprintln!("{} {} {body}", "·".dimmed(), "runner".dimmed());
 }
 
-pub(crate) fn print_output_explain(
-    overrides: &ResolutionOverrides,
-    stdout: crate::tool::TaskStream,
-    stderr: crate::tool::TaskStream,
-) {
+pub(crate) fn print_output_explain(overrides: &ResolutionOverrides, task: &str) {
+    let (stdout, stderr) = overrides.task_streams_for(task);
     print_explain(
         overrides,
         &format!(
             "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
              summary={} task.stdout={} task.stderr={}",
             overrides.quiet_level.label(),
-            show_hide(overrides.shows_progress()),
+            show_hide(overrides.shows_progress_for(task)),
             show_hide(overrides.shows_warnings()),
             show_hide(overrides.shows_errors()),
-            show_hide(overrides.emits_groups()),
-            show_hide(overrides.shows_task_timing()),
+            show_hide(overrides.emits_groups_for(task)),
+            show_hide(overrides.shows_task_timing_for(task)),
             show_hide(overrides.shows_summary()),
             stdout.label(),
             stderr.label(),
@@ -560,22 +565,23 @@ pub(crate) fn task_killed_summary(elapsed: std::time::Duration) -> String {
 /// so it follows the same mute switches as the dispatch arrow and warnings:
 /// `--quiet` / `RUNNER_QUIET` and `--no-warnings` / `RUNNER_NO_WARNINGS` each
 /// suppress it.
-pub(crate) const fn timing_enabled(overrides: &ResolutionOverrides) -> bool {
-    overrides.shows_task_timing()
+pub(crate) fn timing_enabled_for(overrides: &ResolutionOverrides, task: &str) -> bool {
+    overrides.shows_task_timing_for(task)
 }
 
 /// Print a per-task timing line to stderr for the sequential and live
 /// (streaming) parallel paths, e.g. `· build finished in 1.2s (exit 0)`.
 /// Mirrors the dimmed `·` meta-line style used by the `--explain` trace and
-/// is suppressed by [`timing_enabled`]. Grouped parallel output instead folds
+/// is suppressed by [`timing_enabled_for`]. Grouped parallel output instead folds
 /// the summary into each task's block footer (see the chain executor).
 pub(crate) fn emit_task_timing(
     overrides: &ResolutionOverrides,
+    task: &str,
     name: &str,
     elapsed: std::time::Duration,
     code: i32,
 ) {
-    if !timing_enabled(overrides) {
+    if !timing_enabled_for(overrides, task) {
         return;
     }
     eprintln!(
@@ -590,10 +596,11 @@ pub(crate) fn emit_task_timing(
 /// SIGKILL under kill-on-fail.
 pub(crate) fn emit_task_killed(
     overrides: &ResolutionOverrides,
+    task: &str,
     name: &str,
     elapsed: std::time::Duration,
 ) {
-    if !timing_enabled(overrides) {
+    if !timing_enabled_for(overrides, task) {
         return;
     }
     eprintln!(
@@ -1031,9 +1038,11 @@ mod tests {
 
     #[test]
     fn timing_enabled_reads_the_task_timing_category() {
-        use super::timing_enabled;
+        use super::timing_enabled_for;
         use crate::resolver::ResolutionOverrides;
 
+        let timing_enabled =
+            |overrides: &ResolutionOverrides| timing_enabled_for(overrides, "greet");
         assert!(timing_enabled(&ResolutionOverrides::default()));
         assert!(!timing_enabled(&ResolutionOverrides {
             output_policy: crate::tool::OutputPolicy::from_quiet(crate::tool::QuietLevel::Quiet),

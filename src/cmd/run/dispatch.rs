@@ -31,11 +31,12 @@ use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, T
 
 fn print_dispatch_arrow(
     overrides: &ResolutionOverrides,
+    task: &str,
     label: &str,
     task_name: &str,
     args: &[String],
 ) {
-    if !overrides.shows_progress() {
+    if !overrides.shows_progress_for(task) {
         return;
     }
     eprintln!(
@@ -393,7 +394,7 @@ pub(super) fn resolve_dispatch(
     // matching task (e.g. a `make bin/tool` target) wins first.
     if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
         let mut command = local.command;
-        print_dispatch_arrow(overrides, &local.label, task, args);
+        print_dispatch_arrow(overrides, task, &local.label, task, args);
         crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
         crate::cmd::configure_task_streams(&mut command, overrides, task);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
@@ -464,7 +465,7 @@ pub(super) fn resolve_dispatch(
             if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
             {
                 let mut command = local.command;
-                print_dispatch_arrow(overrides, &local.label, task_name, args);
+                print_dispatch_arrow(overrides, task_name, &local.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
                 crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
@@ -480,7 +481,7 @@ pub(super) fn resolve_dispatch(
             {
                 let mut command = dep.dispatch.command;
                 print_pm_explain(overrides, &dep.describe);
-                print_dispatch_arrow(overrides, &dep.dispatch.label, task_name, args);
+                print_dispatch_arrow(overrides, task_name, &dep.dispatch.label, task_name, args);
                 crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
                 crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
@@ -511,6 +512,7 @@ pub(super) fn resolve_dispatch(
         select_task_entry(ctx, overrides, &restricted)
     };
     let dir = entry.dir(&ctx.root);
+    let task_key = super::task_output_key(entry);
     print_scope_explain(ctx, overrides, entry);
 
     // The one place a matched task's source is known: report a `--runtime`
@@ -526,20 +528,18 @@ pub(super) fn resolve_dispatch(
 
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
+    let arrow =
+        |label: &str| print_dispatch_arrow(overrides, &task_key, label, &ctx.spelling(entry), args);
     if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
-        print_dispatch_arrow(overrides, "deno-shell", &ctx.spelling(entry), args);
+        arrow("deno-shell");
         return Ok(Dispatch::DenoSelfExec(self_exec));
     }
 
-    print_dispatch_arrow(overrides, entry.source.label(), &ctx.spelling(entry), args);
+    arrow(entry.source.label());
 
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(spawn.command_mut(), dir, overrides);
-    crate::cmd::configure_task_streams(
-        spawn.command_mut(),
-        overrides,
-        &super::task_output_key(entry),
-    );
+    crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
         .command_mut()
         .env(crate::cmd::TASK_STACK_ENV, task_stack);
@@ -568,7 +568,7 @@ fn dispatch_after_miss(
 
     // Bun-test special case: `bun test` built-in.
     if should_use_bun_test_fallback(ctx, overrides, resolved_pm, task_name) {
-        print_dispatch_arrow(overrides, "bun", "test", args);
+        print_dispatch_arrow(overrides, task_name, "bun", "test", args);
         let mut cmd = tool::bun::test_cmd(args);
         crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
         crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
@@ -587,7 +587,7 @@ fn dispatch_after_miss(
         }
         None => build_pm_exec_command(ctx, resolved_pm, task_name, args),
     };
-    print_dispatch_arrow(overrides, label, task_name, args);
+    print_dispatch_arrow(overrides, task_name, label, task_name, args);
     crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
     crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))

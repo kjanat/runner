@@ -519,11 +519,20 @@ fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> Wh
         });
     WhyOutput {
         level: overrides.quiet_level.label(),
-        progress: overrides.shows_progress(),
+        progress: task_key.as_deref().map_or_else(
+            || overrides.shows_progress(),
+            |key| overrides.shows_progress_for(key),
+        ),
         warnings: overrides.shows_warnings(),
         errors: overrides.shows_errors(),
-        groups: overrides.emits_groups(),
-        task_timing: overrides.shows_task_timing(),
+        groups: task_key.as_deref().map_or_else(
+            || overrides.emits_groups(),
+            |key| overrides.emits_groups_for(key),
+        ),
+        task_timing: task_key.as_deref().map_or_else(
+            || overrides.shows_task_timing(),
+            |key| overrides.shows_task_timing_for(key),
+        ),
         summary: overrides.shows_summary(),
         fatal_errors: overrides.shows_fatal_errors(),
         host_diagnostics: diagnostics.label(),

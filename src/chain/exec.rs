@@ -144,7 +144,8 @@ fn run_sequential(
         let started = std::time::Instant::now();
         let code = dispatch_item(ctx, overrides, item, warnings)?;
         let elapsed = started.elapsed();
-        crate::cmd::emit_task_timing(overrides, item.display_name(), elapsed, code);
+        let key = item_key(ctx, overrides, item);
+        crate::cmd::emit_task_timing(overrides, &key, item.display_name(), elapsed, code);
         outcomes.push(ItemOutcome {
             name: item.display_name().to_string(),
             status: ItemStatus::Ran { code, elapsed },
@@ -253,7 +254,8 @@ fn run_parallel_streaming(
     // reaped, so the threads exit on their own).
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
-            let prefix = if overrides.emits_groups() {
+            let key = item_key(ctx, overrides, item);
+            let prefix = if overrides.emits_groups_for(&key) {
                 render_prefix(item.display_name(), width, colorize)
             } else {
                 String::new()
@@ -325,7 +327,7 @@ fn run_parallel_streaming(
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
-                    record_finished(overrides, outcomes, name, started.elapsed(), code);
+                    record_finished(ctx, overrides, outcomes, name, started.elapsed(), code);
                 }
                 Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
@@ -336,9 +338,9 @@ fn run_parallel_streaming(
                         let elapsed = started.elapsed();
                         match child.wait().ok().and_then(natural_exit_code) {
                             Some(code) => {
-                                record_finished(overrides, outcomes, name, elapsed, code);
+                                record_finished(ctx, overrides, outcomes, name, elapsed, code);
                             }
-                            None => record_killed(overrides, outcomes, name, elapsed),
+                            None => record_killed(ctx, overrides, outcomes, name, elapsed),
                         }
                     } else {
                         next.push((name, started, child));
@@ -378,13 +380,15 @@ fn run_parallel_streaming(
 /// end-of-chain summary. Shared by the normal-exit and SIGKILL branches, so
 /// a killed sibling appears in the summary with the work it did manage.
 fn record_finished(
+    ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     outcomes: &mut Vec<ItemOutcome>,
     name: String,
     elapsed: std::time::Duration,
     code: i32,
 ) {
-    crate::cmd::emit_task_timing(overrides, &name, elapsed, code);
+    let key = crate::cmd::run::task_key_for_token(ctx, overrides, &name);
+    crate::cmd::emit_task_timing(overrides, &key, &name, elapsed, code);
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Ran { code, elapsed },
@@ -394,12 +398,14 @@ fn record_finished(
 /// Emit a killed streaming-chain sibling's timing line and record it for the
 /// end-of-chain summary, distinct from a real failure.
 fn record_killed(
+    ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     outcomes: &mut Vec<ItemOutcome>,
     name: String,
     elapsed: std::time::Duration,
 ) {
-    crate::cmd::emit_task_killed(overrides, &name, elapsed);
+    let key = crate::cmd::run::task_key_for_token(ctx, overrides, &name);
+    crate::cmd::emit_task_killed(overrides, &key, &name, elapsed);
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Killed { elapsed },
@@ -411,6 +417,7 @@ fn record_killed(
 /// spawn `Instant` anchoring the duration folded into the block footer.
 struct GroupedTask {
     name: String,
+    key: String,
     started: std::time::Instant,
     child: std::process::Child,
     sink: std::sync::Arc<crate::chain::mux::BufferSink>,
@@ -447,6 +454,7 @@ fn run_parallel_grouped(
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
             let started = std::time::Instant::now();
+            let key = item_key(ctx, overrides, item);
             let (name, mut child, sink) = match &item.kind {
                 ChainItemKind::Task(task_name) => {
                     let sink = Arc::new(BufferSink::new()?);
@@ -489,6 +497,7 @@ fn run_parallel_grouped(
             );
             tasks.push(GroupedTask {
                 name,
+                key,
                 started,
                 child,
                 sink,
@@ -576,7 +585,7 @@ fn record_grouped(
         name: task.name.clone(),
         status: ItemStatus::Ran { code, elapsed },
     });
-    timing_footer(overrides, elapsed, code)
+    timing_footer(overrides, &task.key, elapsed, code)
 }
 
 /// Kill a still-running grouped sibling after a chain failure, record it,
@@ -635,7 +644,8 @@ fn record_grouped_killed(
         name: task.name.clone(),
         status: ItemStatus::Killed { elapsed },
     });
-    crate::cmd::timing_enabled(overrides).then(|| crate::cmd::task_killed_summary(elapsed))
+    crate::cmd::timing_enabled_for(overrides, &task.key)
+        .then(|| crate::cmd::task_killed_summary(elapsed))
 }
 
 /// Flush a completed grouped task's block, moving its reader handles into
@@ -720,10 +730,21 @@ fn flush_task_group(
 /// stays in one place.
 fn timing_footer(
     overrides: &ResolutionOverrides,
+    task: &str,
     elapsed: std::time::Duration,
     code: i32,
 ) -> Option<String> {
-    crate::cmd::timing_enabled(overrides).then(|| crate::cmd::task_timing_summary(elapsed, code))
+    crate::cmd::timing_enabled_for(overrides, task)
+        .then(|| crate::cmd::task_timing_summary(elapsed, code))
+}
+
+/// The `[tasks.<key>]` identity of a chain item. The install head keeps its
+/// literal `install` key.
+fn item_key(ctx: &ProjectContext, overrides: &ResolutionOverrides, item: &ChainItem) -> String {
+    match &item.kind {
+        ChainItemKind::Task(name) => crate::cmd::run::task_key_for_token(ctx, overrides, name),
+        ChainItemKind::Install { .. } => String::from("install"),
+    }
 }
 
 /// Write a grouped-task block footer to stdout, dimmed when colorizing.

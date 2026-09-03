@@ -938,7 +938,13 @@ fn dispatch_install_chain(
     let started = std::time::Instant::now();
     let install_code = cmd::install(ctx, overrides, frozen)?;
     let install_elapsed = started.elapsed();
-    cmd::emit_task_timing(overrides, "install", install_elapsed, install_code);
+    cmd::emit_task_timing(
+        overrides,
+        "install",
+        "install",
+        install_elapsed,
+        install_code,
+    );
     chain::exec::run_chain_after_completed(
         ctx,
         overrides,

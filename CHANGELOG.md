@@ -45,6 +45,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   effective policy, applied host arguments, and unsupported reductions.
   Per-task timing and the final chain summary are separate categories, allowing
   summary-only output.
+- Per-task `progress`, `groups`, and `task_timing` switches under
+  `[tasks.<key>]` hide one task's dispatch arrow, GitHub Actions group, or
+  chain timing line without a global `-q`. A global quiet rung or `[runner]`
+  `false` still wins over a per-task `true`.
 
 ### Changed
 
@@ -53,7 +57,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   suppresses recoverable runner error decoration, and `-qqqq` mutes all runner
   text while preserving task streams and exit status. Larger counts clamp to
   mute. Host adapters now apply only audited controls that preserve task output
-  (https://github.com/kjanat/runner/issues/116).
+  (https://github.com/kjanat/runner/issues/116). An explicit `-q` merges with
+  the `[runner]` and `[host]` sections instead of replacing them; the quietest
+  setting on each axis wins.
 - Bump the unified `doctor`/`list`/`why` JSON contract to schema version 3 for
   the expanded output-policy report.
 

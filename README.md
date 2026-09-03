@@ -265,8 +265,11 @@ primitive (`--use-stderr`); elsewhere it no-ops. It composes with any quiet
 level.
 
 Runner categories and host diagnostics are independently configurable in
-`[runner]` and `[host]`; host level, host stream, and task streams can also be
-configured per task.
+`[runner]` and `[host]`. An explicit `-q` merges with them and the quietest
+setting wins: `-q` with `[runner] warnings = false` hides both progress and
+warnings, and no config value re-enables something a quiet rung hides. Per
+task, `[tasks.<key>]` sets the host level, host stream, task streams, and the
+`progress`, `groups`, and `task_timing` switches for that task alone.
 
 For example, keep only the final chain summary while suppressing all other
 runner-authored output:
@@ -547,10 +550,15 @@ overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the or
 # verbosity = { level = "quiet", stream = "stderr" }  # off|quiet|very-quiet|silent|mute
 # stdout = "inherit"  # inherit | discard
 # stderr = "inherit"  # inherit | discard
+# progress = true     # this task's dispatch arrow
+# groups = true       # this task's GitHub Actions group
+# task_timing = true  # this task's chain timing line
 
 # `verbosity` is the per-task form of the -q / --host-stream flags: a string
 # (off|quiet|very-quiet|silent|mute) or a { level, stream } table, deep-merged under
-# any global flag/env. So a single noisy task can run quiet without -q.
+# any global flag/env. It quiets the host tool for that task. The runner's own
+# lines for the task follow `progress`, `groups`, and `task_timing`; a global
+# `-q` or `[runner]` false still wins over a per-task true.
 #
 # Keys layer from least to most specific, per axis: `site` (every task by that
 # name), `package.json:site` (that source), `rfc:site` (workspace member `rfc`),

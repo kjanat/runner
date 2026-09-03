@@ -172,6 +172,9 @@ pub(crate) struct TaskVerbosity {
     pub stdout: Option<TaskStream>,
     /// Explicit task stderr policy.
     pub stderr: Option<TaskStream>,
+    pub progress: Option<bool>,
+    pub groups: Option<bool>,
+    pub task_timing: Option<bool>,
 }
 
 impl ResolutionOverrides {
@@ -232,6 +235,18 @@ impl ResolutionOverrides {
             diagnostics,
             stream,
         }
+    }
+
+    pub(crate) fn shows_progress_for(&self, task: &str) -> bool {
+        self.shows_progress() && self.task_verbosity_for(task).progress.unwrap_or(true)
+    }
+
+    pub(crate) fn emits_groups_for(&self, task: &str) -> bool {
+        self.emits_groups() && self.task_verbosity_for(task).groups.unwrap_or(true)
+    }
+
+    pub(crate) fn shows_task_timing_for(&self, task: &str) -> bool {
+        self.shows_task_timing() && self.task_verbosity_for(task).task_timing.unwrap_or(true)
     }
 
     pub(crate) fn task_streams_for(&self, task: &str) -> (TaskStream, TaskStream) {
@@ -333,6 +348,21 @@ const fn merge_task_verbosity(base: TaskVerbosity, overlay: TaskVerbosity) -> Ta
             overlay.stderr
         } else {
             base.stderr
+        },
+        progress: if overlay.progress.is_some() {
+            overlay.progress
+        } else {
+            base.progress
+        },
+        groups: if overlay.groups.is_some() {
+            overlay.groups
+        } else {
+            base.groups
+        },
+        task_timing: if overlay.task_timing.is_some() {
+            overlay.task_timing
+        } else {
+            base.task_timing
         },
     }
 }
