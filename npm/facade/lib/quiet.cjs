@@ -71,10 +71,12 @@ const quietCountFromArgs = (name, args) => {
 };
 
 /** @param {string} name @param {string[]} args */
-const fatalOutputEnabled = (name, args) => {
-	const cliLevel = quietCountFromArgs(name, args);
-	const level = cliLevel ?? namedLevel(process.env.RUNNER_QUIET);
-	return level < 4;
-};
+const effectiveLevel = (name, args) => quietCountFromArgs(name, args) ?? namedLevel(process.env.RUNNER_QUIET);
 
-module.exports = { fatalOutputEnabled };
+/** @param {string} name @param {string[]} args */
+const fatalOutputEnabled = (name, args) => effectiveLevel(name, args) < 4;
+
+/** @param {string} name @param {string[]} args */
+const warningOutputEnabled = (name, args) => effectiveLevel(name, args) < 2;
+
+module.exports = { fatalOutputEnabled, warningOutputEnabled };

@@ -1198,6 +1198,10 @@ fn silent_suppresses_github_actions_annotations() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
+        !output.status.success(),
+        "fail-mid must fail the chain. stdout: {stdout}",
+    );
+    assert!(
         !stdout.contains("::error"),
         "-qqq must keep annotations off stdout. stdout: {stdout}",
     );
@@ -1218,6 +1222,10 @@ fn quiet_keeps_github_actions_error_annotations() {
         .expect("runner binary spawns");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "fail-mid must fail the chain. stdout: {stdout}",
+    );
     assert!(
         stdout.contains("::error") && stdout.contains("fail-mid"),
         "-q keeps runner errors. stdout: {stdout}",

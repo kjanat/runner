@@ -1,6 +1,6 @@
 // tsconfig pins `typeRoots`, so `@types/bun`'s own reference is not followed.
 /// <reference types="bun" />
-import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,11 +21,14 @@ afterAll(() => {
 	fixtureRoots.clear();
 });
 
-afterEach(() => {
+const resetInvocationState = () => {
 	delete process.env.RUNNER_QUIET;
 	process.argv[1] = originalArgv1;
 	process.argv.splice(2);
-});
+};
+
+beforeEach(resetInvocationState);
+afterEach(resetInvocationState);
 
 /** Every platform package the facade declares, in generated manifest order. */
 const declared = targets.map((target) => `${scope}/${target.pkg}`);

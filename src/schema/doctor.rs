@@ -193,6 +193,10 @@ struct Overrides {
     reason = "serialized independent output axes"
 )]
 struct OutputPolicyReport {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))
+    )]
     level: &'static str,
     progress: bool,
     warnings: bool,
@@ -201,7 +205,12 @@ struct OutputPolicyReport {
     task_timing: bool,
     summary: bool,
     fatal_errors: bool,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["normal", "quiet", "reduced"]))
+    )]
     host_diagnostics: &'static str,
+    #[cfg_attr(feature = "schema", schemars(extend("enum" = ["inherit", "stderr"])))]
     host_stream: &'static str,
 }
 

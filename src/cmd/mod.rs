@@ -457,7 +457,7 @@ pub(crate) fn print_output_explain(overrides: &ResolutionOverrides, task: &str) 
         overrides,
         &format!(
             "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
-             summary={} task.stdout={} task.stderr={}",
+             summary={} fatal_errors={} task.stdout={} task.stderr={}",
             overrides.quiet_level.label(),
             show_hide(overrides.shows_progress_for(task)),
             show_hide(overrides.shows_warnings()),
@@ -465,6 +465,7 @@ pub(crate) fn print_output_explain(overrides: &ResolutionOverrides, task: &str) 
             show_hide(overrides.emits_groups_for(task)),
             show_hide(overrides.shows_task_timing_for(task)),
             show_hide(overrides.shows_summary()),
+            show_hide(overrides.shows_fatal_errors()),
             stdout.label(),
             stderr.label(),
         ),

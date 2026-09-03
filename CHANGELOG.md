@@ -62,6 +62,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   setting on each axis wins.
 - Bump the unified `doctor`/`list`/`why` JSON contract to schema version 3 for
   the expanded output-policy report.
+- Inside a member, a root task the member shadows is spelled `root:<name>` in
+  `list` and the dispatch arrow, so the printed token runs that task.
+
+### Fixed
+
+- A source-qualified name several members define (`package.json:site`) is
+  refused with the qualified spellings, the same as the bare name, instead
+  of running whichever member sorts first.
+- The npm facade no longer throws at startup when `bugs` is the object form,
+  and a missing `/lib` or `/usr/lib` no longer aborts libc detection.
+- A failed install head under fail-fast reports its summary and exit code
+  before chain pre-flight can reject a later token.
 
 ## [0.25.1] - 2026-08-12
 

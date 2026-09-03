@@ -105,6 +105,8 @@ fn json(output: &Output) -> serde_json::Value {
     serde_json::from_str(&stdout).expect("--json output parses")
 }
 
+const CWD_SCRIPT: &str = "console.log(process.cwd());\n";
+
 /// Root (script `hello`) with an npm workspace of two members: `rfc`
 /// (scripts `site` and `check`) and `@acme/web` at `apps/web` (script
 /// `site`), plus a plain `docs/` directory and a `.git` marker so the
@@ -115,16 +117,19 @@ fn workspace(tag: &str) -> TempWorkspace {
         .dir("docs")
         .file(
             "package.json",
-            r#"{ "name": "root", "private": true, "workspaces": ["rfc", "apps/*"], "scripts": { "hello": "pwd" } }"#,
+            r#"{ "name": "root", "private": true, "workspaces": ["rfc", "apps/*"], "scripts": { "hello": "node cwd.js" } }"#,
         )
         .file("package-lock.json", "{}")
+        .file("cwd.js", CWD_SCRIPT)
+        .file("rfc/cwd.js", CWD_SCRIPT)
+        .file("apps/web/cwd.js", CWD_SCRIPT)
         .file(
             "rfc/package.json",
-            r#"{ "name": "rfc", "scripts": { "site": "pwd", "check": "pwd" } }"#,
+            r#"{ "name": "rfc", "scripts": { "site": "node cwd.js", "check": "node cwd.js" } }"#,
         )
         .file(
             "apps/web/package.json",
-            r#"{ "name": "@acme/web", "scripts": { "site": "pwd" } }"#,
+            r#"{ "name": "@acme/web", "scripts": { "site": "node cwd.js" } }"#,
         )
 }
 
@@ -281,6 +286,24 @@ fn a_bare_name_two_members_define_is_refused_with_the_qualified_spellings() {
 }
 
 #[test]
+fn a_source_qualified_name_two_members_define_is_refused_too() {
+    let ws = workspace("ambiguous-qualified");
+
+    let output = runner_in(ws.path(), &["run", "package.json:site"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "a source qualifier pins the source, never the member"
+    );
+    assert!(stderr.contains("2 workspace members"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("`rfc:site`") && stderr.contains("`@acme/web:site`"),
+        "stderr: {stderr}",
+    );
+}
+
+#[test]
 fn an_unknown_member_prefix_is_reported_not_sent_to_npx() {
     let ws = workspace("unknown-member");
 
@@ -294,7 +317,15 @@ fn an_unknown_member_prefix_is_reported_not_sent_to_npx() {
     );
 }
 
-/// Run `token` from `from` and assert the `pwd` script printed `expected`.
+/// Whether some stdout line names `expected` once both sides are canonical.
+fn printed_dir(stdout: &str, expected: &Path) -> bool {
+    stdout
+        .lines()
+        .any(|line| std::fs::canonicalize(line.trim()).is_ok_and(|dir| dir == expected))
+}
+
+/// Run `token` from `from` and assert the cwd-printing script printed
+/// `expected`.
 fn assert_runs_in(from: &Path, token: &str, expected: &Path) {
     let expected = std::fs::canonicalize(expected).expect("expected dir exists");
     let output = runner_in(from, &["run", token]);
@@ -307,9 +338,7 @@ fn assert_runs_in(from: &Path, token: &str, expected: &Path) {
         from.display(),
     );
     assert!(
-        stdout
-            .lines()
-            .any(|line| Path::new(line.trim()) == expected),
+        printed_dir(&stdout, &expected),
         "{token} from {}: the script must run inside {}. stdout: {stdout}",
         from.display(),
         expected.display(),
@@ -391,7 +420,7 @@ fn quiet_hides_the_member_dispatch_arrow_and_keeps_task_output() {
         "-q must hide the dispatch arrow. stderr: {stderr}"
     );
     assert!(
-        stdout.lines().any(|line| Path::new(line.trim()) == rfc),
+        printed_dir(&stdout, &rfc),
         "task stdout survives -q. stdout: {stdout}"
     );
 }
@@ -407,20 +436,21 @@ fn per_task_config_addresses_a_member_task_by_member_and_name() {
         "[tasks.\"rfc:site\"]\nstdout = \"discard\"\n",
     );
     let web = std::fs::canonicalize(ws.path().join("apps/web")).expect("member dir exists");
+    let rfc = std::fs::canonicalize(ws.path().join("rfc")).expect("member dir exists");
 
     let output = runner_in(ws.path(), &["run", "rfc:site"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        !stdout.lines().any(|line| line.trim().ends_with("/rfc")),
+        !printed_dir(&stdout, &rfc),
         "[tasks.\"rfc:site\"] stdout = \"discard\" must drop the member's stdout. stdout: {stdout}",
     );
 
     let output = runner_in(ws.path(), &["run", "@acme/web:site"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.lines().any(|line| Path::new(line.trim()) == web),
+        printed_dir(&stdout, &web),
         "the entry is scoped to rfc; web keeps its stdout. stdout: {stdout}"
     );
 }

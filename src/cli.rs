@@ -448,15 +448,35 @@ fn member_task_candidates(
 
     let root_names: HashSet<&str> = root_tasks.iter().map(|task| task.name.as_str()).collect();
     let mut members_for_name: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut sources_for_scoped_name: HashMap<(&str, &str), HashSet<crate::types::TaskSource>> =
+        HashMap::new();
     for task in member_tasks {
         members_for_name
             .entry(task.name.as_str())
             .or_default()
             .insert(task.scope());
+        sources_for_scoped_name
+            .entry((task.scope(), task.name.as_str()))
+            .or_default()
+            .insert(task.source);
     }
+    let is_self_passthrough = |task: &crate::types::Task| -> bool {
+        task.source == crate::types::TaskSource::PackageJson
+            && task
+                .passthrough_to
+                .and_then(TaskRunner::task_source)
+                .is_some_and(|peer| {
+                    sources_for_scoped_name
+                        .get(&(task.scope(), task.name.as_str()))
+                        .is_some_and(|set| set.contains(&peer))
+                })
+    };
     let mut candidates = Vec::new();
     let mut bare_emitted: HashSet<&str> = HashSet::new();
     for task in member_tasks {
+        if is_self_passthrough(task) {
+            continue;
+        }
         let source_label = task.source.label();
         let help = task.description.as_ref().map_or_else(
             || source_label.to_string(),

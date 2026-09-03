@@ -217,7 +217,11 @@ impl<'a> Detected<'a> {
 }
 
 /// Workspace declarations and members projected into the JSON shape.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 #[derive(Debug, Serialize)]
 pub(crate) struct WorkspaceInfo<'a> {
     /// Absolute directory holding the declarations.
@@ -253,7 +257,11 @@ impl<'a> WorkspaceInfo<'a> {
 }
 
 /// One workspace member.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
 #[derive(Debug, Serialize)]
 pub(crate) struct WorkspaceMemberInfo<'a> {
     /// Manifest name, or the directory name when the manifest declares none.

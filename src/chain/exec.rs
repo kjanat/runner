@@ -66,6 +66,17 @@ fn run_chain_with_head(
     });
     let mut outcomes: Vec<ItemOutcome> = head.into_iter().collect();
 
+    if let Some(code) = head_code
+        && !matches!(chain.failure, FailurePolicy::KeepGoing)
+    {
+        outcomes.extend(chain.items.iter().map(|item| ItemOutcome {
+            name: item.display_name().to_string(),
+            status: ItemStatus::Skipped,
+        }));
+        emit_chain_summary(overrides, &outcomes, code);
+        return Ok(code);
+    }
+
     // Pre-flight every task token before *any* sibling runs. Catches
     // the common UX trap where `runner run -s bb t lint:cargo` would
     // run `bb` and `t` to completion before bailing on the obvious
@@ -80,17 +91,6 @@ fn run_chain_with_head(
         if let ChainItemKind::Task(name) = &item.kind {
             crate::cmd::run::precheck_task(ctx, overrides, name)?;
         }
-    }
-
-    if let Some(code) = head_code
-        && !matches!(chain.failure, FailurePolicy::KeepGoing)
-    {
-        outcomes.extend(chain.items.iter().map(|item| ItemOutcome {
-            name: item.display_name().to_string(),
-            status: ItemStatus::Skipped,
-        }));
-        emit_chain_summary(overrides, &outcomes, code);
-        return Ok(code);
     }
 
     // Emit warnings on both success and error paths: a chain that

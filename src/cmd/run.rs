@@ -39,7 +39,9 @@ pub(crate) use qualify::{
     ScopeQuery, TokenLookup, allowed_runner_sources, lookup_token, precheck_task,
     qualified_miss_error, runner_constraint_error,
 };
-pub(crate) use select::{ambiguous_members, select_task_entry, source_depth, source_priority};
+pub(crate) use select::{
+    ambiguous_members, narrow_scope, select_task_entry, source_depth, source_priority,
+};
 
 pub(crate) use dispatch::{ResolvedPythonPm, resolve_python_pm};
 

@@ -498,11 +498,20 @@ pub(super) fn resolve_dispatch(
     }
 
     let entry = if let Some(source) = qualifier {
-        restricted
+        let matched: Vec<_> = restricted
             .iter()
-            .find(|t| t.source == source)
             .copied()
-            .ok_or_else(|| qualified_miss_error(ctx, &scope, qualifier, task_name))?
+            .filter(|t| t.source == source)
+            .collect();
+        if matched.is_empty() {
+            return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+        }
+        if !scope.is_pinned()
+            && let Some(members) = ambiguous_members(&matched)
+        {
+            return Err(member_ambiguity_error(task_name, &members));
+        }
+        select_task_entry(ctx, overrides, &matched)
     } else {
         if !scope.is_pinned()
             && let Some(members) = ambiguous_members(&restricted)

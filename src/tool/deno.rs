@@ -331,8 +331,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        ScriptDirective, detect, exec_cmd, extract_tasks, find_config_upwards, install_cmd,
-        run_file_cmd, workspace_pattern_matches,
+        ScriptDirective, detect, exec_cmd, extract_tasks, extract_tasks_in, find_config_upwards,
+        install_cmd, run_file_cmd, workspace_pattern_matches,
     };
     use crate::tool::test_support::TempDir;
 
@@ -584,6 +584,24 @@ mod tests {
         fs::write(dir.path().join("deno.lock"), "{}").expect("deno.lock should be written");
 
         assert!(detect(dir.path()));
+    }
+
+    #[test]
+    fn extract_tasks_in_reads_only_the_directory_itself() {
+        let dir = TempDir::new("deno-tasks-in");
+        let member = dir.path().join("apps").join("empty");
+        fs::create_dir_all(&member).expect("member dir should be created");
+        fs::write(
+            dir.path().join("deno.json"),
+            r#"{ "tasks": { "root": "deno task root" } }"#,
+        )
+        .expect("root deno.json should be written");
+
+        let local = extract_tasks_in(&member).expect("member lookup should succeed");
+        let inherited = extract_tasks(&member).expect("ancestor lookup should succeed");
+
+        assert!(local.is_empty());
+        assert_eq!(inherited, vec![(String::from("root"), None)]);
     }
 
     #[test]

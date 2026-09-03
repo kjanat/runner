@@ -1,6 +1,5 @@
 //! `runner list`, display available tasks from all detected sources.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
@@ -205,6 +204,7 @@ fn format_conflicts(
     let conflicts: Vec<(String, &'static str, Vec<&'static str>)> = by_name
         .into_values()
         .filter_map(|group| {
+            let group = crate::cmd::run::narrow_scope(ctx, group);
             // A single source never duplicates a name; only cross-source
             // collisions are conflicts.
             if group.iter().map(|t| t.source).collect::<HashSet<_>>().len() < 2 {
@@ -290,28 +290,7 @@ fn render_tasks_grouped(
     }
 }
 
-/// How `task` is typed from the invocation directory: bare for root tasks
-/// and the current member's, `member:name` for every other member.
-fn spelling<'a>(task: &'a Task, current: Option<&WorkspaceMember>) -> Cow<'a, str> {
-    match (&task.member, current) {
-        (None, _) => Cow::Borrowed(task.name.as_str()),
-        (Some(member), Some(current)) if member.dir == current.dir => {
-            Cow::Borrowed(task.name.as_str())
-        }
-        (Some(_), _) => task.display_name(),
-    }
-}
-
-/// Bare-name precedence used to order rows: current member, root, others.
-fn scope_rank(task: &Task, current: Option<&WorkspaceMember>) -> u8 {
-    match (&task.member, current) {
-        (Some(member), Some(current)) if member.dir == current.dir => 0,
-        (None, _) => 1,
-        (Some(_), _) => 2,
-    }
-}
-
-fn terminal_width() -> Option<usize> {
+pub(super) fn terminal_width() -> Option<usize> {
     terminal_size::terminal_size().map(|(Width(columns), _)| usize::from(columns))
 }
 
@@ -334,7 +313,10 @@ fn render_tasks_grouped_rich(
         for (task, alias_names) in fold_aliases(&source_tasks) {
             // A folded canonical carries its aliases in the name cell; a
             // standalone alias keeps showing its target in the value cell.
-            let name = name_with_aliases(&spelling(task, current), &alias_names);
+            let name = name_with_aliases(
+                &task.spelling_from(current, tasks.iter().copied()),
+                &alias_names,
+            );
             let value = if alias_names.is_empty() {
                 task.alias_of.as_deref().or(task.description.as_deref())
             } else {
@@ -509,7 +491,12 @@ fn render_tasks_grouped_compact(
         }
         let names: Vec<String> = fold_aliases(&source_tasks)
             .iter()
-            .map(|(task, alias_names)| name_with_aliases(&spelling(task, current), alias_names))
+            .map(|(task, alias_names)| {
+                name_with_aliases(
+                    &task.spelling_from(current, tasks.iter().copied()),
+                    alias_names,
+                )
+            })
             .collect();
         let label = compact_source_label(source, stdout_is_terminal);
         let _ = writeln!(out, "  {label}{}", names.join(", "));
@@ -529,8 +516,8 @@ fn tasks_for_source<'a>(
         .collect();
     source_tasks.sort_by(|a, b| {
         let member_path = |task: &Task| task.member.as_ref().map(|member| member.path.clone());
-        scope_rank(a, current)
-            .cmp(&scope_rank(b, current))
+        a.scope_rank_from(current)
+            .cmp(&b.scope_rank_from(current))
             .then_with(|| member_path(a).cmp(&member_path(b)))
             .then_with(|| a.name.cmp(&b.name))
     });

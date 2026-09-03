@@ -497,13 +497,29 @@
           "type": "boolean"
         },
         "host_diagnostics": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
         },
         "host_stream": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "inherit",
+            "stderr"
+          ]
         },
         "level": {
-          "type": "string"
+          "type": "string",
+          "enum": [
+            "off",
+            "quiet",
+            "very-quiet",
+            "silent",
+            "mute"
+          ]
         },
         "progress": {
           "type": "boolean"
@@ -1075,7 +1091,8 @@
           "description": "Absolute directory holding the declarations.",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WorkspaceMemberInfo": {
       "description": "One workspace member.",
@@ -1098,7 +1115,8 @@
           "description": "Directory relative to the workspace root, forward slashes.",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   "title": "runner doctor --json",

@@ -685,21 +685,51 @@ pub(crate) struct InstallDir {
     pub writers: Vec<PackageManager>,
 }
 
+impl Task {
+    /// Bare-name precedence of this task's scope seen from `current`: the
+    /// current member first, then the root, then every other member.
+    pub(crate) fn scope_rank_from(&self, current: Option<&WorkspaceMember>) -> u8 {
+        match (&self.member, current) {
+            (Some(member), Some(current)) if member.dir == current.dir => 0,
+            (None, _) => 1,
+            (Some(_), _) => 2,
+        }
+    }
+
+    /// The shortest token that runs this task from inside `current`: the
+    /// bare name for the current member's tasks and for root tasks no
+    /// current-member task shadows, `root:name` for a shadowed root task,
+    /// `member:name` for other members.
+    pub(crate) fn spelling_from<'a, 'b>(
+        &'a self,
+        current: Option<&WorkspaceMember>,
+        siblings: impl IntoIterator<Item = &'b Self>,
+    ) -> Cow<'a, str> {
+        match self.scope_rank_from(current) {
+            0 => Cow::Borrowed(self.name.as_str()),
+            1 => {
+                let shadowed = siblings
+                    .into_iter()
+                    .any(|task| task.name == self.name && task.scope_rank_from(current) == 0);
+                if shadowed {
+                    Cow::Owned(format!("root:{}", self.name))
+                } else {
+                    Cow::Borrowed(self.name.as_str())
+                }
+            }
+            _ => self.display_name(),
+        }
+    }
+}
+
 impl ProjectContext {
     /// The workspace member the invocation directory sits in, if any.
     pub(crate) fn current_member(&self) -> Option<&Arc<WorkspaceMember>> {
         self.workspace.as_ref()?.current.as_ref()
     }
 
-    /// Bare-name precedence of a task's scope from the invocation
-    /// directory: the current member first, then the root, then every other
-    /// member.
     pub(crate) fn scope_rank(&self, task: &Task) -> u8 {
-        match (&task.member, self.current_member()) {
-            (Some(member), Some(current)) if member.dir == current.dir => 0,
-            (None, _) => 1,
-            (Some(_), _) => 2,
-        }
+        task.scope_rank_from(self.current_member().map(Arc::as_ref))
     }
 
     /// Whether a bare name spells this task from the invocation directory:
@@ -708,14 +738,8 @@ impl ProjectContext {
         self.scope_rank(task) < 2
     }
 
-    /// The shortest token that runs `task` from the invocation directory:
-    /// the bare name for local tasks, `member:name` for other members.
     pub(crate) fn spelling<'a>(&self, task: &'a Task) -> Cow<'a, str> {
-        if self.is_local(task) {
-            Cow::Borrowed(task.name.as_str())
-        } else {
-            task.display_name()
-        }
+        task.spelling_from(self.current_member().map(Arc::as_ref), &self.tasks)
     }
 
     /// Returns the first Node-ecosystem package manager, if any.

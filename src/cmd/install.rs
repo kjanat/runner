@@ -396,6 +396,7 @@ fn run_installs_parallel(
     frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
+    super::print_output_explain(overrides, "install");
     let lanes = install_lanes(plan);
     let names: Vec<&str> = plan.pms.iter().map(|pm| pm.label()).collect();
     let width = prefix_width(&names);

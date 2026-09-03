@@ -7,7 +7,7 @@ use std::io::IsTerminal;
 use anyhow::Result;
 use colored::Colorize;
 
-use super::list::{print_conflicts, print_tasks_grouped};
+use super::list::{print_conflicts, print_tasks_grouped, terminal_width};
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
 use crate::types::{ProjectContext, Workspace, version_matches};
@@ -78,10 +78,14 @@ pub(crate) fn info(
     }
 
     if let Some(workspace) = &ctx.workspace {
+        let width = std::io::stdout()
+            .is_terminal()
+            .then(terminal_width)
+            .flatten();
         println!(
             "  {:<20}{}",
             "Workspace".dimmed(),
-            workspace_line(workspace)
+            workspace_line(workspace, width)
         );
     }
 
@@ -110,7 +114,11 @@ pub(crate) fn info(
     Ok(())
 }
 
-fn workspace_line(workspace: &Workspace) -> String {
+const BANNER_LABEL_WIDTH: usize = 22;
+
+/// The workspace banner row, kept on one line: member names are listed
+/// until the row would exceed `width`, the rest collapse into `+N more`.
+fn workspace_line(workspace: &Workspace, width: Option<usize>) -> String {
     let count = workspace.members.len();
     let noun = if count == 1 { "member" } else { "members" };
     let names: Vec<&str> = workspace
@@ -122,15 +130,25 @@ fn workspace_line(workspace: &Workspace) -> String {
         .current
         .as_ref()
         .map_or(String::new(), |member| format!(", in {}", member.name));
+    let kinds = workspace_kinds(workspace);
     if names.is_empty() {
-        format!("{} ({count} {noun}{current})", workspace_kinds(workspace))
-    } else {
-        format!(
-            "{} ({count} {noun}: {}{current})",
-            workspace_kinds(workspace),
-            names.join(", ")
-        )
+        return format!("{kinds} ({count} {noun}{current})");
     }
+    let render = |shown: usize| {
+        let mut list: Vec<String> = names[..shown].iter().map(ToString::to_string).collect();
+        if shown < names.len() {
+            list.push(format!("+{} more", names.len() - shown));
+        }
+        format!("{kinds} ({count} {noun}: {}{current})", list.join(", "))
+    };
+    let Some(budget) = width.map(|width| width.saturating_sub(BANNER_LABEL_WIDTH)) else {
+        return render(names.len());
+    };
+    (0..=names.len())
+        .rev()
+        .map(render)
+        .find(|line| line.chars().count() <= budget)
+        .unwrap_or_else(|| render(0))
 }
 
 fn workspace_kinds(workspace: &Workspace) -> String {
@@ -177,7 +195,50 @@ fn osc8_link(label: &str, url: &str) -> String {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{VERSION, bin_name_from_arg0, release_url, title_line};
+    use super::{VERSION, bin_name_from_arg0, release_url, title_line, workspace_line};
+
+    fn workspace_with(names: &[&str]) -> crate::types::Workspace {
+        use std::sync::Arc;
+
+        use crate::types::{WorkspaceKind, WorkspaceMember};
+        crate::types::Workspace {
+            root: std::path::PathBuf::from("/ws"),
+            kinds: vec![WorkspaceKind::PackageJson],
+            members: names
+                .iter()
+                .map(|name| {
+                    Arc::new(WorkspaceMember {
+                        name: (*name).to_string(),
+                        path: (*name).to_string(),
+                        dir: std::path::PathBuf::from("/ws").join(name),
+                    })
+                })
+                .collect(),
+            current: None,
+        }
+    }
+
+    #[test]
+    fn workspace_line_lists_every_member_without_a_width() {
+        let line = workspace_line(&workspace_with(&["alpha", "beta", "gamma"]), None);
+        assert!(line.ends_with("(3 members: alpha, beta, gamma)"), "{line}");
+    }
+
+    #[test]
+    fn workspace_line_collapses_members_that_would_wrap() {
+        let workspace = workspace_with(&["alpha", "beta", "gamma", "delta"]);
+        let full = workspace_line(&workspace, None);
+        let width = full.chars().count() + super::BANNER_LABEL_WIDTH - 1;
+        let line = workspace_line(&workspace, Some(width));
+        assert!(line.ends_with("alpha, beta, +2 more)"), "{line}");
+        assert!(
+            line.chars().count() + super::BANNER_LABEL_WIDTH <= width,
+            "{line}"
+        );
+
+        let tiny = workspace_line(&workspace, Some(1));
+        assert!(tiny.ends_with("(4 members: +4 more)"), "{tiny}");
+    }
 
     #[test]
     fn bin_name_from_arg0_uses_path_file_name() {

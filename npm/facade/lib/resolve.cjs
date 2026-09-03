@@ -5,10 +5,19 @@ const { optionalDependencies, name: pkgName } = require("#pkg");
 const { platform, arch, env, report } = require("node:process");
 const { dirname, join } = require("node:path");
 const { existsSync, readdirSync } = require("node:fs");
-const { fatalOutputEnabled } = require("#quiet");
+const { fatalOutputEnabled, warningOutputEnabled } = require("#quiet");
 const { bugs } = require("#pkg");
 
-const repo = bugs.replace(/\/issues$/, "");
+/** @param {unknown} value @returns {string} */
+const bugsUrl = (value) => {
+	if (typeof value === "string") return value;
+	if (typeof value === "object" && value !== null && "url" in value && typeof value.url === "string") {
+		return value.url;
+	}
+	return "";
+};
+
+const repo = bugsUrl(bugs).replace(/\/issues$/, "");
 const subPackages = Object.keys(optionalDependencies || {});
 
 // ansispeck handles color and OSC 8 hyperlink capability detection (NO_COLOR,
@@ -79,7 +88,13 @@ const exists = (path) => existsSync(path);
  * @param {string} dir
  * @returns {string[]}
  */
-const listDir = (dir) => readdirSync(dir);
+const listDir = (dir) => {
+	try {
+		return readdirSync(dir);
+	} catch {
+		return [];
+	}
+};
 
 /**
  * Name of the platform package holding the `libc` build for this architecture.
@@ -347,10 +362,16 @@ function isInstalled(pkg, resolve) {
 const isModuleNotFound = (err) =>
 	typeof err === "object" && err !== null && "code" in err && err.code === "MODULE_NOT_FOUND";
 
+const invokedName = () => (process.argv[1]?.endsWith("runner.cjs") ? "runner" : "run");
+
 /** @param {string} message */
 const reportFatal = (message) => {
-	const name = process.argv[1]?.endsWith("runner.cjs") ? "runner" : "run";
-	if (fatalOutputEnabled(name, process.argv.slice(2))) console.error(message);
+	if (fatalOutputEnabled(invokedName(), process.argv.slice(2))) console.error(message);
+};
+
+/** @param {string} message */
+const reportWarning = (message) => {
+	if (warningOutputEnabled(invokedName(), process.argv.slice(2))) console.error(message);
 };
 
 /**
@@ -521,7 +542,7 @@ function resolveBinary(name, context = {}) {
 		// Manifest order picked one; say so rather than let a coin flip pass
 		// for a decision.
 		if (plan.libc === null && plan.pair.includes(subPkg)) {
-			reportFatal(
+			reportWarning(
 				`${yellow(pkgName)}: could not detect this host's libc (${plan.libcSource}); using ${cyan(subPkg)}. Set ${
 					cyan("RUNNER_LIBC=glibc")
 				} or ${cyan("RUNNER_LIBC=musl")} to choose.`,

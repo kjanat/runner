@@ -334,6 +334,10 @@ pub(super) struct WhyReport<'a> {
     reason = "serialized independent output axes"
 )]
 struct WhyOutput {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))
+    )]
     level: &'static str,
     progress: bool,
     warnings: bool,
@@ -342,7 +346,12 @@ struct WhyOutput {
     task_timing: bool,
     summary: bool,
     fatal_errors: bool,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["normal", "quiet", "reduced"]))
+    )]
     host_diagnostics: &'static str,
+    #[cfg_attr(feature = "schema", schemars(extend("enum" = ["inherit", "stderr"])))]
     host_stream: &'static str,
     task_stdout: &'static str,
     task_stderr: &'static str,
