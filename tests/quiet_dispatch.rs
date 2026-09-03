@@ -651,6 +651,31 @@ fn explain_reports_exact_applied_host_args() {
 }
 
 #[test]
+fn explain_reports_output_policy_for_local_files() {
+    if !tool_available("python3") {
+        eprintln!("skipping: `python3` not found on PATH");
+        return;
+    }
+    let proj = TempProject::new("local-file-explain").file("tool.py", "print('PY-OUT')\n");
+    let output = run_in(proj.path(), &[], &["-qq", "--explain", "./tool.py"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stdout.lines().any(|line| line == "PY-OUT"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stderr.contains("output: level=very-quiet progress=hide warnings=hide errors=show"),
+        "stderr: {stderr}",
+    );
+    assert!(
+        stderr.contains("task.stdout=inherit task.stderr=inherit"),
+        "stderr: {stderr}",
+    );
+}
+
+#[test]
 fn mute_hides_clap_parse_errors() {
     let proj = make_project("mute-clap");
     let output = run_in(proj.path(), &[], &["-qqqq", "--definitely-invalid"]);

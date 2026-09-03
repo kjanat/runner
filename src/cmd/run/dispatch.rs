@@ -106,23 +106,6 @@ fn host_verbosity(
     } else {
         tool::Stream::Inherit
     };
-    let (stdout, stderr) = overrides.task_streams_for(&task_key);
-    crate::cmd::print_explain(
-        overrides,
-        &format!(
-            "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
-             summary={} task.stdout={} task.stderr={}",
-            overrides.quiet_level.label(),
-            show_hide(overrides.shows_progress()),
-            show_hide(overrides.shows_warnings()),
-            show_hide(overrides.shows_errors()),
-            show_hide(overrides.emits_groups()),
-            show_hide(overrides.shows_task_timing()),
-            show_hide(overrides.shows_summary()),
-            stdout.label(),
-            stderr.label(),
-        ),
-    );
     let mut args = if applied >= tool::HostDiagnostics::Quiet {
         capabilities.quiet_args.to_vec()
     } else {
@@ -152,10 +135,6 @@ fn host_verbosity(
         diagnostics: applied,
         stream,
     }
-}
-
-const fn show_hide(show: bool) -> &'static str {
-    if show { "show" } else { "hide" }
 }
 
 /// Outcome of resolving a task: a spawnable process, or a deno task to

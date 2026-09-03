@@ -84,6 +84,7 @@ pub(crate) fn run(
         dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
         dispatch::Dispatch::DenoSelfExec(self_exec) => {
             let (stdout, stderr) = task_streams_for_token(ctx, overrides, task);
+            super::print_output_explain(overrides, stdout, stderr);
             self_exec.run(stdout, stderr)
         }
     }

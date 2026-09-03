@@ -97,6 +97,7 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
 
 fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides, task: &str) {
     let (stdout, stderr) = overrides.task_streams_for(task);
+    print_output_explain(overrides, stdout, stderr);
     command.stdout(match stdout {
         crate::tool::TaskStream::Inherit => Stdio::inherit(),
         crate::tool::TaskStream::Discard => Stdio::null(),
@@ -440,6 +441,33 @@ pub(crate) fn print_explain(overrides: &ResolutionOverrides, body: &str) {
         return;
     }
     eprintln!("{} {} {body}", "·".dimmed(), "runner".dimmed());
+}
+
+pub(crate) fn print_output_explain(
+    overrides: &ResolutionOverrides,
+    stdout: crate::tool::TaskStream,
+    stderr: crate::tool::TaskStream,
+) {
+    print_explain(
+        overrides,
+        &format!(
+            "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
+             summary={} task.stdout={} task.stderr={}",
+            overrides.quiet_level.label(),
+            show_hide(overrides.shows_progress()),
+            show_hide(overrides.shows_warnings()),
+            show_hide(overrides.shows_errors()),
+            show_hide(overrides.emits_groups()),
+            show_hide(overrides.shows_task_timing()),
+            show_hide(overrides.shows_summary()),
+            stdout.label(),
+            stderr.label(),
+        ),
+    );
+}
+
+const fn show_hide(show: bool) -> &'static str {
+    if show { "show" } else { "hide" }
 }
 
 pub(crate) fn print_warning_slice(

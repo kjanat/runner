@@ -37,9 +37,18 @@ appear in `--explain` with the matrix ID below.
 | `go`         | none                      | `go run` has no host-only diagnostic switch     | `normal` |
 | `bacon`      | TUI/output controls       | no host-only quiet contract                     | `normal` |
 | `yarn-berry` | no `--silent` global flag | Classic mapping is unsafe on Berry              | `normal` |
+| `python`     | `-q`                      | suppresses only the interactive startup banner  | `normal` |
+
+## Local Files
+
+`runner ./script.ts` and its siblings run the file through a runtime
+(`bun`, `deno run`, `node`, `uv run`, `python3`, `go run`). That path applies no
+host quiet flags on any runtime and `--explain` prints no `host:` line for it.
+Per-task stdout/stderr discard still applies and is reported on the `output:`
+line.
 
 `nx`, `volta`, `cargo_pm`, `composer`, `bundler`, `git`, `files`, `shell`,
-`deno_exec`, `program`, and `test_support` are detection, install, shim, helper,
-or in-process modules rather than direct task-dispatch hosts. They therefore do
-not declare a host diagnostic reduction. In-process Deno execution still honors
-explicit per-task stdout/stderr discard.
+`deno_exec`, `program`, `passthrough`, `workspace`, and `test_support` are
+detection, install, shim, helper, or in-process modules rather than direct
+task-dispatch hosts. They therefore do not declare a host diagnostic reduction.
+In-process Deno execution still honors explicit per-task stdout/stderr discard.
