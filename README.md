@@ -106,7 +106,7 @@ l             -- → clippy --all-targets --all-features -- -D warnings -D clipp
 --no-warnings     -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
 -q, --quiet       -- Graduated output policy: -q runner progress, -qq warnings + safe host quiet, -qqq recoverable error decoration, -qqqq mute. Task streams survive. RUNNER_QUIET accepts numeric levels; nested runners inherit it.
 --host-stream     -- Keep the host tool's stdout clean by diverting its diagnostics to stderr: inherit (default) | stderr. Only pnpm can (via --use-stderr); other hosts no-op. Also reads RUNNER_HOST_STREAM.
---schema-version  -- Pin JSON output schema version (currently always 3). Affects --json output of doctor/list/why only.
+--schema-version  -- Pin JSON output schema version (currently always 1). Affects --json output of doctor/list/why only.
 --sequential      -- Run the given tasks sequentially. Conflicts with `--parallel`
 --parallel        -- Run the given tasks in parallel. Conflicts with `--sequential`
 --keep-going      -- Run every task in the chain regardless of failures. Conflicts with `--kill-on-fail`
@@ -354,6 +354,11 @@ runner why <task> [--json]          # explain how a task would dispatch
 runner config <init|show|validate|path>  # manage runner.toml
 runner completions [<shell>] [-o <path>]
 ```
+
+### JSON output
+
+`schema_version` is `1` and bumps when a field is removed, renamed, or
+retyped. Ignore keys you do not know. Schemas live in [`schemas/`](schemas/).
 
 ### Forwarding arguments
 

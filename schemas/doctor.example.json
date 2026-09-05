@@ -1,6 +1,6 @@
 {
   "$schema": "https://kjanat.github.io/runner/schemas/doctor.schema.json",
-  "schema_version": 3,
+  "schema_version": 1,
   "kind": "runner.doctor",
   "invocation": {
     "argv": [
@@ -25,9 +25,9 @@
     "name": "runner",
     "version": "0.25.1",
     "schema_versions": {
-      "doctor": 3,
-      "list": 3,
-      "why": 3
+      "doctor": 1,
+      "list": 1,
+      "why": 1
     }
   },
   "project": {

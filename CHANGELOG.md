@@ -67,8 +67,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   (https://github.com/kjanat/runner/issues/116). An explicit `-q` merges with
   the `[runner]` and `[host]` sections instead of replacing them; the quietest
   setting on each axis wins.
-- Bump the unified `doctor`/`list`/`why` JSON contract to schema version 3 for
-  the expanded output-policy report.
+- `doctor`/`list`/`why` JSON is schema version 1 again. Version 2 (v0.20.0)
+  added fields. `--schema-version` accepts `1`.
 - Inside a member, a root task the member shadows is spelled `root:<name>` in
   `list` and the dispatch arrow, so the printed token runs that task.
 
