@@ -622,7 +622,7 @@ fn decision_report(
         };
     }
     if let Some(members) = ambiguous {
-        let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
+        let names: Vec<&str> = members.iter().map(|member| member.label.as_str()).collect();
         return WhyDecision {
             strategy: "ambiguous",
             reason: format!(
@@ -730,7 +730,7 @@ fn print_human(
     if let Some(members) = ambiguous {
         let spellings: Vec<String> = members
             .iter()
-            .map(|member| format!("{}:{task}", member.name))
+            .map(|member| format!("{}:{task}", member.label))
             .collect();
         println!(
             "  {}",

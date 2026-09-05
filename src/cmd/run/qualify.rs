@@ -257,7 +257,7 @@ pub(crate) fn qualified_miss_error(
                     let names: Vec<&str> = workspace
                         .members
                         .iter()
-                        .map(|member| member.name.as_str())
+                        .map(|member| member.label.as_str())
                         .collect();
                     if names.is_empty() {
                         "the workspace has no members".to_string()
@@ -297,7 +297,7 @@ pub(crate) fn member_ambiguity_error(
     task_name: &str,
     members: &[&WorkspaceMember],
 ) -> anyhow::Error {
-    let names: Vec<&str> = members.iter().map(|member| member.name.as_str()).collect();
+    let names: Vec<&str> = members.iter().map(|member| member.label.as_str()).collect();
     let spellings: Vec<String> = names
         .iter()
         .map(|name| format!("`{name}:{task_name}`"))
@@ -581,11 +581,11 @@ mod tests {
     }
 
     fn member(name: &str, path: &str) -> Arc<WorkspaceMember> {
-        Arc::new(WorkspaceMember {
-            name: name.to_string(),
-            path: path.to_string(),
-            dir: PathBuf::from("/tmp/ws").join(path),
-        })
+        Arc::new(WorkspaceMember::new(
+            name.to_string(),
+            path.to_string(),
+            PathBuf::from("/tmp/ws").join(path),
+        ))
     }
 
     fn member_task(name: &str, member: &Arc<WorkspaceMember>) -> Task {

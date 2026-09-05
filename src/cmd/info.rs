@@ -207,11 +207,11 @@ mod tests {
             members: names
                 .iter()
                 .map(|name| {
-                    Arc::new(WorkspaceMember {
-                        name: (*name).to_string(),
-                        path: (*name).to_string(),
-                        dir: std::path::PathBuf::from("/ws").join(name),
-                    })
+                    Arc::new(WorkspaceMember::new(
+                        (*name).to_string(),
+                        (*name).to_string(),
+                        std::path::PathBuf::from("/ws").join(name),
+                    ))
                 })
                 .collect(),
             current: None,

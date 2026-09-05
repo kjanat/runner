@@ -94,12 +94,20 @@ fn tool_available(bin: &str) -> bool {
 fn run_in(dir: &Path, args: &[&str]) -> Output {
     for _ in 0..5 {
         let output = run_once(dir, args);
-        if !String::from_utf8_lossy(&output.stderr).contains("Text file busy") {
+        if !failed_on_text_file_busy(&output) {
             return output;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     run_once(dir, args)
+}
+
+/// `ETXTBSY` is errno 26 on every unix.
+fn failed_on_text_file_busy(output: &Output) -> bool {
+    !output.status.success()
+        && String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line.starts_with("Error: ") && line.contains("os error 26"))
 }
 
 fn run_once(dir: &Path, args: &[&str]) -> Output {

@@ -969,16 +969,16 @@ mod tests {
 
         use crate::types::WorkspaceMember;
 
-        let rfc = Arc::new(WorkspaceMember {
-            name: "rfc".to_string(),
-            path: "rfc".to_string(),
-            dir: PathBuf::from("/ws/rfc"),
-        });
-        let web = Arc::new(WorkspaceMember {
-            name: "web".to_string(),
-            path: "apps/web".to_string(),
-            dir: PathBuf::from("/ws/apps/web"),
-        });
+        let rfc = Arc::new(WorkspaceMember::new(
+            "rfc".to_string(),
+            "rfc".to_string(),
+            PathBuf::from("/ws/rfc"),
+        ));
+        let web = Arc::new(WorkspaceMember::new(
+            "web".to_string(),
+            "apps/web".to_string(),
+            PathBuf::from("/ws/apps/web"),
+        ));
         let member = |name: &str, member: &Arc<WorkspaceMember>| Task {
             member: Some(Arc::clone(member)),
             ..task(name, TaskSource::PackageJson)

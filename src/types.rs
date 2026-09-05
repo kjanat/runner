@@ -1,6 +1,7 @@
 //! Shared types used across detection, commands, and tool modules.
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -230,11 +231,11 @@ impl Task {
             .map_or(root, |member| member.dir.as_path())
     }
 
-    /// FQN scope segment: the member name, or `root`.
+    /// FQN scope segment: the member label, or `root`.
     pub(crate) fn scope(&self) -> &str {
         self.member
             .as_ref()
-            .map_or("root", |member| member.name.as_str())
+            .map_or("root", |member| member.label.as_str())
     }
 
     /// The spelling `run` accepts for this task: `member:name` for member
@@ -242,7 +243,7 @@ impl Task {
     pub(crate) fn display_name(&self) -> Cow<'_, str> {
         self.member.as_ref().map_or_else(
             || Cow::Borrowed(self.name.as_str()),
-            |member| Cow::Owned(format!("{}:{}", member.name, self.name)),
+            |member| Cow::Owned(format!("{}:{}", member.label, self.name)),
         )
     }
 
@@ -264,11 +265,44 @@ pub(crate) struct WorkspaceMember {
     pub name: String,
     /// Directory relative to the workspace root, forward slashes.
     pub path: String,
+    /// The scope token that addresses this member and no other: `name`
+    /// when no sibling shares it, `path` otherwise.
+    pub label: String,
     /// Absolute directory.
     pub dir: PathBuf,
 }
 
 impl WorkspaceMember {
+    /// A member whose `label` is its name, to be disambiguated against its
+    /// siblings by [`WorkspaceMember::disambiguate`].
+    pub(crate) fn new(name: String, path: String, dir: PathBuf) -> Self {
+        Self {
+            label: name.clone(),
+            name,
+            path,
+            dir,
+        }
+    }
+
+    /// Relabel every member whose name a sibling shares to its path, so
+    /// each label addresses one member.
+    pub(crate) fn disambiguate(members: &mut [Self]) {
+        let mut counts: HashMap<&str, usize> = HashMap::with_capacity(members.len());
+        for member in &*members {
+            *counts.entry(member.name.as_str()).or_default() += 1;
+        }
+        let shared: HashSet<String> = counts
+            .into_iter()
+            .filter(|&(_, count)| count > 1)
+            .map(|(name, _)| name.to_owned())
+            .collect();
+        for member in members {
+            if shared.contains(&member.name) {
+                member.label.clone_from(&member.path);
+            }
+        }
+    }
+
     /// Whether `scope` addresses this member: its name, its relative path,
     /// or its directory name.
     pub(crate) fn addressed_by(&self, scope: &str) -> bool {
@@ -1301,6 +1335,67 @@ mod tests {
         // Default has no user-settable label; the report surface still
         // needs a stable spelling.
         assert_eq!(json_str(ScriptPolicy::Default), "default");
+    }
+
+    /// Every printed spelling must resolve to the member it names.
+    #[test]
+    fn colliding_member_names_spell_tasks_by_path() {
+        use std::path::PathBuf;
+        use std::sync::Arc;
+
+        use super::{Task, TaskSource, Workspace, WorkspaceKind, WorkspaceMember};
+
+        let mut members = vec![
+            WorkspaceMember::new(
+                "web".to_string(),
+                "apps/web".to_string(),
+                PathBuf::from("/ws/apps/web"),
+            ),
+            WorkspaceMember::new(
+                "api".to_string(),
+                "services/api".to_string(),
+                PathBuf::from("/ws/services/api"),
+            ),
+            WorkspaceMember::new(
+                "web".to_string(),
+                "tools/web".to_string(),
+                PathBuf::from("/ws/tools/web"),
+            ),
+        ];
+        WorkspaceMember::disambiguate(&mut members);
+        let workspace = Workspace {
+            root: PathBuf::from("/ws"),
+            kinds: vec![WorkspaceKind::PackageJson],
+            members: members.into_iter().map(Arc::new).collect(),
+            current: None,
+        };
+        let tasks: Vec<Task> = workspace
+            .members
+            .iter()
+            .map(|member| Task {
+                name: "build".to_string(),
+                source: TaskSource::PackageJson,
+                run_target: None,
+                description: None,
+                alias_of: None,
+                passthrough_to: None,
+                member: Some(Arc::clone(member)),
+            })
+            .collect();
+
+        let spellings: Vec<String> = tasks
+            .iter()
+            .map(|task| task.spelling_from(None, &tasks).into_owned())
+            .collect();
+        assert_eq!(
+            spellings,
+            vec!["apps/web:build", "api:build", "tools/web:build"],
+        );
+        for (task, member) in tasks.iter().zip(&workspace.members) {
+            let resolved = workspace.resolve(task.scope());
+            assert_eq!(resolved.len(), 1, "{} is ambiguous", task.scope());
+            assert_eq!(resolved[0].dir, member.dir);
+        }
     }
 
     #[test]

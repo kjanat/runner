@@ -74,6 +74,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- Two workspace members whose manifests declare no name and whose directories
+  share a basename (`apps/web`, `tools/web`) are now spelled by path in `list`,
+  completions, the dispatch arrow, and every qualification hint, so the printed
+  token runs the task instead of naming both members.
 - A source-qualified name several members define (`package.json:site`) is
   refused with the qualified spellings, the same as the bare name, instead
   of running whichever member sorts first.

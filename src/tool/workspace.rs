@@ -18,24 +18,25 @@ use crate::types::{Workspace, WorkspaceKind, WorkspaceMember};
 /// declaration exists.
 pub(crate) fn discover(root: &Path) -> Option<Workspace> {
     let mut kinds = Vec::new();
-    let mut members: Vec<Arc<WorkspaceMember>> = Vec::new();
+    let mut members: Vec<WorkspaceMember> = Vec::new();
     for (kind, globs) in declarations(root) {
         kinds.push(kind);
         for dir in expand(root, &globs) {
             if !has_manifest(kind, &dir) || members.iter().any(|member| member.dir == dir) {
                 continue;
             }
-            members.push(Arc::new(member(root, kind, dir)));
+            members.push(member(root, kind, dir));
         }
     }
     if kinds.is_empty() {
         return None;
     }
     members.sort_by(|a, b| a.path.cmp(&b.path));
+    WorkspaceMember::disambiguate(&mut members);
     Some(Workspace {
         root: root.to_path_buf(),
         kinds,
-        members,
+        members: members.into_iter().map(Arc::new).collect(),
         current: None,
     })
 }
@@ -217,7 +218,7 @@ fn member(root: &Path, kind: WorkspaceKind, dir: PathBuf) -> WorkspaceMember {
         dir.file_name()
             .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned())
     });
-    WorkspaceMember { name, path, dir }
+    WorkspaceMember::new(name, path, dir)
 }
 
 fn relative_path(root: &Path, dir: &Path) -> String {
@@ -618,6 +619,66 @@ mod tests {
         write(&repo, "lib/package.json", r#"{ "name": "lib" }"#);
 
         assert!(super::anchor(&repo.join("lib")).is_none());
+    }
+
+    #[test]
+    fn members_sharing_a_name_are_labeled_by_path() {
+        let dir = TempDir::new("workspace-label");
+        write(
+            dir.path(),
+            "package.json",
+            r#"{ "workspaces": ["apps/*", "tools/*"] }"#,
+        );
+        write(dir.path(), "apps/docs/package.json", "{}");
+        write(dir.path(), "apps/web/package.json", "{}");
+        write(dir.path(), "tools/web/package.json", "{}");
+
+        let workspace = discover(dir.path()).expect("workspace should be discovered");
+
+        assert_eq!(
+            names(&workspace),
+            vec![
+                ("docs", "apps/docs"),
+                ("web", "apps/web"),
+                ("web", "tools/web"),
+            ],
+        );
+        let labels: Vec<&str> = workspace
+            .members
+            .iter()
+            .map(|member| member.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["docs", "apps/web", "tools/web"]);
+        for member in &workspace.members {
+            let resolved = workspace.resolve(&member.label);
+            assert_eq!(resolved.len(), 1, "{} is ambiguous", member.label);
+            assert_eq!(resolved[0].path, member.path);
+        }
+    }
+
+    #[test]
+    fn a_declared_name_stays_the_label_when_no_sibling_shares_it() {
+        let dir = TempDir::new("workspace-label-declared");
+        write(
+            dir.path(),
+            "package.json",
+            r#"{ "workspaces": ["apps/*", "tools/*"] }"#,
+        );
+        write(
+            dir.path(),
+            "apps/web/package.json",
+            r#"{ "name": "@acme/web" }"#,
+        );
+        write(dir.path(), "tools/web/package.json", "{}");
+
+        let workspace = discover(dir.path()).expect("workspace should be discovered");
+
+        let labels: Vec<&str> = workspace
+            .members
+            .iter()
+            .map(|member| member.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["@acme/web", "web"]);
     }
 
     #[test]
