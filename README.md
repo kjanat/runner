@@ -202,6 +202,17 @@ The installer also works on Termux/Android (aarch64, best-effort) from runner
 release v0.24.0, where it selects a native `aarch64-linux-android` binary.
 Earlier releases lack that asset, so the installer refuses them on Android.
 
+### Verify provenance
+
+Releases after v0.25.1 carry GitHub build-provenance attestations on every
+release archive, the man-page tarball, and the container image.
+`mise install github:kjanat/runner` checks them on its own; by hand:
+
+```sh
+gh attestation verify runner-v<version>-<target>.tar.gz --repo kjanat/runner
+gh attestation verify oci://ghcr.io/kjanat/runner:<version> --repo kjanat/runner
+```
+
 ---
 
 </details>
@@ -213,6 +224,16 @@ Use the action to install runner in CI ([view on marketplace](https://github.com
 ```yaml
 - uses: kjanat/runner@master
 - run: runner install --frozen test build
+```
+
+The action downloads the platform package from npm, checks it against the
+registry integrity hash, and runs `gh attestation verify` on it when GitHub
+holds a build-provenance attestation for that tarball. `verify: require` makes
+a missing attestation fatal; `verify: off` skips the check.
+
+```yaml
+- uses: kjanat/runner@master
+  with: { version: "0.26", verify: require }
 ```
 
 `runner install` is not a task; it runs the project's toolchain command(s)
