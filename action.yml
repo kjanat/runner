@@ -5,10 +5,7 @@ branding: { icon: play, color: blue }
 
 inputs:
   version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver prefix (`1`, `0.10`, `v0.10`).", default: latest }
-  verify: {
-    description: "Build-provenance check on the downloaded package via `gh attestation verify`: `auto` (default; verify when an attestation exists, warn when none does), `require` (a missing attestation fails), or `off`.",
-    default: auto,
-  }
+  verify: { description: "Run `gh attestation verify` on the downloaded package: `auto` (warn when unattested), `require`, or `off`.", default: auto }
   token: { description: "GitHub token for the attestation lookup and `gh attestation verify`.", default: "${{ github.token }}" }
 
 outputs:
