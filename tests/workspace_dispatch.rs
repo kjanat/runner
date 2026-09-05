@@ -63,7 +63,15 @@ fn runner_binary() -> PathBuf {
 }
 
 fn npm_available() -> bool {
-    Command::new("npm")
+    tool_available("npm")
+}
+
+fn make_available() -> bool {
+    tool_available("make")
+}
+
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
         .arg("--version")
         .output()
         .is_ok_and(|o| o.status.success())
@@ -131,6 +139,64 @@ fn workspace(tag: &str) -> TempWorkspace {
             "apps/web/package.json",
             r#"{ "name": "@acme/web", "scripts": { "site": "node cwd.js" } }"#,
         )
+}
+
+const ROOT_MAKEFILE: &str = "build:\n\t@pwd\nlint:\n\t@pwd\n.PHONY: build lint\n";
+const MEMBER_MAKEFILE: &str = "build:\n\t@pwd\nserve:\n\t@pwd\n.PHONY: build serve\n";
+
+/// [`workspace`] with a `Makefile` at the root and another inside `rfc`.
+fn workspace_with_makefiles(tag: &str) -> TempWorkspace {
+    workspace(tag)
+        .file("Makefile", ROOT_MAKEFILE)
+        .file("rfc/Makefile", MEMBER_MAKEFILE)
+}
+
+#[test]
+fn inside_a_member_its_makefile_is_read_and_the_roots_is_qualified() {
+    let ws = workspace_with_makefiles("list-member-make");
+
+    let output = runner_in(&ws.path().join("rfc"), &["list", "--raw"]);
+    assert!(output.status.success());
+    let lines = stdout_lines(&output);
+    for expected in ["build", "serve", "root:build", "lint"] {
+        assert!(
+            lines.contains(&expected.to_string()),
+            "{expected}: {lines:?}"
+        );
+    }
+    assert!(!lines.contains(&"root:lint".to_string()), "{lines:?}");
+}
+
+#[test]
+fn from_the_root_a_member_makefile_is_member_qualified() {
+    let ws = workspace_with_makefiles("list-root-make");
+
+    let output = runner_in(ws.path(), &["list", "--raw"]);
+    assert!(output.status.success());
+    let lines = stdout_lines(&output);
+    for expected in ["build", "lint", "rfc:build", "rfc:serve"] {
+        assert!(
+            lines.contains(&expected.to_string()),
+            "{expected}: {lines:?}"
+        );
+    }
+}
+
+#[test]
+fn member_makefile_targets_run_in_the_member_directory() {
+    if !make_available() {
+        eprintln!("skipping: `make` not found on PATH");
+        return;
+    }
+    let ws = workspace_with_makefiles("dispatch-make");
+    let rfc = ws.path().join("rfc");
+
+    assert_runs_in(&rfc, "make:build", &rfc);
+    assert_runs_in(&rfc, "serve", &rfc);
+    assert_runs_in(&rfc, "root:make:build", ws.path());
+    assert_runs_in(&rfc, "make:lint", ws.path());
+    assert_runs_in(ws.path(), "rfc:make:serve", &rfc);
+    assert_runs_in(ws.path(), "make:build", ws.path());
 }
 
 #[test]

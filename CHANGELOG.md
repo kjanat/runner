@@ -18,6 +18,19 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Fixed
+
+- Inside a workspace member, its own `Makefile`, `justfile`, `Taskfile`,
+  `mise.toml`, and `bacon.toml` are read again. 0.26.0 anchored task discovery
+  on the workspace root and read only manifest scripts and `deno.json` tasks per
+  member, so `runner --dir playground` listed the root's make targets and
+  reported the member's as not found. Member runner tasks now list bare from
+  inside the member, as `<member>:<task>` elsewhere, and run in the member's
+  directory.
+- A source qualifier (`make:build`) reaches the scope that defines the task.
+  The nearest-scope filter ran before the qualifier, so a root `make:build`
+  shadowed by a member `package.json` script failed with `not found in make`.
+
 ## [0.26.0] - 2026-09-05
 
 ### Added

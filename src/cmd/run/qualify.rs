@@ -196,7 +196,11 @@ pub(crate) fn lookup_token<'a>(
     let found: Vec<&Task> = ctx
         .tasks
         .iter()
-        .filter(|task| task.name == parsed.name && parsed.scope.admits(task))
+        .filter(|task| {
+            task.name == parsed.name
+                && parsed.scope.admits(task)
+                && parsed.source.is_none_or(|source| task.source == source)
+        })
         .collect();
     let found = if parsed.scope.is_pinned() {
         found
@@ -706,6 +710,21 @@ mod tests {
 
         precheck_task(&ctx, &ResolutionOverrides::default(), "site")
             .expect("the current member resolves a name every scope defines");
+    }
+
+    #[test]
+    fn lookup_token_source_qualifier_reaches_a_root_task_the_member_shadows() {
+        let mut ctx = inside_rfc_context();
+        ctx.tasks.push(task("site", TaskSource::Makefile));
+
+        let (lookup, found) = lookup_token(&ctx, "make:site");
+        assert_eq!(lookup.qualifier, Some(TaskSource::Makefile));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].source, TaskSource::Makefile);
+        assert!(found[0].member.is_none());
+
+        precheck_task(&ctx, &ResolutionOverrides::default(), "make:site")
+            .expect("the source qualifier picks the scope that defines it");
     }
 
     #[test]

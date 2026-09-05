@@ -551,16 +551,31 @@ fn push_member_extractions(ctx: &mut ProjectContext, extractions: Vec<MemberExtr
 struct MemberExtraction {
     member: Arc<WorkspaceMember>,
     scripts: anyhow::Result<Vec<(String, String)>>,
-    deno_tasks: anyhow::Result<Vec<(String, Option<String>)>>,
+    deno_tasks: Described,
+    make: Option<Described>,
+    just: Option<anyhow::Result<Vec<tool::just::ExtractedTask>>>,
+    go_task: Option<Described>,
+    mise: Option<anyhow::Result<Vec<tool::mise::ExtractedTask>>>,
+    bacon: Option<Described>,
 }
+
+type Described = anyhow::Result<Vec<(String, Option<String>)>>;
 
 fn extract_member_tasks(members: &[Arc<WorkspaceMember>]) -> Vec<MemberExtraction> {
     members
         .iter()
-        .map(|member| MemberExtraction {
-            member: Arc::clone(member),
-            scripts: tool::node::extract_scripts(&member.dir),
-            deno_tasks: tool::deno::extract_tasks_in(&member.dir),
+        .map(|member| {
+            let dir = member.dir.as_path();
+            MemberExtraction {
+                member: Arc::clone(member),
+                scripts: tool::node::extract_scripts(dir),
+                deno_tasks: tool::deno::extract_tasks_in(dir),
+                make: tool::make::detect(dir).then(|| tool::make::extract_tasks(dir)),
+                just: tool::just::detect(dir).then(|| tool::just::extract_tasks(dir)),
+                go_task: tool::go_task::detect(dir).then(|| tool::go_task::extract_tasks(dir)),
+                mise: tool::mise::detect(dir).then(|| tool::mise::extract_tasks(dir)),
+                bacon: tool::bacon::detect(dir).then(|| tool::bacon::extract_tasks(dir)),
+            }
         })
         .collect()
 }
@@ -570,7 +585,37 @@ fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
         member,
         scripts,
         deno_tasks,
+        make,
+        just,
+        go_task,
+        mise,
+        bacon,
     } = extraction;
+    if let Some(result) = make {
+        push_described_tasks_in(ctx, TaskSource::Makefile, result, Some(&member));
+    }
+    if let Some(result) = just {
+        push_recipe_alias_tasks_in(
+            ctx,
+            TaskSource::Justfile,
+            result.map(|entries| entries.into_iter().map(just_entry_triple).collect()),
+            Some(&member),
+        );
+    }
+    if let Some(result) = go_task {
+        push_described_tasks_in(ctx, TaskSource::Taskfile, result, Some(&member));
+    }
+    if let Some(result) = mise {
+        push_recipe_alias_tasks_in(
+            ctx,
+            TaskSource::MiseToml,
+            result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
+            Some(&member),
+        );
+    }
+    if let Some(result) = bacon {
+        push_described_tasks_in(ctx, TaskSource::BaconToml, result, Some(&member));
+    }
     match scripts {
         Ok(entries) => {
             for (name, command) in entries {
@@ -707,25 +752,26 @@ fn push_described_tasks(
     source: TaskSource,
     result: anyhow::Result<Vec<(String, Option<String>)>>,
 ) {
-    match result {
-        Ok(entries) => {
-            for (name, description) in entries {
-                ctx.tasks.push(Task {
-                    name,
-                    source,
-                    run_target: None,
-                    description,
-                    alias_of: None,
-                    passthrough_to: None,
-                    member: None,
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: source.label(),
-            error: format!("{err:#}"),
+    push_described_tasks_in(ctx, source, result, None);
+}
+
+fn push_described_tasks_in(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<(String, Option<String>)>>,
+    member: Option<&Arc<WorkspaceMember>>,
+) {
+    push_recipe_alias_tasks_in(
+        ctx,
+        source,
+        result.map(|entries| {
+            entries
+                .into_iter()
+                .map(|(name, description)| (name, description, None))
+                .collect()
         }),
-    }
+        member,
+    );
 }
 
 /// Append `package.json` scripts, classifying each entry as a
@@ -794,6 +840,15 @@ fn push_recipe_alias_tasks(
     source: TaskSource,
     result: anyhow::Result<Vec<RecipeOrAlias>>,
 ) {
+    push_recipe_alias_tasks_in(ctx, source, result, None);
+}
+
+fn push_recipe_alias_tasks_in(
+    ctx: &mut ProjectContext,
+    source: TaskSource,
+    result: anyhow::Result<Vec<RecipeOrAlias>>,
+    member: Option<&Arc<WorkspaceMember>>,
+) {
     match result {
         Ok(entries) => {
             for (name, description, alias_of) in entries {
@@ -804,13 +859,16 @@ fn push_recipe_alias_tasks(
                     description,
                     alias_of,
                     passthrough_to: None,
-                    member: None,
+                    member: member.map(Arc::clone),
                 });
             }
         }
         Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
             source: source.label(),
-            error: format!("{err:#}"),
+            error: member.map_or_else(
+                || format!("{err:#}"),
+                |member| format!("{}: {err:#}", member.path),
+            ),
         }),
     }
 }
