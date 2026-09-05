@@ -40,6 +40,7 @@ pub(crate) use error::{DevEnginesFailReason, ResolveError};
 /// Re-export of the standalone `runner.toml` validator backing
 /// `cmd::config::validate`; see [`overrides::validate_config`].
 pub(crate) use overrides::validate_config;
+pub(crate) use policies::parse_quiet_env;
 /// Re-export of the canonical Node PATH-probe order so the doctor's
 /// schema layer doesn't carry its own copy.
 pub(crate) use probe::NODE_PROBE_ORDER;
@@ -75,7 +76,7 @@ mod tests {
 
     use super::types::{
         ExplainSource, OverrideSources, PmOverride, QuietSource, ResolutionStep, RunnerOverride,
-        SourceValue,
+        SourceValue, TaskVerbosity,
     };
     use super::{FallbackPolicy, OverrideOrigin, ResolutionOverrides, ResolveError, Resolver};
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
@@ -84,6 +85,7 @@ mod tests {
 
     fn context(package_managers: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers,
             task_runners: Vec::new(),
@@ -91,6 +93,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -629,7 +632,7 @@ mod tests {
 
         assert_eq!(overrides.failure_policy, FailurePolicy::FailFast);
         assert!(
-            !overrides.silences_runner(),
+            overrides.shows_progress(),
             "typo'd RUNNER_QUIET must not enable quiet"
         );
         let vars: Vec<&str> = warnings
@@ -1602,7 +1605,7 @@ mod tests {
         })
         .expect("structured override should parse");
 
-        assert!(overrides.silences_runner());
+        assert!(!overrides.shows_progress());
     }
 
     #[test]
@@ -1618,7 +1621,7 @@ mod tests {
             ..OverrideSources::default()
         })
         .expect("should parse");
-        assert!(overrides.silences_runner(), "-q still silences runner");
+        assert!(!overrides.shows_progress(), "-q still silences runner");
         assert!(
             !overrides.silences_warnings(),
             "an explicit -q (level 1) must not be escalated to Silent by RUNNER_QUIET=3",
@@ -1641,8 +1644,8 @@ mod tests {
 
     #[test]
     fn runner_quiet_env_saturates_large_numbers() {
-        // `RUNNER_QUIET=999` exceeds u8 but must still saturate to the quietest
-        // level (documented "saturating"), not fall through to invalid.
+        // `RUNNER_QUIET=999` exceeds u8 but must clamp to the named maximum,
+        // not fall through to invalid.
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             quiet: QuietSource {
                 cli: 0,
@@ -1653,8 +1656,9 @@ mod tests {
         .expect("should parse");
         assert!(
             overrides.silences_warnings(),
-            "RUNNER_QUIET=999 saturates to Silent",
+            "RUNNER_QUIET=999 clamps to Mute",
         );
+        assert_eq!(overrides.quiet_level, crate::tool::QuietLevel::Mute);
     }
 
     #[test]
@@ -1670,6 +1674,7 @@ mod tests {
         })
         .expect("garbage RUNNER_HOST_STREAM must not error the strict path");
         assert_eq!(overrides.host_stream, crate::tool::Stream::Inherit);
+        assert!(!overrides.host_stream_invocation_explicit);
     }
 
     #[test]
@@ -1684,6 +1689,185 @@ mod tests {
             ..OverrideSources::default()
         });
         assert!(result.is_err(), "a bad --host-stream value must error");
+    }
+
+    #[test]
+    fn explicit_quiet_merges_with_runner_config_quietest_wins() {
+        use crate::config::{HostOutputSection, RunnerOutputSection};
+        let loaded = LoadedConfig {
+            path: PathBuf::from("/test/runner.toml"),
+            warnings: Vec::new(),
+            config: RunnerConfig {
+                runner: RunnerOutputSection {
+                    warnings: Some(false),
+                    progress: Some(true),
+                    ..RunnerOutputSection::default()
+                },
+                host: HostOutputSection {
+                    diagnostics: Some("reduced".to_string()),
+                    stream: None,
+                },
+                ..RunnerConfig::default()
+            },
+        };
+        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+            quiet: QuietSource { cli: 1, env: None },
+            config: Some(&loaded),
+            ..OverrideSources::default()
+        })
+        .expect("resolves");
+
+        assert!(
+            !overrides.shows_warnings(),
+            "config hides warnings under -q"
+        );
+        assert!(
+            !overrides.shows_progress(),
+            "-q hides progress despite config"
+        );
+        assert!(overrides.shows_errors());
+        assert_eq!(
+            overrides.output_policy.host_diagnostics,
+            crate::tool::HostDiagnostics::Reduced,
+            "config host reduction survives -q",
+        );
+    }
+
+    #[test]
+    fn per_task_runner_switches_layer_under_the_global_policy() {
+        let mut overrides = ResolutionOverrides::default();
+        overrides.task_verbosity.insert(
+            "greet".to_string(),
+            TaskVerbosity {
+                progress: Some(false),
+                task_timing: Some(false),
+                ..TaskVerbosity::default()
+            },
+        );
+        overrides.task_verbosity.insert(
+            "make:greet".to_string(),
+            TaskVerbosity {
+                task_timing: Some(true),
+                ..TaskVerbosity::default()
+            },
+        );
+
+        assert!(!overrides.shows_progress_for("root:make#greet"));
+        assert!(overrides.shows_task_timing_for("root:make#greet"));
+        assert!(overrides.emits_groups_for("root:make#greet"));
+        assert!(overrides.shows_progress_for("root:make#other"));
+
+        let quiet = ResolutionOverrides {
+            output_policy: crate::tool::OutputPolicy::from_quiet(crate::tool::QuietLevel::Quiet),
+            task_verbosity: overrides.task_verbosity.clone(),
+            ..ResolutionOverrides::default()
+        };
+        assert!(
+            !quiet.shows_task_timing_for("root:make#greet"),
+            "a per-task true never re-enables what -q hides",
+        );
+    }
+
+    #[test]
+    fn explicit_inherit_host_stream_outranks_config_and_task_streams() {
+        let mut overrides = ResolutionOverrides {
+            host_stream_invocation_explicit: true,
+            host_stream: crate::tool::Stream::Inherit,
+            host_stream_config: crate::tool::Stream::Stderr,
+            ..ResolutionOverrides::default()
+        };
+        overrides.task_verbosity.insert(
+            "make:greet".to_string(),
+            TaskVerbosity {
+                stream: Some(crate::tool::Stream::Stderr),
+                ..TaskVerbosity::default()
+            },
+        );
+
+        assert_eq!(
+            overrides.host_verbosity_for("make:greet").stream,
+            crate::tool::Stream::Inherit
+        );
+    }
+
+    #[test]
+    fn qualified_task_streams_deep_merge_over_bare_task() {
+        let mut overrides = ResolutionOverrides::default();
+        overrides.task_verbosity.insert(
+            "greet".to_string(),
+            TaskVerbosity {
+                stdout: Some(crate::tool::TaskStream::Discard),
+                stderr: Some(crate::tool::TaskStream::Discard),
+                ..TaskVerbosity::default()
+            },
+        );
+        overrides.task_verbosity.insert(
+            "make:greet".to_string(),
+            TaskVerbosity {
+                stdout: Some(crate::tool::TaskStream::Inherit),
+                ..TaskVerbosity::default()
+            },
+        );
+
+        assert_eq!(
+            overrides.task_streams_for("root:make#greet"),
+            (
+                crate::tool::TaskStream::Inherit,
+                crate::tool::TaskStream::Discard
+            )
+        );
+    }
+
+    #[test]
+    fn member_task_keys_layer_over_bare_and_source_keys() {
+        // A member task dispatches under its FQN (`rfc:package.json#site`);
+        // config may address it by bare name, `package.json:site`,
+        // `rfc:site`, or that FQN, most specific winning per axis.
+        let mut overrides = ResolutionOverrides::default();
+        let entry = |stdout, stderr| TaskVerbosity {
+            stdout,
+            stderr,
+            ..TaskVerbosity::default()
+        };
+        overrides.task_verbosity.insert(
+            "site".to_string(),
+            entry(
+                Some(crate::tool::TaskStream::Discard),
+                Some(crate::tool::TaskStream::Discard),
+            ),
+        );
+        overrides.task_verbosity.insert(
+            "rfc:site".to_string(),
+            entry(Some(crate::tool::TaskStream::Inherit), None),
+        );
+
+        assert_eq!(
+            overrides.task_streams_for("rfc:package.json#site"),
+            (
+                crate::tool::TaskStream::Inherit,
+                crate::tool::TaskStream::Discard
+            )
+        );
+        assert_eq!(
+            overrides.task_streams_for("web:package.json#site"),
+            (
+                crate::tool::TaskStream::Discard,
+                crate::tool::TaskStream::Discard
+            ),
+            "another member only inherits the bare-name entry",
+        );
+
+        overrides.task_verbosity.insert(
+            "rfc:package.json#site".to_string(),
+            entry(None, Some(crate::tool::TaskStream::Inherit)),
+        );
+        assert_eq!(
+            overrides.task_streams_for("rfc:package.json#site"),
+            (
+                crate::tool::TaskStream::Inherit,
+                crate::tool::TaskStream::Inherit
+            )
+        );
     }
 
     #[test]

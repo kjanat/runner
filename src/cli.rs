@@ -168,6 +168,10 @@ static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`TaskSource::display_order`] value.
 const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
+/// Inside a workspace member, root tasks sort behind the member's own.
+const ROOT_DISPLAY_ORDER_OFFSET: usize = 20;
+/// Other members' `member:name` candidates sort behind every local task.
+const MEMBER_DISPLAY_ORDER_OFFSET: usize = 40;
 
 /// Help-text ordering bands. Flattened [`GlobalOpts`] and per-command flag
 /// structs register args in interleaved parse order; without explicit bands
@@ -196,7 +200,7 @@ fn task_candidates() -> Vec<CompletionCandidate> {
         return vec![];
     };
     let ctx = crate::detect::detect(&dir);
-    task_candidates_from(&ctx.tasks)
+    task_candidates_from(&ctx.tasks, ctx.current_member().map(std::sync::Arc::as_ref))
 }
 
 fn completion_dir() -> std::io::Result<PathBuf> {
@@ -420,6 +424,132 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
     false
 }
 
+/// Split tasks into other members' (`member:name` candidates) and local
+/// ones: the root's and the current member's, which complete bare.
+fn partition_local<'a>(
+    all_tasks: &'a [crate::types::Task],
+    current: Option<&crate::types::WorkspaceMember>,
+) -> (Vec<&'a crate::types::Task>, Vec<&'a crate::types::Task>) {
+    all_tasks.iter().partition(|task| {
+        task.member
+            .as_ref()
+            .is_some_and(|member| current.is_none_or(|current| current.dir != member.dir))
+    })
+}
+
+/// Candidates for workspace member tasks: always the `member:name` form,
+/// plus the bare name when the root defines no such task and exactly one
+/// member does, mirroring the root-first lookup `run` performs.
+fn member_task_candidates(
+    member_tasks: &[&crate::types::Task],
+    root_tasks: &[&crate::types::Task],
+) -> Vec<CompletionCandidate> {
+    use std::collections::{HashMap, HashSet};
+
+    let root_names: HashSet<&str> = root_tasks.iter().map(|task| task.name.as_str()).collect();
+    let mut members_for_name: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut sources_for_scoped_name: HashMap<(&str, &str), HashSet<crate::types::TaskSource>> =
+        HashMap::new();
+    for task in member_tasks {
+        members_for_name
+            .entry(task.name.as_str())
+            .or_default()
+            .insert(task.scope());
+        sources_for_scoped_name
+            .entry((task.scope(), task.name.as_str()))
+            .or_default()
+            .insert(task.source);
+    }
+    let is_self_passthrough = |task: &crate::types::Task| -> bool {
+        task.source == crate::types::TaskSource::PackageJson
+            && task
+                .passthrough_to
+                .and_then(TaskRunner::task_source)
+                .is_some_and(|peer| {
+                    sources_for_scoped_name
+                        .get(&(task.scope(), task.name.as_str()))
+                        .is_some_and(|set| set.contains(&peer))
+                })
+    };
+    let mut candidates = Vec::new();
+    let mut bare_emitted: HashSet<&str> = HashSet::new();
+    for task in member_tasks {
+        if is_self_passthrough(task) {
+            continue;
+        }
+        let source_label = task.source.label();
+        let help = task.description.as_ref().map_or_else(
+            || source_label.to_string(),
+            |desc| format!("{source_label}: {desc}"),
+        );
+        let tag = format!("{source_label} ({})", task.scope());
+        let order = usize::from(task.source.display_order()) + MEMBER_DISPLAY_ORDER_OFFSET;
+        let unique_member = members_for_name
+            .get(task.name.as_str())
+            .is_some_and(|members| members.len() == 1);
+        if !root_names.contains(task.name.as_str())
+            && unique_member
+            && bare_emitted.insert(task.name.as_str())
+        {
+            candidates.push(
+                CompletionCandidate::new(&task.name)
+                    .help(Some(help.clone().into()))
+                    .tag(Some(tag.clone().into()))
+                    .display_order(Some(order)),
+            );
+        }
+        candidates.push(
+            CompletionCandidate::new(task.display_name().into_owned())
+                .help(Some(help.into()))
+                .tag(Some(tag.into()))
+                .display_order(Some(order)),
+        );
+    }
+    candidates
+}
+
+/// Index of the task supplying each name's bare candidate, mirroring the
+/// runtime selector's default tier (`Turbo > Package > others`, then
+/// `display_order`, then recipes-before-aliases, see
+/// `cmd::run::select::select_task_entry`). Previously the bare label came
+/// from whichever source appeared first in detection order, which could
+/// name a different source than the one `runner <name>` actually
+/// dispatches to. The selector's `[task_runner].prefer` and nearest-config
+/// (`source_depth`) tiebreaks need config plus a `ProjectContext` the
+/// completion callback doesn't have, so the bare label aligns with the
+/// *default* tier only, still strictly better than detection order, and
+/// the qualified `source:name` forms remain for exact disambiguation.
+fn bare_winners<'a>(
+    tasks: &[&'a crate::types::Task],
+    swallowed: impl Fn(&crate::types::Task) -> bool,
+) -> std::collections::HashMap<&'a str, usize> {
+    let no_overrides = crate::resolver::ResolutionOverrides::default();
+    // A current-member task outranks a same-named root task, matching the
+    // scope precedence `run` applies from inside a member.
+    let bare_rank = |task: &crate::types::Task| {
+        (
+            task.member.is_none(),
+            crate::cmd::run::source_priority(&no_overrides, task.source),
+            task.source.display_order(),
+            task.alias_of.is_some(),
+        )
+    };
+    let mut bare_winner = std::collections::HashMap::new();
+    for (idx, task) in tasks.iter().enumerate() {
+        if swallowed(task) {
+            continue;
+        }
+        let is_better = match bare_winner.get(task.name.as_str()) {
+            Some(&best) => bare_rank(task) < bare_rank(tasks[best]),
+            None => true,
+        };
+        if is_better {
+            bare_winner.insert(task.name.as_str(), idx);
+        }
+    }
+    bare_winner
+}
+
 /// Build [`CompletionCandidate`]s from a task list.
 ///
 /// When a task name appears in more than one source, both the bare name *and*
@@ -439,13 +569,19 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
 /// `turbo.json` `build` task is present. `runner list` still surfaces both
 /// sources for transparency, and `runner build` already dispatches through
 /// turbo per the source-priority order in `cmd::run::source_priority`.
-fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate> {
+fn task_candidates_from(
+    all_tasks: &[crate::types::Task],
+    current: Option<&crate::types::WorkspaceMember>,
+) -> Vec<CompletionCandidate> {
     use std::collections::{HashMap, HashSet};
 
-    use crate::types::TaskSource;
+    use crate::types::{Task, TaskSource};
+
+    let (member_tasks, tasks) = partition_local(all_tasks, current);
+    let member_candidates = member_task_candidates(&member_tasks, &tasks);
 
     let mut sources_for_name: HashMap<&str, HashSet<TaskSource>> = HashMap::new();
-    for task in tasks {
+    for task in &tasks {
         sources_for_name
             .entry(&task.name)
             .or_default()
@@ -457,7 +593,7 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     // has a same-named task from that runner's source to absorb it. Without
     // (b), suppressing would leave the user with no completion for the
     // script at all.
-    let is_self_passthrough = |task: &crate::types::Task| -> bool {
+    let is_self_passthrough = |task: &Task| -> bool {
         let Some(runner) = task.passthrough_to else {
             return false;
         };
@@ -471,44 +607,13 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
     };
 
     let mut effective_count: HashMap<&str, usize> = HashMap::new();
-    for task in tasks {
+    for task in &tasks {
         if !is_self_passthrough(task) {
             *effective_count.entry(task.name.as_str()).or_default() += 1;
         }
     }
 
-    // Pick which source supplies each name's bare candidate by mirroring the
-    // runtime selector's default tier (`Turbo > Package > others`, then
-    // `display_order`, then recipes-before-aliases, see
-    // `cmd::run::select::select_task_entry`). Previously the bare label came
-    // from whichever source appeared first in detection order, which could
-    // name a different source than the one `runner <name>` actually
-    // dispatches to. The selector's `[task_runner].prefer` and nearest-config
-    // (`source_depth`) tiebreaks need config plus a `ProjectContext` the
-    // completion callback doesn't have, so the bare label aligns with the
-    // *default* tier only, still strictly better than detection order, and
-    // the qualified `source:name` forms remain for exact disambiguation.
-    let no_overrides = crate::resolver::ResolutionOverrides::default();
-    let bare_rank = |task: &crate::types::Task| {
-        (
-            crate::cmd::run::source_priority(&no_overrides, task.source),
-            task.source.display_order(),
-            task.alias_of.is_some(),
-        )
-    };
-    let mut bare_winner: HashMap<&str, usize> = HashMap::new();
-    for (idx, task) in tasks.iter().enumerate() {
-        if is_self_passthrough(task) {
-            continue;
-        }
-        let is_better = match bare_winner.get(task.name.as_str()) {
-            Some(&best) => bare_rank(task) < bare_rank(&tasks[best]),
-            None => true,
-        };
-        if is_better {
-            bare_winner.insert(task.name.as_str(), idx);
-        }
-    }
+    let bare_winner = bare_winners(&tasks, is_self_passthrough);
 
     let mut candidates = Vec::new();
     for (idx, task) in tasks.iter().enumerate() {
@@ -517,6 +622,12 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
         }
 
         let source_label = task.source.label();
+        // Inside a member, root tasks sort behind the member's own.
+        let scope_offset = if current.is_some() && task.member.is_none() {
+            ROOT_DISPLAY_ORDER_OFFSET
+        } else {
+            0
+        };
         // Separate tag group keeps aliases under their own zsh section instead
         // of interleaving with real recipes.
         let (help, tag, order) = task.alias_of.as_deref().map_or_else(
@@ -528,7 +639,7 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
                 (
                     help,
                     source_label.to_string(),
-                    usize::from(task.source.display_order()),
+                    usize::from(task.source.display_order()) + scope_offset,
                 )
             },
             |target| {
@@ -555,6 +666,21 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
             );
         }
 
+        // A root task the current member shadows stays reachable as
+        // `root:<name>`.
+        let shadowed_by_member = task.member.is_none()
+            && bare_winner
+                .get(task.name.as_str())
+                .is_some_and(|&best| tasks[best].member.is_some());
+        if shadowed_by_member {
+            candidates.push(
+                CompletionCandidate::new(format!("root:{}", task.name))
+                    .help(Some(help.clone().into()))
+                    .tag(Some(tag.clone().into()))
+                    .display_order(Some(order)),
+            );
+        }
+
         // For duplicate names, also emit "source:name" qualified form
         if is_duplicate {
             let qualified = format!("{source_label}:{}", task.name);
@@ -566,6 +692,7 @@ fn task_candidates_from(tasks: &[crate::types::Task]) -> Vec<CompletionCandidate
             );
         }
     }
+    candidates.extend(member_candidates);
     candidates
 }
 
@@ -825,6 +952,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 
@@ -836,13 +964,68 @@ mod tests {
     }
 
     #[test]
+    fn current_member_tasks_complete_bare_and_ahead_of_root_tasks() {
+        use std::sync::Arc;
+
+        use crate::types::WorkspaceMember;
+
+        let rfc = Arc::new(WorkspaceMember::new(
+            "rfc".to_string(),
+            "rfc".to_string(),
+            PathBuf::from("/ws/rfc"),
+        ));
+        let web = Arc::new(WorkspaceMember::new(
+            "web".to_string(),
+            "apps/web".to_string(),
+            PathBuf::from("/ws/apps/web"),
+        ));
+        let member = |name: &str, member: &Arc<WorkspaceMember>| Task {
+            member: Some(Arc::clone(member)),
+            ..task(name, TaskSource::PackageJson)
+        };
+        let tasks = vec![
+            task("site", TaskSource::PackageJson),
+            task("hello", TaskSource::PackageJson),
+            member("site", &rfc),
+            member("check", &rfc),
+            member("site", &web),
+        ];
+
+        let candidates = task_candidates_from(&tasks, Some(&rfc));
+        let values: Vec<String> = candidates
+            .iter()
+            .map(|c| c.get_value().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(values.contains(&"site".to_string()));
+        assert!(values.contains(&"check".to_string()));
+        assert!(values.contains(&"hello".to_string()));
+        assert!(
+            values.contains(&"root:site".to_string()),
+            "the shadowed root task stays reachable: {values:?}"
+        );
+        assert!(values.contains(&"web:site".to_string()));
+        assert_eq!(values.iter().filter(|v| *v == "site").count(), 1);
+
+        let order = |value: &str| {
+            candidates
+                .iter()
+                .find(|c| c.get_value().to_string_lossy() == value)
+                .and_then(clap_complete::CompletionCandidate::get_display_order)
+                .expect("candidate has an order")
+        };
+        assert!(order("site") < order("hello"), "member first, then root");
+        assert!(order("hello") < order("web:site"), "root before siblings");
+    }
+
+    #[test]
     fn qualified_candidates_emitted_for_duplicates() {
         let tasks = vec![
             task("test", TaskSource::PackageJson),
             task("test", TaskSource::Makefile),
             task("build", TaskSource::PackageJson),
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
             .iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
@@ -866,7 +1049,7 @@ mod tests {
             task("build", TaskSource::TurboJson),
             task("fmt", TaskSource::PackageJson),
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
             .iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
@@ -895,7 +1078,7 @@ mod tests {
             task("build", TaskSource::Makefile),
             task("build", TaskSource::TurboJson),
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
             .iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
@@ -928,7 +1111,7 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::TurboJson),
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
             .iter()
             .map(|c| c.get_value().to_string_lossy().into_owned())
@@ -955,7 +1138,7 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::TurboJson),
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let bare = candidates
             .iter()
             .find(|c| c.get_value().to_string_lossy() == "build")
@@ -990,7 +1173,7 @@ mod tests {
             task("build", TaskSource::Makefile),
             task("build", TaskSource::TurboJson),
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let bare = candidates
             .iter()
             .find(|c| c.get_value().to_string_lossy() == "build")
@@ -1020,7 +1203,7 @@ mod tests {
         // `turbo.json` to back it. Suppressing here would leave the user
         // with no completion at all, so the passthrough must remain.
         let tasks = vec![turbo_passthrough("build")];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
 
         assert!(
             candidates
@@ -1042,7 +1225,7 @@ mod tests {
                 ..task("b", TaskSource::Justfile)
             },
         ];
-        let candidates = task_candidates_from(&tasks);
+        let candidates = task_candidates_from(&tasks, None);
         let alias = candidates
             .iter()
             .find(|c| c.get_value() == "b")
@@ -1562,23 +1745,21 @@ pub(crate) struct GlobalOpts {
     )]
     pub no_warnings: bool,
 
-    /// Quiet level, repeatable pytest-style: `-q`, `-qq`, `-qqq`.
+    /// Graduated output policy, repeatable pytest-style.
     ///
-    /// Unlike a runner-only switch, quiet now **crosses the process boundary**
-    /// into the spawned host tool:
-    /// - `-q`: suppress runner's own output (the dispatch arrow
-    ///   `→ <source> <task>`, the `--explain` trace, per-task timing, the chain
-    ///   summary, GitHub Actions `::group::` markers) **and** pass the host's
-    ///   own silence flag (`npm --silent`, `cargo -q`, `make -s`, …). What
-    ///   remains on stdout/stderr is what the task itself wrote, which is what
-    ///   makes `run -q <task>` safe inside a pipeline whose output a parent
-    ///   parses.
-    /// - `-qq`: also mute runner's non-fatal warnings (as `--no-warnings`) and
-    ///   push hosts with graduated loglevels to their quietest.
-    /// - `-qqq`: the saturating floor.
+    /// - `-q`: hide runner progress, groups, task timing, and summary; host
+    ///   unchanged.
+    /// - `-qq`: also hide warnings and request the host's safe quiet mode.
+    /// - `-qqq`: also hide recoverable runner error decoration and request a
+    ///   stronger safe host reduction.
+    /// - `-qqqq`: no runner-authored text. Larger counts clamp to this `mute`
+    ///   level.
     ///
-    /// Errors still surface. `RUNNER_QUIET` sets the level too: a number
-    /// (`0..3`) or a truthy word (→ `-q`); a passed `-q` count wins over it
+    /// Task stdout/stderr survive every level unless explicitly configured as
+    /// `discard`. Fatal errors surface through `-qqq`; `mute` preserves only
+    /// their exit status. Explicit `--explain` overrides presentation silence.
+    /// `RUNNER_QUIET` accepts a number (`0..4`, larger clamps) or a truthy word
+    /// (→ `-q`); a passed `-q` count wins over it
     /// (CLI > env). The resolved level is inherited by a nested `runner` a task
     /// spawns. Orthogonal to `--host-stream`.
     #[arg(
@@ -1588,8 +1769,8 @@ pub(crate) struct GlobalOpts {
         action = clap::ArgAction::Count,
         display_order = help_order::QUIET,
         help = concat!(
-            "Quiet level, repeatable: runner + host tool (", cyan!("-q"), "/", cyan!("-qq"), "/",
-            cyan!("-qqq"), ") [env: ", cyan!("RUNNER_QUIET"), "]"
+            "Output policy, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq"),
+            " [env: ", cyan!("RUNNER_QUIET"), "]"
         ),
     )]
     pub quiet: u8,
@@ -1613,15 +1794,15 @@ pub(crate) struct GlobalOpts {
     )]
     pub host_stream: Option<String>,
 
-    /// Pin the `--json` output schema version. Currently always `2`; any other
+    /// Pin the `--json` output schema version. Currently always `1`; any other
     /// value is rejected.
     #[arg(
         long = "schema-version",
         global = true,
-        value_parser = clap::value_parser!(u32).range(2..=2),
+        value_parser = clap::value_parser!(u32).range(1..=1),
         value_name = "N",
         display_order = help_order::SCHEMA_VERSION,
-        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("2"), ")"),
+        help = concat!("Pin ", cyan!("--json"), " schema (currently always ", cyan!("1"), ")"),
     )]
     pub schema_version: Option<u32>,
 }

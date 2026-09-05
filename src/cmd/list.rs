@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
@@ -13,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
 use crate::tool;
-use crate::types::{ProjectContext, Task, TaskSource};
+use crate::types::{ProjectContext, Task, TaskSource, WorkspaceMember};
 
 /// Print tasks to stdout.
 ///
@@ -61,8 +62,9 @@ pub(crate) fn list(
     if raw {
         let mut seen = HashSet::new();
         for task in &filtered {
-            if seen.insert(task.name.as_str()) {
-                println!("{}", task.name);
+            let name = ctx.spelling(task);
+            if seen.insert(name.to_string()) {
+                println!("{name}");
             }
         }
     } else if filtered.is_empty() {
@@ -72,7 +74,12 @@ pub(crate) fn list(
         // always full detail, never collapse. The height-adaptive
         // compact path is reserved for the bare `runner` / `runner
         // info` glance view (see `print_tasks_grouped`).
-        print_tasks_grouped_with_mode(&filtered, &ctx.root, RenderMode::Rich);
+        print_tasks_grouped_with_mode(
+            &filtered,
+            &ctx.root,
+            ctx.current_member().map(Arc::as_ref),
+            RenderMode::Rich,
+        );
         print_conflicts(ctx, overrides);
     }
     Ok(())
@@ -147,8 +154,18 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
 /// `reserved_rows` is the number of lines the caller has already printed
 /// above the task list (the `runner` info banner). `runner list` passes
 /// `0`.
-pub(super) fn print_tasks_grouped(tasks: &[&Task], root: &Path, reserved_rows: usize) {
-    print_tasks_grouped_with_mode(tasks, root, select_render_mode(tasks, reserved_rows));
+pub(super) fn print_tasks_grouped(
+    tasks: &[&Task],
+    root: &Path,
+    current: Option<&WorkspaceMember>,
+    reserved_rows: usize,
+) {
+    print_tasks_grouped_with_mode(
+        tasks,
+        root,
+        current,
+        select_render_mode(tasks, reserved_rows),
+    );
 }
 
 /// Print duplicate-name conflicts beneath the task list so a shadowed
@@ -172,14 +189,22 @@ fn format_conflicts(
 ) -> Option<String> {
     use std::collections::BTreeMap;
 
-    let mut by_name: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
+    // Grouped per bare-name scope: the tasks a bare name reaches from here
+    // (the root's and the current member's) share one group, every other
+    // member is its own group, since those stay reachable as `member:name`.
+    let mut by_name: BTreeMap<(&str, &str), Vec<&Task>> = BTreeMap::new();
     for task in &ctx.tasks {
-        by_name.entry(task.name.as_str()).or_default().push(task);
+        let scope = if ctx.is_local(task) { "" } else { task.scope() };
+        by_name
+            .entry((scope, task.name.as_str()))
+            .or_default()
+            .push(task);
     }
 
     let conflicts: Vec<(String, &'static str, Vec<&'static str>)> = by_name
-        .into_iter()
-        .filter_map(|(name, group)| {
+        .into_values()
+        .filter_map(|group| {
+            let group = crate::cmd::run::narrow_scope(ctx, group);
             // A single source never duplicates a name; only cross-source
             // collisions are conflicts.
             if group.iter().map(|t| t.source).collect::<HashSet<_>>().len() < 2 {
@@ -193,7 +218,11 @@ fn format_conflicts(
                 .collect();
             shadowed.sort_unstable();
             shadowed.dedup();
-            Some((name.to_string(), winner.source.label(), shadowed))
+            Some((
+                ctx.spelling(winner).into_owned(),
+                winner.source.label(),
+                shadowed,
+            ))
         })
         .collect();
 
@@ -231,11 +260,16 @@ fn format_conflicts(
     Some(out)
 }
 
-fn print_tasks_grouped_with_mode(tasks: &[&Task], root: &Path, mode: RenderMode) {
+fn print_tasks_grouped_with_mode(
+    tasks: &[&Task],
+    root: &Path,
+    current: Option<&WorkspaceMember>,
+    mode: RenderMode,
+) {
     let stdout_is_terminal = std::io::stdout().is_terminal();
     print!(
         "{}",
-        render_tasks_grouped(tasks, root, mode, stdout_is_terminal)
+        render_tasks_grouped(tasks, root, mode, stdout_is_terminal, current)
     );
 }
 
@@ -244,18 +278,19 @@ fn render_tasks_grouped(
     root: &Path,
     mode: RenderMode,
     stdout_is_terminal: bool,
+    current: Option<&WorkspaceMember>,
 ) -> String {
     let terminal_width = stdout_is_terminal.then(terminal_width).flatten();
 
     match mode {
         RenderMode::Rich => {
-            render_tasks_grouped_rich(tasks, root, stdout_is_terminal, terminal_width)
+            render_tasks_grouped_rich(tasks, root, stdout_is_terminal, terminal_width, current)
         }
-        RenderMode::Compact => render_tasks_grouped_compact(tasks, stdout_is_terminal),
+        RenderMode::Compact => render_tasks_grouped_compact(tasks, stdout_is_terminal, current),
     }
 }
 
-fn terminal_width() -> Option<usize> {
+pub(super) fn terminal_width() -> Option<usize> {
     terminal_size::terminal_size().map(|(Width(columns), _)| usize::from(columns))
 }
 
@@ -264,10 +299,11 @@ fn render_tasks_grouped_rich(
     root: &Path,
     stdout_is_terminal: bool,
     terminal_width: Option<usize>,
+    current: Option<&WorkspaceMember>,
 ) -> String {
     let mut out = String::new();
     for &source in TaskSource::all() {
-        let source_tasks = tasks_for_source(tasks, source);
+        let source_tasks = tasks_for_source(tasks, source, current);
         if source_tasks.is_empty() {
             continue;
         }
@@ -277,7 +313,10 @@ fn render_tasks_grouped_rich(
         for (task, alias_names) in fold_aliases(&source_tasks) {
             // A folded canonical carries its aliases in the name cell; a
             // standalone alias keeps showing its target in the value cell.
-            let name = name_with_aliases(&task.name, &alias_names);
+            let name = name_with_aliases(
+                &task.spelling_from(current, tasks.iter().copied()),
+                &alias_names,
+            );
             let value = if alias_names.is_empty() {
                 task.alias_of.as_deref().or(task.description.as_deref())
             } else {
@@ -439,16 +478,25 @@ fn wrap_long_segment(value: &str, width: usize) -> Vec<String> {
     parts
 }
 
-fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> String {
+fn render_tasks_grouped_compact(
+    tasks: &[&Task],
+    stdout_is_terminal: bool,
+    current: Option<&WorkspaceMember>,
+) -> String {
     let mut out = String::new();
     for &source in TaskSource::all() {
-        let source_tasks = tasks_for_source(tasks, source);
+        let source_tasks = tasks_for_source(tasks, source, current);
         if source_tasks.is_empty() {
             continue;
         }
         let names: Vec<String> = fold_aliases(&source_tasks)
             .iter()
-            .map(|(task, alias_names)| name_with_aliases(&task.name, alias_names))
+            .map(|(task, alias_names)| {
+                name_with_aliases(
+                    &task.spelling_from(current, tasks.iter().copied()),
+                    alias_names,
+                )
+            })
             .collect();
         let label = compact_source_label(source, stdout_is_terminal);
         let _ = writeln!(out, "  {label}{}", names.join(", "));
@@ -456,13 +504,23 @@ fn render_tasks_grouped_compact(tasks: &[&Task], stdout_is_terminal: bool) -> St
     out
 }
 
-fn tasks_for_source<'a>(tasks: &[&'a Task], source: TaskSource) -> Vec<&'a Task> {
+fn tasks_for_source<'a>(
+    tasks: &[&'a Task],
+    source: TaskSource,
+    current: Option<&WorkspaceMember>,
+) -> Vec<&'a Task> {
     let mut source_tasks: Vec<&Task> = tasks
         .iter()
         .copied()
         .filter(|task| task.source == source)
         .collect();
-    source_tasks.sort_by(|a, b| a.name.cmp(&b.name));
+    source_tasks.sort_by(|a, b| {
+        let member_path = |task: &Task| task.member.as_ref().map(|member| member.path.clone());
+        a.scope_rank_from(current)
+            .cmp(&b.scope_rank_from(current))
+            .then_with(|| member_path(a).cmp(&member_path(b)))
+            .then_with(|| a.name.cmp(&b.name))
+    });
     source_tasks
 }
 
@@ -473,24 +531,32 @@ fn tasks_for_source<'a>(tasks: &[&'a Task], source: TaskSource) -> Vec<&'a Task>
 fn fold_aliases<'a>(source_tasks: &[&'a Task]) -> Vec<(&'a Task, Vec<&'a str>)> {
     use std::collections::{HashMap, HashSet};
 
-    let names: HashSet<&str> = source_tasks.iter().map(|t| t.name.as_str()).collect();
-    let mut aliases: HashMap<&str, Vec<&'a str>> = HashMap::new();
-    let mut folded: HashSet<&str> = HashSet::new();
+    let names: HashSet<(&str, &str)> = source_tasks
+        .iter()
+        .map(|t| (t.scope(), t.name.as_str()))
+        .collect();
+    let mut aliases: HashMap<(&str, &str), Vec<&'a str>> = HashMap::new();
+    let mut folded: HashSet<(&str, &str)> = HashSet::new();
     for task in source_tasks {
         if let Some(target) = task.alias_of.as_deref()
             && target != task.name
-            && names.contains(target)
+            && names.contains(&(task.scope(), target))
         {
-            aliases.entry(target).or_default().push(task.name.as_str());
-            folded.insert(task.name.as_str());
+            aliases
+                .entry((task.scope(), target))
+                .or_default()
+                .push(task.name.as_str());
+            folded.insert((task.scope(), task.name.as_str()));
         }
     }
 
     source_tasks
         .iter()
-        .filter(|task| !folded.contains(task.name.as_str()))
+        .filter(|task| !folded.contains(&(task.scope(), task.name.as_str())))
         .map(|task| {
-            let mut names = aliases.remove(task.name.as_str()).unwrap_or_default();
+            let mut names = aliases
+                .remove(&(task.scope(), task.name.as_str()))
+                .unwrap_or_default();
             names.sort_unstable();
             (*task, names)
         })
@@ -691,6 +757,7 @@ mod tests {
     #[test]
     fn invalid_source_error_mentions_pyproject() {
         let ctx = ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -698,6 +765,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
@@ -799,11 +867,13 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 
     fn ctx_with_tasks(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("/tmp/conflicts"),
             root: PathBuf::from("/tmp/conflicts"),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -811,6 +881,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -856,7 +927,8 @@ mod tests {
         tasks[2].alias_of = Some("clippy --all".into()); // not a sibling → standalone
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false);
+        let rendered =
+            render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false, None);
 
         assert_eq!(rendered, "  cargo           build (b), lint\n");
     }
@@ -872,7 +944,8 @@ mod tests {
         tasks[2].alias_of = Some("build".into());
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false);
+        let rendered =
+            render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false, None);
 
         assert_eq!(
             rendered,
@@ -946,10 +1019,11 @@ mod tests {
             description: None,
             alias_of: Some("build".into()),
             passthrough_to: None,
+            member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Rich, false);
+        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Rich, false, None);
 
         assert!(rendered.contains('b'));
         assert!(rendered.contains("build"));
@@ -966,10 +1040,11 @@ mod tests {
                 "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
             ),
             passthrough_to: None,
+            member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped_rich(&refs, Path::new("."), true, Some(68));
+        let rendered = render_tasks_grouped_rich(&refs, Path::new("."), true, Some(68), None);
         let lines: Vec<&str> = rendered.lines().collect();
 
         assert_eq!(lines.len(), 3, "expected wrap, got: {rendered:?}");
@@ -1046,10 +1121,11 @@ mod tests {
                 "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
             ),
             passthrough_to: None,
+            member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped_rich(&refs, dir.path(), true, Some(68));
+        let rendered = render_tasks_grouped_rich(&refs, dir.path(), true, Some(68), None);
 
         assert_eq!(rendered.matches("\u{1b}]8;;file://").count(), 1);
         assert_eq!(rendered.matches("\u{1b}]8;;\u{1b}\\").count(), 1);

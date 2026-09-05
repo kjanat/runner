@@ -80,6 +80,12 @@ pub(crate) struct LoadedConfig {
     schemars(deny_unknown_fields)
 )]
 pub(crate) struct RunnerConfig {
+    /// `[runner]`, independent runner-authored output categories.
+    #[serde(default)]
+    pub runner: RunnerOutputSection,
+    /// `[host]`, host-tool diagnostic policy.
+    #[serde(default)]
+    pub host: HostOutputSection,
     /// `[pm]`, per-ecosystem package-manager overrides.
     #[serde(default)]
     pub pm: PmSection,
@@ -113,6 +119,59 @@ pub(crate) struct RunnerConfig {
     /// `[runtime]`, which JS runtime executes tasks and local files.
     #[serde(default)]
     pub runtime: RuntimeSection,
+}
+
+/// `[runner]` output categories. An absent field inherits the selected quiet
+/// preset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was
+/// selected for the invocation.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct RunnerOutputSection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errors: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_timing: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fatal_errors: Option<bool>,
+}
+
+/// `[host]` host-tool output policy. Diagnostics never controls task streams;
+/// adapters clamp unsupported requests to their strongest safe mode.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct HostOutputSection {
+    /// `normal`, `quiet`, or `reduced`. Unsupported reductions are safely
+    /// clamped by each adapter and reported by `--explain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["normal", "quiet", "reduced", null]))
+    )]
+    pub diagnostics: Option<String>,
+    /// `inherit` or `stderr`. Per-task stream settings override this global
+    /// default; CLI/env still outrank both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["inherit", "stderr", null]))
+    )]
+    pub stream: Option<String>,
 }
 
 /// `[runtime]` section, which JS runtime a task's process tree runs on.
@@ -390,6 +449,10 @@ pub(crate) struct TaskRunnerSection {
 /// never hard-rejects an unlisted source, only reorders. An explicit CLI
 /// qualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still
 /// outranks these file settings.
+///
+/// Keys layer from least to most specific: `site`, `package.json:site`,
+/// `rfc:site` (workspace member `rfc`), `rfc:package.json#site` (the FQN
+/// `doctor --json` prints).
 // No `schemars(deny_unknown_fields)`: the flattened `tasks` map makes this an
 // open object (task-name keys become `additionalProperties`), which is
 // mutually exclusive with denying unknown fields.
@@ -487,6 +550,32 @@ pub(crate) struct TaskSettings {
     /// table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verbosity: Option<VerbosityConfig>,
+    /// Preserve or discard this task's stdout independently of quiet presets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["inherit", "discard", null]))
+    )]
+    pub stdout: Option<String>,
+    /// Preserve or discard this task's stderr independently of quiet presets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["inherit", "discard", null]))
+    )]
+    pub stderr: Option<String>,
+    /// Print this task's dispatch arrow. `false` hides it for this task only;
+    /// a quiet preset or `[runner].progress = false` hides it regardless.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<bool>,
+    /// Wrap this task's output in a GitHub Actions group. `false` opts this
+    /// task out; `[runner].groups = false` or a quiet preset wins over `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<bool>,
+    /// Print this task's chain timing line. `false` hides it for this task
+    /// only; `[runner].task_timing = false` or a quiet preset wins over `true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_timing: Option<bool>,
 }
 
 /// Verbosity intent as written in config: a bare level name (`verbosity =
@@ -512,11 +601,11 @@ pub(crate) enum VerbosityConfig {
 )]
 pub(crate) struct VerbosityTable {
     /// How much of the host's own logging to suppress:
-    /// `off` | `quiet` | `very-quiet` | `silent`.
+    /// `off` | `quiet` | `very-quiet` | `silent` | `mute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(
         feature = "schema",
-        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", null]))
+        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute", null]))
     )]
     pub level: Option<String>,
     /// Whether to keep the host's stdout clean by diverting its diagnostics to
@@ -562,6 +651,19 @@ pub(crate) struct ResolutionSection {
 /// versa). Keep in sync when adding a section or field; the
 /// `known_schema_covers_every_section` test guards section-level drift.
 const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
+    (
+        "runner",
+        &[
+            "progress",
+            "warnings",
+            "errors",
+            "groups",
+            "task_timing",
+            "summary",
+            "fatal_errors",
+        ],
+    ),
+    ("host", &["diagnostics", "stream"]),
     ("pm", &["node", "python"]),
     ("task_runner", &["prefer"]),
     ("tasks", &["prefer", "overrides"]),
@@ -581,7 +683,15 @@ const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
 /// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
 /// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
 /// drift. An unrecognized field warns (forward-compat) rather than aborting.
-const TASK_ENTRY_FIELDS: &[&str] = &["runner", "verbosity"];
+const TASK_ENTRY_FIELDS: &[&str] = &[
+    "runner",
+    "verbosity",
+    "stdout",
+    "stderr",
+    "progress",
+    "groups",
+    "task_timing",
+];
 
 /// Recognized fields of a `[tasks.<name>].verbosity` table ([`VerbosityTable`]).
 const VERBOSITY_TABLE_FIELDS: &[&str] = &["level", "stream"];

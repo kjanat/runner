@@ -297,6 +297,10 @@ fn parallel_install_chain_times_the_install_step() {
         stderr.matches("finished in").count() >= 2,
         "expected timing for both the install step and the task. stderr: {stderr}",
     );
+    assert!(
+        stderr.contains("summary: 2 tasks, 2 ok"),
+        "install and its one post-task must share one summary. stderr: {stderr}",
+    );
 }
 
 #[test]
@@ -1177,13 +1181,38 @@ fn github_actions_annotates_each_failed_chain_task() {
 }
 
 #[test]
-fn quiet_suppresses_github_actions_annotations() {
+fn silent_suppresses_github_actions_annotations() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // Annotations are workflow commands, so they land on stdout. Under
-    // `--quiet` that stream belongs to the task alone (#86).
+    // Error annotations survive -q/-qq, which retain runner error decoration,
+    // and disappear at -qqq.
+    let output = runner_command()
+        .arg("--dir")
+        .arg(fixture("chain-parallel-fail"))
+        .args(["run", "-qqq", "-s", "-k", "ok-one", "fail-mid"])
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("runner binary spawns");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "fail-mid must fail the chain. stdout: {stdout}",
+    );
+    assert!(
+        !stdout.contains("::error"),
+        "-qqq must keep annotations off stdout. stdout: {stdout}",
+    );
+}
+
+#[test]
+fn quiet_keeps_github_actions_error_annotations() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("chain-parallel-fail"))
@@ -1194,8 +1223,12 @@ fn quiet_suppresses_github_actions_annotations() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains("::error"),
-        "--quiet must keep annotations off stdout. stdout: {stdout}",
+        !output.status.success(),
+        "fail-mid must fail the chain. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("::error") && stdout.contains("fail-mid"),
+        "-q keeps runner errors. stdout: {stdout}",
     );
 }
 

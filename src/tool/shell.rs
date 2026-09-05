@@ -17,14 +17,22 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
-use deno_task_shell::{KillSignal, execute, parser};
+use deno_task_shell::{
+    KillSignal, ShellPipeReader, ShellPipeWriter, ShellState, execute_with_pipes, parser,
+};
 
 /// Run `command` (with `args` appended) in `cwd`, returning the exit code.
 ///
 /// Errors only on a parse or runtime-construction failure; a non-zero
 /// command exit is returned as the code, not an error. Inherits the
 /// current process environment.
-pub(crate) fn run(command: &str, args: &[String], cwd: &Path) -> Result<i32> {
+pub(crate) fn run(
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+    stdout: crate::tool::TaskStream,
+    stderr: crate::tool::TaskStream,
+) -> Result<i32> {
     let mut script = command.to_string();
     for arg in args {
         let quoted = shlex::try_quote(arg).map_err(|e| anyhow!("cannot quote arg: {e}"))?;
@@ -39,12 +47,26 @@ pub(crate) fn run(command: &str, args: &[String], cwd: &Path) -> Result<i32> {
         .build()
         .context("failed to build async runtime for in-process shell")?;
 
-    Ok(runtime.block_on(execute(
-        list,
+    let state = ShellState::new(
         env,
         cwd.to_path_buf(),
         HashMap::new(),
         KillSignal::default(),
+    );
+    let stdout = match stdout {
+        crate::tool::TaskStream::Inherit => ShellPipeWriter::stdout(),
+        crate::tool::TaskStream::Discard => ShellPipeWriter::null(),
+    };
+    let stderr = match stderr {
+        crate::tool::TaskStream::Inherit => ShellPipeWriter::stderr(),
+        crate::tool::TaskStream::Discard => ShellPipeWriter::null(),
+    };
+    Ok(runtime.block_on(execute_with_pipes(
+        list,
+        state,
+        ShellPipeReader::stdin(),
+        stdout,
+        stderr,
     )))
 }
 
@@ -67,14 +89,28 @@ mod tests {
     #[test]
     fn run_executes_builtin_command() {
         let dir = TempDir::new("shell-run-ok");
-        let code = run("exit 0", &[], dir.path()).expect("builtin should run");
+        let code = run(
+            "exit 0",
+            &[],
+            dir.path(),
+            crate::tool::TaskStream::Inherit,
+            crate::tool::TaskStream::Inherit,
+        )
+        .expect("builtin should run");
         assert_eq!(code, 0);
     }
 
     #[test]
     fn run_propagates_nonzero_exit() {
         let dir = TempDir::new("shell-run-fail");
-        let code = run("exit 3", &[], dir.path()).expect("builtin should run");
+        let code = run(
+            "exit 3",
+            &[],
+            dir.path(),
+            crate::tool::TaskStream::Inherit,
+            crate::tool::TaskStream::Inherit,
+        )
+        .expect("builtin should run");
         assert_eq!(code, 3);
     }
 
@@ -83,7 +119,14 @@ mod tests {
         // `false <args>` ignores args but must still parse with them
         // appended and quoted; a space-bearing arg must not split.
         let dir = TempDir::new("shell-run-args");
-        let code = run("exit", &["7".to_string()], dir.path()).expect("should run");
+        let code = run(
+            "exit",
+            &["7".to_string()],
+            dir.path(),
+            crate::tool::TaskStream::Inherit,
+            crate::tool::TaskStream::Inherit,
+        )
+        .expect("should run");
         assert_eq!(code, 7);
     }
 

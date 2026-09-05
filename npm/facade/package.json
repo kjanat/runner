@@ -15,9 +15,7 @@
 		"taskfile"
 	],
 	"homepage": "https://runner.kjanat.dev",
-	"bugs": {
-		"url": "https://github.com/kjanat/runner/issues"
-	},
+	"bugs": "https://github.com/kjanat/runner/issues",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/kjanat/runner.git"
@@ -28,6 +26,7 @@
 	"imports": {
 		"#launch": "./lib/launch.cjs",
 		"#pkg": "./package.json",
+		"#quiet": "./lib/quiet.cjs",
 		"#resolve": "./lib/resolve.cjs"
 	},
 	"exports": {

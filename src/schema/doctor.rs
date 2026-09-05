@@ -16,12 +16,12 @@
 //! - `overrides.pm`/`overrides.runner` are bare labels; the provenance
 //!   (`cli`/`env`/`config:…`) remains available on the flat `list`/`info`
 //!   surface.
-//! - `project.workspace` is always `null` and `project.root_source` is
-//!   the root itself until workspace/root-anchor detection is modeled.
+//! - `project.workspace` lists the root's workspace declarations and
+//!   members; `project.root_source` is the root itself until root-anchor
+//!   detection is modeled.
 //! - Shapes nothing can emit yet are deferred rather than declared: the
 //!   rich `dependency` object (`tasks[].dependencies` stays an
-//!   always-empty array), `workspace`/`package_identity` objects (fields
-//!   stay null), the `tool_probe_error` variant (the probe cannot
+//!   always-empty array), the `tool_probe_error` variant (the probe cannot
 //!   error), the `binary`/`package-binary` tool kinds, and the
 //!   `debug`/`error` severities. Each gets declared when an emitter
 //!   exists. Contracts should describe output, not ambition.
@@ -69,10 +69,10 @@ pub(crate) struct DoctorReport<'a> {
     invocation: Invocation,
     environment: Environment,
     runner: RunnerInfo,
-    project: ProjectInfo,
+    project: ProjectInfo<'a>,
     overrides: Overrides,
     ecosystems: Vec<EcosystemEntry>,
-    sources: Vec<SourceEntry>,
+    sources: Vec<SourceEntry<'a>>,
     tasks: Vec<DoctorTask<'a>>,
     tools: Vec<Tool>,
     conflicts: Vec<Conflict>,
@@ -130,25 +130,26 @@ struct SchemaVersions {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct ProjectInfo {
+struct ProjectInfo<'a> {
     monorepo: bool,
     root: String,
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "What anchored root detection. Currently always the root itself (cwd or \
-                           --dir); a dedicated anchor model is future work."
+            description = "What anchored root detection: the root itself (cwd or --dir), or \
+                           `workspace root of member <name>` when the invocation directory sits \
+                           inside a workspace member."
         )
     )]
     root_source: String,
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Workspace identity. Always null today: workspace kind/root detection \
-                           is not yet modeled (the monorepo flag is the coarse signal)."
+            description = "Workspace declarations at the root and their members; null when the \
+                           root declares no workspace."
         )
     )]
-    workspace: Option<serde_json::Value>,
+    workspace: Option<super::project::WorkspaceInfo<'a>>,
 }
 
 /// The overrides in effect for this run: `--pm`, `--fallback`, the
@@ -172,6 +173,7 @@ struct Overrides {
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
     quiet: bool,
+    output: OutputPolicyReport,
     on_mismatch: MismatchPolicy,
     pm: Option<PackageManager>,
     pm_by_ecosystem: BTreeMap<Ecosystem, PackageManager>,
@@ -181,6 +183,35 @@ struct Overrides {
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "serialized independent output axes"
+)]
+struct OutputPolicyReport {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))
+    )]
+    level: &'static str,
+    progress: bool,
+    warnings: bool,
+    errors: bool,
+    groups: bool,
+    task_timing: bool,
+    summary: bool,
+    fatal_errors: bool,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["normal", "quiet", "reduced"]))
+    )]
+    host_diagnostics: &'static str,
+    #[cfg_attr(feature = "schema", schemars(extend("enum" = ["inherit", "stderr"])))]
+    host_stream: &'static str,
 }
 
 /// The three grouping toggles bundled so [`Overrides`] doesn't tip
@@ -254,7 +285,7 @@ enum Confidence {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
-struct SourceEntry {
+struct SourceEntry<'a> {
     exists: bool,
     #[cfg_attr(
         feature = "schema",
@@ -268,16 +299,19 @@ struct SourceEntry {
     kind: &'static str,
     #[cfg_attr(
         feature = "schema",
-        schemars(description = "Package identity for manifest-backed sources. Null today.")
+        schemars(
+            description = "Workspace member identity (`name`, `path`) for member sources; null \
+                           for root sources."
+        )
     )]
     package: Option<serde_json::Value>,
     path: String,
     relpath: String,
     #[cfg_attr(
         feature = "schema",
-        schemars(description = "Project-root-relative scope; `root` until member scoping lands.")
+        schemars(description = "`root`, or the workspace member name the source belongs to.")
     )]
-    scope: &'static str,
+    scope: &'a str,
     #[cfg_attr(
         feature = "schema",
         schemars(
@@ -323,6 +357,11 @@ struct DoctorTask<'a> {
         )
     )]
     resolved: Option<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "`root`, or the workspace member name the task belongs to.")
+    )]
+    scope: &'a str,
     #[cfg_attr(
         feature = "schema",
         schemars(
@@ -534,8 +573,14 @@ impl<'a> DoctorReport<'a> {
             project: ProjectInfo {
                 monorepo: ctx.is_monorepo,
                 root: ctx.root.display().to_string(),
-                root_source: ctx.root.display().to_string(),
-                workspace: None,
+                root_source: ctx.current_member().map_or_else(
+                    || ctx.root.display().to_string(),
+                    |member| format!("workspace root of member {}", member.name),
+                ),
+                workspace: ctx
+                    .workspace
+                    .as_ref()
+                    .map(super::project::WorkspaceInfo::from_workspace),
             },
             overrides: overrides_report(overrides),
             ecosystems: ecosystems(ctx, overrides, &node_pm, resolve_shims),
@@ -615,7 +660,24 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             github_group_parallel: overrides.github_group_parallel,
             parallel_grouped: overrides.parallel_grouped,
         },
-        quiet: overrides.silences_runner(),
+        quiet: overrides.quiet_level != crate::tool::QuietLevel::Off,
+        output: OutputPolicyReport {
+            level: overrides.quiet_level.label(),
+            progress: overrides.shows_progress(),
+            warnings: overrides.shows_warnings(),
+            errors: overrides.shows_errors(),
+            groups: overrides.emits_groups(),
+            task_timing: overrides.shows_task_timing(),
+            summary: overrides.shows_summary(),
+            fatal_errors: overrides.shows_fatal_errors(),
+            host_diagnostics: overrides.output_policy.host_diagnostics.label(),
+            host_stream: if overrides.host_stream_invocation_explicit {
+                overrides.host_stream
+            } else {
+                overrides.host_stream_config
+            }
+            .label(),
+        },
         on_mismatch: overrides.on_mismatch,
         pm: overrides.pm.as_ref().map(|o| o.pm),
         pm_by_ecosystem: overrides
@@ -865,18 +927,22 @@ const fn confidence_for_step(step: &ResolutionStep) -> Confidence {
     }
 }
 
-fn sources(ctx: &ProjectContext) -> Vec<SourceEntry> {
-    let mut seen: Vec<TaskSource> = Vec::new();
+fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
+    let mut seen: Vec<&Task> = Vec::new();
     for task in &ctx.tasks {
-        if !seen.contains(&task.source) {
-            seen.push(task.source);
+        if !seen
+            .iter()
+            .any(|first| first.source == task.source && first.same_scope(task))
+        {
+            seen.push(task);
         }
     }
 
     seen.into_iter()
-        .map(|source| {
+        .map(|task| {
+            let source = task.source;
             let kind = structured_source_label(source);
-            let anchor = super::labels::source_anchor(source, &ctx.root);
+            let anchor = super::labels::source_anchor(source, task.dir(&ctx.root));
             let path = anchor
                 .as_ref()
                 .map_or_else(String::new, |p| p.display().to_string());
@@ -885,12 +951,15 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry> {
             });
             SourceEntry {
                 exists: anchor.as_ref().is_some_and(|p| p.is_file()),
-                id: format!("src:root:{kind}"),
+                id: format!("src:{}:{kind}", task.scope()),
                 kind,
-                package: None,
+                package: task
+                    .member
+                    .as_ref()
+                    .map(|member| serde_json::json!({ "name": member.name, "path": member.path })),
                 path,
                 relpath,
-                scope: "root",
+                scope: task.scope(),
                 task_pointer: task_container_key(source),
             }
         })
@@ -906,14 +975,17 @@ fn tasks<'a>(
     let python_pm_label = resolve_python_pm(ctx, overrides).map(|d| d.pm.label());
     let runtime = overrides.js_runtime();
 
-    // `anchor_file` walks the filesystem; resolve each distinct source
-    // once instead of once per task.
-    let mut anchors: std::collections::HashMap<TaskSource, Option<String>> =
+    // `anchor_file` walks the filesystem; resolve each distinct
+    // (scope, source) pair once instead of once per task.
+    let mut anchors: std::collections::HashMap<(&str, TaskSource), Option<String>> =
         std::collections::HashMap::new();
     for task in &ctx.tasks {
-        anchors.entry(task.source).or_insert_with(|| {
-            super::labels::source_anchor(task.source, &ctx.root).map(|p| p.display().to_string())
-        });
+        anchors
+            .entry((task.scope(), task.source))
+            .or_insert_with(|| {
+                super::labels::source_anchor(task.source, task.dir(&ctx.root))
+                    .map(|p| p.display().to_string())
+            });
     }
 
     ctx.tasks
@@ -923,15 +995,17 @@ fn tasks<'a>(
                 .tasks
                 .iter()
                 .filter(|other| {
-                    other.source == task.source && other.alias_of.as_deref() == Some(&task.name)
+                    other.source == task.source
+                        && other.same_scope(task)
+                        && other.alias_of.as_deref() == Some(&task.name)
                 })
                 .map(|other| other.name.as_str())
                 .collect(),
-            cwd: ctx.root.display().to_string(),
+            cwd: task.dir(&ctx.root).display().to_string(),
             definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
             dependencies: Vec::new(),
             description: task.description.as_deref(),
-            fqn: super::labels::fqn(task.source, &task.name),
+            fqn: super::labels::fqn(task),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
             resolved: super::labels::resolved_command(
@@ -940,8 +1014,9 @@ fn tasks<'a>(
                 node_pm_label,
                 python_pm_label,
             ),
+            scope: task.scope(),
             self_executable: deno_task_self_executable(ctx, task),
-            source: anchors.get(&task.source).cloned().flatten(),
+            source: anchors.get(&(task.scope(), task.source)).cloned().flatten(),
             source_pointer: super::labels::source_pointer(task),
         })
         .collect()
@@ -956,7 +1031,7 @@ fn deno_task_self_executable(ctx: &ProjectContext, task: &Task) -> bool {
     if task.source != TaskSource::DenoJson {
         return false;
     }
-    crate::tool::deno::find_config_upwards(&ctx.root)
+    crate::tool::deno::find_config_upwards(task.dir(&ctx.root))
         .and_then(|config| crate::tool::deno_exec::plan(&config, &task.name))
         .is_some_and(|plan| plan.self_executable())
 }
@@ -1121,17 +1196,22 @@ fn conflicts(
     overrides: &ResolutionOverrides,
     plan: Option<&InstallPlan>,
 ) -> Vec<Conflict> {
-    let mut by_name: BTreeMap<&str, Vec<&Task>> = BTreeMap::new();
+    // Grouped per scope: root and member tasks sharing a name are not in
+    // conflict (root wins; the member stays reachable as `member:name`).
+    let mut by_name: BTreeMap<(&str, &str), Vec<&Task>> = BTreeMap::new();
     for task in &ctx.tasks {
-        by_name.entry(&task.name).or_default().push(task);
+        by_name
+            .entry((task.scope(), &task.name))
+            .or_default()
+            .push(task);
     }
 
     let duplicate_names = by_name
         .into_iter()
         .filter(|(_, group)| group.len() > 1)
-        .map(|(name, group)| {
+        .map(|((_, name), group)| {
             let selected = select_task_entry(ctx, overrides, &group);
-            let fqn_of = |task: &Task| super::labels::fqn(task.source, &task.name);
+            let fqn_of = |task: &Task| super::labels::fqn(task);
             Conflict::DuplicateTaskName {
                 reason: format!(
                     "{count} sources define `{name}`; lowest (source_priority={priority}, \
@@ -1142,7 +1222,7 @@ fn conflicts(
                     order = selected.source.display_order(),
                 ),
                 selected: fqn_of(selected),
-                selector: name.to_string(),
+                selector: selected.display_name().into_owned(),
                 severity: Severity::Info,
                 shadowed: group
                     .iter()
@@ -1248,6 +1328,7 @@ mod tests {
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("/tmp/test"),
             root: PathBuf::from("/tmp/test"),
             package_managers: vec![PackageManager::Cargo],
             task_runners: Vec::new(),
@@ -1255,6 +1336,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -1268,6 +1350,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 
@@ -1288,8 +1371,10 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["kind"], "runner.doctor");
-        assert_eq!(json["schema_version"], 2);
-        assert_eq!(json["overrides"]["quiet"], serde_json::json!(false));
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["overrides"]["output"]["level"], "off");
+        assert_eq!(json["overrides"]["output"]["fatal_errors"], true);
+        assert_eq!(json["overrides"]["quiet"], false);
         assert!(
             json["$schema"]
                 .as_str()
@@ -1524,13 +1609,16 @@ mod tests {
             "parent_group_open",
             "parent_warned",
             "host_stream",
+            "host_stream_invocation_explicit",
             "task_verbosity",
+            "host_diagnostics_explicit",
         ];
-        // resolver field name -> name it's actually reported under. `quiet_level`
-        // reports as the boolean-ish `quiet` (runner's own output silenced).
+        // Resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[
             ("task_source_overrides", "task_source_pins"),
             ("quiet_level", "quiet"),
+            ("output_policy", "output"),
+            ("host_stream_config", "output"),
         ];
 
         // One list, two jobs: exhaustively destructure ResolutionOverrides
@@ -1554,7 +1642,11 @@ mod tests {
             on_mismatch,
             no_warnings,
             quiet_level,
+            host_diagnostics_explicit,
+            output_policy,
             host_stream,
+            host_stream_invocation_explicit,
+            host_stream_config,
             task_verbosity,
             explain,
             failure_policy,

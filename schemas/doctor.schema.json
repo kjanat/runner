@@ -185,6 +185,7 @@
         "is_alias",
         "name",
         "resolved",
+        "scope",
         "self_executable",
         "source",
         "source_pointer"
@@ -232,6 +233,10 @@
             "null",
             "string"
           ]
+        },
+        "scope": {
+          "description": "`root`, or the workspace member name the task belongs to.",
+          "type": "string"
         },
         "self_executable": {
           "description": "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false.",
@@ -467,6 +472,70 @@
       },
       "additionalProperties": false
     },
+    "OutputPolicyReport": {
+      "type": "object",
+      "required": [
+        "errors",
+        "fatal_errors",
+        "groups",
+        "host_diagnostics",
+        "host_stream",
+        "level",
+        "progress",
+        "summary",
+        "task_timing",
+        "warnings"
+      ],
+      "properties": {
+        "errors": {
+          "type": "boolean"
+        },
+        "fatal_errors": {
+          "type": "boolean"
+        },
+        "groups": {
+          "type": "boolean"
+        },
+        "host_diagnostics": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
+        },
+        "host_stream": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "stderr"
+          ]
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "off",
+            "quiet",
+            "very-quiet",
+            "silent",
+            "mute"
+          ]
+        },
+        "progress": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "boolean"
+        },
+        "task_timing": {
+          "type": "boolean"
+        },
+        "warnings": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "Overrides": {
       "description": "The overrides in effect for this run: `--pm`, `--fallback`, the\n`RUNNER_*` env vars, and the `runner.toml` policy sections, reported by\ntheir labels. Where each came from (CLI, env, or config) is on the\n`list`/`info` surface instead.",
       "type": "object",
@@ -478,6 +547,7 @@
         "no_warnings",
         "on_collision",
         "on_mismatch",
+        "output",
         "output_grouping",
         "pm",
         "pm_by_ecosystem",
@@ -513,6 +583,9 @@
         },
         "on_mismatch": {
           "$ref": "#/$defs/MismatchPolicy"
+        },
+        "output": {
+          "$ref": "#/$defs/OutputPolicyReport"
         },
         "output_grouping": {
           "$ref": "#/$defs/OutputGrouping"
@@ -686,11 +759,19 @@
           "type": "string"
         },
         "root_source": {
-          "description": "What anchored root detection. Currently always the root itself (cwd or --dir); a dedicated anchor model is future work.",
+          "description": "What anchored root detection: the root itself (cwd or --dir), or `workspace root of member <name>` when the invocation directory sits inside a workspace member.",
           "type": "string"
         },
         "workspace": {
-          "description": "Workspace identity. Always null today: workspace kind/root detection is not yet modeled (the monorepo flag is the coarse signal)."
+          "description": "Workspace declarations at the root and their members; null when the root declares no workspace.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -824,7 +905,7 @@
           "$ref": "#/$defs/TaskSourceLabel"
         },
         "package": {
-          "description": "Package identity for manifest-backed sources. Null today."
+          "description": "Workspace member identity (`name`, `path`) for member sources; null for root sources."
         },
         "path": {
           "type": "string"
@@ -833,7 +914,7 @@
           "type": "string"
         },
         "scope": {
-          "description": "Project-root-relative scope; `root` until member scoping lands.",
+          "description": "`root`, or the workspace member name the source belongs to.",
           "type": "string"
         },
         "task_pointer": {
@@ -974,6 +1055,68 @@
           "additionalProperties": false
         }
       ]
+    },
+    "WorkspaceInfo": {
+      "description": "Workspace declarations and members projected into the JSON shape.",
+      "type": "object",
+      "required": [
+        "current",
+        "kinds",
+        "members",
+        "root"
+      ],
+      "properties": {
+        "current": {
+          "description": "Name of the member the invocation directory sits in, if any.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "kinds": {
+          "description": "Declaration labels in detection order (e.g. `\"package.json workspaces\"`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "members": {
+          "description": "Members in path order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceMemberInfo"
+          }
+        },
+        "root": {
+          "description": "Absolute directory holding the declarations.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkspaceMemberInfo": {
+      "description": "One workspace member.",
+      "type": "object",
+      "required": [
+        "dir",
+        "name",
+        "path"
+      ],
+      "properties": {
+        "dir": {
+          "description": "Absolute directory.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Manifest name, or the directory name when the manifest declares none.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Directory relative to the workspace root, forward slashes.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "title": "runner doctor --json",
@@ -1044,7 +1187,7 @@
     "schema_version": {
       "description": "Schema contract version for this JSON payload.",
       "type": "integer",
-      "const": 2,
+      "const": 1,
       "minimum": 0,
       "format": "uint32"
     },

@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::unsupported("node", "node --run has no host diagnostic switch")
+}
+
 use anyhow::Context as _;
 use serde::Deserialize;
 use yaml_rust2::YamlLoader;
@@ -553,6 +557,8 @@ pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String,
 
 #[derive(Deserialize)]
 struct PackageJson {
+    #[serde(default)]
+    name: Option<String>,
     #[serde(rename = "packageManager")]
     package_manager: Option<String>,
     #[serde(
@@ -562,6 +568,39 @@ struct PackageJson {
     )]
     dev_engines: Option<DevEngines>,
     scripts: Option<HashMap<String, String>>,
+    #[serde(default, deserialize_with = "lenient_workspaces")]
+    workspaces: Option<Vec<String>>,
+}
+
+/// `"workspaces"` as the npm/bun array form or the yarn v1 object form
+/// (`{ "packages": [...] }`). Unrecognised shapes degrade to `None`.
+fn lenient_workspaces<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Workspaces {
+        Globs(Vec<String>),
+        Config { packages: Vec<String> },
+    }
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value::<Option<Workspaces>>(value)
+        .ok()
+        .flatten()
+        .map(|field| match field {
+            Workspaces::Globs(globs) | Workspaces::Config { packages: globs } => globs,
+        }))
+}
+
+/// The `"workspaces"` globs declared by the manifest in `dir`, if any.
+pub(crate) fn workspace_globs(dir: &Path) -> Option<Vec<String>> {
+    parse_package_json(dir)?.workspaces
+}
+
+/// The `"name"` declared by the manifest in `dir`, if any.
+pub(crate) fn manifest_name(dir: &Path) -> Option<String> {
+    parse_package_json(dir)?.name
 }
 
 /// Deserialize `devEngines` without letting a malformed value poison the
@@ -671,10 +710,40 @@ fn parse_package_yaml(content: &str) -> Option<PackageJson> {
         })
         .filter(|table| !table.is_empty());
 
+    let name = root
+        .iter()
+        .find_map(|(key, value)| (key.as_str() == Some("name")).then_some(value))
+        .and_then(yaml_rust2::Yaml::as_str)
+        .map(ToOwned::to_owned);
+
+    let workspaces = root
+        .iter()
+        .find_map(|(key, value)| (key.as_str() == Some("workspaces")).then_some(value))
+        .and_then(|value| {
+            let globs = value.as_vec().or_else(|| {
+                value
+                    .as_hash()?
+                    .iter()
+                    .find_map(|(key, packages)| {
+                        (key.as_str() == Some("packages")).then_some(packages)
+                    })?
+                    .as_vec()
+            })?;
+            Some(
+                globs
+                    .iter()
+                    .filter_map(yaml_rust2::Yaml::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect(),
+            )
+        });
+
     Some(PackageJson {
+        name,
         package_manager,
         dev_engines: None,
         scripts,
+        workspaces,
     })
 }
 
@@ -1288,7 +1357,7 @@ mod tests {
 #[cfg(test)]
 mod run_cmd_tests {
     use super::run_cmd;
-    use crate::tool::{HostVerbosity, QuietLevel, Stream};
+    use crate::tool::{HostDiagnostics, HostVerbosity, Stream};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -1317,7 +1386,7 @@ mod run_cmd_tests {
     #[test]
     fn run_cmd_verbosity_axes_no_op() {
         let v = HostVerbosity {
-            level: QuietLevel::Silent,
+            diagnostics: HostDiagnostics::Reduced,
             stream: Stream::Stderr,
         };
         assert_eq!(argv(&run_cmd("build", &[], v)), ["--run", "build"]);

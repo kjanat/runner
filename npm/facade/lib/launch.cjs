@@ -4,6 +4,7 @@ const process = require("node:process");
 const { argv, exit, stderr } = process;
 const { spawnSync } = require("node:child_process");
 const { resolveBinary } = require("#resolve");
+const { fatalOutputEnabled } = require("#quiet");
 
 /** @param {string} name */
 module.exports = function launch(name) {
@@ -24,7 +25,9 @@ module.exports = function launch(name) {
 		}
 		exit(result.status ?? 1);
 	} catch (err) {
-		stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`);
+		if (fatalOutputEnabled(name, argv.slice(2))) {
+			stderr.write(`${name}: ${err instanceof Error ? err.message : String(err)}\n`);
+		}
 		exit(1);
 	}
 };

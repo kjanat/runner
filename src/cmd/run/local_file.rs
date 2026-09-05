@@ -71,15 +71,15 @@ pub(super) fn try_path_token(
     if !has_local_prefix(token) {
         return Ok(None);
     }
-    let path = resolve_path(&ctx.root, token);
+    let path = resolve_path(&ctx.cwd, token);
     dispatch_for_path(ctx, overrides, token, &path, args)
 }
 
 /// Try to interpret a `token` *without* an explicit local-path prefix, a
 /// bare name (`main.ts`) or a relative path bearing a separator
-/// (`bin/tool`), as a runnable file under the project root (`ctx.root`).
-/// Used as a
-/// fallback *after* task lookup misses but before the PM-exec fallback, so a
+/// (`bin/tool`), as a runnable file under the invocation directory
+/// (`ctx.cwd`). Used as a fallback *after* task lookup misses but before
+/// the PM-exec fallback, so a
 /// matching task always wins first (a bare name or a `make bin/tool` target
 /// never collides) yet a local script such as `main.ts` still runs instead
 /// of being mistaken for a remote package.
@@ -110,7 +110,7 @@ pub(super) fn try_bare_file(
     if has_local_prefix(token) {
         return Ok(None);
     }
-    bare_file_in(ctx, overrides, &ctx.root, token, args)
+    bare_file_in(ctx, overrides, &ctx.cwd, token, args)
 }
 
 /// Resolve a bare `token` against an explicit `base` directory. Split from
@@ -324,7 +324,7 @@ const fn is_windows_drive_abs(token: &str) -> bool {
 }
 
 /// Resolve `token` to an absolute path: expand a leading `~`, then anchor a
-/// relative path on `base`, the detected project root (`ctx.root`), which
+/// relative path on `base`, the invocation directory (`ctx.cwd`), which
 /// also becomes the spawned child's working directory and is what task
 /// detection runs against. Anchoring here (rather than on the live process
 /// cwd) keeps local-file lookup consistent with every other dispatch step,
@@ -768,6 +768,7 @@ mod tests {
 
     fn context(pms: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: pms,
             task_runners: Vec::new(),
@@ -775,14 +776,16 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
     }
 
-    fn context_rooted(pms: Vec<PackageManager>, root: PathBuf) -> ProjectContext {
+    fn context_in(pms: Vec<PackageManager>, cwd: PathBuf) -> ProjectContext {
         ProjectContext {
-            root,
+            root: cwd.join("elsewhere"),
+            cwd,
             ..context(pms)
         }
     }
@@ -1673,38 +1676,39 @@ mod tests {
     }
 
     #[test]
-    fn try_bare_file_resolves_against_ctx_root() {
-        // The bare-file fallback anchors on `ctx.root` (the detected project
-        // dir / `--dir` target), not the live process cwd; a `main.ts` under
-        // the project root runs even when the shell cwd is elsewhere. This is
-        // what stops a `--dir`-set run from missing the file and mis-routing
-        // into the package-manager exec fallback (issue #69).
-        let dir = TempDir::new("bare-root");
+    fn try_bare_file_resolves_against_ctx_cwd() {
+        // The bare-file fallback anchors on `ctx.cwd` (the invocation dir /
+        // `--dir` target), never on `ctx.root` or the live process cwd; a
+        // `main.ts` in the invocation dir runs even when the shell cwd is
+        // elsewhere. This is what stops a `--dir`-set run from missing the
+        // file and mis-routing into the package-manager exec fallback
+        // (issue #69).
+        let dir = TempDir::new("bare-cwd");
         std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")
             .expect("file should be written");
 
-        let ctx = context_rooted(vec![PackageManager::Deno], dir.path().to_path_buf());
+        let ctx = context_in(vec![PackageManager::Deno], dir.path().to_path_buf());
         let dispatch = try_bare_file(&ctx, &ResolutionOverrides::default(), "main.ts", &[])
-            .expect("a runnable bare file under ctx.root should not error")
-            .expect("a runnable bare file under ctx.root should dispatch");
+            .expect("a runnable bare file under ctx.cwd should not error")
+            .expect("a runnable bare file under ctx.cwd should dispatch");
 
         assert_eq!(dispatch.label, deno_run_label());
         assert_eq!(dispatch.command.get_program().to_string_lossy(), "deno");
     }
 
     #[test]
-    fn try_path_token_resolves_relative_prefix_against_ctx_root() {
-        // An explicit `./main.ts` is joined onto `ctx.root`, so it resolves the
-        // project-root file regardless of the process cwd, consistent with
-        // task detection and the spawned child's working directory.
-        let dir = TempDir::new("path-root");
+    fn try_path_token_resolves_relative_prefix_against_ctx_cwd() {
+        // An explicit `./main.ts` is joined onto `ctx.cwd`, so it resolves the
+        // invocation-dir file regardless of the process cwd, consistent with
+        // the spawned child's working directory.
+        let dir = TempDir::new("path-cwd");
         std::fs::write(dir.path().join("main.ts"), "console.log(1)\n")
             .expect("file should be written");
 
-        let ctx = context_rooted(vec![PackageManager::Bun], dir.path().to_path_buf());
+        let ctx = context_in(vec![PackageManager::Bun], dir.path().to_path_buf());
         let dispatch = try_path_token(&ctx, &ResolutionOverrides::default(), "./main.ts", &[])
             .expect("an explicit relative path should not error")
-            .expect("a runnable ./main.ts under ctx.root should dispatch");
+            .expect("a runnable ./main.ts under ctx.cwd should dispatch");
 
         assert_eq!(dispatch.label, "bun");
         assert_eq!(dispatch.command.get_program().to_string_lossy(), "bun");

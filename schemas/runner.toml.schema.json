@@ -54,6 +54,38 @@
       },
       "additionalProperties": false
     },
+    "HostOutputSection": {
+      "description": "`[host]` host-tool output policy. Diagnostics never controls task streams;\nadapters clamp unsupported requests to their strongest safe mode.",
+      "type": "object",
+      "properties": {
+        "diagnostics": {
+          "description": "`normal`, `quiet`, or `reduced`. Unsupported reductions are safely\nclamped by each adapter and reported by `--explain`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced",
+            null
+          ]
+        },
+        "stream": {
+          "description": "`inherit` or `stderr`. Per-task stream settings override this global\ndefault; CLI/env still outrank both.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "stderr",
+            null
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "InstallSection": {
       "description": "`[install]` section, restrict which detected package managers\n`runner install` runs with. Absent or empty installs every detected\nPM (the default). Overridden by `RUNNER_INSTALL_PMS`.\n\nUnlike `[pm]` (which scopes *script dispatch* per ecosystem), this\nscopes the *install fan-out*: in a polyglot repo where both `bun` and\n`deno` would write `node_modules`, `pms = [\"bun\"]` keeps install to bun.",
       "type": "object",
@@ -172,6 +204,55 @@
       },
       "additionalProperties": false
     },
+    "RunnerOutputSection": {
+      "description": "`[runner]` output categories. An absent field inherits the selected quiet\npreset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was\nselected for the invocation.",
+      "type": "object",
+      "properties": {
+        "errors": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "fatal_errors": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "groups": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "task_timing": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "warnings": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "RuntimeSection": {
       "description": "`[runtime]` section, which JS runtime a task's process tree runs on.\n\nSeparate from `[pm]`: the package manager decides who installs and who\ninvokes the script, the runtime decides what the script and the binaries\nit shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.",
       "type": "object",
@@ -212,6 +293,20 @@
       "description": "The table form of a [`TaskSpec`]: individual per-task settings, each merged\nover the built-in defaults so a partial table only overrides what it names.",
       "type": "object",
       "properties": {
+        "groups": {
+          "description": "Wrap this task's output in a GitHub Actions group. `false` opts this\ntask out; `[runner].groups = false` or a quiet preset wins over `true`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "progress": {
+          "description": "Print this task's dispatch arrow. `false` hides it for this task only;\na quiet preset or `[runner].progress = false` hides it regardless.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "runner": {
           "description": "Source/runner pin for this task, same meaning as a legacy\n[`TasksSection::overrides`] entry (a runner, package manager, or source\nlabel). A pin the task doesn't have falls through to the normal ranking.",
           "type": [
@@ -241,6 +336,37 @@
             "package.json",
             "pyproject.toml",
             null
+          ]
+        },
+        "stderr": {
+          "description": "Preserve or discard this task's stderr independently of quiet presets.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "discard",
+            null
+          ]
+        },
+        "stdout": {
+          "description": "Preserve or discard this task's stdout independently of quiet presets.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "inherit",
+            "discard",
+            null
+          ]
+        },
+        "task_timing": {
+          "description": "Print this task's chain timing line. `false` hides it for this task\nonly; `[runner].task_timing = false` or a quiet preset wins over `true`.",
+          "type": [
+            "boolean",
+            "null"
           ]
         },
         "verbosity": {
@@ -294,7 +420,7 @@
       ]
     },
     "TasksSection": {
-      "description": "`[tasks]` section, per-task configuration keyed by task name, plus the two\nreserved cross-task knobs `prefer` and `overrides`.\n\nA task entry works like a crate under Cargo's `[dependencies]`: the key is\nthe task name and the value is either a **string** shorthand for the task's\nsource/runner pin (`build = \"turbo\"`) or a **table** of per-task settings\n(`build = { runner = \"turbo\", verbosity = \"quiet\" }`, or a `[tasks.build]`\nsub-table). `prefer` (global rank) and `overrides` (legacy per-task pin map,\nsuperseded by a task entry's `runner`) are reserved names, so a task literally\ncalled `prefer` or `overrides` cannot use the map form.\n\nThe pin vocabulary is shared: a label is a task runner (`turbo`, `make`, …),\na package manager (`bun`, `npm`, `pnpm`, `yarn`, `deno`, …), or a source\nname (`package.json`, `deno`, …). Package-manager labels map to the script\nsource they run (`bun` → `package.json`). Selection is **rank-only**: it\nnever hard-rejects an unlisted source, only reorders. An explicit CLI\nqualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still\noutranks these file settings.",
+      "description": "`[tasks]` section, per-task configuration keyed by task name, plus the two\nreserved cross-task knobs `prefer` and `overrides`.\n\nA task entry works like a crate under Cargo's `[dependencies]`: the key is\nthe task name and the value is either a **string** shorthand for the task's\nsource/runner pin (`build = \"turbo\"`) or a **table** of per-task settings\n(`build = { runner = \"turbo\", verbosity = \"quiet\" }`, or a `[tasks.build]`\nsub-table). `prefer` (global rank) and `overrides` (legacy per-task pin map,\nsuperseded by a task entry's `runner`) are reserved names, so a task literally\ncalled `prefer` or `overrides` cannot use the map form.\n\nThe pin vocabulary is shared: a label is a task runner (`turbo`, `make`, …),\na package manager (`bun`, `npm`, `pnpm`, `yarn`, `deno`, …), or a source\nname (`package.json`, `deno`, …). Package-manager labels map to the script\nsource they run (`bun` → `package.json`). Selection is **rank-only**: it\nnever hard-rejects an unlisted source, only reorders. An explicit CLI\nqualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still\noutranks these file settings.\n\nKeys layer from least to most specific: `site`, `package.json:site`,\n`rfc:site` (workspace member `rfc`), `rfc:package.json#site` (the FQN\n`doctor --json` prints).",
       "type": "object",
       "properties": {
         "overrides": {
@@ -386,7 +512,7 @@
       "type": "object",
       "properties": {
         "level": {
-          "description": "How much of the host's own logging to suppress:\n`off` | `quiet` | `very-quiet` | `silent`.",
+          "description": "How much of the host's own logging to suppress:\n`off` | `quiet` | `very-quiet` | `silent` | `mute`.",
           "type": [
             "null",
             "string"
@@ -396,6 +522,7 @@
             "quiet",
             "very-quiet",
             "silent",
+            "mute",
             null
           ]
         },
@@ -432,6 +559,11 @@
         "group_parallel": true
       }
     },
+    "host": {
+      "$ref": "#/$defs/HostOutputSection",
+      "description": "`[host]`, host-tool diagnostic policy.",
+      "default": {}
+    },
     "install": {
       "$ref": "#/$defs/InstallSection",
       "description": "`[install]`, restrict which detected PMs `runner install` runs.",
@@ -452,6 +584,11 @@
     "resolution": {
       "$ref": "#/$defs/ResolutionSection",
       "description": "`[resolution]`, resolver-policy knobs.",
+      "default": {}
+    },
+    "runner": {
+      "$ref": "#/$defs/RunnerOutputSection",
+      "description": "`[runner]`, independent runner-authored output categories.",
       "default": {}
     },
     "runtime": {

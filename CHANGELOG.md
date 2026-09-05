@@ -20,12 +20,71 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- List and run workspace member tasks from the workspace root. Members are
+  read from `package.json` `workspaces`, `pnpm-workspace.yaml`, `lerna.json`,
+  `deno.json` `workspace`, and `Cargo.toml` `[workspace]`; each member's
+  manifest scripts and `deno.json` tasks appear as `<member>:<task>` and run in
+  the member's directory. A bare name resolves to the root first, then to the
+  single member defining it; a name several members define is refused with the
+  qualified spellings. `doctor --json` reports `project.workspace` and scopes
+  every task and source by member; `list --json` gains `tasks[].member`;
+  completions offer `<member>:<task>`.
+- Anchor detection on the workspace root from any directory beneath it.
+  Inside a member, that member's tasks win bare names and lead completions,
+  the root's follow, and a shadowed root task stays reachable as
+  `root:<task>`; `<scope>:<source>#<task>` forms resolve from anywhere.
+  Local-file tokens and package-manager exec fallbacks keep resolving against
+  the invocation directory.
+- Per-task `[tasks.<key>]` settings address workspace member tasks as
+  `member:task` or `member:source#task`, layered over the bare name and
+  `source:task` keys per axis. `--explain` reports the scope a task was picked
+  from (current member, root, or member), the scopes it outranked, and the
+  directory it runs in.
+- Add independent `[runner]` output categories, `[host].diagnostics`, and
+  per-task stdout/stderr preservation controls. `--explain` reports the
+  effective policy, applied host arguments, and unsupported reductions.
+  Per-task timing and the final chain summary are separate categories, allowing
+  summary-only output.
+- Per-task `progress`, `groups`, and `task_timing` switches under
+  `[tasks.<key>]` hide one task's dispatch arrow, GitHub Actions group, or
+  chain timing line without a global `-q`. A global quiet rung or `[runner]`
+  `false` still wins over a per-task `true`.
+
 - Release archives, the man-page tarball, the container image, and the npm
   tarballs carry GitHub build-provenance attestations; `mise install
   github:kjanat/runner` and `gh attestation verify` check them (https://github.com/kjanat/runner/issues/125).
 - The GitHub Action verifies the downloaded npm tarball with
   `gh attestation verify`. New inputs: `verify` (`auto`, `require`, `off`) and
   `token`.
+
+### Changed
+
+- Redesign `-q` through `-qqqq` as distinct output-policy levels. `-q` now
+  affects runner progress only, `-qq` requests safe host quieting, `-qqq`
+  suppresses recoverable runner error decoration, and `-qqqq` mutes all runner
+  text while preserving task streams and exit status. Larger counts clamp to
+  mute. Host adapters now apply only audited controls that preserve task output
+  (https://github.com/kjanat/runner/issues/116). An explicit `-q` merges with
+  the `[runner]` and `[host]` sections instead of replacing them; the quietest
+  setting on each axis wins.
+- `doctor`/`list`/`why` JSON is schema version 1 again. Version 2 (v0.20.0)
+  added fields. `--schema-version` accepts `1`.
+- Inside a member, a root task the member shadows is spelled `root:<name>` in
+  `list` and the dispatch arrow, so the printed token runs that task.
+
+### Fixed
+
+- Two workspace members whose manifests declare no name and whose directories
+  share a basename (`apps/web`, `tools/web`) are now spelled by path in `list`,
+  completions, the dispatch arrow, and every qualification hint, so the printed
+  token runs the task instead of naming both members.
+- A source-qualified name several members define (`package.json:site`) is
+  refused with the qualified spellings, the same as the bare name, instead
+  of running whichever member sorts first.
+- The npm facade no longer throws at startup when `bugs` is the object form,
+  and a missing `/lib` or `/usr/lib` no longer aborts libc detection.
+- A failed install head under fail-fast reports its summary and exit code
+  before chain pre-flight can reject a later token.
 
 ## [0.25.1] - 2026-08-12
 

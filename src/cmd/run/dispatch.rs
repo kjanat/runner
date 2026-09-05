@@ -18,11 +18,12 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use super::qualify::{
-    TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
-    qualified_miss_error, reversed_qualifier_error, runner_constraint_error,
+    ScopeQuery, TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
+    member_ambiguity_error, qualified_miss_error, reversed_qualifier_error,
+    runner_constraint_error,
 };
 use super::runtime;
-use super::select::select_task_entry;
+use super::select::{ambiguous_members, select_task_entry};
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::tool;
 use crate::tool::deno_exec::DenoTaskPlan;
@@ -30,24 +31,111 @@ use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, T
 
 fn print_dispatch_arrow(
     overrides: &ResolutionOverrides,
+    task: &str,
     label: &str,
     task_name: &str,
     args: &[String],
 ) {
-    if overrides.silences_runner() {
+    if !overrides.shows_progress_for(task) {
         return;
     }
     eprintln!(
-        "{} {} {} {}",
+        "{} {} {}{}",
         "→".dimmed(),
         label.dimmed(),
         task_name.bold(),
-        args.join(" ").dimmed(),
+        if args.is_empty() { "" } else { " [args]" }.dimmed(),
     );
 }
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::cmd::print_explain(overrides, &format!("resolved: {describe}"));
+}
+
+/// `--explain` line for the workspace scope a task was picked from: which
+/// scope won, why it outranked the others, and the directory it runs in.
+fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, entry: &Task) {
+    let Some(workspace) = ctx.workspace.as_ref() else {
+        return;
+    };
+    let candidates: Vec<&Task> = ctx
+        .tasks
+        .iter()
+        .filter(|task| task.name == entry.name)
+        .collect();
+    let scope = match (&entry.member, workspace.current.as_ref()) {
+        (Some(member), Some(current)) if member.dir == current.dir => {
+            format!("{} (current member)", member.name)
+        }
+        (Some(member), _) => format!("{} (member)", member.name),
+        (None, _) => "root".to_string(),
+    };
+    let mut others: Vec<&str> = candidates
+        .iter()
+        .filter(|candidate| !candidate.same_scope(entry))
+        .map(|candidate| candidate.scope())
+        .collect();
+    others.sort_unstable();
+    others.dedup();
+    let outranked = if others.is_empty() {
+        String::new()
+    } else {
+        format!(", outranks {}", others.join(", "))
+    };
+    crate::cmd::print_explain(
+        overrides,
+        &format!(
+            "scope: {scope}{outranked}; cwd={} root={} dir={}",
+            ctx.cwd.display(),
+            ctx.root.display(),
+            entry.dir(&ctx.root).display(),
+        ),
+    );
+}
+
+fn host_verbosity(
+    overrides: &ResolutionOverrides,
+    task: &Task,
+    host: &str,
+    capabilities: tool::HostQuietCapabilities,
+) -> tool::HostVerbosity {
+    let task_key = super::task_output_key(task);
+    let requested = overrides.host_verbosity_for(&task_key);
+    let applied = requested.diagnostics.min(capabilities.max_diagnostics);
+    let stream = if capabilities.diverts_to_stderr {
+        requested.stream
+    } else {
+        tool::Stream::Inherit
+    };
+    let mut args = if applied >= tool::HostDiagnostics::Quiet {
+        capabilities.quiet_args.to_vec()
+    } else {
+        Vec::new()
+    };
+    if stream == tool::Stream::Stderr {
+        args.push("--use-stderr");
+    }
+    let limitation = if requested.diagnostics > applied {
+        format!(" limitation={:?}", capabilities.limitation)
+    } else {
+        String::new()
+    };
+    crate::cmd::print_explain(
+        overrides,
+        &format!(
+            "host: {host} diagnostics={} applied={} args=[{}] stream={} matrix={}{}",
+            requested.diagnostics.label(),
+            applied.label(),
+            args.join(" "),
+            stream.label(),
+            capabilities.matrix_id,
+            limitation,
+        ),
+    );
+    tool::HostVerbosity {
+        diagnostics: applied,
+        stream,
+    }
 }
 
 /// Outcome of resolving a task: a spawnable process, or a deno task to
@@ -214,8 +302,8 @@ pub(super) struct DenoSelfExec {
 
 impl DenoSelfExec {
     /// Run the task in-process, returning its exit code.
-    pub(super) fn run(&self) -> Result<i32> {
-        tool::deno_exec::run(&self.plan, &self.args, &self.cwd)
+    pub(super) fn run(&self, stdout: tool::TaskStream, stderr: tool::TaskStream) -> Result<i32> {
+        tool::deno_exec::run(&self.plan, &self.args, &self.cwd, stdout, stderr)
     }
 }
 
@@ -248,13 +336,14 @@ fn decide_deno_self_exec(
         return Ok(None);
     }
 
-    let plan = tool::deno::find_config_upwards(&ctx.root)
+    let dir = entry.dir(&ctx.root);
+    let plan = tool::deno::find_config_upwards(dir)
         .and_then(|path| tool::deno_exec::plan(&path, &entry.name));
     match plan {
         Some(plan) if plan.self_executable() => Ok(Some(DenoSelfExec {
             plan,
             args: args.to_vec(),
-            cwd: ctx.root.clone(),
+            cwd: dir.to_path_buf(),
         })),
         // Not self-executable: real deno can still run it; otherwise bail.
         _ if deno => Ok(None),
@@ -305,23 +394,29 @@ pub(super) fn resolve_dispatch(
     // matching task (e.g. a `make bin/tool` target) wins first.
     if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
         let mut command = local.command;
-        print_dispatch_arrow(overrides, &local.label, task, args);
-        crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+        print_dispatch_arrow(overrides, task, &local.label, task, args);
+        crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
+        crate::cmd::configure_task_streams(&mut command, overrides, task);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
     }
 
     let (lookup, found) = lookup_token(ctx, task);
     let TokenLookup {
         qualifier,
+        scope,
         task_name,
     } = lookup;
 
+    if matches!(scope, ScopeQuery::Unresolved { .. }) {
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+    }
+
     // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
     // candidate that isn't under one of the allowed sources is treated
-    // as non-existent. A qualifier (`runner.json:task`) is the user
-    // narrowing *to* a source explicitly and outranks the runner
-    // constraint; the qualified branch below applies its own match.
-    let restricted: Vec<_> = if qualifier.is_some() {
+    // as non-existent. A qualifier (`runner.json:task`, `member:task`) is
+    // the user narrowing explicitly and outranks the runner constraint;
+    // the qualified branch below applies its own match.
+    let restricted: Vec<_> = if qualifier.is_some() || scope.is_pinned() {
         found.clone()
     } else if let Some(allowed) = allowed_runner_sources(overrides) {
         found
@@ -337,11 +432,11 @@ pub(super) fn resolve_dispatch(
         // Restrictive override active but no candidate matched: hard
         // error per the resolved design decision (explicit intent
         // never silently downgrades). Skipped for qualified misses,
-        // the qualifier (`justfile:foo`) is stronger user intent than
-        // `--runner` / `[task_runner].prefer`, so report the qualified
-        // miss directly instead of surfacing a runner-constraint error
-        // the user can't act on.
-        let Some(missed_source) = qualifier else {
+        // the qualifier (`justfile:foo`, `rfc:foo`) is stronger user
+        // intent than `--runner` / `[task_runner].prefer`, so report the
+        // qualified miss directly instead of surfacing a runner-constraint
+        // error the user can't act on.
+        if qualifier.is_none() && !scope.is_pinned() {
             // Fast-fail on the reversed qualifier shape (`task:source`).
             // Without this guard, `lint:cargo` slips through as an
             // unqualified bare name, hits the PM-exec fallback below,
@@ -370,8 +465,9 @@ pub(super) fn resolve_dispatch(
             if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
             {
                 let mut command = local.command;
-                print_dispatch_arrow(overrides, &local.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                print_dispatch_arrow(overrides, task_name, &local.label, task_name, args);
+                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
+                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
@@ -385,30 +481,48 @@ pub(super) fn resolve_dispatch(
             {
                 let mut command = dep.dispatch.command;
                 print_pm_explain(overrides, &dep.describe);
-                print_dispatch_arrow(overrides, &dep.dispatch.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+                print_dispatch_arrow(overrides, task_name, &dep.dispatch.label, task_name, args);
+                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
+                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
                 return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
             }
 
             return dispatch_after_miss(ctx, overrides, task_name, args, sink);
-        };
+        }
 
         // Qualified miss (colon or FQN syntax): the qualifier is explicit
         // task-lookup intent, so error here, never fall through to
         // PM-exec, which would hand the token to bun x/npx as a package
         // spec and resolve it off the network.
-        return Err(qualified_miss_error(ctx, missed_source, task_name));
+        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
     }
 
     let entry = if let Some(source) = qualifier {
-        restricted
+        let matched: Vec<_> = restricted
             .iter()
-            .find(|t| t.source == source)
             .copied()
-            .ok_or_else(|| qualified_miss_error(ctx, source, task_name))?
+            .filter(|t| t.source == source)
+            .collect();
+        if matched.is_empty() {
+            return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
+        }
+        if !scope.is_pinned()
+            && let Some(members) = ambiguous_members(&matched)
+        {
+            return Err(member_ambiguity_error(task_name, &members));
+        }
+        select_task_entry(ctx, overrides, &matched)
     } else {
+        if !scope.is_pinned()
+            && let Some(members) = ambiguous_members(&restricted)
+        {
+            return Err(member_ambiguity_error(task_name, &members));
+        }
         select_task_entry(ctx, overrides, &restricted)
     };
+    let dir = entry.dir(&ctx.root);
+    let task_key = super::task_output_key(entry);
+    print_scope_explain(ctx, overrides, entry);
 
     // The one place a matched task's source is known: report a `--runtime`
     // the winning source cannot honour, so an explicit runtime is never a
@@ -419,19 +533,22 @@ pub(super) fn resolve_dispatch(
     // lineage. Checked before anything is spawned or run in-process, and
     // before the arrow, so the diagnostic is the only output a cycle
     // produces.
-    let task_stack = crate::cmd::push_task_frame(&ctx.root, entry.source, &entry.name)?;
+    let task_stack = crate::cmd::push_task_frame(dir, entry.source, &entry.name)?;
 
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
+    let arrow =
+        |label: &str| print_dispatch_arrow(overrides, &task_key, label, &ctx.spelling(entry), args);
     if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
-        print_dispatch_arrow(overrides, "deno-shell", task_name, args);
+        arrow("deno-shell");
         return Ok(Dispatch::DenoSelfExec(self_exec));
     }
 
-    print_dispatch_arrow(overrides, entry.source.label(), task_name, args);
+    arrow(entry.source.label());
 
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::cmd::configure_command(spawn.command_mut(), &ctx.root, overrides);
+    crate::cmd::configure_command(spawn.command_mut(), dir, overrides);
+    crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
         .command_mut()
         .env(crate::cmd::TASK_STACK_ENV, task_stack);
@@ -460,9 +577,10 @@ fn dispatch_after_miss(
 
     // Bun-test special case: `bun test` built-in.
     if should_use_bun_test_fallback(ctx, overrides, resolved_pm, task_name) {
-        print_dispatch_arrow(overrides, "bun", "test", args);
+        print_dispatch_arrow(overrides, task_name, "bun", "test", args);
         let mut cmd = tool::bun::test_cmd(args);
-        crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+        crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
+        crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
     }
 
@@ -478,8 +596,9 @@ fn dispatch_after_miss(
         }
         None => build_pm_exec_command(ctx, resolved_pm, task_name, args),
     };
-    print_dispatch_arrow(overrides, label, task_name, args);
-    crate::cmd::configure_command(&mut cmd, &ctx.root, overrides);
+    print_dispatch_arrow(overrides, task_name, label, task_name, args);
+    crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
+    crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
 }
 
@@ -582,12 +701,16 @@ pub(super) fn should_use_bun_test_fallback(
 }
 
 fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
-    ctx.tasks
-        .iter()
-        .any(|entry| entry.source == TaskSource::PackageJson && entry.name == task)
+    ctx.tasks.iter().any(|entry| {
+        entry.source == TaskSource::PackageJson && entry.member.is_none() && entry.name == task
+    })
 }
 
 /// Build a [`Command`] for the given task source and package manager.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive task-source dispatch keeps host capability and command selection together"
+)]
 fn build_run_command(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -597,9 +720,12 @@ fn build_run_command(
 ) -> Result<SpawnDispatch> {
     // Deep-merge the global (CLI/env) quiet level + stream over this task's
     // `[tasks.<name>].verbosity` config into the flags the host tool gets.
-    let hv = overrides.host_verbosity_for(&entry.name);
+    let unsupported = |id, reason| tool::HostQuietCapabilities::unsupported(id, reason);
     let command = match entry.source {
-        TaskSource::TurboJson => tool::turbo::run_cmd(&entry.name, args, hv),
+        TaskSource::TurboJson => {
+            let hv = host_verbosity(overrides, entry, "turbo", tool::turbo::quiet_capabilities());
+            tool::turbo::run_cmd(&entry.name, args, hv)
+        }
         TaskSource::PackageJson => {
             // An explicit runtime override outranks the resolved PM: which
             // runtime the script's process tree runs on is a separate question
@@ -620,6 +746,12 @@ fn build_run_command(
                     }
                     runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
                 }
+                let capabilities = match over.runtime {
+                    JsRuntime::Node => tool::node::quiet_capabilities(),
+                    JsRuntime::Bun => tool::bun::quiet_capabilities(),
+                    JsRuntime::Deno => tool::deno::quiet_capabilities(),
+                };
+                let hv = host_verbosity(overrides, entry, over.runtime.label(), capabilities);
                 return Ok(SpawnDispatch::passthrough(runtime::script_cmd(
                     over.runtime,
                     &entry.name,
@@ -630,6 +762,15 @@ fn build_run_command(
             let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
             crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
             print_pm_explain(overrides, &decision.describe());
+            let capabilities = match decision.pm {
+                PackageManager::Npm => tool::npm::quiet_capabilities(),
+                PackageManager::Yarn => tool::yarn::quiet_capabilities(&ctx.root),
+                PackageManager::Pnpm => tool::pnpm::quiet_capabilities(),
+                PackageManager::Bun => tool::bun::quiet_capabilities(),
+                PackageManager::Deno => tool::deno::quiet_capabilities(),
+                other => unsupported(other.label(), "not a script-dispatch adapter"),
+            };
+            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
             let command = match decision.pm {
                 PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
                 PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
@@ -640,19 +781,58 @@ fn build_run_command(
             };
             return Ok(SpawnDispatch::package_manager(command, decision));
         }
-        TaskSource::Makefile => tool::make::run_cmd(&entry.name, args, hv),
-        TaskSource::Justfile => tool::just::run_cmd(&entry.name, args, hv),
-        TaskSource::Taskfile => tool::go_task::run_cmd(&entry.name, args, hv),
-        TaskSource::DenoJson => tool::deno::run_cmd(&entry.name, args, hv),
-        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(&entry.name, args, hv),
+        TaskSource::Makefile => tool::make::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "make", tool::make::quiet_capabilities()),
+        ),
+        TaskSource::Justfile => tool::just::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "just", tool::just::quiet_capabilities()),
+        ),
+        TaskSource::Taskfile => tool::go_task::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(
+                overrides,
+                entry,
+                "go-task",
+                tool::go_task::quiet_capabilities(),
+            ),
+        ),
+        TaskSource::DenoJson => tool::deno::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "deno", tool::deno::quiet_capabilities()),
+        ),
+        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(
+                overrides,
+                entry,
+                "cargo",
+                tool::cargo_aliases::quiet_capabilities(),
+            ),
+        ),
         TaskSource::GoPackage => {
             let Some(run_target) = entry.run_target.as_deref() else {
                 bail!("go task {:?} is missing its run target", entry.name);
             };
+            let hv = host_verbosity(overrides, entry, "go", tool::go_pm::quiet_capabilities());
             tool::go_pm::run_cmd(run_target, args, hv)
         }
-        TaskSource::BaconToml => tool::bacon::run_cmd(&entry.name, args, hv),
-        TaskSource::MiseToml => tool::mise::run_cmd(&entry.name, args, hv),
+        TaskSource::BaconToml => tool::bacon::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "bacon", tool::bacon::quiet_capabilities()),
+        ),
+        TaskSource::MiseToml => tool::mise::run_cmd(
+            &entry.name,
+            args,
+            host_verbosity(overrides, entry, "mise", tool::mise::quiet_capabilities()),
+        ),
         TaskSource::PyprojectScripts => {
             let Some(decision) = resolve_python_pm(ctx, overrides) else {
                 bail!(
@@ -661,6 +841,13 @@ fn build_run_command(
                 );
             };
             print_pm_explain(overrides, &decision.describe());
+            let capabilities = match decision.pm {
+                PackageManager::Uv => tool::uv::quiet_capabilities(),
+                PackageManager::Poetry => tool::poetry::quiet_capabilities(),
+                PackageManager::Pipenv => tool::pipenv::quiet_capabilities(),
+                other => unsupported(other.label(), "not a pyproject script adapter"),
+            };
+            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
             let command = match decision.pm {
                 PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
                 PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
@@ -719,6 +906,7 @@ mod tests {
 
     fn context() -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from("."),
             root: PathBuf::from("."),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -726,6 +914,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -839,6 +1028,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         }
     }
 
@@ -902,6 +1092,7 @@ mod tests {
             description: None,
             alias_of: Some("build".to_string()),
             passthrough_to: None,
+            member: None,
         });
 
         let command = expect_command(
@@ -984,6 +1175,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         let args = [String::from("--port"), String::from("3000")];
 
@@ -1017,6 +1209,7 @@ mod tests {
             description: Some("greenpy.main:main".to_string()),
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         let args = [String::from("--flag")];
 
@@ -1047,6 +1240,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
 
         let command = expect_command(

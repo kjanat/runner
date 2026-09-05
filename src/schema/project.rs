@@ -12,7 +12,7 @@ use serde::Serialize;
 use super::labels::flat_source_label;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, Resolver};
 use crate::tool::node::{ManifestSource, detect_pm_from_manifest};
-use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource};
+use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource, Workspace};
 
 /// The canonical machine-readable view of a project, used by every `--json` surface. Field order is
 /// preserved by `serde_json` so consumers can hand-write `jq` queries without sort surprises.
@@ -97,6 +97,7 @@ impl<'a> Project<'a> {
             .map(|t| TaskInfo {
                 name: &t.name,
                 source: flat_source_label(t.source),
+                member: t.member.as_ref().map(|member| member.name.as_str()),
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
                 passthrough_to: t.passthrough_to.map(crate::types::TaskRunner::label),
@@ -166,7 +167,8 @@ pub(crate) struct TaskListView<'a> {
         schemars(description = "URI of the JSON Schema that describes this payload.")
     )]
     pub schema: String,
-    /// Identical to [`Project::schema_version`]; consumers can assume `2` here means a v2-shaped `tasks` array.
+    /// Identical to [`Project::schema_version`]; consumers can branch on the
+    /// unified output contract version.
     #[cfg_attr(
         feature = "schema",
         schemars(description = "Schema contract version for this JSON payload.")
@@ -190,8 +192,12 @@ pub(crate) struct Detected<'a> {
     pub node_version: Option<NodeVersionInfo<'a>>,
     /// `node --version` output, when the binary is on PATH.
     pub current_node: Option<&'a str>,
-    /// Whether the project looks like a monorepo (workspace globs).
+    /// Whether the project looks like a monorepo (workspace globs, turbo, nx).
     pub monorepo: bool,
+    /// Workspace declarations at the root and their members. Additive field
+    /// (no schema bump): absent when the root declares no workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceInfo<'a>>,
 }
 
 impl<'a> Detected<'a> {
@@ -205,8 +211,65 @@ impl<'a> Detected<'a> {
             }),
             current_node: ctx.current_node.as_deref(),
             monorepo: ctx.is_monorepo,
+            workspace: ctx.workspace.as_ref().map(WorkspaceInfo::from_workspace),
         }
     }
+}
+
+/// Workspace declarations and members projected into the JSON shape.
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceInfo<'a> {
+    /// Absolute directory holding the declarations.
+    pub root: String,
+    /// Declaration labels in detection order (e.g. `"package.json workspaces"`).
+    pub kinds: Vec<&'static str>,
+    /// Members in path order.
+    pub members: Vec<WorkspaceMemberInfo<'a>>,
+    /// Name of the member the invocation directory sits in, if any.
+    pub current: Option<&'a str>,
+}
+
+impl<'a> WorkspaceInfo<'a> {
+    pub(crate) fn from_workspace(workspace: &'a Workspace) -> Self {
+        Self {
+            root: workspace.root.display().to_string(),
+            current: workspace
+                .current
+                .as_ref()
+                .map(|member| member.name.as_str()),
+            kinds: workspace.kinds.iter().map(|kind| kind.label()).collect(),
+            members: workspace
+                .members
+                .iter()
+                .map(|member| WorkspaceMemberInfo {
+                    name: &member.name,
+                    path: &member.path,
+                    dir: member.dir.display().to_string(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One workspace member.
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+#[derive(Debug, Serialize)]
+pub(crate) struct WorkspaceMemberInfo<'a> {
+    /// Manifest name, or the directory name when the manifest declares none.
+    pub name: &'a str,
+    /// Directory relative to the workspace root, forward slashes.
+    pub path: &'a str,
+    /// Absolute directory.
+    pub dir: String,
 }
 
 /// Node version declaration plus the file it came from.
@@ -378,6 +441,9 @@ pub(crate) struct TaskInfo<'a> {
     pub name: &'a str,
     /// Source label, resolved at build time via [`super::labels::flat_source_label`].
     pub source: &'static str,
+    /// Workspace member the task belongs to; absent for root tasks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member: Option<&'a str>,
     /// Human-readable description, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<&'a str>,
@@ -542,6 +608,7 @@ mod tests {
 
     fn empty_context(root: &str) -> ProjectContext {
         ProjectContext {
+            cwd: PathBuf::from(root),
             root: PathBuf::from(root),
             package_managers: vec![PackageManager::Pnpm],
             task_runners: Vec::new(),
@@ -549,6 +616,7 @@ mod tests {
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
@@ -561,7 +629,7 @@ mod tests {
         let project = Project::build(&ctx, &overrides);
         let value = serde_json::to_value(&project).expect("Project should serialize to JSON");
 
-        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["schema_version"], 1);
         assert_eq!(value["root"], "/tmp/test");
         assert!(
             value["ecosystems"]
@@ -580,6 +648,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default()).into_info_view();
         let value = serde_json::to_value(&project).expect("info view should serialize");
@@ -598,6 +667,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         ctx.tasks.push(Task {
             name: "fmt".to_string(),
@@ -606,6 +676,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            member: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default());
         let view = project.into_list_view(Some(TaskSource::Justfile));
@@ -617,6 +688,7 @@ mod tests {
     #[test]
     fn build_with_schema_serializes_flat_labels_for_tasks() {
         let ctx = ProjectContext {
+            cwd: PathBuf::from("/tmp/test"),
             root: PathBuf::from("/tmp/test"),
             package_managers: Vec::new(),
             task_runners: Vec::new(),
@@ -627,17 +699,19 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                member: None,
             }],
             node_version: None,
             current_node: None,
             is_monorepo: false,
+            workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         };
 
         let project = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&project).expect("serialization");
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 1);
         assert_eq!(json["tasks"][0]["source"], "just");
     }
 }

@@ -11,6 +11,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::unsupported("bacon", "no host-only quiet mode")
+}
+
 use anyhow::Context as _;
 use serde::Deserialize;
 

@@ -4,6 +4,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::unsupported("go", "go run has no host-only quiet mode")
+}
+
 /// Directories that may be cleaned in a Go project.
 pub(crate) const CLEAN_DIRS: &[&str] = &["vendor"];
 

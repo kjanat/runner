@@ -4,6 +4,10 @@ use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("deno", &["-q"])
+}
+
 use anyhow::Context as _;
 use serde::Deserialize;
 
@@ -108,7 +112,8 @@ fn workspace_includes_dir(config_path: &Path, dir: &Path) -> bool {
         })
 }
 
-fn workspace_patterns(config_path: &Path) -> Option<Vec<String>> {
+/// The `"workspace"` member globs declared by the config at `config_path`.
+pub(crate) fn workspace_patterns(config_path: &Path) -> Option<Vec<String>> {
     let content = std::fs::read_to_string(config_path).ok()?;
     let config = json5::from_str::<WorkspaceConfig>(&content).ok()?;
 
@@ -164,14 +169,37 @@ fn within_boundary(path: &Path, boundary: Option<&Path>) -> bool {
 /// by name for deterministic output. The self-exec path re-parses the
 /// config for `command` / `dependencies` when it needs them.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let Some(path) = find_config_upwards(dir) else {
+        return Ok(vec![]);
+    };
+    extract_tasks_from(&path)
+}
+
+/// Like [`extract_tasks`], reading only a config located in `dir` itself.
+pub(crate) fn extract_tasks_in(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+    let Some(path) = files::find_first(dir, FILENAMES).filter(|path| path.is_file()) else {
+        return Ok(vec![]);
+    };
+    extract_tasks_from(&path)
+}
+
+/// The `"name"` declared by the config in `dir`, if any.
+pub(crate) fn config_name(dir: &Path) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Partial {
+        name: Option<String>,
+    }
+    let path = files::find_first(dir, FILENAMES).filter(|path| path.is_file())?;
+    let content = std::fs::read_to_string(path).ok()?;
+    json5::from_str::<Partial>(&content).ok()?.name
+}
+
+fn extract_tasks_from(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
     }
-    let Some(path) = find_config_upwards(dir) else {
-        return Ok(vec![]);
-    };
-    let content = std::fs::read_to_string(&path)
+    let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let d = json5::from_str::<Partial>(&content)
         .with_context(|| format!("{} is not valid JSON/JSONC", path.display()))?;
@@ -303,8 +331,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        ScriptDirective, detect, exec_cmd, extract_tasks, find_config_upwards, install_cmd,
-        run_file_cmd, workspace_pattern_matches,
+        ScriptDirective, detect, exec_cmd, extract_tasks, extract_tasks_in, find_config_upwards,
+        install_cmd, run_file_cmd, workspace_pattern_matches,
     };
     use crate::tool::test_support::TempDir;
 
@@ -559,6 +587,24 @@ mod tests {
     }
 
     #[test]
+    fn extract_tasks_in_reads_only_the_directory_itself() {
+        let dir = TempDir::new("deno-tasks-in");
+        let member = dir.path().join("apps").join("empty");
+        fs::create_dir_all(&member).expect("member dir should be created");
+        fs::write(
+            dir.path().join("deno.json"),
+            r#"{ "tasks": { "root": "deno task root" } }"#,
+        )
+        .expect("root deno.json should be written");
+
+        let local = extract_tasks_in(&member).expect("member lookup should succeed");
+        let inherited = extract_tasks(&member).expect("ancestor lookup should succeed");
+
+        assert!(local.is_empty());
+        assert_eq!(inherited, vec![(String::from("root"), None)]);
+    }
+
+    #[test]
     fn find_config_upwards_prefers_nearest_config() {
         let dir = TempDir::new("deno-config-upwards");
         let nested = dir.path().join("apps").join("site").join("src");
@@ -635,7 +681,7 @@ mod tests {
 #[cfg(test)]
 mod verbosity_tests {
     use super::run_cmd;
-    use crate::tool::{HostVerbosity, QuietLevel};
+    use crate::tool::{HostDiagnostics, HostVerbosity};
 
     fn argv(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -652,7 +698,7 @@ mod verbosity_tests {
     #[test]
     fn run_cmd_quiet_maps_to_host_flag() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             ..HostVerbosity::default()
         };
         assert_eq!(argv(&run_cmd("build", &[], v)), ["task", "-q", "build"]);

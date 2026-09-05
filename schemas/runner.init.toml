@@ -8,6 +8,24 @@
 # Precedence, highest first:
 #   CLI flags  >  RUNNER_* env vars  >  this file  >  manifest declarations.
 
+# `[runner]` output categories. An absent field inherits the selected quiet
+# preset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was
+# selected for the invocation.
+[runner]
+# progress = true   # dispatch and status text
+# warnings = true   # non-fatal warnings
+# errors = true   # recoverable error decoration
+# groups = true   # task headers and GitHub groups
+# task_timing = true   # per-task timing and grouped footers
+# summary = true   # final multi-task chain roll-up
+# fatal_errors = true   # fatal diagnostics; exit status is unchanged
+
+# `[host]` host-tool output policy. Diagnostics never controls task streams;
+# adapters clamp unsupported requests to their strongest safe mode.
+[host]
+# diagnostics = "normal"   # normal | quiet | reduced
+# stream = "inherit"   # inherit | stderr
+
 # `[pm]` section, per-ecosystem package manager overrides.
 [pm]
 # node = "pnpm"   # npm | yarn | pnpm | bun | deno
@@ -31,6 +49,10 @@
 # never hard-rejects an unlisted source, only reorders. An explicit CLI
 # qualifier (`package.json:test`), `--runner`, or `--pm`/`RUNNER_PM` still
 # outranks these file settings.
+#
+# Keys layer from least to most specific: `site`, `package.json:site`,
+# `rfc:site` (workspace member `rfc`), `rfc:package.json#site` (the FQN
+# `doctor --json` prints).
 [tasks]
 # prefer = ["turbo", "bun"]   # global order: turbo, then package.json (bun)
 # overrides = { dev = "bun", build = "turbo" }   # per-task pins beat the order

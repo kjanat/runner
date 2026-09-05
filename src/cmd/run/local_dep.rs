@@ -51,7 +51,7 @@ pub(super) fn try_installed_package(
     if !is_package_name(token) {
         return Ok(None);
     }
-    let Some(dir) = installed_dir(&ctx.root, token) else {
+    let Some(dir) = installed_dir(&ctx.cwd, token) else {
         return Ok(None);
     };
     let manifest: Manifest = match std::fs::read_to_string(dir.join("package.json")) {

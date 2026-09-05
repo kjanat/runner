@@ -5,6 +5,10 @@ use std::process::Command;
 
 use super::{HostVerbosity, ScriptDirective};
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("pnpm", &["--silent"]).with_stderr_diversion()
+}
+
 /// Detected via `pnpm-lock.yaml`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("pnpm-lock.yaml").exists()
@@ -62,7 +66,7 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
 #[cfg(test)]
 mod tests {
     use super::{HostVerbosity, ScriptDirective, install_cmd, run_cmd};
-    use crate::tool::{QuietLevel, Stream};
+    use crate::tool::{HostDiagnostics, Stream};
 
     fn args_of(cmd: &std::process::Command) -> Vec<String> {
         cmd.get_args()
@@ -81,7 +85,7 @@ mod tests {
     #[test]
     fn run_quiet_prepends_silent() {
         let v = HostVerbosity {
-            level: QuietLevel::Quiet,
+            diagnostics: HostDiagnostics::Quiet,
             stream: Stream::Inherit,
         };
         assert_eq!(
@@ -93,7 +97,7 @@ mod tests {
     #[test]
     fn run_stderr_stream_appends_use_stderr() {
         let v = HostVerbosity {
-            level: QuietLevel::Off,
+            diagnostics: HostDiagnostics::Normal,
             stream: Stream::Stderr,
         };
         assert_eq!(
@@ -105,7 +109,7 @@ mod tests {
     #[test]
     fn run_quiet_and_stderr_combine() {
         let v = HostVerbosity {
-            level: QuietLevel::Silent,
+            diagnostics: HostDiagnostics::Reduced,
             stream: Stream::Stderr,
         };
         assert_eq!(

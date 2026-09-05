@@ -13,7 +13,7 @@ use super::types::{CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolic
 use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
 use crate::config::{LoadedConfig, TaskSpec, VerbosityConfig};
-use crate::tool::{QuietLevel, Stream};
+use crate::tool::{QuietLevel, Stream, TaskStream};
 use crate::types::{JsRuntime, PackageManager, TaskRunner, TaskSource};
 
 /// Treat any env-var value as truthy unless it's empty, `"0"`, or a
@@ -240,12 +240,9 @@ pub(super) fn parse_tasks_verbosity(
         let TaskSpec::Settings(settings) = spec else {
             continue;
         };
-        let Some(verbosity) = &settings.verbosity else {
-            continue;
-        };
-        let (level, stream) = match verbosity {
-            VerbosityConfig::Level(raw) => (Some(parse_quiet_level_label(task, raw)?), None),
-            VerbosityConfig::Table(table) => {
+        let (level, stream) = match &settings.verbosity {
+            Some(VerbosityConfig::Level(raw)) => (Some(parse_quiet_level_label(task, raw)?), None),
+            Some(VerbosityConfig::Table(table)) => {
                 let level = table
                     .level
                     .as_deref()
@@ -258,23 +255,43 @@ pub(super) fn parse_tasks_verbosity(
                     .transpose()?;
                 (level, stream)
             }
+            None => (None, None),
         };
-        if level.is_some() || stream.is_some() {
-            out.insert(task.clone(), TaskVerbosity { level, stream });
+        let stdout = settings
+            .stdout
+            .as_deref()
+            .map(|raw| parse_task_stream(task, "stdout", raw))
+            .transpose()?;
+        let stderr = settings
+            .stderr
+            .as_deref()
+            .map(|raw| parse_task_stream(task, "stderr", raw))
+            .transpose()?;
+        let verbosity = TaskVerbosity {
+            level,
+            stream,
+            stdout,
+            stderr,
+            progress: settings.progress,
+            groups: settings.groups,
+            task_timing: settings.task_timing,
+        };
+        if verbosity != TaskVerbosity::default() {
+            out.insert(task.clone(), verbosity);
         }
     }
     Ok(out)
 }
 
-/// Parse a `RUNNER_QUIET` env value: a numeric level (`0..3`, saturating) or a
+/// Parse a `RUNNER_QUIET` env value: a numeric level (`0..4`, clamping) or a
 /// truthy/falsy boolean word (truthy → level 1, falsy → level 0). `None` for
 /// anything unrecognized so the lenient path can warn.
-pub(super) fn parse_quiet_env(raw: &str) -> Option<QuietLevel> {
+pub(crate) fn parse_quiet_env(raw: &str) -> Option<QuietLevel> {
     let v = raw.trim();
     if v.is_empty() {
         return Some(QuietLevel::Off);
     }
-    // Parse wide, then saturate: `from_count` already caps `>= 3` at the floor,
+    // Parse wide, then clamp: `from_count` already caps `>= 4` at the floor,
     // so `RUNNER_QUIET=999` resolves to the quietest level rather than falling
     // through to the word checks and reading as invalid.
     if let Ok(n) = v.parse::<u64>() {
@@ -323,6 +340,11 @@ fn parse_quiet_level_label(task: &str, raw: &str) -> Result<QuietLevel> {
 /// Parse a `[tasks.<name>].verbosity` stream label, error-prefixed with the task.
 fn parse_host_stream_for_task(task: &str, raw: &str) -> Result<Stream> {
     parse_host_stream_label(raw).map_err(|e| anyhow!("[tasks.{task}] {e}"))
+}
+
+fn parse_task_stream(task: &str, field: &str, raw: &str) -> Result<TaskStream> {
+    TaskStream::from_label(raw)
+        .ok_or_else(|| anyhow!("[tasks.{task}] {field} {raw:?}; expected one of inherit, discard"))
 }
 
 pub(super) fn parse_mismatch_label(raw: &str) -> Result<MismatchPolicy> {

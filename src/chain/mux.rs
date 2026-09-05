@@ -38,10 +38,44 @@ impl LineSink for StdioSink {
         use std::io::Write;
         if is_stderr {
             let mut h = io::stderr().lock();
-            let _ = writeln!(h, "{prefix} {line}");
+            let _ = if prefix.is_empty() {
+                writeln!(h, "{line}")
+            } else {
+                writeln!(h, "{prefix} {line}")
+            };
         } else {
             let mut h = io::stdout().lock();
-            let _ = writeln!(h, "{prefix} {line}");
+            let _ = if prefix.is_empty() {
+                writeln!(h, "{line}")
+            } else {
+                writeln!(h, "{prefix} {line}")
+            };
+        }
+    }
+}
+
+/// Stream-selective wrapper. Suppressed pipes are still drained by reader
+/// threads, preventing child deadlocks while discarding their bytes.
+pub(crate) struct SelectiveSink {
+    inner: Arc<dyn LineSink>,
+    stdout: bool,
+    stderr: bool,
+}
+
+impl SelectiveSink {
+    pub(crate) const fn new(inner: Arc<dyn LineSink>, stdout: bool, stderr: bool) -> Self {
+        Self {
+            inner,
+            stdout,
+            stderr,
+        }
+    }
+}
+
+impl LineSink for SelectiveSink {
+    fn emit(&self, prefix: &str, is_stderr: bool, line: &str) {
+        if (is_stderr && self.stderr) || (!is_stderr && self.stdout) {
+            self.inner.emit(prefix, is_stderr, line);
         }
     }
 }

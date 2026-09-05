@@ -87,7 +87,30 @@ fn tool_available(bin: &str) -> bool {
 /// Run the `run` binary against `dir` with every `RUNNER_*` var scrubbed and
 /// the binary's own directory prepended to `PATH`, so a task that shells out
 /// to `run` reaches this build rather than an installed one.
+///
+/// Tests run in parallel threads of one process, so a sibling's fork can
+/// briefly hold a just-written script open for writing and the exec of that
+/// script fails with `ETXTBSY`; such a run is retried.
 fn run_in(dir: &Path, args: &[&str]) -> Output {
+    for _ in 0..5 {
+        let output = run_once(dir, args);
+        if !failed_on_text_file_busy(&output) {
+            return output;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    run_once(dir, args)
+}
+
+/// `ETXTBSY` is errno 26 on every unix.
+fn failed_on_text_file_busy(output: &Output) -> bool {
+    !output.status.success()
+        && String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .any(|line| line.starts_with("Error: ") && line.contains("os error 26"))
+}
+
+fn run_once(dir: &Path, args: &[&str]) -> Output {
     let binary = run_binary();
     let bin_dir = binary.parent().expect("binary lives in a directory");
     let path = std::env::var_os("PATH").unwrap_or_default();

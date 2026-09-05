@@ -6,11 +6,13 @@
 //! - `detect(dir)`, returns `true` if the tool's config/lockfile exists
 //! - `extract_tasks(dir)`, parses config and returns task names or a parse error
 //! - `run_cmd(task, args)`, builds a [`std::process::Command`] to run a task
+//! - `quiet_capabilities()`, declares safe host-only diagnostic reduction
 //! - `install_cmd(frozen, scripts)`, builds a [`std::process::Command`] to install deps
 //! - `exec_cmd(args)`, builds a [`std::process::Command`] for ad-hoc execution
 //! - clean-dir constants, directories to remove on `runner clean`
 //!
-//! Not every module exposes every function; only what the tool supports.
+//! Not every module exposes every function; only what the tool supports. The
+//! audited host contract is documented in `docs/host-quiet-support-matrix.md`.
 
 /// bacon, Rust background checker (`bacon.toml`).
 pub(crate) mod bacon;
@@ -69,24 +71,19 @@ pub(crate) mod turbo;
 pub(crate) mod uv;
 /// Volta toolchain manager, shim classification and `volta which` resolution.
 pub(crate) mod volta;
+/// Workspace member discovery from root declarations.
+pub(crate) mod workspace;
 /// Yarn, a Node.js package manager (`yarn.lock`).
 pub(crate) mod yarn;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 
-/// How aggressively to silence the spawned host tool's **own** logging.
+/// The repeated `-q` preset selected for runner output.
 ///
-/// Ordered from loudest to quietest. Lowered from the resolved verbosity
-/// intent at the run-dispatch boundary (`cmd::run::dispatch`) and carried in
-/// [`HostVerbosity`] into each per-tool `run_cmd`. Most hosts saturate at
-/// [`QuietLevel::Quiet`] (their `--silent` is the floor), so the finer rungs
-/// only bite where a host exposes graduated loglevels (e.g. turbo's
-/// `--output-logs`); above a host's floor they are an honest no-op.
-///
-/// The `Ord` derive gives the level comparisons the builders and the
-/// runner-side gates rely on (`level >= QuietLevel::Quiet`), so the variant
-/// order below is load-bearing: loudest first, quietest last.
+/// Ordering is used only for clamping and legacy config parsing. Runner output
+/// categories are derived explicitly by [`OutputPolicy::from_quiet`], avoiding
+/// accidental coupling between unrelated categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub(crate) enum QuietLevel {
     /// No silencing; leave the host at its built-in verbosity.
@@ -99,9 +96,184 @@ pub(crate) enum QuietLevel {
     /// where it distinguishes one (turbo `--output-logs=errors-only`). `-qq` /
     /// level 2. On the runner side this also folds in `--no-warnings`.
     VeryQuiet,
-    /// Saturating floor: everything the host can suppress (turbo
-    /// `--output-logs=none`). `-qqq` / level 3.
+    /// Suppress recoverable runner error decoration and request stronger safe
+    /// host diagnostics. Adapters clamp unsupported requests. `-qqq` / level 3.
     Silent,
+    /// No runner-authored text. Task stdout/stderr remain inherited. `-qqqq` /
+    /// level 4; larger counts clamp here.
+    Mute,
+}
+
+/// Host-owned diagnostic reduction requested independently from runner output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub(crate) enum HostDiagnostics {
+    /// Leave the host invocation unchanged.
+    #[default]
+    Normal,
+    /// Apply the host's documented quiet mode when task output survives.
+    Quiet,
+    /// Request a stronger safe reduction; adapters clamp when unsupported.
+    Reduced,
+}
+
+/// Whether one task stream is inherited or explicitly discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum TaskStream {
+    #[default]
+    Inherit,
+    Discard,
+}
+
+/// Independent runner-authored output categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent output categories"
+)]
+pub(crate) struct RunnerOutputPolicy {
+    pub progress: bool,
+    pub warnings: bool,
+    pub errors: bool,
+    pub groups: bool,
+    pub task_timing: bool,
+    pub summary: bool,
+    pub fatal_errors: bool,
+}
+
+impl RunnerOutputPolicy {
+    pub(crate) const fn and(self, other: Self) -> Self {
+        Self {
+            progress: self.progress && other.progress,
+            warnings: self.warnings && other.warnings,
+            errors: self.errors && other.errors,
+            groups: self.groups && other.groups,
+            task_timing: self.task_timing && other.task_timing,
+            summary: self.summary && other.summary,
+            fatal_errors: self.fatal_errors && other.fatal_errors,
+        }
+    }
+}
+
+/// Effective output policy. Quiet levels are presets over these axes; task
+/// streams never change from a quiet preset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OutputPolicy {
+    pub runner: RunnerOutputPolicy,
+    pub host_diagnostics: HostDiagnostics,
+}
+
+impl Default for OutputPolicy {
+    fn default() -> Self {
+        Self::from_quiet(QuietLevel::Off)
+    }
+}
+
+impl OutputPolicy {
+    pub(crate) const fn from_quiet(level: QuietLevel) -> Self {
+        match level {
+            QuietLevel::Off => Self {
+                runner: RunnerOutputPolicy {
+                    progress: true,
+                    warnings: true,
+                    errors: true,
+                    groups: true,
+                    task_timing: true,
+                    summary: true,
+                    fatal_errors: true,
+                },
+                host_diagnostics: HostDiagnostics::Normal,
+            },
+            QuietLevel::Quiet => Self {
+                runner: RunnerOutputPolicy {
+                    progress: false,
+                    warnings: true,
+                    errors: true,
+                    groups: false,
+                    task_timing: false,
+                    summary: false,
+                    fatal_errors: true,
+                },
+                host_diagnostics: HostDiagnostics::Normal,
+            },
+            QuietLevel::VeryQuiet => Self {
+                runner: RunnerOutputPolicy {
+                    progress: false,
+                    warnings: false,
+                    errors: true,
+                    groups: false,
+                    task_timing: false,
+                    summary: false,
+                    fatal_errors: true,
+                },
+                host_diagnostics: HostDiagnostics::Quiet,
+            },
+            QuietLevel::Silent => Self {
+                runner: RunnerOutputPolicy {
+                    progress: false,
+                    warnings: false,
+                    errors: false,
+                    groups: false,
+                    task_timing: false,
+                    summary: false,
+                    fatal_errors: true,
+                },
+                host_diagnostics: HostDiagnostics::Reduced,
+            },
+            QuietLevel::Mute => Self {
+                runner: RunnerOutputPolicy {
+                    progress: false,
+                    warnings: false,
+                    errors: false,
+                    groups: false,
+                    task_timing: false,
+                    summary: false,
+                    fatal_errors: false,
+                },
+                host_diagnostics: HostDiagnostics::Reduced,
+            },
+        }
+    }
+}
+
+/// Audited host capabilities. `quiet_args` contains only static host flags,
+/// never task arguments, so `--explain` can report it without leaking input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HostQuietCapabilities {
+    pub max_diagnostics: HostDiagnostics,
+    pub quiet_args: &'static [&'static str],
+    pub matrix_id: &'static str,
+    pub limitation: &'static str,
+    pub diverts_to_stderr: bool,
+}
+
+impl HostQuietCapabilities {
+    pub(crate) const fn quiet(
+        matrix_id: &'static str,
+        quiet_args: &'static [&'static str],
+    ) -> Self {
+        Self {
+            max_diagnostics: HostDiagnostics::Quiet,
+            quiet_args,
+            matrix_id,
+            limitation: "no stronger task-output-preserving reduction",
+            diverts_to_stderr: false,
+        }
+    }
+
+    pub(crate) const fn unsupported(matrix_id: &'static str, limitation: &'static str) -> Self {
+        Self {
+            max_diagnostics: HostDiagnostics::Normal,
+            quiet_args: &[],
+            matrix_id,
+            limitation,
+            diverts_to_stderr: false,
+        }
+    }
+
+    pub(crate) const fn with_stderr_diversion(mut self) -> Self {
+        self.diverts_to_stderr = true;
+        self
+    }
 }
 
 /// Whether to keep the host's **stdout** clean by diverting its diagnostics to
@@ -128,19 +300,20 @@ pub(crate) enum Stream {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct HostVerbosity {
     /// How much of the host's own logging to suppress.
-    pub level: QuietLevel,
+    pub diagnostics: HostDiagnostics,
     /// Whether to divert the host's diagnostics to stderr.
     pub stream: Stream,
 }
 
 impl QuietLevel {
-    /// Map a repeat count (`-q` = 1, `-qq` = 2, `-qqq`+ = 3) to a level.
+    /// Map a repeat count to the named ladder, clamping at [`Self::Mute`].
     pub(crate) const fn from_count(count: u8) -> Self {
         match count {
             0 => Self::Off,
             1 => Self::Quiet,
             2 => Self::VeryQuiet,
-            _ => Self::Silent,
+            3 => Self::Silent,
+            _ => Self::Mute,
         }
     }
 
@@ -152,6 +325,7 @@ impl QuietLevel {
             Self::Quiet => 1,
             Self::VeryQuiet => 2,
             Self::Silent => 3,
+            Self::Mute => 4,
         }
     }
 
@@ -163,6 +337,7 @@ impl QuietLevel {
             "quiet" => Some(Self::Quiet),
             "very-quiet" => Some(Self::VeryQuiet),
             "silent" => Some(Self::Silent),
+            "mute" => Some(Self::Mute),
             _ => None,
         }
     }
@@ -174,11 +349,62 @@ impl QuietLevel {
             Self::Quiet => "quiet",
             Self::VeryQuiet => "very-quiet",
             Self::Silent => "silent",
+            Self::Mute => "mute",
         }
     }
 
     /// Every level, loudest first, for building "expected one of …" messages.
-    pub(crate) const ALL: [Self; 4] = [Self::Off, Self::Quiet, Self::VeryQuiet, Self::Silent];
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Off,
+        Self::Quiet,
+        Self::VeryQuiet,
+        Self::Silent,
+        Self::Mute,
+    ];
+}
+
+impl HostDiagnostics {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Quiet => "quiet",
+            Self::Reduced => "reduced",
+        }
+    }
+
+    pub(crate) fn from_label(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "normal" | "off" => Some(Self::Normal),
+            "quiet" => Some(Self::Quiet),
+            "reduced" | "very-quiet" | "silent" | "mute" => Some(Self::Reduced),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn from_legacy_quiet(level: QuietLevel) -> Self {
+        match level {
+            QuietLevel::Off => Self::Normal,
+            QuietLevel::Quiet => Self::Quiet,
+            QuietLevel::VeryQuiet | QuietLevel::Silent | QuietLevel::Mute => Self::Reduced,
+        }
+    }
+}
+
+impl TaskStream {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Discard => "discard",
+        }
+    }
+
+    pub(crate) fn from_label(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "inherit" => Some(Self::Inherit),
+            "discard" => Some(Self::Discard),
+            _ => None,
+        }
+    }
 }
 
 impl Stream {
@@ -204,16 +430,41 @@ impl Stream {
 }
 
 impl HostVerbosity {
-    /// `true` once the level reaches [`QuietLevel::Quiet`]: the host should get
-    /// its silence flag. The single predicate every "does this host have just
-    /// one silence flag" builder uses.
+    /// Whether the applied host plan includes its safe quiet flag.
     pub(crate) fn silences(self) -> bool {
-        self.level >= QuietLevel::Quiet
+        self.diagnostics >= HostDiagnostics::Quiet
     }
 
     /// `true` when stdout should be kept clean by moving diagnostics to stderr.
     pub(crate) fn diverts_to_stderr(self) -> bool {
         self.stream == Stream::Stderr
+    }
+}
+
+#[cfg(test)]
+mod quiet_policy_tests {
+    use super::{HostDiagnostics, OutputPolicy, QuietLevel};
+
+    #[test]
+    fn quiet_counts_have_four_distinct_levels_and_clamp() {
+        assert_eq!(QuietLevel::from_count(0), QuietLevel::Off);
+        assert_eq!(QuietLevel::from_count(1), QuietLevel::Quiet);
+        assert_eq!(QuietLevel::from_count(2), QuietLevel::VeryQuiet);
+        assert_eq!(QuietLevel::from_count(3), QuietLevel::Silent);
+        assert_eq!(QuietLevel::from_count(4), QuietLevel::Mute);
+        assert_eq!(QuietLevel::from_count(u8::MAX), QuietLevel::Mute);
+    }
+
+    #[test]
+    fn host_diagnostics_begin_at_second_quiet_level() {
+        assert_eq!(
+            OutputPolicy::from_quiet(QuietLevel::Quiet).host_diagnostics,
+            HostDiagnostics::Normal
+        );
+        assert_eq!(
+            OutputPolicy::from_quiet(QuietLevel::VeryQuiet).host_diagnostics,
+            HostDiagnostics::Quiet
+        );
     }
 }
 

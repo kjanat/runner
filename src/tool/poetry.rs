@@ -3,6 +3,10 @@
 use std::path::Path;
 use std::process::Command;
 
+pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
+    super::HostQuietCapabilities::quiet("poetry", &["--quiet"])
+}
+
 /// Detected via `poetry.lock` or Poetry markers in `pyproject.toml`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("poetry.lock").exists()
