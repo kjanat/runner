@@ -18,6 +18,21 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+## [0.26.1] - 2026-09-05
+
+### Fixed
+
+- Inside a workspace member, its own `Makefile`, `justfile`, `Taskfile`,
+  `mise.toml`, and `bacon.toml` are read again. 0.26.0 anchored task discovery
+  on the workspace root and read only manifest scripts and `deno.json` tasks per
+  member, so `runner --dir playground` listed the root's make targets and
+  reported the member's as not found. Member runner tasks now list bare from
+  inside the member, as `<member>:<task>` elsewhere, and run in the member's
+  directory.
+- A source qualifier (`make:build`) reaches the scope that defines the task.
+  The nearest-scope filter ran before the qualifier, so a root `make:build`
+  shadowed by a member `package.json` script failed with `not found in make`.
+
 ## [0.26.0] - 2026-09-05
 
 ### Added
@@ -2100,7 +2115,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.26.1...HEAD
+[0.26.1]: https://github.com/kjanat/runner/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/kjanat/runner/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/kjanat/runner/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/kjanat/runner/compare/v0.24.1...v0.25.0
