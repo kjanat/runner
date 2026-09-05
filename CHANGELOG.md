@@ -20,9 +20,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- Release archives, the man-page tarball, and the container image carry GitHub
-  build-provenance attestations; `mise install github:kjanat/runner` and
-  `gh attestation verify` check them (https://github.com/kjanat/runner/issues/125).
+- Release archives, the man-page tarball, the container image, and the npm
+  tarballs carry GitHub build-provenance attestations; `mise install
+  github:kjanat/runner` and `gh attestation verify` check them (https://github.com/kjanat/runner/issues/125).
+- The GitHub Action verifies the downloaded npm tarball with
+  `gh attestation verify`. New inputs: `verify` (`auto`, `require`, `off`) and
+  `token`.
 
 ## [0.25.1] - 2026-08-12
 

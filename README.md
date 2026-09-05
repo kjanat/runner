@@ -226,6 +226,16 @@ Use the action to install runner in CI ([view on marketplace](https://github.com
 - run: runner install --frozen test build
 ```
 
+The action downloads the platform package from npm, checks it against the
+registry integrity hash, and runs `gh attestation verify` on it when GitHub
+holds a build-provenance attestation for that tarball. `verify: require` makes
+a missing attestation fatal; `verify: off` skips the check.
+
+```yaml
+- uses: kjanat/runner@master
+  with: { version: "0.26", verify: require }
+```
+
 `runner install` is not a task; it runs the project's toolchain command(s)
 (`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
 (`test`, then `build`) sequentially.

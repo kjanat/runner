@@ -135,7 +135,8 @@ cmd_smoke() {
 # remains mandatory either way.
 #
 # Required env: RELEASE_TAG, DIST_TAG, DRY_RUN, REGISTRY.
-# Optional env: ONLY_PACKAGE (single-package mode for matrix jobs), GITHUB_OUTPUT.
+# Optional env: ONLY_PACKAGE (single-package mode for matrix jobs), GITHUB_OUTPUT
+# (receives `package-url=` and, once packed, `tarball=<path>`).
 cmd_publish() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
 	DIST_TAG="${DIST_TAG:?DIST_TAG required}"
@@ -323,7 +324,19 @@ publish_allowed() {
 		return 0
 	fi
 
-	local args=(publish --registry "${REGISTRY}" --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
+	local pack_dir tarball
+	pack_dir="$(mktemp -d)"
+	tarball="$(cd "${dir}" && npx -y npm@11 pack --ignore-scripts --json --pack-destination "${pack_dir}" | jq -r '.[0].filename')"
+	if [[ -z "${tarball}" || ! -f "${pack_dir}/${tarball}" ]]; then
+		echo "error: npm pack produced no tarball for ${actual_name}@${version}" >&2
+		return 1
+	fi
+	tarball="${pack_dir}/${tarball}"
+	if [[ -n "${GITHUB_OUTPUT}" ]]; then
+		echo "tarball=${tarball}" >>"${GITHUB_OUTPUT}"
+	fi
+
+	local args=(publish "${tarball}" --registry "${REGISTRY}" --access public --tag "${DIST_TAG}" --ignore-scripts --provenance)
 	if [[ "${DRY_RUN}" == "true" ]]; then args+=(--dry-run); fi
 	echo "+ npx -y npm@11 ${args[*]}  (cwd: ${dir})"
 	# Tolerate the TOCTOU race between the npm view check above and
