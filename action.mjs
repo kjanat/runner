@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { arch, env, exit, platform, stdout } from "node:process";
 
 const REGISTRY = env.RUNNER_NPM_REGISTRY || "https://registry.npmjs.org";
+const GITHUB_API = env.GITHUB_API_URL || "https://api.github.com";
+const REPO = "kjanat/runner";
+const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
 const FETCH_TIMEOUT_MS = 3000;
 const DOWNLOAD_TIMEOUT_MS = 15000;
 const RETRY_BACKOFFS_MS = [250, 750];
@@ -115,6 +118,20 @@ function resolveSpec() {
 	}
 	console.log(`version: ${m[1]} (from '${requested}')`);
 	return m[1];
+}
+
+/**
+ * @typedef {"auto" | "require" | "off"} VerifyMode
+ */
+
+/** @returns {VerifyMode} */
+function resolveVerifyMode() {
+	const raw = (env.INPUT_VERIFY || "auto").trim().toLowerCase();
+	if (raw === "auto" || raw === "require" || raw === "off") {
+		console.log(`verify: ${raw}`);
+		return raw;
+	}
+	throw new Error(`'verify' must be auto, require, or off (got '${raw}')`);
 }
 
 /**
@@ -243,12 +260,64 @@ function verifyIntegrity(buf, integrity, label) {
 }
 
 /**
+ * @param {string} digest
+ * @param {string} token
+ * @returns {Promise<boolean>}
+ */
+async function hasAttestation(digest, token) {
+	const url = `${GITHUB_API}/repos/${REPO}/attestations/sha256:${digest}?per_page=1&predicate_type=${
+		encodeURIComponent(PROVENANCE_PREDICATE)
+	}`;
+	/** @type {Record<string, string>} */
+	const headers = { accept: "application/vnd.github+json", "x-github-api-version": "2026-03-10" };
+	if (token) headers.authorization = `Bearer ${token}`;
+	const body = await withRetry(async (attempt) => {
+		const res = await fetch(url, { headers, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS * 2 ** attempt) });
+		if (res.status === 404) return null;
+		if (!res.ok) throw new Error(`GET ${url} responded ${res.status}`);
+		return /** @type {{ attestations?: unknown[] }} */ (await res.json());
+	}, RETRY_BACKOFFS_MS);
+	return (body?.attestations?.length ?? 0) > 0;
+}
+
+/**
+ * @param {Buffer} buf
+ * @param {string} tgz
+ * @param {string} label
+ * @param {Exclude<VerifyMode, "off">} mode
+ * @param {string} token
+ */
+async function verifyAttestation(buf, tgz, label, mode, token) {
+	const digest = createHash("sha256").update(buf).digest("hex");
+	if (!(await hasAttestation(digest, token))) {
+		const msg = `no build-provenance attestation for ${label} (sha256:${digest})`;
+		if (mode === "require") throw new Error(msg);
+		warn(`${msg}, skipping verification`);
+		return;
+	}
+	const res = spawnSync("gh", ["attestation", "verify", tgz, "--repo", REPO], {
+		encoding: "utf8",
+		stdio: "inherit",
+		env: token ? { ...env, GH_TOKEN: token } : env,
+	});
+	if (res.error) {
+		if ("code" in res.error && res.error.code === "ENOENT") {
+			throw new Error("gh is not on PATH; install the GitHub CLI or set `verify: off`");
+		}
+		throw res.error;
+	}
+	if (res.status !== 0) throw new Error(`attestation verification failed for ${label}`);
+}
+
+/**
  * @param {string} tarball
  * @param {string | undefined} integrity
  * @param {string} label
  * @param {string} binDir
+ * @param {VerifyMode} mode
+ * @param {string} token
  */
-async function downloadExtract(tarball, integrity, label, binDir) {
+async function downloadExtract(tarball, integrity, label, binDir, mode, token) {
 	startGroup(`download ${tarball}`);
 	try {
 		const buf = await withRetry(async (attempt) => {
@@ -260,6 +329,7 @@ async function downloadExtract(tarball, integrity, label, binDir) {
 		mkdirSync(binDir, { recursive: true });
 		const tgz = join(binDir, ".pkg.tgz");
 		writeFileSync(tgz, buf);
+		if (mode !== "off") await verifyAttestation(buf, tgz, label, mode, token);
 		run("tar", ["-xzf", tgz, "-C", binDir, "--strip-components=2", "package/bin"], "inherit");
 		rmSync(tgz, { force: true });
 		if (platform !== "win32") {
@@ -317,6 +387,8 @@ function finish(binDir, label, spec) {
 
 async function main() {
 	const spec = resolveSpec();
+	const mode = resolveVerifyMode();
+	const token = env.INPUT_TOKEN || "";
 	const target = resolvePlatformTarget();
 	if (!target) throw new Error(`no prebuilt runner binary for ${platform}/${arch}`);
 	const label = `${target.scope}/${target.pkg}`;
@@ -326,7 +398,7 @@ async function main() {
 		throw new Error(`registry returned non-semver version '${dist.version}' for ${label}`);
 	}
 	const binDir = join(root, "runner-cli", dist.version, target.pkg);
-	await downloadExtract(dist.tarball, dist.integrity, `${label}@${dist.version}`, binDir);
+	await downloadExtract(dist.tarball, dist.integrity, `${label}@${dist.version}`, binDir, mode, token);
 	finish(binDir, label, spec);
 }
 

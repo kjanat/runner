@@ -2,9 +2,9 @@
 #
 #   verify (also PRs/master) ── one `runner install` chain: fmt, lint, test
 #     ├─ create-release ─────── draft GH release + notes
-#     │    ├─ man ───────────── release assets + artifact `man-pages`
+#     │    ├─ man ───────────── release assets + attestation + artifact `man-pages`
 #     │    └─ upload-assets ─── per-target build matrix (needs: matrix);
-#     │                         release.sh package-asset|verify-asset
+#     │                         release.sh package-asset|verify-asset → attest
 #     └─ matrix ─────────────── build matrix from npm/targets.json
 #   build-dist (needs: upload-assets, man)
 #     └─ release.sh download-archives → verify-checksums → build-npm-packages;
@@ -101,7 +101,7 @@ jobs:
     needs: [verify, create-release]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions: { contents: write }
+    permissions: { contents: write, id-token: write, attestations: write }
     env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
       - uses: actions/checkout@v7
@@ -116,6 +116,9 @@ jobs:
           tar -C man -czf "${archive}" .
           sha256sum "${archive}" >"runner-${RELEASE_TAG}-man.sha256"
           gh release upload "${RELEASE_TAG}" "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with: { subject-path: "runner-${{ env.RELEASE_TAG }}-man.tar.gz" }
       - uses: actions/upload-artifact@v7
         with: { name: man-pages, path: man/, if-no-files-found: error, retention-days: 14 }
 
@@ -147,7 +150,7 @@ jobs:
     name: build+upload ${{ matrix.target }}
     needs: [matrix, create-release]
     runs-on: ${{ matrix.runner }}
-    permissions: { contents: write }
+    permissions: { contents: write, id-token: write, attestations: write }
     strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.matrix.outputs.include) }}" } }
     continue-on-error: ${{ matrix.experimental }}
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
@@ -247,6 +250,10 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}", TARGET: "${{ matrix.target }}" }
         run: bash .github/scripts/release.sh verify-asset
 
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with: { subject-path: "runner-${{ env.RELEASE_TAG }}-${{ matrix.target }}.tar.gz" }
+
   build-dist:
     name: build dist
     needs: [upload-assets, man]
@@ -304,7 +311,7 @@ jobs:
     name: npm publish
     needs: [publish-release]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions: { contents: read, id-token: write, actions: read }
+    permissions: { contents: read, id-token: write, actions: read, attestations: write }
     uses: ./.github/workflows/npm-release.yml
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
 
@@ -321,7 +328,7 @@ jobs:
     name: docker publish
     needs: [publish-release]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    permissions: { contents: read, packages: write, actions: read }
+    permissions: { contents: read, packages: write, actions: read, id-token: write, attestations: write }
     uses: ./.github/workflows/docker-release.yml
     secrets: inherit
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }

@@ -50,6 +50,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   chain timing line without a global `-q`. A global quiet rung or `[runner]`
   `false` still wins over a per-task `true`.
 
+- Release archives, the man-page tarball, the container image, and the npm
+  tarballs carry GitHub build-provenance attestations; `mise install
+  github:kjanat/runner` and `gh attestation verify` check them (https://github.com/kjanat/runner/issues/125).
+- The GitHub Action verifies the downloaded npm tarball with
+  `gh attestation verify`. New inputs: `verify` (`auto`, `require`, `off`) and
+  `token`.
+
 ### Changed
 
 - Redesign `-q` through `-qqqq` as distinct output-policy levels. `-q` now

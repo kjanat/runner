@@ -29,28 +29,21 @@ pub(crate) fn install(
 /// Chain-aware install entry. Runs install across every detected PM and
 /// returns the first failing PM's exit code, or 0 if all succeed.
 ///
-/// `_sink` is accepted for chain-mode parity with `cmd::run::run`; today
-/// install dispatch doesn't emit detection warnings of its own (those
-/// flow through the resolver path), so the sink is unused. Kept on the
-/// signature so future warning-emitting install paths slot in without a
-/// breaking change.
-///
 /// Used by `chain::exec` when `ChainItemKind::Install` appears as a
 /// chain item (i.e. `runner install <tasks>`).
 pub(crate) fn install_pms(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     frozen: bool,
-    _sink: super::WarningSink<'_>,
+    sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    if ctx.package_managers.is_empty() {
-        bail!("No package manager detected.");
-    }
-
     // Planned before the GHA group opens so a refused override doesn't
-    // emit an empty `runner: install` group, same rationale as the
-    // no-PM bail above.
-    let plan = plan_install(ctx, overrides)?;
+    // emit an empty `runner: install` group.
+    let plan = if ctx.package_managers.is_empty() {
+        plan_from_resolver(ctx, overrides, sink)?
+    } else {
+        plan_install(ctx, overrides)?
+    };
 
     report_plan(&plan, overrides);
     warn_unsupported_script_policy(&plan.pms, overrides);
@@ -122,6 +115,43 @@ fn select_install_pms(
     }
 
     Ok(effective_install_pms(ctx, overrides))
+}
+
+/// Install plan for a project without a single detected PM signal: the
+/// same resolver chain `runner run` dispatches through (PM override,
+/// manifest field, PATH probe, fallback policy) picks one PM, so a bare
+/// `package.json` installs with npm instead of erroring. The resolver
+/// refuses when no `package.json` exists upward, so non-Node directories
+/// still fail with its no-signals error.
+fn plan_from_resolver(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    sink: super::WarningSink<'_>,
+) -> Result<InstallPlan> {
+    let decision = Resolver::new(ctx, overrides)
+        .resolve_node_pm()
+        .map_err(anyhow::Error::from)?;
+    if overrides.pm.is_none() {
+        let missing: Vec<PackageManager> = overrides
+            .install_pms
+            .iter()
+            .copied()
+            .filter(|pm| *pm != decision.pm)
+            .collect();
+        if !missing.is_empty() {
+            return Err(ResolveError::InstallPmsNotDetected {
+                missing,
+                detected: vec![decision.pm],
+            }
+            .into());
+        }
+    }
+    super::print_warning_slice(&decision.warnings, overrides, sink);
+    Ok(InstallPlan {
+        pms: vec![decision.pm],
+        shadowed: Vec::new(),
+        collisions: Vec::new(),
+    })
 }
 
 /// The same selection as [`select_install_pms`] with the not-detected
@@ -766,8 +796,8 @@ mod tests {
         warn_unsupported_script_policy,
     };
     use crate::resolver::{
-        CollisionPolicy, OverrideOrigin, PmOverride, ResolutionOverrides, ResolveError,
-        ScriptPolicy,
+        CollisionPolicy, FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides,
+        ResolveError, ScriptPolicy,
     };
     use crate::tool::ScriptDirective;
     use crate::types::{Ecosystem, InstallDir, PackageManager, ProjectContext};
@@ -811,6 +841,35 @@ mod tests {
         let overrides = override_pm(PackageManager::Bun, OverrideOrigin::EnvVar);
         let pms = select_install_pms(&ctx, &overrides).expect("detected override should filter");
         assert_eq!(pms, vec![PackageManager::Bun]);
+    }
+
+    #[test]
+    fn empty_detection_installs_with_the_forced_pm() {
+        // `runner install --pm npm` on a bare package.json: zero detection
+        // signals must not refuse a PM the user pinned explicitly.
+        let ctx = context(Vec::new());
+        let overrides = override_pm(PackageManager::Npm, OverrideOrigin::CliFlag);
+        let plan = super::plan_from_resolver(&ctx, &overrides, None)
+            .expect("forced PM must install without any detection signal");
+        assert_eq!(plan.pms, vec![PackageManager::Npm]);
+        assert!(plan.shadowed.is_empty());
+        assert!(plan.collisions.is_empty());
+    }
+
+    #[test]
+    fn pm_override_outranks_install_allowlist_without_detection() {
+        let ctx = context(Vec::new());
+        let overrides = ResolutionOverrides {
+            pm: Some(PmOverride {
+                pm: PackageManager::Bun,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            install_pms: vec![PackageManager::Pnpm],
+            ..Default::default()
+        };
+        let plan = super::plan_from_resolver(&ctx, &overrides, None)
+            .expect("--pm outranks the install allowlist, as in plan_install");
+        assert_eq!(plan.pms, vec![PackageManager::Bun]);
     }
 
     #[test]
@@ -1048,6 +1107,46 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("pnpm"), "names the missing PM: {msg}");
         assert!(msg.contains("bun"), "lists detected: {msg}");
+    }
+
+    #[test]
+    fn resolver_plan_rejects_allowlist_entries_the_resolver_did_not_pick() {
+        let ctx = context(Vec::new());
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Npm, PackageManager::Pnpm],
+            fallback: FallbackPolicy::Npm,
+            ..Default::default()
+        };
+
+        let err = super::plan_from_resolver(&ctx, &overrides, None)
+            .expect_err("pnpm cannot install, so the allowlist is unsatisfiable");
+        let err = err
+            .downcast_ref::<ResolveError>()
+            .expect("resolver error survives the anyhow wrapper");
+
+        assert!(
+            matches!(
+                err,
+                ResolveError::InstallPmsNotDetected { missing, detected }
+                    if missing == &vec![PackageManager::Pnpm]
+                        && detected == &vec![PackageManager::Npm]
+            ),
+            "only pnpm is missing, npm resolved: {err:?}",
+        );
+    }
+
+    #[test]
+    fn resolver_plan_accepts_an_allowlist_the_resolver_satisfies() {
+        let ctx = context(Vec::new());
+        let overrides = ResolutionOverrides {
+            install_pms: vec![PackageManager::Npm],
+            fallback: FallbackPolicy::Npm,
+            ..Default::default()
+        };
+
+        let plan = super::plan_from_resolver(&ctx, &overrides, None)
+            .expect("the sole allowlist entry is the resolved PM");
+        assert_eq!(plan.pms, vec![PackageManager::Npm]);
     }
 
     #[test]

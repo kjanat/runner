@@ -5,6 +5,8 @@ branding: { icon: play, color: blue }
 
 inputs:
   version: { description: "Tool version to install: `latest` (default), exact pin (`v?0.10.0`), or semver prefix (`1`, `0.10`, `v0.10`).", default: latest }
+  verify: { description: "Run `gh attestation verify` on the downloaded package: `auto` (warn when unattested), `require`, or `off`.", default: auto }
+  token: { description: "GitHub token for the attestation lookup and `gh attestation verify`.", default: "${{ github.token }}" }
 
 outputs:
   version: { description: "Concrete installed version (e.g. `0.10.0`), resolved post-install." }

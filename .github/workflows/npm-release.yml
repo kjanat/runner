@@ -113,7 +113,7 @@ jobs:
     name: publish ${{ matrix.pkg }}
     needs: setup
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write, actions: read }
+    permissions: { contents: read, id-token: write, actions: read, attestations: write }
     environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
     strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.setup.outputs.platforms) }}" } }
     continue-on-error: ${{ matrix.experimental }}
@@ -141,12 +141,17 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: bash .github/scripts/npm.sh publish
 
+      - name: attest build provenance
+        if: needs.setup.outputs.dry-run == 'false' && steps.publish.outputs.tarball != ''
+        uses: actions/attest-build-provenance@v4
+        with: { subject-path: "${{ steps.publish.outputs.tarball }}" }
+
   # Facade last so its optionalDependencies resolve on install.
   publish-facade:
     name: publish ${{ needs.setup.outputs.facade }}
     needs: [setup, publish]
     runs-on: ubuntu-latest
-    permissions: { contents: read, id-token: write, actions: read }
+    permissions: { contents: read, id-token: write, actions: read, attestations: write }
     environment: { name: npm-facade, url: "${{ steps.publish.outputs.package-url }}" }
     steps:
       - uses: actions/checkout@v7
@@ -170,3 +175,8 @@ jobs:
           DRY_RUN: ${{ needs.setup.outputs.dry-run }}
           ONLY_PACKAGE: ${{ needs.setup.outputs.facade }}
         run: bash .github/scripts/npm.sh publish
+
+      - name: attest build provenance
+        if: needs.setup.outputs.dry-run == 'false' && steps.publish.outputs.tarball != ''
+        uses: actions/attest-build-provenance@v4
+        with: { subject-path: "${{ steps.publish.outputs.tarball }}" }
