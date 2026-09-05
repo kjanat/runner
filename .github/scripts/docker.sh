@@ -48,7 +48,8 @@ cmd_prepare() {
 # Build (and optionally push) the image.
 #
 # Required env: META (JSON object from docker/metadata-action), DRY_RUN (true does not push).
-# Optional env: PLATFORMS (comma-separated; empty builds for the host arch only).
+# Optional env: PLATFORMS (comma-separated; empty builds for the host arch only),
+# GITHUB_OUTPUT (receives `digest=<index digest>`).
 #
 # Multi-platform builds need a container-driver builder; the default docker
 # driver rejects them. --load is the docker exporter and cannot take a manifest
@@ -102,9 +103,25 @@ cmd_build() {
 		args+=(--load)
 	fi
 
+	local metadata
+	metadata="$(mktemp)"
+	args+=(--metadata-file "${metadata}")
+
 	group "docker ${args[*]} ${CONTEXT}"
 	docker "${args[@]}" "${CONTEXT}"
 	endgroup
+
+	local digest
+	digest="$(jq -r '."containerimage.digest" // empty' "${metadata}")"
+	rm -f "${metadata}"
+	if [[ "${DRY_RUN}" == "false" && -z "${digest}" ]]; then
+		echo "error: buildx metadata carries no containerimage.digest" >&2
+		exit 1
+	fi
+	echo "digest: ${digest:-<none>}"
+	if [[ -n "${GITHUB_OUTPUT-}" ]]; then
+		echo "digest=${digest}" >>"${GITHUB_OUTPUT}"
+	fi
 }
 
 # Assert the pushed manifest lists every platform, then execute both binaries

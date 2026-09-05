@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Added
+
+- Release archives, the man-page tarball, and the container image carry GitHub
+  build-provenance attestations; `mise install github:kjanat/runner` and
+  `gh attestation verify` check them (https://github.com/kjanat/runner/issues/125).
+
 ## [0.25.1] - 2026-08-12
 
 ### Fixed

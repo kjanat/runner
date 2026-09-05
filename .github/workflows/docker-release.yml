@@ -27,7 +27,7 @@ jobs:
     if: inputs.readme-only != true && startsWith(inputs.tag, 'v')
     # Serialize so dispatch and the release pipeline can't race the same tag.
     concurrency: { group: "docker-publish-${{ inputs.tag }}", cancel-in-progress: false }
-    permissions: { contents: read, packages: write, actions: read }
+    permissions: { contents: read, packages: write, actions: read, id-token: write, attestations: write }
     environment: { name: docker, url: "https://hub.docker.com/r/${{ github.repository }}" }
     steps:
       - uses: actions/checkout@v7
@@ -62,8 +62,24 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
 
       - name: build image
+        id: build
         env: { META: "${{ toJSON(steps.meta.outputs) }}" }
         run: bash .github/scripts/docker.sh build
+
+      - name: attest image provenance (ghcr.io)
+        if: env.DRY_RUN == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: attest image provenance (docker.io)
+        if: env.DRY_RUN == 'false'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: docker.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
 
       # The build needs no emulation (COPY only); executing the arm64 image on an amd64 runner does.
       - uses: docker/setup-qemu-action@v4
