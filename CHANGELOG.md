@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Fixed
+
+- `runner install` names the package manager and executable when one of the
+  detected managers is not on `PATH`, and points at `--pm` and
+  `[install].pms`. It used to fail with a bare `No such file or directory
+  (os error 2)` after the previous manager's output.
+
 ## [0.26.1] - 2026-09-05
 
 ### Fixed
