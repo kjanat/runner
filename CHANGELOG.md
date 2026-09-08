@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+## [0.26.2] - 2026-09-08
+
 ### Fixed
 
 - `runner install` names the package manager and executable when one of the
@@ -2122,7 +2124,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.26.1...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.26.2...HEAD
+[0.26.2]: https://github.com/kjanat/runner/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/kjanat/runner/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/kjanat/runner/compare/v0.25.1...v0.26.0
 [0.25.1]: https://github.com/kjanat/runner/compare/v0.25.0...v0.25.1
