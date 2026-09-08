@@ -380,12 +380,30 @@ fn install_single(
     let mut cmd = build_install_command(ctx, pm, frozen, script_directive(overrides));
     super::configure_command(&mut cmd, &ctx.root, overrides);
     super::configure_task_streams(&mut cmd, overrides, "install");
-    let status = cmd.status()?;
+    let status = cmd.status().map_err(|error| spawn_error(pm, &cmd, error))?;
     Ok(if status.success() {
         0
     } else {
         super::exit_code(status)
     })
+}
+
+/// Name the package manager and executable when an install cannot start.
+fn spawn_error(pm: PackageManager, command: &Command, error: std::io::Error) -> anyhow::Error {
+    let program = command.get_program().to_string_lossy().into_owned();
+    let context = if error.kind() == std::io::ErrorKind::NotFound {
+        format!(
+            "installing with {}: `{program}` was not found on PATH (pick the package manager with \
+             --pm or `[install].pms`)",
+            pm.label(),
+        )
+    } else {
+        format!(
+            "installing with {}: `{program}` failed to launch",
+            pm.label()
+        )
+    };
+    anyhow::Error::new(error).context(context)
 }
 
 /// Split the plan into lanes: the package managers that share an install
@@ -504,7 +522,7 @@ fn run_lane(
                 tool::TaskStream::Inherit => Stdio::piped(),
                 tool::TaskStream::Discard => Stdio::null(),
             });
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.spawn().map_err(|error| spawn_error(*pm, &cmd, error))?;
         let prefix = if overrides.emits_groups() {
             render_prefix(pm.label(), width, colorize)
         } else {
@@ -792,7 +810,7 @@ mod tests {
     use super::{
         CollisionDir, DenySupport, ForceSupport, InstallPlan, Shadowed, build_install_command,
         deny_support, force_support, install_lanes, plan_install, script_directive,
-        select_install_pms, unforceable_managers, unsupported_deny_managers,
+        select_install_pms, spawn_error, unforceable_managers, unsupported_deny_managers,
         warn_unsupported_script_policy,
     };
     use crate::resolver::{
@@ -823,6 +841,21 @@ mod tests {
             pm: Some(PmOverride { pm, origin }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn missing_install_executable_is_named() {
+        let mut command = std::process::Command::new("definitely-not-on-path-xyz");
+        let error = command
+            .spawn()
+            .expect_err("a nonexistent program must not spawn");
+        let message = format!("{:#}", spawn_error(PackageManager::Uv, &command, error));
+        assert!(message.contains("installing with uv"), "{message}");
+        assert!(
+            message.contains("`definitely-not-on-path-xyz` was not found on PATH"),
+            "{message}"
+        );
+        assert!(message.contains("--pm"), "{message}");
     }
 
     #[test]
