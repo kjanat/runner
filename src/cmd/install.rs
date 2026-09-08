@@ -380,7 +380,8 @@ fn install_single(
     let mut cmd = build_install_command(ctx, pm, frozen, script_directive(overrides));
     super::configure_command(&mut cmd, &ctx.root, overrides);
     super::configure_task_streams(&mut cmd, overrides, "install");
-    let status = cmd.status().map_err(|error| spawn_error(pm, &cmd, error))?;
+    let mut child = cmd.spawn().map_err(|error| spawn_error(pm, &cmd, error))?;
+    let status = child.wait()?;
     Ok(if status.success() {
         0
     } else {
@@ -856,6 +857,7 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("--pm"), "{message}");
+        assert!(message.contains("`[install].pms`"), "{message}");
     }
 
     #[test]
