@@ -71,6 +71,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   It looked only for `<root>/mise.lock`, so `.config/mise.toml`,
   `mise/config.toml`, and `mise.local.toml` ran an unlocked tool install.
 
+### Security
+
+- The toolchain step resolves `mise` from the host `PATH`. It was spawned with
+  the project's own bin directories front-loaded, so an executable committed
+  to `node_modules/.bin/mise` ran in place of the real one, before the package
+  managers and under the identity running `runner`, and neither `--frozen` nor
+  `--no-scripts` prevented it. Task dispatch is unchanged: a task binary still
+  resolves from `node_modules/.bin` first.
+
 ## [0.26.2] - 2026-09-08
 
 ### Fixed

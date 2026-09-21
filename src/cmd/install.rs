@@ -142,7 +142,7 @@ fn run_tools_step(
         TaskRunner::Mise => tool::mise::install_cmd(&ctx.root, frozen, verbosity),
         other => bail!("{} has no toolchain install step", other.label()),
     };
-    super::configure_command(&mut cmd, &ctx.root, overrides);
+    super::configure_host_command(&mut cmd, &ctx.root, overrides);
     super::configure_task_streams(&mut cmd, overrides, "install");
     let mut child = match cmd.spawn() {
         Ok(child) => child,

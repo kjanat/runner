@@ -47,6 +47,24 @@ pub(crate) use why::why;
 /// child `PATH`, working directory, inherited stdio.
 fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
     prepend_project_bin_path(command, dir);
+    configure_spawn(command, dir, overrides);
+}
+
+/// [`configure_command`] without the project's binary dirs, for a tool that
+/// must come from the host `PATH`.
+///
+/// The toolchain step runs before anything is installed and exists to set the
+/// environment up. Resolving it through the project's own bin dirs would let
+/// an executable committed to `node_modules/.bin` run under the developer's
+/// or CI's identity, ahead of the package managers and unaffected by
+/// `--frozen` or `--no-scripts`. The child still gets the project bins it
+/// needs through its own `PATH` inheritance once it is the real tool.
+fn configure_host_command(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
+    configure_spawn(command, dir, overrides);
+}
+
+/// Everything [`configure_command`] does apart from the `PATH` augmentation.
+fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
     command
         .current_dir(dir)
         .stdin(Stdio::inherit())
@@ -663,7 +681,8 @@ mod tests {
     use std::process::Command;
 
     use super::{
-        GroupSuppression, configure_command, group_emission, node_bin_dirs, prepended_path,
+        GroupSuppression, configure_command, configure_host_command, group_emission, node_bin_dirs,
+        prepended_path,
     };
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
@@ -780,6 +799,36 @@ mod tests {
         configure_command(&mut command, dir.as_path(), &ResolutionOverrides::default());
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn host_command_does_not_put_project_bins_on_path() {
+        // A checked-in `node_modules/.bin/mise` must not be what the
+        // toolchain step runs: it executes before anything is installed,
+        // under the developer's or CI's identity, and neither `--frozen` nor
+        // `--no-scripts` constrains it.
+        use std::ffi::OsStr;
+
+        let dir = TempDir::new("host-command-path");
+        let bin = dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).expect("bin dir should be created");
+
+        let mut augmented = Command::new("runner-test-host-tool");
+        configure_command(&mut augmented, dir.path(), &ResolutionOverrides::default());
+        assert!(
+            augmented
+                .get_envs()
+                .any(|(key, _)| key == OsStr::new("PATH")),
+            "configure_command must still front-load project bins for tasks",
+        );
+
+        let mut host = Command::new("runner-test-host-tool");
+        configure_host_command(&mut host, dir.path(), &ResolutionOverrides::default());
+        assert!(
+            !host.get_envs().any(|(key, _)| key == OsStr::new("PATH")),
+            "configure_host_command must leave PATH inherited from the host",
+        );
+        assert_eq!(host.get_current_dir(), Some(dir.path()));
     }
 
     #[test]
