@@ -142,6 +142,12 @@ pub(crate) struct ResolutionOverrides {
     /// Install-directory collision policy, resolved from
     /// `RUNNER_INSTALL_ON_COLLISION` (env) → `[install].on_collision` (config).
     pub on_collision: CollisionPolicy,
+    /// `[env]`, `[tools.*].env` and `[tasks.*].env`, kept together because
+    /// they are one layered lookup rather than three independent knobs.
+    pub env: EnvLayers,
+    /// `[tools.<name>].run`, normalized to an ordered operation list.
+    /// Absent means the tool's default, which every tool spells `install`.
+    pub tool_run: BTreeMap<String, Vec<String>>,
     /// `true` when a parent `runner`/`run` already opened a GitHub Actions
     /// log group above this process (signalled via the inherited
     /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest:
@@ -534,6 +540,119 @@ impl CollisionPolicy {
             Self::Resolve => "resolve",
             Self::Error => "error",
         }
+    }
+}
+
+/// The three environment layers a spawned process sees, narrowest last.
+///
+/// A value set for a task beats the same value set for the tool running it,
+/// which beats the project-wide one, which beats the inherited environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EnvLayers {
+    /// `[env]`, every process runner spawns in this project.
+    pub project: BTreeMap<String, String>,
+    /// `[tools.<name>].env`, keyed by tool label (`mise`, `just`, …).
+    pub tool: BTreeMap<String, BTreeMap<String, String>>,
+    /// `[tasks.<name>].env`, keyed by task name.
+    pub task: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl EnvLayers {
+    /// `true` when no layer sets anything, so callers can skip the merge.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.project.is_empty() && self.tool.is_empty() && self.task.is_empty()
+    }
+
+    /// The variables to set for a process, project then tool then task, so
+    /// later entries overwrite earlier ones.
+    pub(crate) fn resolve(&self, tool: Option<&str>, task: Option<&str>) -> Vec<(String, String)> {
+        let mut merged: BTreeMap<&str, &str> = self
+            .project
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        for layer in [
+            tool.and_then(|name| self.tool.get(name)),
+            task.and_then(|name| self.task.get(name)),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            merged.extend(layer.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        }
+        merged
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod env_layer_tests {
+    use super::EnvLayers;
+
+    fn layers() -> EnvLayers {
+        let mut l = EnvLayers::default();
+        l.project.insert("SHARED".into(), "project".into());
+        l.project.insert("ONLY_PROJECT".into(), "yes".into());
+        l.tool.insert(
+            "mise".into(),
+            [
+                ("SHARED".to_string(), "tool".to_string()),
+                ("ONLY_TOOL".to_string(), "yes".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        l.task.insert(
+            "build".into(),
+            std::iter::once(("SHARED".to_string(), "task".to_string())).collect(),
+        );
+        l
+    }
+
+    fn value<'a>(pairs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn narrowest_layer_wins() {
+        let l = layers();
+        assert_eq!(value(&l.resolve(None, None), "SHARED"), Some("project"));
+        assert_eq!(
+            value(&l.resolve(Some("mise"), None), "SHARED"),
+            Some("tool")
+        );
+        assert_eq!(
+            value(&l.resolve(Some("mise"), Some("build")), "SHARED"),
+            Some("task")
+        );
+    }
+
+    #[test]
+    fn wider_layers_still_contribute_their_own_names() {
+        let resolved = layers().resolve(Some("mise"), Some("build"));
+        assert_eq!(value(&resolved, "ONLY_PROJECT"), Some("yes"));
+        assert_eq!(value(&resolved, "ONLY_TOOL"), Some("yes"));
+    }
+
+    #[test]
+    fn an_unrelated_tool_or_task_takes_only_the_project_layer() {
+        let l = layers();
+        assert_eq!(
+            value(&l.resolve(Some("just"), Some("test")), "SHARED"),
+            Some("project")
+        );
+        assert!(value(&l.resolve(Some("just"), Some("test")), "ONLY_TOOL").is_none());
+    }
+
+    #[test]
+    fn empty_layers_report_empty() {
+        assert!(EnvLayers::default().is_empty());
+        assert!(!layers().is_empty());
     }
 }
 

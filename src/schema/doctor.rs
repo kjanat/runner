@@ -80,6 +80,16 @@ pub(crate) struct DoctorReport<'a> {
     resolution: ResolutionPolicy,
 }
 
+/// The variable *names* each env layer sets. Values never appear here.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+struct EnvNames {
+    project: Vec<String>,
+    tool: BTreeMap<String, Vec<String>>,
+    task: BTreeMap<String, Vec<String>>,
+}
+
 /// How this report came to be: the exact process invocation.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
@@ -182,6 +192,22 @@ struct Overrides {
     runner: Option<TaskRunner>,
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Variable names each `env` layer sets, narrowest last. Values are \
+                           withheld: this payload is meant to be pasted into a bug report."
+        )
+    )]
+    env: EnvNames,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "`[tools.<name>].run`, the operations `runner install` runs for each \
+                           tool, in order."
+        )
+    )]
+    tool_run: BTreeMap<String, Vec<String>>,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
 
@@ -648,6 +674,14 @@ fn runner_info() -> RunnerInfo {
     }
 }
 
+/// Variable names per scope, values dropped.
+fn env_names(layers: &BTreeMap<String, BTreeMap<String, String>>) -> BTreeMap<String, Vec<String>> {
+    layers
+        .iter()
+        .map(|(scope, vars)| (scope.clone(), vars.keys().cloned().collect::<Vec<_>>()))
+        .collect()
+}
+
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     Overrides {
         explain: overrides.explain,
@@ -695,6 +729,12 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         runner: overrides.runner.as_ref().map(|o| o.runner),
         runtime: overrides.runtime.as_ref().map(|o| o.runtime),
         script_policy: overrides.script_policy,
+        env: EnvNames {
+            project: overrides.env.project.keys().cloned().collect(),
+            tool: env_names(&overrides.env.tool),
+            task: env_names(&overrides.env.task),
+        },
+        tool_run: overrides.tool_run.clone(),
         task_source_pins: overrides
             .task_source_overrides
             .iter()
@@ -1689,6 +1729,8 @@ mod tests {
             on_collision,
             parent_group_open,
             parent_warned,
+            env,
+            tool_run,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))

@@ -101,3 +101,23 @@
 # it shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.
 [runtime]
 # js = "bun"   # node | bun | deno; bun implies `bun --bun run`
+
+# `[env]` section, variables set on every process runner spawns in this
+# project. A tool or task entry below overrides the same name.
+[env]
+# RUST_BACKTRACE = "1"
+
+# `[tools.<name>]` sections, settings scoped to one detected tool, keyed by
+# its label (`mise`, `just`, `npm`, ...).
+#
+# `run` is the ordered list of operations `runner install` runs for that
+# tool. `true` means ["install"], `false` means none, and a bare string is
+# a one-element list. mise is the only tool with more than one operation
+# today; `bootstrap` also does machine setup (system packages, dotfiles,
+# services, firewall), so it never runs unless named here.
+#
+# `env` applies to every invocation of that tool, over `[env]` and under a
+# task entry's own `env`.
+# [tools.mise]
+# run = ["bootstrap", "install"]   # or true | false | "install"
+# env = { MISE_JOBS = "4" }

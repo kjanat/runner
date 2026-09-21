@@ -293,6 +293,13 @@
       "description": "The table form of a [`TaskSpec`]: individual per-task settings, each merged\nover the built-in defaults so a partial table only overrides what it names.",
       "type": "object",
       "properties": {
+        "env": {
+          "description": "Variables set on this task's process, over the tool and project layers.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "groups": {
           "description": "Wrap this task's output in a GitHub Actions group. `false` opts this\ntask out; `[runner].groups = false` or a quiet preset wins over `true`.",
           "type": [
@@ -488,6 +495,51 @@
         "$ref": "#/$defs/TaskSpec"
       }
     },
+    "ToolRun": {
+      "description": "`[tools.<name>].run` as written: a toggle, one operation name, or an\nordered list. All three normalize to a list via [`ToolRun::operations`].",
+      "anyOf": [
+        {
+          "description": "`run = true` / `run = false`.",
+          "type": "boolean"
+        },
+        {
+          "description": "`run = \"bootstrap\"`.",
+          "type": "string"
+        },
+        {
+          "description": "`run = [\"bootstrap\", \"install\"]`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "ToolSettings": {
+      "description": "`[tools.<name>]`, settings scoped to one detected tool.\n\nNarrower than `[env]` and wider than a task entry, so a value here reaches\nevery invocation of that tool and nothing else.",
+      "type": "object",
+      "properties": {
+        "env": {
+          "description": "Variables set on every invocation of this tool.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "run": {
+          "description": "Which of the tool's operations `runner install` runs, in order.\n\n`true` is `[\"install\"]`, `false` is `[]`, and a bare string is a\none-element list. Only mise defines more than one operation today\n(`install` and `bootstrap`).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolRun"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "VerbosityConfig": {
       "description": "Verbosity intent as written in config: a bare level name (`verbosity =\n\"quiet\"`) or a `{ level, stream }` table. String-or-table, the same\nCargo-`[dependencies]` shape as [`TaskSpec`].",
       "anyOf": [
@@ -551,6 +603,13 @@
       "description": "`[chain]`, failure policy for multi-task chains.",
       "default": {}
     },
+    "env": {
+      "description": "`[env]`, variables set on every process runner spawns in this project.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "github": {
       "$ref": "#/$defs/GitHubSection",
       "description": "`[github]`, GitHub Actions integration (output grouping).",
@@ -605,6 +664,13 @@
       "$ref": "#/$defs/TasksSection",
       "description": "`[tasks]`, persistent task-source preference (global order + per-task pins).",
       "default": {}
+    },
+    "tools": {
+      "description": "`[tools]`, per-tool settings keyed by tool label (`mise`, `just`, …).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ToolSettings"
+      }
     }
   },
   "additionalProperties": false

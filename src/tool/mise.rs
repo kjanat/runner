@@ -451,17 +451,31 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
-/// `mise install [--locked]`
+/// The default operation when `[tools.mise].run` says nothing.
+pub(crate) const INSTALL: &str = "install";
+
+/// Operations `[tools.mise].run` accepts.
 ///
-/// Installs every tool the project's mise config declares. `--locked` is
-/// added for a frozen install only when a lockfile exists, since mise
-/// refuses the flag without one.
-pub(crate) fn install_cmd(root: &Path, frozen: bool, verbosity: super::HostVerbosity) -> Command {
+/// `bootstrap` also performs machine setup (system packages, dotfiles,
+/// services, firewall), so it is never the default and only runs when the
+/// project asks for it by name.
+pub(crate) const OPERATIONS: &[&str] = &[INSTALL, "bootstrap"];
+
+/// `mise <operation> [--locked]`.
+///
+/// `--locked` is added for a frozen run only when a lockfile exists, since
+/// mise refuses the flag without one.
+pub(crate) fn operation_cmd(
+    root: &Path,
+    operation: &str,
+    frozen: bool,
+    verbosity: super::HostVerbosity,
+) -> Command {
     let mut c = super::program::command("mise");
     if verbosity.silences() {
         c.arg("--quiet");
     }
-    c.arg("install");
+    c.arg(operation);
     if frozen && has_lockfile(root) {
         c.arg("--locked");
     }
@@ -1011,7 +1025,7 @@ mod tests {
     use std::fs;
 
     use super::{
-        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, install_cmd,
+        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, operation_cmd,
         parse_cli_output, run_cmd,
     };
     use crate::tool::test_support::TempDir;
@@ -1059,7 +1073,12 @@ mod tests {
     fn install_cmd_is_bare_without_lockfile() {
         let dir = TempDir::new("mise-install-bare");
         fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
-        let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
+        let cmd = operation_cmd(
+            dir.path(),
+            super::INSTALL,
+            true,
+            crate::tool::HostVerbosity::default(),
+        );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["install"]);
     }
@@ -1073,7 +1092,12 @@ mod tests {
         fs::create_dir_all(&nested).expect(".config should be created");
         fs::write(nested.join("mise.toml"), "").expect("config should be written");
         fs::write(nested.join("mise.lock"), "").expect("lockfile should be written");
-        let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
+        let cmd = operation_cmd(
+            dir.path(),
+            super::INSTALL,
+            true,
+            crate::tool::HostVerbosity::default(),
+        );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["install", "--locked"]);
     }
@@ -1104,10 +1128,20 @@ mod tests {
         let dir = TempDir::new("mise-install-locked");
         fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
         fs::write(dir.path().join("mise.lock"), "").expect("mise.lock should be written");
-        let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
+        let cmd = operation_cmd(
+            dir.path(),
+            super::INSTALL,
+            true,
+            crate::tool::HostVerbosity::default(),
+        );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["install", "--locked"]);
-        let cmd = install_cmd(dir.path(), false, crate::tool::HostVerbosity::default());
+        let cmd = operation_cmd(
+            dir.path(),
+            super::INSTALL,
+            false,
+            crate::tool::HostVerbosity::default(),
+        );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["install"]);
     }

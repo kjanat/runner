@@ -214,6 +214,33 @@ fn render_hint(section: &str, field: &str, hint: &FieldHint) -> String {
     }
 }
 
+/// The scaffold block for a section whose keys the user chooses.
+///
+/// These declare no fixed fields, so the schemars walk above has nothing to
+/// enumerate. The example is written out instead, since a section absent from
+/// `runner config init` is a section nobody discovers.
+fn open_map_example(section: &str) -> Option<&'static str> {
+    match section {
+        "env" => Some(
+            "\n# `[env]` section, variables set on every process runner spawns in this\n# \
+             project. A tool or task entry below overrides the same name.\n[env]\n# \
+             RUST_BACKTRACE = \"1\"\n",
+        ),
+        "tools" => Some(
+            "\n# `[tools.<name>]` sections, settings scoped to one detected tool, keyed by\n# its \
+             label (`mise`, `just`, `npm`, ...).\n#\n# `run` is the ordered list of operations \
+             `runner install` runs for that\n# tool. `true` means [\"install\"], `false` means \
+             none, and a bare string is\n# a one-element list. mise is the only tool with more \
+             than one operation\n# today; `bootstrap` also does machine setup (system packages, \
+             dotfiles,\n# services, firewall), so it never runs unless named here.\n#\n# `env` \
+             applies to every invocation of that tool, over `[env]` and under a\n# task entry's \
+             own `env`.\n# [tools.mise]\n# run = [\"bootstrap\", \"install\"]   # or true | false \
+             | \"install\"\n# env = { MISE_JOBS = \"4\" }\n",
+        ),
+        _ => None,
+    }
+}
+
 /// The real, closed accepted-value set for a config field with a small
 /// fixed vocabulary, derived from the same types/functions the resolver
 /// uses to parse that field, so it cannot drift from what's actually
@@ -351,6 +378,10 @@ pub(crate) fn render_init_template() -> String {
     let mut out = INIT_TEMPLATE_HEADER.to_string();
     let mut used = std::collections::HashSet::with_capacity(FIELD_TEMPLATE.len());
     for (section, section_schema) in top_properties {
+        if let Some(example) = open_map_example(section) {
+            out.push_str(example);
+            continue;
+        }
         let def_name = section_schema["$ref"]
             .as_str()
             .and_then(|r| r.strip_prefix("#/$defs/"))

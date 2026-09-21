@@ -376,6 +376,8 @@ impl ResolutionOverrides {
             install_pms,
             script_policy,
             on_collision,
+            env: env_layers(&sources),
+            tool_run: tool_run(&sources),
             // Set in `dispatch`, which is the first place a resolved project
             // root and the inherited `RUNNER_WARNED_ROOT` marker are both in
             // hand. Nothing to capture from `sources`.
@@ -511,6 +513,56 @@ fn parse_install_on_collision(sources: &OverrideSources<'_>) -> Result<Collision
         return parse_collision_label(raw).map_err(|err| anyhow!("[install].on_collision: {err}"));
     }
     Ok(CollisionPolicy::default())
+}
+
+/// Collect `[env]`, `[tools.*].env` and `[tasks.*].env` into the three
+/// layers a spawn merges. Config-only: an environment variable layer set from
+/// the environment would be the environment already.
+fn env_layers(sources: &OverrideSources<'_>) -> super::types::EnvLayers {
+    let Some(loaded) = sources.config else {
+        return super::types::EnvLayers::default();
+    };
+    super::types::EnvLayers {
+        project: loaded.config.env.clone(),
+        tool: loaded
+            .config
+            .tools
+            .iter()
+            .filter(|(_, settings)| !settings.env.is_empty())
+            .map(|(name, settings)| (name.clone(), settings.env.clone()))
+            .collect(),
+        task: loaded
+            .config
+            .tasks
+            .tasks
+            .iter()
+            .filter_map(|(name, spec)| match spec {
+                crate::config::TaskSpec::Settings(settings) if !settings.env.is_empty() => {
+                    Some((name.clone(), settings.env.clone()))
+                }
+                _ => None,
+            })
+            .collect(),
+    }
+}
+
+/// `[tools.<name>].run`, normalized to an ordered operation list per tool.
+fn tool_run(sources: &OverrideSources<'_>) -> std::collections::BTreeMap<String, Vec<String>> {
+    sources
+        .config
+        .map_or_else(std::collections::BTreeMap::new, |loaded| {
+            loaded
+                .config
+                .tools
+                .iter()
+                .filter_map(|(name, settings)| {
+                    settings
+                        .run
+                        .as_ref()
+                        .map(|run| (name.clone(), run.operations()))
+                })
+                .collect()
+        })
 }
 
 /// Parse a single `deny`/`allow` script-policy label (case-sensitive,

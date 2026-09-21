@@ -127,11 +127,46 @@ fn run_tools_step(
     frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<Option<i32>> {
+    for operation in tool_operations(runner, overrides)? {
+        if let Some(code) = run_tool_operation(ctx, runner, &operation, frozen, overrides)? {
+            return Ok(Some(code));
+        }
+    }
+    Ok(None)
+}
+
+/// Which operations `runner install` runs for `runner`, from
+/// `[tools.<name>].run`, defaulting to the tool's install operation.
+fn tool_operations(runner: TaskRunner, overrides: &ResolutionOverrides) -> Result<Vec<String>> {
+    let Some(configured) = overrides.tool_run.get(runner.label()) else {
+        return Ok(vec![tool::mise::INSTALL.to_string()]);
+    };
+    for operation in configured {
+        if !tool::mise::OPERATIONS.contains(&operation.as_str()) {
+            bail!(
+                "[tools.{}].run: unknown operation {operation:?}; expected one of {}",
+                runner.label(),
+                tool::mise::OPERATIONS.join(", "),
+            );
+        }
+    }
+    Ok(configured.clone())
+}
+
+/// Run one of the tool manager's operations in the foreground.
+fn run_tool_operation(
+    ctx: &ProjectContext,
+    runner: TaskRunner,
+    operation: &str,
+    frozen: bool,
+    overrides: &ResolutionOverrides,
+) -> Result<Option<i32>> {
     if overrides.shows_progress() {
         eprintln!(
-            "{} {}",
-            "installing tools with".dimmed(),
-            runner.label().bold()
+            "{} {} {}",
+            "running".dimmed(),
+            runner.label().bold(),
+            operation.bold()
         );
     }
     let verbosity = tool::HostVerbosity {
@@ -139,10 +174,11 @@ fn run_tools_step(
         stream: tool::Stream::Inherit,
     };
     let mut cmd = match runner {
-        TaskRunner::Mise => tool::mise::install_cmd(&ctx.root, frozen, verbosity),
+        TaskRunner::Mise => tool::mise::operation_cmd(&ctx.root, operation, frozen, verbosity),
         other => bail!("{} has no toolchain install step", other.label()),
     };
     super::configure_host_command(&mut cmd, &ctx.root, overrides);
+    super::apply_env_layers(&mut cmd, overrides, Some(runner.label()), None);
     super::configure_task_streams(&mut cmd, overrides, "install");
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -492,6 +528,7 @@ fn install_single(
         eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
     }
     let mut cmd = build_install_command(ctx, pm, frozen, script_directive(overrides));
+    super::apply_env_layers(&mut cmd, overrides, Some(pm.label()), None);
     super::configure_command(&mut cmd, &ctx.root, overrides);
     super::configure_task_streams(&mut cmd, overrides, "install");
     let mut child = cmd.spawn().map_err(|error| spawn_error(pm, &cmd, error))?;
@@ -626,6 +663,7 @@ fn run_lane(
             eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
         }
         let mut cmd = build_install_command(ctx, *pm, frozen, directive);
+        super::apply_env_layers(&mut cmd, overrides, Some(pm.label()), None);
         super::configure_command(&mut cmd, &ctx.root, overrides);
         let (stdout_policy, stderr_policy) = overrides.task_streams_for("install");
         cmd.stdin(Stdio::null())

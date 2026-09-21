@@ -120,6 +120,62 @@ pub(crate) struct RunnerConfig {
     /// `[runtime]`, which JS runtime executes tasks and local files.
     #[serde(default)]
     pub runtime: RuntimeSection,
+    /// `[env]`, variables set on every process runner spawns in this project.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// `[tools]`, per-tool settings keyed by tool label (`mise`, `just`, …).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, ToolSettings>,
+}
+
+/// `[tools.<name>]`, settings scoped to one detected tool.
+///
+/// Narrower than `[env]` and wider than a task entry, so a value here reaches
+/// every invocation of that tool and nothing else.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct ToolSettings {
+    /// Which of the tool's operations `runner install` runs, in order.
+    ///
+    /// `true` is `["install"]`, `false` is `[]`, and a bare string is a
+    /// one-element list. Only mise defines more than one operation today
+    /// (`install` and `bootstrap`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<ToolRun>,
+    /// Variables set on every invocation of this tool.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+/// `[tools.<name>].run` as written: a toggle, one operation name, or an
+/// ordered list. All three normalize to a list via [`ToolRun::operations`].
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub(crate) enum ToolRun {
+    /// `run = true` / `run = false`.
+    Toggle(bool),
+    /// `run = "bootstrap"`.
+    One(String),
+    /// `run = ["bootstrap", "install"]`.
+    Many(Vec<String>),
+}
+
+impl ToolRun {
+    /// The operations to run, in order. `true` means the tool's default
+    /// operation, which every tool spells `install`.
+    pub(crate) fn operations(&self) -> Vec<String> {
+        match self {
+            Self::Toggle(true) => vec!["install".to_string()],
+            Self::Toggle(false) => Vec::new(),
+            Self::One(name) => vec![name.clone()],
+            Self::Many(names) => names.clone(),
+        }
+    }
 }
 
 /// `[runner]` output categories. An absent field inherits the selected quiet
@@ -577,6 +633,9 @@ pub(crate) struct TaskSettings {
     /// only; `[runner].task_timing = false` or a quiet preset wins over `true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_timing: Option<bool>,
+    /// Variables set on this task's process, over the tool and project layers.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Verbosity intent as written in config: a bare level name (`verbosity =
@@ -836,6 +895,12 @@ pub(crate) const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
     ),
 ];
 
+/// Sections whose keys the user chooses rather than runner: `[env]` holds
+/// variable names, `[tools]` holds tool labels. Neither declares fixed
+/// fields, so neither has [`FIELD_TEMPLATE`] rows. A `[tools.<name>]`
+/// entry's own fields are checked against [`TOOL_ENTRY_FIELDS`] instead.
+pub(crate) const OPEN_MAP_SECTIONS: &[&str] = &["env", "tools"];
+
 /// The fields recognized under `section`, from [`FIELD_TEMPLATE`].
 ///
 /// The table carries deprecated sections too (the scaffold renderer skips
@@ -860,6 +925,11 @@ fn known_fields(section: &str) -> Option<Vec<&'static str>> {
 /// checked against [`TASK_ENTRY_FIELDS`] (see [`collect_unknown_keys`]).
 const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
 
+/// Recognized fields of a `[tools.<name>]` table entry ([`ToolSettings`]).
+/// Mirrors the struct; the `known_tool_entry_fields_match_schema` test guards
+/// drift.
+const TOOL_ENTRY_FIELDS: &[&str] = &["run", "env"];
+
 /// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
 /// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
 /// drift. An unrecognized field warns (forward-compat) rather than aborting.
@@ -871,6 +941,7 @@ const TASK_ENTRY_FIELDS: &[&str] = &[
     "progress",
     "groups",
     "task_timing",
+    "env",
 ];
 
 /// Recognized fields of a `[tasks.<name>].verbosity` table ([`VerbosityTable`]).
@@ -886,6 +957,17 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
     };
     let mut warnings = Vec::new();
     for (section, body) in table {
+        if OPEN_MAP_SECTIONS.contains(&section.as_str()) {
+            // `[env]` keys are variable names; `[tools]` keys are tool
+            // labels. Neither can be an unknown *field*, but a `[tools]`
+            // entry's own fields are fixed, so recurse one level there.
+            if section == "tools"
+                && let Some(body) = body.as_table()
+            {
+                collect_unknown_tool_keys(body, &mut warnings);
+            }
+            continue;
+        }
         let Some(known_fields) = known_fields(section) else {
             warnings.push(DetectionWarning::UnknownConfigKey {
                 path: section.clone(),
@@ -914,6 +996,25 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
         }
     }
     warnings
+}
+
+/// Field-level forward-compat check for the `[tools]` open map. Tool labels
+/// are arbitrary, so only an entry's own fields are checked, against
+/// [`TOOL_ENTRY_FIELDS`]. `env` under an entry is itself an open map and is
+/// not recursed into.
+fn collect_unknown_tool_keys(tools: &toml::value::Table, warnings: &mut Vec<DetectionWarning>) {
+    for (name, entry) in tools {
+        let Some(fields) = entry.as_table() else {
+            continue;
+        };
+        for field in fields.keys() {
+            if !TOOL_ENTRY_FIELDS.contains(&field.as_str()) {
+                warnings.push(DetectionWarning::UnknownConfigKey {
+                    path: format!("tools.{name}.{field}"),
+                });
+            }
+        }
+    }
 }
 
 /// Field-level forward-compat check for the `[tasks]` open map. A task entry is
@@ -1581,6 +1682,14 @@ mod tests {
         for section in DEPRECATED_SECTIONS {
             known.remove(*section);
         }
+        // Open-map sections are scaffolded from a hand-written example and
+        // declare no fields, so there is nothing to compare field-wise. The
+        // template walker also cannot see a commented-out `[tools.mise]`
+        // header, so its example keys land under whatever section precedes it.
+        for section in super::OPEN_MAP_SECTIONS {
+            known.remove(*section);
+            template.remove(*section);
+        }
 
         assert_eq!(
             template, known,
@@ -1614,6 +1723,9 @@ mod tests {
 
         let generated: BTreeMap<String, BTreeSet<String>> = top_properties
             .iter()
+            // Open-map sections declare no fixed fields, so there is nothing
+            // on either side to compare.
+            .filter(|(section, _)| !super::OPEN_MAP_SECTIONS.contains(&section.as_str()))
             .map(|(section, section_schema)| {
                 let def_name = section_schema["$ref"]
                     .as_str()
@@ -1650,6 +1762,58 @@ mod tests {
              struct field with no row is silently treated as unknown by collect_unknown_keys even \
              though the typed deserializer accepts it"
         );
+    }
+
+    #[test]
+    fn tool_run_normalizes_every_spelling() {
+        use super::ToolRun;
+        assert_eq!(ToolRun::Toggle(true).operations(), ["install"]);
+        assert!(ToolRun::Toggle(false).operations().is_empty());
+        assert_eq!(ToolRun::One("bootstrap".into()).operations(), ["bootstrap"]);
+        assert_eq!(
+            ToolRun::Many(vec!["bootstrap".into(), "install".into()]).operations(),
+            ["bootstrap", "install"],
+        );
+    }
+
+    #[test]
+    fn tool_run_parses_all_four_toml_forms() {
+        for (written, expected) in [
+            ("run = true", vec!["install"]),
+            ("run = false", vec![]),
+            (r#"run = "bootstrap""#, vec!["bootstrap"]),
+            (
+                r#"run = ["bootstrap", "install"]"#,
+                vec!["bootstrap", "install"],
+            ),
+        ] {
+            let config: RunnerConfig =
+                toml::from_str(&format!("[tools.mise]\n{written}\n")).expect("parses");
+            let run = config.tools["mise"].run.as_ref().expect("run is set");
+            assert_eq!(run.operations(), expected, "{written}");
+        }
+    }
+
+    #[test]
+    fn open_map_sections_do_not_warn_about_their_keys() {
+        let doc: toml::Value = toml::from_str(
+            "[env]\nANYTHING = \"1\"\n\n[tools.mise]\nrun = true\nenv = { A = \"b\" }\n",
+        )
+        .expect("parses");
+        assert!(super::collect_unknown_keys(&doc).is_empty());
+    }
+
+    #[test]
+    fn a_tool_entry_field_typo_still_warns() {
+        let doc: toml::Value = toml::from_str("[tools.mise]\nrunn = true\n").expect("parses");
+        let paths: Vec<String> = super::collect_unknown_keys(&doc)
+            .into_iter()
+            .map(|w| match w {
+                DetectionWarning::UnknownConfigKey { path } => path,
+                other => panic!("unexpected warning: {other:?}"),
+            })
+            .collect();
+        assert_eq!(paths, ["tools.mise.runn"]);
     }
 
     #[test]

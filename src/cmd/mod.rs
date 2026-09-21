@@ -206,6 +206,24 @@ fn prepend_project_bin_path(command: &mut Command, dir: &Path) {
     }
 }
 
+/// Apply the project, tool and task `env` layers to a child, narrowest last.
+///
+/// Called where the tool and task are known, which `configure_command` is not:
+/// it runs for spawns that have neither.
+fn apply_env_layers(
+    command: &mut Command,
+    overrides: &ResolutionOverrides,
+    tool: Option<&str>,
+    task: Option<&str>,
+) {
+    if overrides.env.is_empty() {
+        return;
+    }
+    for (key, value) in overrides.env.resolve(tool, task) {
+        command.env(key, value);
+    }
+}
+
 /// `bins` followed by the entries of `parent`, joined with the platform
 /// separator. `None` when joining fails (a bin dir embeds the separator
 /// itself). The caller leaves `PATH` untouched rather than corrupt it.

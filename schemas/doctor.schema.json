@@ -314,6 +314,42 @@
       },
       "additionalProperties": false
     },
+    "EnvNames": {
+      "description": "The variable *names* each env layer sets. Values never appear here.",
+      "type": "object",
+      "required": [
+        "project",
+        "task",
+        "tool"
+      ],
+      "properties": {
+        "project": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "task": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "tool": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Environment": {
       "description": "Host facts that influence probing and dispatch.",
       "type": "object",
@@ -542,6 +578,7 @@
       "description": "The overrides in effect for this run: `--pm`, `--fallback`, the\n`RUNNER_*` env vars, and the `runner.toml` policy sections, reported by\ntheir labels. Where each came from (CLI, env, or config) is on the\n`list`/`info` surface instead.",
       "type": "object",
       "required": [
+        "env",
         "explain",
         "failure_policy",
         "fallback",
@@ -559,9 +596,14 @@
         "runner",
         "runtime",
         "script_policy",
-        "task_source_pins"
+        "task_source_pins",
+        "tool_run"
       ],
       "properties": {
+        "env": {
+          "$ref": "#/$defs/EnvNames",
+          "description": "Variable names each `env` layer sets, narrowest last. Values are withheld: this payload is meant to be pasted into a bug report."
+        },
         "explain": {
           "type": "boolean"
         },
@@ -673,6 +715,16 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/TaskSourceLabel"
+            }
+          }
+        },
+        "tool_run": {
+          "description": "`[tools.<name>].run`, the operations `runner install` runs for each tool, in order.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }

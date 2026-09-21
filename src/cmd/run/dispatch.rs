@@ -586,6 +586,12 @@ fn spawn_task(
 ) -> Result<Dispatch> {
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
     crate::cmd::configure_command(spawn.command_mut(), entry.dir(&ctx.root), overrides);
+    crate::cmd::apply_env_layers(
+        spawn.command_mut(),
+        overrides,
+        Some(entry.source.label()),
+        Some(entry.name.as_str()),
+    );
     let task_key = super::task_output_key(entry);
     crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
