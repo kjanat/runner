@@ -279,7 +279,7 @@ fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> 
 
 /// The `--long`/`-s` spellings of every root-level (flattened
 /// [`GlobalOpts`]) flag that consumes a following value, read from the
-/// actual clap definition. Used by [`chain_flag_precedes_first_task`] to
+/// actual clap definition. Used by [`scan_run_argv`] to
 /// skip flag values while scanning for the first task word.
 fn global_value_flags() -> Vec<String> {
     use clap::CommandFactory as _;
@@ -388,34 +388,36 @@ fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidat
         return vec![];
     };
 
-    // A flag that takes a value swallows the next word, so once the user
-    // has typed it there is nothing of ours to offer in that position.
+    // A flag that takes a value swallows the next word, so there is nothing
+    // of ours to offer in the position it consumes. The last entry is the
+    // word being completed, which is empty at a fresh TAB, so the flag to
+    // test is the one before it.
     if typed
-        .last()
-        .is_some_and(|word| spec.consumes_value_after(word))
+        .iter()
+        .rev()
+        .take(2)
+        .any(|word| spec.consumes_value_after(word))
     {
         return vec![];
     }
 
     let mut out: Vec<CompletionCandidate> = Vec::new();
     for flag in &spec.flags {
-        for long in &flag.long {
-            let dashed = format!("--{long}");
-            if typed.iter().any(|word| word == &dashed) {
+        for spelling in flag.spellings() {
+            if typed.iter().any(|word| word == &spelling) {
                 continue;
             }
-            let mut candidate = CompletionCandidate::new(&dashed);
+            let mut candidate = CompletionCandidate::new(&spelling);
             if let Some(help) = &flag.help {
                 candidate = candidate.help(Some(help.clone().into()));
             }
             out.push(candidate.tag(Some("task flags".into())));
         }
     }
-    for arg in &spec.args {
+    // Each positional closes its own value set, so only the one the cursor
+    // sits on may contribute choices.
+    if let Some(arg) = spec.args.get(positional_index(&spec, typed)) {
         for choice in &arg.choices {
-            if typed.iter().any(|word| word == choice) {
-                continue;
-            }
             let mut candidate = CompletionCandidate::new(choice);
             if let Some(help) = &arg.help {
                 candidate = candidate.help(Some(help.clone().into()));
@@ -424,6 +426,27 @@ fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidat
         }
     }
     out
+}
+
+/// Which positional the cursor sits on: the count of already-complete
+/// positional words before it, skipping flags and the values they consume.
+fn positional_index(spec: &crate::tool::mise::UsageSpec, typed: &[String]) -> usize {
+    // The final entry is the word being completed, not a finished one.
+    let complete = typed.split_last().map_or(&[][..], |(_, rest)| rest);
+    let mut index = 0;
+    let mut skip_value = false;
+    for word in complete {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if word.starts_with('-') {
+            skip_value = spec.consumes_value_after(word);
+            continue;
+        }
+        index += 1;
+    }
+    index
 }
 
 /// Scan the in-flight completion argv for a chain-mode flag (`-s`/`-p`,
@@ -448,8 +471,8 @@ struct RunArgv {
 }
 
 /// Walk the completion argv once, extracting everything the trailing-arg
-/// completer needs. See [`chain_flag_precedes_first_task`] for the argv shape
-/// and the flag-skipping rules.
+/// completer needs. The argv shape and the flag-skipping rules are in the
+/// match arms below.
 fn scan_run_argv(argv: &[std::ffi::OsString]) -> RunArgv {
     // Flags whose value arrives as the *next* word (the `=` form needs no
     // special casing; it stays one word). Derived from the real clap
@@ -949,6 +972,84 @@ mod tests {
                 "{flag} was not rendered with clap's literal style: {help:?}",
             );
         }
+    }
+
+    /// Two positionals with distinct choices, plus a value-taking flag, so
+    /// each completion position is distinguishable from the others.
+    fn two_positional_spec() -> crate::tool::mise::UsageSpec {
+        use crate::tool::mise::{UsageArg, UsageFlag, UsageSpec};
+        UsageSpec {
+            signature: "[first] [second]".to_string(),
+            args: vec![
+                UsageArg {
+                    name: "first".to_string(),
+                    help: None,
+                    required: false,
+                    choices: vec!["a".to_string()],
+                },
+                UsageArg {
+                    name: "second".to_string(),
+                    help: None,
+                    required: false,
+                    choices: vec!["b".to_string()],
+                },
+            ],
+            flags: vec![UsageFlag {
+                long: vec!["fn".to_string()],
+                short: vec![],
+                help: None,
+                required: false,
+                takes_value: true,
+            }],
+        }
+    }
+
+    fn typed(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_string()).collect()
+    }
+
+    #[test]
+    fn positional_index_counts_only_finished_positionals() {
+        let spec = two_positional_spec();
+        // Only the word being completed: still on the first positional.
+        assert_eq!(super::positional_index(&spec, &typed(&[""])), 0);
+        // One finished positional behind the cursor.
+        assert_eq!(super::positional_index(&spec, &typed(&["a", ""])), 1);
+        // A flag and the value it consumes are not positionals.
+        assert_eq!(
+            super::positional_index(&spec, &typed(&["--fn", "x", ""])),
+            0
+        );
+        assert_eq!(
+            super::positional_index(&spec, &typed(&["--fn", "x", "a", ""])),
+            1
+        );
+    }
+
+    #[test]
+    fn a_value_taking_flag_before_the_cursor_suppresses_candidates() {
+        // The last entry is the empty word being completed, so the flag to
+        // test is the one before it. Checking only the last entry made this
+        // case look fine while offering flags where the value belongs.
+        let spec = two_positional_spec();
+        let words = typed(&["--fn", ""]);
+        assert!(
+            words
+                .iter()
+                .rev()
+                .take(2)
+                .any(|word| spec.consumes_value_after(word)),
+            "a pending --fn value must suppress candidates",
+        );
+        // Once the value is typed, the next position is open again.
+        let words = typed(&["--fn", "x", ""]);
+        assert!(
+            !words
+                .iter()
+                .rev()
+                .take(2)
+                .any(|word| spec.consumes_value_after(word)),
+        );
     }
 
     #[test]

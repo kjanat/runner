@@ -390,6 +390,13 @@
             "string"
           ]
         },
+        "tools": {
+          "description": "Tool version pins the task declares, as `tool@version`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "usage": {
           "description": "Argument and flag spec in the source's own language (mise: usage KDL).",
           "type": [

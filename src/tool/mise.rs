@@ -703,32 +703,54 @@ impl UsageSpec {
     /// `true` when `word` is a flag that swallows the word after it, so the
     /// next position holds that flag's value rather than another flag.
     pub(crate) fn consumes_value_after(&self, word: &str) -> bool {
-        let Some(name) = word.strip_prefix("--") else {
+        let Some((name, long)) = word
+            .strip_prefix("--")
+            .map(|name| (name, true))
+            .or_else(|| word.strip_prefix('-').map(|name| (name, false)))
+        else {
             return false;
         };
-        if name.contains('=') {
+        // `--flag=value` and `-f=value` carry their value already.
+        if name.is_empty() || name.contains('=') {
             return false;
         }
         self.flags
             .iter()
             .filter(|flag| flag.takes_value)
-            .any(|flag| flag.long.iter().any(|long| long == name))
+            .any(|flag| {
+                let spellings = if long { &flag.long } else { &flag.short };
+                spellings.iter().any(|spelling| spelling == name)
+            })
     }
 
-    /// Long spellings of every flag the spec marks required.
+    /// Every flag the spec marks required that `provided` does not set,
+    /// named by its first spelling.
+    ///
+    /// A flag may declare only a short form, so both forms count as
+    /// provided and a short-only flag is still reported when absent.
     pub(crate) fn missing_required_flags(&self, provided: &[String]) -> Vec<String> {
         self.flags
             .iter()
             .filter(|flag| flag.required)
             .filter(|flag| {
-                !flag.long.iter().any(|long| {
-                    let dashed = format!("--{long}");
+                !flag.spellings().into_iter().any(|dashed| {
                     provided
                         .iter()
                         .any(|word| word == &dashed || word.starts_with(&format!("{dashed}=")))
                 })
             })
-            .filter_map(|flag| flag.long.first().map(|long| format!("--{long}")))
+            .filter_map(|flag| flag.spellings().into_iter().next())
+            .collect()
+    }
+}
+
+impl UsageFlag {
+    /// Every spelling of this flag, long forms first.
+    pub(crate) fn spellings(&self) -> Vec<String> {
+        self.long
+            .iter()
+            .map(|long| format!("--{long}"))
+            .chain(self.short.iter().map(|short| format!("-{short}")))
             .collect()
     }
 }
@@ -1620,6 +1642,130 @@ mod tests {
         assert_eq!(names, ["project-task"]);
     }
 
+    /// Names surfaced by a payload, in order.
+    fn names_of(tasks: &[ExtractedTask]) -> Vec<&str> {
+        tasks
+            .iter()
+            .map(|t| match t {
+                ExtractedTask::Recipe { name, .. } | ExtractedTask::Alias { name, .. } => {
+                    name.as_str()
+                }
+            })
+            .collect()
+    }
+
+    /// One `mise tasks --json` entry with the given name and source.
+    fn entry(name: &str, source: &std::path::Path) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "aliases": [],
+            "description": "",
+            "source": source.to_string_lossy(),
+            "hide": false, "global": false, "run": ["echo x"], "file": null,
+        })
+    }
+
+    #[test]
+    fn cli_output_keeps_tasks_from_nested_directories() {
+        // A config in a subdirectory is still the project's. mise merges
+        // `.config/mise`, `.mise/tasks/*` and any nested config, and all of
+        // them are the project speaking.
+        let dir = TempDir::new("mise-cli-nested");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
+        let payload = serde_json::json!([
+            entry("root", &project.join("mise.toml")),
+            entry("nested-config", &project.join(".config").join("mise.toml")),
+            entry(
+                "deep",
+                &project.join("packages").join("api").join("mise.toml"),
+            ),
+            entry(
+                "file-task",
+                &project.join(".mise").join("tasks").join("build"),
+            ),
+        ])
+        .to_string();
+
+        let tasks = parse_cli_output(payload.as_bytes(), &project).expect("payload should parse");
+        assert_eq!(
+            names_of(&tasks),
+            ["deep", "file-task", "nested-config", "root"]
+        );
+    }
+
+    #[test]
+    fn cli_output_drops_tasks_from_a_parent_directory() {
+        // mise merges configs from every ancestor, not just the global one,
+        // and an ancestor's tasks carry `global: false`. Without the path
+        // check a `~/projects/mise.toml` task would look project-owned.
+        let dir = TempDir::new("mise-cli-parent");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize")
+            .join("repo");
+        let parent = project.parent().expect("has a parent").to_path_buf();
+        let payload = serde_json::json!([
+            entry("mine", &project.join("mise.toml")),
+            entry("ancestors", &parent.join("mise.toml")),
+        ])
+        .to_string();
+
+        let tasks = parse_cli_output(payload.as_bytes(), &project).expect("payload should parse");
+        assert_eq!(names_of(&tasks), ["mine"]);
+    }
+
+    #[test]
+    fn cli_output_does_not_match_a_sibling_sharing_a_name_prefix() {
+        // `starts_with` on a Path compares components, so `repo-other` is not
+        // inside `repo`. A string prefix check would have kept it.
+        let dir = TempDir::new("mise-cli-prefix");
+        let base = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
+        let project = base.join("repo");
+        let payload = serde_json::json!([
+            entry("mine", &project.join("mise.toml")),
+            entry("neighbour", &base.join("repo-other").join("mise.toml")),
+        ])
+        .to_string();
+
+        let tasks = parse_cli_output(payload.as_bytes(), &project).expect("payload should parse");
+        assert_eq!(names_of(&tasks), ["mine"]);
+    }
+
+    #[test]
+    fn cli_output_scoped_to_a_member_drops_the_repo_root_tasks() {
+        // What a monorepo member extraction sees: runner runs mise in the
+        // member directory, mise merges the repo root's config in, and those
+        // tasks have a source above the member. They belong to the root's own
+        // extraction, so a member lists what it declares rather than
+        // everything it could run.
+        let dir = TempDir::new("mise-cli-member");
+        let root = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
+        let member = root.join("apps").join("web");
+        let payload = serde_json::json!([
+            entry("web-build", &member.join("mise.toml")),
+            entry("repo-lint", &root.join("mise.toml")),
+        ])
+        .to_string();
+
+        let from_member = parse_cli_output(payload.as_bytes(), &member).expect("parses");
+        assert_eq!(names_of(&from_member), ["web-build"]);
+
+        // The same payload read at the root keeps both, so nothing is lost
+        // from `runner list` overall.
+        let from_root = parse_cli_output(payload.as_bytes(), &root).expect("parses");
+        assert_eq!(names_of(&from_root), ["repo-lint", "web-build"]);
+    }
+
     #[test]
     fn cli_output_falls_back_to_run_when_description_missing() {
         let dir = TempDir::new("mise-cli-desc-fallback");
@@ -1876,6 +2022,65 @@ mod tests {
         }
     }
 
+    /// A spec with a short-only required flag and a second long flag, so a
+    /// suppressed candidate is distinguishable from an already-used one.
+    fn two_flag_spec() -> super::UsageSpec {
+        super::UsageSpec {
+            signature: "<-f <name>> [--dry-run]".to_string(),
+            args: vec![],
+            flags: vec![
+                super::UsageFlag {
+                    long: vec![],
+                    short: vec!["f".to_string()],
+                    help: None,
+                    required: true,
+                    takes_value: true,
+                },
+                super::UsageFlag {
+                    long: vec!["dry-run".to_string()],
+                    short: vec![],
+                    help: None,
+                    required: false,
+                    takes_value: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn a_short_only_required_flag_is_reported_when_absent() {
+        let spec = two_flag_spec();
+        assert_eq!(spec.missing_required_flags(&[]), ["-f"]);
+        assert!(
+            spec.missing_required_flags(&["-f".to_string(), "x".to_string()])
+                .is_empty()
+        );
+        assert!(
+            spec.missing_required_flags(&["-f=x".to_string()])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_short_flag_consumes_the_word_after_it() {
+        let spec = two_flag_spec();
+        assert!(spec.consumes_value_after("-f"));
+        // Carries its value already.
+        assert!(!spec.consumes_value_after("-f=x"));
+        // Takes no value.
+        assert!(!spec.consumes_value_after("--dry-run"));
+        assert!(!spec.consumes_value_after("-"));
+        assert!(!spec.consumes_value_after("--"));
+    }
+
+    #[test]
+    fn spellings_lists_long_then_short() {
+        let spec = two_flag_spec();
+        assert_eq!(spec.flags[0].spellings(), ["-f"]);
+        assert_eq!(spec.flags[1].spellings(), ["--dry-run"]);
+        assert_eq!(leaf_spec().flags[0].spellings(), ["--fn"]);
+    }
+
     #[test]
     fn missing_required_flags_reports_an_absent_flag() {
         let spec = leaf_spec();
@@ -1939,6 +2144,74 @@ mod tests {
             ExtractedTask::Recipe { name, .. } if name == "build")
         });
         assert!(has_build, "fast path should surface `build`; got {tasks:?}");
+    }
+
+    #[test]
+    fn extract_in_a_member_sees_its_own_tasks_not_the_repo_root_s() {
+        // The real merge, not a hand-written payload: mise itself decides
+        // what a member directory inherits. Skipped when mise is absent.
+        if std::process::Command::new("mise")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: mise unavailable");
+            return;
+        }
+
+        let dir = TempDir::new("mise-member-merge");
+        let root = dir.path();
+        let member = root.join("apps").join("web");
+        fs::create_dir_all(&member).expect("member dir should be created");
+        fs::write(
+            root.join("mise.toml"),
+            "[tasks.repo-lint]\nrun = \"echo lint\"\n",
+        )
+        .expect("root config should be written");
+        fs::write(
+            member.join("mise.toml"),
+            "[tasks.web-build]\nrun = \"echo build\"\n",
+        )
+        .expect("member config should be written");
+        // mise refuses to read an untrusted config.
+        for path in [root.join("mise.toml"), member.join("mise.toml")] {
+            let _ = std::process::Command::new("mise")
+                .args(["trust", "--yes"])
+                .arg(&path)
+                .output();
+        }
+
+        let names = |tasks: &[ExtractedTask]| -> Vec<String> {
+            tasks
+                .iter()
+                .map(|t| match t {
+                    ExtractedTask::Recipe { name, .. } | ExtractedTask::Alias { name, .. } => {
+                        name.clone()
+                    }
+                })
+                .collect()
+        };
+
+        let from_member = extract_tasks(&member)
+            .expect("member extraction succeeds")
+            .tasks;
+        let from_root = extract_tasks(root).expect("root extraction succeeds").tasks;
+
+        assert!(
+            names(&from_member).contains(&"web-build".to_string()),
+            "a member must list what it declares; got {:?}",
+            names(&from_member),
+        );
+        assert!(
+            !names(&from_member).contains(&"repo-lint".to_string()),
+            "the repo root's tasks belong to the root's extraction, not the member's; got {:?}",
+            names(&from_member),
+        );
+        assert!(
+            names(&from_root).contains(&"repo-lint".to_string()),
+            "the root must still list its own tasks; got {:?}",
+            names(&from_root),
+        );
     }
 
     #[test]

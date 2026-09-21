@@ -466,6 +466,12 @@ struct WhyTask<'a> {
     usage: Option<&'a str>,
     #[cfg_attr(
         feature = "schema",
+        schemars(description = "Tool version pins the task declares, as `tool@version`.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<String>,
+    #[cfg_attr(
+        feature = "schema",
         schemars(description = "Input globs the source declares for up-to-date checks.")
     )]
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -639,6 +645,12 @@ fn task_report<'a>(
         depends_post: task.detail.depends_post.clone(),
         wait_for: task.detail.wait_for.clone(),
         env: task.detail.env.clone(),
+        tools: task
+            .detail
+            .tools
+            .iter()
+            .map(|(tool, version)| format!("{tool}@{version}"))
+            .collect(),
         usage: task.detail.usage.as_deref(),
         sources: task.detail.sources.iter().map(String::as_str).collect(),
         outputs: task.detail.outputs.iter().map(String::as_str).collect(),
