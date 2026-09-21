@@ -644,6 +644,173 @@ struct ValidateIssue {
     details: Option<String>,
 }
 
+/// A mise task's arguments and flags.
+///
+/// Tasks declare these as a `usage` KDL block. `mise tasks info --json`
+/// returns that block already parsed, so runner reads structure rather than
+/// re-implementing the KDL grammar.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct UsageSpec {
+    /// One-line signature mise renders for the task, e.g. `<--fn <name>> [dir]`.
+    pub signature: String,
+    pub args: Vec<UsageArg>,
+    pub flags: Vec<UsageFlag>,
+}
+
+/// One positional argument of a task.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UsageArg {
+    pub name: String,
+    pub help: Option<String>,
+    pub required: bool,
+    /// Accepted values, when the spec closes the set with `choices`.
+    pub choices: Vec<String>,
+}
+
+/// One flag of a task.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct UsageFlag {
+    /// Long spellings without the `--`.
+    pub long: Vec<String>,
+    /// Short spellings without the `-`.
+    pub short: Vec<String>,
+    pub help: Option<String>,
+    pub required: bool,
+    /// `true` when the flag consumes the next word.
+    pub takes_value: bool,
+}
+
+impl UsageSpec {
+    /// `true` when the spec declares nothing worth completing or checking.
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.args.is_empty() && self.flags.is_empty()
+    }
+
+    /// `true` when `word` is a flag that swallows the word after it, so the
+    /// next position holds that flag's value rather than another flag.
+    pub(crate) fn consumes_value_after(&self, word: &str) -> bool {
+        let Some(name) = word.strip_prefix("--") else {
+            return false;
+        };
+        if name.contains('=') {
+            return false;
+        }
+        self.flags
+            .iter()
+            .filter(|flag| flag.takes_value)
+            .any(|flag| flag.long.iter().any(|long| long == name))
+    }
+
+    /// Long spellings of every flag the spec marks required.
+    pub(crate) fn missing_required_flags(&self, provided: &[String]) -> Vec<String> {
+        self.flags
+            .iter()
+            .filter(|flag| flag.required)
+            .filter(|flag| {
+                !flag.long.iter().any(|long| {
+                    let dashed = format!("--{long}");
+                    provided
+                        .iter()
+                        .any(|word| word == &dashed || word.starts_with(&format!("{dashed}=")))
+                })
+            })
+            .filter_map(|flag| flag.long.first().map(|long| format!("--{long}")))
+            .collect()
+    }
+}
+
+/// Read `task`'s spec via `mise tasks info <task> --json`.
+///
+/// `None` when mise is missing, the task is unknown, or it declares no spec.
+/// One subprocess per call: the bulk `mise tasks ls --json` carries only the
+/// unparsed KDL string and mise exposes no bulk flag for the parsed form.
+pub(crate) fn usage_spec(root: &Path, task: &str) -> Option<UsageSpec> {
+    let stdout = json_stdout(root, &["tasks", "info", task, "--json"])?;
+    let info: TaskInfoJson = serde_json::from_slice(&stdout).ok()?;
+    let cmd = info.usage_spec?.cmd?;
+    let spec = UsageSpec {
+        signature: cmd.usage.unwrap_or_default(),
+        args: cmd
+            .args
+            .into_iter()
+            .map(|arg| UsageArg {
+                name: arg.name,
+                help: arg.help.filter(|h| !h.trim().is_empty()),
+                required: arg.required,
+                choices: arg.choices.map(|c| c.choices).unwrap_or_default(),
+            })
+            .collect(),
+        flags: cmd
+            .flags
+            .into_iter()
+            .map(|flag| UsageFlag {
+                long: flag.long,
+                short: flag.short,
+                help: flag.help.filter(|h| !h.trim().is_empty()),
+                required: flag.required,
+                takes_value: flag.arg.is_some(),
+            })
+            .collect(),
+    };
+    (!spec.is_empty()).then_some(spec)
+}
+
+/// `mise tasks info <task> --json`, narrowed to the spec.
+#[derive(Debug, Deserialize)]
+struct TaskInfoJson {
+    #[serde(default)]
+    usage_spec: Option<UsageSpecJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageSpecJson {
+    #[serde(default)]
+    cmd: Option<UsageCmdJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageCmdJson {
+    #[serde(default)]
+    usage: Option<String>,
+    #[serde(default)]
+    args: Vec<UsageArgJson>,
+    #[serde(default)]
+    flags: Vec<UsageFlagJson>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageArgJson {
+    name: String,
+    #[serde(default)]
+    help: Option<String>,
+    #[serde(default)]
+    required: bool,
+    #[serde(default)]
+    choices: Option<UsageChoicesJson>,
+}
+
+/// mise nests the accepted values one level deep.
+#[derive(Debug, Deserialize)]
+struct UsageChoicesJson {
+    #[serde(default)]
+    choices: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageFlagJson {
+    #[serde(default)]
+    long: Vec<String>,
+    #[serde(default)]
+    short: Vec<String>,
+    #[serde(default)]
+    help: Option<String>,
+    #[serde(default)]
+    required: bool,
+    /// Present when the flag consumes a value.
+    #[serde(default)]
+    arg: Option<serde::de::IgnoredAny>,
+}
+
 /// One task entry surfaced to the rest of the crate. Mirrors
 /// [`crate::tool::just::ExtractedTask`] so the detection-layer push helper
 /// can stay symmetric.
@@ -1652,6 +1819,61 @@ mod tests {
     fn first_line_quotes_the_first_non_empty_stderr_line() {
         assert_eq!(super::first_line(b""), "");
         assert_eq!(super::first_line(b"\n\n  boom  \nnext\n"), ": boom");
+    }
+
+    /// The `usage_spec.cmd` shape of `mise tasks info lower:leaf --json`,
+    /// captured from mise 2026.9.11.
+    fn leaf_spec() -> super::UsageSpec {
+        super::UsageSpec {
+            signature: "<--fn <name>> [dir]".to_string(),
+            args: vec![super::UsageArg {
+                name: "dir".to_string(),
+                help: Some("Core dump directory".to_string()),
+                required: false,
+                choices: vec![],
+            }],
+            flags: vec![super::UsageFlag {
+                long: vec!["fn".to_string()],
+                short: vec![],
+                help: Some("Stable function name".to_string()),
+                required: true,
+                takes_value: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn missing_required_flags_reports_an_absent_flag() {
+        let spec = leaf_spec();
+        assert_eq!(
+            spec.missing_required_flags(&["compiler/core-json".to_string()]),
+            ["--fn"],
+        );
+        assert!(
+            spec.missing_required_flags(&["--fn".to_string(), "foo".to_string()])
+                .is_empty()
+        );
+        // The `--flag=value` spelling counts as provided.
+        assert!(
+            spec.missing_required_flags(&["--fn=foo".to_string()])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn consumes_value_after_only_for_value_taking_flags() {
+        let spec = leaf_spec();
+        assert!(spec.consumes_value_after("--fn"));
+        // Already carries its value, so the next word is not it.
+        assert!(!spec.consumes_value_after("--fn=foo"));
+        assert!(!spec.consumes_value_after("--unknown"));
+        assert!(!spec.consumes_value_after("dir"));
+    }
+
+    #[test]
+    fn usage_spec_is_empty_without_args_or_flags() {
+        assert!(super::UsageSpec::default().is_empty());
+        assert!(!leaf_spec().is_empty());
     }
 
     #[test]

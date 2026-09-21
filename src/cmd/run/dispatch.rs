@@ -93,6 +93,31 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
     );
 }
 
+/// Refuse a mise task whose spec marks a flag required when that flag is
+/// absent. No-op for every other source, none of which declares a spec.
+///
+/// Runs before the dispatch arrow: without it the failure lands after mise
+/// has started the task and whatever it builds has run, and in a parallel
+/// chain the siblings are already going.
+fn check_mise_usage(ctx: &ProjectContext, entry: &Task, args: &[String]) -> Result<()> {
+    if entry.source != TaskSource::MiseToml {
+        return Ok(());
+    }
+    let task = entry.name.as_str();
+    let Some(spec) = tool::mise::usage_spec(&ctx.root, task) else {
+        return Ok(());
+    };
+    let missing = spec.missing_required_flags(args);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{task} requires {}\n  usage: {task} {}",
+        missing.join(", "),
+        spec.signature,
+    )
+}
+
 fn host_verbosity(
     overrides: &ResolutionOverrides,
     task: &Task,
@@ -535,6 +560,8 @@ pub(super) fn resolve_dispatch(
     // produces.
     let task_stack = crate::cmd::push_task_frame(dir, entry.source, &entry.name)?;
 
+    check_mise_usage(ctx, entry, args)?;
+
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
     let arrow =
@@ -545,9 +572,21 @@ pub(super) fn resolve_dispatch(
     }
 
     arrow(entry.source.label());
+    spawn_task(ctx, overrides, entry, args, sink, task_stack)
+}
 
+/// Assemble the child process for a matched task entry.
+fn spawn_task(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    entry: &Task,
+    args: &[String],
+    sink: crate::cmd::WarningSink<'_>,
+    task_stack: OsString,
+) -> Result<Dispatch> {
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::cmd::configure_command(spawn.command_mut(), dir, overrides);
+    crate::cmd::configure_command(spawn.command_mut(), entry.dir(&ctx.root), overrides);
+    let task_key = super::task_output_key(entry);
     crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
         .command_mut()

@@ -47,6 +47,20 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   validate` findings such as a missing or circular dependency. They appear
   under Decisions and Warnings, and as `mise` diagnostics in `--json`.
 
+- Shell completion offers a mise task's own flags and argument choices after
+  its name, from the `usage` spec the task declares. `run lower:leaf <TAB>`
+  offers `--fn`; `run baseline:explain <TAB>` offers that argument's
+  `choices`. A flag that takes a value suppresses further flag offers in the
+  position it consumes. Sources without a spec complete nothing, as before.
+
+- A mise task whose spec marks a flag required fails before dispatch when the
+  flag is absent, naming the flag and the task's signature. It used to fail
+  inside the task, after mise and whatever the task builds had already
+  started, which in a parallel chain leaves siblings running.
+
+- `runner why` prints a mise task's signature (`lower:leaf <--fn <name>>
+  [dir]`) instead of the raw `usage` block.
+
 ### Fixed
 
 - Mise task discovery accepts task references in `run` arrays

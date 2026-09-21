@@ -817,7 +817,17 @@ fn print_detail(task: &Task, ctx: &ProjectContext) {
         lines.push(("timeout", timeout.clone()));
     }
     if let Some(usage) = &detail.usage {
-        lines.push(("usage", usage.replace('\n', "\n              ")));
+        // Prefer the signature the source itself renders; fall back to the
+        // raw spec when the source cannot be asked for a parsed one.
+        let rendered = (task.source == TaskSource::MiseToml)
+            .then(|| crate::tool::mise::usage_spec(&ctx.root, &task.name))
+            .flatten()
+            .filter(|spec| !spec.signature.trim().is_empty())
+            .map(|spec| format!("{} {}", task.name, spec.signature));
+        lines.push((
+            "usage",
+            rendered.unwrap_or_else(|| usage.replace('\n', "\n              ")),
+        ));
     }
     for (label, value) in lines {
         println!("  {:<12}{}", label.dimmed(), value);
