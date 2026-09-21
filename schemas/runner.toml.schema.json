@@ -120,6 +120,18 @@
             "allow",
             null
           ]
+        },
+        "tools": {
+          "description": "Whether `runner install` first installs the project's toolchain\nthrough its tool manager (`mise install` when a mise config is\ndetected). `\"auto\"` (the default) runs it before the package managers\nand skips with a warning when the tool manager is not on `PATH`;\n`\"off\"` leaves tools alone. Overridden by `RUNNER_INSTALL_TOOLS`, then\nthe `--no-tools` flag.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "auto",
+            "off",
+            null
+          ]
         }
       },
       "additionalProperties": false

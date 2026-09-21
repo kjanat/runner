@@ -9,7 +9,9 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
-use crate::resolver::{CollisionPolicy, ResolutionOverrides, ResolveError, Resolver, ScriptPolicy};
+use crate::resolver::{
+    CollisionPolicy, ResolutionOverrides, ResolveError, Resolver, ScriptPolicy, ToolsPolicy,
+};
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 
@@ -37,10 +39,15 @@ pub(crate) fn install_pms(
     frozen: bool,
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
+    let tools = tools_step(ctx, overrides);
     // Planned before the GHA group opens so a refused override doesn't
     // emit an empty `runner: install` group.
     let plan = if ctx.package_managers.is_empty() {
-        plan_from_resolver(ctx, overrides, sink)?
+        match plan_from_resolver(ctx, overrides, sink) {
+            Ok(plan) => plan,
+            Err(err) if tools.is_some() && is_no_signals(&err) => InstallPlan::empty(),
+            Err(err) => return Err(err),
+        }
     } else {
         plan_install(ctx, overrides)?
     };
@@ -51,6 +58,15 @@ pub(crate) fn install_pms(
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
     let _group = super::task_group(overrides, "install", "install");
+
+    if let Some(runner) = tools
+        && let Some(code) = run_tools_step(ctx, runner, frozen, overrides)?
+    {
+        return Ok(code);
+    }
+    if plan.pms.is_empty() {
+        return Ok(0);
+    }
 
     if overrides.shows_warnings()
         && let (Some(nv), Some(cur)) = (&ctx.node_version, &ctx.current_node)
@@ -71,6 +87,86 @@ pub(crate) fn install_pms(
     }
 
     run_installs_parallel(ctx, &plan, frozen, overrides)
+}
+
+/// The tool manager that installs the project's toolchain before any
+/// package manager runs: mise, when a mise config is detected and
+/// [`ToolsPolicy::Auto`] is in effect. Package managers themselves are often
+/// mise-managed tools, so this step always precedes them.
+pub(crate) fn tools_step(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+) -> Option<TaskRunner> {
+    (overrides.install_tools == ToolsPolicy::Auto && ctx.task_runners.contains(&TaskRunner::Mise))
+        .then_some(TaskRunner::Mise)
+}
+
+/// `true` when the resolver found nothing to install with. A project that
+/// only declares tools (a `mise.toml` without a manifest) still has a
+/// meaningful `runner install`: the toolchain step alone.
+fn is_no_signals(err: &anyhow::Error) -> bool {
+    matches!(
+        err.downcast_ref::<ResolveError>(),
+        Some(ResolveError::NoSignalsFound { .. })
+    )
+}
+
+/// Run the toolchain step in the foreground. Returns the tool manager's
+/// exit code when it fails, so the package managers that may depend on the
+/// tools it installs never run against a half-installed toolchain. A
+/// missing binary is a warning: the config describes tools the host may
+/// already have on `PATH`.
+fn run_tools_step(
+    ctx: &ProjectContext,
+    runner: TaskRunner,
+    frozen: bool,
+    overrides: &ResolutionOverrides,
+) -> Result<Option<i32>> {
+    if overrides.shows_progress() {
+        eprintln!(
+            "{} {}",
+            "installing tools with".dimmed(),
+            runner.label().bold()
+        );
+    }
+    let verbosity = tool::HostVerbosity {
+        diagnostics: overrides.host_verbosity_for("install").diagnostics,
+        stream: tool::Stream::Inherit,
+    };
+    let mut cmd = match runner {
+        TaskRunner::Mise => tool::mise::install_cmd(&ctx.root, frozen, verbosity),
+        other => bail!("{} has no toolchain install step", other.label()),
+    };
+    super::configure_command(&mut cmd, &ctx.root, overrides);
+    super::configure_task_streams(&mut cmd, overrides, "install");
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if overrides.shows_warnings() {
+                eprintln!(
+                    "{} {} config detected but `{}` is not on PATH; skipping the toolchain step \
+                     (pass --no-tools or set `[install].tools = \"off\"` to silence this)",
+                    "warn:".yellow().bold(),
+                    runner.label(),
+                    cmd.get_program().to_string_lossy(),
+                );
+            }
+            return Ok(None);
+        }
+        Err(error) => {
+            let program = cmd.get_program().to_string_lossy().into_owned();
+            return Err(anyhow::Error::new(error).context(format!(
+                "installing tools with {}: `{program}` failed to launch",
+                runner.label()
+            )));
+        }
+    };
+    let status = child.wait()?;
+    Ok(if status.success() {
+        None
+    } else {
+        Some(super::exit_code(status))
+    })
 }
 
 /// Which PMs this invocation installs with, in precedence order:
@@ -211,6 +307,17 @@ pub(crate) struct InstallPlan {
     /// Directories kept with two or more writers on the user's say-so. The
     /// warning text and the serial run-order both derive from this.
     pub collisions: Vec<CollisionDir>,
+}
+
+impl InstallPlan {
+    /// A plan with no package managers: the toolchain step alone.
+    const fn empty() -> Self {
+        Self {
+            pms: Vec::new(),
+            shadowed: Vec::new(),
+            collisions: Vec::new(),
+        }
+    }
 }
 
 /// Resolve the install set and every install-directory collision in it.
@@ -810,16 +917,16 @@ mod tests {
 
     use super::{
         CollisionDir, DenySupport, ForceSupport, InstallPlan, Shadowed, build_install_command,
-        deny_support, force_support, install_lanes, plan_install, script_directive,
-        select_install_pms, spawn_error, unforceable_managers, unsupported_deny_managers,
-        warn_unsupported_script_policy,
+        deny_support, force_support, install_lanes, is_no_signals, plan_install, script_directive,
+        select_install_pms, spawn_error, tools_step, unforceable_managers,
+        unsupported_deny_managers, warn_unsupported_script_policy,
     };
     use crate::resolver::{
         CollisionPolicy, FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides,
-        ResolveError, ScriptPolicy,
+        ResolveError, ScriptPolicy, ToolsPolicy,
     };
     use crate::tool::ScriptDirective;
-    use crate::types::{Ecosystem, InstallDir, PackageManager, ProjectContext};
+    use crate::types::{Ecosystem, InstallDir, PackageManager, ProjectContext, TaskRunner};
 
     fn context(pms: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
@@ -842,6 +949,49 @@ mod tests {
             pm: Some(PmOverride { pm, origin }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tools_step_runs_mise_when_detected() {
+        let mut ctx = context(vec![PackageManager::Npm]);
+        ctx.task_runners.push(TaskRunner::Mise);
+        let overrides = ResolutionOverrides::default();
+        assert_eq!(tools_step(&ctx, &overrides), Some(TaskRunner::Mise));
+    }
+
+    #[test]
+    fn tools_step_is_absent_without_mise_config() {
+        let mut ctx = context(vec![PackageManager::Npm]);
+        ctx.task_runners.push(TaskRunner::Just);
+        let overrides = ResolutionOverrides::default();
+        assert_eq!(tools_step(&ctx, &overrides), None);
+    }
+
+    #[test]
+    fn tools_step_honours_off_policy() {
+        let mut ctx = context(vec![]);
+        ctx.task_runners.push(TaskRunner::Mise);
+        let overrides = ResolutionOverrides {
+            install_tools: ToolsPolicy::Off,
+            ..Default::default()
+        };
+        assert_eq!(tools_step(&ctx, &overrides), None);
+    }
+
+    #[test]
+    fn no_signals_error_is_recognised_through_anyhow() {
+        let err: anyhow::Error = ResolveError::NoSignalsFound {
+            ecosystem: Ecosystem::Node,
+            soft: true,
+        }
+        .into();
+        assert!(is_no_signals(&err));
+        let other: anyhow::Error = ResolveError::InstallPmsNotDetected {
+            missing: vec![PackageManager::Bun],
+            detected: vec![],
+        }
+        .into();
+        assert!(!is_no_signals(&other));
     }
 
     #[test]

@@ -250,6 +250,19 @@ pub(crate) struct InstallSection {
         schemars(extend("enum" = ["resolve", "error", null]))
     )]
     pub on_collision: Option<String>,
+
+    /// Whether `runner install` first installs the project's toolchain
+    /// through its tool manager (`mise install` when a mise config is
+    /// detected). `"auto"` (the default) runs it before the package managers
+    /// and skips with a warning when the tool manager is not on `PATH`;
+    /// `"off"` leaves tools alone. Overridden by `RUNNER_INSTALL_TOOLS`, then
+    /// the `--no-tools` flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "schema",
+        schemars(extend("enum" = ["auto", "off", null]))
+    )]
+    pub tools: Option<String>,
 }
 
 /// `[chain]` section, failure policy for `run -s/-p` chains and
@@ -667,7 +680,7 @@ const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
     ("pm", &["node", "python"]),
     ("task_runner", &["prefer"]),
     ("tasks", &["prefer", "overrides"]),
-    ("install", &["pms", "scripts", "on_collision"]),
+    ("install", &["pms", "scripts", "on_collision", "tools"]),
     ("resolution", &["fallback", "on_mismatch"]),
     ("chain", &["keep_going", "kill_on_fail"]),
     ("github", &["group_output", "group_parallel"]),

@@ -37,7 +37,7 @@ use crate::cmd::install::InstallPlan;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
     CollisionPolicy, FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
-    ScriptPolicy,
+    ScriptPolicy, ToolsPolicy,
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
@@ -169,6 +169,7 @@ struct Overrides {
     fallback: FallbackPolicy,
     failure_policy: FailurePolicy,
     install_pms: Vec<PackageManager>,
+    install_tools: ToolsPolicy,
     no_warnings: bool,
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
@@ -653,6 +654,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         fallback: overrides.fallback,
         failure_policy: overrides.failure_policy,
         install_pms: overrides.install_pms.clone(),
+        install_tools: overrides.install_tools,
         no_warnings: overrides.no_warnings,
         on_collision: overrides.on_collision,
         output_grouping: OutputGrouping {
@@ -1656,6 +1658,7 @@ mod tests {
             install_pms,
             script_policy,
             on_collision,
+            install_tools,
             parent_group_open,
             parent_warned,
         ];

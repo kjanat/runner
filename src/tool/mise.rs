@@ -192,10 +192,10 @@ struct MiseJsonTask {
     /// filter these out so they don't appear as project tasks.
     #[serde(default)]
     global: bool,
-    /// `run` is a list of command strings; falls back to the joined
-    /// form when `description` is empty.
+    /// `run` is a list of command strings or task references; falls back
+    /// to the joined form when `description` is empty.
     #[serde(default)]
-    run: Vec<String>,
+    run: Vec<RunStep>,
     /// External script reference; falls back to this when both
     /// `description` and `run` are empty.
     #[serde(default)]
@@ -207,10 +207,7 @@ impl MiseJsonTask {
         if !self.description.trim().is_empty() {
             return Some(self.description.clone());
         }
-        if !self.run.is_empty() {
-            return Some(self.run.join(" && "));
-        }
-        self.file.clone()
+        join_steps(&self.run).or_else(|| self.file.clone())
     }
 }
 
@@ -232,6 +229,23 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c.arg("run").arg(task);
     if !args.is_empty() {
         c.arg("--").args(args);
+    }
+    c
+}
+
+/// `mise install [--locked]`
+///
+/// Installs every tool the project's mise config declares. `--locked` is
+/// added for a frozen install only when `mise.lock` exists at `root`, since
+/// mise refuses the flag without a lockfile.
+pub(crate) fn install_cmd(root: &Path, frozen: bool, verbosity: super::HostVerbosity) -> Command {
+    let mut c = super::program::command("mise");
+    if verbosity.silences() {
+        c.arg("--quiet");
+    }
+    c.arg("install");
+    if frozen && root.join("mise.lock").is_file() {
+        c.arg("--locked");
     }
     c
 }
@@ -308,23 +322,48 @@ struct TaskTable {
 
 /// Shared shape for both inline (`name = "…"` / `name = ["…", "…"]`) and
 /// table-form (`[tasks.name] run = …`) task bodies. Mise accepts a bare
-/// string or a string array in either position.
+/// string or an array of [`RunStep`]s in either position.
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RunField {
     Single(String),
-    Multiple(Vec<String>),
+    Multiple(Vec<RunStep>),
+}
+
+/// One element of a `run` array: a shell command, a reference to another
+/// task (`{ task = "build" }`), or a shape this version does not model.
+/// The catch-all keeps discovery alive when mise grows a new step form.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RunStep {
+    Command(String),
+    TaskRef { task: String },
+    Unknown(serde::de::IgnoredAny),
+}
+
+impl RunStep {
+    fn render(&self) -> Option<String> {
+        match self {
+            Self::Command(command) => Some(command.clone()),
+            Self::TaskRef { task } => Some(format!("mise run {task}")),
+            Self::Unknown(_) => None,
+        }
+    }
+}
+
+/// Join rendered steps with ` && ` for the description column. Empty or
+/// all-unknown arrays collapse to `None` so the caller can fall through
+/// to other description sources.
+fn join_steps(steps: &[RunStep]) -> Option<String> {
+    let rendered: Vec<String> = steps.iter().filter_map(RunStep::render).collect();
+    (!rendered.is_empty()).then(|| rendered.join(" && "))
 }
 
 impl RunField {
-    /// Join `Multiple` commands with ` && ` for the description column;
-    /// return the single command verbatim. Empty arrays collapse to
-    /// `None` so the caller can fall through to other description
-    /// sources.
     fn as_description(&self) -> Option<String> {
         match self {
             Self::Single(s) => Some(s.clone()),
-            Self::Multiple(v) => (!v.is_empty()).then(|| v.join(" && ")),
+            Self::Multiple(steps) => join_steps(steps),
         }
     }
 }
@@ -379,20 +418,9 @@ impl<'de> Deserialize<'de> for TaskEntry {
         let value = toml::Value::deserialize(deserializer)?;
         let kind = match value {
             toml::Value::String(s) => TaskEntryKind::InlineRun(RunField::Single(s)),
-            toml::Value::Array(arr) => {
-                let mut strings = Vec::with_capacity(arr.len());
-                for v in arr {
-                    match v {
-                        toml::Value::String(s) => strings.push(s),
-                        other => {
-                            return Err(serde::de::Error::custom(format!(
-                                "tasks.<name> array must contain strings, got {}",
-                                other.type_str()
-                            )));
-                        }
-                    }
-                }
-                TaskEntryKind::InlineRun(RunField::Multiple(strings))
+            toml::Value::Array(_) => {
+                let steps: Vec<RunStep> = value.try_into().map_err(serde::de::Error::custom)?;
+                TaskEntryKind::InlineRun(RunField::Multiple(steps))
             }
             toml::Value::Table(_) => {
                 let table: TaskTable = value.try_into().map_err(serde::de::Error::custom)?;
@@ -414,7 +442,8 @@ mod tests {
     use std::fs;
 
     use super::{
-        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, parse_cli_output, run_cmd,
+        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, install_cmd,
+        parse_cli_output, run_cmd,
     };
     use crate::tool::test_support::TempDir;
 
@@ -454,6 +483,26 @@ mod tests {
         );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["run", "test", "--", "--watch", "unit"]);
+    }
+
+    #[test]
+    fn install_cmd_is_bare_without_lockfile() {
+        let dir = TempDir::new("mise-install-bare");
+        let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
+        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(argv, ["install"]);
+    }
+
+    #[test]
+    fn install_cmd_locks_when_frozen_and_lockfile_present() {
+        let dir = TempDir::new("mise-install-locked");
+        fs::write(dir.path().join("mise.lock"), "").expect("mise.lock should be written");
+        let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
+        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(argv, ["install", "--locked"]);
+        let cmd = install_cmd(dir.path(), false, crate::tool::HostVerbosity::default());
+        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(argv, ["install"]);
     }
 
     #[test]
@@ -497,6 +546,93 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "ci".to_string(),
                 description: Some("cargo fmt && cargo clippy".to_string()),
+            }],
+        );
+    }
+
+    #[test]
+    fn extract_inline_array_with_task_references() {
+        let dir = TempDir::new("mise-inline-task-ref");
+        fs::write(
+            dir.path().join(".mise.toml"),
+            "[tasks]\nfull = [{ task = \"check\" }, \"echo done\"]\n",
+        )
+        .expect(".mise.toml should be written");
+
+        let tasks = extract_tasks_from_source(dir.path()).expect("parse should succeed");
+        assert_eq!(
+            tasks,
+            [ExtractedTask::Recipe {
+                name: "full".to_string(),
+                description: Some("mise run check && echo done".to_string()),
+            }],
+        );
+    }
+
+    #[test]
+    fn extract_table_task_with_task_references_keeps_siblings() {
+        let dir = TempDir::new("mise-table-task-ref");
+        fs::write(
+            dir.path().join(".mise.toml"),
+            "[tasks.check]\nrun = \"echo check\"\n\n[tasks.oracle]\nrun = \"echo \
+             oracle\"\n\n[tasks.full]\nrun = [{ task = \"check\" }, { task = \"oracle\" }]\n",
+        )
+        .expect(".mise.toml should be written");
+
+        let tasks = extract_tasks_from_source(dir.path()).expect("parse should succeed");
+        assert_eq!(
+            tasks,
+            [
+                ExtractedTask::Recipe {
+                    name: "check".to_string(),
+                    description: Some("echo check".to_string()),
+                },
+                ExtractedTask::Recipe {
+                    name: "full".to_string(),
+                    description: Some("mise run check && mise run oracle".to_string()),
+                },
+                ExtractedTask::Recipe {
+                    name: "oracle".to_string(),
+                    description: Some("echo oracle".to_string()),
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn extract_table_task_tolerates_unknown_step_shape() {
+        let dir = TempDir::new("mise-table-unknown-step");
+        fs::write(
+            dir.path().join(".mise.toml"),
+            "[tasks.full]\nrun = [{ tasks = [\"a\", \"b\"] }, \"echo done\"]\n",
+        )
+        .expect(".mise.toml should be written");
+
+        let tasks = extract_tasks_from_source(dir.path()).expect("parse should succeed");
+        assert_eq!(
+            tasks,
+            [ExtractedTask::Recipe {
+                name: "full".to_string(),
+                description: Some("echo done".to_string()),
+            }],
+        );
+    }
+
+    #[test]
+    fn extract_table_task_with_only_task_references_and_description() {
+        let dir = TempDir::new("mise-table-task-ref-desc");
+        fs::write(
+            dir.path().join(".mise.toml"),
+            "[tasks.full]\ndescription = \"Everything\"\nrun = [{ task = \"check\" }]\n",
+        )
+        .expect(".mise.toml should be written");
+
+        let tasks = extract_tasks_from_source(dir.path()).expect("parse should succeed");
+        assert_eq!(
+            tasks,
+            [ExtractedTask::Recipe {
+                name: "full".to_string(),
+                description: Some("Everything".to_string()),
             }],
         );
     }
@@ -826,6 +962,44 @@ mod tests {
                 name: "ci".to_string(),
                 description: Some("cargo fmt && cargo clippy".to_string()),
             }],
+        );
+    }
+
+    #[test]
+    fn cli_output_accepts_task_reference_steps() {
+        let dir = TempDir::new("mise-cli-task-ref");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
+        let src = project.join("mise.toml").to_string_lossy().to_string();
+        let payload = serde_json::json!([
+            {
+                "name": "check", "aliases": [], "description": "", "source": src,
+                "hide": false, "global": false, "run": ["echo check"], "file": null,
+            },
+            {
+                "name": "full", "aliases": [], "description": "", "source": src,
+                "hide": false, "global": false,
+                "run": [{ "task": "check" }, { "task": "oracle" }],
+                "file": null,
+            },
+        ])
+        .to_string();
+
+        let tasks = parse_cli_output(payload.as_bytes(), &project).expect("payload should parse");
+        assert_eq!(
+            tasks,
+            [
+                ExtractedTask::Recipe {
+                    name: "check".to_string(),
+                    description: Some("echo check".to_string()),
+                },
+                ExtractedTask::Recipe {
+                    name: "full".to_string(),
+                    description: Some("mise run check && mise run oracle".to_string()),
+                },
+            ],
         );
     }
 

@@ -1491,6 +1491,20 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_no_tools_flag() {
+        let cli = Cli::try_parse_from(["runner", "install", "--no-tools"]).expect("parses");
+        let Some(Command::Install { no_tools, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(no_tools);
+        let cli = Cli::try_parse_from(["runner", "install"]).expect("parses");
+        let Some(Command::Install { no_tools, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(!no_tools);
+    }
+
+    #[test]
     fn install_scripts_and_no_scripts_are_mutually_exclusive() {
         let err = Cli::try_parse_from(["runner", "install", "--scripts", "--no-scripts"])
             .expect_err("--scripts and --no-scripts must conflict");
@@ -1872,6 +1886,10 @@ pub(crate) enum Command {
             display_order = help_order::COMMAND + 2
         )]
         scripts: bool,
+        /// Skip the toolchain step (`mise install`) that otherwise runs first
+        /// when a mise config is detected
+        #[arg(long = "no-tools", display_order = help_order::COMMAND + 3)]
+        no_tools: bool,
         /// Optional task names to run after install completes. Sequential by
         /// default; `-p` runs them concurrently once install finishes (install
         /// itself always runs first, never as a parallel sibling). Plain

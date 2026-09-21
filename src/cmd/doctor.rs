@@ -54,7 +54,7 @@ pub(crate) fn doctor(
     // naming an undetected PM) is the diagnosis, so it is rendered rather than
     // propagated, same contract as the resolver error above.
     let plan = super::install::plan_install(ctx, overrides);
-    print_human(&report, overrides, plan.as_ref());
+    print_human(ctx, &report, overrides, plan.as_ref());
 
     Ok(())
 }
@@ -73,6 +73,7 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
     reason = "linear section-by-section renderer; splitting hurts readability"
 )]
 fn print_human(
+    ctx: &ProjectContext,
     report: &Value,
     overrides: &ResolutionOverrides,
     plan: Result<&InstallPlan, &ResolveError>,
@@ -220,6 +221,9 @@ fn print_human(
         if let Some(err) = report["decisions"]["node_pm_error"].as_str() {
             writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
                 .expect("writeln to String should not fail");
+        }
+        if let Some(runner) = super::install::tools_step(ctx, overrides) {
+            writeln_field(out, "tools", runner.label());
         }
         match plan {
             Ok(plan) => {

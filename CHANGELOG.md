@@ -18,6 +18,27 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Added
+
+- `runner install` runs `mise install` before the package managers when the
+  project has a mise config, so tools the config declares (often the package
+  managers themselves) exist before they are called. `--frozen` adds
+  `--locked` when `mise.lock` exists. A project with only a mise config and no
+  manifest now installs its toolchain instead of failing with no signals. A
+  missing `mise` binary warns and continues. `--no-tools`,
+  `RUNNER_INSTALL_TOOLS=off`, and `[install].tools = "off"` skip the step;
+  `runner doctor` lists it under Decisions and reports the policy as
+  `install_tools` in `--json`.
+
+### Fixed
+
+- Mise task discovery accepts task references in `run` arrays
+  (`run = [{ task = "check" }]`). One such task used to fail parsing of the
+  whole file, both through `mise tasks --json` and the direct TOML fallback,
+  so `runner list` reported no mise tasks at all (#138). Referenced tasks
+  render as `mise run <task>` in the description column; step shapes runner
+  does not model are skipped instead of aborting discovery.
+
 ## [0.26.2] - 2026-09-08
 
 ### Fixed

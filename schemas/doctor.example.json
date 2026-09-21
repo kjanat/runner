@@ -41,6 +41,7 @@
     "failure_policy": "fail-fast",
     "fallback": "probe",
     "install_pms": [],
+    "install_tools": "auto",
     "no_warnings": false,
     "on_collision": "resolve",
     "on_mismatch": "warn",

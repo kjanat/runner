@@ -238,7 +238,9 @@ a missing attestation fatal; `verify: off` skips the check.
 
 `runner install` is not a task; it runs the project's toolchain command(s)
 (`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
-(`test`, then `build`) sequentially.
+(`test`, then `build`) sequentially. When the project has a mise config,
+`mise install` runs first so the package managers it declares exist before
+they are called; `--no-tools` (or `[install].tools = "off"`) skips that step.
 
 That is the point: the workflow stays boring even when the project underneath is
 npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation that repo
@@ -345,7 +347,7 @@ runner <task> [-- <args...>]        # run a task
 runner run <target> [-- <args...>]  # run a task or command
 run <target> [-- <args...>]         # alias for `runner run`
 
-runner install [--frozen] [--no-scripts|--scripts]  # install dependencies
+runner install [--frozen] [--no-scripts|--scripts] [--no-tools]  # install dependencies
 runner clean [-y] [--include-framework]
 runner list [--raw] [--json]        # list available tasks
 runner info [--json]                # show detected project info
@@ -617,10 +619,15 @@ overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the or
 # flag (their dependency build scripts need a trustedDependencies /
 # onlyBuiltDependencies manifest allowlist runner won't write), so they warn.
 # Precedence: CLI --no-scripts/--scripts > RUNNER_INSTALL_SCRIPTS > [install].scripts.
+# `tools` controls the toolchain step that precedes the package managers:
+# "auto" (the default) runs `mise install` first when a mise config is
+# detected and warns when mise is not on PATH; "off" skips it. Precedence:
+# CLI --no-tools > RUNNER_INSTALL_TOOLS > [install].tools.
 [install]
 pms          = ["bun"]    # only install with these; each must be detected
 scripts      = "deny"     # deny | allow  (absent = each PM's own default)
 on_collision = "resolve"  # resolve (one writer per install dir) | error
+tools        = "auto"     # auto (mise install first) | off
 
 # Resolver policy knobs.
 [resolution]

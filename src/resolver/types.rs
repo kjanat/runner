@@ -142,6 +142,10 @@ pub(crate) struct ResolutionOverrides {
     /// Install-directory collision policy, resolved from
     /// `RUNNER_INSTALL_ON_COLLISION` (env) → `[install].on_collision` (config).
     pub on_collision: CollisionPolicy,
+    /// Toolchain install policy, resolved from `RUNNER_INSTALL_TOOLS` (env)
+    /// → `[install].tools` (config); the `--no-tools` flag is layered on at
+    /// the dispatch boundary.
+    pub install_tools: ToolsPolicy,
     /// `true` when a parent `runner`/`run` already opened a GitHub Actions
     /// log group above this process (signalled via the inherited
     /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest:
@@ -537,6 +541,35 @@ impl CollisionPolicy {
     }
 }
 
+/// Whether `runner install` runs the project's tool manager before its
+/// package managers. Set via `[install].tools` / `RUNNER_INSTALL_TOOLS` /
+/// `--no-tools`.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ToolsPolicy {
+    /// Run `mise install` first when a mise config is detected; warn and
+    /// continue when the binary is missing.
+    #[default]
+    Auto,
+    /// Skip the toolchain step.
+    Off,
+}
+
+impl ToolsPolicy {
+    /// Every variant, the closed set [`super::policies::parse_tools_label`]
+    /// validates against.
+    pub(crate) const ALL: [Self; 2] = [Self::Auto, Self::Off];
+
+    /// The `[install].tools` / `RUNNER_INSTALL_TOOLS` label.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Off => "off",
+        }
+    }
+}
+
 /// A package-manager override plus the source the user set it from.
 #[derive(Debug, Clone)]
 pub(crate) struct PmOverride {
@@ -728,6 +761,10 @@ pub(crate) struct OverrideSources<'a> {
     /// `RUNNER_INSTALL_ON_COLLISION` env (`resolve`|`error`). No CLI flag; the
     /// config side comes from `[install].on_collision`.
     pub install_on_collision: SourceValue<'a>,
+    /// `RUNNER_INSTALL_TOOLS` env (`auto`|`off`). The `cli` side stays unused
+    /// here; `--no-tools` is layered on at the dispatch boundary; the config
+    /// side comes from `[install].tools`.
+    pub install_tools: SourceValue<'a>,
     /// Internal `RUNNER_GROUP_ACTIVE` nesting marker a parent runner set on
     /// this process (see `crate::cmd::GROUP_ACTIVE_ENV`). Env-only, no CLI or
     /// config side, but captured here so `from_sources` stays a pure function

@@ -1107,6 +1107,7 @@ const fn apply_script_policy_flags(cli: &cli::Cli, overrides: &mut resolver::Res
     if let Some(cli::Command::Install {
         no_scripts,
         scripts,
+        no_tools,
         ..
     }) = cli.command.as_ref()
     {
@@ -1114,6 +1115,9 @@ const fn apply_script_policy_flags(cli: &cli::Cli, overrides: &mut resolver::Res
             overrides.script_policy = resolver::ScriptPolicy::Deny;
         } else if *scripts {
             overrides.script_policy = resolver::ScriptPolicy::Allow;
+        }
+        if *no_tools {
+            overrides.install_tools = resolver::ToolsPolicy::Off;
         }
     }
 }
