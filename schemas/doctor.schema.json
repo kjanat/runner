@@ -546,7 +546,6 @@
         "failure_policy",
         "fallback",
         "install_pms",
-        "install_tools",
         "no_warnings",
         "on_collision",
         "on_mismatch",
@@ -577,9 +576,6 @@
           "items": {
             "$ref": "#/$defs/PackageManager"
           }
-        },
-        "install_tools": {
-          "$ref": "#/$defs/ToolsPolicy"
         },
         "no_warnings": {
           "type": "boolean"
@@ -1059,21 +1055,6 @@
             }
           },
           "additionalProperties": false
-        }
-      ]
-    },
-    "ToolsPolicy": {
-      "description": "Whether `runner install` runs the project's tool manager before its\npackage managers. Set via `[install].tools` / `RUNNER_INSTALL_TOOLS` /\n`--no-tools`.",
-      "oneOf": [
-        {
-          "description": "Run `mise install` first when a mise config is detected; warn and\ncontinue when the binary is missing.",
-          "type": "string",
-          "const": "auto"
-        },
-        {
-          "description": "Skip the toolchain step.",
-          "type": "string",
-          "const": "off"
         }
       ]
     },

@@ -9,9 +9,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow};
 
-use super::types::{
-    CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolicy, TaskVerbosity, ToolsPolicy,
-};
+use super::types::{CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolicy, TaskVerbosity};
 use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
 use crate::config::{LoadedConfig, TaskSpec, VerbosityConfig};
@@ -369,18 +367,6 @@ pub(super) fn parse_collision_label(raw: &str) -> Result<CollisionPolicy> {
             anyhow!(
                 "unknown on-collision policy {raw:?}; expected one of {}",
                 join_labels(CollisionPolicy::ALL.iter().map(|p| p.label())),
-            )
-        })
-}
-
-pub(super) fn parse_tools_label(raw: &str) -> Result<ToolsPolicy> {
-    ToolsPolicy::ALL
-        .into_iter()
-        .find(|policy| policy.label() == raw)
-        .ok_or_else(|| {
-            anyhow!(
-                "unknown tools policy {raw:?}; expected one of {}",
-                join_labels(ToolsPolicy::ALL.iter().map(|p| p.label())),
             )
         })
 }

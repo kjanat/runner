@@ -555,7 +555,7 @@ struct MemberExtraction {
     make: Option<Described>,
     just: Option<anyhow::Result<Vec<tool::just::ExtractedTask>>>,
     go_task: Option<Described>,
-    mise: Option<anyhow::Result<Vec<tool::mise::ExtractedTask>>>,
+    mise: Option<anyhow::Result<tool::mise::MiseTasks>>,
     bacon: Option<Described>,
 }
 
@@ -606,12 +606,8 @@ fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
         push_described_tasks_in(ctx, TaskSource::Taskfile, result, Some(&member));
     }
     if let Some(result) = mise {
-        push_recipe_alias_tasks_in(
-            ctx,
-            TaskSource::MiseToml,
-            result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
-            Some(&member),
-        );
+        let result = result.map(|extracted| mise_entries(ctx, extracted, Some(&member)));
+        push_recipe_alias_tasks_in(ctx, TaskSource::MiseToml, result, Some(&member));
     }
     if let Some(result) = bacon {
         push_described_tasks_in(ctx, TaskSource::BaconToml, result, Some(&member));
@@ -686,15 +682,28 @@ fn push_go_tasks(
 }
 
 /// Append tasks from the mise source, preserving alias→target metadata.
-fn push_mise_tasks(
+fn push_mise_tasks(ctx: &mut ProjectContext, result: anyhow::Result<tool::mise::MiseTasks>) {
+    let result = result.map(|extracted| mise_entries(ctx, extracted, None));
+    push_recipe_alias_tasks(ctx, TaskSource::MiseToml, result);
+}
+
+/// Reduce a mise extraction to the entry list `push_recipe_alias_tasks`
+/// consumes, recording the degraded-view warning when `mise tasks --json`
+/// was tried and could not be read. Falling back to the single-file TOML
+/// parser with mise installed means runner is showing less than
+/// `mise tasks` would, which is worth saying out loud.
+fn mise_entries(
     ctx: &mut ProjectContext,
-    result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,
-) {
-    push_recipe_alias_tasks(
-        ctx,
-        TaskSource::MiseToml,
-        result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
-    );
+    extracted: tool::mise::MiseTasks,
+    member: Option<&Arc<WorkspaceMember>>,
+) -> Vec<RecipeOrAlias> {
+    if let Some(reason) = extracted.degraded {
+        ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::MiseToml.label(),
+            error: member.map_or_else(|| reason.clone(), |m| format!("{}: {reason}", m.path)),
+        });
+    }
+    extracted.tasks.into_iter().map(mise_entry_triple).collect()
 }
 
 fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {

@@ -57,7 +57,7 @@ pub(crate) use types::PmOverride;
 pub(crate) use types::RuntimeOverride;
 pub(crate) use types::{
     CliOverrides, CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
-    ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy, ToolsPolicy,
+    ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
 };
 
 /// Join an iterator of `&'static str` labels with `", "`. Used by the

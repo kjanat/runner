@@ -1,8 +1,10 @@
 //! Subcommand implementations: info, run, install, clean, list, completions.
 
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 use colored::Colorize;
 
@@ -41,10 +43,10 @@ pub(crate) use schema::config_schema;
 pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 
-/// Shared setup for every spawned task: project-local `node_modules/.bin`
-/// dirs on the child `PATH`, working directory, inherited stdio.
+/// Shared setup for every spawned task: the project's binary dirs on the
+/// child `PATH`, working directory, inherited stdio.
 fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
-    prepend_node_bin_path(command, dir);
+    prepend_project_bin_path(command, dir);
     command
         .current_dir(dir)
         .stdin(Stdio::inherit())
@@ -123,18 +125,59 @@ fn node_bin_dirs(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Prepend the project's `node_modules/.bin` dirs to the child's `PATH`.
+/// Memo for [`mise_bin_dirs`].
+fn mise_bin_cache() -> &'static Mutex<HashMap<PathBuf, Vec<PathBuf>>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
+    CACHE.get_or_init(Mutex::default)
+}
+
+/// The mise tool bin dirs for `dir`, resolved once per process.
 ///
-/// Node PMs inject this for `package.json` scripts, but runner spawns
-/// tasks directly (`turbo run <task>`, the bare-binary fallback), so a
-/// devDependency-only binary would die with ENOENT. The OS honors a
-/// `PATH` set on the [`Command`] itself, so prepending fixes both the
-/// spawn and anything the task launches in turn.
+/// `mise bin-paths` spawns a child and `configure_command` runs for every
+/// task in a chain, so the answer is memoized per directory.
+fn mise_bin_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut cache = mise_bin_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    cache
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| crate::tool::mise::bin_paths(dir))
+        .clone()
+}
+
+/// Drop the memoized mise bin dirs.
+///
+/// `mise bin-paths` omits a tool that is not installed yet, so an answer
+/// cached before `mise install` would miss everything that install just
+/// put on disk.
+pub(crate) fn forget_mise_bin_dirs() {
+    mise_bin_cache()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clear();
+}
+
+/// Prepend the project's binary dirs to the child's `PATH`.
+///
+/// Two sources, nearest first: `node_modules/.bin` up the ancestor chain,
+/// then the tool dirs mise manages for this project. Node PMs inject the
+/// former for `package.json` scripts, but runner spawns tasks directly
+/// (`turbo run <task>`, the bare-binary fallback), so a devDependency-only
+/// binary would die with ENOENT. The latter is what makes a tool mise just
+/// installed reachable: `mise install` installs without activating, so
+/// nothing mise manages is on this process's `PATH` unless the user's shell
+/// already ran `mise activate`.
+///
+/// The OS honors a `PATH` set on the [`Command`] itself, so prepending fixes
+/// both the spawn and anything the task launches in turn.
 ///
 /// Entries are not deduplicated against the parent `PATH`: prepending
-/// unconditionally gives local bins priority over global installs.
-fn prepend_node_bin_path(command: &mut Command, dir: &Path) {
-    let bins = node_bin_dirs(dir);
+/// unconditionally gives project bins priority over global installs.
+fn prepend_project_bin_path(command: &mut Command, dir: &Path) {
+    let mut bins = node_bin_dirs(dir);
+    if crate::tool::mise::detect(dir) {
+        bins.extend(mise_bin_dirs(dir));
+    }
     if bins.is_empty() {
         return;
     }

@@ -41,11 +41,11 @@ impl ChainItem {
     }
 
     /// Construct the synthetic install-head used by `runner install <tasks>`.
-    /// `frozen` mirrors the `--frozen` CLI flag and is propagated to the
-    /// install executor (`npm ci`, `--frozen-lockfile`, etc.).
-    pub(crate) const fn install(frozen: bool) -> Self {
+    /// `flags` mirrors the install-scoped CLI flags and is propagated to the
+    /// install executor.
+    pub(crate) const fn install(flags: crate::cmd::install::InstallFlags) -> Self {
         Self {
-            kind: ChainItemKind::Install { frozen },
+            kind: ChainItemKind::Install { flags },
             args: Vec::new(),
         }
     }
@@ -64,9 +64,10 @@ pub(crate) enum ChainItemKind {
     /// User-supplied task name, resolved per-item via the existing 8-step chain.
     Task(String),
     /// Synthetic head used by `runner install <tasks>`. Dispatches the
-    /// detected PM's install command; `frozen` selects the lockfile-only
-    /// install variant when true.
-    Install { frozen: bool },
+    /// detected PM's install command under the install-scoped CLI flags.
+    Install {
+        flags: crate::cmd::install::InstallFlags,
+    },
 }
 
 /// Failure policy for a chain. `FailFast` is the default and matches
@@ -102,18 +103,34 @@ mod tests {
 
     #[test]
     fn install_head_has_no_args() {
-        let item = ChainItem::install(false);
+        let item = ChainItem::install(crate::cmd::install::InstallFlags::default());
         assert!(item.args.is_empty());
         assert!(matches!(
             item.kind,
-            ChainItemKind::Install { frozen: false }
+            ChainItemKind::Install {
+                flags: crate::cmd::install::InstallFlags {
+                    frozen: false,
+                    no_tools: false,
+                }
+            }
         ));
     }
 
     #[test]
-    fn install_head_propagates_frozen_flag() {
-        let item = ChainItem::install(true);
-        assert!(matches!(item.kind, ChainItemKind::Install { frozen: true }));
+    fn install_head_propagates_install_flags() {
+        let item = ChainItem::install(crate::cmd::install::InstallFlags {
+            frozen: true,
+            no_tools: true,
+        });
+        assert!(matches!(
+            item.kind,
+            ChainItemKind::Install {
+                flags: crate::cmd::install::InstallFlags {
+                    frozen: true,
+                    no_tools: true,
+                }
+            }
+        ));
     }
 
     #[test]
@@ -123,6 +140,9 @@ mod tests {
 
     #[test]
     fn display_name_is_install_for_install_head() {
-        assert_eq!(ChainItem::install(false).display_name(), "install");
+        assert_eq!(
+            ChainItem::install(crate::cmd::install::InstallFlags::default()).display_name(),
+            "install"
+        );
     }
 }

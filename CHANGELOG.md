@@ -23,21 +23,29 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - Mise tasks carry what `mise tasks --json` declares beyond name and
   description: `depends`, `depends_post`, `wait_for`, `dir`, `env`, `tools`,
   `usage`, `file`, `sources`, `outputs`, and `timeout`. `runner why` prints
-  them under the selected task and fills its `dependencies` field, `list
-  --json` adds `depends`, `dir`, and `usage`, and `doctor --json` fills
-  `tasks[].dependencies`. `cwd` in `why` and `doctor` is the directory the
-  task runs in when the source declares one. The direct TOML fallback keeps
-  `file` and leaves the rest empty.
+  them under the selected task and fills its `dependencies`, `sources`, and
+  `outputs` fields, `list --json` adds `depends`, `dir`, and `usage`, and
+  `doctor --json` fills `tasks[].dependencies`. `cwd` in `why` and `doctor` is
+  the directory the task runs in when the source declares one. The direct TOML
+  fallback keeps `file` and leaves the rest empty.
 
 - `runner install` runs `mise install` before the package managers when the
   project has a mise config, so tools the config declares (often the package
   managers themselves) exist before they are called. `--frozen` adds
-  `--locked` when `mise.lock` exists. A project with only a mise config and no
-  manifest now installs its toolchain instead of failing with no signals. A
-  missing `mise` binary warns and continues. `--no-tools`,
-  `RUNNER_INSTALL_TOOLS=off`, and `[install].tools = "off"` skip the step;
-  `runner doctor` lists it under Decisions and reports the policy as
-  `install_tools` in `--json`.
+  `--locked` when the config's lockfile exists. A project with only a mise
+  config and no manifest now installs its toolchain instead of failing with no
+  signals. A missing `mise` binary warns and continues. `--no-tools` skips the
+  step; `runner doctor` lists it under Decisions.
+
+- Tools mise manages are on the `PATH` of every process runner spawns in a
+  mise project. `mise install` installs without activating, so a package
+  manager mise had just installed was invisible to the install that ran next
+  unless the shell had already run `mise activate`.
+
+- `runner doctor` relays what mise says about the project: tools the config
+  declares that are not installed (`mise ls --missing`), and `mise tasks
+  validate` findings such as a missing or circular dependency. They appear
+  under Decisions and Warnings, and as `mise` diagnostics in `--json`.
 
 ### Fixed
 
@@ -47,6 +55,21 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   so `runner list` reported no mise tasks at all (#138). Referenced tasks
   render as `mise run <task>` in the description column; step shapes runner
   does not model are skipped instead of aborting discovery.
+
+- Mise task discovery accepts a dependency carrying arguments
+  (`depends = [{ task = "gen", args = ["foo"] }]`, which mise emits as
+  `["gen", "foo"]`) and a structured tool request
+  (`tools = { node = { version = "22" } }`). Either one used to fail the whole
+  `mise tasks --json` payload, silently dropping runner back to the
+  single-file TOML fallback and losing every merged and file-based task.
+
+- A failing `mise tasks --json` is reported instead of silently downgrading to
+  the TOML fallback. Falling back is correct when mise is not installed, and
+  hid a broken config when it was.
+
+- `--frozen` finds the lockfile for a mise config outside the project root.
+  It looked only for `<root>/mise.lock`, so `.config/mise.toml`,
+  `mise/config.toml`, and `mise.local.toml` ran an unlocked tool install.
 
 ## [0.26.2] - 2026-09-08
 

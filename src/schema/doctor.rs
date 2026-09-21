@@ -37,7 +37,7 @@ use crate::cmd::install::InstallPlan;
 use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
     CollisionPolicy, FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
-    ScriptPolicy, ToolsPolicy,
+    ScriptPolicy,
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
@@ -169,7 +169,6 @@ struct Overrides {
     fallback: FallbackPolicy,
     failure_policy: FailurePolicy,
     install_pms: Vec<PackageManager>,
-    install_tools: ToolsPolicy,
     no_warnings: bool,
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
@@ -562,6 +561,7 @@ impl<'a> DoctorReport<'a> {
             .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
             .map(diagnostic)
             .chain(plan_diagnostics)
+            .chain(mise_diagnostics(ctx))
             .collect();
 
         Self {
@@ -654,7 +654,6 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         fallback: overrides.fallback,
         failure_policy: overrides.failure_policy,
         install_pms: overrides.install_pms.clone(),
-        install_tools: overrides.install_tools,
         no_warnings: overrides.no_warnings,
         on_collision: overrides.on_collision,
         output_grouping: OutputGrouping {
@@ -1273,6 +1272,35 @@ fn display_depth(depth: usize) -> String {
     }
 }
 
+/// What mise itself reports about the project: declared tools that are not
+/// installed, and `mise tasks validate` findings. Runner relays these
+/// rather than re-implementing them.
+fn mise_diagnostics(ctx: &ProjectContext) -> Vec<Diagnostic> {
+    if !ctx.task_runners.contains(&TaskRunner::Mise) {
+        return Vec::new();
+    }
+    let health = crate::tool::mise::health(&ctx.root);
+    let missing = health.missing_tools.iter().map(|tool| Diagnostic {
+        code: "mise",
+        message: format!("{tool} is declared but not installed; `runner install` installs it"),
+        severity: Severity::Warning,
+        source: Some("mise"),
+        task: None,
+    });
+    let issues = health.task_issues.into_iter().map(|issue| Diagnostic {
+        code: "mise",
+        message: format!("mise tasks validate: {}", issue.message),
+        severity: if issue.severity == "error" {
+            Severity::Warning
+        } else {
+            Severity::Info
+        },
+        source: Some("mise"),
+        task: Some(issue.task),
+    });
+    missing.chain(issues).collect()
+}
+
 fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
     Diagnostic {
         code: warning.source(),
@@ -1659,7 +1687,6 @@ mod tests {
             install_pms,
             script_policy,
             on_collision,
-            install_tools,
             parent_group_open,
             parent_warned,
         ];

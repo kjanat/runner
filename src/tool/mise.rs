@@ -68,36 +68,98 @@ pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
 /// Hidden tasks (`hide = true`) and underscore-prefixed names are
 /// excluded. Aliases come through as separate `Alias` entries pointing
 /// at their target so [`crate::cmd::list`] can group them.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
-    if let Some(tasks) = extract_tasks_with_cli(dir) {
-        return Ok(tasks);
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<MiseTasks> {
+    match cli_tasks(dir) {
+        CliOutcome::Tasks(tasks) => Ok(MiseTasks {
+            tasks,
+            degraded: None,
+        }),
+        CliOutcome::Unavailable => Ok(MiseTasks {
+            tasks: extract_tasks_from_source(dir)?,
+            degraded: None,
+        }),
+        CliOutcome::Failed(reason) => match extract_tasks_from_source(dir) {
+            Ok(tasks) => Ok(MiseTasks {
+                tasks,
+                degraded: Some(reason),
+            }),
+            Err(err) => Err(err.context(reason)),
+        },
     }
-    extract_tasks_from_source(dir)
 }
 
-/// Run `mise tasks --json` in `dir` and parse the result. Returns `None`
-/// when mise is missing, the invocation fails, or the output doesn't
-/// parse; caller falls back to direct TOML reads.
-fn extract_tasks_with_cli(dir: &Path) -> Option<Vec<ExtractedTask>> {
-    let output = super::program::command("mise")
+/// The mise task list plus the reason the authoritative path was not used,
+/// when it was tried and failed.
+#[derive(Debug)]
+pub(crate) struct MiseTasks {
+    /// Tasks, from `mise tasks --json` or the single-file TOML fallback.
+    pub tasks: Vec<ExtractedTask>,
+    /// Why `mise tasks --json` was not used, when mise is on `PATH` but its
+    /// task view could not be read. The fallback sees one config file, so
+    /// this list may be missing cross-file merges and file tasks.
+    pub degraded: Option<String>,
+}
+
+/// What `mise tasks --json` produced. A missing binary is the fallback's
+/// normal trigger; anything else means mise is installed and runner is
+/// showing a lesser view than the user's own `mise tasks` would.
+enum CliOutcome {
+    Tasks(Vec<ExtractedTask>),
+    Unavailable,
+    Failed(String),
+}
+
+/// Run `mise tasks --json` in `dir` and parse the result.
+fn cli_tasks(dir: &Path) -> CliOutcome {
+    let output = match super::program::command("mise")
         .arg("tasks")
         .arg("--json")
         .current_dir(dir)
         .output()
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return CliOutcome::Unavailable;
+        }
+        Err(error) => {
+            return CliOutcome::Failed(format!("`mise tasks --json` failed to launch: {error}"));
+        }
+    };
     if !output.status.success() {
-        return None;
+        return CliOutcome::Failed(format!(
+            "`mise tasks --json` {}{}",
+            output.status,
+            first_line(&output.stderr)
+        ));
     }
     let project_root = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
-    parse_cli_output(&output.stdout, &project_root)
+    match parse_cli_output(&output.stdout, &project_root) {
+        Ok(tasks) => CliOutcome::Tasks(tasks),
+        Err(error) => {
+            CliOutcome::Failed(format!("`mise tasks --json` output did not parse: {error}"))
+        }
+    }
+}
+
+/// The first non-empty line of a captured stderr, prefixed with `: ` for
+/// appending to a diagnostic. Empty when there is nothing to quote.
+fn first_line(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map_or_else(String::new, |line| format!(": {line}"))
 }
 
 /// Parse a `mise tasks --json` payload, filtering to tasks whose
 /// `source` lives under `project_root`. Mise's JSON view includes
 /// global config and `~/.config/mise/*` tasks; surfacing those in
 /// `runner list` would lie about what the project owns.
-fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedTask>> {
-    let entries: Vec<MiseJsonTask> = serde_json::from_slice(stdout).ok()?;
+fn parse_cli_output(
+    stdout: &[u8],
+    project_root: &Path,
+) -> Result<Vec<ExtractedTask>, serde_json::Error> {
+    let entries: Vec<MiseJsonTask> = serde_json::from_slice(stdout)?;
     let mut tasks: Vec<ExtractedTask> = Vec::new();
     for entry in entries {
         if entry.hide || entry.global || entry.name.starts_with('_') {
@@ -116,7 +178,7 @@ fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedT
         push_aliases(&mut tasks, &entry.name, entry.aliases);
     }
     tasks.sort_by(|a, b| a.name().cmp(b.name()));
-    Some(tasks)
+    Ok(tasks)
 }
 
 /// Append `Alias` entries for `target` to `tasks`, skipping
@@ -210,11 +272,11 @@ struct MiseJsonTask {
     #[serde(default)]
     file: Option<String>,
     #[serde(default)]
-    depends: Vec<String>,
+    depends: Vec<DependEntry>,
     #[serde(default)]
-    depends_post: Vec<String>,
+    depends_post: Vec<DependEntry>,
     #[serde(default)]
-    wait_for: Vec<String>,
+    wait_for: Vec<DependEntry>,
     #[serde(default)]
     dir: Option<PathBuf>,
     /// `KEY=VALUE` strings in current mise; older payloads carried
@@ -222,7 +284,7 @@ struct MiseJsonTask {
     #[serde(default)]
     env: Vec<EnvEntry>,
     #[serde(default)]
-    tools: BTreeMap<String, String>,
+    tools: BTreeMap<String, ToolSpec>,
     #[serde(default)]
     usage: String,
     #[serde(default)]
@@ -231,6 +293,65 @@ struct MiseJsonTask {
     outputs: Vec<String>,
     #[serde(default)]
     timeout: Option<Scalar>,
+}
+
+/// One `depends`/`depends_post`/`wait_for` element. A bare task name is a
+/// string; a dependency carrying arguments (`{ task = "gen", args = ["foo"] }`
+/// in TOML) arrives as `["gen", "foo"]`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum DependEntry {
+    Name(String),
+    WithArgs(Vec<String>),
+    Unknown(serde::de::IgnoredAny),
+}
+
+impl DependEntry {
+    /// The depended-on task's name. The arguments are dropped: every
+    /// consumer of this list matches it against task names.
+    fn name(&self) -> Option<&str> {
+        match self {
+            Self::Name(name) => Some(name.as_str()),
+            Self::WithArgs(parts) => parts.first().map(String::as_str),
+            Self::Unknown(_) => None,
+        }
+    }
+}
+
+/// Collect the task names out of a dependency list.
+fn depend_names(entries: &[DependEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter_map(DependEntry::name)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One `tools` value: a version string, or mise's structured form
+/// (`{ version = "22", os = ["linux"] }`).
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ToolSpec {
+    Version(Scalar),
+    Detailed {
+        #[serde(default)]
+        version: Option<Scalar>,
+    },
+    Unknown(serde::de::IgnoredAny),
+}
+
+impl ToolSpec {
+    /// The requested version, empty when the structured form omits one.
+    fn version(&self) -> String {
+        match self {
+            Self::Version(version) => version.to_string(),
+            Self::Detailed { version } => version
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            Self::Unknown(_) => String::new(),
+        }
+    }
 }
 
 /// One `env` element: `"KEY=VALUE"` or `{ "KEY": "VALUE", ... }`.
@@ -287,12 +408,16 @@ impl MiseJsonTask {
             })
             .collect();
         TaskDetail {
-            depends: self.depends.clone(),
-            depends_post: self.depends_post.clone(),
-            wait_for: self.wait_for.clone(),
+            depends: depend_names(&self.depends),
+            depends_post: depend_names(&self.depends_post),
+            wait_for: depend_names(&self.wait_for),
             dir,
             env,
-            tools: self.tools.clone(),
+            tools: self
+                .tools
+                .iter()
+                .map(|(tool, spec)| (tool.clone(), spec.version()))
+                .collect(),
             usage: Some(self.usage.trim())
                 .filter(|spec| !spec.is_empty())
                 .map(str::to_owned),
@@ -329,18 +454,194 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
 /// `mise install [--locked]`
 ///
 /// Installs every tool the project's mise config declares. `--locked` is
-/// added for a frozen install only when `mise.lock` exists at `root`, since
-/// mise refuses the flag without a lockfile.
+/// added for a frozen install only when a lockfile exists, since mise
+/// refuses the flag without one.
 pub(crate) fn install_cmd(root: &Path, frozen: bool, verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("mise");
     if verbosity.silences() {
         c.arg("--quiet");
     }
     c.arg("install");
-    if frozen && root.join("mise.lock").is_file() {
+    if frozen && has_lockfile(root) {
         c.arg("--locked");
     }
     c
+}
+
+/// `true` when any detected config in `root` has its lockfile on disk.
+fn has_lockfile(root: &Path) -> bool {
+    FILENAMES
+        .iter()
+        .map(|name| root.join(name))
+        .filter(|config| config.is_file())
+        .any(|config| lock_path(&config).is_file())
+}
+
+/// The lockfile mise writes for `config`. It sits beside the config and is
+/// named `mise.lock`, or `mise.local.lock` for a `*.local.toml` config.
+fn lock_path(config: &Path) -> PathBuf {
+    let local = config
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.contains(".local."));
+    let name = if local {
+        "mise.local.lock"
+    } else {
+        "mise.lock"
+    };
+    config
+        .parent()
+        .map_or_else(|| PathBuf::from(name), |dir| dir.join(name))
+}
+
+/// The tool bin directories mise puts on `PATH` for this project, from
+/// `mise bin-paths`. Empty when mise is missing or reports nothing.
+///
+/// `mise install` installs tools without activating them, so a package
+/// manager it just installed is invisible to this process and to the
+/// children runner spawns next.
+pub(crate) fn bin_paths(root: &Path) -> Vec<PathBuf> {
+    let Ok(output) = super::program::command("mise")
+        .arg("bin-paths")
+        .current_dir(root)
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// What mise says about this project's own health, for `runner doctor`.
+/// Empty when mise is not installed or declines to answer: doctor reports
+/// what it can reach and stays quiet about the rest.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Health {
+    /// Declared tools that are not installed, as `node@22`.
+    pub missing_tools: Vec<String>,
+    /// Problems `mise tasks validate` found in the task graph.
+    pub task_issues: Vec<TaskIssue>,
+}
+
+/// One `mise tasks validate` finding.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TaskIssue {
+    /// The task the finding is about.
+    pub task: String,
+    /// Mise's own severity label (`error`, `warning`).
+    pub severity: String,
+    /// One-line summary, with mise's `details` appended when it adds
+    /// anything the message does not already say.
+    pub message: String,
+}
+
+/// Ask mise what is wrong with this project: which declared tools are not
+/// installed, and what `mise tasks validate` makes of the task graph.
+///
+/// Both probes are best-effort. Runner does not fail on what they report;
+/// doctor exists to relay it.
+pub(crate) fn health(root: &Path) -> Health {
+    Health {
+        missing_tools: missing_tools(root),
+        task_issues: task_issues(root),
+    }
+}
+
+/// Capture a mise subcommand's stdout, ignoring the exit status.
+///
+/// `mise tasks validate` exits non-zero precisely when it has findings to
+/// report, and prints them to stdout either way.
+fn json_stdout(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    let output = super::program::command("mise")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .ok()?;
+    (!output.stdout.is_empty()).then_some(output.stdout)
+}
+
+/// `mise ls --missing --json`, rendered as `node@22` entries.
+fn missing_tools(root: &Path) -> Vec<String> {
+    let Some(stdout) = json_stdout(root, &["ls", "--missing", "--json"]) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_slice::<BTreeMap<String, Vec<MissingTool>>>(&stdout) else {
+        return Vec::new();
+    };
+    parsed
+        .into_iter()
+        .flat_map(|(tool, entries)| {
+            entries
+                .into_iter()
+                .filter(|entry| !entry.installed)
+                .map(move |entry| {
+                    entry
+                        .requested_version
+                        .or(entry.version)
+                        .map_or_else(|| tool.clone(), |version| format!("{tool}@{version}"))
+                })
+        })
+        .collect()
+}
+
+/// `mise tasks validate --json`, flattened to one line per finding.
+fn task_issues(root: &Path) -> Vec<TaskIssue> {
+    let Some(stdout) = json_stdout(root, &["tasks", "validate", "--json"]) else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_slice::<ValidateReport>(&stdout) else {
+        return Vec::new();
+    };
+    parsed
+        .issues
+        .into_iter()
+        .map(|issue| TaskIssue {
+            task: issue.task,
+            severity: issue.severity,
+            message: match issue.details.filter(|d| !d.trim().is_empty()) {
+                Some(details) => format!("{} ({details})", issue.message),
+                None => issue.message,
+            },
+        })
+        .collect()
+}
+
+/// One entry of `mise ls --missing --json`.
+#[derive(Debug, Deserialize)]
+struct MissingTool {
+    #[serde(default)]
+    requested_version: Option<String>,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    installed: bool,
+}
+
+/// `mise tasks validate --json`.
+#[derive(Debug, Deserialize)]
+struct ValidateReport {
+    #[serde(default)]
+    issues: Vec<ValidateIssue>,
+}
+
+/// One `issues` element of `mise tasks validate --json`.
+#[derive(Debug, Deserialize)]
+struct ValidateIssue {
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    severity: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    details: Option<String>,
 }
 
 /// One task entry surfaced to the rest of the crate. Mirrors
@@ -590,14 +891,51 @@ mod tests {
     #[test]
     fn install_cmd_is_bare_without_lockfile() {
         let dir = TempDir::new("mise-install-bare");
+        fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
         let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["install"]);
     }
 
     #[test]
+    fn install_cmd_finds_the_lockfile_beside_a_nested_config() {
+        // mise writes `<config dir>/mise.lock`, so a lockfile next to
+        // `.config/mise.toml` is never `<root>/mise.lock`.
+        let dir = TempDir::new("mise-install-nested-lock");
+        let nested = dir.path().join(".config");
+        fs::create_dir_all(&nested).expect(".config should be created");
+        fs::write(nested.join("mise.toml"), "").expect("config should be written");
+        fs::write(nested.join("mise.lock"), "").expect("lockfile should be written");
+        let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
+        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(argv, ["install", "--locked"]);
+    }
+
+    #[test]
+    fn lock_path_follows_the_config_it_belongs_to() {
+        let cases = [
+            ("mise.toml", "mise.lock"),
+            (".mise.toml", "mise.lock"),
+            ("mise.local.toml", "mise.local.lock"),
+            (".mise.local.toml", "mise.local.lock"),
+            ("mise/config.toml", "mise/mise.lock"),
+            (".mise/config.toml", ".mise/mise.lock"),
+            (".config/mise.toml", ".config/mise.lock"),
+            (".config/mise/config.toml", ".config/mise/mise.lock"),
+        ];
+        for (config, expected) in cases {
+            assert_eq!(
+                super::lock_path(std::path::Path::new(config)),
+                std::path::PathBuf::from(expected),
+                "{config}",
+            );
+        }
+    }
+
+    #[test]
     fn install_cmd_locks_when_frozen_and_lockfile_present() {
         let dir = TempDir::new("mise-install-locked");
+        fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
         fs::write(dir.path().join("mise.lock"), "").expect("mise.lock should be written");
         let cmd = install_cmd(dir.path(), true, crate::tool::HostVerbosity::default());
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
@@ -616,7 +954,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
 
         assert_eq!(
             tasks,
@@ -644,7 +984,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         assert_eq!(
             tasks,
             [ExtractedTask::Recipe {
@@ -757,7 +1099,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         assert_eq!(
             tasks,
             [ExtractedTask::Recipe {
@@ -777,7 +1121,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         assert_eq!(
             tasks,
             [ExtractedTask::Recipe {
@@ -802,7 +1148,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         assert_eq!(
             tasks,
             [ExtractedTask::Recipe {
@@ -822,7 +1170,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         // Sort is alphabetical by name: "b" < "build".
         assert_eq!(
             tasks,
@@ -849,7 +1199,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         let names: Vec<&str> = tasks
             .iter()
             .map(|t| match t {
@@ -872,7 +1224,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         let names: Vec<&str> = tasks
             .iter()
             .map(|t| match t {
@@ -893,7 +1247,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         let names: Vec<&str> = tasks
             .iter()
             .map(|t| match t {
@@ -914,7 +1270,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         assert_eq!(
             tasks,
             [ExtractedTask::Recipe {
@@ -934,7 +1292,9 @@ mod tests {
         fs::write(dir.path().join(".mise.toml"), "[tools]\nnode = \"22\"\n")
             .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("parse should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("parse should succeed")
+            .tasks;
         assert!(tasks.is_empty());
     }
 
@@ -945,9 +1305,12 @@ mod tests {
             .expect(".mise.toml should be written");
 
         let err = extract_tasks(dir.path()).expect_err("malformed .mise.toml should error");
+        // Detection renders the whole chain (`{err:#}`), which is where the
+        // parse failure lands once the CLI attempt is reported above it.
+        let chain = format!("{err:#}");
         assert!(
-            err.to_string().contains("failed to parse"),
-            "error chain should mention parse failure: {err:#}",
+            chain.contains("failed to parse"),
+            "error chain should mention parse failure: {chain}",
         );
     }
 
@@ -1240,10 +1603,55 @@ mod tests {
     }
 
     #[test]
-    fn cli_output_returns_none_for_malformed_json() {
+    fn cli_output_errors_for_malformed_json() {
         let dir = TempDir::new("mise-cli-bad-json");
         let project = dir.path().to_path_buf();
-        assert!(parse_cli_output(b"not json", &project).is_none());
+        assert!(parse_cli_output(b"not json", &project).is_err());
+    }
+
+    #[test]
+    fn missing_binary_falls_back_without_a_warning() {
+        let dir = TempDir::new("mise-fallback-quiet");
+        fs::write(
+            dir.path().join("mise.toml"),
+            "[tasks]\nbuild = \"echo a\"\n",
+        )
+        .expect("mise.toml should be written");
+        let extracted = match super::cli_tasks(dir.path()) {
+            super::CliOutcome::Unavailable => extract_tasks(dir.path()).expect("fallback parses"),
+            _ => return,
+        };
+        assert!(extracted.degraded.is_none());
+        assert_eq!(extracted.tasks.len(), 1);
+    }
+
+    #[test]
+    fn json_failure_reports_the_reason_and_still_returns_fallback_tasks() {
+        let dir = TempDir::new("mise-degraded");
+        fs::write(
+            dir.path().join("mise.toml"),
+            "[tasks]\nbuild = \"echo a\"\n",
+        )
+        .expect("mise.toml should be written");
+        let extracted = super::MiseTasks {
+            tasks: extract_tasks_from_source(dir.path()).expect("fallback parses"),
+            degraded: Some(String::from(
+                "`mise tasks --json` output did not parse: boom",
+            )),
+        };
+        assert_eq!(extracted.tasks.len(), 1);
+        assert!(
+            extracted
+                .degraded
+                .as_deref()
+                .is_some_and(|reason| reason.contains("mise tasks --json"))
+        );
+    }
+
+    #[test]
+    fn first_line_quotes_the_first_non_empty_stderr_line() {
+        assert_eq!(super::first_line(b""), "");
+        assert_eq!(super::first_line(b"\n\n  boom  \nnext\n"), ": boom");
     }
 
     #[test]
@@ -1267,7 +1675,9 @@ mod tests {
         )
         .expect(".mise.toml should be written");
 
-        let tasks = extract_tasks(dir.path()).expect("mise CLI should succeed");
+        let tasks = extract_tasks(dir.path())
+            .expect("mise CLI should succeed")
+            .tasks;
         let has_build = tasks.iter().any(|t| {
             matches!(t,
             ExtractedTask::Recipe { name, .. } if name == "build")

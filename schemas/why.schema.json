@@ -345,6 +345,13 @@
         "name": {
           "type": "string"
         },
+        "outputs": {
+          "description": "Output globs the source declares for up-to-date checks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "provider": {
           "$ref": "#/$defs/ProviderLabel"
         },
@@ -368,6 +375,13 @@
             "null",
             "string"
           ]
+        },
+        "sources": {
+          "description": "Input globs the source declares for up-to-date checks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "timeout": {
           "description": "Timeout in the source's own duration syntax.",

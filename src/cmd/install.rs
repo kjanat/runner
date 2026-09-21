@@ -9,9 +9,18 @@ use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
-use crate::resolver::{
-    CollisionPolicy, ResolutionOverrides, ResolveError, Resolver, ScriptPolicy, ToolsPolicy,
-};
+use crate::resolver::{CollisionPolicy, ResolutionOverrides, ResolveError, Resolver, ScriptPolicy};
+
+/// The install-scoped CLI flags, which have no env or config layer: they say
+/// what this one invocation does, not what the project is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InstallFlags {
+    /// `--frozen`: use each package manager's lockfile-only install variant.
+    pub frozen: bool,
+    /// `--no-tools`: skip the toolchain step that otherwise precedes the
+    /// package managers.
+    pub no_tools: bool,
+}
 use crate::tool;
 use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 
@@ -23,9 +32,9 @@ use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
 pub(crate) fn install(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-    frozen: bool,
+    flags: InstallFlags,
 ) -> Result<i32> {
-    install_pms(ctx, overrides, frozen, None)
+    install_pms(ctx, overrides, flags, None)
 }
 
 /// Chain-aware install entry. Runs install across every detected PM and
@@ -36,10 +45,10 @@ pub(crate) fn install(
 pub(crate) fn install_pms(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-    frozen: bool,
+    flags: InstallFlags,
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    let tools = tools_step(ctx, overrides);
+    let tools = tools_step(ctx, flags);
     // Planned before the GHA group opens so a refused override doesn't
     // emit an empty `runner: install` group.
     let plan = if ctx.package_managers.is_empty() {
@@ -60,7 +69,7 @@ pub(crate) fn install_pms(
     let _group = super::task_group(overrides, "install", "install");
 
     if let Some(runner) = tools
-        && let Some(code) = run_tools_step(ctx, runner, frozen, overrides)?
+        && let Some(code) = run_tools_step(ctx, runner, flags.frozen, overrides)?
     {
         return Ok(code);
     }
@@ -83,22 +92,18 @@ pub(crate) fn install_pms(
     }
 
     if let [pm] = plan.pms.as_slice() {
-        return install_single(ctx, *pm, frozen, overrides);
+        return install_single(ctx, *pm, flags.frozen, overrides);
     }
 
-    run_installs_parallel(ctx, &plan, frozen, overrides)
+    run_installs_parallel(ctx, &plan, flags.frozen, overrides)
 }
 
 /// The tool manager that installs the project's toolchain before any
 /// package manager runs: mise, when a mise config is detected and
-/// [`ToolsPolicy::Auto`] is in effect. Package managers themselves are often
+/// `--no-tools` was not passed. Package managers themselves are often
 /// mise-managed tools, so this step always precedes them.
-pub(crate) fn tools_step(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-) -> Option<TaskRunner> {
-    (overrides.install_tools == ToolsPolicy::Auto && ctx.task_runners.contains(&TaskRunner::Mise))
-        .then_some(TaskRunner::Mise)
+pub(crate) fn tools_step(ctx: &ProjectContext, flags: InstallFlags) -> Option<TaskRunner> {
+    (!flags.no_tools && ctx.task_runners.contains(&TaskRunner::Mise)).then_some(TaskRunner::Mise)
 }
 
 /// `true` when the resolver found nothing to install with. A project that
@@ -145,7 +150,7 @@ fn run_tools_step(
             if overrides.shows_warnings() {
                 eprintln!(
                     "{} {} config detected but `{}` is not on PATH; skipping the toolchain step \
-                     (pass --no-tools or set `[install].tools = \"off\"` to silence this)",
+                     (pass --no-tools to silence this)",
                     "warn:".yellow().bold(),
                     runner.label(),
                     cmd.get_program().to_string_lossy(),
@@ -162,11 +167,13 @@ fn run_tools_step(
         }
     };
     let status = child.wait()?;
-    Ok(if status.success() {
-        None
-    } else {
-        Some(super::exit_code(status))
-    })
+    if status.success() {
+        // The tools this just installed were invisible to `mise bin-paths`
+        // a moment ago, and the package managers spawn next.
+        super::forget_mise_bin_dirs();
+        return Ok(None);
+    }
+    Ok(Some(super::exit_code(status)))
 }
 
 /// Which PMs this invocation installs with, in precedence order:
@@ -915,6 +922,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    use super::InstallFlags;
     use super::{
         CollisionDir, DenySupport, ForceSupport, InstallPlan, Shadowed, build_install_command,
         deny_support, force_support, install_lanes, is_no_signals, plan_install, script_directive,
@@ -923,7 +931,7 @@ mod tests {
     };
     use crate::resolver::{
         CollisionPolicy, FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides,
-        ResolveError, ScriptPolicy, ToolsPolicy,
+        ResolveError, ScriptPolicy,
     };
     use crate::tool::ScriptDirective;
     use crate::types::{Ecosystem, InstallDir, PackageManager, ProjectContext, TaskRunner};
@@ -955,27 +963,28 @@ mod tests {
     fn tools_step_runs_mise_when_detected() {
         let mut ctx = context(vec![PackageManager::Npm]);
         ctx.task_runners.push(TaskRunner::Mise);
-        let overrides = ResolutionOverrides::default();
-        assert_eq!(tools_step(&ctx, &overrides), Some(TaskRunner::Mise));
+        assert_eq!(
+            tools_step(&ctx, InstallFlags::default()),
+            Some(TaskRunner::Mise)
+        );
     }
 
     #[test]
     fn tools_step_is_absent_without_mise_config() {
         let mut ctx = context(vec![PackageManager::Npm]);
         ctx.task_runners.push(TaskRunner::Just);
-        let overrides = ResolutionOverrides::default();
-        assert_eq!(tools_step(&ctx, &overrides), None);
+        assert_eq!(tools_step(&ctx, InstallFlags::default()), None);
     }
 
     #[test]
-    fn tools_step_honours_off_policy() {
+    fn tools_step_honours_no_tools_flag() {
         let mut ctx = context(vec![]);
         ctx.task_runners.push(TaskRunner::Mise);
-        let overrides = ResolutionOverrides {
-            install_tools: ToolsPolicy::Off,
-            ..Default::default()
+        let flags = InstallFlags {
+            no_tools: true,
+            ..InstallFlags::default()
         };
-        assert_eq!(tools_step(&ctx, &overrides), None);
+        assert_eq!(tools_step(&ctx, flags), None);
     }
 
     #[test]

@@ -466,6 +466,18 @@ struct WhyTask<'a> {
     usage: Option<&'a str>,
     #[cfg_attr(
         feature = "schema",
+        schemars(description = "Input globs the source declares for up-to-date checks.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<&'a str>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Output globs the source declares for up-to-date checks.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    outputs: Vec<&'a str>,
+    #[cfg_attr(
+        feature = "schema",
         schemars(description = "Script file backing the task.")
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -628,6 +640,8 @@ fn task_report<'a>(
         wait_for: task.detail.wait_for.clone(),
         env: task.detail.env.clone(),
         usage: task.detail.usage.as_deref(),
+        sources: task.detail.sources.iter().map(String::as_str).collect(),
+        outputs: task.detail.outputs.iter().map(String::as_str).collect(),
         file: task.detail.file.as_deref(),
         timeout: task.detail.timeout.as_deref(),
     }
@@ -789,6 +803,12 @@ fn print_detail(task: &Task, ctx: &ProjectContext) {
             .map(|(tool, version)| format!("{tool}@{version}"))
             .collect();
         lines.push(("tools", tools.join(", ")));
+    }
+    if !detail.sources.is_empty() {
+        lines.push(("sources", detail.sources.join(", ")));
+    }
+    if !detail.outputs.is_empty() {
+        lines.push(("outputs", detail.outputs.join(", ")));
     }
     if let Some(file) = &detail.file {
         lines.push(("file", file.clone()));

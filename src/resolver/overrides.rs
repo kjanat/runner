@@ -10,13 +10,13 @@ use super::join_labels;
 use super::policies::{
     is_env_truthy, parse_collision_label, parse_fallback_label, parse_host_stream_label,
     parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_runtime_label,
-    parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity, parse_tools_label,
-    resolve_failure_policy, resolve_fallback_policy, resolve_mismatch_policy,
+    parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity, resolve_failure_policy,
+    resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
     CliOverrides, CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources,
     PmOverride, QuietSource, ResolutionOverrides, RunnerOverride, RuntimeOverride, ScriptPolicy,
-    SourceValue, ToolsPolicy,
+    SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
 use crate::tool::{QuietLevel, Stream};
@@ -141,12 +141,6 @@ impl ResolutionOverrides {
             "RUNNER_INSTALL_ON_COLLISION",
             &mut warnings,
             |raw| parse_collision_label(raw).map(drop),
-        );
-        lenient_env_field(
-            &mut sources.install_tools,
-            "RUNNER_INSTALL_TOOLS",
-            &mut warnings,
-            |raw| parse_tools_label(raw).map(drop),
         );
         lenient_env_bool(
             &mut sources.no_warnings,
@@ -327,7 +321,6 @@ impl ResolutionOverrides {
         let install_pms = parse_install_pms(&sources)?;
         let script_policy = parse_install_scripts(&sources)?;
         let on_collision = parse_install_on_collision(&sources)?;
-        let install_tools = parse_install_tools(&sources)?;
 
         let mut pm_by_ecosystem = HashMap::new();
         if let Some(loaded) = sources.config {
@@ -383,7 +376,6 @@ impl ResolutionOverrides {
             install_pms,
             script_policy,
             on_collision,
-            install_tools,
             // Set in `dispatch`, which is the first place a resolved project
             // root and the inherited `RUNNER_WARNED_ROOT` marker are both in
             // hand. Nothing to capture from `sources`.
@@ -521,28 +513,6 @@ fn parse_install_on_collision(sources: &OverrideSources<'_>) -> Result<Collision
     Ok(CollisionPolicy::default())
 }
 
-/// `RUNNER_INSTALL_TOOLS` (env) → `[install].tools` (config), highest
-/// first. Absent leaves [`ToolsPolicy::Auto`].
-fn parse_install_tools(sources: &OverrideSources<'_>) -> Result<ToolsPolicy> {
-    if let Some(raw) = sources
-        .install_tools
-        .env
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return parse_tools_label(raw).map_err(|err| anyhow!("RUNNER_INSTALL_TOOLS: {err}"));
-    }
-    if let Some(raw) = sources
-        .config
-        .and_then(|loaded| loaded.config.install.tools.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return parse_tools_label(raw).map_err(|err| anyhow!("[install].tools: {err}"));
-    }
-    Ok(ToolsPolicy::default())
-}
-
 /// Parse a single `deny`/`allow` script-policy label (case-sensitive,
 /// lowercase-only, matching the sibling enum-label parsers and the
 /// committed JSON Schema enum).
@@ -673,74 +643,6 @@ mod tests {
                 PackageManager::Deno
             ]
         );
-    }
-
-    #[test]
-    fn install_tools_defaults_to_auto() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources::default())
-            .expect("defaults resolve");
-        assert_eq!(overrides.install_tools, ToolsPolicy::Auto);
-    }
-
-    #[test]
-    fn install_tools_env_beats_config() {
-        let loaded = LoadedConfig {
-            path: std::path::PathBuf::from("runner.toml"),
-            config: RunnerConfig {
-                install: InstallSection {
-                    tools: Some("auto".to_string()),
-                    ..InstallSection::default()
-                },
-                ..RunnerConfig::default()
-            },
-            warnings: Vec::new(),
-        };
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
-            install_tools: SourceValue {
-                cli: None,
-                env: Some("off"),
-            },
-            config: Some(&loaded),
-            ..OverrideSources::default()
-        })
-        .expect("resolves");
-        assert_eq!(overrides.install_tools, ToolsPolicy::Off);
-    }
-
-    #[test]
-    fn install_tools_config_off_is_honoured() {
-        let loaded = LoadedConfig {
-            path: std::path::PathBuf::from("runner.toml"),
-            config: RunnerConfig {
-                install: InstallSection {
-                    tools: Some("off".to_string()),
-                    ..InstallSection::default()
-                },
-                ..RunnerConfig::default()
-            },
-            warnings: Vec::new(),
-        };
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
-            config: Some(&loaded),
-            ..OverrideSources::default()
-        })
-        .expect("resolves");
-        assert_eq!(overrides.install_tools, ToolsPolicy::Off);
-    }
-
-    #[test]
-    fn install_tools_env_rejects_unknown_label() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
-            install_tools: SourceValue {
-                cli: None,
-                env: Some("maybe"),
-            },
-            ..OverrideSources::default()
-        })
-        .expect_err("unknown label must fail");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("RUNNER_INSTALL_TOOLS"), "{msg}");
-        assert!(msg.contains("auto, off"), "{msg}");
     }
 
     #[test]
@@ -966,7 +868,6 @@ struct EnvSnapshot {
     install_pms: Option<String>,
     install_scripts: Option<String>,
     install_on_collision: Option<String>,
-    install_tools: Option<String>,
     group_active: Option<String>,
 }
 
@@ -989,7 +890,6 @@ impl EnvSnapshot {
             install_pms: std::env::var("RUNNER_INSTALL_PMS").ok(),
             install_scripts: std::env::var("RUNNER_INSTALL_SCRIPTS").ok(),
             install_on_collision: std::env::var("RUNNER_INSTALL_ON_COLLISION").ok(),
-            install_tools: std::env::var("RUNNER_INSTALL_TOOLS").ok(),
             group_active: std::env::var(crate::cmd::GROUP_ACTIVE_ENV).ok(),
         }
     }
@@ -1057,10 +957,6 @@ impl EnvSnapshot {
             install_on_collision: SourceValue {
                 cli: None,
                 env: self.install_on_collision.as_deref(),
-            },
-            install_tools: SourceValue {
-                cli: None,
-                env: self.install_tools.as_deref(),
             },
             group_active: self.group_active.as_deref(),
             config,

@@ -240,7 +240,8 @@ a missing attestation fatal; `verify: off` skips the check.
 (`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
 (`test`, then `build`) sequentially. When the project has a mise config,
 `mise install` runs first so the package managers it declares exist before
-they are called; `--no-tools` (or `[install].tools = "off"`) skips that step.
+they are called, and everything mise manages is on the `PATH` of the
+processes runner spawns next; `--no-tools` skips that step.
 
 That is the point: the workflow stays boring even when the project underneath is
 npm, pnpm, bun, Cargo, Deno, uv, Make, just, or whatever automation that repo
@@ -619,15 +620,13 @@ overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the or
 # flag (their dependency build scripts need a trustedDependencies /
 # onlyBuiltDependencies manifest allowlist runner won't write), so they warn.
 # Precedence: CLI --no-scripts/--scripts > RUNNER_INSTALL_SCRIPTS > [install].scripts.
-# `tools` controls the toolchain step that precedes the package managers:
-# "auto" (the default) runs `mise install` first when a mise config is
-# detected and warns when mise is not on PATH; "off" skips it. Precedence:
-# CLI --no-tools > RUNNER_INSTALL_TOOLS > [install].tools.
+# The toolchain step (`mise install`, when a mise config is detected) has no
+# config key: detection decides whether it applies, and `--no-tools` turns it
+# off for one invocation.
 [install]
 pms          = ["bun"]    # only install with these; each must be detected
 scripts      = "deny"     # deny | allow  (absent = each PM's own default)
 on_collision = "resolve"  # resolve (one writer per install dir) | error
-tools        = "auto"     # auto (mise install first) | off
 
 # Resolver policy knobs.
 [resolution]

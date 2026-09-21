@@ -68,7 +68,6 @@
 # pms = ["bun"]   # only install with these; each must be detected
 # scripts = "deny"   # deny | allow  (absent = each PM's own default)
 # on_collision = "resolve"   # resolve (one writer per install dir, rest shadowed) | error (refuse to pick)
-# tools = "auto"   # auto (run `mise install` first when a mise config exists) | off (skip the toolchain step)
 
 # `[resolution]` section, resolver policy knobs.
 [resolution]

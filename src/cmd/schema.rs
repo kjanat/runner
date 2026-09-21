@@ -313,15 +313,6 @@ const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
         ]),
     ),
     (
-        "install",
-        "tools",
-        r#""auto""#,
-        FieldHint::Annotated(&[
-            ("auto", "run `mise install` first when a mise config exists"),
-            ("off", "skip the toolchain step"),
-        ]),
-    ),
-    (
         "resolution",
         "fallback",
         r#""probe""#,
@@ -415,9 +406,7 @@ fn render_hint(section: &str, field: &str, hint: &FieldHint) -> String {
 /// accepted. `None` for booleans and fields with no single fixed set
 /// (see [`broader_vocab`] for those with a large-but-real vocabulary).
 fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
-    use crate::resolver::{
-        CollisionPolicy, FallbackPolicy, MismatchPolicy, ScriptPolicy, ToolsPolicy,
-    };
+    use crate::resolver::{CollisionPolicy, FallbackPolicy, MismatchPolicy, ScriptPolicy};
     use crate::types::{Ecosystem, PackageManager, TaskRunner};
 
     match (section, field) {
@@ -445,7 +434,6 @@ fn accepted_labels(section: &str, field: &str) -> Option<Vec<&'static str>> {
         ("install", "on_collision") => {
             Some(CollisionPolicy::ALL.iter().map(|p| p.label()).collect())
         }
-        ("install", "tools") => Some(ToolsPolicy::ALL.iter().map(|p| p.label()).collect()),
         ("resolution", "fallback") => Some(FallbackPolicy::ALL.iter().map(|p| p.label()).collect()),
         ("resolution", "on_mismatch") => {
             Some(MismatchPolicy::ALL.iter().map(|p| p.label()).collect())
