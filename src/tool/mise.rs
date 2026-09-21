@@ -21,6 +21,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::types::TaskDetail;
+
 pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
     super::HostQuietCapabilities::quiet("mise", &["--quiet"])
 }
@@ -105,9 +107,11 @@ fn parse_cli_output(stdout: &[u8], project_root: &Path) -> Option<Vec<ExtractedT
             continue;
         }
         let description = entry.description_or_fallback();
+        let detail = Box::new(entry.detail(project_root));
         tasks.push(ExtractedTask::Recipe {
             name: entry.name.clone(),
             description,
+            detail,
         });
         push_aliases(&mut tasks, &entry.name, entry.aliases);
     }
@@ -164,9 +168,14 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
         }
         let description = task.description();
         let aliases = task.aliases();
+        let detail = Box::new(TaskDetail {
+            file: task.file().map(str::to_owned),
+            ..TaskDetail::default()
+        });
         entries.push(ExtractedTask::Recipe {
             name: name.clone(),
             description,
+            detail,
         });
         push_aliases(&mut entries, &name, aliases);
     }
@@ -200,6 +209,56 @@ struct MiseJsonTask {
     /// `description` and `run` are empty.
     #[serde(default)]
     file: Option<String>,
+    #[serde(default)]
+    depends: Vec<String>,
+    #[serde(default)]
+    depends_post: Vec<String>,
+    #[serde(default)]
+    wait_for: Vec<String>,
+    #[serde(default)]
+    dir: Option<PathBuf>,
+    /// `KEY=VALUE` strings in current mise; older payloads carried
+    /// objects, which are flattened to the same shape.
+    #[serde(default)]
+    env: Vec<EnvEntry>,
+    #[serde(default)]
+    tools: BTreeMap<String, String>,
+    #[serde(default)]
+    usage: String,
+    #[serde(default)]
+    sources: Vec<String>,
+    #[serde(default)]
+    outputs: Vec<String>,
+    #[serde(default)]
+    timeout: Option<Scalar>,
+}
+
+/// One `env` element: `"KEY=VALUE"` or `{ "KEY": "VALUE", ... }`.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum EnvEntry {
+    Pair(String),
+    Map(BTreeMap<String, Scalar>),
+    Unknown(serde::de::IgnoredAny),
+}
+
+/// A JSON scalar rendered back to its source text.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Scalar {
+    Text(String),
+    Number(serde_json::Number),
+    Flag(bool),
+}
+
+impl std::fmt::Display for Scalar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text(text) => f.write_str(text),
+            Self::Number(number) => write!(f, "{number}"),
+            Self::Flag(flag) => write!(f, "{flag}"),
+        }
+    }
 }
 
 impl MiseJsonTask {
@@ -208,6 +267,40 @@ impl MiseJsonTask {
             return Some(self.description.clone());
         }
         join_steps(&self.run).or_else(|| self.file.clone())
+    }
+
+    /// Everything the payload says about the task beyond name and
+    /// description. `dir` is dropped when it is the project root itself,
+    /// so it only carries information when the task runs elsewhere.
+    fn detail(&self, project_root: &Path) -> TaskDetail {
+        let dir = self.dir.clone().filter(|dir| {
+            let canonical = dir.canonicalize();
+            canonical.as_deref().unwrap_or(dir) != project_root
+        });
+        let env = self
+            .env
+            .iter()
+            .flat_map(|entry| match entry {
+                EnvEntry::Pair(pair) => vec![pair.clone()],
+                EnvEntry::Map(map) => map.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+                EnvEntry::Unknown(_) => Vec::new(),
+            })
+            .collect();
+        TaskDetail {
+            depends: self.depends.clone(),
+            depends_post: self.depends_post.clone(),
+            wait_for: self.wait_for.clone(),
+            dir,
+            env,
+            tools: self.tools.clone(),
+            usage: Some(self.usage.trim())
+                .filter(|spec| !spec.is_empty())
+                .map(str::to_owned),
+            file: self.file.clone(),
+            sources: self.sources.clone(),
+            outputs: self.outputs.clone(),
+            timeout: self.timeout.as_ref().map(ToString::to_string),
+        }
     }
 }
 
@@ -258,6 +351,7 @@ pub(crate) enum ExtractedTask {
     Recipe {
         name: String,
         description: Option<String>,
+        detail: Box<TaskDetail>,
     },
     Alias {
         name: String,
@@ -395,6 +489,13 @@ impl TaskEntry {
         }
     }
 
+    fn file(&self) -> Option<&str> {
+        match &self.kind {
+            TaskEntryKind::Table(t) => t.file.as_deref(),
+            TaskEntryKind::InlineRun(_) => None,
+        }
+    }
+
     fn aliases(&self) -> Vec<String> {
         match &self.kind {
             TaskEntryKind::Table(t) => match &t.alias {
@@ -446,6 +547,7 @@ mod tests {
         parse_cli_output, run_cmd,
     };
     use crate::tool::test_support::TempDir;
+    use crate::types::TaskDetail;
 
     #[test]
     fn detect_finds_dot_mise_toml() {
@@ -522,10 +624,12 @@ mod tests {
                 ExtractedTask::Recipe {
                     name: "build".to_string(),
                     description: Some("cargo build".to_string()),
+                    detail: Box::default(),
                 },
                 ExtractedTask::Recipe {
                     name: "test".to_string(),
                     description: Some("cargo test".to_string()),
+                    detail: Box::default(),
                 },
             ],
         );
@@ -546,6 +650,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "ci".to_string(),
                 description: Some("cargo fmt && cargo clippy".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -565,6 +670,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "full".to_string(),
                 description: Some("mise run check && echo done".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -586,14 +692,17 @@ mod tests {
                 ExtractedTask::Recipe {
                     name: "check".to_string(),
                     description: Some("echo check".to_string()),
+                    detail: Box::default(),
                 },
                 ExtractedTask::Recipe {
                     name: "full".to_string(),
                     description: Some("mise run check && mise run oracle".to_string()),
+                    detail: Box::default(),
                 },
                 ExtractedTask::Recipe {
                     name: "oracle".to_string(),
                     description: Some("echo oracle".to_string()),
+                    detail: Box::default(),
                 },
             ],
         );
@@ -614,6 +723,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "full".to_string(),
                 description: Some("echo done".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -633,6 +743,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "full".to_string(),
                 description: Some("Everything".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -652,6 +763,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "build".to_string(),
                 description: Some("Compile the binary".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -671,6 +783,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "build".to_string(),
                 description: Some("cargo build && cargo test".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -695,6 +808,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "build".to_string(),
                 description: Some("cargo build".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -720,6 +834,7 @@ mod tests {
                 ExtractedTask::Recipe {
                     name: "build".to_string(),
                     description: Some("cargo build".to_string()),
+                    detail: Box::default(),
                 },
             ],
         );
@@ -805,6 +920,10 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "lint".to_string(),
                 description: Some("./scripts/lint.sh".to_string()),
+                detail: Box::new(TaskDetail {
+                    file: Some("./scripts/lint.sh".to_string()),
+                    ..TaskDetail::default()
+                }),
             }],
         );
     }
@@ -875,6 +994,7 @@ mod tests {
                 ExtractedTask::Recipe {
                     name: "build-wasm".to_string(),
                     description: Some("Build wasm plugin and schema".to_string()),
+                    detail: Box::default(),
                 },
                 ExtractedTask::Alias {
                     name: "bw".to_string(),
@@ -883,6 +1003,7 @@ mod tests {
                 ExtractedTask::Recipe {
                     name: "test".to_string(),
                     description: Some("Run Go tests".to_string()),
+                    detail: Box::default(),
                 },
             ],
         );
@@ -961,6 +1082,7 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "ci".to_string(),
                 description: Some("cargo fmt && cargo clippy".to_string()),
+                detail: Box::default(),
             }],
         );
     }
@@ -994,12 +1116,65 @@ mod tests {
                 ExtractedTask::Recipe {
                     name: "check".to_string(),
                     description: Some("echo check".to_string()),
+                    detail: Box::default(),
                 },
                 ExtractedTask::Recipe {
                     name: "full".to_string(),
                     description: Some("mise run check && mise run oracle".to_string()),
+                    detail: Box::default(),
                 },
             ],
+        );
+    }
+
+    #[test]
+    fn cli_output_carries_task_detail() {
+        let dir = TempDir::new("mise-cli-detail");
+        let project = dir
+            .path()
+            .canonicalize()
+            .expect("temp dir should canonicalize");
+        let src = project.join("mise.toml").to_string_lossy().to_string();
+        let run_dir = project.join("compiler/rust");
+        let payload = serde_json::json!([
+            {
+                "name": "leaf", "aliases": [], "description": "Lower one leaf", "source": src,
+                "hide": false, "global": false, "run": ["cargo run -- lower"], "file": null,
+                "depends": ["extract"], "depends_post": ["report"], "wait_for": ["fmt"],
+                "dir": run_dir.to_string_lossy(),
+                "env": ["RUST_BACKTRACE=1", { "H2R_OPT": "-O1", "JOBS": 4 }],
+                "tools": { "rust": "1.95" },
+                "usage": "arg \"[dir]\" default=\"compiler/core-json\"\n",
+                "sources": ["src/**/*.rs"], "outputs": ["target/out"],
+                "timeout": "10m",
+            },
+        ])
+        .to_string();
+
+        let tasks = parse_cli_output(payload.as_bytes(), &project).expect("payload should parse");
+        assert_eq!(
+            tasks,
+            [ExtractedTask::Recipe {
+                name: "leaf".to_string(),
+                description: Some("Lower one leaf".to_string()),
+                detail: Box::new(TaskDetail {
+                    depends: vec!["extract".to_string()],
+                    depends_post: vec!["report".to_string()],
+                    wait_for: vec!["fmt".to_string()],
+                    dir: Some(run_dir),
+                    env: vec![
+                        "RUST_BACKTRACE=1".to_string(),
+                        "H2R_OPT=-O1".to_string(),
+                        "JOBS=4".to_string(),
+                    ],
+                    tools: [("rust".to_string(), "1.95".to_string())].into(),
+                    usage: Some("arg \"[dir]\" default=\"compiler/core-json\"".to_string()),
+                    file: None,
+                    sources: vec!["src/**/*.rs".to_string()],
+                    outputs: vec!["target/out".to_string()],
+                    timeout: Some("10m".to_string()),
+                }),
+            }],
         );
     }
 
@@ -1029,6 +1204,10 @@ mod tests {
             [ExtractedTask::Recipe {
                 name: "lint".to_string(),
                 description: Some("./scripts/lint.sh".to_string()),
+                detail: Box::new(TaskDetail {
+                    file: Some("./scripts/lint.sh".to_string()),
+                    ..TaskDetail::default()
+                }),
             }],
         );
     }

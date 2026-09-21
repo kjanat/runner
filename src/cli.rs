@@ -952,6 +952,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }
@@ -959,6 +960,7 @@ mod tests {
     fn turbo_passthrough(name: &str) -> Task {
         Task {
             passthrough_to: Some(crate::types::TaskRunner::Turbo),
+            detail: crate::types::TaskDetail::default(),
             ..task(name, TaskSource::PackageJson)
         }
     }

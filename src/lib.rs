@@ -1728,6 +1728,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
                     member: None,
                 })
                 .collect(),

@@ -292,6 +292,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             }],
             node_version: None,
@@ -340,6 +341,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             }],
         );
@@ -517,6 +519,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             },
             Task {
@@ -526,6 +529,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             },
         ];
@@ -580,6 +584,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
                     member: None,
                 },
                 Task {
@@ -589,6 +594,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
                     member: None,
                 },
             ],
@@ -631,6 +637,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }

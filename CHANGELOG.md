@@ -20,6 +20,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- Mise tasks carry what `mise tasks --json` declares beyond name and
+  description: `depends`, `depends_post`, `wait_for`, `dir`, `env`, `tools`,
+  `usage`, `file`, `sources`, `outputs`, and `timeout`. `runner why` prints
+  them under the selected task and fills its `dependencies` field, `list
+  --json` adds `depends`, `dir`, and `usage`, and `doctor --json` fills
+  `tasks[].dependencies`. `cwd` in `why` and `doctor` is the directory the
+  task runs in when the source declares one. The direct TOML fallback keeps
+  `file` and leaves the rest empty.
+
 - `runner install` runs `mise install` before the package managers when the
   project has a mise config, so tools the config declares (often the package
   managers themselves) exist before they are called. `--frozen` adds

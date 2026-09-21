@@ -207,9 +207,11 @@
           ]
         },
         "dependencies": {
-          "description": "Task dependencies. Always empty today: no extractor records dependency edges yet; the edge shape lands with the first extractor.",
+          "description": "Tasks that run before this one, as the source declares them. Filled from `mise tasks --json`; empty for sources without dependency edges.",
           "type": "array",
-          "items": true
+          "items": {
+            "type": "string"
+          }
         },
         "description": {
           "type": [

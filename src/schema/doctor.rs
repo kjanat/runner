@@ -335,11 +335,11 @@ struct DoctorTask<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Task dependencies. Always empty today: no extractor records dependency \
-                           edges yet; the edge shape lands with the first extractor."
+            description = "Tasks that run before this one, as the source declares them. Filled \
+                           from `mise tasks --json`; empty for sources without dependency edges."
         )
     )]
-    dependencies: Vec<serde_json::Value>,
+    dependencies: Vec<&'a str>,
     description: Option<&'a str>,
     fqn: String,
     #[cfg_attr(
@@ -1003,9 +1003,9 @@ fn tasks<'a>(
                 })
                 .map(|other| other.name.as_str())
                 .collect(),
-            cwd: task.dir(&ctx.root).display().to_string(),
+            cwd: task.run_dir(&ctx.root).display().to_string(),
             definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
-            dependencies: Vec::new(),
+            dependencies: task.detail.depends.iter().map(String::as_str).collect(),
             description: task.description.as_deref(),
             fqn: super::labels::fqn(task),
             is_alias: task.alias_of.is_some(),
@@ -1352,6 +1352,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }

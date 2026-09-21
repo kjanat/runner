@@ -1028,6 +1028,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }
@@ -1092,6 +1093,7 @@ mod tests {
             description: None,
             alias_of: Some("build".to_string()),
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
 
@@ -1175,6 +1177,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         let args = [String::from("--port"), String::from("3000")];
@@ -1209,6 +1212,7 @@ mod tests {
             description: Some("greenpy.main:main".to_string()),
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         let args = [String::from("--flag")];
@@ -1240,6 +1244,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
 
