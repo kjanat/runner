@@ -850,50 +850,48 @@ struct CliSides<'a> {
     failure: crate::cli::ChainFailureFlags,
 }
 
-/// Captured `RUNNER_*` environment, separated from [`OverrideSources`]
-/// assembly so the strict and lenient constructors share one read path
-/// and can never drift on which variables they consult.
-struct EnvSnapshot {
-    pm: Option<String>,
-    runner: Option<String>,
-    runtime: Option<String>,
-    fallback: Option<String>,
-    on_mismatch: Option<String>,
-    no_warnings: Option<String>,
-    quiet: Option<String>,
-    host_stream: Option<String>,
-    explain: Option<String>,
-    keep_going: Option<String>,
-    kill_on_fail: Option<String>,
-    install_pms: Option<String>,
-    install_scripts: Option<String>,
-    install_on_collision: Option<String>,
-    group_active: Option<String>,
+/// Declare the captured `RUNNER_*` environment from one row per variable.
+///
+/// The field and the variable it reads used to be two declarations that
+/// agreed only by hand.
+macro_rules! env_snapshot {
+    ($($(#[$meta:meta])* $field:ident => $var:expr),* $(,)?) => {
+        /// Captured `RUNNER_*` environment, separated from [`OverrideSources`]
+        /// assembly so the strict and lenient constructors share one read path
+        /// and can never drift on which variables they consult.
+        struct EnvSnapshot {
+            $($(#[$meta])* $field: Option<String>,)*
+        }
+
+        impl EnvSnapshot {
+            /// Read every `RUNNER_*` override variable from the process
+            /// environment.
+            fn capture() -> Self {
+                Self { $($field: std::env::var($var).ok(),)* }
+            }
+        }
+    };
+}
+
+env_snapshot! {
+    pm => "RUNNER_PM",
+    runner => "RUNNER_RUNNER",
+    runtime => "RUNNER_RUNTIME",
+    fallback => "RUNNER_FALLBACK",
+    on_mismatch => "RUNNER_ON_MISMATCH",
+    no_warnings => "RUNNER_NO_WARNINGS",
+    quiet => "RUNNER_QUIET",
+    host_stream => "RUNNER_HOST_STREAM",
+    explain => "RUNNER_EXPLAIN",
+    keep_going => "RUNNER_KEEP_GOING",
+    kill_on_fail => "RUNNER_KILL_ON_FAIL",
+    install_pms => "RUNNER_INSTALL_PMS",
+    install_scripts => "RUNNER_INSTALL_SCRIPTS",
+    install_on_collision => "RUNNER_INSTALL_ON_COLLISION",
+    group_active => crate::cmd::GROUP_ACTIVE_ENV,
 }
 
 impl EnvSnapshot {
-    /// Read every `RUNNER_*` override variable from the process
-    /// environment.
-    fn capture() -> Self {
-        Self {
-            pm: std::env::var("RUNNER_PM").ok(),
-            runner: std::env::var("RUNNER_RUNNER").ok(),
-            runtime: std::env::var("RUNNER_RUNTIME").ok(),
-            fallback: std::env::var("RUNNER_FALLBACK").ok(),
-            on_mismatch: std::env::var("RUNNER_ON_MISMATCH").ok(),
-            no_warnings: std::env::var("RUNNER_NO_WARNINGS").ok(),
-            quiet: std::env::var("RUNNER_QUIET").ok(),
-            host_stream: std::env::var("RUNNER_HOST_STREAM").ok(),
-            explain: std::env::var("RUNNER_EXPLAIN").ok(),
-            keep_going: std::env::var("RUNNER_KEEP_GOING").ok(),
-            kill_on_fail: std::env::var("RUNNER_KILL_ON_FAIL").ok(),
-            install_pms: std::env::var("RUNNER_INSTALL_PMS").ok(),
-            install_scripts: std::env::var("RUNNER_INSTALL_SCRIPTS").ok(),
-            install_on_collision: std::env::var("RUNNER_INSTALL_ON_COLLISION").ok(),
-            group_active: std::env::var(crate::cmd::GROUP_ACTIVE_ENV).ok(),
-        }
-    }
-
     /// Pair the captured environment with the CLI flag values into the
     /// [`OverrideSources`] consumed by the constructors.
     fn sources<'a>(
