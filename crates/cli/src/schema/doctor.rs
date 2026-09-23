@@ -691,7 +691,7 @@ fn ecosystems(
 /// any `package.json`-sourced task each count. Gates Node inclusion in
 /// both [`ecosystems`] and [`tools`] so the two surfaces never
 /// disagree with what `tasks` resolves.
-fn has_node_context(
+pub(crate) fn has_node_context(
     ctx: &ProjectContext,
     node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
 ) -> bool {

@@ -16,7 +16,7 @@ use colored::Colorize;
 use serde_json::{Map, Value};
 
 use crate::cmd::install::InstallPlan;
-use crate::resolver::{ResolutionOverrides, ResolveError};
+use crate::resolver::{ResolutionOverrides, ResolveError, Resolver};
 use crate::schema::Project;
 use crate::schema::doctor::DoctorReport;
 use crate::types::ProjectContext;
@@ -57,6 +57,14 @@ pub(crate) fn doctor(
     print_human(ctx, &report, overrides, plan.as_ref());
 
     Ok(())
+}
+
+/// Whether the human report shows the Node sections: the same predicate
+/// the structured report uses, so a `package.json` whose scripts resolve
+/// without a lockfile-detected package manager still counts.
+fn node_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
+    let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
+    crate::schema::doctor::has_node_context(ctx, &node_pm)
 }
 
 /// Legacy stub retained for the existing tests that exercise
@@ -180,9 +188,7 @@ fn print_human(
         }
     });
 
-    let node_context = report["ecosystems"]
-        .as_array()
-        .is_some_and(|ecosystems| ecosystems.iter().any(|e| e.as_str() == Some("node")));
+    let node_context = node_context(ctx, overrides);
 
     print_section("Signals (Node)", |out| {
         if !node_context {
@@ -470,6 +476,36 @@ mod tests {
         let labels: Vec<&str> = ecos.iter().filter_map(|v| v.as_str()).collect();
         assert!(labels.contains(&"node"));
         assert!(labels.contains(&"rust"));
+    }
+
+    #[test]
+    fn node_context_holds_for_package_json_without_a_lockfile() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("doctor-node-context");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "build": "tsc" } }"#,
+        )
+        .expect("package.json should be written");
+        let ctx = detect(dir.path());
+        assert!(
+            ctx.package_managers.is_empty(),
+            "precondition: no lockfile-detected package manager"
+        );
+
+        assert!(super::node_context(&ctx, &ResolutionOverrides::default()));
+    }
+
+    #[test]
+    fn node_context_is_absent_without_node_signals() {
+        let mut ctx = context();
+        ctx.package_managers = vec![PackageManager::Cargo];
+
+        assert!(!super::node_context(&ctx, &ResolutionOverrides::default()));
     }
 
     #[test]
