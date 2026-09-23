@@ -820,7 +820,7 @@ fn build_pm_exec_command(
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
         Some(PackageManager::Go) => {
             if task_name.contains('@') || task_name.contains('/') || task_name.contains('\\') {
-                ("go run", tool::go_pm::exec_cmd(&combined()))
+                ("go run", tool::go_pm::exec_cmd(&combined(), &ctx.root))
             } else {
                 direct_exec()
             }
@@ -976,7 +976,7 @@ fn build_run_command(
                 bail!("go task {:?} is missing its run target", entry.name);
             };
             let hv = host_verbosity(overrides, entry, "go", tool::go_pm::quiet_capabilities());
-            tool::go_pm::run_cmd(run_target, args, hv)
+            tool::go_pm::run_cmd(run_target, args, &ctx.root, hv)
         }
         TaskSource::BaconToml => tool::bacon::run_cmd(
             &entry.name,

@@ -107,6 +107,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `go run`, whether for a `cmd/<name>` task, a Go file, or the Go exec
+  fallback, sets `GOFLAGS=-buildvcs=true` when the project sits in a
+  version-control checkout, so the binary's `debug.ReadBuildInfo` carries
+  the revision instead of `(devel)`. A `GOFLAGS` that already decides
+  `-buildvcs` is left alone (#130).
+
 - `runner install` reports which package manager and program it was waiting
   on when `wait()` fails, and stops and reaps the child first, matching the
   parallel install lanes (#135).

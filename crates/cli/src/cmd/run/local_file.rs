@@ -199,7 +199,7 @@ fn build_command(
     //    cannot execute. `--pm` is deliberately not part of this: it names an
     //    installer, and the shebang has always won over it.
     if let Some(runtime) = js_runtime_override(overrides, &routing, shebang.as_ref()) {
-        return Ok(command_for_runtime(runtime, path, args));
+        return Ok(command_for_runtime(runtime, path, args, &ctx.root));
     }
 
     // 1. Directly executable → spawn directly, *unless* it is a recognized
@@ -229,7 +229,7 @@ fn build_command(
     //    Erroring is honest; `node app.tsx` would be guaranteed-broken.
     match routing {
         SourceRouting::Runtime(runtime) => {
-            return Ok(command_for_runtime(runtime, path, args));
+            return Ok(command_for_runtime(runtime, path, args, &ctx.root));
         }
         SourceRouting::NodeCannotRunJsx => return Err(node_cannot_run_jsx(overrides, path)),
         SourceRouting::Unrecognized => {}
@@ -706,7 +706,12 @@ fn py_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime 
 /// is the command's own argv prefix, so the printed `→` line reproduces the
 /// dispatch when copied; the Deno arm derives it from the same permission list
 /// it passes rather than a hardcoded string that could drift from the argv.
-fn command_for_runtime(runtime: Runtime, file: &Path, args: &[String]) -> (String, Command) {
+fn command_for_runtime(
+    runtime: Runtime,
+    file: &Path,
+    args: &[String],
+    project: &Path,
+) -> (String, Command) {
     match runtime {
         Runtime::Bun => (String::from("bun"), tool::bun::run_file_cmd(file, args)),
         Runtime::Deno => (
@@ -721,7 +726,7 @@ fn command_for_runtime(runtime: Runtime, file: &Path, args: &[String]) -> (Strin
         ),
         Runtime::Go => (
             String::from("go run"),
-            tool::go_pm::run_file_cmd(file, args),
+            tool::go_pm::run_file_cmd(file, args, project),
         ),
         #[cfg(windows)]
         Runtime::WindowsScript => {

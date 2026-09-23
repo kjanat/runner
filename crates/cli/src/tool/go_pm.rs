@@ -2,6 +2,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use super::files;
 use std::process::Command;
 
 pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
@@ -149,28 +151,65 @@ pub(crate) fn install_cmd() -> Command {
 }
 
 /// `go run <args...>`
-pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = super::program::command("go");
-    c.arg("run").args(args);
+pub(crate) fn exec_cmd(args: &[String], project: &Path) -> Command {
+    let mut c = go_run(project);
+    c.args(args);
     c
 }
 
 /// `go run <target> <args...>`
-pub(crate) fn run_cmd(target: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+pub(crate) fn run_cmd(
+    target: &str,
+    args: &[String],
+    project: &Path,
+    _verbosity: super::HostVerbosity,
+) -> Command {
     // `go run` has no quiet flag and no stdout-diversion primitive, so both
     // verbosity axes no-op here.
-    let mut c = super::program::command("go");
-    c.arg("run").arg(target).args(args);
+    let mut c = go_run(project);
+    c.arg(target).args(args);
     c
 }
 
 /// `go run <file> [args...]`, execute a single-file Go program by path.
 /// Generalizes the slash-containing-token Go special case in the PM-exec
 /// fallback to the local-file dispatch path.
-pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
-    let mut c = super::program::command("go");
-    c.arg("run").arg(file).args(args);
+pub(crate) fn run_file_cmd(file: &Path, args: &[String], project: &Path) -> Command {
+    let mut c = go_run(project);
+    c.arg(file).args(args);
     c
+}
+
+/// `go run` with VCS stamping on inside a checkout, so the binary reports
+/// its revision from `debug.ReadBuildInfo` instead of `(devel)`. Go skips
+/// the stamp for `go run` by default, and `-buildvcs=true` is a build error
+/// outside a checkout, hence the guard.
+fn go_run(project: &Path) -> Command {
+    let mut c = super::program::command("go");
+    c.arg("run");
+    if files::vcs_root(project).is_some()
+        && let Some(flags) = goflags_with_buildvcs(std::env::var("GOFLAGS").ok().as_deref())
+    {
+        c.env("GOFLAGS", flags);
+    }
+    c
+}
+
+/// `GOFLAGS` with `-buildvcs=true` appended, or `None` when the caller
+/// already decided `-buildvcs` either way.
+fn goflags_with_buildvcs(existing: Option<&str>) -> Option<String> {
+    let existing = existing.unwrap_or("").trim();
+    if existing
+        .split_whitespace()
+        .any(|flag| flag.starts_with("-buildvcs"))
+    {
+        return None;
+    }
+    Some(if existing.is_empty() {
+        "-buildvcs=true".to_string()
+    } else {
+        format!("{existing} -buildvcs=true")
+    })
 }
 
 #[cfg(test)]
@@ -178,13 +217,19 @@ mod tests {
     use std::fs;
 
     use super::{ExtractedTask, exec_cmd, extract_tasks, run_cmd, run_file_cmd};
+    use std::path::Path;
+
     use crate::tool::test_support::TempDir;
 
     #[test]
     fn run_file_cmd_uses_go_run_with_path() {
         use std::path::Path;
 
-        let cmd = run_file_cmd(Path::new("/abs/main.go"), &[String::from("serve")]);
+        let cmd = run_file_cmd(
+            Path::new("/abs/main.go"),
+            &[String::from("serve")],
+            Path::new("/nonexistent"),
+        );
         let built: Vec<_> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -207,7 +252,7 @@ mod tests {
             String::from("github.com/foo/tool@latest"),
             String::from("--help"),
         ];
-        let built: Vec<_> = exec_cmd(&args)
+        let built: Vec<_> = exec_cmd(&args, Path::new("/nonexistent"))
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
@@ -336,11 +381,57 @@ mod tests {
     #[test]
     fn run_cmd_uses_go_run_target() {
         let args = [String::from("--port"), String::from("3000")];
-        let built: Vec<_> = run_cmd("./cmd/serve", &args, crate::tool::HostVerbosity::default())
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
+        let built: Vec<_> = run_cmd(
+            "./cmd/serve",
+            &args,
+            Path::new("/nonexistent-project"),
+            crate::tool::HostVerbosity::default(),
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
 
         assert_eq!(built, ["run", "./cmd/serve", "--port", "3000"]);
+    }
+
+    #[test]
+    fn goflags_gain_buildvcs_unless_already_decided() {
+        use super::goflags_with_buildvcs;
+        assert_eq!(
+            goflags_with_buildvcs(None).as_deref(),
+            Some("-buildvcs=true")
+        );
+        assert_eq!(
+            goflags_with_buildvcs(Some("")).as_deref(),
+            Some("-buildvcs=true")
+        );
+        assert_eq!(
+            goflags_with_buildvcs(Some("-mod=vendor")).as_deref(),
+            Some("-mod=vendor -buildvcs=true")
+        );
+        assert_eq!(goflags_with_buildvcs(Some("-buildvcs=false")), None);
+        assert_eq!(
+            goflags_with_buildvcs(Some("-mod=vendor -buildvcs=auto")),
+            None
+        );
+    }
+
+    #[test]
+    fn go_run_stamps_vcs_only_inside_a_checkout() {
+        let dir = TempDir::new("go-buildvcs");
+        let outside = run_file_cmd(Path::new("main.go"), &[], dir.path());
+        assert!(outside.get_envs().all(|(k, _)| k != "GOFLAGS"));
+
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        let inside = run_file_cmd(Path::new("main.go"), &[], dir.path());
+        let goflags = inside
+            .get_envs()
+            .find(|(k, _)| *k == "GOFLAGS")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_string_lossy().into_owned());
+        assert!(
+            goflags.is_some_and(|v| v.contains("-buildvcs=true")),
+            "GOFLAGS should carry -buildvcs=true inside a checkout"
+        );
     }
 }
