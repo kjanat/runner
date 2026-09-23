@@ -4,8 +4,9 @@
 //! Three flavors of dispatch share this code:
 //! - normal entry: `resolve_dispatch` matched a [`crate::types::Task`]
 //!   and builds the per-source run command via [`build_run_command`];
-//! - bun-test special case: `runner test` with no `package.json` script
-//!   forwards to `bun test` directly;
+//! - the `test` shorthand: `runner test` with no `test` task runs the
+//!   ecosystem's built-in test runner (`bun test`, `node --test`, `deno
+//!   test`, `cargo test`, `go test ./...`, `python -m unittest`);
 //! - PM-exec fallback: no task matched, so the token is run through
 //!   `npx`/`bun x`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
 //!   directly when the resolver landed on a PM without an exec primitive.
@@ -601,7 +602,7 @@ fn spawn_task(
 }
 
 /// The tail of the cascade, reached once the token matched no task, no local
-/// file, and no installed dependency: the bun-test special case, the project's
+/// file, and no installed dependency: the `test` shorthand, the project's
 /// bin dirs and `PATH`, then the fetching rungs, `mise exec` ahead of the
 /// package-exec primitive.
 fn dispatch_after_miss(
@@ -621,10 +622,10 @@ fn dispatch_after_miss(
         Err(e) => return Err(e.into()),
     };
 
-    // Bun-test special case: `bun test` built-in.
-    if should_use_bun_test_fallback(ctx, overrides, resolved_pm, task_name) {
-        print_dispatch_arrow(overrides, task_name, "bun", "test", args);
-        let mut cmd = tool::bun::test_cmd(args);
+    if let Some((label, mut cmd)) =
+        super::test_shorthand::resolve(ctx, overrides, resolved_pm, task_name, args)?
+    {
+        print_dispatch_arrow(overrides, task_name, label, "test", args);
         crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
         crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
@@ -769,36 +770,6 @@ impl ResolvedPythonPm {
             }
         }
     }
-}
-
-/// Bun special-case for `runner test` when the project has no
-/// `package.json` `test` script: forward to `bun test`.
-///
-/// An explicit `--runtime` decides alone: `bun test` is bun's built-in test
-/// runner, so forcing node or deno must not land on it, and forcing bun must,
-/// whatever the lockfile says. Without one, `resolved_pm` is the verdict from
-/// the full resolver chain, so all signals, `--pm`, `RUNNER_PM`,
-/// `runner.toml`, `packageManager`, `devEngines.packageManager`, lockfile,
-/// PATH probe, get a vote.
-pub(super) fn should_use_bun_test_fallback(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    resolved_pm: Option<PackageManager>,
-    task: &str,
-) -> bool {
-    if task != "test" || has_package_script(ctx, task) {
-        return false;
-    }
-    runtime::overridden(overrides).map_or_else(
-        || resolved_pm.is_some_and(|pm| pm == PackageManager::Bun),
-        |rt| rt == JsRuntime::Bun,
-    )
-}
-
-fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
-    ctx.tasks.iter().any(|entry| {
-        entry.source == TaskSource::PackageJson && entry.member.is_none() && entry.name == task
-    })
 }
 
 /// Build a [`Command`] for the given task source and package manager.

@@ -20,6 +20,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- `run test` with no `test` task runs the ecosystem's own test runner:
+  `bun test`, `deno test`, `cargo test`, `go test ./...`, `node --test` over
+  every `test.<ext>` and `*.test.<ext>` file below the current directory, and
+  for Python whichever of pytest, nose2, ward, Django's `manage.py test`,
+  tox, nox or `unittest` the project has. The bun-only special case is gone.
+  Arguments are forwarded; a Node file argument skips discovery.
+
 - Mise tasks carry what `mise tasks --json` declares beyond name and
   description: `depends`, `depends_post`, `wait_for`, `dir`, `env`, `tools`,
   `usage`, `file`, `sources`, `outputs`, and `timeout`. `runner why` prints
