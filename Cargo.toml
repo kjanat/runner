@@ -75,7 +75,7 @@ version  = "0.97"
 optional = true
 
 [dependencies.schemars]
-version  = "1.2"
+version = "1.2"
 
 [dependencies.serde]
 version  = "1"
