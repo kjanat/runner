@@ -55,6 +55,27 @@ pub(super) fn exec_cmd(runtime: JsRuntime, argv: &[String]) -> (&'static str, Co
     }
 }
 
+/// Build the package-selecting exec command for `runtime`, plus its trace
+/// label.
+pub(super) fn exec_package_cmd(
+    runtime: JsRuntime,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> (&'static str, Command) {
+    match runtime {
+        JsRuntime::Node => (
+            "npx --package",
+            tool::npm::exec_package_cmd(package, bin, args),
+        ),
+        JsRuntime::Bun => (
+            "bun x --bun --package",
+            tool::bun::exec_package_cmd_with_runtime(package, bin, args, true),
+        ),
+        JsRuntime::Deno => ("deno x", tool::deno::exec_package_cmd(package, bin, args)),
+    }
+}
+
 /// Whether the runtime axis replaces the exec primitive the resolver picked.
 ///
 /// It replaces a JS one (`npx`, `yarn exec`, `pnpm exec`, `bun x`, `deno x`)

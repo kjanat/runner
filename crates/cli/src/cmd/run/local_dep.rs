@@ -91,7 +91,7 @@ pub(super) fn try_selected_package(
         bail!("--package takes a package name (`typescript`, `@scope/name`), got {package:?}");
     }
     let Some(dir) = installed_dir(&ctx.cwd, package) else {
-        return Ok(None);
+        return pnp_selected_package(ctx, overrides, package, bin, args);
     };
     let manifest: Manifest = match std::fs::read_to_string(dir.join("package.json")) {
         Ok(raw) => serde_json::from_str(&raw)?,
@@ -109,6 +109,63 @@ pub(super) fn try_selected_package(
         describe: format!("{bin} from {} (package {package})", dir.display()),
         dispatch,
     }))
+}
+
+/// [`try_selected_package`] for a Yarn Plug'n'Play install, where a
+/// dependency has no `node_modules` directory: `yarn bin --json` names every
+/// binary and its providing package, and `yarn run <bin>` runs it through
+/// the loader. `Ok(None)` when the project is not Plug'n'Play, yarn is unavailable,
+/// or the package provides no binary at all.
+fn pnp_selected_package(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<Option<ResolvedBin>> {
+    if !crate::tool::yarn::is_pnp(&ctx.root) {
+        return Ok(None);
+    }
+    let Some(bins) = crate::tool::yarn::accessible_bins(&ctx.root) else {
+        return Ok(None);
+    };
+    let Some(found) = pnp_bin(&bins, package, bin)? else {
+        return Ok(None);
+    };
+    let command = crate::tool::yarn::run_cmd(bin, args, overrides.host_verbosity_for(bin));
+    Ok(Some(ResolvedBin {
+        describe: format!("{bin} from {} (package {package}, Plug'n'Play)", found.path),
+        dispatch: LocalDispatch {
+            label: "yarn run".to_string(),
+            command,
+        },
+    }))
+}
+
+/// The binary `package` provides under the name `bin`, from a `yarn bin
+/// --json` listing. `Ok(None)` when the package provides nothing, an error
+/// naming what it does provide when `bin` is not among them.
+fn pnp_bin<'a>(
+    bins: &'a [crate::tool::yarn::AccessibleBin],
+    package: &str,
+    bin: &str,
+) -> Result<Option<&'a crate::tool::yarn::AccessibleBin>> {
+    let provided: Vec<&crate::tool::yarn::AccessibleBin> = bins
+        .iter()
+        .filter(|entry| entry.source == package)
+        .collect();
+    if provided.is_empty() {
+        return Ok(None);
+    }
+    if let Some(found) = provided.iter().find(|entry| entry.name == bin) {
+        return Ok(Some(found));
+    }
+    let mut names: Vec<&str> = provided.iter().map(|entry| entry.name.as_str()).collect();
+    names.sort_unstable();
+    bail!(
+        "{package} declares no `{bin}` binary; it exposes {}",
+        names.join(", ")
+    )
 }
 
 /// The path `package` declares for the binary named `bin`.
@@ -217,10 +274,44 @@ fn unscoped(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, is_package_name, select_bin, unscoped};
+    use super::{Manifest, is_package_name, pnp_bin, select_bin, unscoped};
+    use crate::tool::yarn::AccessibleBin;
 
     fn manifest(json: &str) -> Manifest {
         serde_json::from_str(json).expect("manifest should parse")
+    }
+
+    fn accessible(name: &str, source: &str) -> AccessibleBin {
+        AccessibleBin {
+            name: name.to_string(),
+            source: source.to_string(),
+            path: format!("/repo/.yarn/cache/{source}.zip/{name}"),
+        }
+    }
+
+    #[test]
+    fn pnp_bin_matches_the_providing_package_only() {
+        let bins = [
+            accessible("tsc", "typescript"),
+            accessible("tsserver", "typescript"),
+            accessible("tsx", "tsx"),
+        ];
+
+        let found = pnp_bin(&bins, "typescript", "tsc")
+            .expect("declared")
+            .expect("provided");
+        assert_eq!(found.source, "typescript");
+
+        assert!(
+            pnp_bin(&bins, "esbuild", "esbuild")
+                .expect("no error for an absent package")
+                .is_none()
+        );
+
+        let err = pnp_bin(&bins, "typescript", "tsx").expect_err("tsx belongs to tsx");
+        let text = format!("{err:#}");
+        assert!(text.contains("no `tsx` binary"), "{text}");
+        assert!(text.contains("tsc, tsserver"), "{text}");
     }
 
     #[test]

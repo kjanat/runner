@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::process::Command;
 
+use serde::Deserialize;
+
 use super::ScriptDirective;
 
 /// Detected via `yarn.lock`.
@@ -133,6 +135,48 @@ fn parse_major_version(version: &str) -> Option<u32> {
 pub(crate) fn exec_cmd(dir: &Path, args: &[String]) -> Command {
     let yarn_major = detect_major_version(dir);
     exec_cmd_with_major(yarn_major, args)
+}
+
+/// One line of `yarn bin --json`: a binary the workspace can run and the
+/// package that provides it.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct AccessibleBin {
+    pub name: String,
+    /// The providing package's ident, `name` or `@scope/name`.
+    pub source: String,
+    pub path: String,
+}
+
+/// Whether `dir` is a Plug'n'Play install, which keeps dependencies out of
+/// `node_modules` and resolves them through the generated loader.
+pub(crate) fn is_pnp(dir: &Path) -> bool {
+    dir.join(".pnp.cjs").is_file() || dir.join(".pnp.js").is_file()
+}
+
+/// `yarn bin --json` in `dir`: every binary the workspace can run and its
+/// providing package. Yarn 2+ only; `None` when yarn is missing or refuses.
+pub(crate) fn accessible_bins(dir: &Path) -> Option<Vec<AccessibleBin>> {
+    let output = super::program::command("yarn")
+        .arg("bin")
+        .arg("--json")
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_accessible_bins(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Parse the NDJSON stream of `yarn bin --json`, skipping lines that are
+/// not binaries (yarn's own info and warning records).
+fn parse_accessible_bins(stdout: &str) -> Vec<AccessibleBin> {
+    stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
 }
 
 /// `yarn dlx --package <package> <bin> [args...]`, Yarn 2+ only; classic
@@ -357,6 +401,34 @@ mod verbosity_tests {
     fn run_cmd_default_adds_no_verbosity_flag() {
         let v = HostVerbosity::default();
         assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
+    }
+
+    #[test]
+    fn accessible_bins_parse_the_ndjson_stream_and_skip_other_records() {
+        use super::{AccessibleBin, parse_accessible_bins};
+        let stdout = concat!(
+            r#"{"name":"tsc","source":"typescript","path":"/repo/.yarn/cache/typescript.zip/bin/tsc"}"#,
+            "\n",
+            r#"{"type":"info","name":0,"displayName":"YN0000","indent":"","data":"tsc"}"#,
+            "\n",
+            r#"{"name":"lint","source":"@scope/tool","path":"/repo/.yarn/cache/tool.zip/lint.js"}"#,
+            "\n",
+        );
+        assert_eq!(
+            parse_accessible_bins(stdout),
+            [
+                AccessibleBin {
+                    name: "tsc".to_string(),
+                    source: "typescript".to_string(),
+                    path: "/repo/.yarn/cache/typescript.zip/bin/tsc".to_string(),
+                },
+                AccessibleBin {
+                    name: "lint".to_string(),
+                    source: "@scope/tool".to_string(),
+                    path: "/repo/.yarn/cache/tool.zip/lint.js".to_string(),
+                },
+            ]
+        );
     }
 
     #[test]

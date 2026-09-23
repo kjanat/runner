@@ -514,12 +514,16 @@ run --package typescript tsc -v     # typescript's own bin/tsc, never another pa
 run --package typescript tsserver   # any binary the manifest declares
 ```
 
-An installed package resolves from its own `package.json`. One that is not
-installed goes to the package manager's package-selecting form: `npx --package`,
-`bun x --package`, `pnpm --package=<name> dlx`, `yarn dlx --package` (Yarn 2+),
-`deno x npm:<name>/<bin>`, `uvx --from`. A binary the package does not declare
-is an error listing the ones it has. An `npm:` prefix on a task token is refused
-with the equivalent `--package` form.
+An installed package resolves from its own `package.json`, or from `yarn bin`
+under Yarn Plug'n'Play. One that is not installed goes to the package manager's
+package-selecting form: `npx --package`, `bun x --package`,
+`pnpm --package=<name> dlx`, `yarn dlx --package` (Yarn 2+),
+`deno x npm:<name>/<bin>`, `uvx --from`; `--runtime` and a non-Node `--pm`
+pick the form the same way they do for a bare binary. A binary the package does
+not declare is an error listing the ones it has, and so is a fetch for a binary
+another installed package already provides, since the fetched package could not
+be told apart from it. An `npm:` prefix on a task token is refused with the
+equivalent `--package` form.
 
 The `run` binary is equivalent to `runner run`, so:
 
