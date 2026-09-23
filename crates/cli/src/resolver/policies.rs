@@ -154,7 +154,7 @@ fn resolve_source_label(raw: &str) -> Result<Vec<TaskSource>> {
 
 /// Parse `[tasks].prefer` into a deduped, ranked list of [`TaskSource`]s.
 /// Empty/missing → empty `Vec`. Rank-only: the list never restricts; it only
-/// reorders same-name conflicts (see `cmd::run::select`).
+/// reorders same-name conflicts (see `commands::run::select`).
 ///
 /// Unknown labels are a hard error (like the legacy prefer-list) so a typo
 /// surfaces at startup rather than silently changing selection.
@@ -323,6 +323,16 @@ pub(super) fn parse_runtime_label(raw: &str) -> Result<JsRuntime> {
         anyhow!(
             "unknown runtime {raw:?}; expected one of {}",
             join_labels(JsRuntime::all().iter().map(|r| r.label())),
+        )
+    })
+}
+
+/// Parse a `--fetch` / `RUNNER_REACH` label against the declared choices.
+pub(super) fn parse_reach_label(raw: &str) -> Result<runner_core::ReachPolicy> {
+    runner_core::ReachPolicy::from_label(raw).ok_or_else(|| {
+        anyhow!(
+            "unknown fetch policy {raw:?}; expected one of {}",
+            join_labels(runner_core::ReachPolicy::ALL.iter().map(|p| p.label())),
         )
     })
 }

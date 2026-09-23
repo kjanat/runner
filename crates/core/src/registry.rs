@@ -1,0 +1,96 @@
+//! The provider declaration and lookup over a provider table.
+
+use crate::capability::Capabilities;
+use crate::evidence::{Evidence, Present};
+use crate::op::Op;
+use crate::provider::{Ecosystem, Hooks, Kind, ProviderId};
+use crate::signal::Signal;
+use crate::task::Task;
+use crate::tree::Tree;
+use crate::warning::Warning;
+
+/// Task extraction when the format is the tool's own.
+pub type TasksFn = fn(&Present, &Tree) -> Result<Vec<Task>, Warning>;
+
+/// Version parsing when `<program> --version` needs a tool-specific parse.
+pub type VersionFn = fn(&Present) -> Result<String, Warning>;
+
+/// A warning the core cannot know before a plan is made.
+pub type BeforePlanFn = fn(&Present, &Op<'_>, &mut Vec<Warning>);
+
+/// Evidence derived from other evidence.
+pub type AfterObserveFn = fn(&Tree, &[Evidence]) -> Vec<Evidence>;
+
+/// One tool runner knows about.
+pub struct Provider {
+    /// Registry index.
+    pub id: ProviderId,
+    /// The label users type and reports print.
+    pub label: &'static str,
+    /// Other spellings `from_label` accepts.
+    pub aliases: &'static [&'static str],
+    /// The language the provider belongs to.
+    pub ecosystem: Ecosystem,
+    /// What the provider is.
+    pub kind: Kind,
+    /// The executable, probed with `PATHEXT` on Windows. `None` for a file-only task source.
+    pub program: Option<&'static str>,
+    /// What observation looks for.
+    pub signals: &'static [Signal],
+    /// Install directories this provider materialises.
+    pub writes: &'static [&'static str],
+    /// What the provider can do.
+    pub caps: Capabilities,
+    /// Task extraction when the format is the tool's own.
+    pub tasks: Option<TasksFn>,
+    /// Version parsing when `<program> --version` needs a tool-specific parse.
+    pub version: Option<VersionFn>,
+    /// The two places provider code runs besides `tasks` and `version`.
+    pub hooks: Hooks,
+}
+
+impl Provider {
+    /// Whether `spelling` is the label or one of the aliases.
+    #[must_use]
+    pub fn answers_to(&self, spelling: &str) -> bool {
+        self.label == spelling || self.aliases.contains(&spelling)
+    }
+}
+
+/// A provider table with lookup by id, label or alias.
+#[derive(Clone, Copy)]
+pub struct Registry(pub &'static [Provider]);
+
+impl Registry {
+    /// The provider with `id`.
+    ///
+    /// # Panics
+    ///
+    /// When the table has no entry for `id`. The providers crate's drift test rules that out.
+    #[must_use]
+    pub fn by_id(&self, id: ProviderId) -> &'static Provider {
+        self.0
+            .iter()
+            .find(|provider| provider.id == id)
+            .unwrap_or_else(|| panic!("registry has no entry for {id:?}"))
+    }
+
+    /// The provider whose label or alias is `spelling`, trimmed.
+    #[must_use]
+    pub fn by_label(&self, spelling: &str) -> Option<&'static Provider> {
+        let spelling = spelling.trim();
+        self.0.iter().find(|provider| provider.answers_to(spelling))
+    }
+
+    /// Every provider with any of `kind`'s bits.
+    pub fn of_kind(&self, kind: Kind) -> impl Iterator<Item = &'static Provider> {
+        self.0
+            .iter()
+            .filter(move |provider| provider.kind.intersects(kind))
+    }
+
+    /// Every provider.
+    pub fn iter(&self) -> impl Iterator<Item = &'static Provider> {
+        self.0.iter()
+    }
+}

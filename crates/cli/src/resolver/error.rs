@@ -26,7 +26,7 @@ pub(crate) enum ResolveError {
     /// package manager.
     ///
     /// `soft = true` is emitted by `FallbackPolicy::Probe` when `$PATH`
-    /// holds nothing usable. `cmd::run` treats it as a "fall through to
+    /// holds nothing usable. `commands::run` treats it as a "fall through to
     /// a direct PATH spawn" signal so `runner run somebin` keeps
     /// working in projects with no PM signals at all. `soft = false`
     /// fires under `FallbackPolicy::Error` and propagates straight to

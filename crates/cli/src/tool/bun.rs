@@ -7,8 +7,6 @@ pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
     super::HostQuietCapabilities::quiet("bun", &["--silent"])
 }
 
-use super::ScriptDirective;
-
 /// Detected via `bun.lockb` (binary) or `bun.lock` (text).
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("bun.lockb").exists() || dir.join("bun.lock").exists()
@@ -45,38 +43,6 @@ pub(crate) fn run_cmd_with_runtime(
     c
 }
 
-/// `bun test [args...]`
-pub(crate) fn test_cmd(args: &[String]) -> Command {
-    let mut c = super::program::command("bun");
-    c.arg("test").args(args);
-    c
-}
-
-/// `bun install [--frozen-lockfile] [--ignore-scripts]`
-///
-/// Bun denies dependency lifecycle scripts by default (only `trustedDependencies`
-/// run). [`ScriptDirective::Deny`] appends `--ignore-scripts`, additionally
-/// skipping the trusted ones. [`ScriptDirective::ForceOn`] adds nothing: bun
-/// re-enables dependency scripts only through the `trustedDependencies` manifest
-/// allowlist runner won't write, so `cmd::install` warns instead of emitting a
-/// misleading flag.
-pub(crate) fn install_cmd(frozen: bool, scripts: ScriptDirective) -> Command {
-    let mut c = super::program::command("bun");
-    c.arg("install");
-    if frozen {
-        c.arg("--frozen-lockfile");
-    }
-    if scripts == ScriptDirective::Deny {
-        c.arg("--ignore-scripts");
-    }
-    c
-}
-
-/// `bun x <args...>`
-pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    exec_cmd_with_runtime(args, false)
-}
-
 /// `bun x --package <package> <bin> [args...]`
 pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
     exec_package_cmd_with_runtime(package, bin, args, false)
@@ -99,25 +65,6 @@ pub(crate) fn exec_package_cmd_with_runtime(
     c
 }
 
-/// `bun x [--bun] <args...>`
-///
-/// `--bun` is bun x's counterpart to `bun --bun run`: without it a package whose
-/// bin carries a `#!/usr/bin/env node` shebang still executes on system Node.
-pub(crate) fn exec_cmd_with_runtime(args: &[String], force_bun_runtime: bool) -> Command {
-    // Use bun's explicit subcommand instead of the `bunx` hard-link alias.
-    // Bun selects alias mode from its invoked filename case-sensitively;
-    // Windows' stock uppercase `.EXE` in PATHEXT made runner resolve the alias
-    // as `bunx.EXE`, which Bun misclassified as plain `bun` (issues #103 and
-    // oven-sh/bun#36826).
-    let mut c = super::program::command("bun");
-    c.arg("x");
-    if force_bun_runtime {
-        c.arg("--bun");
-    }
-    c.args(args);
-    c
-}
-
 /// `bun <file> [args...]`, execute a local script file with the Bun
 /// runtime. Distinct from [`exec_cmd`] (`bun x`), which fetches and runs a
 /// remote package; this runs an on-disk path the caller already resolved.
@@ -131,16 +78,7 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
 mod tests {
     use std::path::Path;
 
-    use super::{
-        ScriptDirective, exec_cmd, exec_cmd_with_runtime, install_cmd, run_cmd, run_file_cmd,
-        test_cmd,
-    };
-
-    fn args_of(cmd: &std::process::Command) -> Vec<String> {
-        cmd.get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
-    }
+    use super::{run_cmd, run_file_cmd};
 
     fn assert_bun_program(cmd: &std::process::Command) {
         let stem = Path::new(cmd.get_program())
@@ -155,51 +93,6 @@ mod tests {
     }
 
     #[test]
-    fn exec_forced_runtime_prepends_bun_flag() {
-        // `bun x --bun`: without it a package bin with a node shebang still runs
-        // on system Node, defeating `--runtime bun`.
-        let args = [String::from("eslint"), String::from(".")];
-        let cmd = exec_cmd_with_runtime(&args, true);
-        assert_bun_program(&cmd);
-        assert_eq!(args_of(&cmd), ["x", "--bun", "eslint", "."]);
-    }
-
-    #[test]
-    fn exec_unforced_is_bun_x() {
-        let args = [String::from("eslint"), String::from(".")];
-        let cmd = exec_cmd_with_runtime(&args, false);
-        assert_bun_program(&cmd);
-        assert_eq!(args_of(&cmd), ["x", "eslint", "."]);
-        assert_eq!(args_of(&exec_cmd(&args)), args_of(&cmd));
-    }
-
-    #[test]
-    fn install_plain_has_no_extra_flags() {
-        assert_eq!(
-            args_of(&install_cmd(false, ScriptDirective::Default)),
-            ["install"]
-        );
-    }
-
-    #[test]
-    fn install_deny_scripts_appends_ignore_scripts() {
-        assert_eq!(
-            args_of(&install_cmd(false, ScriptDirective::Deny)),
-            ["install", "--ignore-scripts"]
-        );
-    }
-
-    #[test]
-    fn install_force_on_adds_no_flag() {
-        // bun re-enables dependency scripts only via the `trustedDependencies`
-        // allowlist runner won't write, so force-on is not flag-expressible.
-        assert_eq!(
-            args_of(&install_cmd(false, ScriptDirective::ForceOn)),
-            ["install"]
-        );
-    }
-
-    #[test]
     fn run_cmd_uses_bun_run() {
         let built: Vec<_> = run_cmd("lint", &[], crate::tool::HostVerbosity::default())
             .get_args()
@@ -207,17 +100,6 @@ mod tests {
             .collect();
 
         assert_eq!(built, ["run", "lint"]);
-    }
-
-    #[test]
-    fn test_cmd_uses_bun_test() {
-        let args = [String::from("--watch")];
-        let built: Vec<_> = test_cmd(&args)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(built, ["test", "--watch"]);
     }
 
     #[test]

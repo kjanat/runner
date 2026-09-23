@@ -1326,8 +1326,7 @@ fn parse_current_version(current: &str) -> Option<semver::Version> {
 
 #[cfg(test)]
 mod tests {
-    use super::version_matches;
-    use super::{DetectionWarning, PackageManager, TaskDetail};
+    use super::{DetectionWarning, PackageManager, TaskDetail, range_matches, version_matches};
 
     /// The serde `kebab-case` renames and the hand-written `label()`
     /// methods are parallel sources of the same strings; this pins them
@@ -1536,10 +1535,10 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_expected_falls_back_to_prefix() {
-        assert!(!version_matches("lts/*", "22.0.0"));
-        assert!(!version_matches("lts/jod", "22.0.0"));
-        assert!(!version_matches("", "20.0.0"));
+    fn an_unparseable_constraint_cannot_be_evaluated() {
+        assert_eq!(range_matches("lts/*", "22.0.0"), None);
+        assert_eq!(range_matches("lts/jod", "22.0.0"), None);
+        assert_eq!(range_matches("", "20.0.0"), None);
     }
 
     #[test]
@@ -1548,18 +1547,15 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_current_falls_back_to_prefix() {
-        assert!(!version_matches(">=18", "not-a-version"));
+    fn an_unparseable_found_version_cannot_be_evaluated() {
+        assert_eq!(range_matches(">=18", "not-a-version"), None);
     }
 
     #[test]
-    fn prefix_fallback_strips_equals_and_spaced_v() {
-        // An unparseable `current` forces the prefix fallback; the
-        // cleaned expected value must survive a bare `=` operator and
-        // whitespace between the operator and a `v`-prefixed version.
-        assert!(version_matches("=20.11", "20.11.beta"));
-        assert!(!version_matches("=20.11", "20.12.beta"));
-        assert!(version_matches(">= v18", "18.unknown"));
+    fn a_prerelease_tagged_found_version_is_never_matched_by_prefix() {
+        assert_eq!(range_matches("=20.11", "20.11.beta"), None);
+        assert_eq!(range_matches("=20.11", "20.12.beta"), None);
+        assert_eq!(range_matches(">= v18", "18.unknown"), None);
     }
 
     #[test]
@@ -1582,5 +1578,107 @@ mod tests {
         set.insert(c);
 
         assert_eq!(set.len(), 2, "equal variants should dedup");
+    }
+}
+
+#[cfg(test)]
+mod registry_drift {
+    use runner_core::ProviderId;
+    use runner_providers::REGISTRY;
+
+    use super::{Ecosystem, JsRuntime, PackageManager, TaskRunner, TaskSource};
+
+    fn entry(label: &str) -> &'static runner_core::Provider {
+        REGISTRY
+            .by_label(label)
+            .unwrap_or_else(|| panic!("registry has no entry labelled {label}"))
+    }
+
+    #[test]
+    fn every_ecosystem_has_a_core_twin_with_the_same_label() {
+        for eco in Ecosystem::ALL {
+            assert!(
+                runner_core::Ecosystem::ALL
+                    .iter()
+                    .any(|twin| twin.label() == eco.label()),
+                "core has no ecosystem labelled {}",
+                eco.label()
+            );
+        }
+    }
+
+    #[test]
+    fn every_package_manager_has_a_registry_entry() {
+        for &pm in PackageManager::all() {
+            let provider = entry(pm.label());
+            assert_eq!(provider.label, pm.label());
+            assert_eq!(provider.ecosystem.label(), pm.ecosystem().label());
+            assert!(
+                provider.kind.contains(runner_core::Kind::PACKAGE_MANAGER),
+                "{} is not a package manager in the registry",
+                pm.label()
+            );
+            assert!(
+                provider.caps.install.is_some(),
+                "{} cannot install",
+                pm.label()
+            );
+        }
+        assert_eq!(entry("bundle").id, ProviderId::Bundler);
+    }
+
+    #[test]
+    fn every_task_runner_has_a_registry_entry() {
+        for &runner in TaskRunner::all() {
+            let provider = entry(runner.label());
+            assert_eq!(provider.label, runner.label());
+            assert!(
+                provider.kind.contains(runner_core::Kind::TASK_SOURCE),
+                "{} is not a task source in the registry",
+                runner.label()
+            );
+        }
+        assert_eq!(entry("go-task").id, ProviderId::Task);
+    }
+
+    #[test]
+    fn every_runtime_has_a_registry_entry() {
+        for &runtime in JsRuntime::all() {
+            let provider = entry(runtime.label());
+            assert_eq!(provider.label, runtime.label());
+            assert!(
+                provider.kind.contains(runner_core::Kind::RUNTIME),
+                "{} is not a runtime in the registry",
+                runtime.label()
+            );
+            assert!(provider.caps.run_file.is_some());
+        }
+    }
+
+    #[test]
+    fn every_task_source_label_names_a_task_source() {
+        for &source in TaskSource::all() {
+            let provider = entry(source.label());
+            assert!(
+                provider.kind.contains(runner_core::Kind::TASK_SOURCE),
+                "{} is not a task source in the registry",
+                source.label()
+            );
+        }
+    }
+
+    #[test]
+    fn registry_labels_the_cli_does_not_know_are_the_planned_additions() {
+        let unknown: Vec<&str> = REGISTRY
+            .iter()
+            .map(|provider| provider.label)
+            .filter(|label| {
+                PackageManager::from_label(label).is_none()
+                    && TaskRunner::from_label(label).is_none()
+                    && JsRuntime::from_label(label).is_none()
+                    && TaskSource::from_label(label).is_none()
+            })
+            .collect();
+        assert_eq!(unknown, ["volta"]);
     }
 }

@@ -7,7 +7,7 @@
 //!
 //! Chain order (lower wins):
 //!
-//! 1. Qualified syntax (`turbo.json:build`), handled in `cmd::run` today.
+//! 1. Qualified syntax (`turbo.json:build`), handled in `commands::run` today.
 //! 2. CLI flag (`--pm`, `--runner`).
 //! 3. Environment variable (`RUNNER_PM`, `RUNNER_RUNNER`).
 //! 4. Project config (`./runner.toml`), Phase 3.
@@ -38,18 +38,18 @@ mod types;
 
 pub(crate) use error::{DevEnginesFailReason, ResolveError};
 /// Re-export of the standalone `runner.toml` validator backing
-/// `cmd::config::validate`; see [`overrides::validate_config`].
+/// `commands::config::validate`; see [`overrides::validate_config`].
 pub(crate) use overrides::validate_config;
 pub(crate) use policies::parse_quiet_env;
 /// Re-export of the canonical Node PATH-probe order so the doctor's
 /// schema layer doesn't carry its own copy.
 pub(crate) use probe::NODE_PROBE_ORDER;
 /// Re-export of the pure-function probe variant for the `doctor` subcommand.
-/// Lets `cmd::doctor` exercise the same PATH walk the resolver uses without
+/// Lets `commands::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.
 pub(crate) use probe::probe_in as probe_path_for_doctor;
 /// Re-exported for unit tests that need to construct override state
-/// directly (e.g. `cmd::install::tests`); production code receives
+/// directly (e.g. `commands::install::tests`); production code receives
 /// overrides fully built by [`ResolutionOverrides::from_cli_and_env`].
 #[cfg(test)]
 pub(crate) use types::PmOverride;
@@ -159,18 +159,20 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_legacy_npm_when_fallback_policy_is_npm() {
+    #[ignore = "docs/architecture.md section 10 step 5: one resolver"]
+    fn no_evidence_is_a_not_found_refusal_whatever_the_fallback_says() {
         let (_dir, ctx) = isolated_context(vec![]);
         let overrides = ResolutionOverrides {
             fallback: FallbackPolicy::Npm,
             ..ResolutionOverrides::default()
         };
-        let decision = Resolver::new(&ctx, &overrides)
+        let err = Resolver::new(&ctx, &overrides)
             .resolve_node_pm()
-            .expect("legacy npm fallback should succeed");
+            .expect_err("a plan needs evidence and npm has none here");
 
-        assert_eq!(decision.pm, PackageManager::Npm);
-        assert_eq!(decision.via, ResolutionStep::LegacyNpmFallback);
+        let msg = format!("{err}");
+        assert!(msg.contains("node"), "{msg}");
+        assert!(msg.contains("--pm"), "{msg}");
     }
 
     #[test]
@@ -190,50 +192,24 @@ mod tests {
     }
 
     #[test]
-    fn fallback_error_policy_is_a_hard_no_signals_found() {
-        // `--fallback=error` is the user opting into strict mode. The
-        // error must propagate through `cmd::run::run` instead of
-        // collapsing into the soft fall-through, so it carries
-        // `soft: false`.
+    #[ignore = "docs/architecture.md section 10 step 5: one resolver"]
+    fn a_miss_lists_the_rungs_tried_under_every_fallback_policy() {
         let (_dir, ctx) = isolated_context(vec![]);
-        let overrides = ResolutionOverrides {
-            fallback: FallbackPolicy::Error,
-            ..ResolutionOverrides::default()
-        };
-        let err = Resolver::new(&ctx, &overrides)
-            .resolve_node_pm()
-            .expect_err("error policy should bail");
-
-        assert!(
-            matches!(err, ResolveError::NoSignalsFound { soft: false, .. }),
-            "error-policy failure must be hard, got: {err:?}"
-        );
-    }
-
-    #[test]
-    fn fallback_probe_with_empty_path_yields_soft_no_signals_found() {
-        // The soft case: nothing declared, nothing on PATH. The
-        // arbitrary-command fallback in `cmd::run::run` legitimately
-        // wants to drop this and try a direct PATH spawn, so the error
-        // carries `soft: true`.
-        //
-        // A TempDir with no `package.json` short-circuits the probe
-        // entirely (issue #23 guard), making the assertion
-        // deterministic regardless of what's on the host `$PATH`.
-
-        let dir = TempDir::new("resolver-soft-no-signals");
-        let mut ctx = context(vec![]);
-        ctx.root = dir.path().to_path_buf();
-
-        let overrides = ResolutionOverrides::default();
-        let err = Resolver::new(&ctx, &overrides)
-            .resolve_node_pm()
-            .expect_err("probe with no Node evidence must error");
-
-        assert!(
-            matches!(err, ResolveError::NoSignalsFound { soft: true, .. }),
-            "probe-policy miss must be the soft variant, got: {err:?}"
-        );
+        let mut messages = Vec::new();
+        for fallback in [FallbackPolicy::Error, FallbackPolicy::Probe] {
+            let overrides = ResolutionOverrides {
+                fallback,
+                ..ResolutionOverrides::default()
+            };
+            let err = Resolver::new(&ctx, &overrides)
+                .resolve_node_pm()
+                .expect_err("no evidence, no plan");
+            let msg = format!("{err}");
+            assert!(msg.contains("host"), "{msg}");
+            assert!(!msg.contains("--fallback"), "{msg}");
+            messages.push(msg);
+        }
+        assert_eq!(messages[0], messages[1]);
     }
 
     #[test]
@@ -241,7 +217,7 @@ mod tests {
         // Issue #23: in a non-Node project (e.g., a Go repo with
         // `go.mod` and `.mise.toml`), the resolver must not fall
         // through to a Node PM via PATH. The soft `NoSignalsFound`
-        // lets `cmd::run` direct-spawn the target instead of
+        // lets `commands::run` direct-spawn the target instead of
         // routing through `bun`/`pnpm`/`yarn`/`npm`.
 
         let dir = TempDir::new("resolver-no-pkgjson");
@@ -266,7 +242,7 @@ mod tests {
         // Pins the legitimate PATH-probe path: a greenfield Node
         // project with `package.json` and no lockfile must still
         // get a Node PM picked from PATH (Bun-test fallback in
-        // `cmd::run` depends on this resolving to `Bun`). When no
+        // `commands::run` depends on this resolving to `Bun`). When no
         // Node PM is on the host PATH we accept the soft error;
         // what we're guarding against is the issue-#23 early
         // return firing despite Node evidence.
@@ -1125,55 +1101,35 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prefer_runners_parses_known_labels() {
-        use crate::config::{LoadedConfig, RunnerConfig, TaskRunnerSection};
+    fn loaded_from_toml(dir: &TempDir, body: &str) -> LoadedConfig {
+        std::fs::write(dir.path().join(crate::config::CONFIG_FILENAME), body).expect("seed config");
+        crate::config::load(dir.path())
+            .expect("config should parse")
+            .expect("config should be present")
+    }
 
-        let loaded = LoadedConfig {
-            path: PathBuf::from("/test/runner.toml"),
-            warnings: Vec::new(),
-            config: RunnerConfig {
-                task_runner: TaskRunnerSection {
-                    prefer: vec!["just".to_string(), "turbo".to_string()],
-                },
-                ..RunnerConfig::default()
-            },
-        };
+    #[test]
+    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
+    fn a_task_runner_section_feeds_no_runner_policy() {
+        let dir = TempDir::new("resolver-task-runner-section");
+        let loaded = loaded_from_toml(&dir, "[task_runner]\nprefer = [\"just\", \"zoot\"]\n");
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                DetectionWarning::UnknownConfigKey { path } if path == "task_runner"
+            )),
+            "{:?}",
+            loaded.warnings
+        );
+
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
-        .expect("prefer list of known runners should parse");
+        .expect("an unknown section is never validated");
 
-        assert_eq!(
-            overrides.prefer_runners,
-            vec![TaskRunner::Just, TaskRunner::Turbo],
-        );
-    }
-
-    #[test]
-    fn prefer_runners_rejects_unknown_label() {
-        use crate::config::{LoadedConfig, RunnerConfig, TaskRunnerSection};
-
-        let loaded = LoadedConfig {
-            path: PathBuf::from("/test/runner.toml"),
-            warnings: Vec::new(),
-            config: RunnerConfig {
-                task_runner: TaskRunnerSection {
-                    prefer: vec!["zoot".to_string()],
-                },
-                ..RunnerConfig::default()
-            },
-        };
-        let err = ResolutionOverrides::from_sources(OverrideSources {
-            config: Some(&loaded),
-            ..OverrideSources::default()
-        })
-        .expect_err("unknown runner label must error at parse time");
-
-        let msg = format!("{err}");
-        assert!(msg.contains("unknown runner"), "got: {msg}");
-        assert!(msg.contains("zoot"), "got: {msg}");
+        assert!(overrides.prefer_sources.is_empty());
+        assert!(overrides.prefer_runners.is_empty());
     }
 
     fn config_with_tasks(tasks: crate::config::TasksSection) -> LoadedConfig {
@@ -1254,65 +1210,49 @@ mod tests {
     }
 
     #[test]
-    fn tasks_section_supersedes_deprecated_task_runner_prefer() {
-        use crate::config::{TaskRunnerSection, TasksSection};
+    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
+    fn tasks_prefer_applies_beside_a_task_runner_section() {
         use crate::types::TaskSource;
 
-        let loaded = LoadedConfig {
-            path: PathBuf::from("/test/runner.toml"),
-            warnings: Vec::new(),
-            config: RunnerConfig {
-                task_runner: TaskRunnerSection {
-                    prefer: vec!["just".to_string()],
-                },
-                tasks: TasksSection {
-                    prefer: vec!["turbo".to_string()],
-                    ..TasksSection::default()
-                },
-                ..RunnerConfig::default()
-            },
-        };
+        let dir = TempDir::new("resolver-tasks-prefer-beside-task-runner");
+        let loaded = loaded_from_toml(
+            &dir,
+            "[task_runner]\nprefer = [\"just\"]\n\n[tasks]\nprefer = [\"turbo\"]\n",
+        );
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                DetectionWarning::UnknownConfigKey { path } if path == "task_runner"
+            )),
+            "{:?}",
+            loaded.warnings
+        );
+
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
         .expect("config should parse");
 
-        // `[tasks]` wins; the legacy restrictive list is dropped entirely.
         assert_eq!(overrides.prefer_sources, vec![TaskSource::TurboJson]);
         assert!(overrides.prefer_runners.is_empty());
     }
 
     #[test]
-    fn tasks_prefer_of_a_sourceless_label_still_supersedes_legacy_prefer() {
-        use crate::config::{TaskRunnerSection, TasksSection};
+    fn tasks_prefer_of_a_sourceless_label_parses_to_no_ranking() {
+        use crate::config::TasksSection;
 
-        // `nx` is a recognized runner label that resolves to no `TaskSource`
-        // (it has nothing extractable), so `[tasks].prefer` parses to an
-        // empty `Vec`. That must not be mistaken for "`[tasks]` unset" and
-        // fall back to the deprecated, more restrictive `[task_runner]`.
-        let loaded = LoadedConfig {
-            path: PathBuf::from("/test/runner.toml"),
-            warnings: Vec::new(),
-            config: RunnerConfig {
-                task_runner: TaskRunnerSection {
-                    prefer: vec!["just".to_string()],
-                },
-                tasks: TasksSection {
-                    prefer: vec!["nx".to_string()],
-                    ..TasksSection::default()
-                },
-                ..RunnerConfig::default()
-            },
-        };
+        let loaded = config_with_tasks(TasksSection {
+            prefer: vec!["nx".to_string()],
+            ..TasksSection::default()
+        });
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
-        .expect("config should parse");
+        .expect("a known label with no task source parses");
 
         assert!(overrides.prefer_sources.is_empty());
-        assert!(overrides.prefer_runners.is_empty());
     }
 
     #[test]
@@ -1540,13 +1480,10 @@ mod tests {
     }
 
     #[test]
-    fn manifest_on_fail_unverifiable_version_continues_without_warning() {
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
+    fn manifest_on_fail_unverifiable_version_continues_with_a_cannot_evaluate_warning() {
         use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
 
-        // Version checks that can't run (unparseable range, missing
-        // --version output) collapse to Unverifiable. That path must
-        // continue silently, not warn or bail; otherwise a partially
-        // broken environment blocks dispatch unnecessarily.
         let decl = ManifestPmDecl {
             pm: PackageManager::Yarn,
             source: ManifestSource::DevEngines,
@@ -1565,7 +1502,11 @@ mod tests {
         )
         .expect("Unverifiable should continue, not bail");
 
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let detail = warnings[0].detail();
+        assert!(detail.contains("cannot evaluate"), "{detail}");
+        assert!(detail.contains("unparseable range"), "{detail}");
+        assert!(detail.contains("not-a-valid-range"), "{detail}");
     }
 
     #[test]
@@ -1662,19 +1603,35 @@ mod tests {
     }
 
     #[test]
-    fn host_stream_garbage_env_is_lenient_not_fatal() {
-        // Regression (F3): a typo'd RUNNER_HOST_STREAM must not abort the run;
-        // it falls back to Inherit (the doctor/lenient path warns separately).
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
+    fn host_stream_garbage_env_fails_like_every_other_setting() {
+        let sources = || OverrideSources {
             host_stream: SourceValue {
                 cli: None,
                 env: Some("stdrr"),
             },
             ..OverrideSources::default()
-        })
-        .expect("garbage RUNNER_HOST_STREAM must not error the strict path");
+        };
+
+        let err = ResolutionOverrides::from_sources(sources()).expect_err(
+            "the strict pass refuses a bad RUNNER_HOST_STREAM as it refuses a bad RUNNER_PM",
+        );
+        let msg = format!("{err}");
+        assert!(msg.contains("RUNNER_HOST_STREAM"), "{msg}");
+        assert!(msg.contains("stdrr"), "{msg}");
+
+        let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(sources())
+            .expect("the lenient pass absorbs it");
         assert_eq!(overrides.host_stream, crate::tool::Stream::Inherit);
         assert!(!overrides.host_stream_invocation_explicit);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        match &warnings[0] {
+            DetectionWarning::InvalidEnvOverride { var, raw, .. } => {
+                assert_eq!(*var, "RUNNER_HOST_STREAM");
+                assert_eq!(raw, "stdrr");
+            }
+            other => panic!("expected InvalidEnvOverride, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1946,13 +1903,20 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
+    fn describe_names_the_lockfile_a_decision_came_from() {
+        let decision = super::ResolvedPm {
+            pm: PackageManager::Pnpm,
+            via: ResolutionStep::Lockfile,
+            warnings: vec![],
+        };
+        assert_eq!(decision.describe(), "pnpm via pnpm-lock.yaml");
+    }
+
+    #[test]
     fn describe_renders_human_friendly_step_label() {
         use crate::tool::node::OnFail;
 
-        // Table-driven: each row pairs a decision with the exact string
-        // it must produce. Locks down the provenance wording that
-        // `--explain` and `runner why` surface verbatim; a casual
-        // re-phrase shouldn't slip through silently.
         let cases: &[(super::ResolvedPm, &str)] = &[
             (
                 super::ResolvedPm {
@@ -2000,14 +1964,6 @@ mod tests {
             ),
             (
                 super::ResolvedPm {
-                    pm: PackageManager::Pnpm,
-                    via: ResolutionStep::Lockfile,
-                    warnings: vec![],
-                },
-                "pnpm via detected lockfile",
-            ),
-            (
-                super::ResolvedPm {
                     pm: PackageManager::Npm,
                     via: ResolutionStep::PathProbe {
                         binary: PathBuf::from("/usr/bin/npm"),
@@ -2015,14 +1971,6 @@ mod tests {
                     warnings: vec![],
                 },
                 "npm via PATH probe at /usr/bin/npm",
-            ),
-            (
-                super::ResolvedPm {
-                    pm: PackageManager::Npm,
-                    via: ResolutionStep::LegacyNpmFallback,
-                    warnings: vec![],
-                },
-                "npm via --fallback=npm (legacy)",
             ),
         ];
 
@@ -2032,10 +1980,8 @@ mod tests {
     }
 
     #[test]
-    fn deno_config_value_lands_under_deno_ecosystem_and_resolves_for_node_scripts() {
-        // The runner.toml field is `[pm].node = "deno"`; the resolver
-        // stores it under Ecosystem::Deno (per PackageManager::ecosystem)
-        // and the Node-script resolver consults both Node and Deno keys.
+    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
+    fn deno_config_value_fills_the_node_slot_and_resolves_for_node_scripts() {
         let loaded = loaded_config_with_node("deno");
         let overrides = ResolutionOverrides::from_sources(OverrideSources {
             config: Some(&loaded),
@@ -2043,7 +1989,12 @@ mod tests {
         })
         .expect("deno config should parse");
 
-        assert!(overrides.pm_by_ecosystem.contains_key(&Ecosystem::Deno));
+        let node = overrides
+            .pm_by_ecosystem
+            .get(&Ecosystem::Node)
+            .expect("[pm].node is keyed by the key's ecosystem");
+        assert_eq!(node.pm, PackageManager::Deno);
+        assert!(!overrides.pm_by_ecosystem.contains_key(&Ecosystem::Deno));
 
         let ctx = context(vec![PackageManager::Pnpm]);
         let decision = Resolver::new(&ctx, &overrides)

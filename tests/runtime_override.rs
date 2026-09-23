@@ -161,6 +161,11 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 /// The `\u{2192}` dispatch arrow is written before the spawn, so assertions on
 /// *what would have run* still hold.
 fn arrow_only(dir: &Path, args: &[&str]) -> Output {
+    arrow_only_with(dir, args, &[])
+}
+
+/// [`arrow_only`] with extra `RUNNER_*` variables set.
+fn arrow_only_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let binary = run_binary();
     let bin_dir = binary.parent().expect("binary lives in a directory");
     let mut cmd = Command::new(&binary);
@@ -174,6 +179,7 @@ fn arrow_only(dir: &Path, args: &[&str]) -> Output {
         }
     }
     cmd.env("PATH", bin_dir)
+        .envs(envs.iter().copied())
         .arg("--dir")
         .arg(dir)
         .args(args)
@@ -382,15 +388,26 @@ fn runtime_does_not_hijack_a_non_js_file() {
 }
 
 #[test]
-fn runtime_selects_the_exec_fallback_primitive() {
-    // No task, no file, no installed dependency: the token goes to a package
-    // exec primitive, which used to be the resolved PM's regardless.
+fn runtime_selects_the_exec_fallback_primitive_once_reach_is_allowed() {
     let proj = probe_project("exec");
 
+    let refused = arrow_only_with(
+        proj.path(),
+        &["--runtime", "node", "definitely-not-a-real-tool-xyz"],
+        &[("RUNNER_REACH", "local")],
+    );
+    assert!(
+        !refused.status.success()
+            && !String::from_utf8_lossy(&refused.stderr).contains("\u{2192} npx"),
+        "the exec rung is Reach::Network and RUNNER_REACH=local refuses it. stderr: {}",
+        String::from_utf8_lossy(&refused.stderr),
+    );
+
     for (runtime, expected) in [("node", "npx"), ("bun", "bun x"), ("deno", "deno x")] {
-        let output = arrow_only(
+        let output = arrow_only_with(
             proj.path(),
             &["--runtime", runtime, "definitely-not-a-real-tool-xyz"],
+            &[("RUNNER_REACH", "allow")],
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(

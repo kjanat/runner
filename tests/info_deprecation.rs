@@ -218,13 +218,12 @@ fn runner_info_is_the_deprecated_alias_even_when_a_task_is_named_info() {
 }
 
 #[test]
-fn run_info_runs_a_same_named_task() {
+#[ignore = "docs/architecture.md section 10 step 4: run on the core"]
+fn run_info_is_the_builtin_and_the_recipe_needs_a_qualifier() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // The run path is where a same-named task is reachable: `run info`
-    // (and `runner run info`) run the project `info` recipe, no deprecation.
     let dir = fixture("info-shadowed");
     let dir = dir.to_str().unwrap();
     let invocations: [(&str, PathBuf, Vec<&str>); 2] = [
@@ -245,14 +244,24 @@ fn run_info_runs_a_same_named_task() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stdout.contains("project-info-recipe-ran"),
-            "`{label}` should run the project `info` recipe. stdout: {stdout}",
+            !stdout.contains("project-info-recipe-ran"),
+            "`{label}` is the builtin rung, which precedes the task rung. stdout: {stdout}",
         );
         assert!(
-            !stderr.contains("deprecated"),
-            "`{label}` runs the task, not the deprecated alias. stderr: {stderr}",
+            stderr.contains("deprecated"),
+            "`{label}` is the deprecated alias and says so. stderr: {stderr}",
         );
     }
+
+    let output = Command::new(run_binary())
+        .args(["--dir", dir, "just:info"])
+        .output()
+        .expect("binary spawns");
+    assert!(output.status.success(), "`run just:info` should exit 0");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("project-info-recipe-ran"),
+        "the qualified name reaches the recipe",
+    );
 }
 
 #[test]

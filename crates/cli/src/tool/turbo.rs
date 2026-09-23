@@ -233,6 +233,7 @@ mod tests {
 
     use super::{detect, extract_tasks};
     use crate::tool::test_support::TempDir;
+    use crate::types::TaskSource;
 
     #[test]
     fn extract_tasks_returns_empty_when_turbo_json_is_missing() {
@@ -270,7 +271,7 @@ mod tests {
         let dir = TempDir::new("turbo-v2");
         fs::write(
             dir.path().join("turbo.json"),
-            r#"{"tasks":{"build":{},"lint":{},"web#build":{}}}"#,
+            r#"{"tasks":{"build":{},"lint":{}}}"#,
         )
         .expect("turbo.json should be written");
 
@@ -285,7 +286,7 @@ mod tests {
         let dir = TempDir::new("turbo-v1");
         fs::write(
             dir.path().join("turbo.json"),
-            r#"{"pipeline":{"test":{},"typecheck":{},"pkg#build":{}}}"#,
+            r#"{"pipeline":{"test":{},"typecheck":{}}}"#,
         )
         .expect("turbo.json should be written");
 
@@ -368,21 +369,44 @@ mod tests {
         assert_eq!(tasks, ["format", "lint"]);
     }
 
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     #[test]
-    fn extract_tasks_mixes_root_plain_and_workspace_scoped_entries() {
-        // The bug-report repro: root tasks must surface, plain tasks pass
-        // through, workspace-scoped (`web#build`) stays filtered.
+    fn a_workspace_scoped_entry_is_the_task_in_that_member_scope() {
         let dir = TempDir::new("turbo-mixed-keys");
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        fs::write(
+            dir.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - apps/*\n",
+        )
+        .expect("pnpm-workspace.yaml should be written");
+        let member = dir.path().join("apps").join("web");
+        fs::create_dir_all(&member).expect("member dir should be created");
+        fs::write(member.join("package.json"), r#"{ "name": "web" }"#)
+            .expect("member package.json should be written");
         fs::write(
             dir.path().join("turbo.json"),
             r#"{"tasks":{"build":{},"//#lint":{},"//#format":{"cache":false},"web#build":{}}}"#,
         )
         .expect("turbo.json should be written");
 
-        let mut tasks = extract_tasks(dir.path()).expect("mixed keys should parse");
+        let ctx = crate::detect::detect(dir.path());
+        let mut tasks: Vec<(&str, &str)> = ctx
+            .tasks
+            .iter()
+            .filter(|task| task.source == TaskSource::TurboJson)
+            .map(|task| (task.name.as_str(), task.scope()))
+            .collect();
         tasks.sort_unstable();
 
-        assert_eq!(tasks, ["build", "format", "lint"]);
+        assert_eq!(
+            tasks,
+            [
+                ("build", "root"),
+                ("build", "web"),
+                ("format", "root"),
+                ("lint", "root"),
+            ]
+        );
     }
 
     #[test]

@@ -43,7 +43,7 @@ impl ChainItem {
     /// Construct the synthetic install-head used by `runner install <tasks>`.
     /// `flags` mirrors the install-scoped CLI flags and is propagated to the
     /// install executor.
-    pub(crate) const fn install(flags: crate::cmd::install::InstallFlags) -> Self {
+    pub(crate) const fn install(flags: crate::commands::install::InstallFlags) -> Self {
         Self {
             kind: ChainItemKind::Install { flags },
             args: Vec::new(),
@@ -66,7 +66,7 @@ pub(crate) enum ChainItemKind {
     /// Synthetic head used by `runner install <tasks>`. Dispatches the
     /// detected PM's install command under the install-scoped CLI flags.
     Install {
-        flags: crate::cmd::install::InstallFlags,
+        flags: crate::commands::install::InstallFlags,
     },
 }
 
@@ -102,12 +102,12 @@ mod tests {
 
     #[test]
     fn install_head_has_no_args() {
-        let item = ChainItem::install(crate::cmd::install::InstallFlags::default());
+        let item = ChainItem::install(crate::commands::install::InstallFlags::default());
         assert!(item.args.is_empty());
         assert!(matches!(
             item.kind,
             ChainItemKind::Install {
-                flags: crate::cmd::install::InstallFlags {
+                flags: crate::commands::install::InstallFlags {
                     frozen: false,
                     no_tools: false,
                 }
@@ -117,14 +117,14 @@ mod tests {
 
     #[test]
     fn install_head_propagates_install_flags() {
-        let item = ChainItem::install(crate::cmd::install::InstallFlags {
+        let item = ChainItem::install(crate::commands::install::InstallFlags {
             frozen: true,
             no_tools: true,
         });
         assert!(matches!(
             item.kind,
             ChainItemKind::Install {
-                flags: crate::cmd::install::InstallFlags {
+                flags: crate::commands::install::InstallFlags {
                     frozen: true,
                     no_tools: true,
                 }
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn display_name_is_install_for_install_head() {
         assert_eq!(
-            ChainItem::install(crate::cmd::install::InstallFlags::default()).display_name(),
+            ChainItem::install(crate::commands::install::InstallFlags::default()).display_name(),
             "install"
         );
     }

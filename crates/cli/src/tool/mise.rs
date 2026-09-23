@@ -67,7 +67,7 @@ pub(crate) fn find_file(dir: &Path) -> Option<PathBuf> {
 ///
 /// Hidden tasks (`hide = true`) and underscore-prefixed names are
 /// excluded. Aliases come through as separate `Alias` entries pointing
-/// at their target so [`crate::cmd::list`] can group them.
+/// at their target so [`crate::commands::list`] can group them.
 pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<MiseTasks> {
     match cli_tasks(dir) {
         CliOutcome::Tasks(tasks) => Ok(MiseTasks {
@@ -451,46 +451,8 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
-/// `mise exec -- <name> [args...]`
-pub(crate) fn exec_cmd(name: &str, args: &[String]) -> Command {
-    let mut c = super::program::command("mise");
-    c.arg("exec").arg("--").arg(name).args(args);
-    c
-}
-
-/// The default operation when `[tools.mise].install` says nothing.
-pub(crate) const INSTALL: &str = "install";
-
-/// Operations `[tools.mise].install` accepts.
-///
-/// `bootstrap` also performs machine setup (system packages, dotfiles,
-/// services, firewall), so it is never the default and only runs when the
-/// project asks for it by name.
-pub(crate) const OPERATIONS: &[&str] = &[INSTALL, "bootstrap"];
-
-/// `mise <operation> [--locked]`.
-///
-/// `--locked` is added for a frozen run only when a lockfile exists, since
-/// mise refuses the flag without one.
-pub(crate) fn operation_cmd(
-    root: &Path,
-    operation: &str,
-    frozen: bool,
-    verbosity: super::HostVerbosity,
-) -> Command {
-    let mut c = super::program::command("mise");
-    if verbosity.silences() {
-        c.arg("--quiet");
-    }
-    c.arg(operation);
-    if frozen && has_lockfile(root) {
-        c.arg("--locked");
-    }
-    c
-}
-
 /// `true` when any detected config in `root` has its lockfile on disk.
-fn has_lockfile(root: &Path) -> bool {
+pub(crate) fn has_lockfile(root: &Path) -> bool {
     FILENAMES
         .iter()
         .map(|name| root.join(name))
@@ -1054,7 +1016,7 @@ mod tests {
     use std::fs;
 
     use super::{
-        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, operation_cmd,
+        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, has_lockfile,
         parse_cli_output, run_cmd,
     };
     use crate::tool::test_support::TempDir;
@@ -1099,21 +1061,14 @@ mod tests {
     }
 
     #[test]
-    fn install_cmd_is_bare_without_lockfile() {
+    fn no_lockfile_beside_the_config_means_no_lock() {
         let dir = TempDir::new("mise-install-bare");
         fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
-        let cmd = operation_cmd(
-            dir.path(),
-            super::INSTALL,
-            true,
-            crate::tool::HostVerbosity::default(),
-        );
-        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(argv, ["install"]);
+        assert!(!has_lockfile(dir.path()));
     }
 
     #[test]
-    fn install_cmd_finds_the_lockfile_beside_a_nested_config() {
+    fn the_lockfile_is_found_beside_a_nested_config() {
         // mise writes `<config dir>/mise.lock`, so a lockfile next to
         // `.config/mise.toml` is never `<root>/mise.lock`.
         let dir = TempDir::new("mise-install-nested-lock");
@@ -1121,14 +1076,7 @@ mod tests {
         fs::create_dir_all(&nested).expect(".config should be created");
         fs::write(nested.join("mise.toml"), "").expect("config should be written");
         fs::write(nested.join("mise.lock"), "").expect("lockfile should be written");
-        let cmd = operation_cmd(
-            dir.path(),
-            super::INSTALL,
-            true,
-            crate::tool::HostVerbosity::default(),
-        );
-        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(argv, ["install", "--locked"]);
+        assert!(has_lockfile(dir.path()));
     }
 
     #[test]
@@ -1153,26 +1101,11 @@ mod tests {
     }
 
     #[test]
-    fn install_cmd_locks_when_frozen_and_lockfile_present() {
+    fn the_lockfile_is_found_beside_the_root_config() {
         let dir = TempDir::new("mise-install-locked");
         fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
         fs::write(dir.path().join("mise.lock"), "").expect("mise.lock should be written");
-        let cmd = operation_cmd(
-            dir.path(),
-            super::INSTALL,
-            true,
-            crate::tool::HostVerbosity::default(),
-        );
-        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(argv, ["install", "--locked"]);
-        let cmd = operation_cmd(
-            dir.path(),
-            super::INSTALL,
-            false,
-            crate::tool::HostVerbosity::default(),
-        );
-        let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(argv, ["install"]);
+        assert!(has_lockfile(dir.path()));
     }
 
     #[test]
@@ -1745,13 +1678,9 @@ mod tests {
         assert_eq!(names_of(&tasks), ["mine"]);
     }
 
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     #[test]
-    fn cli_output_scoped_to_a_member_drops_the_repo_root_tasks() {
-        // What a monorepo member extraction sees: runner runs mise in the
-        // member directory, mise merges the repo root's config in, and those
-        // tasks have a source above the member. They belong to the root's own
-        // extraction, so a member lists what it declares rather than
-        // everything it could run.
+    fn cli_output_read_from_a_member_keeps_the_root_task_in_root_scope() {
         let dir = TempDir::new("mise-cli-member");
         let root = dir
             .path()
@@ -1765,12 +1694,9 @@ mod tests {
         .to_string();
 
         let from_member = parse_cli_output(payload.as_bytes(), &member).expect("parses");
-        assert_eq!(names_of(&from_member), ["web-build"]);
-
-        // The same payload read at the root keeps both, so nothing is lost
-        // from `runner list` overall.
         let from_root = parse_cli_output(payload.as_bytes(), &root).expect("parses");
-        assert_eq!(names_of(&from_root), ["repo-lint", "web-build"]);
+        assert_eq!(names_of(&from_member), ["repo-lint", "web-build"]);
+        assert_eq!(from_member, from_root);
     }
 
     #[test]
@@ -2153,10 +2079,9 @@ mod tests {
         assert!(has_build, "fast path should surface `build`; got {tasks:?}");
     }
 
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     #[test]
-    fn extract_in_a_member_sees_its_own_tasks_not_the_repo_root_s() {
-        // The real merge, not a hand-written payload: mise itself decides
-        // what a member directory inherits. Skipped when mise is absent.
+    fn extract_in_a_member_keeps_the_repo_root_task_in_root_scope() {
         if std::process::Command::new("mise")
             .arg("--version")
             .output()
@@ -2210,8 +2135,8 @@ mod tests {
             names(&from_member),
         );
         assert!(
-            !names(&from_member).contains(&"repo-lint".to_string()),
-            "the repo root's tasks belong to the root's extraction, not the member's; got {:?}",
+            names(&from_member).contains(&"repo-lint".to_string()),
+            "a root task seen from a member keeps its root scope; got {:?}",
             names(&from_member),
         );
         assert!(

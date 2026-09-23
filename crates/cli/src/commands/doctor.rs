@@ -1,0 +1,236 @@
+//! `runner doctor`, dump every signal the resolver considers.
+//!
+//! Surface for users (and bug reports) to inspect what runner sees in the current project:
+//! detected package managers and task runners, the manifest declaration if any, lockfile presence,
+//! override sources in effect, and the resolved decision. Pairs with `--explain` (one-line trace at run time)
+//! and `runner why <task>` (per-task source pick).
+//!
+//! Two output formats:
+//! - human (default): colored, grouped, easy to skim. Reads the flat [`Project`] shape internally (same one `list`/`info` serve).
+//! - `--json`: the structured [`crate::schema::doctor::DoctorReport`], machine-readable JSON for piping into `jq`, scripts, or bug-report templates.
+
+use anyhow::Result;
+#[cfg(test)]
+use serde_json::Value;
+
+use crate::resolver::{ResolutionOverrides, Resolver};
+use crate::schema::Project;
+use crate::schema::doctor::DoctorReport;
+use crate::types::ProjectContext;
+
+/// Print a full diagnostic dump of the resolver's view of `ctx`.
+///
+/// # Errors
+///
+/// A `Resolver::resolve_node_pm` failure (e.g. `--fallback error` with
+/// nothing on `$PATH`) is embedded in the report rather than propagated:
+/// the JSON path serializes `DoctorReport::build`, which keeps the
+/// resolver's `Result` as part of the report, and the human path builds
+/// `Project` the same way. This can only return `Err` when JSON
+/// serialization itself fails, which does not happen for these types in
+/// practice.
+pub(crate) fn doctor(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    json: bool,
+) -> Result<()> {
+    if json {
+        let report = DoctorReport::build(ctx, overrides, true);
+        crate::render::json::print(&report)?;
+        return Ok(());
+    }
+
+    let project = Project::build_with_schema(ctx, overrides, true);
+    // The human renderer was written against a `serde_json::Value` so it
+    // can address fields by name without a forest of `match`es.
+    // Serializing the typed report once and traversing the resulting
+    // `Value` keeps that ergonomics while the JSON contract itself stays
+    // typed via `Project`.
+    let report = serde_json::to_value(&project)?;
+    // A plan that refuses to resolve (`on_collision = "error"`, an override
+    // naming an undetected PM) is the diagnosis, so it is rendered rather than
+    // propagated, same contract as the resolver error above.
+    let plan = super::install::plan_install(ctx, overrides);
+    crate::render::doctor::print_human(&crate::render::doctor::Human {
+        report: &report,
+        overrides,
+        plan: plan.as_ref(),
+        node_context: node_context(ctx, overrides),
+        tools: super::install::tools_step(ctx, super::install::InstallFlags::default()),
+        health: &mise_health(ctx),
+    });
+
+    Ok(())
+}
+
+/// Whether the human report shows the Node sections: the same predicate
+/// the structured report uses, so a `package.json` whose scripts resolve
+/// without a lockfile-detected package manager still counts.
+fn node_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
+    let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
+    crate::schema::doctor::has_node_context(ctx, &node_pm)
+}
+
+/// Legacy stub retained for the existing tests that exercise
+/// `build_report` directly. Pure passthrough to `Project::build` +
+/// `serde_json::to_value`, same contract, same shape.
+#[cfg(test)]
+fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value {
+    serde_json::to_value(Project::build(ctx, overrides))
+        .expect("Project must serialize for build_report")
+}
+
+/// Mise's own verdict on the project. Empty for a project mise does not
+/// manage, so non-mise projects spawn nothing.
+fn mise_health(ctx: &ProjectContext) -> crate::tool::mise::Health {
+    if !ctx.task_runners.contains(&crate::types::TaskRunner::Mise) {
+        return crate::tool::mise::Health::default();
+    }
+    crate::tool::mise::health(&ctx.root)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{build_report, doctor};
+    use crate::resolver::ResolutionOverrides;
+    use crate::types::{PackageManager, ProjectContext};
+
+    fn context() -> ProjectContext {
+        ProjectContext {
+            cwd: PathBuf::from("/tmp/test"),
+            root: PathBuf::from("/tmp/test"),
+            package_managers: vec![PackageManager::Pnpm, PackageManager::Cargo],
+            task_runners: Vec::new(),
+            tasks: Vec::new(),
+            node_version: None,
+            current_node: None,
+            is_monorepo: false,
+            workspace: None,
+            install_dirs: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn build_report_omits_volta_shims_when_not_resolving() {
+        let ctx = context();
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        // `Project::build` passes `resolve_shims = false`; the additive
+        // field must vanish entirely, keeping the flat shape untouched.
+        assert!(
+            report["signals"]["node"].get("volta_shims").is_none(),
+            "volta_shims must be omitted when empty: {}",
+            report["signals"]["node"],
+        );
+        assert!(
+            report["signals"]["node"].get("path_probe").is_some(),
+            "path_probe shape must be unchanged",
+        );
+    }
+
+    #[test]
+    fn build_report_includes_schema_version() {
+        let ctx = context();
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        assert_eq!(report["schema_version"], 1);
+    }
+
+    #[test]
+    fn build_report_enumerates_detected_pms() {
+        let ctx = context();
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        let pms = report["detected"]["package_managers"]
+            .as_array()
+            .expect("array");
+        let labels: Vec<&str> = pms.iter().filter_map(|v| v.as_str()).collect();
+        assert!(labels.contains(&"pnpm"));
+        assert!(labels.contains(&"cargo"));
+    }
+
+    #[test]
+    fn build_report_reports_ecosystems_from_detected_pms() {
+        let ctx = context();
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        let ecos = report["ecosystems"].as_array().expect("array");
+        let labels: Vec<&str> = ecos.iter().filter_map(|v| v.as_str()).collect();
+        assert!(labels.contains(&"node"));
+        assert!(labels.contains(&"rust"));
+    }
+
+    #[test]
+    fn node_context_holds_for_package_json_without_a_lockfile() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("doctor-node-context");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "build": "tsc" } }"#,
+        )
+        .expect("package.json should be written");
+        let ctx = detect(dir.path());
+        assert!(
+            ctx.package_managers.is_empty(),
+            "precondition: no lockfile-detected package manager"
+        );
+
+        assert!(super::node_context(&ctx, &ResolutionOverrides::default()));
+    }
+
+    #[test]
+    fn node_context_is_absent_without_node_signals() {
+        let mut ctx = context();
+        ctx.package_managers = vec![PackageManager::Cargo];
+
+        assert!(!super::node_context(&ctx, &ResolutionOverrides::default()));
+    }
+
+    #[test]
+    fn doctor_json_runs_without_panic() {
+        let ctx = context();
+        // Ensure both rendering paths are exercised; output goes to stdout
+        // which is fine in tests (captured by `cargo test`).
+        doctor(&ctx, &ResolutionOverrides::default(), true).expect("json render should succeed");
+        doctor(&ctx, &ResolutionOverrides::default(), false).expect("human render should succeed");
+    }
+
+    #[test]
+    fn build_report_merges_resolver_warnings_with_ctx_warnings() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        // When the manifest declaration disagrees with the detected lockfile,
+        // the resolver emits a `package.json` warning. Doctor should
+        // surface it alongside whatever ctx.warnings already carries.
+        let dir = TempDir::new("doctor-merges-warnings");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "yarn@4.3.0" }"#,
+        )
+        .expect("package.json should be written");
+        fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n")
+            .expect("pnpm-lock.yaml should be written");
+
+        let ctx = detect(dir.path());
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+
+        let warnings = report["warnings"].as_array().expect("warnings array");
+        assert!(
+            warnings.iter().any(|w| w["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("declaration wins"))),
+            "expected resolver-produced PM mismatch warning to surface in doctor output, got: \
+             {warnings:?}",
+        );
+    }
+}

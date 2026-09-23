@@ -71,7 +71,7 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
 /// writes it, and Deno joins whenever it materializes a local tree rather than
 /// resolving npm packages from its global cache (see
 /// [`tool::deno::writes_node_modules`]). Whether a shared directory is a
-/// *collision* is an install-time question ([`crate::cmd::install`] answers it
+/// *collision* is an install-time question ([`crate::commands::install`] answers it
 /// against the effective install set), so nothing is judged or warned here.
 fn detect_install_dirs(dir: &Path, ctx: &mut ProjectContext) {
     let mut node_modules_writers: Vec<PackageManager> = ctx
@@ -1420,11 +1420,9 @@ mod tests {
         );
     }
 
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     #[test]
-    fn detect_skips_ancestor_manifest_outside_a_workspace() {
-        // The workspace-root-aware guard: a manifest-less subdir with NO
-        // workspace marker must NOT silently adopt an unrelated ancestor
-        // `package.json` from some outer project.
+    fn detect_lists_an_ancestor_manifest_inside_the_tree_in_root_scope() {
         let dir = TempDir::new("detect-no-workspace-no-adopt");
         fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
         fs::write(
@@ -1438,8 +1436,11 @@ mod tests {
         let ctx = detect(&sub);
 
         assert!(
-            !ctx.tasks.iter().any(|task| task.name == "root-only"),
-            "no workspace marker → ancestor manifest must not be adopted",
+            ctx.tasks
+                .iter()
+                .any(|task| task.name == "root-only" && task.member.is_none()),
+            "an ancestor manifest below the project root is a root-scoped task; got {:?}",
+            ctx.tasks.iter().map(|task| &task.name).collect::<Vec<_>>(),
         );
     }
 

@@ -651,7 +651,8 @@ fn explain_reports_exact_applied_host_args() {
 }
 
 #[test]
-fn explain_reports_output_policy_for_local_files() {
+#[ignore = "docs/architecture.md section 10 step 4: run on the core"]
+fn explain_reports_output_policy_for_local_files_without_running_them() {
     if !tool_available("python3") {
         eprintln!("skipping: `python3` not found on PATH");
         return;
@@ -662,8 +663,8 @@ fn explain_reports_output_policy_for_local_files() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stdout.lines().any(|line| line == "PY-OUT"),
-        "stdout: {stdout}"
+        !stdout.lines().any(|line| line == "PY-OUT"),
+        "--explain stops after the plan. stdout: {stdout}"
     );
     assert!(
         stderr.contains("output: level=very-quiet progress=hide warnings=hide errors=show"),

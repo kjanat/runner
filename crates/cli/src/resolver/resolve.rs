@@ -32,7 +32,7 @@ impl<'ctx> Resolver<'ctx> {
             .task_runners
             .contains(&crate::types::TaskRunner::Mise)
         {
-            crate::cmd::mise_bin_dirs(&self.ctx.root)
+            crate::commands::mise_bin_dirs(&self.ctx.root)
         } else {
             Vec::new()
         }
@@ -280,7 +280,7 @@ fn on_fail_version_mismatch(
 
 /// Soft "no PM found", only emitted from the `Probe` fallback when
 /// nothing on `$PATH` matches. Callers that legitimately want to fall
-/// through to a direct PATH spawn (`cmd::run::run_pm_exec_fallback`)
+/// through to a direct PATH spawn (`commands::run::run_pm_exec_fallback`)
 /// match on `ResolveError::NoSignalsFound { soft: true, .. }` and swallow
 /// it; every other resolver error surfaces to the user.
 const fn no_pm_found_soft() -> ResolveError {
@@ -291,7 +291,7 @@ const fn no_pm_found_soft() -> ResolveError {
 }
 
 /// Hard "no PM found", emitted from `FallbackPolicy::Error`. Carries
-/// the same payload but with `soft = false`, so `cmd::run::run`
+/// the same payload but with `soft = false`, so `commands::run::run`
 /// propagates it instead of falling through.
 const fn no_pm_found_hard() -> ResolveError {
     ResolveError::NoSignalsFound {

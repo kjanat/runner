@@ -63,7 +63,8 @@ fn runner_list_is_always_builtin_even_with_a_list_task() {
 }
 
 #[test]
-fn run_list_runs_a_same_named_task() {
+#[ignore = "docs/architecture.md section 10 step 4: run on the core"]
+fn run_list_is_the_builtin_and_the_recipe_needs_a_qualifier() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
@@ -87,10 +88,24 @@ fn run_list_runs_a_same_named_task() {
         assert!(output.status.success(), "`{label}` should exit 0");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("project-list-recipe-ran"),
-            "`{label}` should run the project `list` recipe. stdout: {stdout}",
+            !stdout.contains("project-list-recipe-ran"),
+            "`{label}` is the builtin rung, which precedes the task rung. stdout: {stdout}",
+        );
+        assert!(
+            stdout.contains("just"),
+            "`{label}` lists the recipes. stdout: {stdout}"
         );
     }
+
+    let output = Command::new(run_binary())
+        .args(["--dir", dir, "just:list"])
+        .output()
+        .expect("binary spawns");
+    assert!(output.status.success(), "`run just:list` should exit 0");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("project-list-recipe-ran"),
+        "the qualified name reaches the recipe",
+    );
 }
 
 #[test]

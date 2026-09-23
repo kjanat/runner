@@ -33,8 +33,8 @@ use serde::Serialize;
 
 use super::labels::structured_source_label;
 use crate::chain::FailurePolicy;
-use crate::cmd::install::InstallPlan;
-use crate::cmd::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
+use crate::commands::install::InstallPlan;
+use crate::commands::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
     CollisionPolicy, FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
     ScriptPolicy,
@@ -166,6 +166,8 @@ struct Overrides {
     runner: Option<TaskRunner>,
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
+    #[schemars(extend("enum" = ["ask", "allow", "local"]))]
+    fetch: &'static str,
     #[schemars(
         description = "Variable names each `env` layer sets, narrowest last. Values are withheld: \
                        this payload is meant to be pasted into a bug report."
@@ -445,7 +447,7 @@ impl<'a> DoctorReport<'a> {
         resolve_shims: bool,
     ) -> Self {
         let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
-        let plan = crate::cmd::install::plan_install(ctx, overrides);
+        let plan = crate::commands::install::plan_install(ctx, overrides);
 
         // A collision is the install plan's verdict, not a detection fact, so
         // it joins the diagnostics here rather than riding in `ctx.warnings`
@@ -458,7 +460,7 @@ impl<'a> DoctorReport<'a> {
                 .iter()
                 .map(|collision| Diagnostic {
                     code: "install",
-                    message: crate::cmd::install::collision_warning(
+                    message: crate::commands::install::collision_warning(
                         collision.dir,
                         &collision.writers,
                     ),
@@ -623,6 +625,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         runner: overrides.runner.as_ref().map(|o| o.runner),
         runtime: overrides.runtime.as_ref().map(|o| o.runtime),
         script_policy: overrides.script_policy,
+        fetch: overrides.reach.label(),
         env: EnvNames {
             project: overrides.env.project.keys().cloned().collect(),
             tool: env_names(&overrides.env.tool),
@@ -1472,7 +1475,7 @@ mod tests {
                 ..crate::resolver::CliOverrides::default()
             },
             crate::resolver::DiagnosticFlags::default(),
-            crate::cli::ChainFailureFlags::default(),
+            crate::args::ChainFailureFlags::default(),
             None,
         )
         .expect("runtime override should parse");
@@ -1580,6 +1583,7 @@ mod tests {
         ];
         // Resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[
+            ("reach", "fetch"),
             ("task_source_overrides", "task_source_pins"),
             ("quiet_level", "quiet"),
             ("output_policy", "output"),
@@ -1626,6 +1630,7 @@ mod tests {
             parent_warned,
             env,
             tool_install,
+            reach,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))

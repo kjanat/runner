@@ -89,7 +89,7 @@ fn run_chain_with_head(
     // here.
     for item in &chain.items {
         if let ChainItemKind::Task(name) = &item.kind {
-            crate::cmd::run::precheck_task(ctx, overrides, name)?;
+            crate::commands::run::precheck_task(ctx, overrides, name)?;
         }
     }
 
@@ -102,7 +102,7 @@ fn run_chain_with_head(
         }
         ChainMode::Parallel => run_parallel(ctx, overrides, chain, &mut warnings, &mut outcomes),
     };
-    crate::cmd::emit_collected_warnings(&warnings, overrides);
+    crate::commands::emit_collected_warnings(&warnings, overrides);
     match result {
         Ok(task_code) => {
             let code = head_code.unwrap_or(task_code);
@@ -145,7 +145,7 @@ fn run_sequential(
         let code = dispatch_item(ctx, overrides, item, warnings)?;
         let elapsed = started.elapsed();
         let key = item_key(ctx, overrides, item);
-        crate::cmd::emit_task_timing(overrides, &key, item.display_name(), elapsed, code);
+        crate::commands::emit_task_timing(overrides, &key, item.display_name(), elapsed, code);
         outcomes.push(ItemOutcome {
             name: item.display_name().to_string(),
             status: ItemStatus::Ran { code, elapsed },
@@ -262,7 +262,7 @@ fn run_parallel_streaming(
             };
             let started = Instant::now();
             let mut child = match &item.kind {
-                ChainItemKind::Task(name) => crate::cmd::run::dispatch_task_piped(
+                ChainItemKind::Task(name) => crate::commands::run::dispatch_task_piped(
                     ctx,
                     overrides,
                     name,
@@ -281,7 +281,7 @@ fn run_parallel_streaming(
             let stderr: Box<dyn std::io::Read + Send> =
                 Box::new(child.stderr.take().expect("stderr piped"));
             let (stdout_policy, stderr_policy) =
-                crate::cmd::run::task_streams_for_token(ctx, overrides, item.display_name());
+                crate::commands::run::task_streams_for_token(ctx, overrides, item.display_name());
             let sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
                 Arc::clone(&base),
                 stdout_policy == crate::tool::TaskStream::Inherit,
@@ -323,7 +323,7 @@ fn run_parallel_streaming(
         for (name, started, mut child) in pending.by_ref() {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let code = crate::cmd::exit_code(status);
+                    let code = crate::commands::exit_code(status);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
@@ -387,8 +387,8 @@ fn record_finished(
     elapsed: std::time::Duration,
     code: i32,
 ) {
-    let key = crate::cmd::run::task_key_for_token(ctx, overrides, &name);
-    crate::cmd::emit_task_timing(overrides, &key, &name, elapsed, code);
+    let key = crate::commands::run::task_key_for_token(ctx, overrides, &name);
+    crate::commands::emit_task_timing(overrides, &key, &name, elapsed, code);
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Ran { code, elapsed },
@@ -404,8 +404,8 @@ fn record_killed(
     name: String,
     elapsed: std::time::Duration,
 ) {
-    let key = crate::cmd::run::task_key_for_token(ctx, overrides, &name);
-    crate::cmd::emit_task_killed(overrides, &key, &name, elapsed);
+    let key = crate::commands::run::task_key_for_token(ctx, overrides, &name);
+    crate::commands::emit_task_killed(overrides, &key, &name, elapsed);
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Killed { elapsed },
@@ -458,7 +458,7 @@ fn run_parallel_grouped(
             let (name, mut child, sink) = match &item.kind {
                 ChainItemKind::Task(task_name) => {
                     let sink = Arc::new(BufferSink::new()?);
-                    let child = crate::cmd::run::dispatch_task_piped(
+                    let child = crate::commands::run::dispatch_task_piped(
                         ctx,
                         overrides,
                         task_name,
@@ -480,7 +480,7 @@ fn run_parallel_grouped(
             // infer its generic from the annotation and fail to coerce.
             let base: Arc<dyn LineSink> = sink.clone();
             let (stdout_policy, stderr_policy) =
-                crate::cmd::run::task_streams_for_token(ctx, overrides, item.display_name());
+                crate::commands::run::task_streams_for_token(ctx, overrides, item.display_name());
             let dyn_sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
                 base,
                 stdout_policy == crate::tool::TaskStream::Inherit,
@@ -535,7 +535,7 @@ fn run_parallel_grouped(
         for mut t in pending.by_ref() {
             match t.child.try_wait() {
                 Ok(Some(status)) => {
-                    let code = crate::cmd::exit_code(status);
+                    let code = crate::commands::exit_code(status);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
@@ -622,14 +622,14 @@ fn natural_exit_code(status: std::process::ExitStatus) -> Option<i32> {
     const SIGKILL: i32 = 9;
     match status.signal() {
         Some(SIGKILL) => None,
-        Some(_) => Some(crate::cmd::exit_code(status)),
+        Some(_) => Some(crate::commands::exit_code(status)),
         None => status.code(),
     }
 }
 
 #[cfg(not(unix))]
 fn natural_exit_code(status: std::process::ExitStatus) -> Option<i32> {
-    Some(crate::cmd::exit_code(status)).filter(|&code| code == 0)
+    Some(crate::commands::exit_code(status)).filter(|&code| code == 0)
 }
 
 /// Record a killed grouped sibling for the end-of-chain summary, distinct
@@ -644,8 +644,8 @@ fn record_grouped_killed(
         name: task.name.clone(),
         status: ItemStatus::Killed { elapsed },
     });
-    crate::cmd::timing_enabled_for(overrides, &task.key)
-        .then(|| crate::cmd::task_killed_summary(elapsed))
+    crate::commands::timing_enabled_for(overrides, &task.key)
+        .then(|| crate::commands::task_killed_summary(elapsed))
 }
 
 /// Flush a completed grouped task's block, moving its reader handles into
@@ -734,15 +734,15 @@ fn timing_footer(
     elapsed: std::time::Duration,
     code: i32,
 ) -> Option<String> {
-    crate::cmd::timing_enabled_for(overrides, task)
-        .then(|| crate::cmd::task_timing_summary(elapsed, code))
+    crate::commands::timing_enabled_for(overrides, task)
+        .then(|| crate::commands::task_timing_summary(elapsed, code))
 }
 
 /// The `[tasks.<key>]` identity of a chain item. The install head keeps its
 /// literal `install` key.
 fn item_key(ctx: &ProjectContext, overrides: &ResolutionOverrides, item: &ChainItem) -> String {
     match &item.kind {
-        ChainItemKind::Task(name) => crate::cmd::run::task_key_for_token(ctx, overrides, name),
+        ChainItemKind::Task(name) => crate::commands::run::task_key_for_token(ctx, overrides, name),
         ChainItemKind::Install { .. } => String::from("install"),
     }
 }
@@ -860,14 +860,17 @@ impl ItemOutcome {
 
         let (mark, detail) = match self.status {
             ItemStatus::Ran { code: 0, elapsed } => {
-                ("✓".green(), crate::cmd::format_duration(elapsed))
+                ("✓".green(), crate::commands::format_duration(elapsed))
             }
             ItemStatus::Ran { code, elapsed } => (
                 "✗".red(),
-                format!("{} (exit {code})", crate::cmd::format_duration(elapsed)),
+                format!(
+                    "{} (exit {code})",
+                    crate::commands::format_duration(elapsed)
+                ),
             ),
             ItemStatus::Killed { elapsed } => {
-                ("–".dimmed(), crate::cmd::task_killed_summary(elapsed))
+                ("–".dimmed(), crate::commands::task_killed_summary(elapsed))
             }
             ItemStatus::Skipped => ("–".dimmed(), String::from("skipped")),
         };
@@ -938,10 +941,10 @@ fn dispatch_item(
     match &item.kind {
         ChainItemKind::Task(name) => {
             // v1 ChainItem.args is always empty; v2 will populate it.
-            crate::cmd::run::run(ctx, overrides, name, &item.args, Some(warnings))
+            crate::commands::run::run(ctx, overrides, name, &item.args, Some(warnings))
         }
         ChainItemKind::Install { flags } => {
-            crate::cmd::install::install_pms(ctx, overrides, *flags, Some(warnings))
+            crate::commands::install::install_pms(ctx, overrides, *flags, Some(warnings))
         }
     }
 }

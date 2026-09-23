@@ -93,7 +93,7 @@ pub(crate) fn source_anchor(source: TaskSource, root: &Path) -> Option<PathBuf> 
 /// doctor: project-wide). `node_pm`/`python_pm` take that result already
 /// resolved to a label. A forced `runtime` that dispatches the task reads
 /// its script through its own runner, so its preview outranks the resolved
-/// package manager, matching `cmd::run`'s dispatch.
+/// package manager, matching `commands::run`'s dispatch.
 pub(crate) fn resolved_command(
     task: &Task,
     runtime: Option<JsRuntime>,
@@ -102,7 +102,7 @@ pub(crate) fn resolved_command(
 ) -> Option<String> {
     let name = &task.name;
     if let Some(rt) = runtime
-        && let Some(preview) = crate::cmd::run::runtime_script_preview(rt, task.source, name)
+        && let Some(preview) = crate::commands::run::runtime_script_preview(rt, task.source, name)
     {
         return Some(preview);
     }

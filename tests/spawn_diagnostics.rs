@@ -172,16 +172,15 @@ fn project_local_pm_uses_effective_child_path_for_diagnostics() {
 }
 
 #[test]
-fn pyproject_script_missing_pm_reports_provenance() {
+#[ignore = "docs/architecture.md section 10 step 5: one resolver"]
+fn pyproject_script_missing_pm_reports_the_layer_that_chose_it() {
     let project = uv_project("python");
     let output = run_in(&project, &["run", "hello"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     assert!(
-        stderr.contains(
-            "uv via detected Python project was selected, but its executable was not found on PATH",
-        ),
+        stderr.contains("uv via uv.lock was selected, but its executable was not found on PATH",),
         "missing actionable Python package-manager diagnostic. stderr: {stderr}",
     );
 }

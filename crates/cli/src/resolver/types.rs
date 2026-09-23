@@ -146,6 +146,10 @@ pub(crate) struct ResolutionOverrides {
     /// Install-directory collision policy, resolved from
     /// `RUNNER_INSTALL_ON_COLLISION` (env) → `[install].on_collision` (config).
     pub on_collision: CollisionPolicy,
+    /// What a command that can download may do, resolved from `--fetch`
+    /// (CLI) → `RUNNER_REACH` (env). `ask` prompts on a terminal, `allow`
+    /// proceeds, `local` refuses.
+    pub reach: runner_core::ReachPolicy,
     /// `[env]`, `[tools.*].env` and `[tasks.*].env`, kept together because
     /// they are one layered lookup rather than three independent knobs.
     pub env: EnvLayers,
@@ -820,6 +824,8 @@ pub(crate) struct OverrideSources<'a> {
     /// `--runtime` flag value plus `RUNNER_RUNTIME` env. The `[runtime].js`
     /// config layer is read from `config` rather than carried here.
     pub runtime: SourceValue<'a>,
+    /// `--fetch` flag value plus `RUNNER_REACH` env.
+    pub reach: SourceValue<'a>,
     /// `--fallback` flag value plus `RUNNER_FALLBACK` env.
     pub fallback: SourceValue<'a>,
     /// `--on-mismatch` flag value plus `RUNNER_ON_MISMATCH` env.
@@ -848,7 +854,7 @@ pub(crate) struct OverrideSources<'a> {
     /// config side comes from `[install].on_collision`.
     pub install_on_collision: SourceValue<'a>,
     /// Internal `RUNNER_GROUP_ACTIVE` nesting marker a parent runner set on
-    /// this process (see `crate::cmd::GROUP_ACTIVE_ENV`). Env-only, no CLI or
+    /// this process (see `crate::commands::GROUP_ACTIVE_ENV`). Env-only, no CLI or
     /// config side, but captured here so `from_sources` stays a pure function
     /// of its inputs and tests can inject it.
     pub group_active: Option<&'a str>,
@@ -879,6 +885,8 @@ pub(crate) struct CliOverrides<'a> {
     pub runner: Option<&'a str>,
     /// `--runtime` flag value.
     pub runtime: Option<&'a str>,
+    /// `--fetch` flag value.
+    pub reach: Option<&'a str>,
     /// `--fallback` flag value.
     pub fallback: Option<&'a str>,
     /// `--on-mismatch` flag value.

@@ -142,22 +142,6 @@ fn is_main_package_line(line: &str) -> bool {
         || tail.starts_with("/*")
 }
 
-/// `go mod download`
-pub(crate) fn install_cmd() -> Command {
-    let mut c = super::program::command("go");
-    c.arg("mod").arg("download");
-    c
-}
-
-/// `go run <args...>`, VCS-stamped when the checkout allows it; the exec
-/// fallback applies no env layers after this.
-pub(crate) fn exec_cmd(args: &[String], project: &Path) -> Command {
-    let mut c = go_run();
-    c.args(args);
-    stamp_vcs(&mut c, project);
-    c
-}
-
 /// `go run <target> <args...>`. The caller stamps VCS data once the env
 /// layers are applied, through [`stamp_vcs`].
 pub(crate) fn run_cmd(target: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
@@ -290,8 +274,7 @@ fn decides_buildvcs(flag: &str) -> bool {
 mod tests {
     use std::fs;
 
-    use super::{ExtractedTask, exec_cmd, extract_tasks, run_cmd, run_file_cmd};
-    use std::path::Path;
+    use super::{ExtractedTask, extract_tasks, run_cmd, run_file_cmd};
 
     use crate::tool::test_support::TempDir;
 
@@ -314,20 +297,6 @@ mod tests {
             name: name.to_string(),
             run_target: run_target.to_string(),
         }
-    }
-
-    #[test]
-    fn exec_uses_go_run_passthrough() {
-        let args = [
-            String::from("github.com/foo/tool@latest"),
-            String::from("--help"),
-        ];
-        let built: Vec<_> = exec_cmd(&args, Path::new("/nonexistent"))
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(built, ["run", "github.com/foo/tool@latest", "--help"]);
     }
 
     #[test]

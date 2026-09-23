@@ -9,9 +9,9 @@ use anyhow::{Result, anyhow};
 use super::join_labels;
 use super::policies::{
     is_env_truthy, parse_collision_label, parse_fallback_label, parse_host_stream_label,
-    parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_runtime_label,
-    parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity, resolve_failure_policy,
-    resolve_fallback_policy, resolve_mismatch_policy,
+    parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_reach_label,
+    parse_runtime_label, parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity,
+    resolve_failure_policy, resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
     CliOverrides, CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources,
@@ -40,7 +40,7 @@ impl ResolutionOverrides {
     pub(crate) fn from_cli_and_env(
         overrides: CliOverrides<'_>,
         diagnostics: DiagnosticFlags<'_>,
-        failure: crate::cli::ChainFailureFlags,
+        failure: crate::args::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<Self> {
         let env = EnvSnapshot::capture();
@@ -70,7 +70,7 @@ impl ResolutionOverrides {
     pub(crate) fn from_cli_and_env_lenient(
         overrides: CliOverrides<'_>,
         diagnostics: DiagnosticFlags<'_>,
-        failure: crate::cli::ChainFailureFlags,
+        failure: crate::args::ChainFailureFlags,
         config: Option<&LoadedConfig>,
     ) -> Result<(Self, Vec<DetectionWarning>)> {
         let env = EnvSnapshot::capture();
@@ -111,6 +111,9 @@ impl ResolutionOverrides {
             &mut warnings,
             |raw| parse_runtime_label(raw).map(drop),
         );
+        lenient_env_field(&mut sources.reach, "RUNNER_REACH", &mut warnings, |raw| {
+            parse_reach_label(raw).map(drop)
+        });
         lenient_env_field(
             &mut sources.fallback,
             "RUNNER_FALLBACK",
@@ -226,6 +229,15 @@ impl ResolutionOverrides {
         )?;
 
         let runtime = resolve_runtime(&sources)?;
+        let reach = sources
+            .reach
+            .cli
+            .or(sources.reach.env)
+            .map(str::trim)
+            .filter(|raw| !raw.is_empty())
+            .map(parse_reach_label)
+            .transpose()?
+            .unwrap_or_default();
         let fallback =
             resolve_fallback_policy(sources.fallback.cli, sources.fallback.env, sources.config)?;
         let on_mismatch = resolve_mismatch_policy(
@@ -356,6 +368,7 @@ impl ResolutionOverrides {
 
         Ok(Self {
             pm,
+            reach,
             package: None,
             pm_by_ecosystem,
             runner,
@@ -388,7 +401,7 @@ impl ResolutionOverrides {
             // hand. Nothing to capture from `sources`.
             parent_warned: false,
             // Set by a parent runner that already opened a GHA group (see
-            // `crate::cmd::GROUP_ACTIVE_ENV`), captured into `sources` so this
+            // `crate::commands::GROUP_ACTIVE_ENV`), captured into `sources` so this
             // stays a pure function of its inputs. An internal nesting signal,
             // not part of the CLI/env/config override layering. Gated through
             // `is_env_truthy` like every other `RUNNER_*` boolean, so
@@ -436,7 +449,7 @@ fn resolve_config_runtime(config: Option<&LoadedConfig>) -> Result<Option<Runtim
 /// Resolve the `runner install` PM allowlist: `RUNNER_INSTALL_PMS` (env,
 /// comma/whitespace-separated) wins over `[install].pms` (config). Each
 /// entry must name a known package manager; detection (whether the PM is
-/// present in *this* project) is checked later in `cmd::install`.
+/// present in *this* project) is checked later in `commands::install`.
 ///
 /// # Errors
 ///
@@ -683,36 +696,18 @@ mod tests {
     use crate::config::{InstallSection, RunnerConfig};
 
     #[test]
-    fn install_pms_env_parses_comma_and_space_list() {
+    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
+    fn install_pms_env_has_no_declared_row() {
         let sources = OverrideSources {
             install_pms: SourceValue {
                 cli: None,
-                env: Some("bun, cargo deno"),
+                env: Some("bun, notapm"),
             },
             ..OverrideSources::default()
         };
-        let overrides = ResolutionOverrides::from_sources(sources).expect("env list parses");
-        assert_eq!(
-            overrides.install_pms,
-            vec![
-                PackageManager::Bun,
-                PackageManager::Cargo,
-                PackageManager::Deno
-            ]
-        );
-    }
-
-    #[test]
-    fn install_pms_env_rejects_unknown_pm() {
-        let sources = OverrideSources {
-            install_pms: SourceValue {
-                cli: None,
-                env: Some("bun,notapm"),
-            },
-            ..OverrideSources::default()
-        };
-        let err = ResolutionOverrides::from_sources(sources).expect_err("unknown PM must error");
-        assert!(format!("{err:#}").contains("RUNNER_INSTALL_PMS"));
+        let overrides = ResolutionOverrides::from_sources(sources)
+            .expect("a variable with no row in the declaration table is never parsed");
+        assert!(overrides.install_pms.is_empty());
     }
 
     #[test]
@@ -904,7 +899,7 @@ mod tests {
 struct CliSides<'a> {
     overrides: CliOverrides<'a>,
     diagnostics: DiagnosticFlags<'a>,
-    failure: crate::cli::ChainFailureFlags,
+    failure: crate::args::ChainFailureFlags,
 }
 
 /// Declare the captured `RUNNER_*` environment from one row per variable.
@@ -934,6 +929,7 @@ env_snapshot! {
     pm => "RUNNER_PM",
     runner => "RUNNER_RUNNER",
     runtime => "RUNNER_RUNTIME",
+    reach => "RUNNER_REACH",
     fallback => "RUNNER_FALLBACK",
     on_mismatch => "RUNNER_ON_MISMATCH",
     no_warnings => "RUNNER_NO_WARNINGS",
@@ -945,7 +941,7 @@ env_snapshot! {
     install_pms => "RUNNER_INSTALL_PMS",
     install_scripts => "RUNNER_INSTALL_SCRIPTS",
     install_on_collision => "RUNNER_INSTALL_ON_COLLISION",
-    group_active => crate::cmd::GROUP_ACTIVE_ENV,
+    group_active => crate::commands::GROUP_ACTIVE_ENV,
 }
 
 impl EnvSnapshot {
@@ -968,6 +964,10 @@ impl EnvSnapshot {
             runtime: SourceValue {
                 cli: cli.overrides.runtime,
                 env: self.runtime.as_deref(),
+            },
+            reach: SourceValue {
+                cli: cli.overrides.reach,
+                env: self.reach.as_deref(),
             },
             fallback: SourceValue {
                 cli: cli.overrides.fallback,

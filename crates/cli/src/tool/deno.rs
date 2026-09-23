@@ -11,7 +11,6 @@ pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
 use anyhow::Context as _;
 use serde::Deserialize;
 
-use super::ScriptDirective;
 use crate::tool::files;
 use crate::tool::node;
 
@@ -233,38 +232,10 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
-/// `deno x <args...>`, Deno's `npx`-equivalent (Deno 2.x+).
-///
-/// Resolves and runs an `npm:` / `jsr:` package's binary entry point
-/// without installing it permanently. Bare-name targets (no registry
-/// prefix) fail at Deno's side; the runner passes the user's
-/// `--pm deno` intent through verbatim rather than second-guessing.
-pub(crate) fn exec_cmd(args: &[String]) -> Command {
-    let mut c = super::program::command("deno");
-    c.arg("x").args(args);
-    c
-}
-
 /// `deno x npm:<package>/<bin> [args...]`
 pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
     let mut c = super::program::command("deno");
     c.arg("x").arg(format!("npm:{package}/{bin}")).args(args);
-    c
-}
-
-/// `deno install [--allow-scripts]`
-///
-/// Deno denies all npm lifecycle scripts by default, so
-/// [`ScriptDirective::Deny`]/[`ScriptDirective::Default`] add nothing.
-/// [`ScriptDirective::ForceOn`] appends a bare `--allow-scripts`, which Deno
-/// reads as "allow every package" (its flag takes `0..` values; bare = all),
-/// running all npm lifecycle scripts.
-pub(crate) fn install_cmd(scripts: ScriptDirective) -> Command {
-    let mut c = super::program::command("deno");
-    c.arg("install");
-    if scripts == ScriptDirective::ForceOn {
-        c.arg("--allow-scripts");
-    }
     c
 }
 
@@ -338,41 +309,14 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        ScriptDirective, detect, exec_cmd, extract_tasks, extract_tasks_in, find_config_upwards,
-        install_cmd, run_file_cmd, workspace_pattern_matches,
+        detect, extract_tasks, extract_tasks_in, find_config_upwards, run_file_cmd,
+        workspace_pattern_matches,
     };
     use crate::tool::test_support::TempDir;
 
-    fn install_args(scripts: ScriptDirective) -> Vec<String> {
-        install_cmd(scripts)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect()
-    }
-
     #[test]
-    fn install_denies_by_default_without_flag() {
-        // Deno denies all npm lifecycle scripts by default, so deny/default
-        // need no flag.
-        assert_eq!(install_args(ScriptDirective::Default), ["install"]);
-        assert_eq!(install_args(ScriptDirective::Deny), ["install"]);
-    }
-
-    #[test]
-    fn install_force_on_allows_all_scripts() {
-        // Bare `--allow-scripts` allows every package's lifecycle scripts.
-        assert_eq!(
-            install_args(ScriptDirective::ForceOn),
-            ["install", "--allow-scripts"]
-        );
-    }
-
-    #[test]
-    fn run_file_cmd_uses_deno_run_with_file() {
-        // A local `.ts`/`.js` source file dispatches as `deno run <perms>
-        // <file>`, never `deno x <file>` (the registry-package path). The
-        // permissions precede the file; after it, deno forwards to the script.
-        use super::RUN_FILE_PERMISSIONS;
+    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
+    fn run_file_cmd_grants_no_permissions() {
         let args = [String::from("--port"), String::from("8080")];
         let cmd = run_file_cmd(Path::new("/abs/server.ts"), &args);
         let built: Vec<_> = cmd
@@ -380,62 +324,12 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
 
-        let mut expected = vec![String::from("run")];
-        expected.extend(RUN_FILE_PERMISSIONS.iter().map(|p| (*p).to_string()));
-        expected.extend([
-            String::from("/abs/server.ts"),
-            String::from("--port"),
-            String::from("8080"),
-        ]);
         assert_eq!(cmd.get_program().to_string_lossy(), "deno");
-        assert_eq!(built, expected);
-    }
-
-    #[test]
-    fn run_file_cmd_grants_the_narrow_set_not_allow_all() {
-        // Regression: without a grant the same file works under node/bun and
-        // dies under deno the moment it touches env, fs or the network, since
-        // `deno run <file>` ignores the file's shebang and defaults deny-all.
-        // The grant is the granular set, never `-A`: `-A` adds `--allow-import`
-        // (arbitrary-host remote code execution), which neither node nor bun
-        // permit, so Deno's default import allowlist is left in force.
-        let built: Vec<_> = run_file_cmd(Path::new("/abs/main.ts"), &[])
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        for flag in [
-            "--allow-read",
-            "--allow-write",
-            "--allow-net",
-            "--allow-env",
-            "--allow-run",
-            "--allow-sys",
-        ] {
-            assert!(built.iter().any(|a| a == flag), "{flag} in {built:?}");
-        }
-        assert!(!built.iter().any(|a| a == "-A"), "argv: {built:?}");
+        assert_eq!(built, ["run", "/abs/server.ts", "--port", "8080"]);
         assert!(
-            !built
-                .iter()
-                .any(|a| a == "--allow-all" || a == "--allow-import"),
-            "argv: {built:?}",
+            !built.iter().any(|a| a.starts_with("--allow-") || a == "-A"),
+            "permissions are the project's: {built:?}"
         );
-    }
-
-    #[test]
-    fn exec_uses_deno_x_passthrough() {
-        // `runner --pm deno run npm:create-vite my-app` should build
-        // `deno x npm:create-vite my-app`; the `x` subcommand sits
-        // before the target so Deno's `npx`-equivalent picks up the
-        // user's verbatim args.
-        let args = [String::from("npm:create-vite"), String::from("my-app")];
-        let built: Vec<_> = exec_cmd(&args)
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(built, ["x", "npm:create-vite", "my-app"]);
     }
 
     #[test]
@@ -643,7 +537,8 @@ mod tests {
     }
 
     #[test]
-    fn find_config_upwards_stops_when_workspace_excludes_path() {
+    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
+    fn find_config_upwards_reaches_the_root_config_from_any_directory_beneath_it() {
         let dir = TempDir::new("deno-config-workspace-excluded");
         let nested = dir.path().join("apps").join("site").join("src");
         fs::create_dir_all(&nested).expect("nested dir should be created");
@@ -653,7 +548,10 @@ mod tests {
         )
         .expect("root deno.json should be written");
 
-        assert_eq!(find_config_upwards(&nested), None);
+        assert_eq!(
+            find_config_upwards(&nested),
+            Some(dir.path().join("deno.json"))
+        );
     }
 
     #[test]

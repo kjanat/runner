@@ -62,12 +62,13 @@
     html_favicon_url = "https://raw.githubusercontent.com/kjanat/runner/d876a0b9716806d92e07f5d5560b022b6158ecd5/branding/icon.svg"
 )]
 
+mod args;
 pub(crate) mod chain;
-mod cli;
-mod cmd;
+mod commands;
 mod complete;
 mod config;
 mod detect;
+mod render;
 mod resolver;
 mod schema;
 mod tool;
@@ -136,7 +137,7 @@ pub fn runner_error_is_muted() -> bool {
     let args: Vec<OsString> = std::env::args_os().collect();
     parse_cli(args.clone()).map_or_else(
         |_| {
-            quiet_level_from_args(args, cli::TaskPosition::AfterRunSubcommand)
+            quiet_level_from_args(args, args::TaskPosition::AfterRunSubcommand)
                 == tool::QuietLevel::Mute
         },
         |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
@@ -154,7 +155,7 @@ pub fn error_suppresses_fatal_output(err: &anyhow::Error) -> bool {
 pub fn run_alias_error_is_muted() -> bool {
     let args: Vec<OsString> = std::env::args_os().collect();
     parse_run_alias_cli(args.clone()).map_or_else(
-        |_| quiet_level_from_args(args, cli::TaskPosition::First) == tool::QuietLevel::Mute,
+        |_| quiet_level_from_args(args, args::TaskPosition::First) == tool::QuietLevel::Mute,
         |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
     )
 }
@@ -170,13 +171,13 @@ fn quiet_level_for_error(cli_count: u8) -> tool::QuietLevel {
         .unwrap_or_default()
 }
 
-fn quiet_level_from_args<I, T>(args: I, task_position: cli::TaskPosition) -> tool::QuietLevel
+fn quiet_level_from_args<I, T>(args: I, task_position: args::TaskPosition) -> tool::QuietLevel
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let args = cli::forward_args_after_task(&args, task_position).unwrap_or(args);
+    let args = args::forward_args_after_task(&args, task_position).unwrap_or(args);
     let mut count = 0_u8;
     for arg in args.into_iter().skip(1) {
         let Some(word) = arg.to_str() else { continue };
@@ -219,7 +220,7 @@ pub fn run_from_env() -> Result<i32> {
     let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
         .unwrap_or_else(|| "runner".to_string());
     clap_complete::CompleteEnv::with_factory(move || {
-        configure_cli_command(cli::Cli::command(), true)
+        configure_cli_command(args::Cli::command(), true)
             .name(bin.clone())
             .bin_name(bin.clone())
     })
@@ -265,8 +266,10 @@ where
     T: Into<OsString> + Clone,
 {
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let quiet_level =
-        quiet_level_from_args(original_args.clone(), cli::TaskPosition::AfterRunSubcommand);
+    let quiet_level = quiet_level_from_args(
+        original_args.clone(),
+        args::TaskPosition::AfterRunSubcommand,
+    );
     let cli = match parse_cli(original_args.clone()) {
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
@@ -281,8 +284,8 @@ where
     // The language server parses each editor buffer itself and needs neither a
     // resolved project dir nor detection; handle it before either can bail.
     #[cfg(feature = "lsp")]
-    if matches!(cli.command.as_ref(), Some(cli::Command::Lsp)) {
-        return cmd::lsp::run();
+    if matches!(cli.command.as_ref(), Some(args::Command::Lsp)) {
+        return commands::lsp::run();
     }
     let project_dir = resolve_project_dir(
         configured_project_dir(
@@ -295,16 +298,16 @@ where
     dispatch(cli, &project_dir)
 }
 
-fn parse_cli<I, T>(args: I) -> Result<cli::Cli, clap::Error>
+fn parse_cli<I, T>(args: I) -> Result<args::Cli, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let args =
-        cli::forward_args_after_task(&args, cli::TaskPosition::AfterRunSubcommand).unwrap_or(args);
+    let args = args::forward_args_after_task(&args, args::TaskPosition::AfterRunSubcommand)
+        .unwrap_or(args);
 
-    let mut command = configure_cli_command(cli::Cli::command(), std::io::stdout().is_terminal());
+    let mut command = configure_cli_command(args::Cli::command(), std::io::stdout().is_terminal());
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
@@ -312,7 +315,7 @@ where
     command = shorten_help_subcommand(command);
 
     let matches = command.try_get_matches_from_mut(args)?;
-    let parsed = cli::Cli::from_arg_matches(&matches)?;
+    let parsed = args::Cli::from_arg_matches(&matches)?;
     if version_request(&parsed.version, parsed.global.quiet).is_some() && parsed.command.is_some() {
         return Err(command.error(
             clap::error::ErrorKind::ArgumentConflict,
@@ -389,7 +392,7 @@ fn shorten_help_subcommand(mut command: clap::Command) -> clap::Command {
 /// dispatch, and return the exit code.
 ///
 /// Always treats positional arguments as a task or command (routed through
-/// `cmd::run`); built-in subcommand names are never parsed specially, so
+/// `commands::run`); built-in subcommand names are never parsed specially, so
 /// `run clean`, `run install`, etc. run a same-named project task when one
 /// exists. When no such task exists, a bare run token naming a built-in verb
 /// (`install`/`clean`/`list`/`info`/`completions`) falls back to that
@@ -409,7 +412,7 @@ pub fn run_alias_from_env() -> Result<i32> {
     let bin = bin_name_from_arg0(&std::env::args_os().next().unwrap_or_default())
         .unwrap_or_else(|| "run".to_string());
     clap_complete::CompleteEnv::with_factory(move || {
-        configure_cli_command(cli::RunAliasCli::command(), true)
+        configure_cli_command(args::RunAliasCli::command(), true)
             .name(bin.clone())
             .bin_name(bin.clone())
     })
@@ -452,7 +455,7 @@ where
 {
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
-    let quiet_level = quiet_level_from_args(original_args.clone(), cli::TaskPosition::First);
+    let quiet_level = quiet_level_from_args(original_args.clone(), args::TaskPosition::First);
     let cli = match parse_run_alias_cli(original_args.clone()) {
         Ok(cli) => cli,
         Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
@@ -476,23 +479,25 @@ where
     dispatch_run_alias(cli, &project_dir)
 }
 
-fn parse_run_alias_cli<I, T>(args: I) -> Result<cli::RunAliasCli, clap::Error>
+fn parse_run_alias_cli<I, T>(args: I) -> Result<args::RunAliasCli, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
-    let args = cli::forward_args_after_task(&args, cli::TaskPosition::First).unwrap_or(args);
+    let args = args::forward_args_after_task(&args, args::TaskPosition::First).unwrap_or(args);
 
-    let mut command =
-        configure_cli_command(cli::RunAliasCli::command(), std::io::stdout().is_terminal());
+    let mut command = configure_cli_command(
+        args::RunAliasCli::command(),
+        std::io::stdout().is_terminal(),
+    );
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
     let args = prioritize_top_level_help(args, &command);
 
     let matches = command.try_get_matches_from_mut(args)?;
-    let parsed = cli::RunAliasCli::from_arg_matches(&matches)?;
+    let parsed = args::RunAliasCli::from_arg_matches(&matches)?;
     let has_task_action = parsed.task.is_some()
         || !parsed.args.is_empty()
         || parsed.mode.sequential
@@ -514,7 +519,7 @@ where
 /// keeping a second copy in sync.
 ///
 /// The alias is a thin shortcut for `runner run <task>`, so a parsed
-/// [`cli::RunAliasCli`] maps onto [`cli::Cli`] one-to-one:
+/// [`args::RunAliasCli`] maps onto [`args::Cli`] one-to-one:
 /// - a bare invocation (no task and no `-s`/`-p` mode flag) becomes
 ///   `command: None`, reproducing the bare-`runner` project dashboard.
 ///   A lone `-k`/`-K` does not defeat this: the chain-failure flags are
@@ -522,20 +527,20 @@ where
 ///   dropped before override building, so, unlike the old eager builder,
 ///   a bare `run -k`/`-K` no longer conflicts with an opposite-polarity
 ///   `RUNNER_KILL_ON_FAIL`/`RUNNER_KEEP_GOING` or `[chain]` config;
-/// - everything else becomes [`cli::Command::Run`] carrying the alias's
+/// - everything else becomes [`args::Command::Run`] carrying the alias's
 ///   task, forwarded args, and chain flags.
 ///
-/// Building a typed [`cli::Cli`] here, rather than rewriting argv to
+/// Building a typed [`args::Cli`] here, rather than rewriting argv to
 /// `["runner", "run", …]` and re-parsing through clap, keeps the mapping
 /// total and compiler-checked and, crucially, leaves the alias's task-argument
-/// forwarding untouched. Re-parsing through [`cli::Command::Run`] would lose
+/// forwarding untouched. Re-parsing through [`args::Command::Run`] would lose
 /// the delimiter placement already established by the alias parse layer.
-fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
+fn dispatch_run_alias(cli: args::RunAliasCli, dir: &Path) -> Result<i32> {
     let bare = cli.task.is_none() && !cli.mode.sequential && !cli.mode.parallel;
     let command = if bare {
         None
     } else {
-        Some(cli::Command::Run {
+        Some(args::Command::Run {
             task: cli.task,
             args: cli.args,
             mode: cli.mode,
@@ -543,7 +548,7 @@ fn dispatch_run_alias(cli: cli::RunAliasCli, dir: &Path) -> Result<i32> {
         })
     };
     dispatch(
-        cli::Cli {
+        args::Cli {
             global: cli.global,
             version: cli.version,
             command,
@@ -691,7 +696,7 @@ struct VersionRequest {
     json: bool,
 }
 
-const fn version_request(options: &cli::VersionOpts, quiet: u8) -> Option<VersionRequest> {
+const fn version_request(options: &args::VersionOpts, quiet: u8) -> Option<VersionRequest> {
     let kind = if options.short_lower || options.short_upper {
         VersionKind::Short
     } else if options.detailed || options.build_options {
@@ -895,9 +900,9 @@ fn render_clap_error(err: &clap::Error, muted: bool) -> Result<i32> {
 fn dispatch_install(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
-    flags: cmd::install::InstallFlags,
-    mode: cli::ChainModeFlags,
-    failure: cli::ChainFailureFlags,
+    flags: commands::install::InstallFlags,
+    mode: args::ChainModeFlags,
+    failure: args::ChainFailureFlags,
     tasks: &[String],
 ) -> Result<i32> {
     if !tasks.is_empty() {
@@ -913,14 +918,14 @@ fn dispatch_install(
             "note:".dimmed(),
         );
     }
-    cmd::install(ctx, overrides, flags)
+    commands::install(ctx, overrides, flags)
 }
 
 fn dispatch_install_chain(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
-    flags: cmd::install::InstallFlags,
-    mode: cli::ChainModeFlags,
+    flags: commands::install::InstallFlags,
+    mode: args::ChainModeFlags,
     tasks: &[String],
 ) -> Result<i32> {
     let items = chain::parse::parse_task_list(tasks)?;
@@ -951,7 +956,7 @@ fn dispatch_install_chain(
     // install; this loop is what gates the slow install. precheck_task is
     // side-effect-free, so the redundant second pass is harmless.
     for task in tasks {
-        cmd::run::precheck_task(ctx, overrides, task)?;
+        commands::run::precheck_task(ctx, overrides, task)?;
     }
     // Time the install step the same way the sequential path's synthetic
     // install head is (run_chain -> emit_task_timing). Without this the
@@ -960,9 +965,9 @@ fn dispatch_install_chain(
     // while `-s` does. "install" matches ChainItem::install(..).display_name();
     // emit_task_timing self-gates via the task-timing output category.
     let started = std::time::Instant::now();
-    let install_code = cmd::install(ctx, overrides, flags)?;
+    let install_code = commands::install(ctx, overrides, flags)?;
     let install_elapsed = started.elapsed();
-    cmd::emit_task_timing(
+    commands::emit_task_timing(
         overrides,
         "install",
         "install",
@@ -988,7 +993,7 @@ fn dispatch_run(
     overrides: &resolver::ResolutionOverrides,
     task: Option<String>,
     args: Vec<String>,
-    mode: cli::ChainModeFlags,
+    mode: args::ChainModeFlags,
 ) -> Result<i32> {
     if mode.sequential || mode.parallel {
         let chain_mode = if mode.parallel {
@@ -1019,7 +1024,7 @@ fn dispatch_run(
     {
         return Ok(code);
     }
-    cmd::run(ctx, overrides, task, &args, None)
+    commands::run(ctx, overrides, task, &args, None)
 }
 
 /// Run-path fallback for builtin verbs.
@@ -1028,10 +1033,10 @@ fn dispatch_run(
 /// no same-named task exists, run that built-in's default (no-flag) form,
 /// the same behavior the explicit `runner <verb>` subcommand provides. A
 /// project task of the same name takes precedence (handled by the early
-/// `has_task` return → falls through to `cmd::run`).
+/// `has_task` return → falls through to `commands::run`).
 ///
 /// Returns `Ok(Some(code))` when the fallback handled the token, `Ok(None)`
-/// to fall through to `cmd::run` (task dispatch / PM-exec).
+/// to fall through to `commands::run` (task dispatch / PM-exec).
 ///
 /// Qualified tokens (`source:verb`) carry the `source:` prefix, so they never
 /// match a bare verb arm and fall through untouched, no qualifier parsing
@@ -1048,19 +1053,19 @@ fn run_path_builtin_fallback(
         return Ok(None);
     }
     let code = match name {
-        "install" => cmd::install(ctx, overrides, cmd::install::InstallFlags::default())?,
+        "install" => commands::install(ctx, overrides, commands::install::InstallFlags::default())?,
         "clean" => {
-            cmd::clean(ctx, overrides, false, false)?;
+            commands::clean(ctx, overrides, false, false)?;
             0
         }
         // `info` maps to a plain `list`: the deprecation warning is specific
         // to the explicit `runner info` subcommand, not the run path.
         "list" | "info" => {
-            cmd::list(ctx, overrides, false, false, None)?;
+            commands::list(ctx, overrides, false, false, None)?;
             0
         }
         "completions" => {
-            cmd::completions(None, None)?;
+            commands::completions(None, None)?;
             0
         }
         _ => return Ok(None),
@@ -1086,11 +1091,11 @@ fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
 /// subcommand carries them (`Run` / `Install`), with `false` defaults for
 /// subcommands that don't.
 fn build_overrides(
-    cli: &cli::Cli,
+    cli: &args::Cli,
     loaded_config: Option<&config::LoadedConfig>,
 ) -> Result<resolver::ResolutionOverrides> {
     let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
-        Some(cli::Command::Run { failure, .. } | cli::Command::Install { failure, .. }) => {
+        Some(args::Command::Run { failure, .. } | args::Command::Install { failure, .. }) => {
             (failure.keep_going, failure.kill_on_fail)
         }
         _ => (false, false),
@@ -1100,6 +1105,7 @@ fn build_overrides(
             pm: cli.global.pm_override.as_deref(),
             runner: cli.global.runner_override.as_deref(),
             runtime: cli.global.runtime_override.as_deref(),
+            reach: cli.global.fetch_policy.as_deref(),
             fallback: cli.global.fallback.as_deref(),
             on_mismatch: cli.global.on_mismatch.as_deref(),
             package: cli.global.package_selection.as_deref(),
@@ -1110,7 +1116,7 @@ fn build_overrides(
             explain: cli.global.explain,
             host_stream: cli.global.host_stream.as_deref(),
         },
-        cli::ChainFailureFlags {
+        args::ChainFailureFlags {
             keep_going: cli_keep_going,
             kill_on_fail: cli_kill_on_fail,
         },
@@ -1128,8 +1134,8 @@ fn build_overrides(
 /// resolution untouched. clap marks the two mutually exclusive, so at most one
 /// is set. Threading them here (rather than as more `from_cli_and_env`
 /// arguments) keeps that constructor's signature stable.
-const fn apply_script_policy_flags(cli: &cli::Cli, overrides: &mut resolver::ResolutionOverrides) {
-    if let Some(cli::Command::Install {
+const fn apply_script_policy_flags(cli: &args::Cli, overrides: &mut resolver::ResolutionOverrides) {
+    if let Some(args::Command::Install {
         no_scripts,
         scripts,
         ..
@@ -1148,11 +1154,11 @@ const fn apply_script_policy_flags(cli: &cli::Cli, overrides: &mut resolver::Res
 /// values degrade to [`types::DetectionWarning`]s instead of killing
 /// the one command whose job is to report a broken environment.
 fn build_overrides_lenient(
-    cli: &cli::Cli,
+    cli: &args::Cli,
     loaded_config: Option<&config::LoadedConfig>,
 ) -> Result<(resolver::ResolutionOverrides, Vec<types::DetectionWarning>)> {
     let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
-        Some(cli::Command::Run { failure, .. } | cli::Command::Install { failure, .. }) => {
+        Some(args::Command::Run { failure, .. } | args::Command::Install { failure, .. }) => {
             (failure.keep_going, failure.kill_on_fail)
         }
         _ => (false, false),
@@ -1162,6 +1168,7 @@ fn build_overrides_lenient(
             pm: cli.global.pm_override.as_deref(),
             runner: cli.global.runner_override.as_deref(),
             runtime: cli.global.runtime_override.as_deref(),
+            reach: cli.global.fetch_policy.as_deref(),
             fallback: cli.global.fallback.as_deref(),
             on_mismatch: cli.global.on_mismatch.as_deref(),
             package: cli.global.package_selection.as_deref(),
@@ -1172,7 +1179,7 @@ fn build_overrides_lenient(
             explain: cli.global.explain,
             host_stream: cli.global.host_stream.as_deref(),
         },
-        cli::ChainFailureFlags {
+        args::ChainFailureFlags {
             keep_going: cli_keep_going,
             kill_on_fail: cli_kill_on_fail,
         },
@@ -1186,13 +1193,13 @@ fn build_overrides_lenient(
 /// degrades to warnings appended to `ctx`, while CLI flag garbage
 /// re-raises from the lenient pass and stays fatal.
 fn dispatch_overrides(
-    cli: &cli::Cli,
+    cli: &args::Cli,
     loaded_config: Option<&config::LoadedConfig>,
     ctx: &mut types::ProjectContext,
 ) -> Result<resolver::ResolutionOverrides> {
     match build_overrides(cli, loaded_config) {
         Ok(overrides) => Ok(overrides),
-        Err(_) if matches!(cli.command, Some(cli::Command::Doctor { .. })) => {
+        Err(_) if matches!(cli.command, Some(args::Command::Doctor { .. })) => {
             let (overrides, env_warnings) = build_overrides_lenient(cli, loaded_config)?;
             ctx.warnings.extend(env_warnings);
             Ok(overrides)
@@ -1201,7 +1208,7 @@ fn dispatch_overrides(
     }
 }
 
-fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
+fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
     let mut ctx = detect::detect(dir);
     // A malformed `runner.toml` must not abort the `config` subcommand;
     // `config validate`/`show` exist to inspect and repair exactly that
@@ -1211,7 +1218,7 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     // wrong-typed known field still fails the parse here.
     let loaded_config = match config::load(dir) {
         Ok(loaded) => loaded,
-        Err(_) if matches!(cli.command, Some(cli::Command::Config { .. })) => None,
+        Err(_) if matches!(cli.command, Some(args::Command::Config { .. })) => None,
         Err(e) => return Err(e),
     };
     if let Some(loaded) = &loaded_config {
@@ -1220,14 +1227,14 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
     let mut overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
     // The first point where a resolved root and the inherited marker are both
     // in hand, so it is where the nesting question gets answered.
-    overrides.parent_warned = cmd::parent_warned_about(&ctx.root);
+    overrides.parent_warned = commands::parent_warned_about(&ctx.root);
 
     let result = match cli.command {
-        None => cmd::info(&ctx, &overrides, false).map(|()| 0),
+        None => commands::info(&ctx, &overrides, false).map(|()| 0),
         // `info` is a deprecated alias for `list`. Bare `runner` (the
         // `None` arm above) keeps the dashboard; only the explicit verb
         // is deprecated.
-        Some(cli::Command::Info { json }) => {
+        Some(args::Command::Info { json }) => {
             if overrides.shows_warnings() {
                 eprintln!(
                     "{} `runner info` is deprecated; use `runner list`",
@@ -1246,21 +1253,21 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
                 }
             }
             schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::list(&ctx, &overrides, false, json, None)?;
+            commands::list(&ctx, &overrides, false, json, None)?;
             Ok(0)
         }
-        Some(cli::Command::Run {
+        Some(args::Command::Run {
             task, args, mode, ..
         }) => dispatch_run(&ctx, &overrides, task, args, mode),
-        Some(cli::Command::External(args)) => {
+        Some(args::Command::External(args)) => {
             if args.is_empty() {
-                cmd::info(&ctx, &overrides, false)?;
+                commands::info(&ctx, &overrides, false)?;
                 Ok(0)
             } else {
-                cmd::run(&ctx, &overrides, &args[0], &args[1..], None)
+                commands::run(&ctx, &overrides, &args[0], &args[1..], None)
             }
         }
-        Some(cli::Command::Install {
+        Some(args::Command::Install {
             frozen,
             no_tools,
             tasks,
@@ -1270,41 +1277,41 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }) => dispatch_install(
             &ctx,
             &overrides,
-            cmd::install::InstallFlags { frozen, no_tools },
+            commands::install::InstallFlags { frozen, no_tools },
             mode,
             failure,
             &tasks,
         ),
-        Some(cli::Command::Clean {
+        Some(args::Command::Clean {
             yes,
             include_framework,
         }) => {
-            cmd::clean(&ctx, &overrides, yes, include_framework)?;
+            commands::clean(&ctx, &overrides, yes, include_framework)?;
             Ok(0)
         }
-        Some(cli::Command::List { raw, json, source }) => {
+        Some(args::Command::List { raw, json, source }) => {
             schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::list(&ctx, &overrides, raw, json, source.as_deref())?;
+            commands::list(&ctx, &overrides, raw, json, source.as_deref())?;
             Ok(0)
         }
-        Some(cli::Command::Completions { shell, output }) => {
-            cmd::completions(shell, output.as_deref())?;
+        Some(args::Command::Completions { shell, output }) => {
+            commands::completions(shell, output.as_deref())?;
             Ok(0)
         }
         #[cfg(feature = "man")]
-        Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
-        Some(cli::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
+        Some(args::Command::Man { output }) => dispatch_man(output.as_deref()),
+        Some(args::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
         #[cfg(feature = "lsp")]
-        Some(cli::Command::Lsp) => cmd::lsp::run(), // intercepted pre-detection
-        Some(cli::Command::Doctor { json }) => {
+        Some(args::Command::Lsp) => commands::lsp::run(), // intercepted pre-detection
+        Some(args::Command::Doctor { json }) => {
             schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::doctor(&ctx, &overrides, json)?;
+            commands::doctor(&ctx, &overrides, json)?;
             Ok(0)
         }
-        Some(cli::Command::Config { action }) => cmd::config(dir, action),
-        Some(cli::Command::Why { task, json }) => {
+        Some(args::Command::Config { action }) => commands::config(dir, action),
+        Some(args::Command::Why { task, json }) => {
             schema_version_for_json(json, cli.global.schema_version)?;
-            cmd::why(&ctx, &overrides, &task, json)?;
+            commands::why(&ctx, &overrides, &task, json)?;
             Ok(0)
         }
     };
@@ -1327,14 +1334,14 @@ fn apply_fatal_output_policy(
 #[cfg(feature = "man")]
 fn dispatch_man(output: Option<&Path>) -> Result<i32> {
     match output {
-        Some(dir) => cmd::write_man_pages(dir)?,
-        None => cmd::write_runner_page_to_stdout()?,
+        Some(dir) => commands::write_man_pages(dir)?,
+        None => commands::write_runner_page_to_stdout()?,
     }
     Ok(0)
 }
 
 fn dispatch_schema(all: bool, output: Option<&Path>) -> Result<i32> {
-    cmd::write_schema(all, output)?;
+    commands::write_schema(all, output)?;
     Ok(0)
 }
 
@@ -1355,7 +1362,7 @@ mod tests {
         release_url, requests_version, resolve_project_dir, revision_version, run_alias_in_dir,
         run_in_dir, version_line, version_output, version_request,
     };
-    use crate::cli;
+    use crate::args;
     use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
     use crate::types::{Ecosystem, ProjectContext, Task, TaskSource};
@@ -1949,7 +1956,7 @@ mod tests {
         let cli = parse_cli(["runner", "install", "--frozen"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Install { frozen: true, .. }) => {}
+            Some(args::Command::Install { frozen: true, .. }) => {}
             other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
         }
     }
@@ -1959,7 +1966,7 @@ mod tests {
         let cli = parse_cli(["runner", "install", "-f"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Install { frozen: true, .. }) => {}
+            Some(args::Command::Install { frozen: true, .. }) => {}
             other => panic!("expected Install {{ frozen: true }}, got {other:?}"),
         }
     }
@@ -1971,10 +1978,10 @@ mod tests {
         // Regression for the `trailing_var_arg` consumption bug.
         let cli = parse_cli(["runner", "install", "build", "test", "-K"]).expect("parses");
         match cli.command {
-            Some(cli::Command::Install {
+            Some(args::Command::Install {
                 tasks,
                 failure:
-                    cli::ChainFailureFlags {
+                    args::ChainFailureFlags {
                         kill_on_fail: true, ..
                     },
                 ..
@@ -1990,7 +1997,7 @@ mod tests {
         let cli = parse_cli(["runner", "clean", "-y"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Clean { yes: true, .. }) => {}
+            Some(args::Command::Clean { yes: true, .. }) => {}
             other => panic!("expected Clean {{ yes: true, .. }}, got {other:?}"),
         }
     }
@@ -2000,7 +2007,7 @@ mod tests {
         let cli = parse_cli(["runner", "no-such-builtin"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::External(args)) => {
+            Some(args::Command::External(args)) => {
                 assert_eq!(args, vec!["no-such-builtin"]);
             }
             other => panic!("expected External, got {other:?}"),
@@ -2015,7 +2022,7 @@ mod tests {
         assert_eq!(cli.global.pm_override.as_deref(), Some("pnpm"));
         assert_eq!(cli.global.runner_override.as_deref(), Some("just"));
         match cli.command {
-            Some(cli::Command::Run { task, args, .. }) => {
+            Some(args::Command::Run { task, args, .. }) => {
                 assert_eq!(task.as_deref(), Some("build"));
                 assert!(args.is_empty());
             }
@@ -2130,7 +2137,7 @@ mod tests {
             .expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Completions {
+            Some(args::Command::Completions {
                 shell: None,
                 output: Some(path),
             }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
@@ -2144,7 +2151,7 @@ mod tests {
             parse_cli(["runner", "completions", "-o", "/tmp/runner.zsh"]).expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Completions {
+            Some(args::Command::Completions {
                 shell: None,
                 output: Some(path),
             }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),
@@ -2164,7 +2171,7 @@ mod tests {
         .expect("should parse");
 
         match cli.command {
-            Some(cli::Command::Completions {
+            Some(args::Command::Completions {
                 shell: Some(_),
                 output: Some(path),
             }) => assert_eq!(path, PathBuf::from("/tmp/runner.zsh")),

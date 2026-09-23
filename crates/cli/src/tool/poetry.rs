@@ -50,13 +50,6 @@ fn is_poetry_pyproject(content: &str) -> bool {
     false
 }
 
-/// `poetry install`
-pub(crate) fn install_cmd() -> Command {
-    let mut c = super::program::command("poetry");
-    c.arg("install");
-    c
-}
-
 /// `poetry run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
 pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {

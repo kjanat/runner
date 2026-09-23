@@ -263,18 +263,21 @@ pub struct RunTaskCap {
 }
 
 pub struct ExecCap {
-    pub argv: Template,     // ["exec", Name, Args] or ["x", Name, Args]
-    pub reach: Reach,       // Network for npx, bun x, uvx, deno x; Local for `go run ./...` shapes
+    pub program: Option<&'static str>, // npx is not npm, uvx is not uv
+    pub argv: Template,                // ["exec", Name, Args] or ["x", Name, Args]
+    pub reach: Reach, // Network for npx, bun x, uvx, deno x; Local for `yarn run` shapes
     pub accepts: NameShape, // Bare | PathLike | Versioned, so `go run` only takes module paths
 }
 
 pub struct RunFileCap {
+    pub program: Option<&'static str>,
     pub extensions: &'static [&'static str],
     pub argv: Template,
 }
 
 pub struct TestCap {
-    pub argv: Template,       // ["test", Args]
+    pub program: Option<&'static str>, // npm's test runner is `node --test`
+    pub argv: Template,                // ["test", Args]
     pub discovery: Discovery, /* Tool (the runner finds its own files) | Files { patterns } | Detect(fn) */
 }
 
@@ -298,6 +301,7 @@ pub struct UsageCap {
 pub struct QuietSupport {
     pub levels: [Option<Template>; 4],
     pub stream: Option<Template>,
+    pub limitation: &'static str, // why the ladder stops where it does, for the Clamp
 }
 ```
 
@@ -315,6 +319,8 @@ pub enum Piece {
     Frozen,
     Scripts,
     File,
+    Files, // what Discovery::Files found
+    Op,    // the tool-manager operation
 }
 pub struct Template(pub &'static [Piece]);
 ```
@@ -380,7 +386,7 @@ error. Three tables: `[tools]` for vetoes and tie-breaks, `[tasks]` for
 decoration and composition, `[defaults]` for taste. Four additions the core
 needs that the issue leaves out:
 
-- `fetch = "ask" | "allow" | "never"`, a trust decision.
+- `fetch = "ask" | "allow" | "local"`, a trust decision.
 - `env` at project, tool and task scope.
 - `[tools.<name>].install`, the operations a tool manager runs.
 - `quiet = true` on a task, translated by the provider table, in place of
@@ -390,8 +396,9 @@ needs that the issue leaves out:
 
 ```rust
 pub struct Plan {
-    pub provider: ProviderId,
-    pub argv: Vec<OsString>, // program first, never a shell string
+    pub provider: Option<ProviderId>, // None for a file on disk or a binary on a search path
+    pub found: Option<PathBuf>,       // what the path, file, dep, bins or host rung found
+    pub argv: Vec<OsString>,          // program first, never a shell string
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
     pub path_prepend: Vec<PathBuf>, // empty when trust is Host

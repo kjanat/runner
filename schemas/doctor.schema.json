@@ -582,6 +582,7 @@
         "explain",
         "failure_policy",
         "fallback",
+        "fetch",
         "install_pms",
         "no_warnings",
         "on_collision",
@@ -612,6 +613,14 @@
         },
         "fallback": {
           "$ref": "#/$defs/FallbackPolicy"
+        },
+        "fetch": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "allow",
+            "local"
+          ]
         },
         "install_pms": {
           "type": "array",

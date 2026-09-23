@@ -11,7 +11,7 @@ use std::process::Command;
 /// Fallback when `PATHEXT` is unset: the stock Windows value (from
 /// `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`),
 /// so resolution matches what cmd.exe would do on a vanilla host. Shared
-/// with the bin-dir re-resolution in `cmd::configure_command` so the two
+/// with the bin-dir re-resolution in `commands::configure_command` so the two
 /// fallbacks cannot drift.
 #[cfg(windows)]
 pub(crate) const DEFAULT_PATHEXT: &str =
