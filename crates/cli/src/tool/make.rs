@@ -117,6 +117,33 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
+/// The first forwarded word make would not treat as a variable assignment.
+///
+/// GNU make has no recipe-argument passthrough: a word after the goal is
+/// either one of make's own options or another goal. A variable assignment
+/// is the one form that reaches the recipe, through `$(NAME)`.
+pub(crate) fn first_non_assignment(args: &[String]) -> Option<&str> {
+    args.iter()
+        .map(String::as_str)
+        .find(|arg| !is_assignment(arg))
+}
+
+/// GNU make's command-line assignment grammar: `NAME` followed by `=`,
+/// `:=`, `::=`, `:::=`, `+=`, `?=` or `!=`, where the name is any run of
+/// characters without whitespace, `:`, `#` or `=`.
+fn is_assignment(arg: &str) -> bool {
+    let Some((lhs, _)) = arg.split_once('=') else {
+        return false;
+    };
+    let name = lhs
+        .strip_suffix(['+', '?', '!'])
+        .unwrap_or_else(|| lhs.trim_end_matches(':'));
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.contains([':', '#'])
+        && !name.chars().any(char::is_whitespace)
+}
+
 /// `make [-s] [args...]`, leaving the goal to the Makefile's default.
 pub(crate) fn root_cmd(args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("make");
@@ -264,6 +291,33 @@ mod verbosity_tests {
     fn run_cmd_default_adds_no_verbosity_flag() {
         let v = HostVerbosity::default();
         assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
+    }
+
+    #[test]
+    fn variable_assignments_pass_and_anything_else_is_named() {
+        use super::first_non_assignment;
+        let ok = [String::from("CC=clang"), String::from("ARGS=-run TestFoo")];
+        assert_eq!(first_non_assignment(&ok), None);
+        let flag = [String::from("CC=clang"), String::from("--help")];
+        assert_eq!(first_non_assignment(&flag), Some("--help"));
+        let goal = [String::from("clean")];
+        assert_eq!(first_non_assignment(&goal), Some("clean"));
+        let odd = [String::from("1X=y"), String::from("=y")];
+        assert_eq!(first_non_assignment(&odd), Some("=y"));
+        let forms = [
+            String::from("CFLAGS+=-g"),
+            String::from("CC:=clang"),
+            String::from("V::=1"),
+            String::from("W:::=1"),
+            String::from("DEBUG?=1"),
+            String::from("REV!=git rev-parse HEAD"),
+            String::from("foo-bar=1"),
+        ];
+        assert_eq!(first_non_assignment(&forms), None);
+        let option = [String::from("-j=4")];
+        assert_eq!(first_non_assignment(&option), Some("-j=4"));
+        let spaced = [String::from("A B=1")];
+        assert_eq!(first_non_assignment(&spaced), Some("A B=1"));
     }
 
     #[test]

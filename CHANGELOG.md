@@ -107,6 +107,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- A make target, or a package script that is a bare `make <name>` wrapper,
+  forwards only variable assignments (`NAME=value`, `NAME+=value`, `NAME:=value`
+  and the other GNU make forms), which the recipe reads as `$(NAME)`. Any other
+  word is refused before make runs, naming the word and the two ways to pass
+  it, instead of landing in make's own option parser or becoming a bogus goal
+  (`--help` printed make's help; `-- --help` ran the recipe and then failed on
+  a missing target). `run --help` says so (#128).
+
 - `runner install` in a project with no package manager runs the project's
   own `install` task when one exists, printing the same dispatch line as
   `run install`, instead of failing with `No package manager detected`. This

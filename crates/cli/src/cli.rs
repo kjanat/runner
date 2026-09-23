@@ -1992,6 +1992,7 @@ pub(crate) enum Command {
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: Option<String>,
         /// Arguments forwarded to the task, or extra task names in chain mode.
+        /// A make target accepts only `NAME=value` assignments.
         // In chain mode, chain-failure flags (`-k`) must precede task names;
         // `trailing_var_arg` consumes everything after the first positional.
         #[arg(
@@ -2228,6 +2229,7 @@ pub(crate) struct RunAliasCli {
     pub task: Option<String>,
 
     /// Arguments forwarded to the task, or extra task names in chain mode.
+    /// A make target accepts only `NAME=value` assignments.
     // In chain mode, chain-failure flags (`-k`) must precede task names;
     // `trailing_var_arg` consumes everything after the first positional.
     // That same rule forwards a *trailing* `--help`/`--version` to the task
