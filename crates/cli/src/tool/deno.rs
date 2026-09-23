@@ -245,6 +245,13 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
+/// `deno x npm:<package>/<bin> [args...]`
+pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("deno");
+    c.arg("x").arg(format!("npm:{package}/{bin}")).args(args);
+    c
+}
+
 /// `deno install [--allow-scripts]`
 ///
 /// Deno denies all npm lifecycle scripts by default, so

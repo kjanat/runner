@@ -445,6 +445,9 @@ pub(super) fn resolve_dispatch(
     allow_self_exec: bool,
 ) -> Result<Dispatch> {
     crate::cmd::print_warnings(ctx, overrides, sink.as_deref_mut());
+    if let Some(selected) = dispatch_by_package(ctx, overrides, task, args, sink.as_deref_mut())? {
+        return Ok(selected);
+    }
 
     // Local-file execution short-circuit: a token with an explicit
     // local-path prefix (`./`, `../`, `/`, `\`, `~`, or a Windows drive
@@ -652,6 +655,124 @@ fn spawn_local(
     Dispatch::Spawn(SpawnDispatch::passthrough(command))
 }
 
+/// `--package <package> <bin>`: the binary from the package's own manifest
+/// when it is installed, else the package manager's package-selecting exec.
+/// Nothing else is consulted, so a same-named `.bin` link, a task or a file
+/// cannot stand in for the package the user named. An `npm:` token is
+/// refused with the equivalent form. `None` when no package was selected.
+fn dispatch_by_package(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    bin: &str,
+    args: &[String],
+    mut sink: crate::cmd::WarningSink<'_>,
+) -> Result<Option<Dispatch>> {
+    if let Some(spec) = bin.strip_prefix("npm:") {
+        bail!(
+            "`npm:{spec}` is not a task: name the package with `--package` and the binary as the \
+             task, e.g. `run --package {spec} <bin>`"
+        );
+    }
+    let Some(package) = overrides.package.as_deref() else {
+        return Ok(None);
+    };
+    if let Some(dep) = super::local_dep::try_selected_package(ctx, overrides, package, bin, args)? {
+        print_pm_explain(overrides, &dep.describe);
+        return Ok(Some(spawn_local(ctx, overrides, bin, args, dep.dispatch)));
+    }
+    if let Some(shadow) = project_bin(&ctx.cwd, bin) {
+        bail!(
+            "{package} is not installed, and `{bin}` at {} belongs to another package; a fetched \
+             {package} lacking `{bin}` would fall through to that one, so install {package} to \
+             run its `{bin}`",
+            shadow.display()
+        );
+    }
+
+    let resolved_pm = match overrides.pm.as_ref() {
+        Some(o) if !o.pm.can_dispatch_node_scripts() => {
+            let decision = ResolvedPm {
+                pm: o.pm,
+                via: crate::resolver::ResolutionStep::Override(o.origin.clone()),
+                warnings: Vec::new(),
+            };
+            print_pm_explain(overrides, &decision.describe());
+            Some(o.pm)
+        }
+        _ => match Resolver::new(ctx, overrides).resolve_node_pm() {
+            Ok(decision) => {
+                crate::cmd::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
+                print_pm_explain(overrides, &decision.describe());
+                Some(decision.pm)
+            }
+            Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
+            Err(e) => return Err(e.into()),
+        },
+    };
+    let (label, mut cmd) = match runtime::overridden(overrides) {
+        Some(rt) if runtime::replaces_exec(resolved_pm) => {
+            runtime::exec_package_cmd(rt, package, bin, args)
+        }
+        Some(rt) => {
+            runtime::report_unapplied_exec(overrides, rt, resolved_pm, sink);
+            package_exec_command(ctx, resolved_pm, package, bin, args)?
+        }
+        None => package_exec_command(ctx, resolved_pm, package, bin, args)?,
+    };
+    confirm_fetch(overrides, label, &format!("{package} ({bin})"))?;
+    print_dispatch_arrow(overrides, bin, label, bin, args);
+    crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
+    crate::cmd::configure_task_streams(&mut cmd, overrides, bin);
+    Ok(Some(Dispatch::Spawn(SpawnDispatch::passthrough(cmd))))
+}
+
+/// The package manager's own way of running `bin` from `package` without
+/// installing it into the project.
+fn package_exec_command(
+    ctx: &ProjectContext,
+    resolved_pm: Option<PackageManager>,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<(&'static str, Command)> {
+    let pm = resolved_pm
+        .or_else(|| ctx.package_managers.iter().copied().find(|pm| pm.is_node()))
+        .or_else(|| ctx.package_managers.first().copied());
+    Ok(match pm {
+        Some(PackageManager::Npm) => (
+            "npx --package",
+            tool::npm::exec_package_cmd(package, bin, args),
+        ),
+        Some(PackageManager::Bun) => (
+            "bun x --package",
+            tool::bun::exec_package_cmd(package, bin, args),
+        ),
+        Some(PackageManager::Pnpm) => {
+            ("pnpm dlx", tool::pnpm::exec_package_cmd(package, bin, args))
+        }
+        Some(PackageManager::Yarn) => {
+            match tool::yarn::exec_package_cmd(&ctx.root, package, bin, args) {
+                Some(command) => ("yarn dlx", command),
+                None => bail!(
+                    "{package} is not installed and Yarn 1 has no package-selecting exec; install \
+                     it or pick another package manager with --pm"
+                ),
+            }
+        }
+        Some(PackageManager::Deno) => ("deno x", tool::deno::exec_package_cmd(package, bin, args)),
+        Some(PackageManager::Uv) => ("uvx --from", tool::uv::exec_package_cmd(package, bin, args)),
+        Some(other) => bail!(
+            "{package} is not installed and {} has no package-selecting exec; install it or pick \
+             another package manager with --pm",
+            other.label()
+        ),
+        None => bail!(
+            "{package} is not installed and no package manager was detected to fetch it; pick one \
+             with --pm"
+        ),
+    })
+}
+
 /// The tail of the cascade, reached once the token matched no task, no local
 /// file, and no installed dependency: the `test` shorthand, the project's
 /// bin dirs and `PATH`, then the fetching rungs, `mise exec` ahead of the
@@ -717,6 +838,13 @@ fn dispatch_after_miss(
     crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
     crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
+}
+
+/// `name` in the project's own `node_modules/.bin` dirs alone.
+fn project_bin(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let bins = crate::cmd::node_bin_dirs(dir);
+    let search = std::env::join_paths(bins).ok()?;
+    crate::resolver::probe::probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
 }
 
 /// The project's own bin dirs, then `PATH`. `None` for a token with a path
@@ -1061,8 +1189,8 @@ mod tests {
     use super::{
         Dispatch, SpawnDispatch, build_pm_exec_command, check_make_args, resolve_dispatch,
     };
-    use crate::resolver::{ResolutionOverrides, ResolutionStep, ResolvedPm};
-    use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+    use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolutionStep, ResolvedPm};
+    use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     fn context() -> ProjectContext {
         ProjectContext {
@@ -1557,6 +1685,223 @@ mod tests {
     }
 
     #[test]
+    fn npm_prefixed_tokens_are_refused_with_the_package_form() {
+        let err = resolve_dispatch(
+            &context(),
+            &ResolutionOverrides::default(),
+            "npm:typescript",
+            &[],
+            None,
+            true,
+        )
+        .expect_err("npm: spec is refused");
+        assert!(
+            format!("{err:#}").contains("--package typescript"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_selected_package_runs_its_own_declared_bin() {
+        let dir = crate::tool::test_support::TempDir::new("package-selector");
+        let pkg = dir.path().join("node_modules").join("typescript");
+        let other = dir
+            .path()
+            .join("node_modules")
+            .join("@typescript")
+            .join("native");
+        for (root, name) in [(&pkg, "typescript"), (&other, "@typescript/native")] {
+            std::fs::create_dir_all(root.join("bin")).expect("bin dir");
+            std::fs::write(
+                root.join("package.json"),
+                format!(
+                    r#"{{"name":"{name}","bin":{{"tsc":"bin/tsc","tsserver":"bin/tsserver"}}}}"#
+                ),
+            )
+            .expect("manifest");
+            for bin in ["tsc", "tsserver"] {
+                let file = root.join("bin").join(bin);
+                std::fs::write(&file, "#!/usr/bin/env node\n").expect("bin");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+                        .expect("chmod");
+                }
+            }
+        }
+        let mut ctx = context();
+        ctx.cwd = dir.path().to_path_buf();
+        ctx.root = dir.path().to_path_buf();
+        let overrides = ResolutionOverrides {
+            package: Some("typescript".to_string()),
+            ..ResolutionOverrides::default()
+        };
+
+        let command = expect_command(
+            resolve_dispatch(&ctx, &overrides, "tsc", &[String::from("-v")], None, true)
+                .expect("selected package dispatches"),
+        );
+        let argv: Vec<String> =
+            std::iter::once(command.get_program().to_string_lossy().into_owned())
+                .chain(command_args(&command))
+                .collect();
+        let expected = pkg.join("bin").join("tsc").to_string_lossy().into_owned();
+        assert!(argv.contains(&expected), "{argv:?} should name {expected}");
+        assert_eq!(argv.last().map(String::as_str), Some("-v"));
+
+        let err = resolve_dispatch(&ctx, &overrides, "tsx", &[], None, true)
+            .expect_err("an undeclared bin is refused");
+        assert!(
+            format!("{err:#}").contains("exposes tsc, tsserver"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_missing_selected_package_refuses_a_bin_another_package_installed() {
+        let dir = crate::tool::test_support::TempDir::new("package-selector-shadow");
+        let bin_dir = dir.path().join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        let shadow = bin_dir.join("tsx");
+        std::fs::write(&shadow, "#!/usr/bin/env node\n").expect("bin");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shadow, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        let mut ctx = context();
+        ctx.cwd = dir.path().to_path_buf();
+        ctx.root = dir.path().to_path_buf();
+        ctx.package_managers.push(PackageManager::Npm);
+        let overrides = ResolutionOverrides {
+            package: Some("typescript".to_string()),
+            ..ResolutionOverrides::default()
+        };
+
+        let err = resolve_dispatch(&ctx, &overrides, "tsx", &[], None, true)
+            .expect_err("the fetched package cannot be told apart from the installed bin");
+        assert!(
+            format!("{err:#}").contains("belongs to another package"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_missing_selected_package_honours_the_runtime_override() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Npm);
+        let overrides = ResolutionOverrides {
+            package: Some("typescript".to_string()),
+            runtime: Some(crate::resolver::RuntimeOverride {
+                runtime: JsRuntime::Bun,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        let command = expect_command(
+            resolve_dispatch(&ctx, &overrides, "tsc", &[String::from("-v")], None, true)
+                .expect("the runtime's package exec dispatches"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "bun");
+        assert_eq!(
+            command_args(&command),
+            ["x", "--bun", "--package", "typescript", "tsc", "-v"]
+        );
+    }
+
+    #[test]
+    fn a_missing_selected_package_takes_a_non_node_pm_override() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Cargo);
+        ctx.package_managers.push(PackageManager::Uv);
+        let overrides = ResolutionOverrides {
+            package: Some("ruff".to_string()),
+            pm: Some(crate::resolver::PmOverride {
+                pm: PackageManager::Uv,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &overrides,
+                "ruff",
+                &[String::from("--version")],
+                None,
+                true,
+            )
+            .expect("--pm uv reaches uvx --from"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "uvx");
+        assert_eq!(
+            command_args(&command),
+            ["--from", "ruff", "ruff", "--version"]
+        );
+    }
+
+    #[test]
+    fn a_missing_selected_package_goes_to_the_manager_with_its_name() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Bun);
+        let args = [String::from("-v")];
+        let (label, command) = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Bun),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect("bun has a package-selecting exec");
+        assert_eq!(label, "bun x --package");
+        assert_eq!(
+            command_args(&command),
+            ["x", "--package", "typescript", "tsc", "-v"]
+        );
+
+        let (label, command) = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Npm),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect("npx has --package");
+        assert_eq!(label, "npx --package");
+        assert_eq!(
+            command_args(&command),
+            ["--package", "typescript", "--", "tsc", "-v"]
+        );
+
+        let (_, command) = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Pnpm),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect("pnpm dlx has --package");
+        assert_eq!(
+            command_args(&command),
+            ["--package=typescript", "dlx", "tsc", "-v"]
+        );
+
+        let err = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Cargo),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect_err("cargo cannot select an npm package");
+        assert!(format!("{err:#}").contains("--pm"), "{err:#}");
+    }
+
+    #[test]
     fn run_make_invokes_make_with_no_target() {
         let mut ctx = context();
         ctx.task_runners.push(TaskRunner::Make);
@@ -1585,7 +1930,7 @@ mod tests {
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
                 runner: TaskRunner::Make,
-                origin: crate::resolver::OverrideOrigin::CliFlag,
+                origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
         };
@@ -1606,7 +1951,7 @@ mod tests {
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
                 runner: TaskRunner::Just,
-                origin: crate::resolver::OverrideOrigin::CliFlag,
+                origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
         };

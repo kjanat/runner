@@ -55,6 +55,13 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
+/// `uvx --from <package> <bin> [args...]`
+pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("uvx");
+    c.arg("--from").arg(package).arg(bin).args(args);
+    c
+}
+
 /// `uv run <file> [args...]`, execute a local Python script inside the
 /// project environment. `uv run` accepts a script path directly, syncing
 /// the environment first when needed. Distinct from [`exec_cmd`] (`uvx`),

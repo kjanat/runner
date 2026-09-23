@@ -186,6 +186,7 @@ mod help_order {
     pub(super) const RUNTIME: usize = 102;
     pub(super) const FALLBACK: usize = 103;
     pub(super) const ON_MISMATCH: usize = 104;
+    pub(super) const PACKAGE: usize = 105;
     pub(super) const EXPLAIN: usize = 200;
     pub(super) const NO_WARNINGS: usize = 201;
     pub(super) const QUIET: usize = 202;
@@ -1848,6 +1849,19 @@ pub(crate) struct GlobalOpts {
         display_order = help_order::RUNTIME,
     )]
     pub runtime_override: Option<String>,
+
+    /// Run the task token as the binary this npm package declares, from the
+    /// package's own manifest, never from a same-named `.bin` link another
+    /// package won. A package that is not installed is fetched through the
+    /// package manager's own package-selection form.
+    #[arg(
+        long = "package",
+        global = true,
+        value_name = "NAME",
+        help = "Run <TASK> as the binary npm package <NAME> declares",
+        display_order = help_order::PACKAGE,
+    )]
+    pub package_selection: Option<String>,
 
     /// What to do when no detection signal matches: `probe` (default,
     /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).

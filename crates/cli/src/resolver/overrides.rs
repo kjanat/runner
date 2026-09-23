@@ -49,7 +49,9 @@ impl ResolutionOverrides {
             diagnostics,
             failure,
         };
-        Self::from_sources(env.sources(cli, config))
+        let mut built = Self::from_sources(env.sources(cli, config))?;
+        built.package = overrides.package.map(str::to_owned);
+        Ok(built)
     }
 
     /// Lenient sibling of [`Self::from_cli_and_env`] for commands that
@@ -77,7 +79,9 @@ impl ResolutionOverrides {
             diagnostics,
             failure,
         };
-        Self::from_sources_lenient(env.sources(cli, config))
+        let (mut built, warnings) = Self::from_sources_lenient(env.sources(cli, config))?;
+        built.package = overrides.package.map(str::to_owned);
+        Ok((built, warnings))
     }
 
     /// Pure-function counterpart of [`Self::from_cli_and_env_lenient`]:
@@ -352,6 +356,7 @@ impl ResolutionOverrides {
 
         Ok(Self {
             pm,
+            package: None,
             pm_by_ecosystem,
             runner,
             runtime,

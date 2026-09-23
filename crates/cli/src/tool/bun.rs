@@ -77,6 +77,28 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     exec_cmd_with_runtime(args, false)
 }
 
+/// `bun x --package <package> <bin> [args...]`
+pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
+    exec_package_cmd_with_runtime(package, bin, args, false)
+}
+
+/// `bun x [--bun] --package <package> <bin> [args...]`; `--bun` as in
+/// [`exec_cmd_with_runtime`].
+pub(crate) fn exec_package_cmd_with_runtime(
+    package: &str,
+    bin: &str,
+    args: &[String],
+    force_bun_runtime: bool,
+) -> Command {
+    let mut c = super::program::command("bun");
+    c.arg("x");
+    if force_bun_runtime {
+        c.arg("--bun");
+    }
+    c.arg("--package").arg(package).arg(bin).args(args);
+    c
+}
+
 /// `bun x [--bun] <args...>`
 ///
 /// `--bun` is bun x's counterpart to `bun --bun run`: without it a package whose

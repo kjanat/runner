@@ -73,6 +73,130 @@ pub(super) fn try_installed_package(
     }))
 }
 
+/// `--package <package> <bin>`: the binary `bin` that the installed
+/// `package` declares in its own manifest, so a same-named `.bin` link that
+/// another package won is never consulted.
+///
+/// Returns `Ok(None)` when the package is not installed; the caller then
+/// hands the same selection to the package manager. Everything else that
+/// goes wrong is an error, since the user named the package.
+pub(super) fn try_selected_package(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<Option<ResolvedBin>> {
+    if !is_package_name(package) {
+        bail!("--package takes a package name (`typescript`, `@scope/name`), got {package:?}");
+    }
+    let Some(dir) = installed_dir(&ctx.cwd, package) else {
+        return pnp_selected_package(ctx, overrides, package, bin, args);
+    };
+    let manifest: Manifest = match std::fs::read_to_string(dir.join("package.json")) {
+        Ok(raw) => serde_json::from_str(&raw)?,
+        Err(_) => return Ok(None),
+    };
+    let bin_path = declared_bin(package, bin, &manifest)?;
+    let Some(dispatch) = bare_file_in(ctx, overrides, &dir, &bin_path, args)? else {
+        bail!(
+            "{package} declares `{bin}` at {}, but nothing is there.\nhint: reinstall \
+             dependencies.",
+            dir.join(&bin_path).display(),
+        );
+    };
+    Ok(Some(ResolvedBin {
+        describe: format!("{bin} from {} (package {package})", dir.display()),
+        dispatch,
+    }))
+}
+
+/// [`try_selected_package`] for a Yarn Plug'n'Play install, where a
+/// dependency has no `node_modules` directory: `yarn bin --json` names every
+/// binary and its providing package, and `yarn run <bin>` runs it through
+/// the loader. `Ok(None)` when the project is not Plug'n'Play, yarn is unavailable,
+/// or the package provides no binary at all.
+fn pnp_selected_package(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<Option<ResolvedBin>> {
+    if !crate::tool::yarn::is_pnp(&ctx.root) {
+        return Ok(None);
+    }
+    let Some(bins) = crate::tool::yarn::accessible_bins(&ctx.root) else {
+        return Ok(None);
+    };
+    let Some(found) = pnp_bin(&bins, package, bin)? else {
+        return Ok(None);
+    };
+    let command = crate::tool::yarn::run_cmd(bin, args, overrides.host_verbosity_for(bin));
+    Ok(Some(ResolvedBin {
+        describe: format!("{bin} from {} (package {package}, Plug'n'Play)", found.path),
+        dispatch: LocalDispatch {
+            label: "yarn run".to_string(),
+            command,
+        },
+    }))
+}
+
+/// The binary `package` provides under the name `bin`, from a `yarn bin
+/// --json` listing. `Ok(None)` when the package provides nothing, an error
+/// naming what it does provide when `bin` is not among them.
+fn pnp_bin<'a>(
+    bins: &'a [crate::tool::yarn::AccessibleBin],
+    package: &str,
+    bin: &str,
+) -> Result<Option<&'a crate::tool::yarn::AccessibleBin>> {
+    let provided: Vec<&crate::tool::yarn::AccessibleBin> = bins
+        .iter()
+        .filter(|entry| entry.source == package)
+        .collect();
+    if provided.is_empty() {
+        return Ok(None);
+    }
+    if let Some(found) = provided.iter().find(|entry| entry.name == bin) {
+        return Ok(Some(found));
+    }
+    let mut names: Vec<&str> = provided.iter().map(|entry| entry.name.as_str()).collect();
+    names.sort_unstable();
+    bail!(
+        "{package} declares no `{bin}` binary; it exposes {}",
+        names.join(", ")
+    )
+}
+
+/// The path `package` declares for the binary named `bin`.
+fn declared_bin(package: &str, bin: &str, manifest: &Manifest) -> Result<String> {
+    match &manifest.bin {
+        Some(serde_json::Value::String(path)) => {
+            let declared = manifest
+                .name
+                .as_deref()
+                .map_or_else(|| unscoped(package), unscoped);
+            if declared == bin {
+                Ok(path.clone())
+            } else {
+                bail!("{package} declares one binary, `{declared}`, and no `{bin}`")
+            }
+        }
+        Some(serde_json::Value::Object(map)) if !map.is_empty() => {
+            if let Some(path) = map.get(bin) {
+                return string_path(package, bin, path);
+            }
+            let mut names: Vec<&str> = map.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            bail!(
+                "{package} declares no `{bin}` binary; it exposes {}",
+                names.join(", ")
+            )
+        }
+        _ => bail!("{package} is installed but declares no binary in its package.json"),
+    }
+}
+
 /// Whether `token` can name an npm package: `name` or `@scope/name`, with no
 /// version suffix and no extra path segments. Excludes remote specs the
 /// PM-exec fallback still owns (`typescript@7`, `user/repo#ref`,
@@ -123,7 +247,7 @@ fn select_bin(token: &str, manifest: &Manifest) -> Result<(String, String)> {
                 names.sort_unstable();
                 bail!(
                     "{token} exposes {} binaries ({}); none is named after the package.\nhint: \
-                     run the binary directly, e.g. `runner run {}`.",
+                     pick one with `run --package {token} {}`.",
                     map.len(),
                     names.join(", "),
                     names[0],
@@ -150,10 +274,44 @@ fn unscoped(name: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Manifest, is_package_name, select_bin, unscoped};
+    use super::{Manifest, is_package_name, pnp_bin, select_bin, unscoped};
+    use crate::tool::yarn::AccessibleBin;
 
     fn manifest(json: &str) -> Manifest {
         serde_json::from_str(json).expect("manifest should parse")
+    }
+
+    fn accessible(name: &str, source: &str) -> AccessibleBin {
+        AccessibleBin {
+            name: name.to_string(),
+            source: source.to_string(),
+            path: format!("/repo/.yarn/cache/{source}.zip/{name}"),
+        }
+    }
+
+    #[test]
+    fn pnp_bin_matches_the_providing_package_only() {
+        let bins = [
+            accessible("tsc", "typescript"),
+            accessible("tsserver", "typescript"),
+            accessible("tsx", "tsx"),
+        ];
+
+        let found = pnp_bin(&bins, "typescript", "tsc")
+            .expect("declared")
+            .expect("provided");
+        assert_eq!(found.source, "typescript");
+
+        assert!(
+            pnp_bin(&bins, "esbuild", "esbuild")
+                .expect("no error for an absent package")
+                .is_none()
+        );
+
+        let err = pnp_bin(&bins, "typescript", "tsx").expect_err("tsx belongs to tsx");
+        let text = format!("{err:#}");
+        assert!(text.contains("no `tsx` binary"), "{text}");
+        assert!(text.contains("tsc, tsserver"), "{text}");
     }
 
     #[test]
@@ -230,6 +388,27 @@ mod tests {
             .expect_err("a library has nothing to run");
 
         assert!(format!("{err:#}").contains("declares no binary"));
+    }
+
+    #[test]
+    fn a_selected_package_yields_the_named_bin_or_lists_what_it_has() {
+        use super::declared_bin;
+        let ts =
+            manifest(r#"{"name":"typescript","bin":{"tsc":"bin/tsc","tsserver":"bin/tsserver"}}"#);
+        assert_eq!(
+            declared_bin("typescript", "tsc", &ts).expect("declared"),
+            "bin/tsc"
+        );
+        let err = declared_bin("typescript", "tsx", &ts).expect_err("undeclared");
+        assert!(err.to_string().contains("exposes tsc, tsserver"), "{err}");
+
+        let single = manifest(r#"{"name":"@scope/tool","bin":"cli.js"}"#);
+        assert_eq!(
+            declared_bin("@scope/tool", "tool", &single).expect("declared"),
+            "cli.js"
+        );
+        let err = declared_bin("@scope/tool", "other", &single).expect_err("wrong name");
+        assert!(err.to_string().contains("one binary, `tool`"), "{err}");
     }
 
     #[test]
