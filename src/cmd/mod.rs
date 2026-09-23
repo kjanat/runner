@@ -23,8 +23,7 @@ pub(crate) mod lsp;
 #[cfg(feature = "man")]
 mod man;
 pub(crate) mod run;
-#[cfg(feature = "schema")]
-mod schema;
+pub(crate) mod schema;
 mod why;
 
 pub(crate) use clean::clean;
@@ -37,9 +36,6 @@ pub(crate) use list::list;
 #[cfg(feature = "man")]
 pub(crate) use man::{write_man_pages, write_runner_page_to_stdout};
 pub(crate) use run::run;
-#[cfg(feature = "schema")]
-pub(crate) use schema::config_schema;
-#[cfg(feature = "schema")]
 pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 

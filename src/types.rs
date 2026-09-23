@@ -14,9 +14,7 @@ use std::sync::Arc;
 ///
 /// Variants use `//`, not `///`: a per-variant doc comment defeats
 /// `BTreeMap`'s closed-key-set schema optimization for `Overrides.pm_by_ecosystem`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, schemars::JsonSchema, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Ecosystem {
     // Node.js (npm, yarn, pnpm, bun).
@@ -80,8 +78,7 @@ impl Ecosystem {
 }
 
 /// A dependency manager detected via lockfile or config presence.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum PackageManager {
     /// npm, detected via `package-lock.json`.
@@ -121,8 +118,7 @@ pub(crate) enum PackageManager {
 /// Each variant brings its own script runner, file runner and package-exec
 /// primitive; no package manager is consulted on this path. Set, it also
 /// outranks a local file's `#!` line, which is the case the axis exists for.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum JsRuntime {
     /// Node.js, via `node --run <script>` (Node 22+), `node <file>` and `npx`.
@@ -166,8 +162,7 @@ impl JsRuntime {
 }
 
 /// A task runner detected via config file presence.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum TaskRunner {
     /// Turborepo, detected via `turbo.json` / `turbo.jsonc`.
@@ -182,10 +177,7 @@ pub(crate) enum TaskRunner {
     /// `"task"` (matching [`Self::label`]); `kebab-case` alone would
     /// produce `"go-task"`, the accepted parse *alias*, not the canonical
     /// label.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "go-task, detected via `Taskfile.yml` and variants.")
-    )]
+    #[schemars(description = "go-task, detected via `Taskfile.yml` and variants.")]
     #[serde(rename = "task")]
     GoTask,
     /// mise, detected via `mise.toml` / `.mise.toml`.

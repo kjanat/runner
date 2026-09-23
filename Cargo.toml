@@ -65,7 +65,6 @@ optional = true
 [dependencies.json-schema-sort]
 version          = "0.1"
 default-features = false
-optional         = true
 
 [dependencies.lsp-server]
 version  = "0.8"
@@ -77,7 +76,6 @@ optional = true
 
 [dependencies.schemars]
 version  = "1.2"
-optional = true
 
 [dependencies.serde]
 version  = "1"
@@ -104,11 +102,10 @@ features         = ["parse", "serde"]
 [features]
 default            = ["lsp", "run"]
 # Editor language server (`runner lsp`): hover, completion, and diagnostics for
-# runner.toml. Pulls in `schema` to reuse field docs as the single source of truth.
-lsp                = ["dep:lsp-server", "dep:lsp-types", "schema"]
+# runner.toml.
+lsp                = ["dep:lsp-server", "dep:lsp-types"]
 man                = ["dep:clap_mangen"]
 run                = []
-schema             = ["dep:json-schema-sort", "dep:schemars"]
 # Flip the deno self-exec policy to self-exec-first (default policy is
 # `deno task` when deno is present, self-exec only as fallback). The
 # self-exec engine itself is always compiled in.

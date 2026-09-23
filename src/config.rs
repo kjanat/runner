@@ -74,12 +74,8 @@ pub(crate) struct LoadedConfig {
 }
 
 /// Top-level schema for `runner.toml`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct RunnerConfig {
     /// `[runner]`, independent runner-authored output categories.
     #[serde(default)]
@@ -95,10 +91,9 @@ pub(crate) struct RunnerConfig {
     pub tasks: TasksSection,
     /// `[task_runner]`, task-runner preferences. Deprecated; superseded
     /// by [`Self::tasks`].
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "`[task_runner]`, task-runner preferences. Deprecated; \
-                                superseded by `[tasks]`.")
+    #[schemars(
+        description = "`[task_runner]`, task-runner preferences. Deprecated; superseded by \
+                       `[tasks]`."
     )]
     #[serde(default, rename = "task_runner")]
     pub task_runner: TaskRunnerSection,
@@ -132,12 +127,8 @@ pub(crate) struct RunnerConfig {
 ///
 /// Narrower than `[env]` and wider than a task entry, so a value here reaches
 /// every invocation of that tool and nothing else.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ToolSettings {
     /// Which of the tool's operations `runner install` runs, in order.
     ///
@@ -153,8 +144,7 @@ pub(crate) struct ToolSettings {
 
 /// `[tools.<name>].install` as written: a toggle, one operation name, or an
 /// ordered list. All three normalize to a list via [`ToolInstall::operations`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum ToolInstall {
     /// `install = true` / `install = false`.
@@ -181,12 +171,8 @@ impl ToolInstall {
 /// `[runner]` output categories. An absent field inherits the selected quiet
 /// preset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was
 /// selected for the invocation.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct RunnerOutputSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<bool>,
@@ -206,28 +192,18 @@ pub(crate) struct RunnerOutputSection {
 
 /// `[host]` host-tool output policy. Diagnostics never controls task streams;
 /// adapters clamp unsupported requests to their strongest safe mode.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct HostOutputSection {
     /// `normal`, `quiet`, or `reduced`. Unsupported reductions are safely
     /// clamped by each adapter and reported by `--explain`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["normal", "quiet", "reduced", null]))
-    )]
+    #[schemars(extend("enum" = ["normal", "quiet", "reduced", null]))]
     pub diagnostics: Option<String>,
     /// `inherit` or `stderr`. Per-task stream settings override this global
     /// default; CLI/env still outrank both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "stderr", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "stderr", null]))]
     pub stream: Option<String>,
 }
 
@@ -236,20 +212,13 @@ pub(crate) struct HostOutputSection {
 /// Separate from `[pm]`: the package manager decides who installs and who
 /// invokes the script, the runtime decides what the script and the binaries
 /// it shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct RuntimeSection {
     /// JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the
     /// runtime to the detected package manager, the behaviour before this
     /// key existed.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["node", "bun", "deno", null]))
-    )]
+    #[schemars(extend("enum" = ["node", "bun", "deno", null]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub js: Option<String>,
 }
@@ -261,12 +230,8 @@ pub(crate) struct RuntimeSection {
 /// Unlike `[pm]` (which scopes *script dispatch* per ecosystem), this
 /// scopes the *install fan-out*: in a polyglot repo where both `bun` and
 /// `deno` would write `node_modules`, `pms = ["bun"]` keeps install to bun.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct InstallSection {
     /// Allowlist of package-manager labels to install with, e.g.
     /// `["bun"]`. Each must be a detected PM or `runner install` errors.
@@ -288,10 +253,7 @@ pub(crate) struct InstallSection {
     /// at its default. Overridden by `RUNNER_INSTALL_SCRIPTS`, then the
     /// `--no-scripts` / `--scripts` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["deny", "allow", null]))
-    )]
+    #[schemars(extend("enum" = ["deny", "allow", null]))]
     pub scripts: Option<String>,
 
     /// What to do when two or more package managers in the install set write
@@ -302,10 +264,7 @@ pub(crate) struct InstallSection {
     /// and runs them all, serialized over the shared tree. `"error"` refuses to
     /// pick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["resolve", "error", null]))
-    )]
+    #[schemars(extend("enum" = ["resolve", "error", null]))]
     pub on_collision: Option<String>,
 }
 
@@ -315,22 +274,15 @@ pub(crate) struct InstallSection {
 // distinguish "user explicitly set false" from "user didn't say":
 // env-overrides-config layering means `[chain].keep_going = false` plus
 // `RUNNER_KEEP_GOING=1` resolves to `true`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
-#[cfg_attr(
-    feature = "schema",
-    schemars(extend("not" = {
-        "required": ["keep_going", "kill_on_fail"],
-        "properties": {
-            "keep_going": { "const": true },
-            "kill_on_fail": { "const": true }
-        }
-    }))
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[schemars(extend("not" = {
+    "required": ["keep_going", "kill_on_fail"],
+    "properties": {
+        "keep_going": { "const": true },
+        "kill_on_fail": { "const": true }
+    }
+}))]
 pub(crate) struct ChainSection {
     /// Run every task in the chain to completion regardless of failures.
     /// Mutually exclusive with `kill_on_fail`. Equivalent to `-k` /
@@ -351,12 +303,8 @@ pub(crate) struct ChainSection {
 /// effect under GitHub Actions (gated at the call site by
 /// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 /// changes behavior.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct GitHubSection {
     /// Wrap task output in `runner: <task>` groups under GitHub Actions, and
     /// annotate each failed chain task in the Annotations panel. Defaults to
@@ -364,15 +312,12 @@ pub(crate) struct GitHubSection {
     /// the live `[task]`-prefixed muxer for parallel runs. `--quiet`
     /// suppresses both independently, since workflow commands are written to
     /// stdout and would otherwise reach a caller parsing it.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Wrap task output in `runner: <task>` groups under GitHub Actions, and \
-                           annotate each failed chain task in the Annotations panel. Defaults to \
-                           `true`; set `false` to restore the old undecorated output, including \
-                           the live `[task]`-prefixed muxer for parallel runs. `--quiet` \
-                           suppresses both independently."
-        )
+    #[schemars(
+        description = "Wrap task output in `runner: <task>` groups under GitHub Actions, and \
+                       annotate each failed chain task in the Annotations panel. Defaults to \
+                       `true`; set `false` to restore the old undecorated output, including the \
+                       live `[task]`-prefixed muxer for parallel runs. `--quiet` suppresses both \
+                       independently."
     )]
     #[serde(default = "default_group_output")]
     pub group_output: bool,
@@ -383,14 +328,11 @@ pub(crate) struct GitHubSection {
     /// [`Self::group_output`] is also true. The non-CI equivalent is
     /// `[parallel].grouped` (default `false`), so CI and local diverge unless
     /// you set them to match.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Under GitHub Actions, group parallel (`-p`) output: buffer each task \
-                           and print it as one block on completion instead of interleaving lines \
-                           live. Defaults to `true`, but only when `group_output` is also true. \
-                           The non-CI equivalent is `[parallel].grouped` (default `false`)."
-        )
+    #[schemars(
+        description = "Under GitHub Actions, group parallel (`-p`) output: buffer each task and \
+                       print it as one block on completion instead of interleaving lines live. \
+                       Defaults to `true`, but only when `group_output` is also true. The non-CI \
+                       equivalent is `[parallel].grouped` (default `false`)."
     )]
     #[serde(default = "default_github_group_parallel")]
     pub group_parallel: bool,
@@ -420,12 +362,8 @@ const fn default_github_group_parallel() -> bool {
 /// `[parallel]` section, how parallel (`-p`) chains present their output
 /// **outside** GitHub Actions. (Under GitHub Actions, see
 /// `[github].group_parallel` instead.)
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ParallelSection {
     /// Buffer each parallel task's output and print it as one contiguous
     /// block the moment that task finishes (completion order, first done,
@@ -437,28 +375,18 @@ pub(crate) struct ParallelSection {
 }
 
 /// `[pm]` section, per-ecosystem package manager overrides.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct PmSection {
     /// Package manager used to dispatch Node `package.json` scripts.
     /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))
-    )]
+    #[schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))]
     pub node: Option<String>,
     /// Package manager used for Python ecosystems.
     /// Valid values: `uv`, `poetry`, `pipenv`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))
-    )]
+    #[schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))]
     pub python: Option<String>,
 }
 
@@ -468,12 +396,8 @@ pub(crate) struct PmSection {
 /// keep working (and emit a deprecation warning), but `[tasks].prefer` is the
 /// supported successor, rank-only and able to name package managers, not just
 /// task runners.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields, extend("deprecated" = true))
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields, extend("deprecated" = true))]
 pub(crate) struct TaskRunnerSection {
     /// **Deprecated, use `[tasks].prefer` instead** (rank-only, and accepts
     /// package managers like `bun`, not just task runners). Migration:
@@ -484,7 +408,7 @@ pub(crate) struct TaskRunnerSection {
     /// same-named task under a runner not in the list is hard-rejected.
     /// Valid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "schema", schemars(extend("deprecated" = true)))]
+    #[schemars(extend("deprecated" = true))]
     pub prefer: Vec<String>,
 }
 
@@ -513,8 +437,7 @@ pub(crate) struct TaskRunnerSection {
 // No `schemars(deny_unknown_fields)`: the flattened `tasks` map makes this an
 // open object (task-name keys become `additionalProperties`), which is
 // mutually exclusive with denying unknown fields.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct TasksSection {
     /// Global tie-break order for ambiguous task names, highest priority
     /// first. Listed sources win over unlisted ones (which still run as
@@ -528,14 +451,11 @@ pub(crate) struct TasksSection {
     /// carries the same meaning; both are honored and merged (a task entry wins
     /// on conflict). A pin to a source the task doesn't have falls through to the
     /// normal ranking (no hard error).
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Legacy per-task pins that override `prefer` for specific names: \
-                           `overrides = { dev = \"bun\", build = \"turbo\" }`. Superseded by a \
-                           task entry's `runner` field. A pin to a source the task doesn't have \
-                           falls through to the normal ranking (no hard error)."
-        )
+    #[schemars(
+        description = "Legacy per-task pins that override `prefer` for specific names: `overrides \
+                       = { dev = \"bun\", build = \"turbo\" }`. Superseded by a task entry's \
+                       `runner` field. A pin to a source the task doesn't have falls through to \
+                       the normal ranking (no hard error)."
     )]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, String>,
@@ -577,8 +497,7 @@ impl TasksSection {
 /// task's source/runner pin, e.g. `build = "turbo"`) or a **table** of per-task
 /// settings (`build = { runner = "turbo", verbosity = "quiet" }`, or a
 /// `[tasks.build]` sub-table).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum TaskSpec {
     /// Shorthand: `build = "turbo"` pins the task's source/runner. Equivalent to
@@ -590,12 +509,8 @@ pub(crate) enum TaskSpec {
 
 /// The table form of a [`TaskSpec`]: individual per-task settings, each merged
 /// over the built-in defaults so a partial table only overrides what it names.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct TaskSettings {
     /// Source/runner pin for this task, same meaning as a legacy
     /// [`TasksSection::overrides`] entry (a runner, package manager, or source
@@ -609,17 +524,11 @@ pub(crate) struct TaskSettings {
     pub verbosity: Option<VerbosityConfig>,
     /// Preserve or discard this task's stdout independently of quiet presets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "discard", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "discard", null]))]
     pub stdout: Option<String>,
     /// Preserve or discard this task's stderr independently of quiet presets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "discard", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "discard", null]))]
     pub stderr: Option<String>,
     /// Print this task's dispatch arrow. `false` hides it for this task only;
     /// a quiet preset or `[runner].progress = false` hides it regardless.
@@ -641,8 +550,7 @@ pub(crate) struct TaskSettings {
 /// Verbosity intent as written in config: a bare level name (`verbosity =
 /// "quiet"`) or a `{ level, stream }` table. String-or-table, the same
 /// Cargo-`[dependencies]` shape as [`TaskSpec`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum VerbosityConfig {
     /// `verbosity = "quiet"` — sets the level, leaves stream at its default.
@@ -653,54 +561,34 @@ pub(crate) enum VerbosityConfig {
 
 /// The table form of [`VerbosityConfig`]: the two orthogonal knobs, each
 /// optional so a partial table deep-merges over the inherited default.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct VerbosityTable {
     /// How much of the host's own logging to suppress:
     /// `off` | `quiet` | `very-quiet` | `silent` | `mute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute", null]))
-    )]
+    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute", null]))]
     pub level: Option<String>,
     /// Whether to keep the host's stdout clean by diverting its diagnostics to
     /// stderr: `inherit` | `stderr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "stderr", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "stderr", null]))]
     pub stream: Option<String>,
 }
 
 /// `[resolution]` section, resolver policy knobs.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default), PATH probe in canonical order when no signals
     /// match; `npm`, legacy silent fallback; `error`, refuse to proceed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["probe", "npm", "error", null]))
-    )]
+    #[schemars(extend("enum" = ["probe", "npm", "error", null]))]
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore`, how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["warn", "error", "ignore", null]))
-    )]
+    #[schemars(extend("enum" = ["warn", "error", "ignore", null]))]
     pub on_mismatch: Option<String>,
 }
 
@@ -1494,7 +1382,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "schema")]
     #[test]
     fn known_task_entry_fields_match_schema() {
         // Drift guard: the const field lists `collect_unknown_task_keys` checks
@@ -1698,7 +1585,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "schema")]
     #[test]
     fn known_fields_match_generated_runner_config_schema() {
         // field_template_matches_init_template_sections_and_fields only

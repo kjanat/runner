@@ -2142,7 +2142,6 @@ pub(crate) enum Command {
     },
 
     /// Emit JSON Schemas. Only compiled in with the `schema` cargo feature.
-    #[cfg(feature = "schema")]
     #[command(about = "Emit JSON Schemas")]
     Schema {
         /// Emit every committed schema into the output directory.

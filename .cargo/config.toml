@@ -23,7 +23,7 @@ meta   = "metadata --format-version 1"
 
 # features
 man    = "rq --features man -- man"
-schema = "rq --features schema -- schema"
+schema = "rq -- schema"
 
 # bin commands
 bin-run     = "rq --bin run"

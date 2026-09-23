@@ -376,8 +376,7 @@ const fn merge_task_verbosity(base: TaskVerbosity, overlay: TaskVerbosity) -> Ta
 /// What to do when no signal in steps 2–6 matches.
 ///
 /// Set via `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback`.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum FallbackPolicy {
     /// Walk `$PATH` in canonical order and pick the first installed PM.
@@ -421,8 +420,7 @@ impl FallbackPolicy {
 /// Set via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,
 /// `RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest
 /// first.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ScriptPolicy {
     /// Leave each package manager at its own built-in default: npm,
@@ -474,8 +472,7 @@ impl ScriptPolicy {
 /// the *declared* PM can actually run; this one governs whether the
 /// resolver tolerates the declaration disagreeing with the install
 /// state at all.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum MismatchPolicy {
     /// Emit a `package.json` warning; prefer the declaration (Corepack
@@ -512,8 +509,7 @@ impl MismatchPolicy {
 /// `nodeModulesDir`-enabled Deno both materializing `node_modules/`).
 ///
 /// Set via `[install].on_collision` / `RUNNER_INSTALL_ON_COLLISION`.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CollisionPolicy {
     /// Install with one writer per directory and shadow the rest, the same
