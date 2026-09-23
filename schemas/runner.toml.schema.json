@@ -61,8 +61,7 @@
       "type": "object",
       "properties": {
         "diagnostics": {
-          "description": "`normal`, `quiet`, or `reduced`. Unsupported reductions are safely\nclamped by each adapter and reported by `--explain`.",
-          "default": "normal",
+          "description": "`normal`, `quiet`, or `reduced`. Unsupported reductions are safely\nclamped by each adapter and reported by `--explain`. Absent, each\ntask's `[tasks.<name>].verbosity` decides; any value here, `normal`\nincluded, overrides it.",
           "type": [
             "null",
             "string"

@@ -193,10 +193,11 @@ pub(crate) struct RunnerOutputSection {
 #[schemars(deny_unknown_fields)]
 pub(crate) struct HostOutputSection {
     /// `normal`, `quiet`, or `reduced`. Unsupported reductions are safely
-    /// clamped by each adapter and reported by `--explain`.
+    /// clamped by each adapter and reported by `--explain`. Absent, each
+    /// task's `[tasks.<name>].verbosity` decides; any value here, `normal`
+    /// included, overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("enum" = ["normal", "quiet", "reduced", null]))]
-    #[schemars(extend("default" = crate::tool::HostDiagnostics::default().label()))]
     pub diagnostics: Option<String>,
     /// `inherit` or `stderr`. Per-task stream settings override this global
     /// default; CLI/env still outrank both.
