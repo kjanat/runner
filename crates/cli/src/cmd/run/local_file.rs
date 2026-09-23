@@ -24,6 +24,7 @@
 //!    set, since a shebang-less source file is not a native executable.
 //! 4. **Otherwise** → a clear, actionable error.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -220,7 +221,7 @@ fn build_command(
     // 2. A `#!` shebang names the interpreter explicitly; honor it even
     //    without the executable bit (and on Windows, which has none).
     if let Some(shebang) = shebang {
-        return Ok(shebang_command(&shebang, path, args));
+        return Ok(shebang_command(&shebang, path, &ctx.cwd, args));
     }
 
     // 3. A recognized source extension runs via the project runtime, except
@@ -542,10 +543,55 @@ fn is_env(interpreter: &str) -> bool {
 
 /// Build the command for a shebang-described file: `<interp> [interp-args]
 /// <file> [forwarded-args]`.
-fn shebang_command(shebang: &Shebang, file: &Path, args: &[String]) -> (String, Command) {
+fn shebang_command(
+    shebang: &Shebang,
+    file: &Path,
+    cwd: &Path,
+    args: &[String],
+) -> (String, Command) {
     let mut command = tool::program::command(&shebang.program);
-    command.args(&shebang.args).arg(file).args(args);
+    let file_arg: OsString = if cfg!(windows) && is_posix_shell(shebang) {
+        posix_shell_path(file, cwd).into()
+    } else {
+        file.as_os_str().to_owned()
+    };
+    command.args(&shebang.args).arg(file_arg).args(args);
     (shebang_label(shebang), command)
+}
+
+/// Whether the shebang names a POSIX shell, which reads a backslash as an
+/// escape and so cannot take a native Windows path.
+fn is_posix_shell(shebang: &Shebang) -> bool {
+    let name = Path::new(&shebang.program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shebang.program.as_str());
+    matches!(
+        name,
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "ash" | "fish"
+    )
+}
+
+/// `file` as a POSIX shell on Windows reads it: relative to `cwd` with
+/// forward slashes when it lives under `cwd`, otherwise the `/c/...` form
+/// Git for Windows and MSYS2 give a drive path.
+fn posix_shell_path(file: &Path, cwd: &Path) -> String {
+    let text = file
+        .strip_prefix(cwd)
+        .unwrap_or(file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let bytes = text.as_bytes();
+    match bytes {
+        [drive, b':', b'/', rest @ ..] if drive.is_ascii_alphabetic() => {
+            format!(
+                "/{}/{}",
+                drive.to_ascii_lowercase() as char,
+                String::from_utf8_lossy(rest)
+            )
+        }
+        _ => text,
+    }
 }
 
 /// Short trace label for a shebang interpreter (`deno run`, `python3`, …).
@@ -851,6 +897,49 @@ mod tests {
         let parsed = parse_shebang("#!/bin/sh").expect("shebang should parse");
         assert_eq!(parsed.program, "/bin/sh");
         assert!(parsed.args.is_empty());
+    }
+
+    #[test]
+    fn posix_shell_paths_drop_backslashes_and_drive_letters() {
+        use super::posix_shell_path;
+        let cwd = Path::new("/repo");
+        assert_eq!(
+            posix_shell_path(Path::new("/repo/scripts/cf.sh"), cwd),
+            "scripts/cf.sh"
+        );
+        assert_eq!(
+            posix_shell_path(
+                Path::new(r"C:\Users\me\proj\scripts\cf.sh"),
+                Path::new("/elsewhere")
+            ),
+            "/c/Users/me/proj/scripts/cf.sh"
+        );
+        assert_eq!(
+            posix_shell_path(Path::new(r"scripts\cf.sh"), cwd),
+            "scripts/cf.sh"
+        );
+    }
+
+    #[test]
+    fn posix_shells_are_recognised_by_interpreter_name() {
+        use super::is_posix_shell;
+        for line in [
+            "#!/bin/bash",
+            "#!/usr/bin/env bash",
+            "#!/bin/sh -e",
+            "#!/usr/bin/env zsh",
+        ] {
+            let parsed = parse_shebang(line).expect("shebang should parse");
+            assert!(is_posix_shell(&parsed), "{line}");
+        }
+        for line in [
+            "#!/usr/bin/env python3",
+            "#!/usr/bin/env node",
+            "#!/usr/bin/env -S deno run",
+        ] {
+            let parsed = parse_shebang(line).expect("shebang should parse");
+            assert!(!is_posix_shell(&parsed), "{line}");
+        }
     }
 
     #[test]

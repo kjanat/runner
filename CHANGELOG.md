@@ -107,6 +107,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- On Windows, a file task whose shebang names a POSIX shell (`bash`, `sh`,
+  `zsh`, ...) receives its path in the form that shell reads: relative to the
+  working directory with forward slashes, or `/c/...` for a file elsewhere.
+  Bash used to consume the backslashes of the native path as escapes and
+  report `C:Users...: No such file or directory` (#121).
+
 - `go run` for a `cmd/<name>` task or the Go exec fallback sets
   `GOFLAGS=-buildvcs=true` when the project sits in a checkout Go can read
   (Git, Mercurial, Subversion, Bazaar, Fossil), that tool is on `PATH`, and
