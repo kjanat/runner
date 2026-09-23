@@ -100,6 +100,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `runner doctor` prints the Node signals and the `node scripts` decision
+  only when the project has a Node ecosystem, so a cargo-only workspace no
+  longer shows a PATH probe for four Node package managers and a `?`
+  decision (#122). The JSON report is unchanged. The PATH probe lists one
+  manager per line, with a Volta shim's target on a continuation line, in
+  place of one unbounded line (#110).
+
 - `run <name>` with no matching task now looks for `<name>` in the project's
   own bin dirs and on `PATH` before any rung that can download, so an
   installed `npx` or `make` is no longer wrapped in `npx <name>` (#136). The
