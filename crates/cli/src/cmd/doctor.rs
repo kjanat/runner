@@ -16,7 +16,7 @@ use colored::Colorize;
 use serde_json::{Map, Value};
 
 use crate::cmd::install::InstallPlan;
-use crate::resolver::{ResolutionOverrides, ResolveError};
+use crate::resolver::{ResolutionOverrides, ResolveError, Resolver};
 use crate::schema::Project;
 use crate::schema::doctor::DoctorReport;
 use crate::types::ProjectContext;
@@ -57,6 +57,14 @@ pub(crate) fn doctor(
     print_human(ctx, &report, overrides, plan.as_ref());
 
     Ok(())
+}
+
+/// Whether the human report shows the Node sections: the same predicate
+/// the structured report uses, so a `package.json` whose scripts resolve
+/// without a lockfile-detected package manager still counts.
+fn node_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
+    let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
+    crate::schema::doctor::has_node_context(ctx, &node_pm)
 }
 
 /// Legacy stub retained for the existing tests that exercise
@@ -180,7 +188,12 @@ fn print_human(
         }
     });
 
+    let node_context = node_context(ctx, overrides);
+
     print_section("Signals (Node)", |out| {
+        if !node_context {
+            return;
+        }
         let node = &report["signals"]["node"];
         if let Some(lp) = node["lockfile_pm"].as_str() {
             writeln_field(out, "lockfile pm", lp);
@@ -200,13 +213,12 @@ fn print_human(
         }
         if let Some(probe) = node["path_probe"].as_object() {
             let shims = node["volta_shims"].as_object();
-            let parts: Vec<String> = probe
-                .iter()
-                .map(|(bin, path)| {
-                    format_probe_entry(bin, path.as_str(), shims.and_then(|s| s.get(bin)))
-                })
-                .collect();
-            writeln_field(out, "PATH probe", &parts.join(", "));
+            let _ = writeln!(out, "  {}", "PATH probe".dimmed());
+            for (bin, path) in probe {
+                for line in probe_lines(bin, path.as_str(), shims.and_then(|s| s.get(bin))) {
+                    let _ = writeln!(out, "{line}");
+                }
+            }
         }
     });
 
@@ -215,11 +227,17 @@ fn print_human(
         // `Value` indexing, which yields `Null`). Use `.get` so a
         // `node_pm` decision missing its `via` field renders `?`
         // instead of crashing the renderer.
-        if let Some(pm) = report["decisions"]["node_pm"].as_object() {
+        if let Some(pm) = report["decisions"]["node_pm"]
+            .as_object()
+            .filter(|_| node_context)
+        {
             let via = pm.get("via").and_then(Value::as_str).unwrap_or("?");
             writeln_field(out, "node scripts", via);
         }
-        if let Some(err) = report["decisions"]["node_pm_error"].as_str() {
+        if let Some(err) = report["decisions"]["node_pm_error"]
+            .as_str()
+            .filter(|_| node_context)
+        {
             writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
                 .expect("writeln to String should not fail");
         }
@@ -318,19 +336,20 @@ fn mise_health(ctx: &ProjectContext) -> crate::tool::mise::Health {
     crate::tool::mise::health(&ctx.root)
 }
 
-/// Render one `PATH probe` entry. Four cases:
-/// `npm=not found` (dimmed), `bun=<path>`,
-/// `npm=<shim> -> <real> (volta)` for a provisioned Volta shim, and
-/// `pnpm=<shim> (volta shim, not provisioned)` (dimmed suffix) when
-/// Volta fronts the tool but has no version of it.
-fn format_probe_entry(bin: &str, path: Option<&str>, shim: Option<&Value>) -> String {
+/// The `PATH probe` lines for one manager: its path, or `not found`, on the
+/// first line, and where a Volta shim resolves on a second.
+fn probe_lines(bin: &str, path: Option<&str>, shim: Option<&Value>) -> Vec<String> {
     let Some(path) = path else {
-        return format!("{bin}={}", "not found".dimmed());
+        return vec![format!("    {bin:<18}{}", "not found".dimmed())];
     };
+    let first = format!("    {bin:<18}{path}");
     match shim.map(|s| s["resolved"].as_str()) {
-        Some(Some(real)) => format!("{bin}={path} -> {real} {}", "(volta)".dimmed()),
-        Some(None) => format!("{bin}={path} {}", "(volta shim, not provisioned)".dimmed()),
-        None => format!("{bin}={path}"),
+        Some(Some(real)) => vec![first, format!("{:22}-> {real} {}", "", "(volta)".dimmed())],
+        Some(None) => vec![format!(
+            "{first} {}",
+            "(volta shim, not provisioned)".dimmed()
+        )],
+        None => vec![first],
     }
 }
 
@@ -377,33 +396,35 @@ mod tests {
     }
 
     #[test]
-    fn format_probe_entry_renders_all_four_cases() {
+    fn probe_lines_render_all_four_cases() {
         use serde_json::json;
 
-        use super::format_probe_entry;
+        use super::probe_lines;
 
-        // Strip color control codes by asserting on substrings only.
-        let not_found = format_probe_entry("npm", None, None);
-        assert!(not_found.starts_with("npm="), "{not_found}");
-        assert!(not_found.contains("not found"), "{not_found}");
+        let not_found = probe_lines("npm", None, None);
+        assert_eq!(not_found.len(), 1);
+        assert!(not_found[0].starts_with("    npm"), "{not_found:?}");
+        assert!(not_found[0].contains("not found"), "{not_found:?}");
 
-        let plain = format_probe_entry("bun", Some(r"C:\bun\bun.EXE"), None);
-        assert!(plain.contains(r"bun=C:\bun\bun.EXE"), "{plain}");
-        assert!(!plain.contains("volta"), "{plain}");
+        let plain = probe_lines("bun", Some(r"C:\bun\bun.EXE"), None);
+        assert_eq!(plain, [format!("    {:<18}{}", "bun", r"C:\bun\bun.EXE")]);
 
         let shim = json!({ "resolved": r"C:\Volta\image\npm\11.6.2\npm.cmd" });
-        let resolved = format_probe_entry("npm", Some(r"C:\Volta\npm.EXE"), Some(&shim));
+        let resolved = probe_lines("npm", Some(r"C:\Volta\npm.EXE"), Some(&shim));
+        assert_eq!(resolved.len(), 2, "{resolved:?}");
+        assert!(resolved[0].ends_with(r"C:\Volta\npm.EXE"), "{resolved:?}");
         assert!(
-            resolved.contains(r"npm=C:\Volta\npm.EXE -> C:\Volta\image\npm\11.6.2\npm.cmd"),
-            "{resolved}"
+            resolved[1].contains(r"-> C:\Volta\image\npm\11.6.2\npm.cmd"),
+            "{resolved:?}"
         );
-        assert!(resolved.contains("(volta)"), "{resolved}");
+        assert!(resolved[1].contains("(volta)"), "{resolved:?}");
 
         let phantom = json!({ "resolved": null });
-        let unprovisioned = format_probe_entry("pnpm", Some(r"C:\Volta\pnpm.EXE"), Some(&phantom));
+        let unprovisioned = probe_lines("pnpm", Some(r"C:\Volta\pnpm.EXE"), Some(&phantom));
+        assert_eq!(unprovisioned.len(), 1);
         assert!(
-            unprovisioned.contains("volta shim, not provisioned"),
-            "{unprovisioned}"
+            unprovisioned[0].contains("volta shim, not provisioned"),
+            "{unprovisioned:?}"
         );
     }
 
@@ -455,6 +476,36 @@ mod tests {
         let labels: Vec<&str> = ecos.iter().filter_map(|v| v.as_str()).collect();
         assert!(labels.contains(&"node"));
         assert!(labels.contains(&"rust"));
+    }
+
+    #[test]
+    fn node_context_holds_for_package_json_without_a_lockfile() {
+        use std::fs;
+
+        use crate::detect::detect;
+        use crate::tool::test_support::TempDir;
+
+        let dir = TempDir::new("doctor-node-context");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "build": "tsc" } }"#,
+        )
+        .expect("package.json should be written");
+        let ctx = detect(dir.path());
+        assert!(
+            ctx.package_managers.is_empty(),
+            "precondition: no lockfile-detected package manager"
+        );
+
+        assert!(super::node_context(&ctx, &ResolutionOverrides::default()));
+    }
+
+    #[test]
+    fn node_context_is_absent_without_node_signals() {
+        let mut ctx = context();
+        ctx.package_managers = vec![PackageManager::Cargo];
+
+        assert!(!super::node_context(&ctx, &ResolutionOverrides::default()));
     }
 
     #[test]
