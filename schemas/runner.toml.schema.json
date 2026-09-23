@@ -8,6 +8,7 @@
       "properties": {
         "keep_going": {
           "description": "Run every task in the chain to completion regardless of failures.\nMutually exclusive with `kill_on_fail`. Equivalent to `-k` /\n`RUNNER_KEEP_GOING`.",
+          "default": false,
           "type": [
             "boolean",
             "null"
@@ -15,6 +16,7 @@
         },
         "kill_on_fail": {
           "description": "Parallel only: terminate sibling tasks immediately on first\nfailure (forcible kill, not graceful shutdown, uncatchable on\nUnix). Mutually exclusive with `keep_going`. Equivalent to\n`--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential\ncontexts.",
+          "default": false,
           "type": [
             "boolean",
             "null"
@@ -59,7 +61,7 @@
       "type": "object",
       "properties": {
         "diagnostics": {
-          "description": "`normal`, `quiet`, or `reduced`. Unsupported reductions are safely\nclamped by each adapter and reported by `--explain`.",
+          "description": "`normal`, `quiet`, or `reduced`. Unsupported reductions are safely\nclamped by each adapter and reported by `--explain`. Absent, each\ntask's `[tasks.<name>].verbosity` decides; any value here, `normal`\nincluded, overrides it.",
           "type": [
             "null",
             "string"
@@ -73,6 +75,7 @@
         },
         "stream": {
           "description": "`inherit` or `stderr`. Per-task stream settings override this global\ndefault; CLI/env still outrank both.",
+          "default": "inherit",
           "type": [
             "null",
             "string"
@@ -92,6 +95,7 @@
       "properties": {
         "on_collision": {
           "description": "What to do when two or more package managers in the install set write\nthe same directory (a node PM plus a `nodeModulesDir`-enabled Deno both\nmaterializing `node_modules/`). `\"resolve\"` (the default) installs with\none writer per directory and shadows the rest, the way a duplicate task\nname resolves to one source; listing several writers in `pms` is consent\nand runs them all, serialized over the shared tree. `\"error\"` refuses to\npick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.",
+          "default": "resolve",
           "type": [
             "null",
             "string"
@@ -177,6 +181,7 @@
       "properties": {
         "fallback": {
           "description": "`probe` (default), PATH probe in canonical order when no signals\nmatch; `npm`, legacy silent fallback; `error`, refuse to proceed.",
+          "default": "probe",
           "type": [
             "null",
             "string"
@@ -190,6 +195,7 @@
         },
         "on_mismatch": {
           "description": "`warn` (default), `error`, `ignore`, how to react when declaration\n(manifest field) disagrees with detection (lockfile).",
+          "default": "warn",
           "type": [
             "null",
             "string"
@@ -209,42 +215,49 @@
       "type": "object",
       "properties": {
         "errors": {
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
         "fatal_errors": {
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
         "groups": {
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
         "progress": {
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
         "summary": {
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
         "task_timing": {
+          "default": true,
           "type": [
             "boolean",
             "null"
           ]
         },
         "warnings": {
+          "default": true,
           "type": [
             "boolean",
             "null"

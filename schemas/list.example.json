@@ -162,7 +162,7 @@
     {
       "name": "schema",
       "source": "cargo",
-      "alias_of": "run --quiet --features schema -- schema"
+      "alias_of": "run --quiet -- schema"
     },
     {
       "name": "t",

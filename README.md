@@ -68,7 +68,7 @@ run 0.12.2
   cargo           rq                   run --quiet
   cargo           rr                   run --release
   cargo           runner               run --quiet --bin runner
-  cargo           schema               run --quiet --features schema -- schema
+  cargo           schema               run --quiet -- schema
   cargo           t                    test
 ```
 
@@ -93,7 +93,7 @@ cl            -- → clippy --all-targets --all-features                        
 comp          -- → run --quiet --bin runner -- completions                            rq            -- → run --quiet
 d             -- → doc                                                                rr            -- → run --release
 f             -- → run --quiet --bin run -- --pm npm dprint fmt                       cargo:runner  -- → run --quiet --bin runner
-format        -- → run --quiet --bin run -- --pm npm dprint fmt                       schema        -- → run --quiet --features schema -- schema
+format        -- → run --quiet --bin run -- --pm npm dprint fmt                       schema        -- → run --quiet -- schema
 i             -- → install --path .                                                   t             -- → test
 l             -- → clippy --all-targets --all-features -- -D warnings -D clippy::all
 -- Options --
@@ -523,10 +523,10 @@ use `run install` / `runner run install` to reach a task called `install`.
 ## Configuration
 
 Auto-detection needs no config. To override it per project, drop a
-`runner.toml` at the repo root. Scaffold one with every knob documented:
+`runner.toml` at the repo root. Scaffold one from the schema:
 
 ```sh
-runner config init          # write a commented runner.toml (--force to overwrite)
+runner config init          # write the schema pragma and every default (--force to overwrite)
 runner config show          # print the effective config (--json for machine output)
 runner config validate      # parse + check it; exit 2 on error
 runner config path          # print the resolved runner.toml path

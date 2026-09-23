@@ -86,6 +86,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `runner why` prints a mise task's signature (`lower:leaf <--fn <name>>
   [dir]`) instead of the raw `usage` block.
 
+### Changed
+
+- `runner config init` writes the schema pragma and every default the schema
+  declares, live, and nothing else. The commented scaffold with its prose is
+  gone; the schema is the documentation, on hover through the pragma. The
+  thirteen keys that had an effective default now carry it in the published
+  schema. Unknown-key warnings read the recognised fields from the schema
+  too, so a struct field cannot fall out of step with the loader.
+
+- The `schema` cargo feature is removed. Every build carries schemars, and
+  `cargo schema` needs no flag.
+
 ### Fixed
 
 - `run <name>` with no matching task now looks for `<name>` in the project's

@@ -103,7 +103,6 @@ impl std::error::Error for FatalOutputSuppressed {
 
 /// JSON Schema for `runner.toml`. Built under the `schema` feature;
 /// `runner schema` renders it.
-#[cfg(feature = "schema")]
 #[must_use]
 pub fn config_schema() -> schemars::Schema {
     schemars::schema_for!(config::RunnerConfig)
@@ -1292,7 +1291,6 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }
         #[cfg(feature = "man")]
         Some(cli::Command::Man { output }) => dispatch_man(output.as_deref()),
-        #[cfg(feature = "schema")]
         Some(cli::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
         #[cfg(feature = "lsp")]
         Some(cli::Command::Lsp) => cmd::lsp::run(), // intercepted pre-detection
@@ -1333,7 +1331,6 @@ fn dispatch_man(output: Option<&Path>) -> Result<i32> {
     Ok(0)
 }
 
-#[cfg(feature = "schema")]
 fn dispatch_schema(all: bool, output: Option<&Path>) -> Result<i32> {
     cmd::write_schema(all, output)?;
     Ok(0)

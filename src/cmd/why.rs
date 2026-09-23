@@ -124,8 +124,7 @@ enum PmDecision {
     Python(Result<ResolvedPythonPm, String>),
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(untagged)]
 enum PmResolution {
     Resolved {
@@ -138,8 +137,7 @@ enum PmResolution {
     },
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 struct WhyWarning {
     source: &'static str,
     detail: String,
@@ -147,38 +145,25 @@ struct WhyWarning {
 
 /// The forced JS runtime and whether it reaches the selected task, so a
 /// consumer can reconcile `selected.task.resolved` against the PM block.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct WhyRuntime {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Forced JS runtime label (`node`, `bun`, or `deno`).",
-            extend("enum" = ["node", "bun", "deno"])
-        )
+    #[schemars(
+        description = "Forced JS runtime label (`node`, `bun`, or `deno`).",
+        extend("enum" = ["node", "bun", "deno"])
     )]
     runtime: &'static str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Where the runtime override came from (CLI, env, or config).")
-    )]
+    #[schemars(description = "Where the runtime override came from (CLI, env, or config).")]
     via: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Whether the selected task dispatches on this runtime. Null when no \
-                           task was selected."
-        )
+    #[schemars(
+        description = "Whether the selected task dispatches on this runtime. Null when no task \
+                       was selected."
     )]
     applied: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Why the runtime did not apply, or the lifecycle scripts `node --run` \
-                           will skip."
-        )
+    #[schemars(
+        description = "Why the runtime did not apply, or the lifecycle scripts `node --run` will \
+                       skip."
     )]
     note: Option<String>,
 }
@@ -287,35 +272,19 @@ fn pm_resolution(decision: &PmDecision) -> PmResolution {
 
 /// `runner why --json` payload. Field order mirrors the committed
 /// `schemas/why.example.json`.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 pub(super) struct WhyReport<'a> {
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "URI of the JSON Schema that describes this payload.")
-    )]
+    #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     schema: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Schema contract version for this JSON payload.")
-    )]
+    #[schemars(description = "Schema contract version for this JSON payload.")]
     schema_version: u32,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Payload discriminator; always \"runner.why\".")
-    )]
+    #[schemars(description = "Payload discriminator; always \"runner.why\".")]
     kind: &'static str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Project root the query ran against.")
-    )]
+    #[schemars(description = "Project root the query ran against.")]
     root: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "The task selector as the user typed it.")
-    )]
+    #[schemars(description = "The task selector as the user typed it.")]
     query: &'a str,
     pm_resolution: Option<PmResolution>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -326,18 +295,14 @@ pub(super) struct WhyReport<'a> {
     decision: WhyDecision,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "serialized independent output axes"
 )]
 struct WhyOutput {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))
-    )]
+    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
     level: &'static str,
     progress: bool,
     warnings: bool,
@@ -346,165 +311,100 @@ struct WhyOutput {
     task_timing: bool,
     summary: bool,
     fatal_errors: bool,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["normal", "quiet", "reduced"]))
-    )]
+    #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
     host_diagnostics: &'static str,
-    #[cfg_attr(feature = "schema", schemars(extend("enum" = ["inherit", "stderr"])))]
+    #[schemars(extend("enum" = ["inherit", "stderr"]))]
     host_stream: &'static str,
     task_stdout: &'static str,
     task_stderr: &'static str,
 }
 
 /// One candidate: the task's identity plus how it matched the query.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct WhyCandidate<'a> {
     task: WhyTask<'a>,
     #[serde(rename = "match")]
     matched: WhyMatch<'a>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct WhyTask<'a> {
     name: &'a str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps \
-                           a task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is \
-                           `root` until workspace-member scoping lands."
-        )
+    #[schemars(
+        description = "Stable task identity: `<scope>:<kind>#<name>`. The `#` boundary keeps a \
+                       task name containing `:` (e.g. `fmt:update`) unambiguous. Scope is `root` \
+                       until workspace-member scoping lands."
     )]
     fqn: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
-        )
+    #[schemars(
+        description = "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
     )]
     provider: &'static str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Task mechanism label (structured source label, e.g. `cargo-alias`)."
-        )
-    )]
+    #[schemars(description = "Task mechanism label (structured source label, e.g. `cargo-alias`).")]
     kind: &'static str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Config file the task was extracted from, when resolvable.")
-    )]
+    #[schemars(description = "Config file the task was extracted from, when resolvable.")]
     source: Option<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Locator inside the source file: a key path for structured configs \
-                           (`alias.t`, `scripts.test`), the target/recipe name for flat files."
-        )
+    #[schemars(
+        description = "Locator inside the source file: a key path for structured configs \
+                       (`alias.t`, `scripts.test`), the target/recipe name for flat files."
     )]
     source_pointer: Option<String>,
     description: Option<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Names of sibling alias tasks that resolve to this task.")
-    )]
+    #[schemars(description = "Names of sibling alias tasks that resolve to this task.")]
     aliases: Vec<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Raw definition target: alias expansion or tool-specific run target."
-        )
+    #[schemars(
+        description = "Raw definition target: alias expansion or tool-specific run target."
     )]
     definition: Option<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Effective command preview. Null when it depends on a PM resolution \
-                           that was not performed for this candidate."
-        )
+    #[schemars(
+        description = "Effective command preview. Null when it depends on a PM resolution that \
+                       was not performed for this candidate."
     )]
     resolved: Option<String>,
     cwd: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Tasks that run before this one, as the source declares them. Filled \
-                           from `mise tasks --json`; empty for sources without dependency edges."
-        )
+    #[schemars(
+        description = "Tasks that run before this one, as the source declares them. Filled from \
+                       `mise tasks --json`; empty for sources without dependency edges."
     )]
     dependencies: Vec<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Tasks the source runs after this one.")
-    )]
+    #[schemars(description = "Tasks the source runs after this one.")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     depends_post: Vec<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Tasks this one waits for when they are already scheduled.")
-    )]
+    #[schemars(description = "Tasks this one waits for when they are already scheduled.")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     wait_for: Vec<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "`KEY=VALUE` pairs the source sets for the task.")
-    )]
+    #[schemars(description = "`KEY=VALUE` pairs the source sets for the task.")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     env: Vec<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Argument and flag spec in the source's own language (mise: usage KDL)."
-        )
+    #[schemars(
+        description = "Argument and flag spec in the source's own language (mise: usage KDL)."
     )]
     #[serde(skip_serializing_if = "Option::is_none")]
     usage: Option<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Tool version pins the task declares, as `tool@version`.")
-    )]
+    #[schemars(description = "Tool version pins the task declares, as `tool@version`.")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Input globs the source declares for up-to-date checks.")
-    )]
+    #[schemars(description = "Input globs the source declares for up-to-date checks.")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     sources: Vec<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Output globs the source declares for up-to-date checks.")
-    )]
+    #[schemars(description = "Output globs the source declares for up-to-date checks.")]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     outputs: Vec<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Script file backing the task.")
-    )]
+    #[schemars(description = "Script file backing the task.")]
     #[serde(skip_serializing_if = "Option::is_none")]
     file: Option<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Timeout in the source's own duration syntax.")
-    )]
+    #[schemars(description = "Timeout in the source's own duration syntax.")]
     #[serde(skip_serializing_if = "Option::is_none")]
     timeout: Option<&'a str>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct WhyMatch<'a> {
     selector: &'a str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "How the selector matched. `why` matches exact names only today.")
-    )]
+    #[schemars(description = "How the selector matched. `why` matches exact names only today.")]
     matched_by: &'static str,
     depth: Option<usize>,
     display_order: u8,
@@ -513,14 +413,12 @@ struct WhyMatch<'a> {
     passthrough_to: Option<&'static str>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct WhyDecision {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Selection branch taken: `single-candidate`, `ranked`, \
-                                `filtered`, `ambiguous`, or `exec-fallback`.")
+    #[schemars(
+        description = "Selection branch taken: `single-candidate`, `ranked`, `filtered`, \
+                       `ambiguous`, or `exec-fallback`."
     )]
     strategy: &'static str,
     reason: String,

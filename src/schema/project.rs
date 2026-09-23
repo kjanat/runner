@@ -16,22 +16,15 @@ use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource,
 
 /// The canonical machine-readable view of a project, used by every `--json` surface. Field order is
 /// preserved by `serde_json` so consumers can hand-write `jq` queries without sort surprises.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct Project<'a> {
     /// URI of the JSON Schema that describes this payload.
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "URI of the JSON Schema that describes this payload.")
-    )]
+    #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     pub schema: String,
     /// Increments on any breaking change to this schema.
     /// Consumers should reject anything they weren't built for.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Schema contract version for this JSON payload.")
-    )]
+    #[schemars(description = "Schema contract version for this JSON payload.")]
     pub schema_version: u32,
     /// Absolute path of the project root the report describes.
     pub root: String,
@@ -160,22 +153,15 @@ impl<'a> Project<'a> {
 }
 
 /// `list --json` projection. Same `schema_version` as [`Project`] so consumers can branch on it.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct TaskListView<'a> {
     /// URI of the JSON Schema that describes this payload.
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "URI of the JSON Schema that describes this payload.")
-    )]
+    #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     pub schema: String,
     /// Identical to [`Project::schema_version`]; consumers can branch on the
     /// unified output contract version.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Schema contract version for this JSON payload.")
-    )]
+    #[schemars(description = "Schema contract version for this JSON payload.")]
     pub schema_version: u32,
     /// Project root.
     pub root: String,
@@ -184,8 +170,7 @@ pub(crate) struct TaskListView<'a> {
 }
 
 /// Detection results, what the file scan found, before any resolver policy was applied.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct Detected<'a> {
     /// Detected package managers, in detection-priority order.
     pub package_managers: Vec<&'static str>,
@@ -220,11 +205,8 @@ impl<'a> Detected<'a> {
 }
 
 /// Workspace declarations and members projected into the JSON shape.
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[derive(Debug, Serialize)]
 pub(crate) struct WorkspaceInfo<'a> {
     /// Absolute directory holding the declarations.
@@ -260,11 +242,8 @@ impl<'a> WorkspaceInfo<'a> {
 }
 
 /// One workspace member.
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 #[derive(Debug, Serialize)]
 pub(crate) struct WorkspaceMemberInfo<'a> {
     /// Manifest name, or the directory name when the manifest declares none.
@@ -276,8 +255,7 @@ pub(crate) struct WorkspaceMemberInfo<'a> {
 }
 
 /// Node version declaration plus the file it came from.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct NodeVersionInfo<'a> {
     /// Version string as written (e.g. `"20.11.0"`, `">=18"`).
     pub expected: &'a str,
@@ -287,8 +265,7 @@ pub(crate) struct NodeVersionInfo<'a> {
 
 /// Materialised override stack, the inputs that fed into resolver
 /// decisions.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct OverridesView {
     /// Cross-ecosystem PM override from `--pm` / `RUNNER_PM`.
     pub pm: Option<PmOverrideInfo>,
@@ -340,8 +317,7 @@ impl OverridesView {
 }
 
 /// PM override + provenance.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct PmOverrideInfo {
     /// The chosen PM label.
     pub pm: &'static str,
@@ -350,8 +326,7 @@ pub(crate) struct PmOverrideInfo {
 }
 
 /// Task-runner override + provenance.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct RunnerOverrideInfo {
     /// The chosen runner label.
     pub runner: &'static str,
@@ -360,8 +335,7 @@ pub(crate) struct RunnerOverrideInfo {
 }
 
 /// Per-ecosystem signals, what the resolver had to work with.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct Signals {
     /// Node-ecosystem signals. The schema is intentionally node-flat today; other ecosystems get
     /// peer fields as their resolver paths land.
@@ -369,8 +343,7 @@ pub(crate) struct Signals {
 }
 
 /// Node-ecosystem detection signals: lockfile, manifest, PATH probe.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct NodeSignals {
     /// PM inferred from the highest-priority lockfile, if any.
     pub lockfile_pm: Option<&'static str>,
@@ -385,8 +358,7 @@ pub(crate) struct NodeSignals {
 }
 
 /// What `volta which` said about one shimmed tool.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct VoltaShimInfo {
     /// Real provisioned binary behind the shim; `null` when Volta has no version of the tool ("not provisioned").
     /// Shims Volta could not classify at all are omitted from the map instead of guessed.
@@ -394,8 +366,7 @@ pub(crate) struct VoltaShimInfo {
 }
 
 /// Manifest-level PM declaration plus the field it came from.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct ManifestPm {
     /// Declared PM label.
     pub pm: &'static str,
@@ -408,8 +379,7 @@ pub(crate) struct ManifestPm {
 }
 
 /// Resolver verdict surface. Mirrors the resolver's `Result` so consumers can branch on the variant before reading the inner shape.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct Decisions {
     /// Node script-dispatch PM decision, or an error message when the resolver bailed.
     pub node_pm: NodePmDecision,
@@ -418,8 +388,7 @@ pub(crate) struct Decisions {
 /// Either a resolved Node PM or the diagnostic string for the failure that prevented one.
 ///
 /// Untagged so consumers can probe via "is the `pm` field present?".
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(untagged)]
 pub(crate) enum NodePmDecision {
     /// Successful resolution.
@@ -437,8 +406,7 @@ pub(crate) enum NodePmDecision {
 }
 
 /// Task entry projected into the JSON shape.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
@@ -469,8 +437,7 @@ pub(crate) struct TaskInfo<'a> {
 
 /// Warning projected into the JSON shape. The `source`/`detail` split is kept stable from the
 /// pre-A4 flat-struct days so existing consumers (the `doctor` test suite, ad-hoc `jq` queries) keep working.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct WarningInfo {
     /// Subsystem the warning came from (e.g. `"package.json"`).
     pub source: &'static str,

@@ -46,25 +46,15 @@ use crate::types::{
 };
 
 /// `runner doctor --json` payload.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct DoctorReport<'a> {
     #[serde(rename = "$schema")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "URI of the JSON Schema that describes this payload.")
-    )]
+    #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     schema: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Schema contract version for this JSON payload.")
-    )]
+    #[schemars(description = "Schema contract version for this JSON payload.")]
     schema_version: u32,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Payload discriminator; always \"runner.doctor\".")
-    )]
+    #[schemars(description = "Payload discriminator; always \"runner.doctor\".")]
     kind: &'static str,
     invocation: Invocation,
     environment: Environment,
@@ -81,9 +71,8 @@ pub(crate) struct DoctorReport<'a> {
 }
 
 /// The variable *names* each env layer sets. Values never appear here.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct EnvNames {
     project: Vec<String>,
     tool: BTreeMap<String, Vec<String>>,
@@ -91,23 +80,18 @@ struct EnvNames {
 }
 
 /// How this report came to be: the exact process invocation.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct Invocation {
     argv: Vec<String>,
     cwd: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "UTC RFC 3339 timestamp of report generation.")
-    )]
+    #[schemars(description = "UTC RFC 3339 timestamp of report generation.")]
     started_at: String,
 }
 
 /// Host facts that influence probing and dispatch.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct Environment {
     arch: &'static str,
     os: &'static str,
@@ -116,9 +100,8 @@ struct Environment {
 }
 
 /// The reporting binary's own identity and contract versions.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct RunnerInfo {
     binary: String,
     name: String,
@@ -127,9 +110,8 @@ struct RunnerInfo {
 }
 
 /// Latest schema version each `--json` surface speaks.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct SchemaVersions {
     doctor: u32,
     list: u32,
@@ -137,27 +119,20 @@ struct SchemaVersions {
 }
 
 /// Project anchoring facts.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct ProjectInfo<'a> {
     monorepo: bool,
     root: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "What anchored root detection: the root itself (cwd or --dir), or \
-                           `workspace root of member <name>` when the invocation directory sits \
-                           inside a workspace member."
-        )
+    #[schemars(
+        description = "What anchored root detection: the root itself (cwd or --dir), or \
+                       `workspace root of member <name>` when the invocation directory sits \
+                       inside a workspace member."
     )]
     root_source: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Workspace declarations at the root and their members; null when the \
-                           root declares no workspace."
-        )
+    #[schemars(
+        description = "Workspace declarations at the root and their members; null when the root \
+                       declares no workspace."
     )]
     workspace: Option<super::project::WorkspaceInfo<'a>>,
 }
@@ -171,9 +146,8 @@ struct ProjectInfo<'a> {
 // report. `every_resolution_overrides_field_is_reported_or_excluded` (bottom of
 // this file) fails the build if a new field misses both this struct and that
 // exclusion list.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct Overrides {
     explain: bool,
     fallback: FallbackPolicy,
@@ -192,37 +166,27 @@ struct Overrides {
     runner: Option<TaskRunner>,
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Variable names each `env` layer sets, narrowest last. Values are \
-                           withheld: this payload is meant to be pasted into a bug report."
-        )
+    #[schemars(
+        description = "Variable names each `env` layer sets, narrowest last. Values are withheld: \
+                       this payload is meant to be pasted into a bug report."
     )]
     env: EnvNames,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "`[tools.<name>].install`, the operations `runner install` runs for \
-                           each tool, in order."
-        )
+    #[schemars(
+        description = "`[tools.<name>].install`, the operations `runner install` runs for each \
+                       tool, in order."
     )]
     tool_install: BTreeMap<String, Vec<String>>,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "serialized independent output axes"
 )]
 struct OutputPolicyReport {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))
-    )]
+    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
     level: &'static str,
     progress: bool,
     warnings: bool,
@@ -231,27 +195,20 @@ struct OutputPolicyReport {
     task_timing: bool,
     summary: bool,
     fatal_errors: bool,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["normal", "quiet", "reduced"]))
-    )]
+    #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
     host_diagnostics: &'static str,
-    #[cfg_attr(feature = "schema", schemars(extend("enum" = ["inherit", "stderr"])))]
+    #[schemars(extend("enum" = ["inherit", "stderr"]))]
     host_stream: &'static str,
 }
 
 /// The three grouping toggles bundled so [`Overrides`] doesn't tip
 /// clippy's bool-count lint; each mirrors a same-named field on
 /// [`ResolutionOverrides`].
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    schemars(
-        deny_unknown_fields,
-        description = "Whether task output is grouped into collapsible blocks, under GitHub \
-                       Actions and elsewhere."
-    )
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(
+    deny_unknown_fields,
+    description = "Whether task output is grouped into collapsible blocks, under GitHub Actions \
+                   and elsewhere."
 )]
 struct OutputGrouping {
     /// Broad GitHub Actions grouping switch (`[github].group_output`).
@@ -265,27 +222,22 @@ struct OutputGrouping {
 }
 
 /// One detected ecosystem and the PM decision made for it.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct EcosystemEntry {
     decision: EcosystemDecision,
     name: &'static str,
     root: String,
     selected_package_manager: Option<&'static str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Detection evidence. Node carries the full signal set \
-                                (lockfile/manifest/PATH probe/shim classification, keyed by \
-                                tool with the shim manager as data); other ecosystems list \
-                                their detected package managers.")
-    )]
+    #[schemars(description = "Detection evidence. Node carries the full signal set \
+                              (lockfile/manifest/PATH probe/shim classification, keyed by tool \
+                              with the shim manager as data); other ecosystems list their \
+                              detected package managers.")]
     signals: serde_json::Value,
 }
 
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct EcosystemDecision {
     confidence: Confidence,
     reason: String,
@@ -293,8 +245,7 @@ struct EcosystemDecision {
 }
 
 /// How sure the resolver is about an ecosystem's PM selection.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Confidence {
     /// Explicit signal: override, manifest declaration, or lockfile.
@@ -308,94 +259,63 @@ enum Confidence {
 }
 
 /// One task-source config file as a first-class object.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct SourceEntry<'a> {
     exists: bool,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Stable source identity: `src:<scope>:<kind>`.")
-    )]
+    #[schemars(description = "Stable source identity: `src:<scope>:<kind>`.")]
     id: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Structured source label (same convention as `why`).")
-    )]
+    #[schemars(description = "Structured source label (same convention as `why`).")]
     kind: &'static str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Workspace member identity (`name`, `path`) for member sources; null \
-                           for root sources."
-        )
+    #[schemars(
+        description = "Workspace member identity (`name`, `path`) for member sources; null for \
+                       root sources."
     )]
     package: Option<serde_json::Value>,
     path: String,
     relpath: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "`root`, or the workspace member name the source belongs to.")
-    )]
+    #[schemars(description = "`root`, or the workspace member name the source belongs to.")]
     scope: &'a str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Key of the container holding tasks inside the file (`scripts`, \
-                           `tasks`, `alias`, …); null for flat-format files."
-        )
+    #[schemars(
+        description = "Key of the container holding tasks inside the file (`scripts`, `tasks`, \
+                       `alias`, …); null for flat-format files."
     )]
     task_pointer: Option<&'static str>,
 }
 
 /// One task in the doctor inventory. Same identity scheme as `why`
 /// (`fqn`, `source_pointer`, `aliases`, `definition`, `resolved`).
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct DoctorTask<'a> {
     aliases: Vec<&'a str>,
     cwd: String,
     definition: Option<&'a str>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Tasks that run before this one, as the source declares them. Filled \
-                           from `mise tasks --json`; empty for sources without dependency edges."
-        )
+    #[schemars(
+        description = "Tasks that run before this one, as the source declares them. Filled from \
+                       `mise tasks --json`; empty for sources without dependency edges."
     )]
     dependencies: Vec<&'a str>,
     description: Option<&'a str>,
     fqn: String,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "True when this task is an alias for another target; \
-                                `definition` holds the target it expands to (e.g. cargo `b` → \
-                                `build`).")
+    #[schemars(
+        description = "True when this task is an alias for another target; `definition` holds the \
+                       target it expands to (e.g. cargo `b` → `build`)."
     )]
     is_alias: bool,
     name: &'a str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Effective command preview. Null when it depends on a PM resolution \
-                           that failed."
-        )
+    #[schemars(
+        description = "Effective command preview. Null when it depends on a PM resolution that \
+                       failed."
     )]
     resolved: Option<String>,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "`root`, or the workspace member name the task belongs to.")
-    )]
+    #[schemars(description = "`root`, or the workspace member name the task belongs to.")]
     scope: &'a str,
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "True when runner can run this task without its source's primary tool. \
-                           Only deno tasks runner can execute via the embedded task shell (leaf \
-                           command, no `dependencies`, no `deno` invocation) qualify today; all \
-                           other sources are false."
-        )
+    #[schemars(
+        description = "True when runner can run this task without its source's primary tool. Only \
+                       deno tasks runner can execute via the embedded task shell (leaf command, \
+                       no `dependencies`, no `deno` invocation) qualify today; all other sources \
+                       are false."
     )]
     self_executable: bool,
     source: Option<String>,
@@ -404,8 +324,7 @@ struct DoctorTask<'a> {
 
 /// What kind of thing a probed tool is. The draft's `binary` /
 /// `package-binary` kinds join when something probes them.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
 enum DependencyKind {
     Runtime,
@@ -424,14 +343,10 @@ impl DependencyKind {
 }
 
 /// One PATH-probed tool the project relies on.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct Tool {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Stable tool identity: `tool:<kind>:<name>`.")
-    )]
+    #[schemars(description = "Stable tool identity: `tool:<kind>:<name>`.")]
     id: String,
     kind: DependencyKind,
     name: &'static str,
@@ -440,18 +355,16 @@ struct Tool {
 }
 
 /// PATH-probe outcome, tagged by `status`.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[schemars(deny_unknown_fields)]
 enum ToolProbe {
     Found {
         path: String,
-        #[cfg_attr(
-            feature = "schema",
-            schemars(description = "Resolved version: taken from detection when known, \
-                                    otherwise read by running `<binary> --version`. Null when \
-                                    the binary reports no parseable version.")
+        #[schemars(
+            description = "Resolved version: taken from detection when known, otherwise read by \
+                           running `<binary> --version`. Null when the binary reports no \
+                           parseable version."
         )]
         version: Option<String>,
     },
@@ -459,25 +372,21 @@ enum ToolProbe {
 }
 
 /// A task-name or install-directory conflict, tagged by `kind`.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(tag = "kind")]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[schemars(deny_unknown_fields)]
 enum Conflict {
     /// A task name claimed by more than one source: which task wins and which
     /// fully-qualified task names are shadowed.
     #[serde(rename = "duplicate-task-name")]
     DuplicateTaskName {
         reason: String,
-        #[cfg_attr(feature = "schema", schemars(description = "FQN of the winning task."))]
+        #[schemars(description = "FQN of the winning task.")]
         selected: String,
-        #[cfg_attr(feature = "schema", schemars(description = "Conflicting task name."))]
+        #[schemars(description = "Conflicting task name.")]
         selector: String,
         severity: Severity,
-        #[cfg_attr(
-            feature = "schema",
-            schemars(description = "FQNs of the shadowed tasks.")
-        )]
+        #[schemars(description = "FQNs of the shadowed tasks.")]
         shadowed: Vec<String>,
     },
     /// Package managers that write the same installation directory: which
@@ -485,29 +394,19 @@ enum Conflict {
     #[serde(rename = "install-dir-collision")]
     InstallDirCollision {
         reason: String,
-        #[cfg_attr(
-            feature = "schema",
-            schemars(description = "Label of the selected package manager.")
-        )]
+        #[schemars(description = "Label of the selected package manager.")]
         selected: String,
-        #[cfg_attr(
-            feature = "schema",
-            schemars(description = "Path of the conflicting installation directory.")
-        )]
+        #[schemars(description = "Path of the conflicting installation directory.")]
         selector: String,
         severity: Severity,
-        #[cfg_attr(
-            feature = "schema",
-            schemars(description = "Labels of the shadowed package managers.")
-        )]
+        #[schemars(description = "Labels of the shadowed package managers.")]
         shadowed: Vec<String>,
     },
 }
 
 /// Severity of a conflict or diagnostic. The draft's `debug`/`error`
 /// levels join when something emits them.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum Severity {
     Info,
@@ -516,14 +415,10 @@ enum Severity {
 
 /// One detection/resolution diagnostic, flattened from the warning
 /// streams.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct Diagnostic {
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "Stable warning category (the warning's source subsystem).")
-    )]
+    #[schemars(description = "Stable warning category (the warning's source subsystem).")]
     code: &'static str,
     message: String,
     severity: Severity,
@@ -533,9 +428,8 @@ struct Diagnostic {
 
 /// Self-description of the task-selection policy, so consumers don't
 /// hardcode runner's precedence rules.
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[derive(Debug, Serialize)]
-#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
 struct ResolutionPolicy {
     fqn_policy: &'static str,
     precedence: Vec<&'static str>,
@@ -1666,7 +1560,6 @@ mod tests {
     /// `parallel_grouped` nest under `output_grouping`
     /// (`struct_excessive_bools`). `RENAMED`/the `output_grouping` unnest
     /// below account for both.
-    #[cfg(feature = "schema")]
     #[test]
     fn every_resolution_overrides_field_is_reported_or_excluded() {
         // Internal runner-to-runner plumbing (inherited env markers),
@@ -1777,7 +1670,6 @@ mod tests {
     /// The closed key set depends on `Ecosystem` variants carrying no doc
     /// comments (see `src/types.rs`); a `///` there silently reverts the
     /// map to open `additionalProperties`. This pins the shape.
-    #[cfg(feature = "schema")]
     #[test]
     fn pm_by_ecosystem_schema_keys_stay_closed() {
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))

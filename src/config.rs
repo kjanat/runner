@@ -27,10 +27,9 @@
 //! `additionalProperties: false` (via `schemars(deny_unknown_fields)`), so
 //! editors flag typos inline even though the runtime tolerates them.
 //!
-//! Adding a new knob is three changes: a field on the matching section, a
-//! row in [`FIELD_TEMPLATE`], and a consumer in `crate::resolver`. The row
-//! is what makes the key recognized, scaffolded into `runner.toml`, and
-//! documented; a field without one fails the build.
+//! Adding a new knob is two changes: a field on the matching section and a
+//! consumer in `crate::resolver`. The schema derived from the field is what
+//! makes the key recognized and documented.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -50,15 +49,6 @@ pub(crate) const CONFIG_FILENAME: &str = "runner.toml";
 /// precedence first: the directory itself (`""`) and its `.config/` subdir.
 pub(crate) const CONFIG_DIRS: [&str; 2] = ["", ".config"];
 
-/// Starter `runner.toml` scaffolded by `runner config init`. Generated from
-/// [`RunnerConfig`]'s schemars metadata (section/field doc comments) plus a
-/// small hand-picked value/hint table, see
-/// `cmd::schema::render_init_template`, so a field can't silently ship
-/// without scaffold coverage. Regenerate with `just gen-schema` after
-/// changing a section struct; a drift-guard test enforces this file stays
-/// in sync.
-pub(crate) const INIT_TEMPLATE: &str = include_str!("../schemas/runner.init.toml");
-
 /// Parsed `runner.toml` content plus the absolute path it was loaded from.
 #[derive(Debug, Clone)]
 pub(crate) struct LoadedConfig {
@@ -74,12 +64,8 @@ pub(crate) struct LoadedConfig {
 }
 
 /// Top-level schema for `runner.toml`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct RunnerConfig {
     /// `[runner]`, independent runner-authored output categories.
     #[serde(default)]
@@ -95,10 +81,9 @@ pub(crate) struct RunnerConfig {
     pub tasks: TasksSection,
     /// `[task_runner]`, task-runner preferences. Deprecated; superseded
     /// by [`Self::tasks`].
-    #[cfg_attr(
-        feature = "schema",
-        schemars(description = "`[task_runner]`, task-runner preferences. Deprecated; \
-                                superseded by `[tasks]`.")
+    #[schemars(
+        description = "`[task_runner]`, task-runner preferences. Deprecated; superseded by \
+                       `[tasks]`."
     )]
     #[serde(default, rename = "task_runner")]
     pub task_runner: TaskRunnerSection,
@@ -132,12 +117,8 @@ pub(crate) struct RunnerConfig {
 ///
 /// Narrower than `[env]` and wider than a task entry, so a value here reaches
 /// every invocation of that tool and nothing else.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ToolSettings {
     /// Which of the tool's operations `runner install` runs, in order.
     ///
@@ -153,8 +134,7 @@ pub(crate) struct ToolSettings {
 
 /// `[tools.<name>].install` as written: a toggle, one operation name, or an
 /// ordered list. All three normalize to a list via [`ToolInstall::operations`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum ToolInstall {
     /// `install = true` / `install = false`.
@@ -181,53 +161,49 @@ impl ToolInstall {
 /// `[runner]` output categories. An absent field inherits the selected quiet
 /// preset. These settings apply when no explicit `-q`/`RUNNER_QUIET` preset was
 /// selected for the invocation.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct RunnerOutputSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub progress: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub warnings: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub errors: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub groups: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub task_timing: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub summary: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = true))]
     pub fatal_errors: Option<bool>,
 }
 
 /// `[host]` host-tool output policy. Diagnostics never controls task streams;
 /// adapters clamp unsupported requests to their strongest safe mode.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct HostOutputSection {
     /// `normal`, `quiet`, or `reduced`. Unsupported reductions are safely
-    /// clamped by each adapter and reported by `--explain`.
+    /// clamped by each adapter and reported by `--explain`. Absent, each
+    /// task's `[tasks.<name>].verbosity` decides; any value here, `normal`
+    /// included, overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["normal", "quiet", "reduced", null]))
-    )]
+    #[schemars(extend("enum" = ["normal", "quiet", "reduced", null]))]
     pub diagnostics: Option<String>,
     /// `inherit` or `stderr`. Per-task stream settings override this global
     /// default; CLI/env still outrank both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "stderr", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "stderr", null]))]
+    #[schemars(extend("default" = crate::tool::Stream::default().label()))]
     pub stream: Option<String>,
 }
 
@@ -236,20 +212,13 @@ pub(crate) struct HostOutputSection {
 /// Separate from `[pm]`: the package manager decides who installs and who
 /// invokes the script, the runtime decides what the script and the binaries
 /// it shells out to execute on. Overridden by `--runtime` / `RUNNER_RUNTIME`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct RuntimeSection {
     /// JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the
     /// runtime to the detected package manager, the behaviour before this
     /// key existed.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["node", "bun", "deno", null]))
-    )]
+    #[schemars(extend("enum" = ["node", "bun", "deno", null]))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub js: Option<String>,
 }
@@ -261,12 +230,8 @@ pub(crate) struct RuntimeSection {
 /// Unlike `[pm]` (which scopes *script dispatch* per ecosystem), this
 /// scopes the *install fan-out*: in a polyglot repo where both `bun` and
 /// `deno` would write `node_modules`, `pms = ["bun"]` keeps install to bun.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct InstallSection {
     /// Allowlist of package-manager labels to install with, e.g.
     /// `["bun"]`. Each must be a detected PM or `runner install` errors.
@@ -288,10 +253,7 @@ pub(crate) struct InstallSection {
     /// at its default. Overridden by `RUNNER_INSTALL_SCRIPTS`, then the
     /// `--no-scripts` / `--scripts` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["deny", "allow", null]))
-    )]
+    #[schemars(extend("enum" = ["deny", "allow", null]))]
     pub scripts: Option<String>,
 
     /// What to do when two or more package managers in the install set write
@@ -302,10 +264,8 @@ pub(crate) struct InstallSection {
     /// and runs them all, serialized over the shared tree. `"error"` refuses to
     /// pick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["resolve", "error", null]))
-    )]
+    #[schemars(extend("enum" = ["resolve", "error", null]))]
+    #[schemars(extend("default" = crate::resolver::CollisionPolicy::default().label()))]
     pub on_collision: Option<String>,
 }
 
@@ -315,27 +275,21 @@ pub(crate) struct InstallSection {
 // distinguish "user explicitly set false" from "user didn't say":
 // env-overrides-config layering means `[chain].keep_going = false` plus
 // `RUNNER_KEEP_GOING=1` resolves to `true`.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
-#[cfg_attr(
-    feature = "schema",
-    schemars(extend("not" = {
-        "required": ["keep_going", "kill_on_fail"],
-        "properties": {
-            "keep_going": { "const": true },
-            "kill_on_fail": { "const": true }
-        }
-    }))
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+#[schemars(extend("not" = {
+    "required": ["keep_going", "kill_on_fail"],
+    "properties": {
+        "keep_going": { "const": true },
+        "kill_on_fail": { "const": true }
+    }
+}))]
 pub(crate) struct ChainSection {
     /// Run every task in the chain to completion regardless of failures.
     /// Mutually exclusive with `kill_on_fail`. Equivalent to `-k` /
     /// `RUNNER_KEEP_GOING`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = false))]
     pub keep_going: Option<bool>,
 
     /// Parallel only: terminate sibling tasks immediately on first
@@ -344,6 +298,7 @@ pub(crate) struct ChainSection {
     /// `--kill-on-fail` / `RUNNER_KILL_ON_FAIL`. Ignored in sequential
     /// contexts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("default" = false))]
     pub kill_on_fail: Option<bool>,
 }
 
@@ -351,12 +306,8 @@ pub(crate) struct ChainSection {
 /// effect under GitHub Actions (gated at the call site by
 /// `actions_rs::env::is_github_actions`); in a normal terminal nothing here
 /// changes behavior.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct GitHubSection {
     /// Wrap task output in `runner: <task>` groups under GitHub Actions, and
     /// annotate each failed chain task in the Annotations panel. Defaults to
@@ -364,15 +315,12 @@ pub(crate) struct GitHubSection {
     /// the live `[task]`-prefixed muxer for parallel runs. `--quiet`
     /// suppresses both independently, since workflow commands are written to
     /// stdout and would otherwise reach a caller parsing it.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Wrap task output in `runner: <task>` groups under GitHub Actions, and \
-                           annotate each failed chain task in the Annotations panel. Defaults to \
-                           `true`; set `false` to restore the old undecorated output, including \
-                           the live `[task]`-prefixed muxer for parallel runs. `--quiet` \
-                           suppresses both independently."
-        )
+    #[schemars(
+        description = "Wrap task output in `runner: <task>` groups under GitHub Actions, and \
+                       annotate each failed chain task in the Annotations panel. Defaults to \
+                       `true`; set `false` to restore the old undecorated output, including the \
+                       live `[task]`-prefixed muxer for parallel runs. `--quiet` suppresses both \
+                       independently."
     )]
     #[serde(default = "default_group_output")]
     pub group_output: bool,
@@ -383,14 +331,11 @@ pub(crate) struct GitHubSection {
     /// [`Self::group_output`] is also true. The non-CI equivalent is
     /// `[parallel].grouped` (default `false`), so CI and local diverge unless
     /// you set them to match.
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Under GitHub Actions, group parallel (`-p`) output: buffer each task \
-                           and print it as one block on completion instead of interleaving lines \
-                           live. Defaults to `true`, but only when `group_output` is also true. \
-                           The non-CI equivalent is `[parallel].grouped` (default `false`)."
-        )
+    #[schemars(
+        description = "Under GitHub Actions, group parallel (`-p`) output: buffer each task and \
+                       print it as one block on completion instead of interleaving lines live. \
+                       Defaults to `true`, but only when `group_output` is also true. The non-CI \
+                       equivalent is `[parallel].grouped` (default `false`)."
     )]
     #[serde(default = "default_github_group_parallel")]
     pub group_parallel: bool,
@@ -420,12 +365,8 @@ const fn default_github_group_parallel() -> bool {
 /// `[parallel]` section, how parallel (`-p`) chains present their output
 /// **outside** GitHub Actions. (Under GitHub Actions, see
 /// `[github].group_parallel` instead.)
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ParallelSection {
     /// Buffer each parallel task's output and print it as one contiguous
     /// block the moment that task finishes (completion order, first done,
@@ -437,28 +378,18 @@ pub(crate) struct ParallelSection {
 }
 
 /// `[pm]` section, per-ecosystem package manager overrides.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct PmSection {
     /// Package manager used to dispatch Node `package.json` scripts.
     /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))
-    )]
+    #[schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))]
     pub node: Option<String>,
     /// Package manager used for Python ecosystems.
     /// Valid values: `uv`, `poetry`, `pipenv`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))
-    )]
+    #[schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))]
     pub python: Option<String>,
 }
 
@@ -468,12 +399,8 @@ pub(crate) struct PmSection {
 /// keep working (and emit a deprecation warning), but `[tasks].prefer` is the
 /// supported successor, rank-only and able to name package managers, not just
 /// task runners.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields, extend("deprecated" = true))
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields, extend("deprecated" = true))]
 pub(crate) struct TaskRunnerSection {
     /// **Deprecated, use `[tasks].prefer` instead** (rank-only, and accepts
     /// package managers like `bun`, not just task runners). Migration:
@@ -484,7 +411,7 @@ pub(crate) struct TaskRunnerSection {
     /// same-named task under a runner not in the list is hard-rejected.
     /// Valid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "schema", schemars(extend("deprecated" = true)))]
+    #[schemars(extend("deprecated" = true))]
     pub prefer: Vec<String>,
 }
 
@@ -513,8 +440,7 @@ pub(crate) struct TaskRunnerSection {
 // No `schemars(deny_unknown_fields)`: the flattened `tasks` map makes this an
 // open object (task-name keys become `additionalProperties`), which is
 // mutually exclusive with denying unknown fields.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 pub(crate) struct TasksSection {
     /// Global tie-break order for ambiguous task names, highest priority
     /// first. Listed sources win over unlisted ones (which still run as
@@ -528,14 +454,11 @@ pub(crate) struct TasksSection {
     /// carries the same meaning; both are honored and merged (a task entry wins
     /// on conflict). A pin to a source the task doesn't have falls through to the
     /// normal ranking (no hard error).
-    #[cfg_attr(
-        feature = "schema",
-        schemars(
-            description = "Legacy per-task pins that override `prefer` for specific names: \
-                           `overrides = { dev = \"bun\", build = \"turbo\" }`. Superseded by a \
-                           task entry's `runner` field. A pin to a source the task doesn't have \
-                           falls through to the normal ranking (no hard error)."
-        )
+    #[schemars(
+        description = "Legacy per-task pins that override `prefer` for specific names: `overrides \
+                       = { dev = \"bun\", build = \"turbo\" }`. Superseded by a task entry's \
+                       `runner` field. A pin to a source the task doesn't have falls through to \
+                       the normal ranking (no hard error)."
     )]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, String>,
@@ -577,8 +500,7 @@ impl TasksSection {
 /// task's source/runner pin, e.g. `build = "turbo"`) or a **table** of per-task
 /// settings (`build = { runner = "turbo", verbosity = "quiet" }`, or a
 /// `[tasks.build]` sub-table).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum TaskSpec {
     /// Shorthand: `build = "turbo"` pins the task's source/runner. Equivalent to
@@ -590,12 +512,8 @@ pub(crate) enum TaskSpec {
 
 /// The table form of a [`TaskSpec`]: individual per-task settings, each merged
 /// over the built-in defaults so a partial table only overrides what it names.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct TaskSettings {
     /// Source/runner pin for this task, same meaning as a legacy
     /// [`TasksSection::overrides`] entry (a runner, package manager, or source
@@ -609,17 +527,11 @@ pub(crate) struct TaskSettings {
     pub verbosity: Option<VerbosityConfig>,
     /// Preserve or discard this task's stdout independently of quiet presets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "discard", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "discard", null]))]
     pub stdout: Option<String>,
     /// Preserve or discard this task's stderr independently of quiet presets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "discard", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "discard", null]))]
     pub stderr: Option<String>,
     /// Print this task's dispatch arrow. `false` hides it for this task only;
     /// a quiet preset or `[runner].progress = false` hides it regardless.
@@ -641,8 +553,7 @@ pub(crate) struct TaskSettings {
 /// Verbosity intent as written in config: a bare level name (`verbosity =
 /// "quiet"`) or a `{ level, stream }` table. String-or-table, the same
 /// Cargo-`[dependencies]` shape as [`TaskSpec`].
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum VerbosityConfig {
     /// `verbosity = "quiet"` — sets the level, leaves stream at its default.
@@ -653,302 +564,94 @@ pub(crate) enum VerbosityConfig {
 
 /// The table form of [`VerbosityConfig`]: the two orthogonal knobs, each
 /// optional so a partial table deep-merges over the inherited default.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct VerbosityTable {
     /// How much of the host's own logging to suppress:
     /// `off` | `quiet` | `very-quiet` | `silent` | `mute`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute", null]))
-    )]
+    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute", null]))]
     pub level: Option<String>,
     /// Whether to keep the host's stdout clean by diverting its diagnostics to
     /// stderr: `inherit` | `stderr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["inherit", "stderr", null]))
-    )]
+    #[schemars(extend("enum" = ["inherit", "stderr", null]))]
     pub stream: Option<String>,
 }
 
 /// `[resolution]` section, resolver policy knobs.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[cfg_attr(
-    feature = "schema",
-    derive(schemars::JsonSchema),
-    schemars(deny_unknown_fields)
-)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default), PATH probe in canonical order when no signals
     /// match; `npm`, legacy silent fallback; `error`, refuse to proceed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["probe", "npm", "error", null]))
-    )]
+    #[schemars(extend("enum" = ["probe", "npm", "error", null]))]
+    #[schemars(extend("default" = crate::resolver::FallbackPolicy::default().label()))]
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore`, how to react when declaration
     /// (manifest field) disagrees with detection (lockfile).
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(
-        feature = "schema",
-        schemars(extend("enum" = ["warn", "error", "ignore", null]))
-    )]
+    #[schemars(extend("enum" = ["warn", "error", "ignore", null]))]
+    #[schemars(extend("default" = crate::resolver::MismatchPolicy::default().label()))]
     pub on_mismatch: Option<String>,
 }
 
-/// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
-///
-/// The scaffold renderer in `cmd::schema` consumes this; it lives here
-/// because [`collect_unknown_keys`] shares the same table and must work in a
-/// build without the `schema` feature.
-#[derive(Clone, Copy)]
-pub(crate) enum FieldHint {
-    /// Hand-written hint text, for booleans and fields whose accepted
-    /// values aren't a small fixed set (`cmd::schema::broader_vocab` validates
-    /// their example value instead of enumerating every label inline).
-    Static(&'static str),
-    /// The field's real accepted-value set (`cmd::schema::accepted_labels`),
-    /// pipe-joined bare, with an optional trailing suffix note.
-    ClosedSet { suffix: Option<&'static str> },
-    /// The field's real accepted-value set, each with a short
-    /// parenthetical note. Every label `cmd::schema::accepted_labels` returns for
-    /// this field must have exactly one entry here, enforced by
-    /// `field_template_hints_cover_every_accepted_label`.
-    Annotated(&'static [(&'static str, &'static str)]),
+/// `RunnerConfig`'s schema, generated once per process.
+pub(crate) fn schema() -> &'static serde_json::Value {
+    static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        serde_json::to_value(schemars::schema_for!(RunnerConfig))
+            .expect("RunnerConfig schema serializes")
+    })
 }
 
-/// (section, field) -> (commented-out value, hint). Every field
-/// [`RunnerConfig`]'s schemars metadata declares must
-/// have an entry here, and every entry must name a real field, both
-/// enforced by `cmd::schema::render_init_template`'s own assertions, which run
-/// whenever `committed_init_template_matches_generator` exercises it,
-/// so a new config field can't ship without scaffold coverage. Values
-/// are either the field's real built-in default (`fallback`,
-/// `on_mismatch`, the three booleans) or, where there's no single
-/// sensible default to show (an unset PM override, an empty preference
-/// list), a hand-picked illustrative example, validated against the
-/// real accepted vocabulary (`cmd::schema::accepted_labels`) by
-/// `field_template_values_use_real_accepted_labels`.
-pub(crate) const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
-    (
-        "runner",
-        "progress",
-        "true",
-        FieldHint::Static("dispatch and status text"),
-    ),
-    (
-        "runner",
-        "warnings",
-        "true",
-        FieldHint::Static("non-fatal warnings"),
-    ),
-    (
-        "runner",
-        "errors",
-        "true",
-        FieldHint::Static("recoverable error decoration"),
-    ),
-    (
-        "runner",
-        "groups",
-        "true",
-        FieldHint::Static("task headers and GitHub groups"),
-    ),
-    (
-        "runner",
-        "task_timing",
-        "true",
-        FieldHint::Static("per-task timing and grouped footers"),
-    ),
-    (
-        "runner",
-        "summary",
-        "true",
-        FieldHint::Static("final multi-task chain roll-up"),
-    ),
-    (
-        "runner",
-        "fatal_errors",
-        "true",
-        FieldHint::Static("fatal diagnostics; exit status is unchanged"),
-    ),
-    (
-        "host",
-        "diagnostics",
-        r#""normal""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "host",
-        "stream",
-        r#""inherit""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "pm",
-        "node",
-        r#""pnpm""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "pm",
-        "python",
-        r#""uv""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "tasks",
-        "prefer",
-        r#"["turbo", "bun"]"#,
-        FieldHint::Static("global order: turbo, then package.json (bun)"),
-    ),
-    (
-        "tasks",
-        "overrides",
-        r#"{ dev = "bun", build = "turbo" }"#,
-        FieldHint::Static("per-task pins beat the order"),
-    ),
-    (
-        "task_runner",
-        "prefer",
-        r#"["just", "turbo"]"#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "install",
-        "pms",
-        r#"["bun"]"#,
-        FieldHint::Static("only install with these; each must be detected"),
-    ),
-    (
-        "install",
-        "scripts",
-        r#""deny""#,
-        FieldHint::ClosedSet {
-            suffix: Some("(absent = each PM's own default)"),
-        },
-    ),
-    (
-        "install",
-        "on_collision",
-        r#""resolve""#,
-        FieldHint::Annotated(&[
-            ("resolve", "one writer per install dir, rest shadowed"),
-            ("error", "refuse to pick"),
-        ]),
-    ),
-    (
-        "resolution",
-        "fallback",
-        r#""probe""#,
-        FieldHint::Annotated(&[("probe", "PATH probe"), ("npm", "legacy"), ("error", "")]),
-    ),
-    (
-        "resolution",
-        "on_mismatch",
-        r#""warn""#,
-        FieldHint::Annotated(&[("warn", ""), ("ignore", ""), ("error", "exit 2")]),
-    ),
-    (
-        "chain",
-        "keep_going",
-        "false",
-        FieldHint::Static("run every task despite failures (same as -k)"),
-    ),
-    (
-        "chain",
-        "kill_on_fail",
-        "false",
-        FieldHint::Static("parallel: kill siblings on first failure (same as -K)"),
-    ),
-    (
-        "github",
-        "group_output",
-        "true",
-        FieldHint::Static("::group:: each task; annotate failed chain tasks"),
-    ),
-    (
-        "github",
-        "group_parallel",
-        "true",
-        FieldHint::Static("buffer parallel tasks, print each as one block"),
-    ),
-    (
-        "parallel",
-        "grouped",
-        "false",
-        FieldHint::Static("buffer + print each task as one block on completion"),
-    ),
-    (
-        "runtime",
-        "js",
-        r#""bun""#,
-        FieldHint::Static("node | bun | deno; bun implies `bun --bun run`"),
-    ),
-];
+/// The field names a `$defs` entry declares, in declaration order.
+pub(crate) fn def_fields(def: &str) -> Vec<&'static str> {
+    schema()["$defs"][def]["properties"]
+        .as_object()
+        .map(|props| props.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// Top-level section name to the `$defs` entry describing it.
+pub(crate) fn section_def(section: &str) -> Option<&'static str> {
+    schema()["properties"][section]["$ref"]
+        .as_str()
+        .and_then(|r| r.strip_prefix("#/$defs/"))
+}
 
 /// Sections whose keys the user chooses rather than runner: `[env]` holds
-/// variable names, `[tools]` holds tool labels. Neither declares fixed
-/// fields, so neither has [`FIELD_TEMPLATE`] rows. A `[tools.<name>]`
-/// entry's own fields are checked against [`TOOL_ENTRY_FIELDS`] instead.
+/// variable names, `[tools]` holds tool labels.
 pub(crate) const OPEN_MAP_SECTIONS: &[&str] = &["env", "tools"];
 
-/// The fields recognized under `section`, from [`FIELD_TEMPLATE`].
-///
-/// The table carries deprecated sections too (the scaffold renderer skips
-/// those when writing a starter file); a config that still sets one is
-/// recognized rather than warned about.
-///
-/// A key absent from the table is reported as a
-/// [`DetectionWarning::UnknownConfigKey`] rather than aborting the load, so a
-/// config written by a newer `runner` never bricks an older binary, and vice
-/// versa.
+/// The fields recognized under `section`, from the schema. A key absent from
+/// it is reported as a [`DetectionWarning::UnknownConfigKey`] rather than
+/// aborting the load, so a config written by a newer `runner` never bricks an
+/// older binary, and vice versa.
 fn known_fields(section: &str) -> Option<Vec<&'static str>> {
-    let fields: Vec<&'static str> = FIELD_TEMPLATE
-        .iter()
-        .filter(|(entry_section, ..)| *entry_section == section)
-        .map(|(_, field, ..)| *field)
-        .collect();
-    (!fields.is_empty()).then_some(fields)
+    section_def(section).map(def_fields)
 }
 
 /// Reserved keys under `[tasks]` that are section fields, not task entries.
 /// Every other key is a task name; a table-valued task entry has its fields
-/// checked against [`TASK_ENTRY_FIELDS`] (see [`collect_unknown_keys`]).
+/// checked against `TaskSettings` (see [`collect_unknown_keys`]).
 const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
 
-/// Recognized fields of a `[tools.<name>]` table entry ([`ToolSettings`]).
-/// Mirrors the struct; the `known_tool_entry_fields_match_schema` test guards
-/// drift.
-const TOOL_ENTRY_FIELDS: &[&str] = &["install", "env"];
+fn tool_entry_fields() -> Vec<&'static str> {
+    def_fields("ToolSettings")
+}
 
-/// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
-/// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
-/// drift. An unrecognized field warns (forward-compat) rather than aborting.
-const TASK_ENTRY_FIELDS: &[&str] = &[
-    "runner",
-    "verbosity",
-    "stdout",
-    "stderr",
-    "progress",
-    "groups",
-    "task_timing",
-    "env",
-];
+fn task_entry_fields() -> Vec<&'static str> {
+    def_fields("TaskSettings")
+}
 
-/// Recognized fields of a `[tasks.<name>].verbosity` table ([`VerbosityTable`]).
-const VERBOSITY_TABLE_FIELDS: &[&str] = &["level", "stream"];
+fn verbosity_table_fields() -> Vec<&'static str> {
+    def_fields("VerbosityTable")
+}
 
 /// Collect forward-compat warnings for sections/fields this build doesn't
-/// recognize. Walks the raw parsed table against [`FIELD_TEMPLATE`]; a
+/// recognize. Walks the raw parsed table against the schema; a
 /// non-table where a section is expected is left for the typed deserialize to
 /// reject (a genuine type error, not version skew).
 pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning> {
@@ -1000,7 +703,7 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
 
 /// Field-level forward-compat check for the `[tools]` open map. Tool labels
 /// are arbitrary, so only an entry's own fields are checked, against
-/// [`TOOL_ENTRY_FIELDS`]. `env` under an entry is itself an open map and is
+/// `ToolSettings`. `env` under an entry is itself an open map and is
 /// not recursed into.
 fn collect_unknown_tool_keys(tools: &toml::value::Table, warnings: &mut Vec<DetectionWarning>) {
     for (name, entry) in tools {
@@ -1008,7 +711,7 @@ fn collect_unknown_tool_keys(tools: &toml::value::Table, warnings: &mut Vec<Dete
             continue;
         };
         for field in fields.keys() {
-            if !TOOL_ENTRY_FIELDS.contains(&field.as_str()) {
+            if !tool_entry_fields().contains(&field.as_str()) {
                 warnings.push(DetectionWarning::UnknownConfigKey {
                     path: format!("tools.{name}.{field}"),
                 });
@@ -1019,8 +722,8 @@ fn collect_unknown_tool_keys(tools: &toml::value::Table, warnings: &mut Vec<Dete
 
 /// Field-level forward-compat check for the `[tasks]` open map. A task entry is
 /// either a string shorthand (a source pin — no fields to check) or a table
-/// whose fields must be in [`TASK_ENTRY_FIELDS`], with its `verbosity` sub-table
-/// (when a table) checked against [`VERBOSITY_TABLE_FIELDS`]. Unknown fields are
+/// whose fields must be in `TaskSettings`, with its `verbosity` sub-table
+/// (when a table) checked against `VerbosityTable`. Unknown fields are
 /// warned about (dotted path `tasks.<name>.<field>` /
 /// `tasks.<name>.verbosity.<sub>`), not errors, so a config from a newer runner
 /// still loads. Reserved section keys (`prefer`/`overrides`) are skipped.
@@ -1034,7 +737,7 @@ fn collect_unknown_task_keys(tasks: &toml::value::Table, warnings: &mut Vec<Dete
             continue;
         };
         for (field, value) in fields {
-            if !TASK_ENTRY_FIELDS.contains(&field.as_str()) {
+            if !task_entry_fields().contains(&field.as_str()) {
                 warnings.push(DetectionWarning::UnknownConfigKey {
                     path: format!("tasks.{name}.{field}"),
                 });
@@ -1044,7 +747,7 @@ fn collect_unknown_task_keys(tasks: &toml::value::Table, warnings: &mut Vec<Dete
                 && let Some(verbosity) = value.as_table()
             {
                 for sub in verbosity.keys() {
-                    if !VERBOSITY_TABLE_FIELDS.contains(&sub.as_str()) {
+                    if !verbosity_table_fields().contains(&sub.as_str()) {
                         warnings.push(DetectionWarning::UnknownConfigKey {
                             path: format!("tasks.{name}.verbosity.{sub}"),
                         });
@@ -1197,8 +900,7 @@ mod tests {
     use std::fs;
 
     use super::{
-        CONFIG_FILENAME, FIELD_TEMPLATE, INIT_TEMPLATE, LoadedConfig, RunnerConfig, load,
-        parse_node_pm, parse_python_pm,
+        CONFIG_FILENAME, LoadedConfig, RunnerConfig, load, parse_node_pm, parse_python_pm,
     };
     use crate::tool::test_support::TempDir;
     use crate::types::{DetectionWarning, PackageManager};
@@ -1494,56 +1196,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "schema")]
-    #[test]
-    fn known_task_entry_fields_match_schema() {
-        // Drift guard: the const field lists `collect_unknown_task_keys` checks
-        // against must match the real structs, or a renamed/added field would
-        // be spuriously warned about (or a typo silently tolerated).
-        use std::collections::BTreeSet;
-
-        fn schema_props<T: schemars::JsonSchema>() -> BTreeSet<String> {
-            let schema =
-                serde_json::to_value(schemars::schema_for!(T)).expect("schema should serialize");
-            schema["properties"]
-                .as_object()
-                .expect("struct schema must have properties")
-                .keys()
-                .cloned()
-                .collect()
-        }
-
-        assert_eq!(
-            super::TASK_ENTRY_FIELDS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect::<BTreeSet<_>>(),
-            schema_props::<super::TaskSettings>(),
-            "TASK_ENTRY_FIELDS must match TaskSettings",
-        );
-        assert_eq!(
-            super::VERBOSITY_TABLE_FIELDS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect::<BTreeSet<_>>(),
-            schema_props::<super::VerbosityTable>(),
-            "VERBOSITY_TABLE_FIELDS must match VerbosityTable",
-        );
-        // `TasksSection`'s named (non-flattened) fields ARE the reserved keys;
-        // the flattened `tasks` map is `additionalProperties`, not a property,
-        // so it never appears here. If a reserved field is added/renamed without
-        // updating TASKS_RESERVED_KEYS, `collect_unknown_task_keys` would treat
-        // it as a task entry (or vice versa) — this guard catches that.
-        assert_eq!(
-            super::TASKS_RESERVED_KEYS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect::<BTreeSet<_>>(),
-            schema_props::<super::TasksSection>(),
-            "TASKS_RESERVED_KEYS must match TasksSection's named fields",
-        );
-    }
-
     #[test]
     fn tasks_section_validates() {
         // `[tasks]` with a PM label and a per-task pin is a valid config,
@@ -1626,142 +1278,6 @@ mod tests {
 
         let err = load(dir.path()).expect_err("wrong type on a known field must stay fatal");
         assert!(format!("{err:#}").contains("failed to parse"));
-    }
-
-    #[test]
-    fn field_template_matches_init_template_sections_and_fields() {
-        // The committed scaffold is generated from FIELD_TEMPLATE, so the two
-        // must agree field for field. A field missing from the scaffold makes
-        // `config init` write a file that omits a real knob; a stale scaffold
-        // entry offers one nobody can set.
-        use std::collections::{BTreeMap, BTreeSet};
-
-        // Deprecated sections keep their FIELD_TEMPLATE rows (so drift is
-        // still caught) but `render_init_template` leaves them out of the
-        // starter file rather than hand a new user a superseded section.
-        const DEPRECATED_SECTIONS: &[&str] = &["task_runner"];
-
-        // Walk the template into section -> {field names it emits}.
-        let mut template: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut section: Option<String> = None;
-        for line in INIT_TEMPLATE.lines() {
-            let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix('[') {
-                section = Some(rest.trim_end_matches(']').to_string());
-                template
-                    .entry(section.clone().expect("just set"))
-                    .or_default();
-                continue;
-            }
-            // Field lines are `key = ...`, shipped commented-out. Strip one
-            // leading `#`, then keep only a bare-identifier left of `=`; that
-            // shape excludes the prose comments, which carry no `key =`.
-            let body = trimmed.strip_prefix('#').map_or(trimmed, str::trim);
-            let Some((lhs, _)) = body.split_once('=') else {
-                continue;
-            };
-            let key = lhs.trim();
-            if !key.is_empty()
-                && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && let Some(sec) = &section
-            {
-                template
-                    .get_mut(sec)
-                    .expect("section recorded above")
-                    .insert(key.to_string());
-            }
-        }
-
-        let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (section, field, ..) in FIELD_TEMPLATE {
-            known
-                .entry((*section).to_string())
-                .or_default()
-                .insert((*field).to_string());
-        }
-        for section in DEPRECATED_SECTIONS {
-            known.remove(*section);
-        }
-        // Open-map sections are scaffolded from a hand-written example and
-        // declare no fields, so there is nothing to compare field-wise. The
-        // template walker also cannot see a commented-out `[tools.mise]`
-        // header, so its example keys land under whatever section precedes it.
-        for section in super::OPEN_MAP_SECTIONS {
-            known.remove(*section);
-            template.remove(*section);
-        }
-
-        assert_eq!(
-            template, known,
-            "INIT_TEMPLATE sections/fields must match FIELD_TEMPLATE exactly; regenerate the \
-             scaffold with `just gen-schema` after adding a row"
-        );
-    }
-
-    #[cfg(feature = "schema")]
-    #[test]
-    fn known_fields_match_generated_runner_config_schema() {
-        // field_template_matches_init_template_sections_and_fields only
-        // catches the scaffold drifting from FIELD_TEMPLATE: a struct field
-        // added without a row passes that guard invisibly (scaffold and table
-        // still agree with each other, just not with the real type; the typed
-        // deserializer would accept the field while `collect_unknown_keys`
-        // spuriously flags it as unknown). Compare the recognized set
-        // directly against the schemars-derived shape of RunnerConfig,
-        // independent of the scaffold.
-        use std::collections::{BTreeMap, BTreeSet};
-
-        let schema = serde_json::to_value(schemars::schema_for!(RunnerConfig))
-            .expect("RunnerConfig schema should serialize");
-
-        let top_properties = schema["properties"]
-            .as_object()
-            .expect("RunnerConfig schema must have top-level properties");
-        let defs = schema["$defs"]
-            .as_object()
-            .expect("RunnerConfig schema must have $defs");
-
-        let generated: BTreeMap<String, BTreeSet<String>> = top_properties
-            .iter()
-            // Open-map sections declare no fixed fields, so there is nothing
-            // on either side to compare.
-            .filter(|(section, _)| !super::OPEN_MAP_SECTIONS.contains(&section.as_str()))
-            .map(|(section, section_schema)| {
-                let def_name = section_schema["$ref"]
-                    .as_str()
-                    .and_then(|r| r.strip_prefix("#/$defs/"))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "{section}: expected a $defs $ref in the generated schema, got \
-                             {section_schema:?}"
-                        )
-                    });
-                let fields = defs[def_name]["properties"]
-                    .as_object()
-                    .unwrap_or_else(|| {
-                        panic!("{def_name}: expected a properties object in the generated schema")
-                    })
-                    .keys()
-                    .cloned()
-                    .collect();
-                (section.clone(), fields)
-            })
-            .collect();
-
-        let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (section, field, ..) in FIELD_TEMPLATE {
-            known
-                .entry((*section).to_string())
-                .or_default()
-                .insert((*field).to_string());
-        }
-
-        assert_eq!(
-            generated, known,
-            "FIELD_TEMPLATE must match RunnerConfig's real (schemars-derived) shape exactly; a \
-             struct field with no row is silently treated as unknown by collect_unknown_keys even \
-             though the typed deserializer accepts it"
-        );
     }
 
     #[test]

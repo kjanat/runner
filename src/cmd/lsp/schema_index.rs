@@ -55,7 +55,7 @@ impl SchemaIndex {
     /// fails to generate (should not happen) yields an empty index, degrading
     /// hover/completion to no-ops rather than failing the server.
     pub(super) fn build() -> Self {
-        let schema = crate::cmd::config_schema().unwrap_or(Value::Null);
+        let schema = crate::cmd::schema::config_schema().unwrap_or(Value::Null);
         let defs = schema.get("$defs");
         let mut sections = BTreeMap::new();
 
