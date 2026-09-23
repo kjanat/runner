@@ -112,13 +112,20 @@ fn is_suffix_rule(target: &str) -> bool {
 
 /// `make <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
+    let mut c = root_cmd(&[], verbosity);
+    c.arg(task).args(args);
+    c
+}
+
+/// `make [-s] [args...]`, leaving the goal to the Makefile's default.
+pub(crate) fn root_cmd(args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("make");
     // `make -s` (silent mode) suppresses the command echo. make has no
     // stdout-diversion primitive, so the stream axis no-ops.
     if verbosity.silences() {
         c.arg("-s");
     }
-    c.arg(task).args(args);
+    c.args(args);
     c
 }
 

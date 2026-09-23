@@ -125,8 +125,16 @@ fn host_verbosity(
     host: &str,
     capabilities: tool::HostQuietCapabilities,
 ) -> tool::HostVerbosity {
-    let task_key = super::task_output_key(task);
-    let requested = overrides.host_verbosity_for(&task_key);
+    host_verbosity_for_key(overrides, &super::task_output_key(task), host, capabilities)
+}
+
+fn host_verbosity_for_key(
+    overrides: &ResolutionOverrides,
+    task_key: &str,
+    host: &str,
+    capabilities: tool::HostQuietCapabilities,
+) -> tool::HostVerbosity {
+    let requested = overrides.host_verbosity_for(task_key);
     let applied = requested.diagnostics.min(capabilities.max_diagnostics);
     let stream = if capabilities.diverts_to_stderr {
         requested.stream
@@ -472,6 +480,10 @@ pub(super) fn resolve_dispatch(
                 return Err(reversed_qualifier_error(ctx, task, src, task_part));
             }
 
+            if let Some(dispatch) = runner_root_invocation(ctx, overrides, task_name, args) {
+                return Ok(dispatch);
+            }
+
             if let Some(reason) = runner_constraint_error(overrides, &found) {
                 return Err(reason.into());
             }
@@ -696,6 +708,44 @@ fn confirm_fetch(overrides: &ResolutionOverrides, label: &str, name: &str) -> Re
         return Ok(());
     }
     bail!("task {name:?} not found; fetch via {label} declined")
+}
+
+/// `run make`, `run just`, `run task`, `run bacon`: the runner's own entry
+/// point, letting it pick its default target, when the token is a detected
+/// task runner's label and no task carries that name. With `--runner` set,
+/// only that runner qualifies. turbo, nx and mise have no default target.
+fn runner_root_invocation(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+    args: &[String],
+) -> Option<Dispatch> {
+    use crate::types::TaskRunner;
+    let runner = TaskRunner::from_label(token).filter(|r| r.label() == token)?;
+    if !ctx.task_runners.contains(&runner)
+        || overrides
+            .runner
+            .as_ref()
+            .is_some_and(|o| o.runner != runner)
+    {
+        return None;
+    }
+    let verbosity = |caps| host_verbosity_for_key(overrides, token, token, caps);
+    let mut command = match runner {
+        TaskRunner::Make => tool::make::root_cmd(args, verbosity(tool::make::quiet_capabilities())),
+        TaskRunner::Just => tool::just::root_cmd(args, verbosity(tool::just::quiet_capabilities())),
+        TaskRunner::GoTask => {
+            tool::go_task::root_cmd(args, verbosity(tool::go_task::quiet_capabilities()))
+        }
+        TaskRunner::Bacon => {
+            tool::bacon::root_cmd(args, verbosity(tool::bacon::quiet_capabilities()))
+        }
+        TaskRunner::Turbo | TaskRunner::Nx | TaskRunner::Mise => return None,
+    };
+    print_dispatch_arrow(overrides, token, token, "(default)", args);
+    crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
+    crate::cmd::configure_task_streams(&mut command, overrides, token);
+    Some(Dispatch::Spawn(SpawnDispatch::passthrough(command)))
 }
 
 /// The exec primitive's argument vector: the token followed by the user's
@@ -1391,6 +1441,87 @@ mod tests {
         assert_eq!(label, "exec");
         assert_eq!(command.get_program().to_string_lossy(), "golangci-lint");
         assert_eq!(command_args(&command), ["run"]);
+    }
+
+    #[test]
+    fn run_make_invokes_make_with_no_target() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        let args = [String::from("-j4")];
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "make",
+                &args,
+                None,
+                true,
+            )
+            .expect("runner root invocation dispatches"),
+        );
+
+        assert_eq!(command.get_program().to_string_lossy(), "make");
+        assert_eq!(command_args(&command), ["-j4"]);
+    }
+
+    #[test]
+    fn run_make_under_runner_make_constraint_still_invokes_make() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        let overrides = ResolutionOverrides {
+            runner: Some(crate::resolver::RunnerOverride {
+                runner: TaskRunner::Make,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        let command = expect_command(
+            resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
+                .expect("constraint names the invoked runner"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "make");
+        assert!(command_args(&command).is_empty());
+    }
+
+    #[test]
+    fn run_make_under_runner_just_constraint_is_refused() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        ctx.task_runners.push(TaskRunner::Just);
+        let overrides = ResolutionOverrides {
+            runner: Some(crate::resolver::RunnerOverride {
+                runner: TaskRunner::Just,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        let err = resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
+            .expect_err("a different runner constraint refuses the root invocation");
+        assert!(format!("{err:#}").contains("invalid override value"));
+    }
+
+    #[test]
+    fn a_task_named_after_the_runner_wins_over_the_root_invocation() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Just);
+        ctx.tasks.push(justfile_task("just"));
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "just",
+                &[],
+                None,
+                true,
+            )
+            .expect("task dispatches"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "just");
+        assert_eq!(command_args(&command), ["just"]);
     }
 
     #[test]

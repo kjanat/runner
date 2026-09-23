@@ -330,14 +330,21 @@ fn is_private_attr(trimmed: &str) -> bool {
 }
 
 /// `just <task> [args...]`
-pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
+pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     // Both verbosity axes no-op here. just's own noise (the recipe-line echo)
     // already goes to stderr, so it never pollutes a stdout pipeline; and its
     // only quiet switch, `--quiet`, suppresses the recipe's *own* output too
     // (a full mute), which would violate the contract that quiet must leave the
     // task's output intact. just has no stdout-diversion primitive either.
-    let mut c = super::program::command("just");
+    let mut c = root_cmd(&[], verbosity);
     c.arg(task).args(args);
+    c
+}
+
+/// `just [args...]`, leaving the recipe to the justfile's default.
+pub(crate) fn root_cmd(args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    let mut c = super::program::command("just");
+    c.args(args);
     c
 }
 
