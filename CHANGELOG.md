@@ -107,6 +107,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `go run` for a `cmd/<name>` task or the Go exec fallback sets
+  `GOFLAGS=-buildvcs=true` when the project sits in a checkout Go can read
+  (Git, Mercurial, Subversion, Bazaar, Fossil), that tool is on `PATH`, and
+  the toolchain is Go 1.18 or newer, so the binary's `debug.ReadBuildInfo`
+  carries the revision instead of `(devel)`. The flag is merged into the
+  `GOFLAGS` the `[env]` layers produce, and a `GOFLAGS` that already decides
+  `-buildvcs` or `--buildvcs` is left alone. A single Go file is never
+  stamped, since Go stamps nothing into `command-line-arguments` (#130).
+
 - `runner install` reports which package manager and program it was waiting
   on when `wait()` fails, and stops and reaps the child first, matching the
   parallel install lanes (#135).

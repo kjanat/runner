@@ -625,6 +625,9 @@ fn spawn_task(
         Some(entry.source.label()),
         Some(entry.name.as_str()),
     );
+    if entry.source == TaskSource::GoPackage {
+        tool::go_pm::stamp_vcs(spawn.command_mut(), &ctx.root);
+    }
     let task_key = super::task_output_key(entry);
     crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
@@ -820,7 +823,7 @@ fn build_pm_exec_command(
         Some(PackageManager::Uv) => ("uvx", tool::uv::exec_cmd(&combined())),
         Some(PackageManager::Go) => {
             if task_name.contains('@') || task_name.contains('/') || task_name.contains('\\') {
-                ("go run", tool::go_pm::exec_cmd(&combined()))
+                ("go run", tool::go_pm::exec_cmd(&combined(), &ctx.root))
             } else {
                 direct_exec()
             }
