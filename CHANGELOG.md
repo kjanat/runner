@@ -107,6 +107,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `runner install` reports which package manager and program it was waiting
+  on when `wait()` fails, and stops and reaps the child first, matching the
+  parallel install lanes (#135).
+
 - A make target, or a package script that is a bare `make <name>` wrapper,
   forwards only variable assignments (`NAME=value`, `NAME+=value`, `NAME:=value`
   and the other GNU make forms), which the recipe reads as `$(NAME)`. Any other
