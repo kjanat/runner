@@ -34,7 +34,7 @@ pub(crate) fn find_first_upwards(dir: &Path, filenames: &[&str]) -> Option<PathB
     find_in_ancestors(dir, |ancestor| find_first(ancestor, filenames))
 }
 
-pub(crate) fn vcs_root(dir: &Path) -> Option<PathBuf> {
+fn vcs_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|ancestor| ancestor.join(".jj").is_dir() || ancestor.join(".git").exists())
         .map(Path::to_path_buf)

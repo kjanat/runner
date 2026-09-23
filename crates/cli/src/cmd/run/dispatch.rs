@@ -625,6 +625,9 @@ fn spawn_task(
         Some(entry.source.label()),
         Some(entry.name.as_str()),
     );
+    if entry.source == TaskSource::GoPackage {
+        tool::go_pm::stamp_vcs(spawn.command_mut(), &ctx.root);
+    }
     let task_key = super::task_output_key(entry);
     crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
@@ -976,7 +979,7 @@ fn build_run_command(
                 bail!("go task {:?} is missing its run target", entry.name);
             };
             let hv = host_verbosity(overrides, entry, "go", tool::go_pm::quiet_capabilities());
-            tool::go_pm::run_cmd(run_target, args, &ctx.root, hv)
+            tool::go_pm::run_cmd(run_target, args, hv)
         }
         TaskSource::BaconToml => tool::bacon::run_cmd(
             &entry.name,
