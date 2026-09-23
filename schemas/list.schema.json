@@ -17,8 +17,22 @@
             "string"
           ]
         },
+        "depends": {
+          "description": "Tasks that run before this one, as the source declares them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "description": {
           "description": "Human-readable description, if any.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "dir": {
+          "description": "Directory the task executes in, when the source declares one.",
           "type": [
             "null",
             "string"
@@ -44,6 +58,13 @@
         },
         "source": {
           "$ref": "#/$defs/TaskSourceLabel"
+        },
+        "usage": {
+          "description": "Argument and flag spec in the source's own language (mise: usage KDL).",
+          "type": [
+            "null",
+            "string"
+          ]
         }
       }
     },

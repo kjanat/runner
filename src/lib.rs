@@ -892,10 +892,35 @@ fn render_clap_error(err: &clap::Error, muted: bool) -> Result<i32> {
     Ok(exit_code)
 }
 
+/// `runner install`, with or without post-install task names.
+fn dispatch_install(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    flags: cmd::install::InstallFlags,
+    mode: cli::ChainModeFlags,
+    failure: cli::ChainFailureFlags,
+    tasks: &[String],
+) -> Result<i32> {
+    if !tasks.is_empty() {
+        return dispatch_install_chain(ctx, overrides, flags, mode, tasks);
+    }
+    // The chain flags govern nothing without task names; say so rather than
+    // silently swallowing a `-p`/`-k` the user expected to matter.
+    if overrides.shows_progress()
+        && (mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail)
+    {
+        eprintln!(
+            "{} chain flags (-s/-p/-k/-K) have no effect without post-install task names",
+            "note:".dimmed(),
+        );
+    }
+    cmd::install(ctx, overrides, flags)
+}
+
 fn dispatch_install_chain(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
-    frozen: bool,
+    flags: cmd::install::InstallFlags,
     mode: cli::ChainModeFlags,
     tasks: &[String],
 ) -> Result<i32> {
@@ -905,7 +930,7 @@ fn dispatch_install_chain(
         // Sequential (default): install is the chain head, then tasks run in
         // order. `run_chain` pre-flights the task tokens *before* install, so
         // a typo'd task name aborts ahead of the slow install step.
-        let mut all = vec![chain::ChainItem::install(frozen)];
+        let mut all = vec![chain::ChainItem::install(flags)];
         all.extend(items);
         return chain::exec::run_chain(
             ctx,
@@ -936,7 +961,7 @@ fn dispatch_install_chain(
     // while `-s` does. "install" matches ChainItem::install(..).display_name();
     // emit_task_timing self-gates via the task-timing output category.
     let started = std::time::Instant::now();
-    let install_code = cmd::install(ctx, overrides, frozen)?;
+    let install_code = cmd::install(ctx, overrides, flags)?;
     let install_elapsed = started.elapsed();
     cmd::emit_task_timing(
         overrides,
@@ -1024,7 +1049,7 @@ fn run_path_builtin_fallback(
         return Ok(None);
     }
     let code = match name {
-        "install" => cmd::install(ctx, overrides, false)?,
+        "install" => cmd::install(ctx, overrides, cmd::install::InstallFlags::default())?,
         "clean" => {
             cmd::clean(ctx, overrides, false, false)?;
             0
@@ -1236,29 +1261,19 @@ fn dispatch(cli: cli::Cli, dir: &Path) -> Result<i32> {
         }
         Some(cli::Command::Install {
             frozen,
+            no_tools,
             tasks,
-            mode,
-            ..
-        }) if !tasks.is_empty() => dispatch_install_chain(&ctx, &overrides, frozen, mode, &tasks),
-        Some(cli::Command::Install {
-            frozen,
             mode,
             failure,
             ..
-        }) => {
-            // No post-install tasks, so the chain flags govern nothing; say so
-            // rather than silently swallowing a `-p`/`-k` the user expected to
-            // matter.
-            if overrides.shows_progress()
-                && (mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail)
-            {
-                eprintln!(
-                    "{} chain flags (-s/-p/-k/-K) have no effect without post-install task names",
-                    "note:".dimmed(),
-                );
-            }
-            cmd::install(&ctx, &overrides, frozen)
-        }
+        }) => dispatch_install(
+            &ctx,
+            &overrides,
+            cmd::install::InstallFlags { frozen, no_tools },
+            mode,
+            failure,
+            &tasks,
+        ),
         Some(cli::Command::Clean {
             yes,
             include_framework,
@@ -1724,6 +1739,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
                     member: None,
                 })
                 .collect(),

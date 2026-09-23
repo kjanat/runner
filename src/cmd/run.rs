@@ -34,6 +34,7 @@ mod local_file;
 mod qualify;
 mod runtime;
 mod select;
+mod test_shorthand;
 
 pub(crate) use qualify::{
     ScopeQuery, TokenLookup, allowed_runner_sources, lookup_token, precheck_task,
@@ -64,8 +65,8 @@ pub(crate) fn task_output_key(task: &Task) -> String {
 }
 
 /// Resolve `task` and run it with inherited stdio, returning the exit
-/// code. Bun special case: when `task == "test"` and no package-manifest
-/// `test` script exists, falls back to `bun test`. PM-exec fallback for
+/// code. `test` shorthand: when `task == "test"` and no `test` task exists,
+/// runs the ecosystem's built-in test runner. PM-exec fallback for
 /// unqualified misses runs the target through `npx`/`bun x`/`pnpm exec`/
 /// `deno x`/`uvx`, plus `go run` for Go module/path-shaped targets;
 /// otherwise spawns the binary directly from `PATH`.
@@ -161,7 +162,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::dispatch::should_use_bun_test_fallback;
     use super::qualify::{detect_reversed_qualifier, parse_qualified_task};
     use super::{precheck_task, select_task_entry};
     use crate::resolver::ResolutionOverrides;
@@ -292,6 +292,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             }],
             node_version: None,
@@ -314,109 +315,6 @@ mod tests {
              is empty",
         );
         assert_eq!(found[0].source, TaskSource::Justfile);
-    }
-
-    #[test]
-    fn bun_test_fallback_enabled_when_resolved_to_bun() {
-        let ctx = context(vec![PackageManager::Bun], vec![]);
-
-        // The resolver would return Bun via Lockfile for ctx=[Bun].
-        assert!(should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            Some(PackageManager::Bun),
-            "test"
-        ));
-    }
-
-    #[test]
-    fn bun_test_fallback_disabled_when_test_script_exists() {
-        let ctx = context(
-            vec![PackageManager::Bun],
-            vec![Task {
-                name: "test".to_string(),
-                source: TaskSource::PackageJson,
-                run_target: None,
-                description: None,
-                alias_of: None,
-                passthrough_to: None,
-                member: None,
-            }],
-        );
-
-        assert!(!should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            Some(PackageManager::Bun),
-            "test"
-        ));
-    }
-
-    #[test]
-    fn bun_test_fallback_disabled_for_other_package_managers() {
-        let ctx = context(vec![PackageManager::Npm], vec![]);
-
-        assert!(!should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            Some(PackageManager::Npm),
-            "test"
-        ));
-    }
-
-    #[test]
-    fn bun_test_fallback_disabled_for_non_test_task() {
-        let ctx = context(vec![PackageManager::Bun], vec![]);
-
-        assert!(!should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            Some(PackageManager::Bun),
-            "build"
-        ));
-    }
-
-    #[test]
-    fn bun_test_fallback_suppressed_when_resolver_returns_non_bun() {
-        // `--pm npm` against a Bun-detected project: the resolver
-        // returns Npm (override wins), so the fallback must not fire.
-        let ctx = context(vec![PackageManager::Bun], vec![]);
-
-        assert!(!should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            Some(PackageManager::Npm),
-            "test"
-        ));
-    }
-
-    #[test]
-    fn bun_test_fallback_disabled_when_resolver_returns_none() {
-        // Resolver errored (--fallback=error with no signal) → no
-        // fallback. Even though ctx says Bun, the caller already
-        // collapsed the error to None.
-        let ctx = context(vec![PackageManager::Bun], vec![]);
-
-        assert!(!should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            None,
-            "test"
-        ));
-    }
-
-    #[test]
-    fn bun_test_fallback_enabled_when_resolver_picks_bun_with_no_lockfile() {
-        // `--pm bun` against an empty ctx: resolver returns Bun despite
-        // no detected PM, so the fallback fires.
-        let ctx = context(vec![], vec![]);
-
-        assert!(should_use_bun_test_fallback(
-            &ctx,
-            &ResolutionOverrides::default(),
-            Some(PackageManager::Bun),
-            "test"
-        ));
     }
 
     #[test]
@@ -517,6 +415,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             },
             Task {
@@ -526,6 +425,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             },
         ];
@@ -580,6 +480,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
                     member: None,
                 },
                 Task {
@@ -589,6 +490,7 @@ mod tests {
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: crate::types::TaskDetail::default(),
                     member: None,
                 },
             ],
@@ -631,6 +533,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }

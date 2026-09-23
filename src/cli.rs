@@ -279,7 +279,7 @@ fn cli_dir_from_argv(argv: &[std::ffi::OsString]) -> Option<std::ffi::OsString> 
 
 /// The `--long`/`-s` spellings of every root-level (flattened
 /// [`GlobalOpts`]) flag that consumes a following value, read from the
-/// actual clap definition. Used by [`chain_flag_precedes_first_task`] to
+/// actual clap definition. Used by [`scan_run_argv`] to
 /// skip flag values while scanning for the first task word.
 fn global_value_flags() -> Vec<String> {
     use clap::CommandFactory as _;
@@ -368,10 +368,85 @@ pub(crate) fn forward_args_after_task(
 /// so complete nothing.
 fn chain_args_candidates() -> Vec<CompletionCandidate> {
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    if !chain_flag_precedes_first_task(&argv) {
+    let scan = scan_run_argv(&argv);
+    if scan.chain {
+        return task_candidates();
+    }
+    scan.task
+        .as_deref()
+        .map_or_else(Vec::new, |task| task_usage_candidates(task, &scan.after))
+}
+
+/// Candidates for a task's own arguments, from the spec its source
+/// declares. Only mise carries one today; every other source returns
+/// nothing and the trailing words stay uncompleted.
+fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidate> {
+    let Ok(dir) = completion_dir() else {
+        return vec![];
+    };
+    let Some(spec) = crate::tool::mise::usage_spec(&dir, task) else {
+        return vec![];
+    };
+
+    // A flag that takes a value swallows the next word, so there is nothing
+    // of ours to offer in the position it consumes. The last entry is the
+    // word being completed, which is empty at a fresh TAB, so the flag to
+    // test is the one before it.
+    if typed
+        .iter()
+        .rev()
+        .take(2)
+        .any(|word| spec.consumes_value_after(word))
+    {
         return vec![];
     }
-    task_candidates()
+
+    let mut out: Vec<CompletionCandidate> = Vec::new();
+    for flag in &spec.flags {
+        for spelling in flag.spellings() {
+            if typed.iter().any(|word| word == &spelling) {
+                continue;
+            }
+            let mut candidate = CompletionCandidate::new(&spelling);
+            if let Some(help) = &flag.help {
+                candidate = candidate.help(Some(help.clone().into()));
+            }
+            out.push(candidate.tag(Some("task flags".into())));
+        }
+    }
+    // Each positional closes its own value set, so only the one the cursor
+    // sits on may contribute choices.
+    if let Some(arg) = spec.args.get(positional_index(&spec, typed)) {
+        for choice in &arg.choices {
+            let mut candidate = CompletionCandidate::new(choice);
+            if let Some(help) = &arg.help {
+                candidate = candidate.help(Some(help.clone().into()));
+            }
+            out.push(candidate.tag(Some(arg.name.clone().into())));
+        }
+    }
+    out
+}
+
+/// Which positional the cursor sits on: the count of already-complete
+/// positional words before it, skipping flags and the values they consume.
+fn positional_index(spec: &crate::tool::mise::UsageSpec, typed: &[String]) -> usize {
+    // The final entry is the word being completed, not a finished one.
+    let complete = typed.split_last().map_or(&[][..], |(_, rest)| rest);
+    let mut index = 0;
+    let mut skip_value = false;
+    for word in complete {
+        if skip_value {
+            skip_value = false;
+            continue;
+        }
+        if word.starts_with('-') {
+            skip_value = spec.consumes_value_after(word);
+            continue;
+        }
+        index += 1;
+    }
+    index
 }
 
 /// Scan the in-flight completion argv for a chain-mode flag (`-s`/`-p`,
@@ -382,7 +457,23 @@ fn chain_args_candidates() -> Vec<CompletionCandidate> {
 /// follow the first `--`, and the word after that is the binary name.
 /// Value-carrying global flags are skipped with their values so
 /// `--dir /some/path -s build` still detects the chain flag.
-fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
+/// What the in-flight completion argv says about the `run` being typed.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RunArgv {
+    /// A chain flag (`-s`/`-p`) appeared before the first task word, so the
+    /// trailing words are further task names.
+    chain: bool,
+    /// The first bare word after the globals: the task whose arguments the
+    /// trailing words are.
+    task: Option<String>,
+    /// Words already typed after the task name.
+    after: Vec<String>,
+}
+
+/// Walk the completion argv once, extracting everything the trailing-arg
+/// completer needs. The argv shape and the flag-skipping rules are in the
+/// match arms below.
+fn scan_run_argv(argv: &[std::ffi::OsString]) -> RunArgv {
     // Flags whose value arrives as the *next* word (the `=` form needs no
     // special casing; it stays one word). Derived from the real clap
     // definition so a new value-taking global can't silently drift out of
@@ -399,7 +490,12 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
             continue;
         };
         match word {
-            "-s" | "--sequential" | "-p" | "--parallel" => return true,
+            "-s" | "--sequential" | "-p" | "--parallel" => {
+                return RunArgv {
+                    chain: true,
+                    ..RunArgv::default()
+                };
+            }
             // The `run` subcommand token (`runner run …`); the alias
             // binary has no subcommand. Only the first bare word can be
             // it. A task literally named `run` still terminates the
@@ -412,16 +508,27 @@ fn chain_flag_precedes_first_task(argv: &[std::ffi::OsString]) -> bool {
             // shorts, so a chain flag can hide inside one.
             _ if word.starts_with('-') && !word.starts_with("--") => {
                 if word.chars().skip(1).any(|c| c == 's' || c == 'p') {
-                    return true;
+                    return RunArgv {
+                        chain: true,
+                        ..RunArgv::default()
+                    };
                 }
             }
             _ if word.starts_with('-') => {}
             // First bare word is the task; anything after it belongs to
             // the task, not the chain.
-            _ => return false,
+            _ => {
+                return RunArgv {
+                    chain: false,
+                    task: Some(word.to_owned()),
+                    after: iter
+                        .filter_map(|rest| rest.to_str().map(str::to_owned))
+                        .collect(),
+                };
+            }
         }
     }
-    false
+    RunArgv::default()
 }
 
 /// Split tasks into other members' (`member:name` candidates) and local
@@ -706,8 +813,8 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{
-        ChainFailureFlags, Cli, Command, RunAliasCli, TaskPosition, chain_flag_precedes_first_task,
-        cli_dir_from_argv, forward_args_after_task, resolve_completion_dir, task_candidates_from,
+        ChainFailureFlags, Cli, Command, RunAliasCli, TaskPosition, cli_dir_from_argv,
+        forward_args_after_task, resolve_completion_dir, scan_run_argv, task_candidates_from,
     };
 
     fn osv(words: &[&str]) -> Vec<OsString> {
@@ -867,80 +974,129 @@ mod tests {
         }
     }
 
+    /// Two positionals with distinct choices, plus a value-taking flag, so
+    /// each completion position is distinguishable from the others.
+    fn two_positional_spec() -> crate::tool::mise::UsageSpec {
+        use crate::tool::mise::{UsageArg, UsageFlag, UsageSpec};
+        UsageSpec {
+            signature: "[first] [second]".to_string(),
+            args: vec![
+                UsageArg {
+                    name: "first".to_string(),
+                    help: None,
+                    required: false,
+                    choices: vec!["a".to_string()],
+                },
+                UsageArg {
+                    name: "second".to_string(),
+                    help: None,
+                    required: false,
+                    choices: vec!["b".to_string()],
+                },
+            ],
+            flags: vec![UsageFlag {
+                long: vec!["fn".to_string()],
+                short: vec![],
+                help: None,
+                required: false,
+                takes_value: true,
+            }],
+        }
+    }
+
+    fn typed(words: &[&str]) -> Vec<String> {
+        words.iter().map(|w| (*w).to_string()).collect()
+    }
+
+    #[test]
+    fn positional_index_counts_only_finished_positionals() {
+        let spec = two_positional_spec();
+        // Only the word being completed: still on the first positional.
+        assert_eq!(super::positional_index(&spec, &typed(&[""])), 0);
+        // One finished positional behind the cursor.
+        assert_eq!(super::positional_index(&spec, &typed(&["a", ""])), 1);
+        // A flag and the value it consumes are not positionals.
+        assert_eq!(
+            super::positional_index(&spec, &typed(&["--fn", "x", ""])),
+            0
+        );
+        assert_eq!(
+            super::positional_index(&spec, &typed(&["--fn", "x", "a", ""])),
+            1
+        );
+    }
+
+    #[test]
+    fn a_value_taking_flag_before_the_cursor_suppresses_candidates() {
+        // The last entry is the empty word being completed, so the flag to
+        // test is the one before it. Checking only the last entry made this
+        // case look fine while offering flags where the value belongs.
+        let spec = two_positional_spec();
+        let words = typed(&["--fn", ""]);
+        assert!(
+            words
+                .iter()
+                .rev()
+                .take(2)
+                .any(|word| spec.consumes_value_after(word)),
+            "a pending --fn value must suppress candidates",
+        );
+        // Once the value is typed, the next position is open again.
+        let words = typed(&["--fn", "x", ""]);
+        assert!(
+            !words
+                .iter()
+                .rev()
+                .take(2)
+                .any(|word| spec.consumes_value_after(word)),
+        );
+    }
+
     #[test]
     fn chain_flag_detected_before_first_task() {
         // `runner run -s build <TAB>`, chain mode, trailing words are tasks.
-        assert!(chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "runner",
-            "run",
-            "-s",
-            "build",
-            ""
-        ])));
+        assert!(
+            scan_run_argv(&osv(&[
+                "completer",
+                "--",
+                "runner",
+                "run",
+                "-s",
+                "build",
+                ""
+            ]))
+            .chain
+        );
         // Long form + value-carrying global flag before it.
-        assert!(chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "runner",
-            "--dir",
-            "/repo",
-            "run",
-            "--parallel",
-            "build",
-            ""
-        ])));
+        assert!(
+            scan_run_argv(&osv(&[
+                "completer",
+                "--",
+                "runner",
+                "--dir",
+                "/repo",
+                "run",
+                "--parallel",
+                "build",
+                ""
+            ]))
+            .chain
+        );
         // `run` alias binary, no subcommand token.
-        assert!(chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "run",
-            "-p",
-            "build",
-            ""
-        ])));
+        assert!(scan_run_argv(&osv(&["completer", "--", "run", "-p", "build", ""])).chain);
         // Chain flag hidden in a short cluster.
-        assert!(chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "run",
-            "-sk",
-            "build",
-            ""
-        ])));
+        assert!(scan_run_argv(&osv(&["completer", "--", "run", "-sk", "build", ""])).chain);
     }
 
     #[test]
     fn chain_flag_after_first_task_is_forwarded_not_chain() {
         // `run build -p 3000 <TAB>`, `-p` lands after the task, so
         // trailing_var_arg forwards it to the task; not chain mode.
-        assert!(!chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "run",
-            "build",
-            "-p",
-            "3000",
-            ""
-        ])));
+        assert!(!scan_run_argv(&osv(&["completer", "--", "run", "build", "-p", "3000", ""])).chain);
         // Plain single-task run.
-        assert!(!chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "runner",
-            "run",
-            "build",
-            ""
-        ])));
+        assert!(!scan_run_argv(&osv(&["completer", "--", "runner", "run", "build", ""])).chain);
         // No chain flag at all.
-        assert!(!chain_flag_precedes_first_task(&osv(&[
-            "completer",
-            "--",
-            "runner",
-            "run",
-            ""
-        ])));
+        assert!(!scan_run_argv(&osv(&["completer", "--", "runner", "run", ""])).chain);
     }
     use crate::types::{Task, TaskSource};
 
@@ -952,6 +1108,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }
@@ -959,6 +1116,7 @@ mod tests {
     fn turbo_passthrough(name: &str) -> Task {
         Task {
             passthrough_to: Some(crate::types::TaskRunner::Turbo),
+            detail: crate::types::TaskDetail::default(),
             ..task(name, TaskSource::PackageJson)
         }
     }
@@ -1491,6 +1649,20 @@ mod tests {
     }
 
     #[test]
+    fn install_accepts_no_tools_flag() {
+        let cli = Cli::try_parse_from(["runner", "install", "--no-tools"]).expect("parses");
+        let Some(Command::Install { no_tools, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(no_tools);
+        let cli = Cli::try_parse_from(["runner", "install"]).expect("parses");
+        let Some(Command::Install { no_tools, .. }) = cli.command else {
+            panic!("expected Install subcommand");
+        };
+        assert!(!no_tools);
+    }
+
+    #[test]
     fn install_scripts_and_no_scripts_are_mutually_exclusive() {
         let err = Cli::try_parse_from(["runner", "install", "--scripts", "--no-scripts"])
             .expect_err("--scripts and --no-scripts must conflict");
@@ -1872,6 +2044,10 @@ pub(crate) enum Command {
             display_order = help_order::COMMAND + 2
         )]
         scripts: bool,
+        /// Skip the toolchain step (`mise install`) that otherwise runs first
+        /// when a mise config is detected
+        #[arg(long = "no-tools", display_order = help_order::COMMAND + 3)]
+        no_tools: bool,
         /// Optional task names to run after install completes. Sequential by
         /// default; `-p` runs them concurrently once install finishes (install
         /// itself always runs first, never as a parallel sibling). Plain

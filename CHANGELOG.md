@@ -18,6 +18,116 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 
+### Added
+
+- `run test` with no `test` task runs the ecosystem's own test runner:
+  `bun test`, `deno test`, `cargo test`, `go test ./...`, `node --test` over
+  every `test.<ext>` and `*.test.<ext>` file below the current directory, and
+  for Python whichever of pytest, nose2, ward, Django's `manage.py test`,
+  tox, nox or `unittest` the project has. The bun-only special case is gone.
+  Arguments are forwarded; a Node file argument skips discovery.
+
+- Mise tasks carry what `mise tasks --json` declares beyond name and
+  description: `depends`, `depends_post`, `wait_for`, `dir`, `env`, `tools`,
+  `usage`, `file`, `sources`, `outputs`, and `timeout`. `runner why` prints
+  them under the selected task and fills its `dependencies`, `sources`, and
+  `outputs` fields, `list --json` adds `depends`, `dir`, and `usage`, and
+  `doctor --json` fills `tasks[].dependencies`. `cwd` in `why` and `doctor` is
+  the directory the task runs in when the source declares one. The direct TOML
+  fallback keeps `file` and leaves the rest empty.
+
+- `runner install` runs `mise install` before the package managers when the
+  project has a mise config, so tools the config declares (often the package
+  managers themselves) exist before they are called. `--frozen` adds
+  `--locked` when the config's lockfile exists. A project with only a mise
+  config and no manifest now installs its toolchain instead of failing with no
+  signals. A missing `mise` binary warns and continues. `--no-tools` skips the
+  step; `runner doctor` lists it under Decisions.
+
+- Tools mise manages are on the `PATH` of every process runner spawns in a
+  mise project. `mise install` installs without activating, so a package
+  manager mise had just installed was invisible to the install that ran next
+  unless the shell had already run `mise activate`.
+
+- `runner doctor` relays what mise says about the project: tools the config
+  declares that are not installed (`mise ls --missing`), and `mise tasks
+  validate` findings such as a missing or circular dependency. They appear
+  under Decisions and Warnings, and as `mise` diagnostics in `--json`.
+
+- `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` set variables on the
+  processes runner spawns, narrowest layer winning. A value set for a task
+  beats the same name set for the tool running it, which beats the
+  project-wide one, which beats the inherited environment. Every layer still
+  contributes the names the narrower ones do not set.
+
+- `[tools.<name>].install` says which of a tool's operations `runner install`
+  runs, in order. `install = true` is `["install"]`, `install = false` runs none,
+  and a bare string is a one-element list. mise is the only tool with more
+  than one operation today: `bootstrap` also does machine setup (system
+  packages, dotfiles, services, firewall), so it never runs unless the
+  project names it. An unrecognized operation is refused before anything
+  spawns.
+
+- `runner doctor --json` reports `overrides.tool_install`, and `overrides.env`
+  carrying the variable *names* each layer sets. Values are withheld, since
+  that payload is meant to be pasted into a bug report.
+
+- Shell completion offers a mise task's own flags and argument choices after
+  its name, from the `usage` spec the task declares. `run lower:leaf <TAB>`
+  offers `--fn`; `run baseline:explain <TAB>` offers that argument's
+  `choices`. A flag that takes a value suppresses further flag offers in the
+  position it consumes. Sources without a spec complete nothing, as before.
+
+- A mise task whose spec marks a flag required fails before dispatch when the
+  flag is absent, naming the flag and the task's signature. It used to fail
+  inside the task, after mise and whatever the task builds had already
+  started, which in a parallel chain leaves siblings running.
+
+- `runner why` prints a mise task's signature (`lower:leaf <--fn <name>>
+  [dir]`) instead of the raw `usage` block.
+
+### Fixed
+
+- `run <name>` with no matching task now looks for `<name>` in the project's
+  own bin dirs and on `PATH` before any rung that can download, so an
+  installed `npx` or `make` is no longer wrapped in `npx <name>` (#136). The
+  fetching rungs come last: `mise exec -- <name>` when the project uses mise,
+  then the package manager's exec primitive. On a terminal, a fetching rung
+  asks `[y/N]` first; a pipe proceeds as before. The resolver's `PATH` probe
+  also searches mise's tool dirs, so a project whose only package manager is
+  mise-managed and not yet activated no longer detects nothing.
+
+- Mise task discovery accepts task references in `run` arrays
+  (`run = [{ task = "check" }]`). One such task used to fail parsing of the
+  whole file, both through `mise tasks --json` and the direct TOML fallback,
+  so `runner list` reported no mise tasks at all (#138). Referenced tasks
+  render as `mise run <task>` in the description column; step shapes runner
+  does not model are skipped instead of aborting discovery.
+
+- Mise task discovery accepts a dependency carrying arguments
+  (`depends = [{ task = "gen", args = ["foo"] }]`, which mise emits as
+  `["gen", "foo"]`) and a structured tool request
+  (`tools = { node = { version = "22" } }`). Either one used to fail the whole
+  `mise tasks --json` payload, silently dropping runner back to the
+  single-file TOML fallback and losing every merged and file-based task.
+
+- A failing `mise tasks --json` is reported instead of silently downgrading to
+  the TOML fallback. Falling back is correct when mise is not installed, and
+  hid a broken config when it was.
+
+- `--frozen` finds the lockfile for a mise config outside the project root.
+  It looked only for `<root>/mise.lock`, so `.config/mise.toml`,
+  `mise/config.toml`, and `mise.local.toml` ran an unlocked tool install.
+
+### Security
+
+- The toolchain step resolves `mise` from the host `PATH`. It was spawned with
+  the project's own bin directories front-loaded, so an executable committed
+  to `node_modules/.bin/mise` ran in place of the real one, before the package
+  managers and under the identity running `runner`, and neither `--frozen` nor
+  `--no-scripts` prevented it. Task dispatch is unchanged: a task binary still
+  resolves from `node_modules/.bin` first.
+
 ## [0.26.2] - 2026-09-08
 
 ### Fixed

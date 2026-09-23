@@ -27,9 +27,10 @@
 //! `additionalProperties: false` (via `schemars(deny_unknown_fields)`), so
 //! editors flag typos inline even though the runtime tolerates them.
 //!
-//! Adding a new knob is two changes: a field on the matching section plus a
-//! consumer in `crate::resolver`. Keep [`KNOWN_SCHEMA`] in sync so the new
-//! key isn't mis-reported as unknown.
+//! Adding a new knob is three changes: a field on the matching section, a
+//! row in [`FIELD_TEMPLATE`], and a consumer in `crate::resolver`. The row
+//! is what makes the key recognized, scaffolded into `runner.toml`, and
+//! documented; a field without one fails the build.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -119,6 +120,62 @@ pub(crate) struct RunnerConfig {
     /// `[runtime]`, which JS runtime executes tasks and local files.
     #[serde(default)]
     pub runtime: RuntimeSection,
+    /// `[env]`, variables set on every process runner spawns in this project.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// `[tools]`, per-tool settings keyed by tool label (`mise`, `just`, …).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tools: BTreeMap<String, ToolSettings>,
+}
+
+/// `[tools.<name>]`, settings scoped to one detected tool.
+///
+/// Narrower than `[env]` and wider than a task entry, so a value here reaches
+/// every invocation of that tool and nothing else.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[cfg_attr(
+    feature = "schema",
+    derive(schemars::JsonSchema),
+    schemars(deny_unknown_fields)
+)]
+pub(crate) struct ToolSettings {
+    /// Which of the tool's operations `runner install` runs, in order.
+    ///
+    /// `true` is `["install"]`, `false` is `[]`, and a bare string is a
+    /// one-element list. Only mise defines more than one operation today
+    /// (`install` and `bootstrap`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<ToolInstall>,
+    /// Variables set on every invocation of this tool.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+}
+
+/// `[tools.<name>].install` as written: a toggle, one operation name, or an
+/// ordered list. All three normalize to a list via [`ToolInstall::operations`].
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(untagged)]
+pub(crate) enum ToolInstall {
+    /// `install = true` / `install = false`.
+    Toggle(bool),
+    /// `install = "bootstrap"`.
+    One(String),
+    /// `install = ["bootstrap", "install"]`.
+    Many(Vec<String>),
+}
+
+impl ToolInstall {
+    /// The operations to run, in order. `true` means the tool's default
+    /// operation, which every tool spells `install`.
+    pub(crate) fn operations(&self) -> Vec<String> {
+        match self {
+            Self::Toggle(true) => vec!["install".to_string()],
+            Self::Toggle(false) => Vec::new(),
+            Self::One(name) => vec![name.clone()],
+            Self::Many(names) => names.clone(),
+        }
+    }
 }
 
 /// `[runner]` output categories. An absent field inherits the selected quiet
@@ -576,6 +633,9 @@ pub(crate) struct TaskSettings {
     /// only; `[runner].task_timing = false` or a quiet preset wins over `true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_timing: Option<bool>,
+    /// Variables set on this task's process, over the tool and project layers.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Verbosity intent as written in config: a bare level name (`verbosity =
@@ -644,41 +704,231 @@ pub(crate) struct ResolutionSection {
     pub on_mismatch: Option<String>,
 }
 
-/// Recognized sections and their fields, mirroring the section structs and
-/// [`INIT_TEMPLATE`]. A key absent from this table is reported as an
-/// [`DetectionWarning::UnknownConfigKey`] rather than aborting the load, so a
-/// config written by a newer `runner` never bricks an older binary (and vice
-/// versa). Keep in sync when adding a section or field; the
-/// `known_schema_covers_every_section` test guards section-level drift.
-const KNOWN_SCHEMA: &[(&str, &[&str])] = &[
+/// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
+///
+/// The scaffold renderer in `cmd::schema` consumes this; it lives here
+/// because [`collect_unknown_keys`] shares the same table and must work in a
+/// build without the `schema` feature.
+#[derive(Clone, Copy)]
+pub(crate) enum FieldHint {
+    /// Hand-written hint text, for booleans and fields whose accepted
+    /// values aren't a small fixed set (`cmd::schema::broader_vocab` validates
+    /// their example value instead of enumerating every label inline).
+    Static(&'static str),
+    /// The field's real accepted-value set (`cmd::schema::accepted_labels`),
+    /// pipe-joined bare, with an optional trailing suffix note.
+    ClosedSet { suffix: Option<&'static str> },
+    /// The field's real accepted-value set, each with a short
+    /// parenthetical note. Every label `cmd::schema::accepted_labels` returns for
+    /// this field must have exactly one entry here, enforced by
+    /// `field_template_hints_cover_every_accepted_label`.
+    Annotated(&'static [(&'static str, &'static str)]),
+}
+
+/// (section, field) -> (commented-out value, hint). Every field
+/// [`RunnerConfig`]'s schemars metadata declares must
+/// have an entry here, and every entry must name a real field, both
+/// enforced by `cmd::schema::render_init_template`'s own assertions, which run
+/// whenever `committed_init_template_matches_generator` exercises it,
+/// so a new config field can't ship without scaffold coverage. Values
+/// are either the field's real built-in default (`fallback`,
+/// `on_mismatch`, the three booleans) or, where there's no single
+/// sensible default to show (an unset PM override, an empty preference
+/// list), a hand-picked illustrative example, validated against the
+/// real accepted vocabulary (`cmd::schema::accepted_labels`) by
+/// `field_template_values_use_real_accepted_labels`.
+pub(crate) const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
     (
         "runner",
-        &[
-            "progress",
-            "warnings",
-            "errors",
-            "groups",
-            "task_timing",
-            "summary",
-            "fatal_errors",
-        ],
+        "progress",
+        "true",
+        FieldHint::Static("dispatch and status text"),
     ),
-    ("host", &["diagnostics", "stream"]),
-    ("pm", &["node", "python"]),
-    ("task_runner", &["prefer"]),
-    ("tasks", &["prefer", "overrides"]),
-    ("install", &["pms", "scripts", "on_collision"]),
-    ("resolution", &["fallback", "on_mismatch"]),
-    ("chain", &["keep_going", "kill_on_fail"]),
-    ("github", &["group_output", "group_parallel"]),
-    ("parallel", &["grouped"]),
-    ("runtime", &["js"]),
+    (
+        "runner",
+        "warnings",
+        "true",
+        FieldHint::Static("non-fatal warnings"),
+    ),
+    (
+        "runner",
+        "errors",
+        "true",
+        FieldHint::Static("recoverable error decoration"),
+    ),
+    (
+        "runner",
+        "groups",
+        "true",
+        FieldHint::Static("task headers and GitHub groups"),
+    ),
+    (
+        "runner",
+        "task_timing",
+        "true",
+        FieldHint::Static("per-task timing and grouped footers"),
+    ),
+    (
+        "runner",
+        "summary",
+        "true",
+        FieldHint::Static("final multi-task chain roll-up"),
+    ),
+    (
+        "runner",
+        "fatal_errors",
+        "true",
+        FieldHint::Static("fatal diagnostics; exit status is unchanged"),
+    ),
+    (
+        "host",
+        "diagnostics",
+        r#""normal""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "host",
+        "stream",
+        r#""inherit""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "pm",
+        "node",
+        r#""pnpm""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "pm",
+        "python",
+        r#""uv""#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "tasks",
+        "prefer",
+        r#"["turbo", "bun"]"#,
+        FieldHint::Static("global order: turbo, then package.json (bun)"),
+    ),
+    (
+        "tasks",
+        "overrides",
+        r#"{ dev = "bun", build = "turbo" }"#,
+        FieldHint::Static("per-task pins beat the order"),
+    ),
+    (
+        "task_runner",
+        "prefer",
+        r#"["just", "turbo"]"#,
+        FieldHint::ClosedSet { suffix: None },
+    ),
+    (
+        "install",
+        "pms",
+        r#"["bun"]"#,
+        FieldHint::Static("only install with these; each must be detected"),
+    ),
+    (
+        "install",
+        "scripts",
+        r#""deny""#,
+        FieldHint::ClosedSet {
+            suffix: Some("(absent = each PM's own default)"),
+        },
+    ),
+    (
+        "install",
+        "on_collision",
+        r#""resolve""#,
+        FieldHint::Annotated(&[
+            ("resolve", "one writer per install dir, rest shadowed"),
+            ("error", "refuse to pick"),
+        ]),
+    ),
+    (
+        "resolution",
+        "fallback",
+        r#""probe""#,
+        FieldHint::Annotated(&[("probe", "PATH probe"), ("npm", "legacy"), ("error", "")]),
+    ),
+    (
+        "resolution",
+        "on_mismatch",
+        r#""warn""#,
+        FieldHint::Annotated(&[("warn", ""), ("ignore", ""), ("error", "exit 2")]),
+    ),
+    (
+        "chain",
+        "keep_going",
+        "false",
+        FieldHint::Static("run every task despite failures (same as -k)"),
+    ),
+    (
+        "chain",
+        "kill_on_fail",
+        "false",
+        FieldHint::Static("parallel: kill siblings on first failure (same as -K)"),
+    ),
+    (
+        "github",
+        "group_output",
+        "true",
+        FieldHint::Static("::group:: each task; annotate failed chain tasks"),
+    ),
+    (
+        "github",
+        "group_parallel",
+        "true",
+        FieldHint::Static("buffer parallel tasks, print each as one block"),
+    ),
+    (
+        "parallel",
+        "grouped",
+        "false",
+        FieldHint::Static("buffer + print each task as one block on completion"),
+    ),
+    (
+        "runtime",
+        "js",
+        r#""bun""#,
+        FieldHint::Static("node | bun | deno; bun implies `bun --bun run`"),
+    ),
 ];
+
+/// Sections whose keys the user chooses rather than runner: `[env]` holds
+/// variable names, `[tools]` holds tool labels. Neither declares fixed
+/// fields, so neither has [`FIELD_TEMPLATE`] rows. A `[tools.<name>]`
+/// entry's own fields are checked against [`TOOL_ENTRY_FIELDS`] instead.
+pub(crate) const OPEN_MAP_SECTIONS: &[&str] = &["env", "tools"];
+
+/// The fields recognized under `section`, from [`FIELD_TEMPLATE`].
+///
+/// The table carries deprecated sections too (the scaffold renderer skips
+/// those when writing a starter file); a config that still sets one is
+/// recognized rather than warned about.
+///
+/// A key absent from the table is reported as a
+/// [`DetectionWarning::UnknownConfigKey`] rather than aborting the load, so a
+/// config written by a newer `runner` never bricks an older binary, and vice
+/// versa.
+fn known_fields(section: &str) -> Option<Vec<&'static str>> {
+    let fields: Vec<&'static str> = FIELD_TEMPLATE
+        .iter()
+        .filter(|(entry_section, ..)| *entry_section == section)
+        .map(|(_, field, ..)| *field)
+        .collect();
+    (!fields.is_empty()).then_some(fields)
+}
 
 /// Reserved keys under `[tasks]` that are section fields, not task entries.
 /// Every other key is a task name; a table-valued task entry has its fields
 /// checked against [`TASK_ENTRY_FIELDS`] (see [`collect_unknown_keys`]).
 const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
+
+/// Recognized fields of a `[tools.<name>]` table entry ([`ToolSettings`]).
+/// Mirrors the struct; the `known_tool_entry_fields_match_schema` test guards
+/// drift.
+const TOOL_ENTRY_FIELDS: &[&str] = &["install", "env"];
 
 /// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
 /// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
@@ -691,13 +941,14 @@ const TASK_ENTRY_FIELDS: &[&str] = &[
     "progress",
     "groups",
     "task_timing",
+    "env",
 ];
 
 /// Recognized fields of a `[tasks.<name>].verbosity` table ([`VerbosityTable`]).
 const VERBOSITY_TABLE_FIELDS: &[&str] = &["level", "stream"];
 
 /// Collect forward-compat warnings for sections/fields this build doesn't
-/// recognize. Walks the raw parsed table against [`KNOWN_SCHEMA`]; a
+/// recognize. Walks the raw parsed table against [`FIELD_TEMPLATE`]; a
 /// non-table where a section is expected is left for the typed deserialize to
 /// reject (a genuine type error, not version skew).
 pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning> {
@@ -706,7 +957,18 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
     };
     let mut warnings = Vec::new();
     for (section, body) in table {
-        let Some((_, known_fields)) = KNOWN_SCHEMA.iter().find(|(name, _)| name == section) else {
+        if OPEN_MAP_SECTIONS.contains(&section.as_str()) {
+            // `[env]` keys are variable names; `[tools]` keys are tool
+            // labels. Neither can be an unknown *field*, but a `[tools]`
+            // entry's own fields are fixed, so recurse one level there.
+            if section == "tools"
+                && let Some(body) = body.as_table()
+            {
+                collect_unknown_tool_keys(body, &mut warnings);
+            }
+            continue;
+        }
+        let Some(known_fields) = known_fields(section) else {
             warnings.push(DetectionWarning::UnknownConfigKey {
                 path: section.clone(),
             });
@@ -734,6 +996,25 @@ pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning>
         }
     }
     warnings
+}
+
+/// Field-level forward-compat check for the `[tools]` open map. Tool labels
+/// are arbitrary, so only an entry's own fields are checked, against
+/// [`TOOL_ENTRY_FIELDS`]. `env` under an entry is itself an open map and is
+/// not recursed into.
+fn collect_unknown_tool_keys(tools: &toml::value::Table, warnings: &mut Vec<DetectionWarning>) {
+    for (name, entry) in tools {
+        let Some(fields) = entry.as_table() else {
+            continue;
+        };
+        for field in fields.keys() {
+            if !TOOL_ENTRY_FIELDS.contains(&field.as_str()) {
+                warnings.push(DetectionWarning::UnknownConfigKey {
+                    path: format!("tools.{name}.{field}"),
+                });
+            }
+        }
+    }
 }
 
 /// Field-level forward-compat check for the `[tasks]` open map. A task entry is
@@ -916,7 +1197,7 @@ mod tests {
     use std::fs;
 
     use super::{
-        CONFIG_FILENAME, INIT_TEMPLATE, KNOWN_SCHEMA, LoadedConfig, RunnerConfig, load,
+        CONFIG_FILENAME, FIELD_TEMPLATE, INIT_TEMPLATE, LoadedConfig, RunnerConfig, load,
         parse_node_pm, parse_python_pm,
     };
     use crate::tool::test_support::TempDir;
@@ -1348,22 +1629,16 @@ mod tests {
     }
 
     #[test]
-    fn known_schema_matches_init_template_sections_and_fields() {
-        // Guard KNOWN_SCHEMA against drift in both directions, at section AND
-        // field granularity. The scaffold ships every non-deprecated knob
-        // (commented out), so its sections/fields are the canonical set
-        // modulo deprecated sections (see DEPRECATED_SECTIONS below), which
-        // `render_init_template` deliberately omits so new users never get
-        // handed one; a field missing from KNOWN_SCHEMA makes `config init`
-        // write a file that warns about its own keys, while a stale
-        // KNOWN_SCHEMA entry lists a field nobody can set. Equality catches
-        // either, so adding a struct field forces the template and
-        // KNOWN_SCHEMA to be updated alongside it.
+    fn field_template_matches_init_template_sections_and_fields() {
+        // The committed scaffold is generated from FIELD_TEMPLATE, so the two
+        // must agree field for field. A field missing from the scaffold makes
+        // `config init` write a file that omits a real knob; a stale scaffold
+        // entry offers one nobody can set.
         use std::collections::{BTreeMap, BTreeSet};
 
-        // Sections KNOWN_SCHEMA recognizes (for backward-compat parsing) but
-        // that `render_init_template` intentionally leaves out of the
-        // scaffold because they're deprecated.
+        // Deprecated sections keep their FIELD_TEMPLATE rows (so drift is
+        // still caught) but `render_init_template` leaves them out of the
+        // starter file rather than hand a new user a superseded section.
         const DEPRECATED_SECTIONS: &[&str] = &["task_runner"];
 
         // Walk the template into section -> {field names it emits}.
@@ -1397,39 +1672,43 @@ mod tests {
             }
         }
 
-        let mut known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
-            .iter()
-            .map(|(name, fields)| {
-                (
-                    (*name).to_string(),
-                    fields.iter().map(|f| (*f).to_string()).collect(),
-                )
-            })
-            .collect();
+        let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (section, field, ..) in FIELD_TEMPLATE {
+            known
+                .entry((*section).to_string())
+                .or_default()
+                .insert((*field).to_string());
+        }
         for section in DEPRECATED_SECTIONS {
             known.remove(*section);
+        }
+        // Open-map sections are scaffolded from a hand-written example and
+        // declare no fields, so there is nothing to compare field-wise. The
+        // template walker also cannot see a commented-out `[tools.mise]`
+        // header, so its example keys land under whatever section precedes it.
+        for section in super::OPEN_MAP_SECTIONS {
+            known.remove(*section);
+            template.remove(*section);
         }
 
         assert_eq!(
             template, known,
-            "INIT_TEMPLATE sections/fields must match KNOWN_SCHEMA (minus DEPRECATED_SECTIONS) \
-             exactly, keep the section structs, the scaffold template, and KNOWN_SCHEMA in sync \
-             when adding a knob"
+            "INIT_TEMPLATE sections/fields must match FIELD_TEMPLATE exactly; regenerate the \
+             scaffold with `just gen-schema` after adding a row"
         );
     }
 
     #[cfg(feature = "schema")]
     #[test]
-    fn known_schema_matches_generated_runner_config_schema() {
-        // known_schema_matches_init_template_sections_and_fields only
-        // catches INIT_TEMPLATE drifting from KNOWN_SCHEMA, a struct field
-        // added to a section without updating either the scaffold or
-        // KNOWN_SCHEMA passes that guard invisibly (template and KNOWN_SCHEMA
-        // still agree with each other, just not with the real type; the
-        // typed deserializer would accept the field while
-        // `collect_unknown_keys` spuriously flags it as unknown). Compare
-        // KNOWN_SCHEMA directly against the schemars-derived shape of
-        // RunnerConfig, independent of the scaffold.
+    fn known_fields_match_generated_runner_config_schema() {
+        // field_template_matches_init_template_sections_and_fields only
+        // catches the scaffold drifting from FIELD_TEMPLATE: a struct field
+        // added without a row passes that guard invisibly (scaffold and table
+        // still agree with each other, just not with the real type; the typed
+        // deserializer would accept the field while `collect_unknown_keys`
+        // spuriously flags it as unknown). Compare the recognized set
+        // directly against the schemars-derived shape of RunnerConfig,
+        // independent of the scaffold.
         use std::collections::{BTreeMap, BTreeSet};
 
         let schema = serde_json::to_value(schemars::schema_for!(RunnerConfig))
@@ -1444,6 +1723,9 @@ mod tests {
 
         let generated: BTreeMap<String, BTreeSet<String>> = top_properties
             .iter()
+            // Open-map sections declare no fixed fields, so there is nothing
+            // on either side to compare.
+            .filter(|(section, _)| !super::OPEN_MAP_SECTIONS.contains(&section.as_str()))
             .map(|(section, section_schema)| {
                 let def_name = section_schema["$ref"]
                     .as_str()
@@ -1466,22 +1748,78 @@ mod tests {
             })
             .collect();
 
-        let known: BTreeMap<String, BTreeSet<String>> = KNOWN_SCHEMA
-            .iter()
-            .map(|(name, fields)| {
-                (
-                    (*name).to_string(),
-                    fields.iter().map(|f| (*f).to_string()).collect(),
-                )
-            })
-            .collect();
+        let mut known: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (section, field, ..) in FIELD_TEMPLATE {
+            known
+                .entry((*section).to_string())
+                .or_default()
+                .insert((*field).to_string());
+        }
 
         assert_eq!(
             generated, known,
-            "KNOWN_SCHEMA must match RunnerConfig's real (schemars-derived) shape exactly, a \
-             struct field with no KNOWN_SCHEMA entry is silently treated as unknown by \
-             collect_unknown_keys even though the typed deserializer accepts it"
+            "FIELD_TEMPLATE must match RunnerConfig's real (schemars-derived) shape exactly; a \
+             struct field with no row is silently treated as unknown by collect_unknown_keys even \
+             though the typed deserializer accepts it"
         );
+    }
+
+    #[test]
+    fn tool_install_normalizes_every_spelling() {
+        use super::ToolInstall;
+        assert_eq!(ToolInstall::Toggle(true).operations(), ["install"]);
+        assert!(ToolInstall::Toggle(false).operations().is_empty());
+        assert_eq!(
+            ToolInstall::One("bootstrap".into()).operations(),
+            ["bootstrap"]
+        );
+        assert_eq!(
+            ToolInstall::Many(vec!["bootstrap".into(), "install".into()]).operations(),
+            ["bootstrap", "install"],
+        );
+    }
+
+    #[test]
+    fn tool_install_parses_all_four_toml_forms() {
+        for (written, expected) in [
+            ("install = true", vec!["install"]),
+            ("install = false", vec![]),
+            (r#"install = "bootstrap""#, vec!["bootstrap"]),
+            (
+                r#"install = ["bootstrap", "install"]"#,
+                vec!["bootstrap", "install"],
+            ),
+        ] {
+            let config: RunnerConfig =
+                toml::from_str(&format!("[tools.mise]\n{written}\n")).expect("parses");
+            let install = config.tools["mise"]
+                .install
+                .as_ref()
+                .expect("install is set");
+            assert_eq!(install.operations(), expected, "{written}");
+        }
+    }
+
+    #[test]
+    fn open_map_sections_do_not_warn_about_their_keys() {
+        let doc: toml::Value = toml::from_str(
+            "[env]\nANYTHING = \"1\"\n\n[tools.mise]\ninstall = true\nenv = { A = \"b\" }\n",
+        )
+        .expect("parses");
+        assert!(super::collect_unknown_keys(&doc).is_empty());
+    }
+
+    #[test]
+    fn a_tool_entry_field_typo_still_warns() {
+        let doc: toml::Value = toml::from_str("[tools.mise]\ninstalll = true\n").expect("parses");
+        let paths: Vec<String> = super::collect_unknown_keys(&doc)
+            .into_iter()
+            .map(|w| match w {
+                DetectionWarning::UnknownConfigKey { path } => path,
+                other => panic!("unexpected warning: {other:?}"),
+            })
+            .collect();
+        assert_eq!(paths, ["tools.mise.installl"]);
     }
 
     #[test]

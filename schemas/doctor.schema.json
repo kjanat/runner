@@ -207,9 +207,11 @@
           ]
         },
         "dependencies": {
-          "description": "Task dependencies. Always empty today: no extractor records dependency edges yet; the edge shape lands with the first extractor.",
+          "description": "Tasks that run before this one, as the source declares them. Filled from `mise tasks --json`; empty for sources without dependency edges.",
           "type": "array",
-          "items": true
+          "items": {
+            "type": "string"
+          }
         },
         "description": {
           "type": [
@@ -308,6 +310,42 @@
         },
         "signals": {
           "description": "Detection evidence. Node carries the full signal set (lockfile/manifest/PATH probe/shim classification, keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnvNames": {
+      "description": "The variable *names* each env layer sets. Values never appear here.",
+      "type": "object",
+      "required": [
+        "project",
+        "task",
+        "tool"
+      ],
+      "properties": {
+        "project": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "task": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "tool": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -540,6 +578,7 @@
       "description": "The overrides in effect for this run: `--pm`, `--fallback`, the\n`RUNNER_*` env vars, and the `runner.toml` policy sections, reported by\ntheir labels. Where each came from (CLI, env, or config) is on the\n`list`/`info` surface instead.",
       "type": "object",
       "required": [
+        "env",
         "explain",
         "failure_policy",
         "fallback",
@@ -557,9 +596,14 @@
         "runner",
         "runtime",
         "script_policy",
-        "task_source_pins"
+        "task_source_pins",
+        "tool_install"
       ],
       "properties": {
+        "env": {
+          "$ref": "#/$defs/EnvNames",
+          "description": "Variable names each `env` layer sets, narrowest last. Values are withheld: this payload is meant to be pasted into a bug report."
+        },
         "explain": {
           "type": "boolean"
         },
@@ -671,6 +715,16 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/TaskSourceLabel"
+            }
+          }
+        },
+        "tool_install": {
+          "description": "`[tools.<name>].install`, the operations `runner install` runs for each tool, in order.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
             }
           }
         }

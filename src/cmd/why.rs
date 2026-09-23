@@ -433,11 +433,67 @@ struct WhyTask<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Task dependencies. Always empty today: no extractor records dependency \
-                           edges yet."
+            description = "Tasks that run before this one, as the source declares them. Filled \
+                           from `mise tasks --json`; empty for sources without dependency edges."
         )
     )]
     dependencies: Vec<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Tasks the source runs after this one.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    depends_post: Vec<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Tasks this one waits for when they are already scheduled.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    wait_for: Vec<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "`KEY=VALUE` pairs the source sets for the task.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    env: Vec<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Argument and flag spec in the source's own language (mise: usage KDL)."
+        )
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<&'a str>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Tool version pins the task declares, as `tool@version`.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<String>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Input globs the source declares for up-to-date checks.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sources: Vec<&'a str>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Output globs the source declares for up-to-date checks.")
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    outputs: Vec<&'a str>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Script file backing the task.")
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<&'a str>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(description = "Timeout in the source's own duration syntax.")
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout: Option<&'a str>,
 }
 
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -584,8 +640,22 @@ fn task_report<'a>(
             .collect(),
         definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
         resolved: resolved_command(task, runtime, pm_decision.filter(|_| is_selected)),
-        cwd: task.dir(&ctx.root).display().to_string(),
-        dependencies: Vec::new(),
+        cwd: task.run_dir(&ctx.root).display().to_string(),
+        dependencies: task.detail.depends.clone(),
+        depends_post: task.detail.depends_post.clone(),
+        wait_for: task.detail.wait_for.clone(),
+        env: task.detail.env.clone(),
+        tools: task
+            .detail
+            .tools
+            .iter()
+            .map(|(tool, version)| format!("{tool}@{version}"))
+            .collect(),
+        usage: task.detail.usage.as_deref(),
+        sources: task.detail.sources.iter().map(String::as_str).collect(),
+        outputs: task.detail.outputs.iter().map(String::as_str).collect(),
+        file: task.detail.file.as_deref(),
+        timeout: task.detail.timeout.as_deref(),
     }
 }
 
@@ -715,6 +785,102 @@ fn resolved_command(
     clippy::too_many_lines,
     reason = "linear human report renderer mirrors the structured report sections"
 )]
+/// The facts the source declared beyond name and description, one line
+/// each, only when present.
+fn print_detail(task: &Task, ctx: &ProjectContext) {
+    let detail = &task.detail;
+    let mut lines: Vec<(&str, String)> = Vec::new();
+    if let Some(dir) = &detail.dir
+        && dir != task.dir(&ctx.root)
+    {
+        let shown = dir.strip_prefix(&ctx.root).unwrap_or(dir);
+        lines.push(("runs in", shown.display().to_string()));
+    }
+    if !detail.depends.is_empty() {
+        lines.push(("depends on", detail.depends.join(", ")));
+    }
+    if !detail.depends_post.is_empty() {
+        lines.push(("followed by", detail.depends_post.join(", ")));
+    }
+    if !detail.wait_for.is_empty() {
+        lines.push(("waits for", detail.wait_for.join(", ")));
+    }
+    if !detail.env.is_empty() {
+        lines.push(("env", detail.env.join(" ")));
+    }
+    if !detail.tools.is_empty() {
+        let tools: Vec<String> = detail
+            .tools
+            .iter()
+            .map(|(tool, version)| format!("{tool}@{version}"))
+            .collect();
+        lines.push(("tools", tools.join(", ")));
+    }
+    if !detail.sources.is_empty() {
+        lines.push(("sources", detail.sources.join(", ")));
+    }
+    if !detail.outputs.is_empty() {
+        lines.push(("outputs", detail.outputs.join(", ")));
+    }
+    if let Some(file) = &detail.file {
+        lines.push(("file", file.clone()));
+    }
+    if let Some(timeout) = &detail.timeout {
+        lines.push(("timeout", timeout.clone()));
+    }
+    if let Some(usage) = &detail.usage {
+        // Prefer the signature the source itself renders; fall back to the
+        // raw spec when the source cannot be asked for a parsed one.
+        let rendered = (task.source == TaskSource::MiseToml)
+            .then(|| crate::tool::mise::usage_spec(&ctx.root, &task.name))
+            .flatten()
+            .filter(|spec| !spec.signature.trim().is_empty())
+            .map(|spec| format!("{} {}", task.name, spec.signature));
+        lines.push((
+            "usage",
+            rendered.unwrap_or_else(|| usage.replace('\n', "\n              ")),
+        ));
+    }
+    for (label, value) in lines {
+        println!("  {:<12}{}", label.dimmed(), value);
+    }
+}
+
+/// One line per candidate with the rank key that ordered it.
+fn print_candidates(candidates: &[&Task], overrides: &ResolutionOverrides, ctx: &ProjectContext) {
+    println!("{}", "Candidates".bold());
+    for c in candidates {
+        let depth = source_depth(ctx, c.source);
+        let depth_label = if depth == usize::MAX {
+            "-".to_string()
+        } else {
+            depth.to_string()
+        };
+        let alias_tag = c
+            .alias_of
+            .as_deref()
+            .map_or(String::new(), |target| format!(" → {target}"));
+        let passthrough_tag = c.passthrough_to.map_or(String::new(), |r| {
+            format!(" (passthrough to {})", r.label())
+        });
+        let scope_tag = c
+            .member
+            .as_ref()
+            .map_or(String::new(), |member| format!(" ({})", member.name));
+        println!(
+            "  {} {}{} [priority={}, depth={}, order={}]{}{}",
+            "·".dimmed(),
+            c.source.label().bold(),
+            scope_tag,
+            source_priority(overrides, c.source),
+            depth_label,
+            c.source.display_order(),
+            alias_tag,
+            passthrough_tag,
+        );
+    }
+}
+
 fn print_human(
     task: &str,
     candidates: &[&Task],
@@ -759,37 +925,7 @@ fn print_human(
         return;
     }
 
-    println!("{}", "Candidates".bold());
-    for c in candidates {
-        let depth = source_depth(ctx, c.source);
-        let depth_label = if depth == usize::MAX {
-            "-".to_string()
-        } else {
-            depth.to_string()
-        };
-        let alias_tag = c
-            .alias_of
-            .as_deref()
-            .map_or(String::new(), |target| format!(" → {target}"));
-        let passthrough_tag = c.passthrough_to.map_or(String::new(), |r| {
-            format!(" (passthrough to {})", r.label())
-        });
-        let scope_tag = c
-            .member
-            .as_ref()
-            .map_or(String::new(), |member| format!(" ({})", member.name));
-        println!(
-            "  {} {}{} [priority={}, depth={}, order={}]{}{}",
-            "·".dimmed(),
-            c.source.label().bold(),
-            scope_tag,
-            source_priority(overrides, c.source),
-            depth_label,
-            c.source.display_order(),
-            alias_tag,
-            passthrough_tag,
-        );
-    }
+    print_candidates(candidates, overrides, ctx);
     println!();
 
     if let Some(sel) = selected {
@@ -803,6 +939,7 @@ fn print_human(
             "  {}",
             "key: (source_priority, depth, display_order, alias_last)".dimmed()
         );
+        print_detail(sel, ctx);
     }
 
     if let Some(res) = pm_decision {
@@ -895,6 +1032,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }

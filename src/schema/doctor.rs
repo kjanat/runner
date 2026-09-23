@@ -80,6 +80,16 @@ pub(crate) struct DoctorReport<'a> {
     resolution: ResolutionPolicy,
 }
 
+/// The variable *names* each env layer sets. Values never appear here.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "schema", schemars(deny_unknown_fields))]
+struct EnvNames {
+    project: Vec<String>,
+    tool: BTreeMap<String, Vec<String>>,
+    task: BTreeMap<String, Vec<String>>,
+}
+
 /// How this report came to be: the exact process invocation.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Serialize)]
@@ -182,6 +192,22 @@ struct Overrides {
     runner: Option<TaskRunner>,
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "Variable names each `env` layer sets, narrowest last. Values are \
+                           withheld: this payload is meant to be pasted into a bug report."
+        )
+    )]
+    env: EnvNames,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(
+            description = "`[tools.<name>].install`, the operations `runner install` runs for \
+                           each tool, in order."
+        )
+    )]
+    tool_install: BTreeMap<String, Vec<String>>,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
 
@@ -334,11 +360,11 @@ struct DoctorTask<'a> {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "Task dependencies. Always empty today: no extractor records dependency \
-                           edges yet; the edge shape lands with the first extractor."
+            description = "Tasks that run before this one, as the source declares them. Filled \
+                           from `mise tasks --json`; empty for sources without dependency edges."
         )
     )]
-    dependencies: Vec<serde_json::Value>,
+    dependencies: Vec<&'a str>,
     description: Option<&'a str>,
     fqn: String,
     #[cfg_attr(
@@ -561,6 +587,7 @@ impl<'a> DoctorReport<'a> {
             .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
             .map(diagnostic)
             .chain(plan_diagnostics)
+            .chain(mise_diagnostics(ctx))
             .collect();
 
         Self {
@@ -647,6 +674,14 @@ fn runner_info() -> RunnerInfo {
     }
 }
 
+/// Variable names per scope, values dropped.
+fn env_names(layers: &BTreeMap<String, BTreeMap<String, String>>) -> BTreeMap<String, Vec<String>> {
+    layers
+        .iter()
+        .map(|(scope, vars)| (scope.clone(), vars.keys().cloned().collect::<Vec<_>>()))
+        .collect()
+}
+
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     Overrides {
         explain: overrides.explain,
@@ -694,6 +729,12 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         runner: overrides.runner.as_ref().map(|o| o.runner),
         runtime: overrides.runtime.as_ref().map(|o| o.runtime),
         script_policy: overrides.script_policy,
+        env: EnvNames {
+            project: overrides.env.project.keys().cloned().collect(),
+            tool: env_names(&overrides.env.tool),
+            task: env_names(&overrides.env.task),
+        },
+        tool_install: overrides.tool_install.clone(),
         task_source_pins: overrides
             .task_source_overrides
             .iter()
@@ -1001,9 +1042,9 @@ fn tasks<'a>(
                 })
                 .map(|other| other.name.as_str())
                 .collect(),
-            cwd: task.dir(&ctx.root).display().to_string(),
+            cwd: task.run_dir(&ctx.root).display().to_string(),
             definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
-            dependencies: Vec::new(),
+            dependencies: task.detail.depends.iter().map(String::as_str).collect(),
             description: task.description.as_deref(),
             fqn: super::labels::fqn(task),
             is_alias: task.alias_of.is_some(),
@@ -1271,6 +1312,35 @@ fn display_depth(depth: usize) -> String {
     }
 }
 
+/// What mise itself reports about the project: declared tools that are not
+/// installed, and `mise tasks validate` findings. Runner relays these
+/// rather than re-implementing them.
+fn mise_diagnostics(ctx: &ProjectContext) -> Vec<Diagnostic> {
+    if !ctx.task_runners.contains(&TaskRunner::Mise) {
+        return Vec::new();
+    }
+    let health = crate::tool::mise::health(&ctx.root);
+    let missing = health.missing_tools.iter().map(|tool| Diagnostic {
+        code: "mise",
+        message: format!("{tool} is declared but not installed; `runner install` installs it"),
+        severity: Severity::Warning,
+        source: Some("mise"),
+        task: None,
+    });
+    let issues = health.task_issues.into_iter().map(|issue| Diagnostic {
+        code: "mise",
+        message: format!("mise tasks validate: {}", issue.message),
+        severity: if issue.severity == "error" {
+            Severity::Warning
+        } else {
+            Severity::Info
+        },
+        source: Some("mise"),
+        task: Some(issue.task),
+    });
+    missing.chain(issues).collect()
+}
+
 fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
     Diagnostic {
         code: warning.source(),
@@ -1350,6 +1420,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }
@@ -1658,6 +1729,8 @@ mod tests {
             on_collision,
             parent_group_open,
             parent_warned,
+            env,
+            tool_install,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))

@@ -1,7 +1,7 @@
 //! Shared types used across detection, commands, and tool modules.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -221,14 +221,54 @@ pub(crate) struct Task {
     pub passthrough_to: Option<TaskRunner>,
     /// The workspace member this task belongs to; `None` for root tasks.
     pub member: Option<Arc<WorkspaceMember>>,
+    /// Everything else the source declared about the task. Populated by
+    /// extractors that read a tool's own structured output (`mise tasks
+    /// --json`); left at its default by file-parsing fallbacks.
+    pub detail: TaskDetail,
+}
+
+/// Structured facts about a task beyond name and description: its
+/// dependency edges, working directory, environment, and argument spec.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TaskDetail {
+    /// Tasks that run before this one.
+    pub depends: Vec<String>,
+    /// Tasks that run after this one.
+    pub depends_post: Vec<String>,
+    /// Tasks this one waits for when they are already scheduled.
+    pub wait_for: Vec<String>,
+    /// Directory the tool runs the task in, when it differs from the
+    /// scope directory.
+    pub dir: Option<PathBuf>,
+    /// `KEY=VALUE` pairs the task sets.
+    pub env: Vec<String>,
+    /// Tool versions the task pins, keyed by tool.
+    pub tools: BTreeMap<String, String>,
+    /// Argument and flag spec in the tool's own language (mise: usage KDL).
+    pub usage: Option<String>,
+    /// Script file backing the task.
+    pub file: Option<String>,
+    /// Input globs for up-to-date checks.
+    pub sources: Vec<String>,
+    /// Output globs for up-to-date checks.
+    pub outputs: Vec<String>,
+    /// Timeout in the tool's own duration syntax.
+    pub timeout: Option<String>,
 }
 
 impl Task {
-    /// Directory the task runs in: the member's directory, or `root`.
+    /// Directory the task's config lives in: the member's directory, or
+    /// `root`.
     pub(crate) fn dir<'a>(&'a self, root: &'a Path) -> &'a Path {
         self.member
             .as_ref()
             .map_or(root, |member| member.dir.as_path())
+    }
+
+    /// Directory the task executes in: the declared one when the source
+    /// reports it, else [`Self::dir`].
+    pub(crate) fn run_dir<'a>(&'a self, root: &'a Path) -> &'a Path {
+        self.detail.dir.as_deref().unwrap_or_else(|| self.dir(root))
     }
 
     /// FQN scope segment: the member label, or `root`.
@@ -1295,7 +1335,7 @@ fn parse_current_version(current: &str) -> Option<semver::Version> {
 #[cfg(test)]
 mod tests {
     use super::version_matches;
-    use super::{DetectionWarning, PackageManager};
+    use super::{DetectionWarning, PackageManager, TaskDetail};
 
     /// The serde `kebab-case` renames and the hand-written `label()`
     /// methods are parallel sources of the same strings; this pins them
@@ -1379,6 +1419,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: TaskDetail::default(),
                 member: Some(Arc::clone(member)),
             })
             .collect();

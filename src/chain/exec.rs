@@ -940,8 +940,8 @@ fn dispatch_item(
             // v1 ChainItem.args is always empty; v2 will populate it.
             crate::cmd::run::run(ctx, overrides, name, &item.args, Some(warnings))
         }
-        ChainItemKind::Install { frozen } => {
-            crate::cmd::install::install_pms(ctx, overrides, *frozen, Some(warnings))
+        ChainItemKind::Install { flags } => {
+            crate::cmd::install::install_pms(ctx, overrides, *flags, Some(warnings))
         }
     }
 }

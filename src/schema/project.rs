@@ -101,6 +101,9 @@ impl<'a> Project<'a> {
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
                 passthrough_to: t.passthrough_to.map(crate::types::TaskRunner::label),
+                depends: t.detail.depends.iter().map(String::as_str).collect(),
+                dir: t.detail.dir.as_ref().map(|dir| dir.display().to_string()),
+                usage: t.detail.usage.as_deref(),
             })
             .collect();
 
@@ -453,6 +456,15 @@ pub(crate) struct TaskInfo<'a> {
     /// When the task's body is a thin wrapper for another runner.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub passthrough_to: Option<&'static str>,
+    /// Tasks that run before this one, as the source declares them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub depends: Vec<&'a str>,
+    /// Directory the task executes in, when the source declares one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// Argument and flag spec in the source's own language (mise: usage KDL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<&'a str>,
 }
 
 /// Warning projected into the JSON shape. The `source`/`detail` split is kept stable from the
@@ -648,6 +660,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default()).into_info_view();
@@ -667,6 +680,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         ctx.tasks.push(Task {
@@ -676,6 +690,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default());
@@ -699,6 +714,7 @@ mod tests {
                 description: None,
                 alias_of: None,
                 passthrough_to: None,
+                detail: crate::types::TaskDetail::default(),
                 member: None,
             }],
             node_version: None,

@@ -103,16 +103,43 @@ pub(crate) const NODE_PROBE_ORDER: &[PackageManager] = &[
     PackageManager::Yarn,
 ];
 
+/// Probe `pm` across `extra` directories first, then `$PATH`.
+///
+/// A tool manager installs without activating, so a package manager it
+/// provides is on nobody's `$PATH` until the user's shell runs the
+/// activation hook. Probing `$PATH` alone therefore reports "no package
+/// manager" for a project whose npm comes from mise, and the install
+/// silently does nothing.
+///
+/// Only the `$PATH`-only form is memoized; a call carrying `extra`
+/// searches fresh, since those directories depend on the project.
+pub(crate) fn probe_with(pm: PackageManager, extra: &[PathBuf]) -> Option<PathBuf> {
+    if extra.is_empty() {
+        return probe(pm);
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let search = std::env::join_paths(extra.iter().cloned().chain(std::env::split_paths(&path)))
+        .ok()
+        .unwrap_or(path);
+    probe_in(pm.label(), &search, std::env::var_os("PATHEXT").as_deref())
+}
+
 /// Probe every entry of `order` and return all installed matches in order.
 ///
 /// The first element is the resolver's pick under [`FallbackPolicy::Probe`];
 /// the remainder populates `DetectionWarning::PathProbeFallback`'s
 /// `others_available` so users can see what else was installed when the
 /// resolver picked the first PM by precedence.
-pub(crate) fn probe_all(order: &[PackageManager]) -> Vec<(PackageManager, PathBuf)> {
+///
+/// `extra` holds directories to search ahead of `$PATH`, for tools a
+/// manager provides without activating them. See [`probe_with`].
+pub(crate) fn probe_all(
+    order: &[PackageManager],
+    extra: &[PathBuf],
+) -> Vec<(PackageManager, PathBuf)> {
     order
         .iter()
-        .filter_map(|&pm| probe(pm).map(|path| (pm, path)))
+        .filter_map(|&pm| probe_with(pm, extra).map(|path| (pm, path)))
         .collect()
 }
 
@@ -123,6 +150,39 @@ mod tests {
 
     use super::{NODE_PROBE_ORDER, probe_in};
     use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn extra_dirs_are_searched_ahead_of_path() {
+        // A tool manager installs without activating, so its package
+        // manager is real but absent from `$PATH`. Without the extra
+        // directories the probe reports nothing and the install becomes a
+        // silent no-op.
+        let dir = TempDir::new("probe-extra");
+        let tool_bin = dir.path().join("mise-installs").join("node").join("bin");
+        fs::create_dir_all(&tool_bin).expect("tool bin dir should be created");
+        let npm = tool_bin.join("npm");
+        fs::write(&npm, "#!/bin/sh\n").expect("shim should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&npm, fs::Permissions::from_mode(0o755))
+                .expect("shim should be executable");
+        }
+
+        // An empty PATH stands in for a shell that never ran the hook.
+        let empty = OsString::new();
+        assert!(
+            probe_in("npm", &empty, None).is_none(),
+            "nothing on PATH means nothing to find",
+        );
+
+        let search = std::env::join_paths([tool_bin]).expect("joins");
+        assert_eq!(
+            probe_in("npm", &search, None),
+            Some(npm),
+            "the tool manager's bin dir must be searched",
+        );
+    }
 
     #[test]
     fn probe_in_finds_executable_by_bare_name() {

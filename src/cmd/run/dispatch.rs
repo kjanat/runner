@@ -4,8 +4,9 @@
 //! Three flavors of dispatch share this code:
 //! - normal entry: `resolve_dispatch` matched a [`crate::types::Task`]
 //!   and builds the per-source run command via [`build_run_command`];
-//! - bun-test special case: `runner test` with no `package.json` script
-//!   forwards to `bun test` directly;
+//! - the `test` shorthand: `runner test` with no `test` task runs the
+//!   ecosystem's built-in test runner (`bun test`, `node --test`, `deno
+//!   test`, `cargo test`, `go test ./...`, `python -m unittest`);
 //! - PM-exec fallback: no task matched, so the token is run through
 //!   `npx`/`bun x`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
 //!   directly when the resolver landed on a PM without an exec primitive.
@@ -91,6 +92,31 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
             entry.dir(&ctx.root).display(),
         ),
     );
+}
+
+/// Refuse a mise task whose spec marks a flag required when that flag is
+/// absent. No-op for every other source, none of which declares a spec.
+///
+/// Runs before the dispatch arrow: without it the failure lands after mise
+/// has started the task and whatever it builds has run, and in a parallel
+/// chain the siblings are already going.
+fn check_mise_usage(ctx: &ProjectContext, entry: &Task, args: &[String]) -> Result<()> {
+    if entry.source != TaskSource::MiseToml {
+        return Ok(());
+    }
+    let task = entry.name.as_str();
+    let Some(spec) = tool::mise::usage_spec(&ctx.root, task) else {
+        return Ok(());
+    };
+    let missing = spec.missing_required_flags(args);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{task} requires {}\n  usage: {task} {}",
+        missing.join(", "),
+        spec.signature,
+    )
 }
 
 fn host_verbosity(
@@ -535,6 +561,8 @@ pub(super) fn resolve_dispatch(
     // produces.
     let task_stack = crate::cmd::push_task_frame(dir, entry.source, &entry.name)?;
 
+    check_mise_usage(ctx, entry, args)?;
+
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
     let arrow =
@@ -545,9 +573,27 @@ pub(super) fn resolve_dispatch(
     }
 
     arrow(entry.source.label());
+    spawn_task(ctx, overrides, entry, args, sink, task_stack)
+}
 
+/// Assemble the child process for a matched task entry.
+fn spawn_task(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    entry: &Task,
+    args: &[String],
+    sink: crate::cmd::WarningSink<'_>,
+    task_stack: OsString,
+) -> Result<Dispatch> {
     let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::cmd::configure_command(spawn.command_mut(), dir, overrides);
+    crate::cmd::configure_command(spawn.command_mut(), entry.dir(&ctx.root), overrides);
+    crate::cmd::apply_env_layers(
+        spawn.command_mut(),
+        overrides,
+        Some(entry.source.label()),
+        Some(entry.name.as_str()),
+    );
+    let task_key = super::task_output_key(entry);
     crate::cmd::configure_task_streams(spawn.command_mut(), overrides, &task_key);
     spawn
         .command_mut()
@@ -555,9 +601,10 @@ pub(super) fn resolve_dispatch(
     Ok(Dispatch::Spawn(spawn))
 }
 
-/// The last two rungs of the cascade, reached once the token matched no task,
-/// no local file, and no installed dependency: the bun-test special case, then
-/// the package-exec fallback.
+/// The tail of the cascade, reached once the token matched no task, no local
+/// file, and no installed dependency: the `test` shorthand, the project's
+/// bin dirs and `PATH`, then the fetching rungs, `mise exec` ahead of the
+/// package-exec primitive.
 fn dispatch_after_miss(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -575,17 +622,33 @@ fn dispatch_after_miss(
         Err(e) => return Err(e.into()),
     };
 
-    // Bun-test special case: `bun test` built-in.
-    if should_use_bun_test_fallback(ctx, overrides, resolved_pm, task_name) {
-        print_dispatch_arrow(overrides, task_name, "bun", "test", args);
-        let mut cmd = tool::bun::test_cmd(args);
+    if let Some((label, mut cmd)) =
+        super::test_shorthand::resolve(ctx, overrides, resolved_pm, task_name, args)?
+    {
+        print_dispatch_arrow(overrides, task_name, label, "test", args);
         crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
         crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
         return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
     }
 
-    // Exec fallback: a forced runtime brings its own package-exec primitive,
-    // otherwise the detected PM's is used.
+    if let Some(found) = path_hunt(&ctx.cwd, task_name) {
+        print_dispatch_arrow(overrides, task_name, "exec", task_name, args);
+        let mut cmd = Command::new(found);
+        cmd.args(args);
+        crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
+        crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
+        return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
+    }
+
+    if ctx.task_runners.contains(&crate::types::TaskRunner::Mise) {
+        confirm_fetch(overrides, "mise exec", task_name)?;
+        print_dispatch_arrow(overrides, task_name, "mise exec", task_name, args);
+        let mut cmd = tool::mise::exec_cmd(task_name, args);
+        crate::cmd::configure_host_command(&mut cmd, &ctx.cwd, overrides);
+        crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
+        return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)));
+    }
+
     let (label, mut cmd) = match runtime::overridden(overrides) {
         Some(rt) if runtime::replaces_exec(resolved_pm) => {
             runtime::exec_cmd(rt, &exec_argv(task_name, args))
@@ -596,10 +659,43 @@ fn dispatch_after_miss(
         }
         None => build_pm_exec_command(ctx, resolved_pm, task_name, args),
     };
+    if label != "exec" {
+        confirm_fetch(overrides, label, task_name)?;
+    }
     print_dispatch_arrow(overrides, task_name, label, task_name, args);
     crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
     crate::cmd::configure_task_streams(&mut cmd, overrides, task_name);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
+}
+
+/// The project's own bin dirs, then `PATH`. `None` for a token with a path
+/// separator, which `build_pm_exec_command` routes to `go run`.
+fn path_hunt(cwd: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
+    let extra = crate::cmd::project_bin_dirs(cwd);
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let search =
+        std::env::join_paths(extra.into_iter().chain(std::env::split_paths(&path))).unwrap_or(path);
+    crate::resolver::probe::probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
+}
+
+/// Asks before a rung that may download `name`. Only a terminal is asked;
+/// a pipe gets the fetch, as before.
+fn confirm_fetch(overrides: &ResolutionOverrides, label: &str, name: &str) -> Result<()> {
+    use std::io::{IsTerminal, Write};
+    if !overrides.shows_progress() || !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return Ok(());
+    }
+    eprint!(
+        "{} not found locally; fetch it via {label}? [y/N] ",
+        name.bold()
+    );
+    io::stderr().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    if input.trim().eq_ignore_ascii_case("y") {
+        return Ok(());
+    }
+    bail!("task {name:?} not found; fetch via {label} declined")
 }
 
 /// The exec primitive's argument vector: the token followed by the user's
@@ -674,36 +770,6 @@ impl ResolvedPythonPm {
             }
         }
     }
-}
-
-/// Bun special-case for `runner test` when the project has no
-/// `package.json` `test` script: forward to `bun test`.
-///
-/// An explicit `--runtime` decides alone: `bun test` is bun's built-in test
-/// runner, so forcing node or deno must not land on it, and forcing bun must,
-/// whatever the lockfile says. Without one, `resolved_pm` is the verdict from
-/// the full resolver chain, so all signals, `--pm`, `RUNNER_PM`,
-/// `runner.toml`, `packageManager`, `devEngines.packageManager`, lockfile,
-/// PATH probe, get a vote.
-pub(super) fn should_use_bun_test_fallback(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    resolved_pm: Option<PackageManager>,
-    task: &str,
-) -> bool {
-    if task != "test" || has_package_script(ctx, task) {
-        return false;
-    }
-    runtime::overridden(overrides).map_or_else(
-        || resolved_pm.is_some_and(|pm| pm == PackageManager::Bun),
-        |rt| rt == JsRuntime::Bun,
-    )
-}
-
-fn has_package_script(ctx: &ProjectContext, task: &str) -> bool {
-    ctx.tasks.iter().any(|entry| {
-        entry.source == TaskSource::PackageJson && entry.member.is_none() && entry.name == task
-    })
 }
 
 /// Build a [`Command`] for the given task source and package manager.
@@ -1028,6 +1094,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }
@@ -1092,6 +1159,7 @@ mod tests {
             description: None,
             alias_of: Some("build".to_string()),
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
 
@@ -1175,6 +1243,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         let args = [String::from("--port"), String::from("3000")];
@@ -1209,6 +1278,7 @@ mod tests {
             description: Some("greenpy.main:main".to_string()),
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
         let args = [String::from("--flag")];
@@ -1240,6 +1310,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         });
 
@@ -1320,5 +1391,28 @@ mod tests {
         assert_eq!(label, "exec");
         assert_eq!(command.get_program().to_string_lossy(), "golangci-lint");
         assert_eq!(command_args(&command), ["run"]);
+    }
+
+    #[test]
+    fn path_hunt_finds_a_node_modules_bin_before_path() {
+        let dir = crate::tool::test_support::TempDir::new("path-hunt");
+        let bin = dir.path().join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).expect("bin dir");
+        let tool = bin.join("eslint");
+        std::fs::write(&tool, "#!/bin/sh\n").expect("tool");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+
+        assert_eq!(super::path_hunt(dir.path(), "eslint"), Some(tool));
+        assert_eq!(super::path_hunt(dir.path(), "./cmd/foo"), None);
+    }
+
+    #[test]
+    fn mise_exec_cmd_separates_the_tool_from_mise_flags() {
+        let command = crate::tool::mise::exec_cmd("cowsay", &[String::from("--help")]);
+        assert_eq!(command_args(&command), ["exec", "--", "cowsay", "--help"]);
     }
 }

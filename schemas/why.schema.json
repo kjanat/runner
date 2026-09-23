@@ -302,13 +302,34 @@
           ]
         },
         "dependencies": {
-          "description": "Task dependencies. Always empty today: no extractor records dependency edges yet.",
+          "description": "Tasks that run before this one, as the source declares them. Filled from `mise tasks --json`; empty for sources without dependency edges.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends_post": {
+          "description": "Tasks the source runs after this one.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "description": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "env": {
+          "description": "`KEY=VALUE` pairs the source sets for the task.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "file": {
+          "description": "Script file backing the task.",
           "type": [
             "null",
             "string"
@@ -323,6 +344,13 @@
         },
         "name": {
           "type": "string"
+        },
+        "outputs": {
+          "description": "Output globs the source declares for up-to-date checks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         "provider": {
           "$ref": "#/$defs/ProviderLabel"
@@ -347,6 +375,41 @@
             "null",
             "string"
           ]
+        },
+        "sources": {
+          "description": "Input globs the source declares for up-to-date checks.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "timeout": {
+          "description": "Timeout in the source's own duration syntax.",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "tools": {
+          "description": "Tool version pins the task declares, as `tool@version`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "usage": {
+          "description": "Argument and flag spec in the source's own language (mise: usage KDL).",
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "wait_for": {
+          "description": "Tasks this one waits for when they are already scheduled.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

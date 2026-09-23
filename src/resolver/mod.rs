@@ -32,7 +32,7 @@
 mod error;
 mod overrides;
 mod policies;
-mod probe;
+pub(crate) mod probe;
 mod resolve;
 mod types;
 

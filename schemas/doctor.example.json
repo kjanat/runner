@@ -69,7 +69,13 @@
     "runner": null,
     "runtime": null,
     "script_policy": "default",
-    "task_source_pins": {}
+    "task_source_pins": {},
+    "env": {
+      "project": [],
+      "tool": {},
+      "task": {}
+    },
+    "tool_install": {}
   },
   "ecosystems": [
     {

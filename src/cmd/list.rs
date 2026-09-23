@@ -867,6 +867,7 @@ mod tests {
             description: None,
             alias_of: None,
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }
     }
@@ -1019,6 +1020,7 @@ mod tests {
             description: None,
             alias_of: Some("build".into()),
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
@@ -1040,6 +1042,7 @@ mod tests {
                 "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
             ),
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
@@ -1121,6 +1124,7 @@ mod tests {
                 "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
             ),
             passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
             member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();

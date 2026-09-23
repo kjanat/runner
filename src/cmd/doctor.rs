@@ -54,7 +54,7 @@ pub(crate) fn doctor(
     // naming an undetected PM) is the diagnosis, so it is rendered rather than
     // propagated, same contract as the resolver error above.
     let plan = super::install::plan_install(ctx, overrides);
-    print_human(&report, overrides, plan.as_ref());
+    print_human(ctx, &report, overrides, plan.as_ref());
 
     Ok(())
 }
@@ -73,11 +73,13 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
     reason = "linear section-by-section renderer; splitting hurts readability"
 )]
 fn print_human(
+    ctx: &ProjectContext,
     report: &Value,
     overrides: &ResolutionOverrides,
     plan: Result<&InstallPlan, &ResolveError>,
 ) {
     let root = report["root"].as_str().unwrap_or("?");
+    let health = mise_health(ctx);
     println!(
         "{} {}",
         "runner doctor".bold(),
@@ -221,6 +223,14 @@ fn print_human(
             writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
                 .expect("writeln to String should not fail");
         }
+        if let Some(runner) =
+            super::install::tools_step(ctx, super::install::InstallFlags::default())
+        {
+            writeln_field(out, "tools", runner.label());
+        }
+        if !health.missing_tools.is_empty() {
+            writeln_field(out, "tools missing", &health.missing_tools.join(", "));
+        }
         match plan {
             Ok(plan) => {
                 let pms = plan
@@ -285,12 +295,27 @@ fn print_human(
             )
         }));
     }
+    warnings.extend(health.task_issues.iter().map(|issue| {
+        (
+            "mise".to_string(),
+            format!("tasks validate: {} [{}]", issue.message, issue.task),
+        )
+    }));
     if !warnings.is_empty() {
         println!("{}", "Warnings".bold());
         for (source, detail) in &warnings {
             println!("  {} {source}: {detail}", "warn:".yellow().bold());
         }
     }
+}
+
+/// Mise's own verdict on the project. Empty for a project mise does not
+/// manage, so non-mise projects spawn nothing.
+fn mise_health(ctx: &ProjectContext) -> crate::tool::mise::Health {
+    if !ctx.task_runners.contains(&crate::types::TaskRunner::Mise) {
+        return crate::tool::mise::Health::default();
+    }
+    crate::tool::mise::health(&ctx.root)
 }
 
 /// Render one `PATH probe` entry. Four cases:

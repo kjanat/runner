@@ -8,6 +8,7 @@ use anyhow::{Context as _, Result, bail};
 use schemars::{JsonSchema, Schema};
 use serde_json::{Map, Value, json};
 
+use crate::config::{FIELD_TEMPLATE, FieldHint};
 use crate::schema::project::TaskListView;
 
 const SCHEMA_DIR: &str = "schemas";
@@ -175,193 +176,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "render_init_template panicked with a non-string payload".to_string())
 }
 
-/// How a [`FIELD_TEMPLATE`] entry's inline hint is produced.
-#[derive(Clone, Copy)]
-enum FieldHint {
-    /// Hand-written hint text, for booleans and fields whose accepted
-    /// values aren't a small fixed set ([`broader_vocab`] validates
-    /// their example value instead of enumerating every label inline).
-    Static(&'static str),
-    /// The field's real accepted-value set ([`accepted_labels`]),
-    /// pipe-joined bare, with an optional trailing suffix note.
-    ClosedSet { suffix: Option<&'static str> },
-    /// The field's real accepted-value set, each with a short
-    /// parenthetical note. Every label [`accepted_labels`] returns for
-    /// this field must have exactly one entry here, enforced by
-    /// `field_template_hints_cover_every_accepted_label`.
-    Annotated(&'static [(&'static str, &'static str)]),
-}
-
-/// (section, field) -> (commented-out value, hint). Every field
-/// [`crate::config::RunnerConfig`]'s schemars metadata declares must
-/// have an entry here, and every entry must name a real field, both
-/// enforced by [`render_init_template`]'s own assertions, which run
-/// whenever `committed_init_template_matches_generator` exercises it,
-/// so a new config field can't ship without scaffold coverage. Values
-/// are either the field's real built-in default (`fallback`,
-/// `on_mismatch`, the three booleans) or, where there's no single
-/// sensible default to show (an unset PM override, an empty preference
-/// list), a hand-picked illustrative example, validated against the
-/// real accepted vocabulary (`accepted_labels`/`broader_vocab`) by
-/// `field_template_values_use_real_accepted_labels`.
-const FIELD_TEMPLATE: &[(&str, &str, &str, FieldHint)] = &[
-    (
-        "runner",
-        "progress",
-        "true",
-        FieldHint::Static("dispatch and status text"),
-    ),
-    (
-        "runner",
-        "warnings",
-        "true",
-        FieldHint::Static("non-fatal warnings"),
-    ),
-    (
-        "runner",
-        "errors",
-        "true",
-        FieldHint::Static("recoverable error decoration"),
-    ),
-    (
-        "runner",
-        "groups",
-        "true",
-        FieldHint::Static("task headers and GitHub groups"),
-    ),
-    (
-        "runner",
-        "task_timing",
-        "true",
-        FieldHint::Static("per-task timing and grouped footers"),
-    ),
-    (
-        "runner",
-        "summary",
-        "true",
-        FieldHint::Static("final multi-task chain roll-up"),
-    ),
-    (
-        "runner",
-        "fatal_errors",
-        "true",
-        FieldHint::Static("fatal diagnostics; exit status is unchanged"),
-    ),
-    (
-        "host",
-        "diagnostics",
-        r#""normal""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "host",
-        "stream",
-        r#""inherit""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "pm",
-        "node",
-        r#""pnpm""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "pm",
-        "python",
-        r#""uv""#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "tasks",
-        "prefer",
-        r#"["turbo", "bun"]"#,
-        FieldHint::Static("global order: turbo, then package.json (bun)"),
-    ),
-    (
-        "tasks",
-        "overrides",
-        r#"{ dev = "bun", build = "turbo" }"#,
-        FieldHint::Static("per-task pins beat the order"),
-    ),
-    (
-        "task_runner",
-        "prefer",
-        r#"["just", "turbo"]"#,
-        FieldHint::ClosedSet { suffix: None },
-    ),
-    (
-        "install",
-        "pms",
-        r#"["bun"]"#,
-        FieldHint::Static("only install with these; each must be detected"),
-    ),
-    (
-        "install",
-        "scripts",
-        r#""deny""#,
-        FieldHint::ClosedSet {
-            suffix: Some("(absent = each PM's own default)"),
-        },
-    ),
-    (
-        "install",
-        "on_collision",
-        r#""resolve""#,
-        FieldHint::Annotated(&[
-            ("resolve", "one writer per install dir, rest shadowed"),
-            ("error", "refuse to pick"),
-        ]),
-    ),
-    (
-        "resolution",
-        "fallback",
-        r#""probe""#,
-        FieldHint::Annotated(&[("probe", "PATH probe"), ("npm", "legacy"), ("error", "")]),
-    ),
-    (
-        "resolution",
-        "on_mismatch",
-        r#""warn""#,
-        FieldHint::Annotated(&[("warn", ""), ("ignore", ""), ("error", "exit 2")]),
-    ),
-    (
-        "chain",
-        "keep_going",
-        "false",
-        FieldHint::Static("run every task despite failures (same as -k)"),
-    ),
-    (
-        "chain",
-        "kill_on_fail",
-        "false",
-        FieldHint::Static("parallel: kill siblings on first failure (same as -K)"),
-    ),
-    (
-        "github",
-        "group_output",
-        "true",
-        FieldHint::Static("::group:: each task; annotate failed chain tasks"),
-    ),
-    (
-        "github",
-        "group_parallel",
-        "true",
-        FieldHint::Static("buffer parallel tasks, print each as one block"),
-    ),
-    (
-        "parallel",
-        "grouped",
-        "false",
-        FieldHint::Static("buffer + print each task as one block on completion"),
-    ),
-    (
-        "runtime",
-        "js",
-        r#""bun""#,
-        FieldHint::Static("node | bun | deno; bun implies `bun --bun run`"),
-    ),
-];
-
 /// Render a [`FieldHint`] into the trailing `# ...` comment text (without
 /// the leading `#`), or `None` for no hint.
 fn render_hint(section: &str, field: &str, hint: &FieldHint) -> String {
@@ -397,6 +211,33 @@ fn render_hint(section: &str, field: &str, hint: &FieldHint) -> String {
                 .collect::<Vec<_>>()
                 .join(" | ")
         }
+    }
+}
+
+/// The scaffold block for a section whose keys the user chooses.
+///
+/// These declare no fixed fields, so the schemars walk above has nothing to
+/// enumerate. The example is written out instead, since a section absent from
+/// `runner config init` is a section nobody discovers.
+fn open_map_example(section: &str) -> Option<&'static str> {
+    match section {
+        "env" => Some(
+            "\n# `[env]` section, variables set on every process runner spawns in this\n# \
+             project. A tool or task entry below overrides the same name.\n[env]\n# \
+             RUST_BACKTRACE = \"1\"\n",
+        ),
+        "tools" => Some(
+            "\n# `[tools.<name>]` sections, settings scoped to one detected tool, keyed by\n# its \
+             label (`mise`, `just`, `npm`, ...).\n#\n# `install` is the ordered list of \
+             operations `runner install` runs for that\n# tool. `true` means [\"install\"], \
+             `false` means none, and a bare string is\n# a one-element list. mise is the only \
+             tool with more than one operation\n# today; `bootstrap` also does machine setup \
+             (system packages, dotfiles,\n# services, firewall), so it never runs unless named \
+             here.\n#\n# `env` applies to every invocation of that tool, over `[env]` and under \
+             a\n# task entry's own `env`.\n# [tools.mise]\n# install = [\"bootstrap\", \
+             \"install\"]   # or true | false | \"install\"\n# env = { MISE_JOBS = \"4\" }\n",
+        ),
+        _ => None,
     }
 }
 
@@ -537,6 +378,10 @@ pub(crate) fn render_init_template() -> String {
     let mut out = INIT_TEMPLATE_HEADER.to_string();
     let mut used = std::collections::HashSet::with_capacity(FIELD_TEMPLATE.len());
     for (section, section_schema) in top_properties {
+        if let Some(example) = open_map_example(section) {
+            out.push_str(example);
+            continue;
+        }
         let def_name = section_schema["$ref"]
             .as_str()
             .and_then(|r| r.strip_prefix("#/$defs/"))

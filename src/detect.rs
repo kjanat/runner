@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use crate::tool;
 use crate::types::{
-    DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner,
-    TaskSource, WorkspaceMember,
+    DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskDetail,
+    TaskRunner, TaskSource, WorkspaceMember,
 };
 
 /// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
@@ -555,7 +555,7 @@ struct MemberExtraction {
     make: Option<Described>,
     just: Option<anyhow::Result<Vec<tool::just::ExtractedTask>>>,
     go_task: Option<Described>,
-    mise: Option<anyhow::Result<Vec<tool::mise::ExtractedTask>>>,
+    mise: Option<anyhow::Result<tool::mise::MiseTasks>>,
     bacon: Option<Described>,
 }
 
@@ -606,12 +606,8 @@ fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
         push_described_tasks_in(ctx, TaskSource::Taskfile, result, Some(&member));
     }
     if let Some(result) = mise {
-        push_recipe_alias_tasks_in(
-            ctx,
-            TaskSource::MiseToml,
-            result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
-            Some(&member),
-        );
+        let result = result.map(|extracted| mise_entries(ctx, extracted, Some(&member)));
+        push_recipe_alias_tasks_in(ctx, TaskSource::MiseToml, result, Some(&member));
     }
     if let Some(result) = bacon {
         push_described_tasks_in(ctx, TaskSource::BaconToml, result, Some(&member));
@@ -627,6 +623,7 @@ fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
                     description: None,
                     alias_of: None,
                     passthrough_to,
+                    detail: TaskDetail::default(),
                     member: Some(Arc::clone(&member)),
                 });
             }
@@ -646,6 +643,7 @@ fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
                     description,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: TaskDetail::default(),
                     member: Some(Arc::clone(&member)),
                 });
             }
@@ -671,6 +669,7 @@ fn push_go_tasks(
                     description: None,
                     alias_of: None,
                     passthrough_to: None,
+                    detail: TaskDetail::default(),
                     member: None,
                 });
             }
@@ -683,21 +682,40 @@ fn push_go_tasks(
 }
 
 /// Append tasks from the mise source, preserving alias→target metadata.
-fn push_mise_tasks(
+fn push_mise_tasks(ctx: &mut ProjectContext, result: anyhow::Result<tool::mise::MiseTasks>) {
+    let result = result.map(|extracted| mise_entries(ctx, extracted, None));
+    push_recipe_alias_tasks(ctx, TaskSource::MiseToml, result);
+}
+
+/// Reduce a mise extraction to the entry list `push_recipe_alias_tasks`
+/// consumes, recording the degraded-view warning when `mise tasks --json`
+/// was tried and could not be read. Falling back to the single-file TOML
+/// parser with mise installed means runner is showing less than
+/// `mise tasks` would, which is worth saying out loud.
+fn mise_entries(
     ctx: &mut ProjectContext,
-    result: anyhow::Result<Vec<tool::mise::ExtractedTask>>,
-) {
-    push_recipe_alias_tasks(
-        ctx,
-        TaskSource::MiseToml,
-        result.map(|entries| entries.into_iter().map(mise_entry_triple).collect()),
-    );
+    extracted: tool::mise::MiseTasks,
+    member: Option<&Arc<WorkspaceMember>>,
+) -> Vec<RecipeOrAlias> {
+    if let Some(reason) = extracted.degraded {
+        ctx.warnings.push(DetectionWarning::TaskListUnreadable {
+            source: TaskSource::MiseToml.label(),
+            error: member.map_or_else(|| reason.clone(), |m| format!("{}: {reason}", m.path)),
+        });
+    }
+    extracted.tasks.into_iter().map(mise_entry_triple).collect()
 }
 
 fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {
     match entry {
-        tool::mise::ExtractedTask::Recipe { name, description } => (name, description, None),
-        tool::mise::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+        tool::mise::ExtractedTask::Recipe {
+            name,
+            description,
+            detail,
+        } => (name, description, None, *detail),
+        tool::mise::ExtractedTask::Alias { name, target } => {
+            (name, None, Some(target), TaskDetail::default())
+        }
     }
 }
 
@@ -722,6 +740,7 @@ fn push_cargo_aliases(
                     description: None,
                     alias_of,
                     passthrough_to: None,
+                    detail: TaskDetail::default(),
                     member: None,
                 });
             }
@@ -767,7 +786,7 @@ fn push_described_tasks_in(
         result.map(|entries| {
             entries
                 .into_iter()
-                .map(|(name, description)| (name, description, None))
+                .map(|(name, description)| (name, description, None, TaskDetail::default()))
                 .collect()
         }),
         member,
@@ -796,6 +815,7 @@ fn push_package_json_tasks(
                     description: None,
                     alias_of: None,
                     passthrough_to,
+                    detail: TaskDetail::default(),
                     member: None,
                 });
             }
@@ -821,15 +841,17 @@ fn push_just_tasks(
 
 fn just_entry_triple(entry: tool::just::ExtractedTask) -> RecipeOrAlias {
     match entry {
-        tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None),
-        tool::just::ExtractedTask::Alias { name, target } => (name, None, Some(target)),
+        tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None, TaskDetail::default()),
+        tool::just::ExtractedTask::Alias { name, target } => {
+            (name, None, Some(target), TaskDetail::default())
+        }
     }
 }
 
-/// Flattened `(name, description, alias_of)` shape both
+/// Flattened `(name, description, alias_of, detail)` shape both
 /// `tool::mise::ExtractedTask` and `tool::just::ExtractedTask` collapse
 /// to before they hit [`push_recipe_alias_tasks`].
-type RecipeOrAlias = (String, Option<String>, Option<String>);
+type RecipeOrAlias = (String, Option<String>, Option<String>, TaskDetail);
 
 /// Push `(name, description, alias_of)` triples into `ctx.tasks` under
 /// `source`, or record a `TaskListUnreadable` warning on error. Shared
@@ -851,7 +873,7 @@ fn push_recipe_alias_tasks_in(
 ) {
     match result {
         Ok(entries) => {
-            for (name, description, alias_of) in entries {
+            for (name, description, alias_of, detail) in entries {
                 ctx.tasks.push(Task {
                     name,
                     source,
@@ -859,6 +881,7 @@ fn push_recipe_alias_tasks_in(
                     description,
                     alias_of,
                     passthrough_to: None,
+                    detail,
                     member: member.map(Arc::clone),
                 });
             }

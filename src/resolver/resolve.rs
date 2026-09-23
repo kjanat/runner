@@ -21,6 +21,23 @@ impl<'ctx> Resolver<'ctx> {
         Self { ctx, overrides }
     }
 
+    /// Directories holding tools a tool manager provides for this project.
+    ///
+    /// Searched ahead of `$PATH` by the probe, because a tool manager
+    /// installs without activating: mise's npm is real and runnable, and
+    /// invisible to `$PATH` until the shell runs the activation hook.
+    fn tool_bin_dirs(&self) -> Vec<std::path::PathBuf> {
+        if self
+            .ctx
+            .task_runners
+            .contains(&crate::types::TaskRunner::Mise)
+        {
+            crate::cmd::mise_bin_dirs(&self.ctx.root)
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Resolve the package manager used to dispatch `package.json` scripts.
     ///
     /// Walks the precedence chain in order:
@@ -132,7 +149,7 @@ impl<'ctx> Resolver<'ctx> {
                 if find_manifest_upwards(&self.ctx.root).is_none() {
                     return Err(no_pm_found_soft());
                 }
-                let mut found = probe::probe_all(probe::NODE_PROBE_ORDER);
+                let mut found = probe::probe_all(probe::NODE_PROBE_ORDER, &self.tool_bin_dirs());
                 if found.is_empty() {
                     return Err(no_pm_found_soft());
                 }
