@@ -117,6 +117,28 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
+/// The first forwarded word make would not treat as a variable assignment.
+///
+/// GNU make has no recipe-argument passthrough: a word after the goal is
+/// either one of make's own options or another goal. `NAME=value` is the one
+/// form that reaches the recipe, through `$(NAME)`.
+pub(crate) fn first_non_assignment(args: &[String]) -> Option<&str> {
+    args.iter()
+        .map(String::as_str)
+        .find(|arg| !is_assignment(arg))
+}
+
+fn is_assignment(arg: &str) -> bool {
+    let Some((name, _)) = arg.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// `make [-s] [args...]`, leaving the goal to the Makefile's default.
 pub(crate) fn root_cmd(args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("make");
@@ -264,6 +286,19 @@ mod verbosity_tests {
     fn run_cmd_default_adds_no_verbosity_flag() {
         let v = HostVerbosity::default();
         assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
+    }
+
+    #[test]
+    fn variable_assignments_pass_and_anything_else_is_named() {
+        use super::first_non_assignment;
+        let ok = [String::from("CC=clang"), String::from("ARGS=-run TestFoo")];
+        assert_eq!(first_non_assignment(&ok), None);
+        let flag = [String::from("CC=clang"), String::from("--help")];
+        assert_eq!(first_non_assignment(&flag), Some("--help"));
+        let goal = [String::from("clean")];
+        assert_eq!(first_non_assignment(&goal), Some("clean"));
+        let odd = [String::from("1X=y"), String::from("=y")];
+        assert_eq!(first_non_assignment(&odd), Some("1X=y"));
     }
 
     #[test]

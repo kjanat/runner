@@ -94,6 +94,24 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
     );
 }
 
+/// Refuse a make target given anything but `NAME=value` assignments, before
+/// the arrow, since make would take the word as an option or a goal.
+fn check_make_args(entry: &Task, args: &[String]) -> Result<()> {
+    if entry.source != TaskSource::Makefile {
+        return Ok(());
+    }
+    let Some(word) = tool::make::first_non_assignment(args) else {
+        return Ok(());
+    };
+    bail!(
+        "make target {:?} cannot take {word:?}: GNU make has no recipe-argument passthrough, so \
+         it would parse the word as its own option or as another goal. Pass `NAME=value` \
+         assignments the Makefile reads as `$(NAME)`, or run the command itself with `run -- \
+         <command> <args>`",
+        entry.name
+    )
+}
+
 /// Refuse a mise task whose spec marks a flag required when that flag is
 /// absent. No-op for every other source, none of which declares a spec.
 ///
@@ -564,6 +582,7 @@ pub(super) fn resolve_dispatch(
     let task_stack = crate::cmd::push_task_frame(dir, entry.source, &entry.name)?;
 
     check_mise_usage(ctx, entry, args)?;
+    check_make_args(entry, args)?;
 
     // Deno tasks may run in-process via the embedded task shell (no deno
     // binary) per policy; otherwise fall through to `deno task`.
@@ -1450,6 +1469,48 @@ mod tests {
         assert_eq!(label, "exec");
         assert_eq!(command.get_program().to_string_lossy(), "golangci-lint");
         assert_eq!(command_args(&command), ["run"]);
+    }
+
+    #[test]
+    fn make_task_forwards_assignments_and_refuses_other_words() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        ctx.tasks.push(Task {
+            name: "build".to_string(),
+            source: TaskSource::Makefile,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
+            member: None,
+        });
+
+        let assignments = [String::from("CC=clang")];
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "build",
+                &assignments,
+                None,
+                true,
+            )
+            .expect("assignments reach make"),
+        );
+        assert_eq!(command_args(&command), ["build", "CC=clang"]);
+
+        let flag = [String::from("--help")];
+        let err = resolve_dispatch(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "build",
+            &flag,
+            None,
+            true,
+        )
+        .expect_err("a flag never reaches make's parser");
+        assert!(format!("{err:#}").contains("cannot take \"--help\""));
     }
 
     #[test]
