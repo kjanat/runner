@@ -1,117 +1,19 @@
 #:tombi toml-version = "v1.0.0"
 
-[package]
-name          = "runner-run"
-version       = "0.26.2"
-edition       = "2024"
-rust-version  = "1.95"
-description   = "Universal project task runner"
-documentation = "https://docs.rs/runner-run"
-homepage      = "https://runner.kjanat.dev"
-repository    = "https://github.com/kjanat/runner"
-license       = "MIT"
-keywords      = ["automation", "build-tool", "cli", "task-runner"]
-categories    = ["command-line-utilities", "development-tools"]
-build         = "build.rs"
-include       = ["/CHANGELOG.md", "/LICENSE*", "/README.md", "/build.rs", "/man", "/schemas", "/src", "/tests"]
-default-run   = "runner"
-autobins      = false
+[workspace]
+resolver        = "3"
+members         = ["crates/cli", "crates/core", "crates/providers", "crates/schemes"]
+default-members = ["crates/cli"]
 
-[package.metadata]
-authors     = [{ name = "Kaj Kowalski", email = "info+runner@kajkowalski.nl" }]
-schema-base = "https://kjanat.github.io/runner/schemas"
-binstall    = { pkg-url = "{repo}/releases/download/v{version}/runner-v{version}-{target}{archive-suffix}", pkg-fmt = "tgz", bin-dir = "{bin}{binary-ext}" }
-npm         = { name = "runner-run", subpkgscope = "@runner-run", bugs = { "url" = "https://github.com/kjanat/runner/issues" }, repository = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }, engines = { "node" = ">=18" } }
+[workspace.package]
+edition      = "2024"
+rust-version = "1.95"
 
-[lib]
-name = "runner"
-path = "src/lib.rs"
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml  = { version = "1.1", default-features = false }
 
-[[bin]]
-name = "runner"
-path = "src/main.rs"
-
-[[bin]]
-name              = "run"
-path              = "src/bin/run.rs"
-required-features = ["run"]
-
-[dependencies]
-actions-rs      = "0.1"
-anyhow          = "1"
-colored         = "3"
-deno_task_shell = "0.33"
-glob            = "0.3"
-json5           = "1"
-semver          = "1"
-serde_json      = "1"
-shlex           = "2"
-terminal_size   = "0.4"
-unicode-width   = "0.2"
-yaml-rust2      = "0.11"
-
-[dependencies.clap]
-version  = "4"
-features = ["cargo", "derive", "env", "string", "wrap_help"]
-
-[dependencies.clap_complete]
-version  = "4"
-features = ["unstable-dynamic"]
-
-[dependencies.clap_mangen]
-version  = "0.3"
-optional = true
-
-[dependencies.json-schema-sort]
-version          = "0.1"
-default-features = false
-
-[dependencies.lsp-server]
-version  = "0.8"
-optional = true
-
-[dependencies.lsp-types]
-version  = "0.97"
-optional = true
-
-[dependencies.schemars]
-version = "1.2"
-
-[dependencies.serde]
-version  = "1"
-features = ["derive"]
-
-[dependencies.tokio]
-version  = "1"
-features = ["io-util", "process", "rt", "signal", "time"]
-
-[dependencies.toml]
-version          = "1.1"
-default-features = false
-features         = ["display", "parse", "serde"]
-
-[build-dependencies.serde]
-version  = "1"
-features = ["derive"]
-
-[build-dependencies.toml]
-version          = "1.1"
-default-features = false
-features         = ["parse", "serde"]
-
-[features]
-default            = ["lsp", "run"]
-# Editor language server (`runner lsp`): hover, completion, and diagnostics for
-# runner.toml.
-lsp                = ["dep:lsp-server", "dep:lsp-types"]
-man                = ["dep:clap_mangen"]
-run                = []
-# Flip the deno self-exec policy to self-exec-first (default policy is
-# `deno task` when deno is present, self-exec only as fallback). The
-# self-exec engine itself is always compiled in.
-unstable-deno-exec = []
-
-[lints.clippy]
+[workspace.lints.clippy]
 all         = { level = "deny", priority = -1 }
 cargo       = { level = "deny", priority = -1 }
 complexity  = { level = "deny", priority = -1 }
@@ -126,7 +28,7 @@ suspicious  = { level = "warn", priority = -1 }
 multiple_crate_versions = "allow"
 redundant_pub_crate     = "allow"
 
-[lints.rust]
+[workspace.lints.rust]
 elided_lifetimes_in_paths = "warn"
 missing_docs              = "warn"
 trivial_numeric_casts     = "warn"
@@ -137,7 +39,7 @@ unused_import_braces      = "warn"
 unused_lifetimes          = "warn"
 unused_qualifications     = "warn"
 
-[lints.rustdoc]
+[workspace.lints.rustdoc]
 bare_urls                    = "deny"
 broken_intra_doc_links       = "deny"
 invalid_codeblock_attributes = "deny"

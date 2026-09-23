@@ -1,0 +1,160 @@
+#:tombi toml-version = "v1.0.0"
+
+[package]
+name                   = "runner-run"
+version                = "0.26.2"
+edition.workspace      = true
+rust-version.workspace = true
+description            = "Universal project task runner"
+documentation          = "https://docs.rs/runner-run"
+readme                 = "../../README.md"
+homepage               = "https://runner.kjanat.dev"
+repository             = "https://github.com/kjanat/runner"
+license                = "MIT"
+keywords               = ["automation", "build-tool", "cli", "task-runner"]
+categories             = ["command-line-utilities", "development-tools"]
+build                  = "build.rs"
+include                = ["/build.rs", "/man", "/src"]
+default-run            = "runner"
+autobins               = false
+
+[package.metadata]
+authors     = [{ name = "Kaj Kowalski", email = "info+runner@kajkowalski.nl" }]
+schema-base = "https://kjanat.github.io/runner/schemas"
+binstall    = { pkg-url = "{repo}/releases/download/v{version}/runner-v{version}-{target}{archive-suffix}", pkg-fmt = "tgz", bin-dir = "{bin}{binary-ext}" }
+npm         = { name = "runner-run", subpkgscope = "@runner-run", bugs = { "url" = "https://github.com/kjanat/runner/issues" }, repository = { "type" = "git", "url" = "git+https://github.com/kjanat/runner.git" }, engines = { "node" = ">=18" } }
+
+[lib]
+name = "runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "runner"
+path = "src/main.rs"
+
+[[bin]]
+name              = "run"
+path              = "src/bin/run.rs"
+required-features = ["run"]
+
+[[test]]
+name = "builtin_verb_dispatch"
+path = "../../tests/builtin_verb_dispatch.rs"
+
+[[test]]
+name = "chain_integration"
+path = "../../tests/chain_integration.rs"
+
+[[test]]
+name = "doctor_env"
+path = "../../tests/doctor_env.rs"
+
+[[test]]
+name = "info_deprecation"
+path = "../../tests/info_deprecation.rs"
+
+[[test]]
+name = "install_collision"
+path = "../../tests/install_collision.rs"
+
+[[test]]
+name = "nested_dispatch"
+path = "../../tests/nested_dispatch.rs"
+
+[[test]]
+name = "nested_warnings"
+path = "../../tests/nested_warnings.rs"
+
+[[test]]
+name = "quiet_dispatch"
+path = "../../tests/quiet_dispatch.rs"
+
+[[test]]
+name = "runtime_override"
+path = "../../tests/runtime_override.rs"
+
+[[test]]
+name = "spawn_diagnostics"
+path = "../../tests/spawn_diagnostics.rs"
+
+[[test]]
+name = "version_output"
+path = "../../tests/version_output.rs"
+
+[[test]]
+name = "workspace_dispatch"
+path = "../../tests/workspace_dispatch.rs"
+
+[dependencies]
+actions-rs      = "0.1"
+anyhow          = "1"
+colored         = "3"
+deno_task_shell = "0.33"
+glob            = "0.3"
+json5           = "1"
+semver          = "1"
+serde_json      = "1"
+shlex           = "2"
+terminal_size   = "0.4"
+unicode-width   = "0.2"
+yaml-rust2      = "0.11"
+
+[dependencies.clap]
+version  = "4"
+features = ["cargo", "derive", "env", "string", "wrap_help"]
+
+[dependencies.clap_complete]
+version  = "4"
+features = ["unstable-dynamic"]
+
+[dependencies.clap_mangen]
+version  = "0.3"
+optional = true
+
+[dependencies.json-schema-sort]
+version          = "0.1"
+default-features = false
+
+[dependencies.lsp-server]
+version  = "0.8"
+optional = true
+
+[dependencies.lsp-types]
+version  = "0.97"
+optional = true
+
+[dependencies.schemars]
+version = "1.2"
+
+[dependencies.serde]
+workspace = true
+
+[dependencies.tokio]
+version  = "1"
+features = ["io-util", "process", "rt", "signal", "time"]
+
+[dependencies.toml]
+workspace = true
+features  = ["display", "parse", "serde"]
+
+[build-dependencies.serde]
+workspace = true
+
+[build-dependencies.toml]
+workspace = true
+features  = ["parse", "serde"]
+
+[features]
+default            = ["lsp", "run"]
+# Editor language server (`runner lsp`): hover, completion, and diagnostics for
+# runner.toml. Pulls in `schema` to reuse field docs as the single source of truth.
+lsp                = ["dep:lsp-server", "dep:lsp-types"]
+man                = ["dep:clap_mangen"]
+run                = []
+# Flip the deno self-exec policy to self-exec-first (default policy is
+# `deno task` when deno is present, self-exec only as fallback). The
+# self-exec engine itself is always compiled in.
+unstable-deno-exec = []
+
+[lints]
+workspace = true

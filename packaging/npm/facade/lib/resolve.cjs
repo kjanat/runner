@@ -36,7 +36,7 @@ const { red, yellow, cyan, link, space } = (() => {
 })();
 
 /**
- * A libc implementation, named the way `npm/targets.json` names it.
+ * A libc implementation, named the way `packaging/npm/targets.json` names it.
  *
  * @typedef {"glibc" | "musl"} Libc
  */

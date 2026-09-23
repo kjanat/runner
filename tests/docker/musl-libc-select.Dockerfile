@@ -18,7 +18,7 @@ RUN set -eux; \
         || { echo "FAIL: not a pure musl environment"; exit 1; }; \
     npm i -g --omit=dev "runner-run@${VER}"
 
-COPY npm/facade/lib/resolve.cjs /usr/local/lib/node_modules/runner-run/lib/resolve.cjs
+COPY packaging/npm/facade/lib/resolve.cjs /usr/local/lib/node_modules/runner-run/lib/resolve.cjs
 
 # npm honours the `libc` field, so the GNU sibling has to be planted by hand.
 # That tree is what Bun and Deno produce on their own.

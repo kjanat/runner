@@ -34,7 +34,7 @@ script_dir="$(
 	pwd -P
 )"
 
-manifest="${script_dir}/../Cargo.toml"
+manifest="${script_dir}/../crates/cli/Cargo.toml"
 target_dir="${script_dir}/../target/runner-dev"
 
 [[ -f "${manifest}" ]] || {

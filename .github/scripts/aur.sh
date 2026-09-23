@@ -19,7 +19,7 @@ cmd_prepare() {
 	: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 	local pkgname="${1:?usage: aur.sh prepare <pkgname> <version>}"
 	local version="${2:?usage: aur.sh prepare <pkgname> <version>}"
-	local pkgbuild="aur/${pkgname}/PKGBUILD"
+	local pkgbuild="packaging/aur/${pkgname}/PKGBUILD"
 
 	# Reject anything that isn't strict semver (with optional prerelease)
 	# before touching files. The downstream `sed -i ".../pkgver=${version}/"`
@@ -42,7 +42,7 @@ cmd_prepare() {
 
 	if [[ "${pkgname}" == 'runner-run-bin' ]]; then
 		# Arch CARCH -> Rust triple. Keep in lockstep with the source_<arch>
-		# arrays in aur/runner-run-bin/PKGBUILD.
+		# arrays in packaging/aur/runner-run-bin/PKGBUILD.
 		declare -A triples=(
 			[x86_64]='x86_64-unknown-linux-gnu'
 			[aarch64]='aarch64-unknown-linux-gnu'

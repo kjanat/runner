@@ -192,7 +192,7 @@
     }
   },
   "title": "runner npm targets matrix",
-  "description": "Build matrix for the runner-run façade and its per-platform optionalDependencies. Consumed by npm/scripts/build-packages.ts and the release workflow.",
+  "description": "Build matrix for the runner-run façade and its per-platform optionalDependencies. Consumed by packaging/npm/scripts/build-packages.ts and the release workflow.",
   "type": "object",
   "required": [
     "binaries",

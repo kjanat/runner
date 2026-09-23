@@ -11,7 +11,7 @@
         "typescript": "catalog:",
       },
     },
-    "npm/facade": {
+    "packaging/npm/facade": {
       "name": "runner-run",
       "bin": {
         "run": "bin/run.cjs",
@@ -253,7 +253,7 @@
 
     "pathe": ["pathe@2.0.3", "", {}, "sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w=="],
 
-    "runner-run": ["runner-run@workspace:npm/facade"],
+    "runner-run": ["runner-run@workspace:packaging/npm/facade"],
 
     "runner-site": ["runner-site@workspace:site"],
 

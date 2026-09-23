@@ -5,7 +5,7 @@
 #     │    ├─ man ───────────── release assets + attestation + artifact `man-pages`
 #     │    └─ upload-assets ─── per-target build matrix (needs: matrix);
 #     │                         release.sh package-asset|verify-asset → attest
-#     └─ matrix ─────────────── build matrix from npm/targets.json
+#     └─ matrix ─────────────── build matrix from packaging/npm/targets.json
 #   build-dist (needs: upload-assets, man)
 #     └─ release.sh download-archives → verify-checksums → build-npm-packages;
 #        smoke; artifact `dist` (tarred: keeps exec bits)
@@ -108,19 +108,19 @@ jobs:
         with: { persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo man --output man
+      - run: cargo man --output packaging/man
       - name: archive and upload to release
         run: |
           set -euo pipefail
           archive="runner-${RELEASE_TAG}-man.tar.gz"
-          tar -C man -czf "${archive}" .
+          tar -C packaging/man -czf "${archive}" .
           sha256sum "${archive}" >"runner-${RELEASE_TAG}-man.sha256"
           gh release upload "${RELEASE_TAG}" "${archive}" "runner-${RELEASE_TAG}-man.sha256" --clobber
       - name: attest build provenance
         uses: actions/attest-build-provenance@v4
         with: { subject-path: "runner-${{ env.RELEASE_TAG }}-man.tar.gz" }
       - uses: actions/upload-artifact@v7
-        with: { name: man-pages, path: man/, if-no-files-found: error, retention-days: 14 }
+        with: { name: man-pages, path: packaging/man/, if-no-files-found: error, retention-days: 14 }
 
   matrix:
     name: build matrix
@@ -131,7 +131,7 @@ jobs:
     outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
       - uses: actions/checkout@v7
-        with: { sparse-checkout: npm/targets.json, sparse-checkout-cone-mode: false, persist-credentials: false }
+        with: { sparse-checkout: packaging/npm/targets.json, sparse-checkout-cone-mode: false, persist-credentials: false }
 
       - id: gen
         # `target: .rust` is mandatory; taiki-e and build-packages.ts both
@@ -143,7 +143,7 @@ jobs:
             runner: .runner,
             "build-tool": .build,
             experimental: (.experimental // false)
-          }]' npm/targets.json)
+          }]' packaging/npm/targets.json)
           echo "include=${include}" >> "${GITHUB_OUTPUT}"
 
   upload-assets:
@@ -274,7 +274,7 @@ jobs:
 
       - name: download man pages
         uses: actions/download-artifact@v8
-        with: { name: man-pages, path: man }
+        with: { name: man-pages, path: packaging/man }
 
       - name: verify checksums
         run: bash .github/scripts/release.sh verify-checksums
@@ -283,7 +283,7 @@ jobs:
         run: bash .github/scripts/release.sh build-npm-packages
 
       - name: add bin dir to path
-        run: echo "${GITHUB_WORKSPACE}/npm/dist/linux-x64-gnu/bin" >> "${GITHUB_PATH}"
+        run: echo "${GITHUB_WORKSPACE}/packaging/npm/dist/linux-x64-gnu/bin" >> "${GITHUB_PATH}"
 
       # Only target executable on ubuntu-latest; others exercised at install.
       - name: smoke-test packaged linux-x64-gnu binary
@@ -291,11 +291,11 @@ jobs:
         run: "& (gcm runner -CommandType Application).Path --version"
 
       - name: tar dist (preserve file modes)
-        run: tar -cf npm/dist.tar -C npm dist
+        run: tar -cf packaging/npm/dist.tar -C packaging/npm dist
 
-      - name: upload npm/dist artifact
+      - name: upload packaging/npm/dist artifact
         uses: actions/upload-artifact@v7
-        with: { name: dist, path: npm/dist.tar, retention-days: 14, if-no-files-found: error }
+        with: { name: dist, path: packaging/npm/dist.tar, retention-days: 14, if-no-files-found: error }
 
   # Flip draft→published once binaries + dist are in place.
   publish-release:

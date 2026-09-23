@@ -21,8 +21,8 @@
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,
-		"typeRoots": ["./node_modules/@types", "./npm/facade/node_modules/@types"]
+		"typeRoots": ["./node_modules/@types", "./packaging/npm/facade/node_modules/@types"]
 	},
-	"include": ["./npm/**/*", "./action.mjs"],
+	"include": ["./packaging/npm/**/*", "./packaging/action.mjs"],
 	"exclude": ["**/node_modules", "**/dist"]
 }

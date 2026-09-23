@@ -39,7 +39,7 @@ jobs:
         uses: KSXGitHub/github-actions-deploy-aur@v4.2.0
         with:
           pkgname: ${{ matrix.pkgname }}
-          pkgbuild: aur/${{ matrix.pkgname }}/PKGBUILD
+          pkgbuild: packaging/aur/${{ matrix.pkgname }}/PKGBUILD
           commit_username: Kaj Kowalski
           commit_email: info@kajkowalski.nl
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}

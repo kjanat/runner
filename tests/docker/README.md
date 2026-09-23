@@ -42,7 +42,7 @@ Verifies that the facade picks the musl build on pure Alpine/musl when **both**
 Linux libc variants are installed — the tree Bun and Deno produce, and the one
 you get by copying `node_modules` off a glibc machine.
 
-This one grafts the working tree's `npm/facade/lib/resolve.cjs` onto the
+This one grafts the working tree's `packaging/npm/facade/lib/resolve.cjs` onto the
 installed package, so the selection logic under test is the one in this
 checkout. npm will not install the mismatched sibling, so its tarball is fetched
 and unpacked next to the musl package by hand.
@@ -66,7 +66,7 @@ docker build -f tests/docker/musl-libc-select.Dockerfile \
 ```
 
 The libc selection logic itself is also covered by
-[`npm/facade/test/resolve.test.mts`](../../npm/facade/test/resolve.test.mts),
+[`packaging/npm/facade/test/resolve.test.mts`](../../packaging/npm/facade/test/resolve.test.mts),
 which stubs the host signals and needs no container. This test is what proves
 the detection layers agree with a real musl root filesystem.
 

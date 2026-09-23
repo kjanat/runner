@@ -4,13 +4,13 @@
 	"type": "module",
 	"workspaces": [
 		"site",
-		"npm/facade"
+		"packaging/npm/facade"
 	],
 	"scripts": {
 		"fmt": "bunx dprint fmt",
 		"fmt:check": "bunx dprint check",
 		"fmt:update": "bunx dprint config update --yes",
-		"test:facade": "bun test npm/facade/test/",
+		"test:facade": "bun test packaging/npm/facade/test/",
 		"typecheck": "tsc --noEmit"
 	},
 	"devDependencies": {

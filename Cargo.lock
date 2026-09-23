@@ -773,6 +773,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
+name = "runner-core"
+version = "0.0.0"
+
+[[package]]
+name = "runner-providers"
+version = "0.0.0"
+
+[[package]]
 name = "runner-run"
 version = "0.26.2"
 dependencies = [
@@ -799,6 +807,10 @@ dependencies = [
  "unicode-width",
  "yaml-rust2",
 ]
+
+[[package]]
+name = "runner-schemes"
+version = "0.0.0"
 
 [[package]]
 name = "rustix"

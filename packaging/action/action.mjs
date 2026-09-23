@@ -146,7 +146,7 @@ function resolvePlatformTarget() {
 	try {
 		manifest = JSON.parse(readFileSync(join(import.meta.dirname, "npm", "targets.json"), "utf8"));
 	} catch (err) {
-		debug(`could not read npm/targets.json (${err instanceof Error ? err.message : String(err)})`);
+		debug(`could not read packaging/npm/targets.json (${err instanceof Error ? err.message : String(err)})`);
 		return null;
 	}
 
@@ -167,7 +167,7 @@ function resolvePlatformTarget() {
 		&& (t.libc == null || (libc !== undefined && t.libc.includes(libc)))
 	);
 	if (!match) {
-		debug(`no npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""}`);
+		debug(`no packaging/npm/targets.json entry for ${platform}/${arch}${libc ? `/${libc}` : ""}`);
 		return null;
 	}
 	return { scope: manifest.scope, pkg: match.pkg };
