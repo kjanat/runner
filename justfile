@@ -2,8 +2,9 @@
 set unstable
 
 # Version/triple live in recipe parameter defaults (evaluated per invocation), not globals; just evaluates globals on every run.
-build-pkgscript := "npm" / "scripts" / "build-packages.ts"
-downloads-dir := "npm" / "downloads"
+build-pkgscript := "packaging" / "npm" / "scripts" / "build-packages.ts"
+downloads-dir := "packaging" / "npm" / "downloads"
+targets-json := "packaging" / "npm" / "targets.json"
 
 schema-dir := "schemas"
 
@@ -42,7 +43,7 @@ test-facade:
     bun run test:facade
 
 [group('npm')]
-build-packages only="" skip="false" version=`cargo read-manifest | jq -r .version`:
+build-packages only="" skip="false" version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'`:
     #!/usr/bin/env bash
     set -euo pipefail
     args=("--version" "{{ version }}")
@@ -52,11 +53,11 @@ build-packages only="" skip="false" version=`cargo read-manifest | jq -r .versio
     node {{ build-pkgscript }} "${args[@]}"
     echo "✓ built packages for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
 
-# Build the distribution image locally. Never pushes; needs npm/dist populated
-# by `just build-packages` or a downloaded dist artifact. Defaults to the host
-# arch; passing several needs a container-driver buildx builder.
+# Build the distribution image locally. Never pushes; needs packaging/npm/dist
+# populated by `just build-packages` or a downloaded dist artifact. Defaults to
+# the host arch; passing several needs a container-driver buildx builder.
 [group('docker')]
-docker-image version=`cargo read-manifest | jq -r .version` platforms="":
+docker-image version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'` platforms="":
     #!/usr/bin/env bash
     set -euo pipefail
     echo "→ preparing context for {{ MAGENTA }}{{ version }}{{ NORMAL }}"
@@ -68,10 +69,10 @@ docker-image version=`cargo read-manifest | jq -r .version` platforms="":
 
 # Build release bin, pack the npm artifacts, and smoke-test them like CI.
 [group('npm')]
-test-release version=`cargo read-manifest | jq -r .version` host-triple=`rustc --print host-tuple`:
+test-release version=`cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "runner-run") | .version'` host-triple=`rustc --print host-tuple`:
     #!/usr/bin/env bash
     set -euo pipefail
-    pkg="$(jq -r --arg t '{{ host-triple }}' '.targets[] | select(.rust == $t) | .pkg' npm/targets.json)"
+    pkg="$(jq -r --arg t '{{ host-triple }}' '.targets[] | select(.rust == $t) | .pkg' {{ targets-json }})"
     if [[ -z "${pkg}" ]]; then
         echo "✗ no npm package mapped for host triple: {{ host-triple }}" >&2
         exit 1

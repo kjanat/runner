@@ -9,7 +9,7 @@
 			"settings": {
 				"json": {
 					"schemas": [
-						{ "fileMatch": ["targets.json"], "url": "./npm/targets.schema.json" },
+						{ "fileMatch": ["targets.json"], "url": "./packaging/npm/targets.schema.json" },
 						{
 							"fileMatch": ["schemas/*.schema.json", "*.schema.json"],
 							"url": "https://json-schema.org/draft/2020-12/schema",

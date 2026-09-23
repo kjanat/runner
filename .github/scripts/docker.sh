@@ -18,7 +18,7 @@ readonly ARCH_MAP=(
 group() { echo "::group::$1"; }
 endgroup() { echo "::endgroup::"; }
 
-# Lay out npm/dist binaries as context/<TARGETARCH>/{runner,run}.
+# Lay out packaging/npm/dist binaries as context/<TARGETARCH>/{runner,run}.
 cmd_prepare() {
 	rm -rf "${CONTEXT}"
 
@@ -26,7 +26,7 @@ cmd_prepare() {
 	for entry in "${ARCH_MAP[@]}"; do
 		pkg="${entry%%:*}"
 		arch="${entry##*:}"
-		src="npm/dist/${pkg}/bin"
+		src="packaging/npm/dist/${pkg}/bin"
 		dest="${CONTEXT}/${arch}"
 
 		mkdir -p "${dest}"

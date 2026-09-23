@@ -28,7 +28,7 @@ build() {
 	export RUSTUP_TOOLCHAIN=stable
 	cargo build --frozen --release --bin runner --bin run
 	env CARGO_TARGET_DIR=target/man \
-		cargo run --frozen --features man -- man --output man
+		cargo run --frozen --features man -- man --output packaging/man
 }
 
 check() {
@@ -82,6 +82,6 @@ package() {
 	# this file from their `$PROFILE`:  . /usr/share/runner/runner.ps1
 	install -Dm0644 "$g/runner.ps1" "$pkgdir/usr/share/runner/runner.ps1"
 
-	# Man pages rendered into ./man by build(). makepkg gzips them (zipman).
-	install -Dm0644 -t "$pkgdir/usr/share/man/man1/" man/*.1
+	# Man pages rendered into ./packaging/man by build(). makepkg gzips them (zipman).
+	install -Dm0644 -t "$pkgdir/usr/share/man/man1/" packaging/man/*.1
 }

@@ -587,21 +587,17 @@ mod tests {
             "packages/web/package.json",
             r#"{ "name": "web" }"#,
         );
-        write(
-            dir.path(),
-            "tests/fixtures/chain/justfile",
-            "build:\n\techo hi\n",
-        );
+        write(dir.path(), "fixtures/chain/justfile", "build:\n\techo hi\n");
         write(
             dir.path(),
             "examples/demo/package.json",
             r#"{ "name": "demo" }"#,
         );
 
-        assert!(super::anchor(&dir.path().join("tests/fixtures/chain")).is_none());
+        assert!(super::anchor(&dir.path().join("fixtures/chain")).is_none());
         assert!(super::anchor(&dir.path().join("examples/demo")).is_none());
         assert!(
-            super::anchor(&dir.path().join("tests/fixtures")).is_some(),
+            super::anchor(&dir.path().join("fixtures")).is_some(),
             "a directory without project files of its own still anchors",
         );
     }

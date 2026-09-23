@@ -54,7 +54,7 @@ Cut a release as usual, or dry-run first:
 - **Local lint** (on an Arch box, from repo root):
 
   ```bash
-  cd aur/runner-run-bin \
+  cd packaging/aur/runner-run-bin \
   && updpkgsums \
   && makepkg --printsrcinfo >/dev/null \
   && namcap PKGBUILD

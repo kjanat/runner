@@ -4,7 +4,7 @@ import { readdir, rm } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { brotliCompressSync, constants as zlib, gzipSync } from "node:zlib";
 
-import cargo from "../Cargo.toml" with { type: "toml" };
+import cargo from "../crates/cli/Cargo.toml" with { type: "toml" };
 
 const root = import.meta.dir;
 const [dist, src, pub] = [join(root, "dist"), join(root, "src"), join(root, "public")];

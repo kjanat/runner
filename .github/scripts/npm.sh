@@ -57,7 +57,7 @@ cmd_derive() {
 cmd_smoke() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
 	local expected_version="${RELEASE_TAG#v}"
-	local targets_json="${GITHUB_WORKSPACE:-.}/npm/targets.json"
+	local targets_json="${GITHUB_WORKSPACE:-.}/packaging/npm/targets.json"
 	local facade scope
 	facade=$(jq -r '.facade' "${targets_json}")
 	scope=$(jq -r '.scope' "${targets_json}")
@@ -68,8 +68,8 @@ cmd_smoke() {
 	scratch=$(mktemp -d)
 	trap 'rm -rf "${scratch-}"' EXIT
 
-	(cd "npm/dist/${host_pkg}" && npm pack --pack-destination "${scratch}" >/dev/null)
-	(cd "npm/dist/${facade}" && npm pack --pack-destination "${scratch}" >/dev/null)
+	(cd "packaging/npm/dist/${host_pkg}" && npm pack --pack-destination "${scratch}" >/dev/null)
+	(cd "packaging/npm/dist/${facade}" && npm pack --pack-destination "${scratch}" >/dev/null)
 
 	mkdir "${scratch}/app"
 	(cd "${scratch}/app" && npm install --no-audit --no-fund --ignore-scripts "${scratch}"/*.tgz)
@@ -127,7 +127,7 @@ cmd_smoke() {
 #   3. Each package.json's `version` field must equal the version
 #      derived from the trigger tag (trusted metadata), which prevents
 #      stamping arbitrary versions onto allowed packages.
-# Single source of truth: npm/targets.json. `experimental: true`
+# Single source of truth: packaging/npm/targets.json. `experimental: true`
 # packages may legitimately be missing because their build matrix uses
 # `continue-on-error`. Everything else is mandatory for release-triggered
 # runs; for manual workflow_dispatch backfills we relax this so missing
@@ -145,7 +145,7 @@ cmd_publish() {
 	ONLY_PACKAGE="${ONLY_PACKAGE-}"
 	GITHUB_OUTPUT="${GITHUB_OUTPUT-}"
 
-	TARGETS_JSON="${GITHUB_WORKSPACE:-.}/npm/targets.json"
+	TARGETS_JSON="${GITHUB_WORKSPACE:-.}/packaging/npm/targets.json"
 	FACADE=$(jq -r '.facade' "${TARGETS_JSON}")
 	SCOPE=$(jq -r '.scope' "${TARGETS_JSON}")
 	# Assign before mapfile so a jq failure aborts under `set -e`; guard
@@ -163,7 +163,7 @@ cmd_publish() {
 	# allowlist; that's either a misconfiguration or an attack.
 	local allowed_set=" ${FACADE} ${REQUIRED_PLATFORMS[*]} ${OPTIONAL_PLATFORMS[*]} "
 	local dir base
-	for dir in npm/dist/*/; do
+	for dir in packaging/npm/dist/*/; do
 		base=$(basename "${dir%/}")
 		if [[ "${allowed_set}" != *" ${base} "* ]]; then
 			echo "error: artifact contains unexpected directory '${base}' (not in allowlist)" >&2
@@ -174,7 +174,7 @@ cmd_publish() {
 	# 0644 binaries EACCES at spawn, fail loud before publishing.
 	local platform bin
 	for platform in "${REQUIRED_PLATFORMS[@]}" "${OPTIONAL_PLATFORMS[@]}"; do
-		for bin in "npm/dist/${platform}/bin/"*; do
+		for bin in "packaging/npm/dist/${platform}/bin/"*; do
 			if [[ ! -x "${bin}" ]]; then
 				echo "error: ${bin} lost its executable bit in the artifact handoff" >&2
 				exit 1
@@ -184,11 +184,11 @@ cmd_publish() {
 
 	if [[ -n "${ONLY_PACKAGE}" ]]; then
 		if [[ "${ONLY_PACKAGE}" == "${FACADE}" ]]; then
-			publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
+			publish_allowed "packaging/npm/dist/${FACADE}" "${FACADE}" true
 		elif [[ " ${REQUIRED_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
-			publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" true
+			publish_allowed "packaging/npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" true
 		elif [[ " ${OPTIONAL_PLATFORMS[*]} " == *" ${ONLY_PACKAGE} "* ]]; then
-			publish_allowed "npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" false
+			publish_allowed "packaging/npm/dist/${ONLY_PACKAGE}" "${SCOPE}/${ONLY_PACKAGE}" false
 		else
 			echo "error: ONLY_PACKAGE '${ONLY_PACKAGE}' is not the facade or a known platform" >&2
 			exit 1
@@ -202,15 +202,15 @@ cmd_publish() {
 	# build silently dropped a target; either case warrants a hard fail.
 	# Sub-packages first so the façade's optionalDependencies resolve on install.
 	for platform in "${REQUIRED_PLATFORMS[@]}"; do
-		publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" true
+		publish_allowed "packaging/npm/dist/${platform}" "${SCOPE}/${platform}" true
 	done
 	for platform in "${OPTIONAL_PLATFORMS[@]}"; do
-		publish_allowed "npm/dist/${platform}" "${SCOPE}/${platform}" false
+		publish_allowed "packaging/npm/dist/${platform}" "${SCOPE}/${platform}" false
 	done
 
 	# Façade is mandatory either way, no point publishing a half-empty
 	# set of platform packages with no entry point.
-	publish_allowed "npm/dist/${FACADE}" "${FACADE}" true
+	publish_allowed "packaging/npm/dist/${FACADE}" "${FACADE}" true
 }
 
 # publish_allowed publishes a single package from a built artifact directory

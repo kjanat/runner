@@ -122,7 +122,7 @@ cmd_verify_asset() {
 	echo "verified ${archive} and ${checksum} on release ${RELEASE_TAG}"
 }
 
-# Download every release tarball + checksum into npm/downloads.
+# Download every release tarball + checksum into packaging/npm/downloads.
 # Required env: RELEASE_TAG, GITHUB_REPOSITORY, GH_TOKEN.
 cmd_download_archives() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
@@ -131,22 +131,22 @@ cmd_download_archives() {
 	# Scrub before fetch: stale files from a previous tag would pass
 	# verify-checksums but be wrong-version. Hosted runners get fresh
 	# workspaces; self-hosted runners and local invocations don't.
-	rm -rf npm/downloads
-	mkdir -p npm/downloads
+	rm -rf packaging/npm/downloads
+	mkdir -p packaging/npm/downloads
 	gh release download "${RELEASE_TAG}" \
 		--repo "${GITHUB_REPOSITORY}" \
 		--pattern 'runner-*-*.tar.gz' \
 		--pattern 'runner-*-*.sha256' \
-		--dir npm/downloads
-	ls -la npm/downloads
+		--dir packaging/npm/downloads
+	ls -la packaging/npm/downloads
 }
 
-# Verify every downloaded tarball against its .sha256 in npm/downloads.
+# Verify every downloaded tarball against its .sha256 in packaging/npm/downloads.
 # Required env: RELEASE_TAG.
 cmd_verify_checksums() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
 	shopt -s nullglob
-	cd npm/downloads
+	cd packaging/npm/downloads
 
 	local tarballs=(*.tar.gz)
 	local sums=(*.sha256)
@@ -187,20 +187,20 @@ cmd_verify_checksums() {
 	done
 }
 
-# Build the npm packages from npm/downloads via build-packages.ts.
+# Build the npm packages from packaging/npm/downloads via build-packages.ts.
 # Required env: RELEASE_TAG.
 cmd_build_npm_packages() {
 	: "${RELEASE_TAG:?RELEASE_TAG required}"
 
 	local version="${RELEASE_TAG#v}"
 
-	# Man pages come from the `man` job's artifact, downloaded to ./man.
+	# Man pages come from the `man` job's artifact, downloaded to ./packaging/man.
 	local man_arg=()
-	[[ -d man ]] && man_arg=(--man-dir man)
+	[[ -d packaging/man ]] && man_arg=(--man-dir packaging/man)
 
 	# build-packages.ts is tier-aware: missing tier-3 (experimental)
 	# tarballs are skipped; missing tier-1/2 fail the job.
-	node npm/scripts/build-packages.ts --version "${version}" "${man_arg[@]}"
+	node packaging/npm/scripts/build-packages.ts --version "${version}" "${man_arg[@]}"
 }
 
 case "${1-}" in

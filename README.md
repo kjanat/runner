@@ -56,7 +56,7 @@ run 0.12.2
   cargo           d                    doc
   cargo           f                    run --quiet --bin run -- --pm npm dprint fmt
   cargo           format               run --quiet --bin run -- --pm npm dprint fmt
-  cargo           i                    install --path .
+  cargo           i                    install --path crates/cli
   cargo           l                    clippy --all-targets --all-features -- -D warnings -D clippy::all
   cargo           lint                 clippy --all-targets --all-features -- -D warnings -D clippy::all
   cargo           man                  run --quiet --features man -- man
@@ -94,7 +94,7 @@ comp          -- → run --quiet --bin runner -- completions                    
 d             -- → doc                                                                rr            -- → run --release
 f             -- → run --quiet --bin run -- --pm npm dprint fmt                       cargo:runner  -- → run --quiet --bin runner
 format        -- → run --quiet --bin run -- --pm npm dprint fmt                       schema        -- → run --quiet -- schema
-i             -- → install --path .                                                   t             -- → test
+i             -- → install --path crates/cli                                          t             -- → test
 l             -- → clippy --all-targets --all-features -- -D warnings -D clippy::all
 -- Options --
 --dir             -- Use this directory instead of the current one
@@ -160,7 +160,7 @@ yay  -S runner-run-bin # .. `yay  -S runner-run`
 ```sh
 cargo install runner-run
 cargo install --git=https://github.com/kjanat/runner/ runner-run
-cargo install --path .
+cargo install --path crates/cli
 ```
 
 ```sh

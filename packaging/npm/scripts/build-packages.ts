@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Builds npm package trees in `npm/dist/` for:
+ * Builds npm package trees in `packaging/npm/dist/` for:
  *
  * - the facade package
- * - every per-platform package listed in `npm/targets.json`
+ * - every per-platform package listed in `packaging/npm/targets.json`
  *
- * Native binary tarballs are read from `npm/downloads/` by default. CI usually
+ * Native binary tarballs are read from `packaging/npm/downloads/` by default. CI usually
  * populates that directory with `gh release download`. Outside CI (no
  * `GITHUB_ACTIONS=true`), a dev machine only ever has native binaries for its
  * own host, so a bare local run: builds the host's own tarball with
@@ -15,10 +15,10 @@
  *
  * Usage:
  *
- *   node npm/scripts/build-packages.ts                                  # version + meta from Cargo.toml
- *   node npm/scripts/build-packages.ts --only=linux-x64-gnu
- *   node npm/scripts/build-packages.ts --version 0.0.0-dev              # override the Cargo version
- *   node npm/scripts/build-packages.ts --downloads=/tmp/artifacts
+ *   node packaging/npm/scripts/build-packages.ts                                  # version + meta from Cargo.toml
+ *   node packaging/npm/scripts/build-packages.ts --only=linux-x64-gnu
+ *   node packaging/npm/scripts/build-packages.ts --version 0.0.0-dev              # override the Cargo version
+ *   node packaging/npm/scripts/build-packages.ts --downloads=/tmp/artifacts
  */
 import { spawnSync } from "node:child_process";
 import { access, cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -33,7 +33,7 @@ const gunzipAsync = promisify(gunzip);
 const scriptPath = fileURLToPath(import.meta.url);
 const here = dirname(scriptPath);
 const npmDir = resolve(here, "..");
-const repoDir = resolve(npmDir, "..");
+const repoDir = resolve(npmDir, "..", "..");
 const distDir = join(npmDir, "dist");
 
 const BLOCK_SIZE = 512;
@@ -465,7 +465,7 @@ function readOptions(defaultVersion: string): BuildOptions {
 
 /**
  * The current machine's Rust target triple, via `rustc --print host-tuple`.
- * Used to tell which `npm/targets.json` entry is buildable locally without
+ * Used to tell which `packaging/npm/targets.json` entry is buildable locally without
  * cross-compiling.
  *
  * @returns The host triple, or `null` if `rustc` isn't on `PATH` or fails.
@@ -495,7 +495,7 @@ function parseOnlyList(value: string | undefined): Set<string> | null {
 }
 
 /**
- * Load and parse the build matrix from npm/targets.json.
+ * Load and parse the build matrix from packaging/npm/targets.json.
  *
  * @returns The parsed `Matrix` containing the facade package name, npm scope,
  * and the list of per-target package definitions.
@@ -640,7 +640,7 @@ async function buildHostTarball(
  *
  * Attempts to locate and extract the platform runner tarball for `target`,
  * writes the extracted binaries to
- * `npm/dist/<target.pkg>/bin/`, and creates `package.json`, `README.md`, and
+ * `packaging/npm/dist/<target.pkg>/bin/`, and creates `package.json`, `README.md`, and
  * `LICENSE` in that destination.
  *
  * @param matrix - Build matrix describing the facade and the list of binary names to include
@@ -1072,8 +1072,8 @@ function formatPackage(scope: string | undefined, name: string, version: string)
 }
 
 /**
- * Builds per-platform npm packages and a facade package under `npm/dist/` using
- * the crate's Cargo manifest and the build matrix from `npm/targets.json`.
+ * Builds per-platform npm packages and a facade package under `packaging/npm/dist/` using
+ * the crate's Cargo manifest and the build matrix from `packaging/npm/targets.json`.
  *
  * Reads Cargo metadata, CLI options, and the target matrix; cleans the dist
  * directory; builds each requested platform package (respecting `--only` and

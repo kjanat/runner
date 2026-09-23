@@ -16,7 +16,7 @@ bun --cwd=site deploy     # build + wrangler deploy
 ```
 
 The build templates `{{version}}`, `{{repo}}`, `{{authorName}}` etc.
-from the workspace `Cargo.toml` so the site and the crate share one
+from `crates/cli/Cargo.toml` so the site and the crate share one
 source of truth for metadata. Other scripts live in
 [`package.json`](./package.json) (`check`, `lint`, `fmt`, `typecheck`,
 `tail`).

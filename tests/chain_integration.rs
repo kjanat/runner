@@ -1,7 +1,7 @@
 //! Integration tests for chain mode dispatch.
 //!
 //! Each test spawns the `runner` binary against a fixture project under
-//! `tests/fixtures/`. The fixtures use `just` (already a dependency the
+//! `fixtures/`. The fixtures use `just` (already a dependency the
 //! repo expects to be on PATH for development) so the tests don't need
 //! to install any package managers.
 //!
@@ -39,7 +39,7 @@ fn runner_command() -> Command {
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
+        .join("../../fixtures")
         .join(name)
 }
 
@@ -633,7 +633,7 @@ fn chain_prevalidates_all_tokens_before_running_any_task() {
         "expected `did you mean cargo:lint?` hint in stderr: {stderr}",
     );
     // The fixture's `build` and `test` recipes echo `build-ran` /
-    // `test-ran` (see `tests/fixtures/chain-sequential/justfile`).
+    // `test-ran` (see `fixtures/chain-sequential/justfile`).
     // Their absence proves the pre-validation fired *before* any
     // sibling dispatch.
     assert!(

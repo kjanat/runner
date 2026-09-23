@@ -1,11 +1,12 @@
 target/
 dist/
 downloads/
-# Docker build context, staged from npm/dist.
+# Docker build context, staged from packaging/npm/dist.
 /.github/docker/context/
 /.github/docker/README.rendered.md
 # Generated man pages.
-/man/
+/packaging/man/
+/crates/cli/man/
 package-lock.json
 node_modules/
 .playwright-mcp/
@@ -15,5 +16,5 @@ node_modules/
 
 # serena MCP cache
 /.serena/
-/proposal.md
+/docs/notes/proposal.md
 /mise.toml

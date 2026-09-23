@@ -3,14 +3,14 @@
 [alias]
 # one-letter
 f = "format"
-i = "install --path ."
+i = "install --path crates/cli"
 l = "lint"
-t = "test --all-features --all-targets"
+t = "test --workspace --all-features --all-targets"
 
 # other short
 bb  = "build --bin run --bin runner"
 bbr = "bb --release"
-cl  = "clippy --all-targets --all-features"
+cl  = "clippy --workspace --all-targets --all-features"
 dwn = "--config .cargo/nightly.toml doc --workspace --all-features"  # rustup run nightly cargo dwn
 rq  = "run --quiet"
 rr  = "run --release"
@@ -34,7 +34,7 @@ runner      = "bin-runner"
 
 # CI
 build-std = "-Z build-std=std,panic_abort build --locked --release --bin runner --bin run"
-dirtypub  = "publish --locked --allow-dirty"
+dirtypub  = "publish --locked --allow-dirty -p runner-run"
 
 # [target.<triple>]
 # linker = "…"              # linker to use

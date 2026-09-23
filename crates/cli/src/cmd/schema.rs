@@ -456,7 +456,7 @@ mod tests {
     fn committed_doctor_example_includes_quiet_override() {
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/schemas/doctor.example.json"
+            "/../../schemas/doctor.example.json"
         ))
         .expect("committed doctor example should be readable");
         let example: Value = serde_json::from_str(&raw).expect("example should parse as JSON");
@@ -482,15 +482,21 @@ mod tests {
     /// (`doctor`/`why`) or flat (`list`) convention.
     const COMMITTED_SCHEMAS_WITH_TASK_SOURCE_LABEL: &[(&str, &str)] = &[
         (
-            concat!(env!("CARGO_MANIFEST_DIR"), "/schemas/doctor.schema.json"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/doctor.schema.json"
+            ),
             "doctor",
         ),
         (
-            concat!(env!("CARGO_MANIFEST_DIR"), "/schemas/list.schema.json"),
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/list.schema.json"
+            ),
             "list",
         ),
         (
-            concat!(env!("CARGO_MANIFEST_DIR"), "/schemas/why.schema.json"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../schemas/why.schema.json"),
             "why",
         ),
     ];
@@ -587,7 +593,7 @@ mod tests {
         // after a generator fix.
         let raw = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/schemas/why.schema.json"
+            "/../../schemas/why.schema.json"
         ))
         .expect("committed why schema should be readable");
         let schema: Value = serde_json::from_str(&raw).expect("schema should parse as JSON");

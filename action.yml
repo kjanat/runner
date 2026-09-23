@@ -16,4 +16,4 @@ outputs:
 
 runs:
   using: node24
-  main: action.mjs
+  main: packaging/action/action.mjs
