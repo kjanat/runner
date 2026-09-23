@@ -135,6 +135,35 @@ pub(crate) fn exec_cmd(dir: &Path, args: &[String]) -> Command {
     exec_cmd_with_major(yarn_major, args)
 }
 
+/// `yarn dlx --package <package> <bin> [args...]`, Yarn 2+ only; classic
+/// Yarn has no package-selecting exec.
+pub(crate) fn exec_package_cmd(
+    dir: &Path,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Option<Command> {
+    exec_package_cmd_with_major(detect_major_version(dir), package, bin, args)
+}
+
+fn exec_package_cmd_with_major(
+    yarn_major: Option<u32>,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Option<Command> {
+    if yarn_major.is_none_or(|major| major < 2) {
+        return None;
+    }
+    let mut c = super::program::command("yarn");
+    c.arg("dlx")
+        .arg("--package")
+        .arg(package)
+        .arg(bin)
+        .args(args);
+    Some(c)
+}
+
 fn exec_cmd_with_major(yarn_major: Option<u32>, args: &[String]) -> Command {
     let mut c = super::program::command("yarn");
     let subcommand = match yarn_major {

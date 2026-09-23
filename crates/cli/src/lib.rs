@@ -1102,6 +1102,7 @@ fn build_overrides(
             runtime: cli.global.runtime_override.as_deref(),
             fallback: cli.global.fallback.as_deref(),
             on_mismatch: cli.global.on_mismatch.as_deref(),
+            package: cli.global.package_selection.as_deref(),
         },
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,
@@ -1163,6 +1164,7 @@ fn build_overrides_lenient(
             runtime: cli.global.runtime_override.as_deref(),
             fallback: cli.global.fallback.as_deref(),
             on_mismatch: cli.global.on_mismatch.as_deref(),
+            package: cli.global.package_selection.as_deref(),
         },
         resolver::DiagnosticFlags {
             no_warnings: cli.global.no_warnings,

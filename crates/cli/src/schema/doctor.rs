@@ -1570,6 +1570,7 @@ mod tests {
         // not part of the doctor resolution report (the runner-facing quiet
         // level still is, as `quiet`).
         const EXCLUDED: &[&str] = &[
+            "package",
             "parent_group_open",
             "parent_warned",
             "host_stream",
@@ -1596,6 +1597,7 @@ mod tests {
         }
         let resolution_overrides_fields = resolution_overrides_fields![
             pm,
+            package,
             pm_by_ecosystem,
             runner,
             runtime,

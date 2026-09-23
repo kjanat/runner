@@ -445,6 +445,9 @@ pub(super) fn resolve_dispatch(
     allow_self_exec: bool,
 ) -> Result<Dispatch> {
     crate::cmd::print_warnings(ctx, overrides, sink.as_deref_mut());
+    if let Some(selected) = dispatch_by_package(ctx, overrides, task, args, sink.as_deref_mut())? {
+        return Ok(selected);
+    }
 
     // Local-file execution short-circuit: a token with an explicit
     // local-path prefix (`./`, `../`, `/`, `\`, `~`, or a Windows drive
@@ -650,6 +653,96 @@ fn spawn_local(
     crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
     crate::cmd::configure_task_streams(&mut command, overrides, token);
     Dispatch::Spawn(SpawnDispatch::passthrough(command))
+}
+
+/// `--package <package> <bin>`: the binary from the package's own manifest
+/// when it is installed, else the package manager's package-selecting exec.
+/// Nothing else is consulted, so a same-named `.bin` link, a task or a file
+/// cannot stand in for the package the user named. An `npm:` token is
+/// refused with the equivalent form. `None` when no package was selected.
+fn dispatch_by_package(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    bin: &str,
+    args: &[String],
+    sink: crate::cmd::WarningSink<'_>,
+) -> Result<Option<Dispatch>> {
+    if let Some(spec) = bin.strip_prefix("npm:") {
+        bail!(
+            "`npm:{spec}` is not a task: name the package with `--package` and the binary as the \
+             task, e.g. `run --package {spec} <bin>`"
+        );
+    }
+    let Some(package) = overrides.package.as_deref() else {
+        return Ok(None);
+    };
+    if let Some(dep) = super::local_dep::try_selected_package(ctx, overrides, package, bin, args)? {
+        print_pm_explain(overrides, &dep.describe);
+        return Ok(Some(spawn_local(ctx, overrides, bin, args, dep.dispatch)));
+    }
+
+    let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
+        Ok(decision) => {
+            crate::cmd::print_warning_slice(&decision.warnings, overrides, sink);
+            print_pm_explain(overrides, &decision.describe());
+            Some(decision.pm)
+        }
+        Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
+        Err(e) => return Err(e.into()),
+    };
+    let (label, mut cmd) = package_exec_command(ctx, resolved_pm, package, bin, args)?;
+    confirm_fetch(overrides, label, &format!("{package} ({bin})"))?;
+    print_dispatch_arrow(overrides, bin, label, bin, args);
+    crate::cmd::configure_command(&mut cmd, &ctx.cwd, overrides);
+    crate::cmd::configure_task_streams(&mut cmd, overrides, bin);
+    Ok(Some(Dispatch::Spawn(SpawnDispatch::passthrough(cmd))))
+}
+
+/// The package manager's own way of running `bin` from `package` without
+/// installing it into the project.
+fn package_exec_command(
+    ctx: &ProjectContext,
+    resolved_pm: Option<PackageManager>,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<(&'static str, Command)> {
+    let pm = resolved_pm
+        .or_else(|| ctx.package_managers.iter().copied().find(|pm| pm.is_node()))
+        .or_else(|| ctx.package_managers.first().copied());
+    Ok(match pm {
+        Some(PackageManager::Npm) => (
+            "npx --package",
+            tool::npm::exec_package_cmd(package, bin, args),
+        ),
+        Some(PackageManager::Bun) => (
+            "bun x --package",
+            tool::bun::exec_package_cmd(package, bin, args),
+        ),
+        Some(PackageManager::Pnpm) => {
+            ("pnpm dlx", tool::pnpm::exec_package_cmd(package, bin, args))
+        }
+        Some(PackageManager::Yarn) => {
+            match tool::yarn::exec_package_cmd(&ctx.root, package, bin, args) {
+                Some(command) => ("yarn dlx", command),
+                None => bail!(
+                    "{package} is not installed and Yarn 1 has no package-selecting exec; install \
+                     it or pick another package manager with --pm"
+                ),
+            }
+        }
+        Some(PackageManager::Deno) => ("deno x", tool::deno::exec_package_cmd(package, bin, args)),
+        Some(PackageManager::Uv) => ("uvx --from", tool::uv::exec_package_cmd(package, bin, args)),
+        Some(other) => bail!(
+            "{package} is not installed and {} has no package-selecting exec; install it or pick \
+             another package manager with --pm",
+            other.label()
+        ),
+        None => bail!(
+            "{package} is not installed and no package manager was detected to fetch it; pick one \
+             with --pm"
+        ),
+    })
 }
 
 /// The tail of the cascade, reached once the token matched no task, no local
@@ -1554,6 +1647,137 @@ mod tests {
             ..wrapper
         };
         check_make_args(&plain, &[String::from("--help")]).expect("a real script forwards flags");
+    }
+
+    #[test]
+    fn npm_prefixed_tokens_are_refused_with_the_package_form() {
+        let err = resolve_dispatch(
+            &context(),
+            &ResolutionOverrides::default(),
+            "npm:typescript",
+            &[],
+            None,
+            true,
+        )
+        .expect_err("npm: spec is refused");
+        assert!(
+            format!("{err:#}").contains("--package typescript"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_selected_package_runs_its_own_declared_bin() {
+        let dir = crate::tool::test_support::TempDir::new("package-selector");
+        let pkg = dir.path().join("node_modules").join("typescript");
+        let other = dir
+            .path()
+            .join("node_modules")
+            .join("@typescript")
+            .join("native");
+        for (root, name) in [(&pkg, "typescript"), (&other, "@typescript/native")] {
+            std::fs::create_dir_all(root.join("bin")).expect("bin dir");
+            std::fs::write(
+                root.join("package.json"),
+                format!(
+                    r#"{{"name":"{name}","bin":{{"tsc":"bin/tsc","tsserver":"bin/tsserver"}}}}"#
+                ),
+            )
+            .expect("manifest");
+            for bin in ["tsc", "tsserver"] {
+                let file = root.join("bin").join(bin);
+                std::fs::write(&file, "#!/usr/bin/env node\n").expect("bin");
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))
+                        .expect("chmod");
+                }
+            }
+        }
+        let mut ctx = context();
+        ctx.cwd = dir.path().to_path_buf();
+        ctx.root = dir.path().to_path_buf();
+        let overrides = ResolutionOverrides {
+            package: Some("typescript".to_string()),
+            ..ResolutionOverrides::default()
+        };
+
+        let command = expect_command(
+            resolve_dispatch(&ctx, &overrides, "tsc", &[String::from("-v")], None, true)
+                .expect("selected package dispatches"),
+        );
+        let argv: Vec<String> =
+            std::iter::once(command.get_program().to_string_lossy().into_owned())
+                .chain(command_args(&command))
+                .collect();
+        let expected = pkg.join("bin").join("tsc").to_string_lossy().into_owned();
+        assert!(argv.contains(&expected), "{argv:?} should name {expected}");
+        assert_eq!(argv.last().map(String::as_str), Some("-v"));
+
+        let err = resolve_dispatch(&ctx, &overrides, "tsx", &[], None, true)
+            .expect_err("an undeclared bin is refused");
+        assert!(
+            format!("{err:#}").contains("exposes tsc, tsserver"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn a_missing_selected_package_goes_to_the_manager_with_its_name() {
+        let mut ctx = context();
+        ctx.package_managers.push(PackageManager::Bun);
+        let args = [String::from("-v")];
+        let (label, command) = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Bun),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect("bun has a package-selecting exec");
+        assert_eq!(label, "bun x --package");
+        assert_eq!(
+            command_args(&command),
+            ["x", "--package", "typescript", "tsc", "-v"]
+        );
+
+        let (label, command) = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Npm),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect("npx has --package");
+        assert_eq!(label, "npx --package");
+        assert_eq!(
+            command_args(&command),
+            ["--package", "typescript", "--", "tsc", "-v"]
+        );
+
+        let (_, command) = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Pnpm),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect("pnpm dlx has --package");
+        assert_eq!(
+            command_args(&command),
+            ["--package=typescript", "dlx", "tsc", "-v"]
+        );
+
+        let err = super::package_exec_command(
+            &ctx,
+            Some(PackageManager::Cargo),
+            "typescript",
+            "tsc",
+            &args,
+        )
+        .expect_err("cargo cannot select an npm package");
+        assert!(format!("{err:#}").contains("--pm"), "{err:#}");
     }
 
     #[test]

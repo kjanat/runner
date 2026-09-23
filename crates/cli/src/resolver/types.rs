@@ -38,6 +38,10 @@ pub(crate) struct ResolutionOverrides {
     /// ecosystem-qualified; the resolver applies this value only when the
     /// named PM is compatible with the requested ecosystem.
     pub pm: Option<PmOverride>,
+    /// `--package`: the npm package whose declared binary the task token
+    /// names. Resolution then reads that package's own manifest and, when it
+    /// is not installed, the package manager's package-selection form.
+    pub package: Option<String>,
     /// Per-ecosystem PM overrides from `runner.toml`. Consulted after the
     /// cross-ecosystem CLI/env override falls through (e.g. `--pm cargo`
     /// against a Node resolution).
@@ -879,6 +883,8 @@ pub(crate) struct CliOverrides<'a> {
     pub fallback: Option<&'a str>,
     /// `--on-mismatch` flag value.
     pub on_mismatch: Option<&'a str>,
+    /// `--package` flag value.
+    pub package: Option<&'a str>,
 }
 
 /// CLI-side diagnostic flags (`--no-warnings`, `--quiet`, `--explain`)

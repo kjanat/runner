@@ -66,6 +66,17 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
+/// `npx --package <package> -- <bin> [args...]`
+pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("npx");
+    c.arg("--package")
+        .arg(package)
+        .arg("--")
+        .arg(bin)
+        .args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HostVerbosity, ScriptDirective, exec_cmd, install_cmd, run_cmd};

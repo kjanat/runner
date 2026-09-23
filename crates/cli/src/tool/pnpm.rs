@@ -63,6 +63,16 @@ pub(crate) fn exec_cmd(args: &[String]) -> Command {
     c
 }
 
+/// `pnpm --package=<package> dlx <bin> [args...]`
+pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("pnpm");
+    c.arg(format!("--package={package}"))
+        .arg("dlx")
+        .arg(bin)
+        .args(args);
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::{HostVerbosity, ScriptDirective, install_cmd, run_cmd};

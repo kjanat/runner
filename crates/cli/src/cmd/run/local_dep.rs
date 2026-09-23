@@ -73,6 +73,73 @@ pub(super) fn try_installed_package(
     }))
 }
 
+/// `--package <package> <bin>`: the binary `bin` that the installed
+/// `package` declares in its own manifest, so a same-named `.bin` link that
+/// another package won is never consulted.
+///
+/// Returns `Ok(None)` when the package is not installed; the caller then
+/// hands the same selection to the package manager. Everything else that
+/// goes wrong is an error, since the user named the package.
+pub(super) fn try_selected_package(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    package: &str,
+    bin: &str,
+    args: &[String],
+) -> Result<Option<ResolvedBin>> {
+    if !is_package_name(package) {
+        bail!("--package takes a package name (`typescript`, `@scope/name`), got {package:?}");
+    }
+    let Some(dir) = installed_dir(&ctx.cwd, package) else {
+        return Ok(None);
+    };
+    let manifest: Manifest = match std::fs::read_to_string(dir.join("package.json")) {
+        Ok(raw) => serde_json::from_str(&raw)?,
+        Err(_) => return Ok(None),
+    };
+    let bin_path = declared_bin(package, bin, &manifest)?;
+    let Some(dispatch) = bare_file_in(ctx, overrides, &dir, &bin_path, args)? else {
+        bail!(
+            "{package} declares `{bin}` at {}, but nothing is there.\nhint: reinstall \
+             dependencies.",
+            dir.join(&bin_path).display(),
+        );
+    };
+    Ok(Some(ResolvedBin {
+        describe: format!("{bin} from {} (package {package})", dir.display()),
+        dispatch,
+    }))
+}
+
+/// The path `package` declares for the binary named `bin`.
+fn declared_bin(package: &str, bin: &str, manifest: &Manifest) -> Result<String> {
+    match &manifest.bin {
+        Some(serde_json::Value::String(path)) => {
+            let declared = manifest
+                .name
+                .as_deref()
+                .map_or_else(|| unscoped(package), unscoped);
+            if declared == bin {
+                Ok(path.clone())
+            } else {
+                bail!("{package} declares one binary, `{declared}`, and no `{bin}`")
+            }
+        }
+        Some(serde_json::Value::Object(map)) if !map.is_empty() => {
+            if let Some(path) = map.get(bin) {
+                return string_path(package, bin, path);
+            }
+            let mut names: Vec<&str> = map.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            bail!(
+                "{package} declares no `{bin}` binary; it exposes {}",
+                names.join(", ")
+            )
+        }
+        _ => bail!("{package} is installed but declares no binary in its package.json"),
+    }
+}
+
 /// Whether `token` can name an npm package: `name` or `@scope/name`, with no
 /// version suffix and no extra path segments. Excludes remote specs the
 /// PM-exec fallback still owns (`typescript@7`, `user/repo#ref`,
@@ -123,7 +190,7 @@ fn select_bin(token: &str, manifest: &Manifest) -> Result<(String, String)> {
                 names.sort_unstable();
                 bail!(
                     "{token} exposes {} binaries ({}); none is named after the package.\nhint: \
-                     run the binary directly, e.g. `runner run {}`.",
+                     pick one with `run --package {token} {}`.",
                     map.len(),
                     names.join(", "),
                     names[0],
@@ -230,6 +297,27 @@ mod tests {
             .expect_err("a library has nothing to run");
 
         assert!(format!("{err:#}").contains("declares no binary"));
+    }
+
+    #[test]
+    fn a_selected_package_yields_the_named_bin_or_lists_what_it_has() {
+        use super::declared_bin;
+        let ts =
+            manifest(r#"{"name":"typescript","bin":{"tsc":"bin/tsc","tsserver":"bin/tsserver"}}"#);
+        assert_eq!(
+            declared_bin("typescript", "tsc", &ts).expect("declared"),
+            "bin/tsc"
+        );
+        let err = declared_bin("typescript", "tsx", &ts).expect_err("undeclared");
+        assert!(err.to_string().contains("exposes tsc, tsserver"), "{err}");
+
+        let single = manifest(r#"{"name":"@scope/tool","bin":"cli.js"}"#);
+        assert_eq!(
+            declared_bin("@scope/tool", "tool", &single).expect("declared"),
+            "cli.js"
+        );
+        let err = declared_bin("@scope/tool", "other", &single).expect_err("wrong name");
+        assert!(err.to_string().contains("one binary, `tool`"), "{err}");
     }
 
     #[test]

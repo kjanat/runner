@@ -20,6 +20,17 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- `--package <name>` selects an npm package, and the task token names one of
+  the binaries its manifest declares: `run --package typescript tsc`. An
+  installed package resolves from its own `package.json`, never from the
+  shared `node_modules/.bin` link another package may have won. One that is
+  not installed goes to the package manager's package-selecting form (`npx
+  --package`, `bun x --package`, `pnpm --package= dlx`, `yarn dlx --package`,
+  `deno x npm:<name>/<bin>`, `uvx --from`). A binary the package does not
+  declare is an error naming the ones it has, the multi-binary ambiguity
+  message suggests the `--package` form, and an `npm:` prefix on a task token
+  is refused with the equivalent (#126).
+
 - `run make`, `run just`, `run task` and `run bacon` invoke the runner's own
   entry point when the project uses it and no task carries that name, so
   Make picks its `.DEFAULT_GOAL`, just its default recipe, and so on.
