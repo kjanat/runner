@@ -144,7 +144,7 @@ function resolvePlatformTarget() {
 	/** @type {{ scope: string, targets: { pkg: string, os: string[], cpu: string[], libc?: string[] | null }[] }} */
 	let manifest;
 	try {
-		manifest = JSON.parse(readFileSync(join(import.meta.dirname, "npm", "targets.json"), "utf8"));
+		manifest = JSON.parse(readFileSync(join(import.meta.dirname, "..", "npm", "targets.json"), "utf8"));
 	} catch (err) {
 		debug(`could not read packaging/npm/targets.json (${err instanceof Error ? err.message : String(err)})`);
 		return null;

@@ -24,19 +24,16 @@ Cargo aliases live in `.cargo/config.toml` (`t`, `cl`, `l`/`lint`, …).
 
 ## Generated artifacts
 
-Both are rendered from the CLI definition behind off-by-default features,
-never hand-edited.
+Both are rendered from the CLI definition, never hand-edited.
 
-- **`runner.toml` JSON Schema**, committed under `schemas/`, and the
-  `runner config init` scaffold under `crates/cli/templates/`:
+- **JSON Schemas**, committed under `schemas/`:
 
   ```sh
-  just gen-schema                                          # cargo schema --all --output schemas
-  git diff --exit-code schemas/ crates/cli/templates/      # drift guard
+  just gen-schema                   # cargo schema --all --output schemas
+  git diff --exit-code schemas/     # drift guard
   ```
 
-- **Man pages** (`man`/`schema` features), generated at release time, not
-  committed:
+- **Man pages** (`man` feature), generated at release time, not committed:
 
   ```sh
   cargo man                        # → stdout

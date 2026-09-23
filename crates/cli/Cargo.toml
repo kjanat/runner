@@ -14,7 +14,7 @@ license                = "MIT"
 keywords               = ["automation", "build-tool", "cli", "task-runner"]
 categories             = ["command-line-utilities", "development-tools"]
 build                  = "build.rs"
-include                = ["/build.rs", "/man", "/src"]
+include                = ["/LICENSE", "/build.rs", "/man", "/src"]
 default-run            = "runner"
 autobins               = false
 
