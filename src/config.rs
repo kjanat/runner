@@ -145,27 +145,27 @@ pub(crate) struct ToolSettings {
     /// one-element list. Only mise defines more than one operation today
     /// (`install` and `bootstrap`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<ToolRun>,
+    pub install: Option<ToolInstall>,
     /// Variables set on every invocation of this tool.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
 }
 
-/// `[tools.<name>].run` as written: a toggle, one operation name, or an
-/// ordered list. All three normalize to a list via [`ToolRun::operations`].
+/// `[tools.<name>].install` as written: a toggle, one operation name, or an
+/// ordered list. All three normalize to a list via [`ToolInstall::operations`].
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(untagged)]
-pub(crate) enum ToolRun {
-    /// `run = true` / `run = false`.
+pub(crate) enum ToolInstall {
+    /// `install = true` / `install = false`.
     Toggle(bool),
-    /// `run = "bootstrap"`.
+    /// `install = "bootstrap"`.
     One(String),
-    /// `run = ["bootstrap", "install"]`.
+    /// `install = ["bootstrap", "install"]`.
     Many(Vec<String>),
 }
 
-impl ToolRun {
+impl ToolInstall {
     /// The operations to run, in order. `true` means the tool's default
     /// operation, which every tool spells `install`.
     pub(crate) fn operations(&self) -> Vec<String> {
@@ -928,7 +928,7 @@ const TASKS_RESERVED_KEYS: &[&str] = &["prefer", "overrides"];
 /// Recognized fields of a `[tools.<name>]` table entry ([`ToolSettings`]).
 /// Mirrors the struct; the `known_tool_entry_fields_match_schema` test guards
 /// drift.
-const TOOL_ENTRY_FIELDS: &[&str] = &["run", "env"];
+const TOOL_ENTRY_FIELDS: &[&str] = &["install", "env"];
 
 /// Recognized fields of a `[tasks.<name>]` table entry ([`TaskSettings`]).
 /// Mirrors the struct; the `known_task_entry_fields_match_schema` test guards
@@ -1765,39 +1765,45 @@ mod tests {
     }
 
     #[test]
-    fn tool_run_normalizes_every_spelling() {
-        use super::ToolRun;
-        assert_eq!(ToolRun::Toggle(true).operations(), ["install"]);
-        assert!(ToolRun::Toggle(false).operations().is_empty());
-        assert_eq!(ToolRun::One("bootstrap".into()).operations(), ["bootstrap"]);
+    fn tool_install_normalizes_every_spelling() {
+        use super::ToolInstall;
+        assert_eq!(ToolInstall::Toggle(true).operations(), ["install"]);
+        assert!(ToolInstall::Toggle(false).operations().is_empty());
         assert_eq!(
-            ToolRun::Many(vec!["bootstrap".into(), "install".into()]).operations(),
+            ToolInstall::One("bootstrap".into()).operations(),
+            ["bootstrap"]
+        );
+        assert_eq!(
+            ToolInstall::Many(vec!["bootstrap".into(), "install".into()]).operations(),
             ["bootstrap", "install"],
         );
     }
 
     #[test]
-    fn tool_run_parses_all_four_toml_forms() {
+    fn tool_install_parses_all_four_toml_forms() {
         for (written, expected) in [
-            ("run = true", vec!["install"]),
-            ("run = false", vec![]),
-            (r#"run = "bootstrap""#, vec!["bootstrap"]),
+            ("install = true", vec!["install"]),
+            ("install = false", vec![]),
+            (r#"install = "bootstrap""#, vec!["bootstrap"]),
             (
-                r#"run = ["bootstrap", "install"]"#,
+                r#"install = ["bootstrap", "install"]"#,
                 vec!["bootstrap", "install"],
             ),
         ] {
             let config: RunnerConfig =
                 toml::from_str(&format!("[tools.mise]\n{written}\n")).expect("parses");
-            let run = config.tools["mise"].run.as_ref().expect("run is set");
-            assert_eq!(run.operations(), expected, "{written}");
+            let install = config.tools["mise"]
+                .install
+                .as_ref()
+                .expect("install is set");
+            assert_eq!(install.operations(), expected, "{written}");
         }
     }
 
     #[test]
     fn open_map_sections_do_not_warn_about_their_keys() {
         let doc: toml::Value = toml::from_str(
-            "[env]\nANYTHING = \"1\"\n\n[tools.mise]\nrun = true\nenv = { A = \"b\" }\n",
+            "[env]\nANYTHING = \"1\"\n\n[tools.mise]\ninstall = true\nenv = { A = \"b\" }\n",
         )
         .expect("parses");
         assert!(super::collect_unknown_keys(&doc).is_empty());
@@ -1805,7 +1811,7 @@ mod tests {
 
     #[test]
     fn a_tool_entry_field_typo_still_warns() {
-        let doc: toml::Value = toml::from_str("[tools.mise]\nrunn = true\n").expect("parses");
+        let doc: toml::Value = toml::from_str("[tools.mise]\ninstalll = true\n").expect("parses");
         let paths: Vec<String> = super::collect_unknown_keys(&doc)
             .into_iter()
             .map(|w| match w {
@@ -1813,7 +1819,7 @@ mod tests {
                 other => panic!("unexpected warning: {other:?}"),
             })
             .collect();
-        assert_eq!(paths, ["tools.mise.runn"]);
+        assert_eq!(paths, ["tools.mise.installl"]);
     }
 
     #[test]

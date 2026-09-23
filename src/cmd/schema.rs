@@ -228,14 +228,14 @@ fn open_map_example(section: &str) -> Option<&'static str> {
         ),
         "tools" => Some(
             "\n# `[tools.<name>]` sections, settings scoped to one detected tool, keyed by\n# its \
-             label (`mise`, `just`, `npm`, ...).\n#\n# `run` is the ordered list of operations \
-             `runner install` runs for that\n# tool. `true` means [\"install\"], `false` means \
-             none, and a bare string is\n# a one-element list. mise is the only tool with more \
-             than one operation\n# today; `bootstrap` also does machine setup (system packages, \
-             dotfiles,\n# services, firewall), so it never runs unless named here.\n#\n# `env` \
-             applies to every invocation of that tool, over `[env]` and under a\n# task entry's \
-             own `env`.\n# [tools.mise]\n# run = [\"bootstrap\", \"install\"]   # or true | false \
-             | \"install\"\n# env = { MISE_JOBS = \"4\" }\n",
+             label (`mise`, `just`, `npm`, ...).\n#\n# `install` is the ordered list of \
+             operations `runner install` runs for that\n# tool. `true` means [\"install\"], \
+             `false` means none, and a bare string is\n# a one-element list. mise is the only \
+             tool with more than one operation\n# today; `bootstrap` also does machine setup \
+             (system packages, dotfiles,\n# services, firewall), so it never runs unless named \
+             here.\n#\n# `env` applies to every invocation of that tool, over `[env]` and under \
+             a\n# task entry's own `env`.\n# [tools.mise]\n# install = [\"bootstrap\", \
+             \"install\"]   # or true | false | \"install\"\n# env = { MISE_JOBS = \"4\" }\n",
         ),
         _ => None,
     }

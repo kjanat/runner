@@ -136,15 +136,15 @@ fn run_tools_step(
 }
 
 /// Which operations `runner install` runs for `runner`, from
-/// `[tools.<name>].run`, defaulting to the tool's install operation.
+/// `[tools.<name>].install`, defaulting to the tool's install operation.
 fn tool_operations(runner: TaskRunner, overrides: &ResolutionOverrides) -> Result<Vec<String>> {
-    let Some(configured) = overrides.tool_run.get(runner.label()) else {
+    let Some(configured) = overrides.tool_install.get(runner.label()) else {
         return Ok(vec![tool::mise::INSTALL.to_string()]);
     };
     for operation in configured {
         if !tool::mise::OPERATIONS.contains(&operation.as_str()) {
             bail!(
-                "[tools.{}].run: unknown operation {operation:?}; expected one of {}",
+                "[tools.{}].install: unknown operation {operation:?}; expected one of {}",
                 runner.label(),
                 tool::mise::OPERATIONS.join(", "),
             );

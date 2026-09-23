@@ -458,10 +458,10 @@ pub(crate) fn exec_cmd(name: &str, args: &[String]) -> Command {
     c
 }
 
-/// The default operation when `[tools.mise].run` says nothing.
+/// The default operation when `[tools.mise].install` says nothing.
 pub(crate) const INSTALL: &str = "install";
 
-/// Operations `[tools.mise].run` accepts.
+/// Operations `[tools.mise].install` accepts.
 ///
 /// `bootstrap` also performs machine setup (system packages, dotfiles,
 /// services, firewall), so it is never the default and only runs when the

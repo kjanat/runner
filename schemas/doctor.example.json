@@ -75,7 +75,7 @@
       "tool": {},
       "task": {}
     },
-    "tool_run": {}
+    "tool_install": {}
   },
   "ecosystems": [
     {

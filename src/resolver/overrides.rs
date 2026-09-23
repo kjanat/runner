@@ -377,7 +377,7 @@ impl ResolutionOverrides {
             script_policy,
             on_collision,
             env: env_layers(&sources),
-            tool_run: tool_run(&sources),
+            tool_install: tool_install(&sources),
             // Set in `dispatch`, which is the first place a resolved project
             // root and the inherited `RUNNER_WARNED_ROOT` marker are both in
             // hand. Nothing to capture from `sources`.
@@ -546,8 +546,8 @@ fn env_layers(sources: &OverrideSources<'_>) -> super::types::EnvLayers {
     }
 }
 
-/// `[tools.<name>].run`, normalized to an ordered operation list per tool.
-fn tool_run(sources: &OverrideSources<'_>) -> std::collections::BTreeMap<String, Vec<String>> {
+/// `[tools.<name>].install`, normalized to an ordered operation list per tool.
+fn tool_install(sources: &OverrideSources<'_>) -> std::collections::BTreeMap<String, Vec<String>> {
     sources
         .config
         .map_or_else(std::collections::BTreeMap::new, |loaded| {
@@ -557,7 +557,7 @@ fn tool_run(sources: &OverrideSources<'_>) -> std::collections::BTreeMap<String,
                 .iter()
                 .filter_map(|(name, settings)| {
                     settings
-                        .run
+                        .install
                         .as_ref()
                         .map(|run| (name.clone(), run.operations()))
                 })

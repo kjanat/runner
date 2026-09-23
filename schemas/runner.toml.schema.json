@@ -495,19 +495,19 @@
         "$ref": "#/$defs/TaskSpec"
       }
     },
-    "ToolRun": {
-      "description": "`[tools.<name>].run` as written: a toggle, one operation name, or an\nordered list. All three normalize to a list via [`ToolRun::operations`].",
+    "ToolInstall": {
+      "description": "`[tools.<name>].install` as written: a toggle, one operation name, or an\nordered list. All three normalize to a list via [`ToolInstall::operations`].",
       "anyOf": [
         {
-          "description": "`run = true` / `run = false`.",
+          "description": "`install = true` / `install = false`.",
           "type": "boolean"
         },
         {
-          "description": "`run = \"bootstrap\"`.",
+          "description": "`install = \"bootstrap\"`.",
           "type": "string"
         },
         {
-          "description": "`run = [\"bootstrap\", \"install\"]`.",
+          "description": "`install = [\"bootstrap\", \"install\"]`.",
           "type": "array",
           "items": {
             "type": "string"
@@ -526,11 +526,11 @@
             "type": "string"
           }
         },
-        "run": {
+        "install": {
           "description": "Which of the tool's operations `runner install` runs, in order.\n\n`true` is `[\"install\"]`, `false` is `[]`, and a bare string is a\none-element list. Only mise defines more than one operation today\n(`install` and `bootstrap`).",
           "anyOf": [
             {
-              "$ref": "#/$defs/ToolRun"
+              "$ref": "#/$defs/ToolInstall"
             },
             {
               "type": "null"

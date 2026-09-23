@@ -597,7 +597,7 @@
         "runtime",
         "script_policy",
         "task_source_pins",
-        "tool_run"
+        "tool_install"
       ],
       "properties": {
         "env": {
@@ -718,8 +718,8 @@
             }
           }
         },
-        "tool_run": {
-          "description": "`[tools.<name>].run`, the operations `runner install` runs for each tool, in order.",
+        "tool_install": {
+          "description": "`[tools.<name>].install`, the operations `runner install` runs for each tool, in order.",
           "type": "object",
           "additionalProperties": {
             "type": "array",

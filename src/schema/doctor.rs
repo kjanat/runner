@@ -203,11 +203,11 @@ struct Overrides {
     #[cfg_attr(
         feature = "schema",
         schemars(
-            description = "`[tools.<name>].run`, the operations `runner install` runs for each \
-                           tool, in order."
+            description = "`[tools.<name>].install`, the operations `runner install` runs for \
+                           each tool, in order."
         )
     )]
-    tool_run: BTreeMap<String, Vec<String>>,
+    tool_install: BTreeMap<String, Vec<String>>,
     task_source_pins: BTreeMap<String, Vec<&'static str>>,
 }
 
@@ -734,7 +734,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             tool: env_names(&overrides.env.tool),
             task: env_names(&overrides.env.task),
         },
-        tool_run: overrides.tool_run.clone(),
+        tool_install: overrides.tool_install.clone(),
         task_source_pins: overrides
             .task_source_overrides
             .iter()
@@ -1730,7 +1730,7 @@ mod tests {
             parent_group_open,
             parent_warned,
             env,
-            tool_run,
+            tool_install,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))

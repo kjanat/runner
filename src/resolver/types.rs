@@ -145,9 +145,9 @@ pub(crate) struct ResolutionOverrides {
     /// `[env]`, `[tools.*].env` and `[tasks.*].env`, kept together because
     /// they are one layered lookup rather than three independent knobs.
     pub env: EnvLayers,
-    /// `[tools.<name>].run`, normalized to an ordered operation list.
+    /// `[tools.<name>].install`, normalized to an ordered operation list.
     /// Absent means the tool's default, which every tool spells `install`.
-    pub tool_run: BTreeMap<String, Vec<String>>,
+    pub tool_install: BTreeMap<String, Vec<String>>,
     /// `true` when a parent `runner`/`run` already opened a GitHub Actions
     /// log group above this process (signalled via the inherited
     /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest:

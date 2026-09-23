@@ -53,15 +53,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   project-wide one, which beats the inherited environment. Every layer still
   contributes the names the narrower ones do not set.
 
-- `[tools.<name>].run` says which of a tool's operations `runner install`
-  runs, in order. `run = true` is `["install"]`, `run = false` runs none,
+- `[tools.<name>].install` says which of a tool's operations `runner install`
+  runs, in order. `install = true` is `["install"]`, `install = false` runs none,
   and a bare string is a one-element list. mise is the only tool with more
   than one operation today: `bootstrap` also does machine setup (system
   packages, dotfiles, services, firewall), so it never runs unless the
   project names it. An unrecognized operation is refused before anything
   spawns.
 
-- `runner doctor --json` reports `overrides.tool_run`, and `overrides.env`
+- `runner doctor --json` reports `overrides.tool_install`, and `overrides.env`
   carrying the variable *names* each layer sets. Values are withheld, since
   that payload is meant to be pasted into a bug report.
 
