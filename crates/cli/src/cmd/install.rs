@@ -46,15 +46,18 @@ pub(crate) fn install_pms(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     flags: InstallFlags,
-    sink: super::WarningSink<'_>,
+    mut sink: super::WarningSink<'_>,
 ) -> Result<i32> {
     let tools = tools_step(ctx, flags);
+    let task = install_task(ctx);
     // Planned before the GHA group opens so a refused override doesn't
     // emit an empty `runner: install` group.
     let plan = if ctx.package_managers.is_empty() {
-        match plan_from_resolver(ctx, overrides, sink) {
+        match plan_from_resolver(ctx, overrides, sink.as_deref_mut()) {
             Ok(plan) => plan,
-            Err(err) if tools.is_some() && is_no_signals(&err) => InstallPlan::empty(),
+            Err(err) if (tools.is_some() || task.is_some()) && is_no_signals(&err) => {
+                InstallPlan::empty()
+            }
             Err(err) => return Err(err),
         }
     } else {
@@ -74,6 +77,9 @@ pub(crate) fn install_pms(
         return Ok(code);
     }
     if plan.pms.is_empty() {
+        if let Some(task) = task {
+            return super::run::run(ctx, overrides, &task.name, &[], sink);
+        }
         return Ok(0);
     }
 
@@ -109,6 +115,14 @@ pub(crate) fn tools_step(ctx: &ProjectContext, flags: InstallFlags) -> Option<Ta
 /// `true` when the resolver found nothing to install with. A project that
 /// only declares tools (a `mise.toml` without a manifest) still has a
 /// meaningful `runner install`: the toolchain step alone.
+/// The project's own `install` task, run when no package manager has
+/// anything to install. `runner why install` already names it.
+fn install_task(ctx: &ProjectContext) -> Option<&crate::types::Task> {
+    ctx.tasks
+        .iter()
+        .find(|task| task.name == "install" && task.member.is_none())
+}
+
 fn is_no_signals(err: &anyhow::Error) -> bool {
     matches!(
         err.downcast_ref::<ResolveError>(),

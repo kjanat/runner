@@ -58,6 +58,10 @@ name = "install_collision"
 path = "../../tests/install_collision.rs"
 
 [[test]]
+name = "install_task_fallback"
+path = "../../tests/install_task_fallback.rs"
+
+[[test]]
 name = "nested_dispatch"
 path = "../../tests/nested_dispatch.rs"
 
