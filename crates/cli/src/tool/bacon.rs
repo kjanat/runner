@@ -174,6 +174,15 @@ pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbos
     c
 }
 
+/// `bacon [-- args...]`, leaving the job to bacon's default.
+pub(crate) fn root_cmd(args: &[String], _verbosity: super::HostVerbosity) -> Command {
+    let mut c = super::program::command("bacon");
+    if !args.is_empty() {
+        c.arg("--").args(args);
+    }
+    c
+}
+
 #[derive(Deserialize)]
 struct BaconDoc {
     #[serde(default)]

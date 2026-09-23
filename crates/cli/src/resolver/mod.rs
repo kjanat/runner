@@ -53,12 +53,12 @@ pub(crate) use probe::probe_in as probe_path_for_doctor;
 /// overrides fully built by [`ResolutionOverrides::from_cli_and_env`].
 #[cfg(test)]
 pub(crate) use types::PmOverride;
-#[cfg(test)]
-pub(crate) use types::RuntimeOverride;
 pub(crate) use types::{
     CliOverrides, CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
     ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
 };
+#[cfg(test)]
+pub(crate) use types::{RunnerOverride, RuntimeOverride};
 
 /// Join an iterator of `&'static str` labels with `", "`. Used by the
 /// override and policy parsers to format `"unknown X; expected one of ..."`

@@ -145,13 +145,20 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 
 /// `task <task> [args...]`
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
+    let mut c = root_cmd(&[], verbosity);
+    c.arg(task).args(args);
+    c
+}
+
+/// `task [-s] [args...]`, leaving the task to the Taskfile's default.
+pub(crate) fn root_cmd(args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("task");
     // go-task's `-s`/`--silent` disables task-name and command echo. It has no
     // stdout-diversion primitive, so the stream axis no-ops.
     if verbosity.silences() {
         c.arg("-s");
     }
-    c.arg(task).args(args);
+    c.args(args);
     c
 }
 

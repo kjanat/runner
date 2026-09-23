@@ -20,6 +20,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- `run make`, `run just`, `run task` and `run bacon` invoke the runner's own
+  entry point when the project uses it and no task carries that name, so
+  Make picks its `.DEFAULT_GOAL`, just its default recipe, and so on.
+  Arguments are forwarded. A `--runner` constraint naming the same runner
+  allows it; one naming another runner refuses as before. A task named after
+  the runner still wins (#137).
+
 - `run test` with no `test` task runs the ecosystem's own test runner:
   `bun test`, `deno test`, `cargo test`, `go test ./...`, `node --test` over
   every `test.<ext>` and `*.test.<ext>` file below the current directory, and

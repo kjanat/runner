@@ -125,8 +125,16 @@ fn host_verbosity(
     host: &str,
     capabilities: tool::HostQuietCapabilities,
 ) -> tool::HostVerbosity {
-    let task_key = super::task_output_key(task);
-    let requested = overrides.host_verbosity_for(&task_key);
+    host_verbosity_for_key(overrides, &super::task_output_key(task), host, capabilities)
+}
+
+fn host_verbosity_for_key(
+    overrides: &ResolutionOverrides,
+    task_key: &str,
+    host: &str,
+    capabilities: tool::HostQuietCapabilities,
+) -> tool::HostVerbosity {
+    let requested = overrides.host_verbosity_for(task_key);
     let applied = requested.diagnostics.min(capabilities.max_diagnostics);
     let stream = if capabilities.diverts_to_stderr {
         requested.stream
@@ -419,11 +427,7 @@ pub(super) fn resolve_dispatch(
     // is intentionally left for the after-miss `try_bare_file` fallback so a
     // matching task (e.g. a `make bin/tool` target) wins first.
     if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
-        let mut command = local.command;
-        print_dispatch_arrow(overrides, task, &local.label, task, args);
-        crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
-        crate::cmd::configure_task_streams(&mut command, overrides, task);
-        return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
+        return Ok(spawn_local(ctx, overrides, task, args, local));
     }
 
     let (lookup, found) = lookup_token(ctx, task);
@@ -472,6 +476,12 @@ pub(super) fn resolve_dispatch(
                 return Err(reversed_qualifier_error(ctx, task, src, task_part));
             }
 
+            if let Some(dispatch) =
+                runner_root_invocation(ctx, overrides, task_name, args, sink.as_deref_mut())?
+            {
+                return Ok(dispatch);
+            }
+
             if let Some(reason) = runner_constraint_error(overrides, &found) {
                 return Err(reason.into());
             }
@@ -490,11 +500,7 @@ pub(super) fn resolve_dispatch(
             // never sees a local file.
             if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
             {
-                let mut command = local.command;
-                print_dispatch_arrow(overrides, task_name, &local.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
-                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
-                return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
+                return Ok(spawn_local(ctx, overrides, task_name, args, local));
             }
 
             // Locally installed dependency: run the binary its manifest
@@ -505,12 +511,8 @@ pub(super) fn resolve_dispatch(
             if let Some(dep) =
                 super::local_dep::try_installed_package(ctx, overrides, task_name, args)?
             {
-                let mut command = dep.dispatch.command;
                 print_pm_explain(overrides, &dep.describe);
-                print_dispatch_arrow(overrides, task_name, &dep.dispatch.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
-                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
-                return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
+                return Ok(spawn_local(ctx, overrides, task_name, args, dep.dispatch));
             }
 
             return dispatch_after_miss(ctx, overrides, task_name, args, sink);
@@ -599,6 +601,22 @@ fn spawn_task(
         .command_mut()
         .env(crate::cmd::TASK_STACK_ENV, task_stack);
     Ok(Dispatch::Spawn(spawn))
+}
+
+/// Print the arrow for a local file or installed binary and configure its
+/// process for the project.
+fn spawn_local(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+    args: &[String],
+    local: super::local_file::LocalDispatch,
+) -> Dispatch {
+    let mut command = local.command;
+    print_dispatch_arrow(overrides, token, &local.label, token, args);
+    crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
+    crate::cmd::configure_task_streams(&mut command, overrides, token);
+    Dispatch::Spawn(SpawnDispatch::passthrough(command))
 }
 
 /// The tail of the cascade, reached once the token matched no task, no local
@@ -696,6 +714,47 @@ fn confirm_fetch(overrides: &ResolutionOverrides, label: &str, name: &str) -> Re
         return Ok(());
     }
     bail!("task {name:?} not found; fetch via {label} declined")
+}
+
+/// `run make`, `run just`, `run task`, `run bacon`: the runner's own entry
+/// point, letting it pick its default target, when
+/// [`super::qualify::root_runner`] admits the token. Runs at the project
+/// root, where the runner's file was detected, and takes the task frame,
+/// env layers and runtime diagnostic a named task would.
+fn runner_root_invocation(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+    args: &[String],
+    sink: crate::cmd::WarningSink<'_>,
+) -> Result<Option<Dispatch>> {
+    use crate::types::TaskRunner;
+    let Some(runner) = super::qualify::root_runner(ctx, overrides, token) else {
+        return Ok(None);
+    };
+    let Some(source) = runner.task_source() else {
+        return Ok(None);
+    };
+    runtime::report_unhonored_source(overrides, token, source, sink);
+    let task_stack = crate::cmd::push_task_frame(&ctx.root, source, token)?;
+    let verbosity = |caps| host_verbosity_for_key(overrides, token, token, caps);
+    let mut command = match runner {
+        TaskRunner::Make => tool::make::root_cmd(args, verbosity(tool::make::quiet_capabilities())),
+        TaskRunner::Just => tool::just::root_cmd(args, verbosity(tool::just::quiet_capabilities())),
+        TaskRunner::GoTask => {
+            tool::go_task::root_cmd(args, verbosity(tool::go_task::quiet_capabilities()))
+        }
+        TaskRunner::Bacon => {
+            tool::bacon::root_cmd(args, verbosity(tool::bacon::quiet_capabilities()))
+        }
+        TaskRunner::Turbo | TaskRunner::Nx | TaskRunner::Mise => return Ok(None),
+    };
+    print_dispatch_arrow(overrides, token, token, "(default)", args);
+    crate::cmd::configure_command(&mut command, &ctx.root, overrides);
+    crate::cmd::apply_env_layers(&mut command, overrides, Some(token), Some(token));
+    crate::cmd::configure_task_streams(&mut command, overrides, token);
+    command.env(crate::cmd::TASK_STACK_ENV, task_stack);
+    Ok(Some(Dispatch::Spawn(SpawnDispatch::passthrough(command))))
 }
 
 /// The exec primitive's argument vector: the token followed by the user's
@@ -1391,6 +1450,168 @@ mod tests {
         assert_eq!(label, "exec");
         assert_eq!(command.get_program().to_string_lossy(), "golangci-lint");
         assert_eq!(command_args(&command), ["run"]);
+    }
+
+    #[test]
+    fn run_make_invokes_make_with_no_target() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        let args = [String::from("-j4")];
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "make",
+                &args,
+                None,
+                true,
+            )
+            .expect("runner root invocation dispatches"),
+        );
+
+        assert_eq!(command.get_program().to_string_lossy(), "make");
+        assert_eq!(command_args(&command), ["-j4"]);
+    }
+
+    #[test]
+    fn run_make_under_runner_make_constraint_still_invokes_make() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        let overrides = ResolutionOverrides {
+            runner: Some(crate::resolver::RunnerOverride {
+                runner: TaskRunner::Make,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        let command = expect_command(
+            resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
+                .expect("constraint names the invoked runner"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "make");
+        assert!(command_args(&command).is_empty());
+    }
+
+    #[test]
+    fn run_make_under_runner_just_constraint_is_refused() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        ctx.task_runners.push(TaskRunner::Just);
+        let overrides = ResolutionOverrides {
+            runner: Some(crate::resolver::RunnerOverride {
+                runner: TaskRunner::Just,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        let err = resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
+            .expect_err("a different runner constraint refuses the root invocation");
+        assert!(format!("{err:#}").contains("invalid override value"));
+    }
+
+    #[test]
+    fn run_make_from_a_member_runs_at_the_workspace_root() {
+        let mut ctx = context();
+        ctx.root = PathBuf::from("/tmp/ws");
+        ctx.cwd = PathBuf::from("/tmp/ws/apps/web");
+        ctx.task_runners.push(TaskRunner::Make);
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "make",
+                &[],
+                None,
+                true,
+            )
+            .expect("runner root invocation dispatches"),
+        );
+
+        assert_eq!(
+            command.get_current_dir(),
+            Some(std::path::Path::new("/tmp/ws"))
+        );
+    }
+
+    #[test]
+    fn run_make_under_a_prefer_list_without_make_is_refused() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        ctx.task_runners.push(TaskRunner::Just);
+        let overrides = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+
+        let err = resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
+            .expect_err("a prefer list that excludes make refuses the root invocation");
+        assert!(format!("{err:#}").contains("invalid override value"));
+
+        let listed = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just, TaskRunner::Make],
+            ..ResolutionOverrides::default()
+        };
+        let command = expect_command(
+            resolve_dispatch(&ctx, &listed, "make", &[], None, true)
+                .expect("a prefer list naming make admits it"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "make");
+    }
+
+    #[test]
+    fn root_invocation_records_a_task_frame_and_env_layers() {
+        use std::ffi::OsStr;
+
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        let mut overrides = ResolutionOverrides::default();
+        overrides.env.tool.insert(
+            "make".to_string(),
+            std::collections::BTreeMap::from([("CC".to_string(), "clang".to_string())]),
+        );
+
+        let command = expect_command(
+            resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
+                .expect("runner root invocation dispatches"),
+        );
+
+        let envs: Vec<(&OsStr, Option<&OsStr>)> = command.get_envs().collect();
+        assert!(
+            envs.iter()
+                .any(|(key, _)| *key == OsStr::new(crate::cmd::TASK_STACK_ENV)),
+            "the root invocation joins the recursion stack: {envs:?}"
+        );
+        assert!(
+            envs.iter()
+                .any(|(key, value)| *key == OsStr::new("CC")
+                    && *value == Some(OsStr::new("clang"))),
+            "[tools.make].env applies to the root invocation: {envs:?}"
+        );
+    }
+
+    #[test]
+    fn a_task_named_after_the_runner_wins_over_the_root_invocation() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Just);
+        ctx.tasks.push(justfile_task("just"));
+
+        let command = expect_command(
+            resolve_dispatch(
+                &ctx,
+                &ResolutionOverrides::default(),
+                "just",
+                &[],
+                None,
+                true,
+            )
+            .expect("task dispatches"),
+        );
+        assert_eq!(command.get_program().to_string_lossy(), "just");
+        assert_eq!(command_args(&command), ["just"]);
     }
 
     #[test]

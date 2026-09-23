@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::cmd::run::{
     ResolvedPythonPm, ScopeQuery, TokenLookup, allowed_runner_sources, ambiguous_members,
-    lookup_token, qualified_miss_error, resolve_python_pm, runner_constraint_error,
+    lookup_token, qualified_miss_error, resolve_python_pm, root_runner, runner_constraint_error,
     select_task_entry, source_depth, source_priority,
 };
 use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
@@ -74,7 +74,15 @@ pub(crate) fn why(
         },
     );
 
-    if restricted.is_empty()
+    // No candidate survived and the token names a detected task runner:
+    // `run` invokes that runner's own entry point, ahead of the runner
+    // constraint check, mirroring `resolve_dispatch`.
+    let root = (restricted.is_empty() && qualifier.is_none() && !scope.is_pinned())
+        .then(|| root_runner(ctx, overrides, task_name))
+        .flatten();
+
+    if root.is_none()
+        && restricted.is_empty()
         && qualifier.is_none()
         && !scope.is_pinned()
         && let Some(reason) = runner_constraint_error(overrides, &candidates)
@@ -93,7 +101,8 @@ pub(crate) fn why(
     let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
 
     if json {
-        let decision = decision_report(&candidates, selected, qualifier, ambiguous.as_deref());
+        let decision =
+            decision_report(&candidates, selected, qualifier, ambiguous.as_deref(), root);
         let report = build_report(
             task,
             &candidates,
@@ -104,6 +113,8 @@ pub(crate) fn why(
             decision,
         );
         println!("{}", serde_json::to_string_pretty(&report)?);
+    } else if let Some(runner) = root {
+        print_root(task, runner);
     } else {
         print_human(
             task,
@@ -117,6 +128,22 @@ pub(crate) fn why(
     }
 
     Ok(())
+}
+
+/// The human report for a token `run` hands to a task runner's own entry
+/// point.
+fn print_root(task: &str, runner: crate::types::TaskRunner) {
+    println!("{} {}", "runner why".bold(), task.bold());
+    println!();
+    println!(
+        "  {}",
+        format!(
+            "No task with that name; `runner run {task}` invokes {}'s own entry point and lets it \
+             pick its default target.",
+            runner.label()
+        )
+        .dimmed()
+    );
 }
 
 enum PmDecision {
@@ -418,7 +445,7 @@ struct WhyMatch<'a> {
 struct WhyDecision {
     #[schemars(
         description = "Selection branch taken: `single-candidate`, `ranked`, `filtered`, \
-                       `ambiguous`, or `exec-fallback`."
+                       `ambiguous`, `runner-root`, or `exec-fallback`."
     )]
     strategy: &'static str,
     reason: String,
@@ -580,7 +607,18 @@ fn decision_report(
     selected: Option<&Task>,
     qualifier: Option<TaskSource>,
     ambiguous: Option<&[&WorkspaceMember]>,
+    root: Option<crate::types::TaskRunner>,
 ) -> WhyDecision {
+    if let Some(runner) = root {
+        return WhyDecision {
+            strategy: "runner-root",
+            reason: format!(
+                "no task matched; `runner run` invokes {}'s own entry point and lets it pick its \
+                 default target",
+                runner.label()
+            ),
+        };
+    }
     if candidates.is_empty() {
         return WhyDecision {
             strategy: "exec-fallback",
@@ -944,7 +982,7 @@ mod tests {
         ctx: &'a ProjectContext,
         qualifier: Option<TaskSource>,
     ) -> WhyReport<'a> {
-        let decision = decision_report(candidates, selected, qualifier, None);
+        let decision = decision_report(candidates, selected, qualifier, None, None);
         build_report(
             query,
             candidates,
@@ -1084,6 +1122,14 @@ mod tests {
         assert_eq!(json["selected"], serde_json::Value::Null);
         assert_eq!(json["candidates"], serde_json::json!([]));
         assert_eq!(json["decision"]["strategy"], "exec-fallback");
+    }
+
+    #[test]
+    fn decision_names_the_runner_root_invocation() {
+        let decision = decision_report(&[], None, None, None, Some(crate::types::TaskRunner::Make));
+
+        assert_eq!(decision.strategy, "runner-root");
+        assert!(decision.reason.contains("make"), "{}", decision.reason);
     }
 
     #[test]
