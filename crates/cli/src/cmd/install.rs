@@ -1,6 +1,7 @@
 //! `runner install`, install dependencies via every detected package manager.
 
 use std::any::Any;
+use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -555,8 +556,11 @@ fn install_single(
     super::apply_env_layers(&mut cmd, overrides, Some(pm.label()), None);
     super::configure_command(&mut cmd, &ctx.root, overrides);
     super::configure_task_streams(&mut cmd, overrides, "install");
-    let mut child = cmd.spawn().map_err(|error| spawn_error(pm, &cmd, error))?;
-    let status = child.wait()?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|error| spawn_error(pm, cmd.get_program(), error))?;
+    let status =
+        wait_or_reap(&mut child).map_err(|error| wait_error(pm, cmd.get_program(), error))?;
     Ok(if status.success() {
         0
     } else {
@@ -564,9 +568,22 @@ fn install_single(
     })
 }
 
+/// Wait for the child; on a failed wait, stop and reap it so neither the
+/// process nor its pipe writers outlive the error, then return that error.
+fn wait_or_reap(child: &mut std::process::Child) -> std::io::Result<std::process::ExitStatus> {
+    match child.wait() {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err(error)
+        }
+    }
+}
+
 /// Name the package manager and executable when an install cannot start.
-fn spawn_error(pm: PackageManager, command: &Command, error: std::io::Error) -> anyhow::Error {
-    let program = command.get_program().to_string_lossy().into_owned();
+fn spawn_error(pm: PackageManager, program: &OsStr, error: std::io::Error) -> anyhow::Error {
+    let program = program.to_string_lossy();
     let context = if error.kind() == std::io::ErrorKind::NotFound {
         format!(
             "installing with {}: `{program}` was not found on PATH (pick the package manager with \
@@ -580,6 +597,16 @@ fn spawn_error(pm: PackageManager, command: &Command, error: std::io::Error) -> 
         )
     };
     anyhow::Error::new(error).context(context)
+}
+
+/// Name the package manager and executable when waiting on a started
+/// install fails.
+fn wait_error(pm: PackageManager, program: &OsStr, error: std::io::Error) -> anyhow::Error {
+    anyhow::Error::new(error).context(format!(
+        "installing with {}: waiting for `{}` failed",
+        pm.label(),
+        program.to_string_lossy()
+    ))
 }
 
 /// Split the plan into lanes: the package managers that share an install
@@ -699,7 +726,9 @@ fn run_lane(
                 tool::TaskStream::Inherit => Stdio::piped(),
                 tool::TaskStream::Discard => Stdio::null(),
             });
-        let mut child = cmd.spawn().map_err(|error| spawn_error(*pm, &cmd, error))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|error| spawn_error(*pm, cmd.get_program(), error))?;
         let prefix = if overrides.emits_groups() {
             render_prefix(pm.label(), width, colorize)
         } else {
@@ -714,21 +743,11 @@ fn run_lane(
         }
         let readers = spawn_readers(streams, sink);
 
-        let waited = match child.wait() {
-            Ok(status) => Ok(status),
-            Err(e) => {
-                // A failed wait can leave the process and its pipe writers
-                // alive. Stop and reap it before joining readers waiting for
-                // EOF, then propagate the original wait error.
-                let _ = child.kill();
-                let _ = child.wait();
-                Err(e)
-            }
-        };
+        let waited = wait_or_reap(&mut child);
         for handle in readers {
             join_reader_thread(handle);
         }
-        let status = waited?;
+        let status = waited.map_err(|error| wait_error(*pm, cmd.get_program(), error))?;
         if !status.success() {
             return Ok(Some((*pm, super::exit_code(status))));
         }
@@ -1147,7 +1166,10 @@ mod tests {
         let error = command
             .spawn()
             .expect_err("a nonexistent program must not spawn");
-        let message = format!("{:#}", spawn_error(PackageManager::Uv, &command, error));
+        let message = format!(
+            "{:#}",
+            spawn_error(PackageManager::Uv, command.get_program(), error)
+        );
         assert!(message.contains("installing with uv"), "{message}");
         assert!(
             message.contains("`definitely-not-on-path-xyz` was not found on PATH"),
@@ -1155,6 +1177,47 @@ mod tests {
         );
         assert!(message.contains("--pm"), "{message}");
         assert!(message.contains("`[install].pms`"), "{message}");
+    }
+
+    #[test]
+    fn other_spawn_failures_name_the_program_without_the_path_hint() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let message = format!(
+            "{:#}",
+            spawn_error(PackageManager::Npm, std::ffi::OsStr::new("npm"), error)
+        );
+        assert!(message.contains("installing with npm"), "{message}");
+        assert!(message.contains("`npm` failed to launch"), "{message}");
+        assert!(message.contains("denied"), "{message}");
+        assert!(!message.contains("--pm"), "{message}");
+    }
+
+    #[test]
+    fn wait_failures_name_the_package_manager_and_program() {
+        let error = std::io::Error::new(std::io::ErrorKind::Interrupted, "signal");
+        let message = format!(
+            "{:#}",
+            super::wait_error(PackageManager::Pnpm, std::ffi::OsStr::new("pnpm"), error)
+        );
+        assert!(
+            message.contains("installing with pnpm: waiting for `pnpm` failed"),
+            "{message}"
+        );
+        assert!(message.contains("signal"), "{message}");
+    }
+
+    #[test]
+    fn wait_or_reap_returns_the_status_of_a_finished_child() {
+        let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "true" })
+            .args(if cfg!(windows) {
+                &["/C", "exit 0"][..]
+            } else {
+                &[][..]
+            })
+            .spawn()
+            .expect("spawns");
+        let status = super::wait_or_reap(&mut child).expect("wait succeeds");
+        assert!(status.success());
     }
 
     #[test]
