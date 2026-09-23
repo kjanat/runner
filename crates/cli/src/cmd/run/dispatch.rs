@@ -427,11 +427,7 @@ pub(super) fn resolve_dispatch(
     // is intentionally left for the after-miss `try_bare_file` fallback so a
     // matching task (e.g. a `make bin/tool` target) wins first.
     if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
-        let mut command = local.command;
-        print_dispatch_arrow(overrides, task, &local.label, task, args);
-        crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
-        crate::cmd::configure_task_streams(&mut command, overrides, task);
-        return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
+        return Ok(spawn_local(ctx, overrides, task, args, local));
     }
 
     let (lookup, found) = lookup_token(ctx, task);
@@ -504,11 +500,7 @@ pub(super) fn resolve_dispatch(
             // never sees a local file.
             if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
             {
-                let mut command = local.command;
-                print_dispatch_arrow(overrides, task_name, &local.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
-                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
-                return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
+                return Ok(spawn_local(ctx, overrides, task_name, args, local));
             }
 
             // Locally installed dependency: run the binary its manifest
@@ -519,12 +511,8 @@ pub(super) fn resolve_dispatch(
             if let Some(dep) =
                 super::local_dep::try_installed_package(ctx, overrides, task_name, args)?
             {
-                let mut command = dep.dispatch.command;
                 print_pm_explain(overrides, &dep.describe);
-                print_dispatch_arrow(overrides, task_name, &dep.dispatch.label, task_name, args);
-                crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
-                crate::cmd::configure_task_streams(&mut command, overrides, task_name);
-                return Ok(Dispatch::Spawn(SpawnDispatch::passthrough(command)));
+                return Ok(spawn_local(ctx, overrides, task_name, args, dep.dispatch));
             }
 
             return dispatch_after_miss(ctx, overrides, task_name, args, sink);
@@ -613,6 +601,22 @@ fn spawn_task(
         .command_mut()
         .env(crate::cmd::TASK_STACK_ENV, task_stack);
     Ok(Dispatch::Spawn(spawn))
+}
+
+/// Print the arrow for a local file or installed binary and configure its
+/// process for the project.
+fn spawn_local(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+    args: &[String],
+    local: super::local_file::LocalDispatch,
+) -> Dispatch {
+    let mut command = local.command;
+    print_dispatch_arrow(overrides, token, &local.label, token, args);
+    crate::cmd::configure_command(&mut command, &ctx.cwd, overrides);
+    crate::cmd::configure_task_streams(&mut command, overrides, token);
+    Dispatch::Spawn(SpawnDispatch::passthrough(command))
 }
 
 /// The tail of the cascade, reached once the token matched no task, no local
