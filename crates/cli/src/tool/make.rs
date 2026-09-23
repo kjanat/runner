@@ -120,23 +120,28 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
 /// The first forwarded word make would not treat as a variable assignment.
 ///
 /// GNU make has no recipe-argument passthrough: a word after the goal is
-/// either one of make's own options or another goal. `NAME=value` is the one
-/// form that reaches the recipe, through `$(NAME)`.
+/// either one of make's own options or another goal. A variable assignment
+/// is the one form that reaches the recipe, through `$(NAME)`.
 pub(crate) fn first_non_assignment(args: &[String]) -> Option<&str> {
     args.iter()
         .map(String::as_str)
         .find(|arg| !is_assignment(arg))
 }
 
+/// GNU make's command-line assignment grammar: `NAME` followed by `=`,
+/// `:=`, `::=`, `:::=`, `+=`, `?=` or `!=`, where the name is any run of
+/// characters without whitespace, `:`, `#` or `=`.
 fn is_assignment(arg: &str) -> bool {
-    let Some((name, _)) = arg.split_once('=') else {
+    let Some((lhs, _)) = arg.split_once('=') else {
         return false;
     };
-    let mut chars = name.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    let name = lhs
+        .strip_suffix(['+', '?', '!'])
+        .unwrap_or_else(|| lhs.trim_end_matches(':'));
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.contains([':', '#'])
+        && !name.chars().any(char::is_whitespace)
 }
 
 /// `make [-s] [args...]`, leaving the goal to the Makefile's default.
@@ -298,7 +303,21 @@ mod verbosity_tests {
         let goal = [String::from("clean")];
         assert_eq!(first_non_assignment(&goal), Some("clean"));
         let odd = [String::from("1X=y"), String::from("=y")];
-        assert_eq!(first_non_assignment(&odd), Some("1X=y"));
+        assert_eq!(first_non_assignment(&odd), Some("=y"));
+        let forms = [
+            String::from("CFLAGS+=-g"),
+            String::from("CC:=clang"),
+            String::from("V::=1"),
+            String::from("W:::=1"),
+            String::from("DEBUG?=1"),
+            String::from("REV!=git rev-parse HEAD"),
+            String::from("foo-bar=1"),
+        ];
+        assert_eq!(first_non_assignment(&forms), None);
+        let option = [String::from("-j=4")];
+        assert_eq!(first_non_assignment(&option), Some("-j=4"));
+        let spaced = [String::from("A B=1")];
+        assert_eq!(first_non_assignment(&spaced), Some("A B=1"));
     }
 
     #[test]

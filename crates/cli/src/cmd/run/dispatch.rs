@@ -94,21 +94,32 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
     );
 }
 
-/// Refuse a make target given anything but `NAME=value` assignments, before
-/// the arrow, since make would take the word as an option or a goal.
+/// Refuse a make target, or a package script that is a bare `make <name>`
+/// wrapper, given anything but variable assignments, before the arrow,
+/// since make would take the word as an option or a goal.
 fn check_make_args(entry: &Task, args: &[String]) -> Result<()> {
-    if entry.source != TaskSource::Makefile {
+    let wraps_make = entry.passthrough_to == Some(crate::types::TaskRunner::Make);
+    if entry.source != TaskSource::Makefile && !wraps_make {
         return Ok(());
     }
     let Some(word) = tool::make::first_non_assignment(args) else {
         return Ok(());
     };
+    let subject = if wraps_make {
+        format!(
+            "{} script {:?}, which runs `make {}`,",
+            entry.source.label(),
+            entry.name,
+            entry.name
+        )
+    } else {
+        format!("make target {:?}", entry.name)
+    };
     bail!(
-        "make target {:?} cannot take {word:?}: GNU make has no recipe-argument passthrough, so \
-         it would parse the word as its own option or as another goal. Pass `NAME=value` \
-         assignments the Makefile reads as `$(NAME)`, or run the command itself with `run -- \
-         <command> <args>`",
-        entry.name
+        "{subject} cannot take {word:?}: GNU make has no recipe-argument passthrough, so it would \
+         parse the word as its own option or as another goal. Pass `NAME=value` assignments the \
+         Makefile reads as `$(NAME)`, or invoke the command itself by path (`run \
+         ./node_modules/.bin/<command> <args>`), which outranks task lookup"
     )
 }
 
@@ -1044,7 +1055,9 @@ mod tests {
 
     use std::process::Command;
 
-    use super::{Dispatch, SpawnDispatch, build_pm_exec_command, resolve_dispatch};
+    use super::{
+        Dispatch, SpawnDispatch, build_pm_exec_command, check_make_args, resolve_dispatch,
+    };
     use crate::resolver::{ResolutionOverrides, ResolutionStep, ResolvedPm};
     use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
@@ -1511,6 +1524,33 @@ mod tests {
         )
         .expect_err("a flag never reaches make's parser");
         assert!(format!("{err:#}").contains("cannot take \"--help\""));
+    }
+
+    #[test]
+    fn package_script_wrapping_make_rejects_flags_too() {
+        let wrapper = Task {
+            name: "build".to_string(),
+            source: TaskSource::PackageJson,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: Some(TaskRunner::Make),
+            detail: crate::types::TaskDetail::default(),
+            member: None,
+        };
+
+        check_make_args(&wrapper, &[String::from("CC=clang")]).expect("assignments pass");
+        let err = check_make_args(&wrapper, &[String::from("--help")])
+            .expect_err("a flag appended by the package manager reaches make's parser");
+        let text = format!("{err:#}");
+        assert!(text.contains("package.json script \"build\""), "{text}");
+        assert!(text.contains("cannot take \"--help\""), "{text}");
+
+        let plain = Task {
+            passthrough_to: None,
+            ..wrapper
+        };
+        check_make_args(&plain, &[String::from("--help")]).expect("a real script forwards flags");
     }
 
     #[test]
