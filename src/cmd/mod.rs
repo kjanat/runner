@@ -59,7 +59,11 @@ fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOv
 /// or CI's identity, ahead of the package managers and unaffected by
 /// `--frozen` or `--no-scripts`. The child still gets the project bins it
 /// needs through its own `PATH` inheritance once it is the real tool.
-fn configure_host_command(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
+pub(crate) fn configure_host_command(
+    command: &mut Command,
+    dir: &Path,
+    overrides: &ResolutionOverrides,
+) {
     configure_spawn(command, dir, overrides);
 }
 
@@ -153,7 +157,7 @@ fn mise_bin_cache() -> &'static Mutex<HashMap<PathBuf, Vec<PathBuf>>> {
 ///
 /// `mise bin-paths` spawns a child and `configure_command` runs for every
 /// task in a chain, so the answer is memoized per directory.
-fn mise_bin_dirs(dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn mise_bin_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut cache = mise_bin_cache()
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
@@ -175,6 +179,17 @@ pub(crate) fn forget_mise_bin_dirs() {
         .clear();
 }
 
+/// Every directory holding a binary this project can already run:
+/// `node_modules/.bin` up the ancestor chain, then the tool dirs mise
+/// manages for it. Nearest first.
+pub(crate) fn project_bin_dirs(dir: &Path) -> Vec<PathBuf> {
+    let mut bins = node_bin_dirs(dir);
+    if crate::tool::mise::detect(dir) {
+        bins.extend(mise_bin_dirs(dir));
+    }
+    bins
+}
+
 /// Prepend the project's binary dirs to the child's `PATH`.
 ///
 /// Two sources, nearest first: `node_modules/.bin` up the ancestor chain,
@@ -192,10 +207,7 @@ pub(crate) fn forget_mise_bin_dirs() {
 /// Entries are not deduplicated against the parent `PATH`: prepending
 /// unconditionally gives project bins priority over global installs.
 fn prepend_project_bin_path(command: &mut Command, dir: &Path) {
-    let mut bins = node_bin_dirs(dir);
-    if crate::tool::mise::detect(dir) {
-        bins.extend(mise_bin_dirs(dir));
-    }
+    let bins = project_bin_dirs(dir);
     if bins.is_empty() {
         return;
     }

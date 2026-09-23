@@ -81,6 +81,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `run <name>` with no matching task now looks for `<name>` in the project's
+  own bin dirs and on `PATH` before any rung that can download, so an
+  installed `npx` or `make` is no longer wrapped in `npx <name>` (#136). The
+  fetching rungs come last: `mise exec -- <name>` when the project uses mise,
+  then the package manager's exec primitive. On a terminal, a fetching rung
+  asks `[y/N]` first; a pipe proceeds as before. The resolver's `PATH` probe
+  also searches mise's tool dirs, so a project whose only package manager is
+  mise-managed and not yet activated no longer detects nothing.
+
 - Mise task discovery accepts task references in `run` arrays
   (`run = [{ task = "check" }]`). One such task used to fail parsing of the
   whole file, both through `mise tasks --json` and the direct TOML fallback,

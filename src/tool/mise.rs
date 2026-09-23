@@ -451,6 +451,13 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
+/// `mise exec -- <name> [args...]`
+pub(crate) fn exec_cmd(name: &str, args: &[String]) -> Command {
+    let mut c = super::program::command("mise");
+    c.arg("exec").arg("--").arg(name).args(args);
+    c
+}
+
 /// The default operation when `[tools.mise].run` says nothing.
 pub(crate) const INSTALL: &str = "install";
 
