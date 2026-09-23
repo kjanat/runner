@@ -15,6 +15,18 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn fixture_dir(tag: &str) -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("runner-install-task-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::copy(
+        fixture("install-task").join("justfile"),
+        dir.join("justfile"),
+    )
+    .expect("fixture copies");
+    dir
+}
+
 fn just_available() -> bool {
     Command::new("just")
         .arg("--version")
@@ -30,13 +42,7 @@ fn install_runs_the_install_task_when_no_package_manager_exists() {
     }
     // Copied out of the repository so detection cannot walk up to this
     // repository's own manifests and lockfiles.
-    let dir = std::env::temp_dir().join(format!("runner-install-task-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
-    std::fs::copy(
-        fixture("install-task").join("justfile"),
-        dir.join("justfile"),
-    )
-    .expect("fixture copies");
+    let dir = fixture_dir("runs");
     let output = Command::new(runner_binary())
         .args(["--dir", dir.to_str().unwrap(), "install"])
         .output()
@@ -56,5 +62,35 @@ fn install_runs_the_install_task_when_no_package_manager_exists() {
     assert!(
         !stdout.contains("build-ran"),
         "only the `install` task runs. stdout: {stdout}"
+    );
+}
+
+#[test]
+fn install_refuses_an_allowlist_no_package_manager_satisfies() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let dir = fixture_dir("allowlist");
+    let output = Command::new(runner_binary())
+        .args(["--dir", dir.to_str().unwrap(), "install"])
+        .env("RUNNER_INSTALL_PMS", "npm")
+        .output()
+        .expect("runner binary spawns");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "an unmet install allowlist must fail. stdout: {stdout} stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("npm"),
+        "the error names the listed manager. stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("task-install-ran"),
+        "the install task must not run. stdout: {stdout}"
     );
 }
