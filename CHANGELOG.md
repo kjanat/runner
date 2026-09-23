@@ -100,6 +100,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `runner install` in a project with no package manager runs the project's
+  own `install` task when one exists, printing the same dispatch line as
+  `run install`, instead of failing with `No package manager detected`. This
+  is what `runner why install` already reported (#129).
+
 - `runner doctor` prints the Node signals and the `node scripts` decision
   only when the project has a Node ecosystem, so a cargo-only workspace no
   longer shows a PATH probe for four Node package managers and a `?`

@@ -46,15 +46,25 @@ pub(crate) fn install_pms(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     flags: InstallFlags,
-    sink: super::WarningSink<'_>,
+    mut sink: super::WarningSink<'_>,
 ) -> Result<i32> {
     let tools = tools_step(ctx, flags);
+    let task = install_task(ctx);
     // Planned before the GHA group opens so a refused override doesn't
     // emit an empty `runner: install` group.
     let plan = if ctx.package_managers.is_empty() {
-        match plan_from_resolver(ctx, overrides, sink) {
+        match plan_from_resolver(ctx, overrides, sink.as_deref_mut()) {
             Ok(plan) => plan,
-            Err(err) if tools.is_some() && is_no_signals(&err) => InstallPlan::empty(),
+            Err(err) if (tools.is_some() || task.is_some()) && is_no_signals(&err) => {
+                if !overrides.install_pms.is_empty() {
+                    return Err(ResolveError::InstallPmsNotDetected {
+                        missing: overrides.install_pms.clone(),
+                        detected: Vec::new(),
+                    }
+                    .into());
+                }
+                InstallPlan::empty()
+            }
             Err(err) => return Err(err),
         }
     } else {
@@ -66,7 +76,7 @@ pub(crate) fn install_pms(
 
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
-    let _group = super::task_group(overrides, "install", "install");
+    let group = super::task_group(overrides, "install", "install");
 
     if let Some(runner) = tools
         && let Some(code) = run_tools_step(ctx, runner, flags.frozen, overrides)?
@@ -74,6 +84,10 @@ pub(crate) fn install_pms(
         return Ok(code);
     }
     if plan.pms.is_empty() {
+        if let Some(task) = task {
+            drop(group);
+            return super::run::run(ctx, overrides, &ctx.spelling(task), &[], sink);
+        }
         return Ok(0);
     }
 
@@ -109,6 +123,16 @@ pub(crate) fn tools_step(ctx: &ProjectContext, flags: InstallFlags) -> Option<Ta
 /// `true` when the resolver found nothing to install with. A project that
 /// only declares tools (a `mise.toml` without a manifest) still has a
 /// meaningful `runner install`: the toolchain step alone.
+/// The project's own `install` task, run when no package manager has
+/// anything to install: the current workspace member's, else the root's.
+/// `runner why install` already names it.
+fn install_task(ctx: &ProjectContext) -> Option<&crate::types::Task> {
+    ctx.tasks
+        .iter()
+        .filter(|task| task.name == "install" && ctx.is_local(task))
+        .min_by_key(|task| ctx.scope_rank(task))
+}
+
 fn is_no_signals(err: &anyhow::Error) -> bool {
     matches!(
         err.downcast_ref::<ResolveError>(),
@@ -959,12 +983,13 @@ fn suggest_version_switch(ctx: &ProjectContext) {
 mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use super::InstallFlags;
     use super::{
         CollisionDir, DenySupport, ForceSupport, InstallPlan, Shadowed, build_install_command,
-        deny_support, force_support, install_lanes, is_no_signals, plan_install, script_directive,
-        select_install_pms, spawn_error, tools_step, unforceable_managers,
+        deny_support, force_support, install_lanes, install_task, is_no_signals, plan_install,
+        script_directive, select_install_pms, spawn_error, tools_step, unforceable_managers,
         unsupported_deny_managers, warn_unsupported_script_policy,
     };
     use crate::resolver::{
@@ -972,7 +997,10 @@ mod tests {
         ResolveError, ScriptPolicy,
     };
     use crate::tool::ScriptDirective;
-    use crate::types::{Ecosystem, InstallDir, PackageManager, ProjectContext, TaskRunner};
+    use crate::types::{
+        Ecosystem, InstallDir, PackageManager, ProjectContext, Task, TaskRunner, TaskSource,
+        Workspace, WorkspaceKind, WorkspaceMember,
+    };
 
     fn context(pms: Vec<PackageManager>) -> ProjectContext {
         ProjectContext {
@@ -1023,6 +1051,78 @@ mod tests {
             ..InstallFlags::default()
         };
         assert_eq!(tools_step(&ctx, flags), None);
+    }
+
+    fn install_task_in(member: Option<Arc<WorkspaceMember>>) -> Task {
+        Task {
+            name: "install".to_string(),
+            source: TaskSource::Justfile,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
+            member,
+        }
+    }
+
+    fn workspace(members: Vec<Arc<WorkspaceMember>>, current: usize) -> Workspace {
+        Workspace {
+            root: PathBuf::from("/tmp/test"),
+            kinds: vec![WorkspaceKind::PnpmWorkspace],
+            current: Some(Arc::clone(&members[current])),
+            members,
+        }
+    }
+
+    #[test]
+    fn install_task_prefers_the_current_member_over_the_root() {
+        let app = Arc::new(WorkspaceMember::new(
+            "app".to_string(),
+            "apps/app".to_string(),
+            PathBuf::from("/tmp/test/apps/app"),
+        ));
+        let mut ctx = context(vec![]);
+        ctx.workspace = Some(workspace(vec![Arc::clone(&app)], 0));
+        ctx.tasks = vec![install_task_in(None), install_task_in(Some(app))];
+
+        let task = install_task(&ctx).expect("an install task");
+        assert!(task.member.is_some(), "the member's task wins");
+        assert_eq!(ctx.spelling(task), "install");
+    }
+
+    #[test]
+    fn install_task_ignores_other_members() {
+        let app = Arc::new(WorkspaceMember::new(
+            "app".to_string(),
+            "apps/app".to_string(),
+            PathBuf::from("/tmp/test/apps/app"),
+        ));
+        let lib = Arc::new(WorkspaceMember::new(
+            "lib".to_string(),
+            "libs/lib".to_string(),
+            PathBuf::from("/tmp/test/libs/lib"),
+        ));
+        let mut ctx = context(vec![]);
+        ctx.workspace = Some(workspace(vec![Arc::clone(&app), Arc::clone(&lib)], 0));
+        ctx.tasks = vec![install_task_in(Some(lib))];
+
+        assert!(install_task(&ctx).is_none());
+    }
+
+    #[test]
+    fn install_task_falls_back_to_the_root_from_a_member() {
+        let app = Arc::new(WorkspaceMember::new(
+            "app".to_string(),
+            "apps/app".to_string(),
+            PathBuf::from("/tmp/test/apps/app"),
+        ));
+        let mut ctx = context(vec![]);
+        ctx.workspace = Some(workspace(vec![app], 0));
+        ctx.tasks = vec![install_task_in(None)];
+
+        let task = install_task(&ctx).expect("the root install task");
+        assert!(task.member.is_none());
     }
 
     #[test]
