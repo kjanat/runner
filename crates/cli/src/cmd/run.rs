@@ -38,7 +38,7 @@ mod test_shorthand;
 
 pub(crate) use qualify::{
     ScopeQuery, TokenLookup, allowed_runner_sources, lookup_token, precheck_task,
-    qualified_miss_error, runner_constraint_error,
+    qualified_miss_error, root_runner, runner_constraint_error,
 };
 pub(crate) use select::{
     ambiguous_members, narrow_scope, select_task_entry, source_depth, source_priority,

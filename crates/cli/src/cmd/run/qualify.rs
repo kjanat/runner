@@ -14,7 +14,9 @@ use anyhow::{Result, anyhow};
 
 use super::select::{ambiguous_members, narrow_scope};
 use crate::resolver::{ResolutionOverrides, ResolveError};
-use crate::types::{DetectionWarning, ProjectContext, Task, TaskSource, WorkspaceMember};
+use crate::types::{
+    DetectionWarning, ProjectContext, Task, TaskRunner, TaskSource, WorkspaceMember,
+};
 
 /// Parse `"source:task"` syntax. Returns `(Some(source), task_name)` if the
 /// prefix before the first `:` is a known source label, or `(None, original)`
@@ -452,6 +454,10 @@ pub(crate) fn precheck_task(
         return Err(reversed_qualifier_error(ctx, task, src, task_part));
     }
 
+    if root_runner(ctx, overrides, task_name).is_some() {
+        return Ok(());
+    }
+
     if let Some(reason) = runner_constraint_error(overrides, &found) {
         return Err(reason.into());
     }
@@ -460,6 +466,37 @@ pub(crate) fn precheck_task(
     // will try bun-test / PM-exec fallback. Those require resolver state
     // we intentionally skip here; defer to the dispatch-time path.
     Ok(())
+}
+
+/// The task runner whose own entry point `run <token>` invokes when no
+/// task carries the token's name: a detected make, just, task or bacon
+/// spelled by its label, permitted by any `--runner` or
+/// `[task_runner].prefer` constraint. turbo, nx and mise have no default
+/// target. Shared by dispatch, precheck and `why`.
+pub(crate) fn root_runner(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> Option<TaskRunner> {
+    let runner = TaskRunner::from_label(token).filter(|runner| runner.label() == token)?;
+    if !matches!(
+        runner,
+        TaskRunner::Make | TaskRunner::Just | TaskRunner::GoTask | TaskRunner::Bacon
+    ) || !ctx.task_runners.contains(&runner)
+    {
+        return None;
+    }
+    if overrides
+        .runner
+        .as_ref()
+        .is_some_and(|ovr| ovr.runner != runner)
+    {
+        return None;
+    }
+    if !overrides.prefer_runners.is_empty() && !overrides.prefer_runners.contains(&runner) {
+        return None;
+    }
+    Some(runner)
 }
 
 /// Compute the set of [`TaskSource`]s the user's runner constraint
@@ -968,6 +1005,28 @@ mod tests {
                 panic!("explicit local path {token} should precheck Ok: {e:#}")
             });
         }
+    }
+
+    #[test]
+    fn precheck_passes_root_invocation_under_matching_runner_constraint() {
+        let mut ctx = context();
+        ctx.task_runners.push(TaskRunner::Make);
+        let overrides = ResolutionOverrides {
+            runner: Some(crate::resolver::RunnerOverride {
+                runner: TaskRunner::Make,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+
+        precheck_task(&ctx, &overrides, "make").expect("`make` invokes make's own entry point");
+
+        let preferred = ResolutionOverrides {
+            prefer_runners: vec![TaskRunner::Just],
+            ..ResolutionOverrides::default()
+        };
+        precheck_task(&ctx, &preferred, "make")
+            .expect_err("a prefer list without make refuses the root invocation");
     }
 
     #[test]

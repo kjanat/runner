@@ -107,25 +107,35 @@ pub(super) fn report_unhonored(
     entry: &Task,
     sink: crate::cmd::WarningSink<'_>,
 ) {
+    report_unhonored_source(overrides, &entry.name, entry.source, sink);
+}
+
+/// [`report_unhonored`] for a dispatch that has a source but no task entry,
+/// such as a task runner's own entry point.
+pub(super) fn report_unhonored_source(
+    overrides: &ResolutionOverrides,
+    name: &str,
+    source: TaskSource,
+    sink: crate::cmd::WarningSink<'_>,
+) {
     let Some(runtime) = overridden(overrides) else {
         return;
     };
-    if honors(entry.source, runtime) {
+    if honors(source, runtime) {
         return;
     }
     crate::cmd::print_explain(
         overrides,
         &format!(
-            "runtime {} not applied: {} dispatches through {}",
+            "runtime {} not applied: {name} dispatches through {}",
             runtime.label(),
-            entry.name,
-            entry.source.label(),
+            source.label(),
         ),
     );
     crate::cmd::print_warning_slice(
         &[DetectionWarning::RuntimeNotApplied {
             runtime,
-            source: entry.source.label(),
+            source: source.label(),
         }],
         overrides,
         sink,
