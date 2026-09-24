@@ -53,7 +53,7 @@ pub const PROVIDER: Provider = Provider {
                 deny: ScriptMechanism::Flag("--ignore-scripts"),
                 allow: ScriptMechanism::Warn("trustedDependencies"),
             },
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t!["run", Quiet, Task, Args],

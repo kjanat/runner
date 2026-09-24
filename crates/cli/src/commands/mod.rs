@@ -1,7 +1,9 @@
 //! Subcommand implementations: info, run, install, clean, list, completions.
 
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+#[cfg(windows)]
+use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -39,31 +41,7 @@ pub(crate) use run::run;
 pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 
-/// Shared setup for every spawned task: the project's binary dirs on the
-/// child `PATH`, working directory, inherited stdio.
-fn configure_command(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
-    prepend_project_bin_path(command, dir);
-    configure_spawn(command, dir, overrides);
-}
-
-/// [`configure_command`] without the project's binary dirs, for a tool that
-/// must come from the host `PATH`.
-///
-/// The toolchain step runs before anything is installed and exists to set the
-/// environment up. Resolving it through the project's own bin dirs would let
-/// an executable committed to `node_modules/.bin` run under the developer's
-/// or CI's identity, ahead of the package managers and unaffected by
-/// `--frozen` or `--no-scripts`. The child still gets the project bins it
-/// needs through its own `PATH` inheritance once it is the real tool.
-pub(crate) fn configure_host_command(
-    command: &mut Command,
-    dir: &Path,
-    overrides: &ResolutionOverrides,
-) {
-    configure_spawn(command, dir, overrides);
-}
-
-/// Everything [`configure_command`] does apart from the `PATH` augmentation.
+/// Invocation metadata inherited by children.
 fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
     command
         .current_dir(dir)
@@ -215,8 +193,7 @@ fn mise_bin_cache() -> &'static Mutex<HashMap<PathBuf, Vec<PathBuf>>> {
 
 /// The mise tool bin dirs for `dir`, resolved once per process.
 ///
-/// `mise bin-paths` spawns a child and `configure_command` runs for every
-/// task in a chain, so the answer is memoized per directory.
+/// The answer is memoized per directory for package-manager resolution.
 pub(crate) fn mise_bin_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut cache = mise_bin_cache()
         .lock()
@@ -237,122 +214,6 @@ pub(crate) fn forget_mise_bin_dirs() {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .clear();
-}
-
-/// Every directory holding a binary this project can already run:
-/// `node_modules/.bin` up the ancestor chain, then the tool dirs mise
-/// manages for it. Nearest first.
-pub(crate) fn project_bin_dirs(dir: &Path) -> Vec<PathBuf> {
-    let mut bins = node_bin_dirs(dir);
-    if crate::tool::mise::detect(dir) {
-        bins.extend(mise_bin_dirs(dir));
-    }
-    bins
-}
-
-/// Prepend the project's binary dirs to the child's `PATH`.
-///
-/// Two sources, nearest first: `node_modules/.bin` up the ancestor chain,
-/// then the tool dirs mise manages for this project. Node PMs inject the
-/// former for `package.json` scripts, but runner spawns tasks directly
-/// (`turbo run <task>`, the bare-binary fallback), so a devDependency-only
-/// binary would die with ENOENT. The latter is what makes a tool mise just
-/// installed reachable: `mise install` installs without activating, so
-/// nothing mise manages is on this process's `PATH` unless the user's shell
-/// already ran `mise activate`.
-///
-/// The OS honors a `PATH` set on the [`Command`] itself, so prepending fixes
-/// both the spawn and anything the task launches in turn.
-///
-/// Entries are not deduplicated against the parent `PATH`: prepending
-/// unconditionally gives project bins priority over global installs.
-fn prepend_project_bin_path(command: &mut Command, dir: &Path) {
-    let bins = project_bin_dirs(dir);
-    if bins.is_empty() {
-        return;
-    }
-    #[cfg(windows)]
-    resolve_program_in_bins(command, &bins);
-    if let Some(path) = prepended_path(&bins, std::env::var_os("PATH").as_deref()) {
-        command.env("PATH", path);
-    }
-}
-
-/// Apply the project, tool and task `env` layers to a child, narrowest last.
-///
-/// Called where the tool and task are known, which `configure_command` is not:
-/// it runs for spawns that have neither.
-fn apply_env_layers(
-    command: &mut Command,
-    overrides: &ResolutionOverrides,
-    tool: Option<&str>,
-    task: Option<&str>,
-) {
-    if overrides.env.is_empty() {
-        return;
-    }
-    for (key, value) in overrides.env.resolve(tool, task) {
-        command.env(key, value);
-    }
-}
-
-/// `bins` followed by the entries of `parent`, joined with the platform
-/// separator. `None` when joining fails (a bin dir embeds the separator
-/// itself). The caller leaves `PATH` untouched rather than corrupt it.
-fn prepended_path(bins: &[PathBuf], parent: Option<&OsStr>) -> Option<OsString> {
-    let inherited = parent.map(std::env::split_paths).into_iter().flatten();
-    std::env::join_paths(bins.iter().cloned().chain(inherited)).ok()
-}
-
-/// Re-resolve a bare program name against the project's bin dirs.
-///
-/// [`crate::tool::program::command`] resolves bare names against the
-/// parent `PATH`×`PATHEXT` before the bin dirs are prepended, and the
-/// std child-`PATH` search only appends `.exe` at spawn time, so a
-/// `turbo.cmd`/`.ps1` shim living only under `node_modules/.bin` would
-/// fail to spawn. When a bare name resolves inside `bins`, rebuild the
-/// command around the absolute shim path, preserving args and env.
-/// Absolute/relative programs and parent-`PATH` hits are left alone
-/// (so a global install still shadows a local one here, unlike Unix).
-#[cfg(windows)]
-fn resolve_program_in_bins(command: &mut Command, bins: &[PathBuf]) {
-    let program = command.get_program().to_os_string();
-    let Some(name) = program.to_str() else { return };
-    if Path::new(name).components().count() > 1 {
-        return;
-    }
-    let Ok(joined) = std::env::join_paths(bins.iter().cloned()) else {
-        return;
-    };
-    let pathext =
-        std::env::var_os("PATHEXT").unwrap_or_else(|| crate::tool::program::DEFAULT_PATHEXT.into());
-    let Some(resolved) = crate::tool::program::resolve_windows(name, &joined, &pathext) else {
-        return;
-    };
-
-    let args: Vec<OsString> = command.get_args().map(ToOwned::to_owned).collect();
-    let envs: Vec<(OsString, Option<OsString>)> = command
-        .get_envs()
-        .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
-        .collect();
-    let cwd = command.get_current_dir().map(Path::to_path_buf);
-
-    let mut next = Command::new(resolved);
-    next.args(args);
-    for (key, value) in envs {
-        match value {
-            Some(value) => {
-                next.env(key, value);
-            }
-            None => {
-                next.env_remove(key);
-            }
-        }
-    }
-    if let Some(cwd) = cwd {
-        next.current_dir(cwd);
-    }
-    *command = next;
 }
 
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {
@@ -737,10 +598,7 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::{
-        GroupSuppression, configure_command, configure_host_command, group_emission, node_bin_dirs,
-        prepended_path,
-    };
+    use super::{GroupSuppression, configure_spawn, group_emission, node_bin_dirs};
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
 
@@ -849,43 +707,13 @@ mod tests {
     }
 
     #[test]
-    fn configure_command_sets_current_dir() {
+    fn invocation_metadata_sets_current_dir() {
         let dir = std::env::temp_dir();
         let mut command = Command::new("runner-test-command");
 
-        configure_command(&mut command, dir.as_path(), &ResolutionOverrides::default());
+        configure_spawn(&mut command, dir.as_path(), &ResolutionOverrides::default());
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
-    }
-
-    #[test]
-    fn host_command_does_not_put_project_bins_on_path() {
-        // A checked-in `node_modules/.bin/mise` must not be what the
-        // toolchain step runs: it executes before anything is installed,
-        // under the developer's or CI's identity, and neither `--frozen` nor
-        // `--no-scripts` constrains it.
-        use std::ffi::OsStr;
-
-        let dir = TempDir::new("host-command-path");
-        let bin = dir.path().join("node_modules").join(".bin");
-        fs::create_dir_all(&bin).expect("bin dir should be created");
-
-        let mut augmented = Command::new("runner-test-host-tool");
-        configure_command(&mut augmented, dir.path(), &ResolutionOverrides::default());
-        assert!(
-            augmented
-                .get_envs()
-                .any(|(key, _)| key == OsStr::new("PATH")),
-            "configure_command must still front-load project bins for tasks",
-        );
-
-        let mut host = Command::new("runner-test-host-tool");
-        configure_host_command(&mut host, dir.path(), &ResolutionOverrides::default());
-        assert!(
-            !host.get_envs().any(|(key, _)| key == OsStr::new("PATH")),
-            "configure_host_command must leave PATH inherited from the host",
-        );
-        assert_eq!(host.get_current_dir(), Some(dir.path()));
     }
 
     #[test]
@@ -906,7 +734,7 @@ mod tests {
                 ..ResolutionOverrides::default()
             };
             let mut command = Command::new("runner-test-command");
-            configure_command(&mut command, dir.as_path(), &overrides);
+            configure_spawn(&mut command, dir.as_path(), &overrides);
             command
                 .get_envs()
                 .find(|(key, _)| *key == OsStr::new("RUNNER_RUNTIME"))
@@ -964,36 +792,35 @@ mod tests {
         assert!(bins.iter().all(|bin| !bin.starts_with(dir.path())));
     }
 
-    #[test]
-    fn prepended_path_orders_bins_before_parent() {
-        let bins = vec![
-            PathBuf::from("/repo/apps/web/node_modules/.bin"),
-            PathBuf::from("/repo/node_modules/.bin"),
-        ];
-        let parent = OsString::from("/usr/bin");
-
-        let joined = prepended_path(&bins, Some(parent.as_os_str()))
-            .expect("plain paths should always join");
-
-        let parts: Vec<PathBuf> = std::env::split_paths(&joined).collect();
-        assert_eq!(
-            parts,
-            [
-                PathBuf::from("/repo/apps/web/node_modules/.bin"),
-                PathBuf::from("/repo/node_modules/.bin"),
-                PathBuf::from("/usr/bin"),
-            ],
-        );
-    }
-
-    #[test]
-    fn prepended_path_handles_missing_parent() {
-        let bins = vec![PathBuf::from("/repo/node_modules/.bin")];
-
-        let joined = prepended_path(&bins, None).expect("plain paths should always join");
-
-        let parts: Vec<PathBuf> = std::env::split_paths(&joined).collect();
-        assert_eq!(parts, [PathBuf::from("/repo/node_modules/.bin")]);
+    fn shim_plan(dir: &std::path::Path, args: &[String]) -> runner_core::Plan {
+        let tree = runner_core::Tree {
+            root: dir.to_owned(),
+            cwd: dir.to_owned(),
+            members: vec![],
+        };
+        let bin = dir.join("node_modules/.bin");
+        let project = runner_core::Project {
+            present: vec![runner_core::Present {
+                provider: runner_core::ProviderId::Npm,
+                scope: runner_core::Scope::Root,
+                version: None,
+                bin_dirs: vec![bin.clone()],
+                because: vec![],
+            }],
+            ..runner_core::Project::default()
+        };
+        let mut plan = runner_core::plan::plan_argv(
+            &tree,
+            &project,
+            &runner_core::Policy::default(),
+            bin.join("runner-test-shim"),
+            std::iter::once(OsString::from("runner-test-shim"))
+                .chain(args.iter().map(OsString::from))
+                .collect(),
+        )
+        .unwrap();
+        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test");
+        plan
     }
 
     #[cfg(unix)]
@@ -1016,18 +843,16 @@ mod tests {
         fs::set_permissions(&shim, fs::Permissions::from_mode(0o755))
             .expect("shim should be marked executable");
 
-        let mut command = Command::new("runner-test-shim");
-        configure_command(&mut command, dir.path(), &ResolutionOverrides::default());
-
-        let status = command
-            .status()
+        let plan = shim_plan(dir.path(), &[]);
+        let mut command = runner_core::execute::command(&plan);
+        let status = runner_core::execute::status(&plan, &mut command)
             .expect("shim should spawn via the child PATH");
         assert_eq!(status.code(), Some(42));
     }
 
     #[cfg(windows)]
     #[test]
-    fn configure_command_resolves_cmd_shim_from_bin_dir() {
+    fn configure_plan_resolves_cmd_shim_from_bin_dir() {
         use std::ffi::OsStr;
 
         // `CreateProcessW` never consults PATHEXT and the std child-PATH
@@ -1040,9 +865,9 @@ mod tests {
         let shim = bin.join("runner-test-shim.cmd");
         fs::write(&shim, "@echo off\r\n").expect("shim should be written");
 
-        let mut command = Command::new("runner-test-shim");
-        command.arg("run").env("RUNNER_TEST_MARKER", "1");
-        configure_command(&mut command, dir.path(), &ResolutionOverrides::default());
+        let mut plan = shim_plan(dir.path(), &["run".into()]);
+        plan.env.push(("RUNNER_TEST_MARKER".into(), "1".into()));
+        let command = runner_core::execute::command(&plan);
 
         assert_eq!(PathBuf::from(command.get_program()), shim);
         let args: Vec<_> = command.get_args().collect();

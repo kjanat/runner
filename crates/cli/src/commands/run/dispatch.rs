@@ -126,6 +126,7 @@ pub(super) enum Dispatch {
 /// A command plus any resolver decision needed to diagnose spawn failure.
 #[derive(Debug)]
 pub(super) struct SpawnDispatch {
+    pub(super) task_key: String,
     command: Command,
     plan: Box<runner_core::Plan>,
     diagnostic: SpawnDiagnostic,
@@ -160,6 +161,7 @@ impl SpawnDispatch {
         )
         .expect("test plan");
         Self {
+            task_key: String::new(),
             command,
             plan: Box::new(plan),
             diagnostic: SpawnDiagnostic::Passthrough,
@@ -314,6 +316,7 @@ fn spawn_plan(
     let mut command = runner_core::execute::command(&plan);
     crate::commands::configure_task_streams(&mut command, overrides, token);
     let spawn = SpawnDispatch {
+        task_key: token.to_owned(),
         command,
         plan: Box::new(plan),
         diagnostic: SpawnDiagnostic::Passthrough,
@@ -449,18 +452,11 @@ fn dispatch_plan(
         runner_core::Dispatch::Plan(plan) => plan,
     };
     let entry = if rung.name == "task" {
-        runner_core::select(&cascade, task_name)
-            .ok()
-            .flatten()
-            .and_then(|selected| {
-                ctx.tasks
-                    .iter()
-                    .find(|entry| super::core::task(entry).as_ref() == Some(selected))
-            })
+        prepared.selected(ctx, task_name)?
     } else {
         None
     };
-    let task_key = entry.map_or_else(|| task_name.to_owned(), super::task_output_key);
+    let task_key = prepared.task_key.clone();
     prepare_task(ctx, overrides, entry, args, &mut plan, sink)?;
     prepare_host(ctx, task_name, rung, &mut plan)?;
     crate::commands::configure_plan(&mut plan, overrides, &task_key);
@@ -505,6 +501,7 @@ fn dispatch_plan(
         SpawnDiagnostic::Passthrough
     };
     let spawn = SpawnDispatch {
+        task_key,
         command: cmd,
         plan,
         diagnostic,
@@ -672,13 +669,19 @@ fn refusal_error(
             file,
             reason,
             chosen_by,
+            alternatives,
         } => {
             let origin = chosen_by
                 .as_ref()
-                .map_or_else(String::new, |layer| format!(" (chosen by {layer:?})"));
+                .map_or_else(String::new, |layer| format!(" ({})", runtime_origin(layer)));
+            let suggestions = runtime_suggestions(alternatives, &runner_providers::REGISTRY);
+            let hint = if suggestions.is_empty() {
+                String::new()
+            } else {
+                format!(" Try {}.", suggestions.join(" or "))
+            };
             anyhow!(
-                "{} cannot run {}{origin}: {reason}. Use --runtime bun or --runtime deno for \
-                 JSX/TSX.",
+                "{} cannot run {}{origin}: {reason}.{hint}",
                 runner_providers::REGISTRY.by_id(*provider).label,
                 file.display()
             )
@@ -718,6 +721,31 @@ fn refusal_error(
             let _ = ctx;
             anyhow!("{} resolves outside the project root", path.display())
         }
+    }
+}
+
+fn runtime_suggestions(
+    alternatives: &[runner_core::ProviderId],
+    registry: &runner_core::Registry,
+) -> Vec<String> {
+    alternatives
+        .iter()
+        .filter_map(|id| {
+            JsRuntime::from_label(registry.by_id(*id).label)
+                .map(|runtime| format!("--runtime {}", runtime.label()))
+        })
+        .collect()
+}
+
+fn runtime_origin(layer: &runner_core::Layer) -> String {
+    use runner_core::Layer;
+    match layer {
+        Layer::Cli => "selected by --runtime".into(),
+        Layer::Env => "selected by RUNNER_RUNTIME".into(),
+        Layer::ConfigFile(path) => format!("selected by {}", path.display()),
+        Layer::Manifest(path) => format!("declared in {}", path.display()),
+        Layer::Lockfile(path) => format!("locked in {}", path.display()),
+        Layer::Probe => "discovered on PATH".into(),
     }
 }
 
@@ -798,6 +826,38 @@ mod tests {
     use super::{Dispatch, SpawnDispatch, check_make_args, resolve_dispatch};
     use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolutionStep, ResolvedPm};
     use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+
+    #[test]
+    fn runtime_hints_offer_only_client_supported_choices_from_the_refusal() {
+        use runner_core::ProviderId;
+        assert_eq!(
+            super::runtime_suggestions(
+                &[ProviderId::Python, ProviderId::Deno],
+                &runner_providers::REGISTRY
+            ),
+            ["--runtime deno"]
+        );
+        assert!(
+            super::runtime_suggestions(&[ProviderId::Python], &runner_providers::REGISTRY)
+                .is_empty()
+        );
+        let refusal = |alternatives| runner_core::Refusal::UnsupportedFile {
+            provider: ProviderId::Node,
+            file: "input.widget".into(),
+            reason: "widget loader unavailable",
+            chosen_by: Some(runner_core::Layer::Env),
+            alternatives,
+        };
+        let message =
+            super::refusal_error(&context(), "input.widget", &refusal(vec![ProviderId::Deno]))
+                .to_string();
+        assert!(message.contains("--runtime deno"));
+        assert!(message.contains("RUNNER_RUNTIME"));
+        assert!(!message.contains("bun") && !message.contains("JSX"));
+        let message =
+            super::refusal_error(&context(), "input.widget", &refusal(vec![])).to_string();
+        assert!(!message.contains("Try") && !message.contains("--runtime"));
+    }
 
     fn context() -> ProjectContext {
         ProjectContext {

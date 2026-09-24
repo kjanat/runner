@@ -30,7 +30,7 @@
       "description": null,
       "aliases": [],
       "definition": "test",
-      "resolved": "cargo test",
+      "resolved": "cargo t",
       "cwd": "/path/to/project",
       "dependencies": []
     },
@@ -56,7 +56,7 @@
         "description": null,
         "aliases": [],
         "definition": "test",
-        "resolved": "cargo test",
+        "resolved": "cargo t",
         "cwd": "/path/to/project",
         "dependencies": []
       },

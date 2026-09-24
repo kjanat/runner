@@ -2,13 +2,13 @@
 
 use std::any::Any;
 use std::ffi::OsStr;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
-use runner_core::{Provider, Request, ScriptMechanism, ScriptRequest, ScriptSupport};
+use runner_core::{Provider, ScriptMechanism, ScriptSupport};
 use runner_providers::REGISTRY;
 
 use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
@@ -74,8 +74,9 @@ pub(crate) fn install_pms(
         plan_install(ctx, overrides)?
     };
 
+    let mut execution = InstallExecution::new(ctx, overrides, flags.frozen, &plan.pms)?;
     report_plan(&plan, overrides);
-    warn_unsupported_script_policy(&plan.pms, overrides);
+    warn_unsupported_script_policy(&plan.pms, overrides, &execution.project);
     if !plan.pms.is_empty() || tools.is_some() {
         super::authorize_fetch(overrides, "install", "install")?;
     }
@@ -85,9 +86,12 @@ pub(crate) fn install_pms(
     let group = super::task_group(overrides, "install", "install");
 
     if let Some(runner) = tools
-        && let Some(code) = run_tools_step(ctx, runner, flags.frozen, overrides)?
+        && let Some(code) = run_tools_step(&execution, runner, overrides)?
     {
         return Ok(code);
+    }
+    if tools.is_some() && !overrides.explain {
+        execution.project.refresh_bins(&execution.tree, &REGISTRY);
     }
     if plan.pms.is_empty() {
         if let Some(task) = task {
@@ -118,10 +122,10 @@ pub(crate) fn install_pms(
     }
 
     if let [pm] = plan.pms.as_slice() {
-        return install_single(ctx, *pm, flags.frozen, overrides);
+        return install_single(&execution, *pm, overrides);
     }
 
-    run_installs_parallel(ctx, &plan, flags.frozen, overrides)
+    run_installs_parallel(&execution, &plan, overrides)
 }
 
 /// The tool manager that installs the project's toolchain before any
@@ -158,13 +162,12 @@ fn is_no_signals(err: &anyhow::Error) -> bool {
 /// missing binary is a warning: the config describes tools the host may
 /// already have on `PATH`.
 fn run_tools_step(
-    ctx: &ProjectContext,
+    execution: &InstallExecution,
     runner: TaskRunner,
-    frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<Option<i32>> {
-    for operation in tool_operations(runner, overrides)? {
-        if let Some(code) = run_tool_operation(ctx, runner, &operation, frozen, overrides)? {
+    for operation in tool_operations(runner, overrides, &execution.project)? {
+        if let Some(code) = run_tool_operation(execution, runner, &operation, overrides)? {
             return Ok(Some(code));
         }
     }
@@ -173,8 +176,19 @@ fn run_tools_step(
 
 /// Which operations `runner install` runs for `runner`, from
 /// `[tools.<name>].install`, defaulting to the tool's install operation.
-fn tool_operations(runner: TaskRunner, overrides: &ResolutionOverrides) -> Result<Vec<String>> {
-    let operations = provider(runner.label()).caps.operations;
+fn tool_operations(
+    runner: TaskRunner,
+    overrides: &ResolutionOverrides,
+    project: &runner_core::Project,
+) -> Result<Vec<String>> {
+    let operations = REGISTRY
+        .effective(
+            provider(runner.label()).id,
+            project,
+            &runner_core::Scope::Root,
+        )
+        .caps
+        .operations;
     let Some(default) = operations.first() else {
         bail!("{} has no toolchain install step", runner.label());
     };
@@ -200,22 +214,82 @@ fn provider(label: &str) -> &'static Provider {
         .unwrap_or_else(|| panic!("registry has no entry for {label}"))
 }
 
-/// Spawnable command for a rendered template of `provider`.
-fn command_for(provider: &Provider, rendered: runner_core::Rendered) -> Command {
-    let program = provider
-        .program
-        .unwrap_or_else(|| panic!("{} declares no program", provider.label));
-    let mut cmd = tool::program::command(program);
-    cmd.args(rendered.args).envs(rendered.env);
-    cmd
+struct InstallExecution {
+    tree: runner_core::Tree,
+    project: runner_core::Project,
+    policy: runner_core::Policy,
+}
+
+impl InstallExecution {
+    fn new(
+        ctx: &ProjectContext,
+        overrides: &ResolutionOverrides,
+        frozen: bool,
+        managers: &[PackageManager],
+    ) -> Result<Self> {
+        let mut policy = super::run::core::policy(overrides);
+        policy.frozen = frozen;
+        policy.scripts = match overrides.script_policy {
+            ScriptPolicy::Default => runner_core::ScriptPolicy::Default,
+            ScriptPolicy::Deny => runner_core::ScriptPolicy::Deny,
+            ScriptPolicy::Allow => runner_core::ScriptPolicy::Allow,
+        };
+        for pm in managers {
+            let provider = provider(pm.label());
+            policy
+                .pm
+                .0
+                .entry(provider.ecosystem)
+                .or_insert(runner_core::Choice {
+                    id: provider.id,
+                    from: runner_core::Layer::Probe,
+                });
+        }
+        let requested = overrides.host_verbosity_for("install");
+        policy.verbosity = match requested.diagnostics {
+            tool::HostDiagnostics::Normal => runner_core::Verbosity::Normal,
+            tool::HostDiagnostics::Quiet => runner_core::Verbosity::Quiet,
+            tool::HostDiagnostics::Reduced => runner_core::Verbosity::VeryQuiet,
+        };
+        let project = super::run::core::project_under(ctx, &policy)?;
+        Ok(Self {
+            tree: super::run::core::tree(ctx),
+            project,
+            policy,
+        })
+    }
+
+    fn plan(
+        &self,
+        label: &str,
+        operations: &[String],
+        overrides: &ResolutionOverrides,
+    ) -> Result<runner_core::Plan> {
+        let provider = provider(label);
+        let present = self
+            .project
+            .present
+            .iter()
+            .find(|p| p.provider == provider.id)
+            .ok_or_else(|| anyhow::anyhow!("no evidence for install provider {label}"))?;
+        let mut plan = runner_core::plan_with(
+            &self.tree,
+            &self.project,
+            &self.policy,
+            present,
+            &runner_core::Op::Install { operations },
+            &REGISTRY,
+        )?;
+        super::configure_plan(&mut plan, overrides, "install");
+        Ok(plan)
+    }
 }
 
 /// Run one of the tool manager's operations in the foreground.
 fn run_tool_operation(
-    ctx: &ProjectContext,
+    execution: &InstallExecution,
     runner: TaskRunner,
     operation: &str,
-    frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<Option<i32>> {
     if overrides.shows_progress() {
@@ -226,38 +300,15 @@ fn run_tool_operation(
             operation.bold()
         );
     }
-    let verbosity = tool::HostVerbosity {
-        diagnostics: overrides.host_verbosity_for("install").diagnostics,
-        stream: tool::Stream::Inherit,
-    };
-    let manager = provider(runner.label());
-    let Some(install) = manager.caps.install else {
-        bail!("{} has no toolchain install step", runner.label());
-    };
-    let locked = frozen
-        && install
-            .locked_only_with
-            .is_none_or(|_| tool::mise::has_lockfile(&ctx.root));
-    let mut cmd = command_for(
-        manager,
-        install.argv.render(&Request {
-            op: Some(operation),
-            quiet: verbosity
-                .silences()
-                .then_some(manager.caps.quiet.levels[1])
-                .flatten(),
-            frozen: locked.then_some(install.frozen),
-            ..Request::default()
-        }),
-    );
-    super::configure_host_command(&mut cmd, &ctx.root, overrides);
-    super::apply_env_layers(&mut cmd, overrides, Some(runner.label()), None);
+    let plan = execution.plan(runner.label(), &[operation.to_owned()], overrides)?;
+    let mut cmd = runner_core::execute::command(&plan);
     super::configure_task_streams(&mut cmd, overrides, "install");
     if overrides.explain {
+        crate::render::explain::print_plan(overrides, &plan);
         crate::render::explain::print_command(overrides, &cmd);
         return Ok(None);
     }
-    let mut child = match cmd.spawn() {
+    let mut child = match runner_core::execute::spawn(&plan, &mut cmd) {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             if overrides.shows_warnings() {
@@ -596,24 +647,22 @@ fn report_plan(plan: &InstallPlan, overrides: &ResolutionOverrides) {
 
 /// Run a single PM's install in the foreground, inheriting stdio.
 fn install_single(
-    ctx: &ProjectContext,
+    execution: &InstallExecution,
     pm: PackageManager,
-    frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
     if overrides.shows_progress() {
         eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
     }
-    let mut cmd = build_install_command(ctx, pm, frozen, script_request(overrides));
-    super::apply_env_layers(&mut cmd, overrides, Some(pm.label()), None);
-    super::configure_command(&mut cmd, &ctx.root, overrides);
+    let plan = execution.plan(pm.label(), &[], overrides)?;
+    let mut cmd = runner_core::execute::command(&plan);
     super::configure_task_streams(&mut cmd, overrides, "install");
     if overrides.explain {
+        crate::render::explain::print_plan(overrides, &plan);
         crate::render::explain::print_command(overrides, &cmd);
         return Ok(0);
     }
-    let mut child = cmd
-        .spawn()
+    let mut child = runner_core::execute::spawn(&plan, &mut cmd)
         .map_err(|error| spawn_error(pm, cmd.get_program(), error))?;
     let status =
         wait_or_reap(&mut child).map_err(|error| wait_error(pm, cmd.get_program(), error))?;
@@ -698,14 +747,13 @@ fn install_lanes(plan: &InstallPlan) -> Vec<Vec<PackageManager>> {
 /// own. A failure *inside* a lane stops that lane, because the next manager in
 /// it would install over the tree the failed one left behind.
 fn run_installs_parallel(
-    ctx: &ProjectContext,
+    execution: &InstallExecution,
     plan: &InstallPlan,
-    frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
     if overrides.explain {
         for pm in &plan.pms {
-            install_single(ctx, *pm, frozen, overrides)?;
+            install_single(execution, *pm, overrides)?;
         }
         return Ok(0);
     }
@@ -715,7 +763,6 @@ fn run_installs_parallel(
     let width = prefix_width(&names);
     let colorize = colored::control::SHOULD_COLORIZE.should_colorize();
     let sink: Arc<dyn LineSink> = Arc::new(StdioSink);
-    let directive = script_request(overrides);
 
     let outcomes: Vec<Result<Option<(PackageManager, i32)>>> = std::thread::scope(|scope| {
         // Every lane is spawned before any is joined: joining as we go would
@@ -724,11 +771,9 @@ fn run_installs_parallel(
         let mut handles = Vec::with_capacity(lanes.len());
         for lane in &lanes {
             let sink = Arc::clone(&sink);
-            handles.push(scope.spawn(move || {
-                run_lane(
-                    ctx, lane, frozen, overrides, &sink, width, colorize, directive,
-                )
-            }));
+            handles.push(
+                scope.spawn(move || run_lane(execution, lane, overrides, &sink, width, colorize)),
+            );
         }
         handles
             .into_iter()
@@ -762,22 +807,19 @@ fn run_installs_parallel(
               nothing at one call site"
 )]
 fn run_lane(
-    ctx: &ProjectContext,
+    execution: &InstallExecution,
     lane: &[PackageManager],
-    frozen: bool,
     overrides: &ResolutionOverrides,
     sink: &Arc<dyn LineSink>,
     width: usize,
     colorize: bool,
-    directive: ScriptRequest,
 ) -> Result<Option<(PackageManager, i32)>> {
     for pm in lane {
         if overrides.shows_progress() {
             eprintln!("{} {}", "installing with".dimmed(), pm.label().bold());
         }
-        let mut cmd = build_install_command(ctx, *pm, frozen, directive);
-        super::apply_env_layers(&mut cmd, overrides, Some(pm.label()), None);
-        super::configure_command(&mut cmd, &ctx.root, overrides);
+        let plan = execution.plan(pm.label(), &[], overrides)?;
+        let mut cmd = runner_core::execute::command(&plan);
         let (stdout_policy, stderr_policy) = overrides.task_streams_for("install");
         cmd.stdin(Stdio::null())
             .stdout(match stdout_policy {
@@ -788,8 +830,7 @@ fn run_lane(
                 tool::TaskStream::Inherit => Stdio::piped(),
                 tool::TaskStream::Discard => Stdio::null(),
             });
-        let mut child = cmd
-            .spawn()
+        let mut child = runner_core::execute::spawn(&plan, &mut cmd)
             .map_err(|error| spawn_error(*pm, cmd.get_program(), error))?;
         let prefix = if overrides.emits_groups() {
             render_prefix(pm.label(), width, colorize)
@@ -836,48 +877,6 @@ fn panic_payload(payload: &(dyn Any + Send)) -> String {
     "non-string panic payload".to_string()
 }
 
-/// The install command for `pm`.
-///
-/// Every mechanism comes from the registry entry's install capability. Yarn
-/// alone is probed for its major version first, since Berry and Classic
-/// spell the frozen and script switches differently.
-fn build_install_command(
-    ctx: &ProjectContext,
-    pm: PackageManager,
-    frozen: bool,
-    scripts: ScriptRequest,
-) -> Command {
-    let manager = provider(pm.label());
-    let install = manager
-        .caps
-        .install
-        .unwrap_or_else(|| panic!("{} cannot install", pm.label()));
-    let yarn = (pm == PackageManager::Yarn)
-        .then(|| tool::yarn::install_mechanisms(&ctx.root, frozen, scripts));
-    let request = Request {
-        frozen: frozen.then_some(yarn.as_ref().map_or(install.frozen, |yarn| yarn.frozen)),
-        scripts: Some((
-            yarn.as_ref().map_or(install.scripts, |yarn| yarn.scripts),
-            scripts,
-        )),
-        ..Request::default()
-    };
-    let mut cmd = command_for(manager, install.argv.render(&request));
-    if let Some(yarn) = yarn {
-        cmd.envs(yarn.env);
-    }
-    cmd
-}
-
-/// Lower the resolved [`ScriptPolicy`] to the request the templates render.
-const fn script_request(overrides: &ResolutionOverrides) -> ScriptRequest {
-    match overrides.script_policy {
-        ScriptPolicy::Default => ScriptRequest::Default,
-        ScriptPolicy::Deny => ScriptRequest::Deny,
-        ScriptPolicy::Allow => ScriptRequest::Allow,
-    }
-}
-
 /// Whether the resolved [`ScriptPolicy`] asks to skip install scripts.
 const fn deny_scripts(overrides: &ResolutionOverrides) -> bool {
     matches!(overrides.script_policy, ScriptPolicy::Deny)
@@ -889,8 +888,9 @@ const fn force_scripts(overrides: &ResolutionOverrides) -> bool {
 }
 
 /// The script mechanisms `pm` declares for its install.
-fn script_support(pm: PackageManager) -> ScriptSupport {
-    provider(pm.label())
+fn script_support(pm: PackageManager, project: &runner_core::Project) -> ScriptSupport {
+    REGISTRY
+        .effective(provider(pm.label()).id, project, &runner_core::Scope::Root)
         .caps
         .install
         .map_or(ScriptSupport::NONE, |install| install.scripts)
@@ -898,8 +898,8 @@ fn script_support(pm: PackageManager) -> ScriptSupport {
 
 /// The manifest allowlist that re-enables scripts for a manager whose
 /// force-on is not flag-expressible.
-fn force_allowlist(pm: PackageManager) -> Option<&'static str> {
-    match script_support(pm).allow {
+fn force_allowlist(pm: PackageManager, project: &runner_core::Project) -> Option<&'static str> {
+    match script_support(pm, project).allow {
         ScriptMechanism::Warn(allowlist) => Some(allowlist),
         ScriptMechanism::Flag(_)
         | ScriptMechanism::Env(..)
@@ -923,26 +923,30 @@ fn force_allowlist(pm: PackageManager) -> Option<&'static str> {
 /// - **force-on** is a request-fidelity disclosure: a manager that denies
 ///   dependency build scripts by default and re-enables them only through a
 ///   manifest allowlist runner won't write cannot apply `--scripts`.
-fn warn_unsupported_script_policy(pms: &[PackageManager], overrides: &ResolutionOverrides) {
+fn warn_unsupported_script_policy(
+    pms: &[PackageManager],
+    overrides: &ResolutionOverrides,
+    project: &runner_core::Project,
+) {
     if !(overrides.shows_warnings()
         || overrides.no_warnings && overrides.quiet_level <= tool::QuietLevel::Quiet)
     {
         return;
     }
-    for pm in unsupported_deny_managers(pms, overrides) {
+    for pm in unsupported_deny_managers(pms, overrides, project) {
         eprintln!(
             "{} {} cannot skip install scripts; deny policy not applied to it",
             "warn:".yellow().bold(),
             pm.label(),
         );
     }
-    for pm in unforceable_managers(pms, overrides) {
+    for pm in unforceable_managers(pms, overrides, project) {
         eprintln!(
             "{} {} cannot force install scripts on; it denies dependency build scripts by default \
              and only the {} allowlist (which runner won't write) re-enables them",
             "warn:".yellow().bold(),
             pm.label(),
-            force_allowlist(pm).unwrap_or("manifest"),
+            force_allowlist(pm, project).unwrap_or("manifest"),
         );
     }
 }
@@ -952,13 +956,19 @@ fn warn_unsupported_script_policy(pms: &[PackageManager], overrides: &Resolution
 fn unsupported_deny_managers(
     pms: &[PackageManager],
     overrides: &ResolutionOverrides,
+    project: &runner_core::Project,
 ) -> Vec<PackageManager> {
     if !deny_scripts(overrides) {
         return Vec::new();
     }
     pms.iter()
         .copied()
-        .filter(|pm| matches!(script_support(*pm).deny, ScriptMechanism::Unsupported))
+        .filter(|pm| {
+            matches!(
+                script_support(*pm, project).deny,
+                ScriptMechanism::Unsupported
+            )
+        })
         .collect()
 }
 
@@ -967,13 +977,14 @@ fn unsupported_deny_managers(
 fn unforceable_managers(
     pms: &[PackageManager],
     overrides: &ResolutionOverrides,
+    project: &runner_core::Project,
 ) -> Vec<PackageManager> {
     if !force_scripts(overrides) {
         return Vec::new();
     }
     pms.iter()
         .copied()
-        .filter(|pm| force_allowlist(*pm).is_some())
+        .filter(|pm| force_allowlist(*pm, project).is_some())
         .collect()
 }
 
@@ -1003,10 +1014,9 @@ mod tests {
     use runner_core::{ScriptMechanism, ScriptRequest};
 
     use super::{
-        CollisionDir, InstallPlan, Shadowed, build_install_command, install_lanes, install_task,
-        is_no_signals, plan_install, script_request, script_support, select_install_pms,
-        spawn_error, tools_step, unforceable_managers, unsupported_deny_managers,
-        warn_unsupported_script_policy,
+        CollisionDir, InstallExecution, InstallPlan, Shadowed, install_lanes, install_task,
+        is_no_signals, plan_install, script_support, select_install_pms, spawn_error, tools_step,
+        unforceable_managers, unsupported_deny_managers, warn_unsupported_script_policy,
     };
     use crate::resolver::{
         CollisionPolicy, FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides,
@@ -1579,13 +1589,23 @@ mod tests {
             .expect_err("a choice nothing shows is refused, in install as in run");
     }
 
-    /// argv produced by `build_install_command` for `pm`, ignoring the
-    /// subprocess-probing managers (yarn) whose flag logic is unit-tested in
-    /// their own module.
     fn install_argv(pm: PackageManager, scripts: ScriptRequest) -> Vec<String> {
         let ctx = context(vec![pm]);
-        build_install_command(&ctx, pm, false, scripts)
-            .get_args()
+        let overrides = ResolutionOverrides {
+            script_policy: match scripts {
+                ScriptRequest::Default => ScriptPolicy::Default,
+                ScriptRequest::Deny => ScriptPolicy::Deny,
+                ScriptRequest::Allow => ScriptPolicy::Allow,
+            },
+            ..ResolutionOverrides::default()
+        };
+        let execution = InstallExecution::new(&ctx, &overrides, false, &[pm]).unwrap();
+        execution
+            .plan(pm.label(), &[], &overrides)
+            .unwrap()
+            .argv
+            .iter()
+            .skip(1)
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
     }
@@ -1600,13 +1620,16 @@ mod tests {
             PackageManager::Composer,
         ] {
             assert!(
-                matches!(script_support(pm).deny, ScriptMechanism::Flag(_)),
+                matches!(
+                    script_support(pm, &runner_core::Project::default()).deny,
+                    ScriptMechanism::Flag(_)
+                ),
                 "{} via flag",
                 pm.label()
             );
         }
         assert_eq!(
-            script_support(PackageManager::Deno).deny,
+            script_support(PackageManager::Deno, &runner_core::Project::default()).deny,
             ScriptMechanism::Default
         );
         for pm in [
@@ -1618,7 +1641,7 @@ mod tests {
             PackageManager::Bundler,
         ] {
             assert_eq!(
-                script_support(pm).deny,
+                script_support(pm, &runner_core::Project::default()).deny,
                 ScriptMechanism::Unsupported,
                 "{} unsupported",
                 pm.label(),
@@ -1630,14 +1653,20 @@ mod tests {
     fn force_support_classifies_every_pm() {
         for pm in [PackageManager::Npm, PackageManager::Deno] {
             assert!(
-                matches!(script_support(pm).allow, ScriptMechanism::Flag(_)),
+                matches!(
+                    script_support(pm, &runner_core::Project::default()).allow,
+                    ScriptMechanism::Flag(_)
+                ),
                 "{} via flag",
                 pm.label(),
             );
         }
         for pm in [PackageManager::Bun, PackageManager::Pnpm] {
             assert!(
-                matches!(script_support(pm).allow, ScriptMechanism::Warn(_)),
+                matches!(
+                    script_support(pm, &runner_core::Project::default()).allow,
+                    ScriptMechanism::Warn(_)
+                ),
                 "{} not expressible",
                 pm.label(),
             );
@@ -1654,26 +1683,13 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    script_support(pm).allow,
+                    script_support(pm, &runner_core::Project::default()).allow,
                     ScriptMechanism::Default | ScriptMechanism::Unsupported
                 ),
                 "{} already runs",
                 pm.label(),
             );
         }
-    }
-
-    #[test]
-    fn script_request_lowers_every_policy() {
-        let request = |policy| {
-            script_request(&ResolutionOverrides {
-                script_policy: policy,
-                ..ResolutionOverrides::default()
-            })
-        };
-        assert_eq!(request(ScriptPolicy::Default), ScriptRequest::Default);
-        assert_eq!(request(ScriptPolicy::Deny), ScriptRequest::Deny);
-        assert_eq!(request(ScriptPolicy::Allow), ScriptRequest::Allow);
     }
 
     #[test]
@@ -1762,7 +1778,14 @@ mod tests {
     fn deny_disclosure_fires_for_unsupported_pms_regardless_of_no_warnings() {
         let pms = [PackageManager::Cargo, PackageManager::Npm];
         // Non-deny policy: nothing to disclose.
-        assert!(unsupported_deny_managers(&pms, &ResolutionOverrides::default()).is_empty());
+        assert!(
+            unsupported_deny_managers(
+                &pms,
+                &ResolutionOverrides::default(),
+                &runner_core::Project::default()
+            )
+            .is_empty()
+        );
         // Deny + --no-warnings: the unsupported PM (cargo) is still disclosed,
         // because this is a security notice, not a cosmetic warning. Npm honors
         // the deny via a flag, so it is not listed.
@@ -1772,11 +1795,11 @@ mod tests {
             ..ResolutionOverrides::default()
         };
         assert_eq!(
-            unsupported_deny_managers(&pms, &denying),
+            unsupported_deny_managers(&pms, &denying, &runner_core::Project::default()),
             vec![PackageManager::Cargo]
         );
         // Smoke the public entry point with the same inputs: still emits, no panic.
-        warn_unsupported_script_policy(&pms, &denying);
+        warn_unsupported_script_policy(&pms, &denying, &runner_core::Project::default());
     }
 
     #[test]
@@ -1787,7 +1810,14 @@ mod tests {
             PackageManager::Bun,
         ];
         // Non-force policy: nothing to disclose.
-        assert!(unforceable_managers(&pms, &ResolutionOverrides::default()).is_empty());
+        assert!(
+            unforceable_managers(
+                &pms,
+                &ResolutionOverrides::default(),
+                &runner_core::Project::default()
+            )
+            .is_empty()
+        );
         // Force-on + --no-warnings: pnpm and bun (manifest-allowlist managers)
         // are still disclosed, in selection order. npm expresses force-on via a
         // flag, so it is not listed.
@@ -1797,10 +1827,10 @@ mod tests {
             ..ResolutionOverrides::default()
         };
         assert_eq!(
-            unforceable_managers(&pms, &forcing),
+            unforceable_managers(&pms, &forcing, &runner_core::Project::default()),
             vec![PackageManager::Pnpm, PackageManager::Bun]
         );
         // Smoke the public entry point with the same inputs: still emits, no panic.
-        warn_unsupported_script_policy(&pms, &forcing);
+        warn_unsupported_script_policy(&pms, &forcing, &runner_core::Project::default());
     }
 }

@@ -418,10 +418,15 @@ fn cli_refuses_node_jsx_but_allows_capable_runtimes() {
             let output = fixture.run(&args, "local");
             assert!(!output.status.success());
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains("node cannot run") && stderr.contains("--runtime bun"),
-                "{stderr}"
-            );
+            assert!(stderr.contains("node cannot run"), "{stderr}");
+            for id in runner_providers::REGISTRY.file_runtimes(
+                std::path::Path::new(&file),
+                &runner_core::Project::default(),
+                &runner_core::Scope::Root,
+            ) {
+                let label = runner_providers::REGISTRY.by_id(id).label;
+                assert!(stderr.contains(&format!("--runtime {label}")), "{stderr}");
+            }
             fixture.assert_not_executed();
         }
         for runtime in ["bun", "deno"] {
@@ -526,7 +531,7 @@ fn jsx_refusal_identifies_cli_and_environment_runtime_origins() {
     assert!(!cli.status.success());
     let message = String::from_utf8_lossy(&cli.stderr);
     assert!(
-        message.contains("chosen by Cli") && message.contains("--runtime bun"),
+        message.contains("selected by --runtime") && message.contains("--runtime bun"),
         "{message}"
     );
     let env = builtin_command(&fixture, false, &["view.jsx"])
@@ -535,7 +540,7 @@ fn jsx_refusal_identifies_cli_and_environment_runtime_origins() {
         .unwrap();
     assert!(!env.status.success());
     let message = String::from_utf8_lossy(&env.stderr);
-    assert!(message.contains("chosen by Env"), "{message}");
+    assert!(message.contains("selected by RUNNER_RUNTIME"), "{message}");
     fixture.assert_not_executed();
 }
 
@@ -608,5 +613,127 @@ fn removed_internal_flag_is_rejected() {
     let output = fixture.run(&["--internal-runner-builtin", "list"], "local");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn yarn_install_preview_and_execution_share_the_registry_variant() {
+    for (version, frozen, verb, script_env) in [
+        ("1.22.0", "--frozen-lockfile", "run", ""),
+        ("4.1.0", "--immutable", "exec", "false"),
+    ] {
+        let fixture = Fixture::new();
+        fixture.file(
+            "package.json",
+            &format!(r#"{{"packageManager":"yarn@{version}","scripts":{{"build":"echo build"}}}}"#),
+        );
+        std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
+        fixture.file("yarn.lock", "");
+        fixture.program("yarn");
+        fixture.file(
+            "bin/yarn",
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 99.0.0; exit 0; fi\nprintf \
+             '%s|%s\\n' \"$YARN_ENABLE_SCRIPTS\" \"$*\" >> \"$AUDIT_LOG\"\n",
+        );
+        let explained = fixture.run(
+            &[
+                "--explain",
+                "install",
+                "--no-tools",
+                "--frozen",
+                "--no-scripts",
+            ],
+            "local",
+        );
+        assert!(
+            explained.status.success(),
+            "{}",
+            String::from_utf8_lossy(&explained.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&explained.stderr);
+        assert!(
+            stderr.contains(frozen) && stderr.contains("evidence:") && stderr.contains("Network"),
+            "{stderr}"
+        );
+        fixture.assert_not_executed();
+        let installed = fixture.run(
+            &["install", "--no-tools", "--frozen", "--no-scripts"],
+            "allow",
+        );
+        assert!(
+            installed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&installed.stderr)
+        );
+        let log = std::fs::read_to_string(fixture.0.join("executed")).unwrap();
+        assert!(
+            log.starts_with(&format!("{script_env}|install {frozen}")),
+            "{log}"
+        );
+        assert_eq!(log.contains("--ignore-scripts"), version.starts_with('1'));
+        let explained = fixture.run(&["--explain", "run", "missing-widget"], "local");
+        assert!(
+            String::from_utf8_lossy(&explained.stderr).contains(&format!("\"yarn\", \"{verb}\""))
+        );
+        let why = fixture.run(&["why", "build", "--json"], "local");
+        assert!(
+            why.status.success(),
+            "{}",
+            String::from_utf8_lossy(&why.stderr)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&why.stdout).unwrap();
+        assert_eq!(
+            report["selected"]["task"]["resolved"],
+            if version.starts_with('1') {
+                "yarn build"
+            } else {
+                "yarn run build"
+            }
+        );
+    }
+}
+
+#[test]
+fn tool_install_refreshes_declared_bin_paths_before_the_package_manager_starts() {
+    let fixture = Fixture::new();
+    fixture.file("mise.toml", "[tools]\n");
+    fixture.program("mise");
+    std::fs::create_dir(fixture.0.join("managed")).unwrap();
+    std::fs::rename(fixture.0.join("bin/npm"), fixture.0.join("managed/npm")).unwrap();
+    fixture.file(
+        "bin/mise",
+        r#"#!/bin/sh
+case "$1" in
+  tasks) echo '{}';;
+  --version) echo 2026.1.0;;
+  bin-paths) if [ -f "$HOME/installed" ]; then printf '%s/managed\n' "$HOME"; fi;;
+  install) printf installed > "$HOME/installed";;
+esac
+"#,
+    );
+    let output = fixture.run(&["install"], "allow");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.0.join("executed"))
+            .unwrap()
+            .trim(),
+        "install"
+    );
+}
+
+#[test]
+fn install_refuses_broken_yarn_observations_before_spawning() {
+    let fixture = Fixture::new();
+    fixture.file("package.json", r#"{"packageManager":"yarn@4.1.0"}"#);
+    std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
+    std::fs::create_dir(fixture.0.join("yarn.lock")).unwrap();
+    fixture.program("yarn");
+    let output = fixture.run(&["install", "--no-tools", "--frozen"], "allow");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("yarn.lock"));
     fixture.assert_not_executed();
 }

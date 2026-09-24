@@ -83,6 +83,40 @@ impl Provider {
 pub struct Registry(pub &'static [Provider]);
 
 impl Registry {
+    /// Capabilities effective for a provider in this scope, with root inheritance.
+    #[must_use]
+    pub fn effective(
+        &self,
+        id: ProviderId,
+        project: &crate::Project,
+        scope: &crate::Scope,
+    ) -> Provider {
+        let provider = self.by_id(id);
+        let observed = project.present_in(id, scope);
+        observed.map_or(*provider, |p| provider.for_present(p))
+    }
+
+    /// Runtime providers accepting this file under the scope's observed variants.
+    #[must_use]
+    pub fn file_runtimes(
+        &self,
+        file: &std::path::Path,
+        project: &crate::Project,
+        scope: &crate::Scope,
+    ) -> Vec<ProviderId> {
+        self.of_kind(Kind::RUNTIME)
+            .filter_map(|provider| {
+                let effective = self.effective(provider.id, project, scope);
+                effective
+                    .caps
+                    .run_file
+                    .filter(|cap| cap.supports(file))
+                    .filter(|cap| cap.program.or(effective.program).is_some())
+                    .map(|_| provider.id)
+            })
+            .collect()
+    }
+
     /// The provider with `id`.
     ///
     /// # Panics

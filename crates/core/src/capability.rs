@@ -134,8 +134,8 @@ pub struct InstallCap {
     pub frozen: Frozen,
     /// The script mechanisms.
     pub scripts: ScriptSupport,
-    /// A file the frozen mechanism needs present.
-    pub locked_only_with: Option<&'static str>,
+    /// Config/lockfile pairs; any existing pair enables frozen mode. Empty is unconditional.
+    pub locked_only_with: &'static [(&'static str, &'static str)],
 }
 
 /// Run a declared task.
@@ -196,6 +196,32 @@ pub struct RunFileCap {
     pub extensions: &'static [&'static str],
     /// The argv.
     pub argv: Template,
+}
+
+impl RunFileCap {
+    /// Whether this capability accepts the file's extension.
+    #[must_use]
+    pub fn supports(&self, file: &Path) -> bool {
+        self.refusal(file).is_none()
+            && file
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    self.extensions
+                        .iter()
+                        .any(|known| ext.eq_ignore_ascii_case(known))
+                })
+    }
+
+    /// The declared limitation for the file's extension.
+    #[must_use]
+    pub fn refusal(&self, file: &Path) -> Option<&'static str> {
+        let extension = file.extension()?.to_str()?;
+        self.unsupported
+            .iter()
+            .find(|(ext, _)| extension.eq_ignore_ascii_case(ext))
+            .map(|(_, reason)| *reason)
+    }
 }
 
 /// How a test runner finds its tests.

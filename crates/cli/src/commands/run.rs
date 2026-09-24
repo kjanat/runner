@@ -76,33 +76,33 @@ pub(crate) fn run(
     args: &[String],
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
+    run_with_key(ctx, overrides, task, args, sink).map(|(code, _)| code)
+}
+
+pub(crate) fn run_with_key(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task: &str,
+    args: &[String],
+    sink: super::WarningSink<'_>,
+) -> Result<(i32, String)> {
     let mut spawn = match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, true)? {
         dispatch::Dispatch::Builtin(name) => {
-            return crate::run_builtin(ctx, overrides, &name, args);
+            return crate::run_builtin(ctx, overrides, &name, args).map(|code| (code, name));
         }
         dispatch::Dispatch::Spawn(spawn) => spawn,
     };
     if overrides.explain {
         crate::render::explain::print_command(overrides, spawn.command_mut());
-        return Ok(0);
+        return Ok((0, spawn.task_key.clone()));
     }
     // Wrap the child's output in a collapsible GitHub Actions group
     // (`runner: <task>`) when enabled. Opened after resolution so the `→`
     // dispatch arrow stays visible above the fold and a resolver error
     // never leaves an empty group; the guard closes the group on drop.
-    let key = task_key_for_token(ctx, overrides, task)?;
+    let key = spawn.task_key.clone();
     let _group = super::task_group(overrides, task, &key);
-    Ok(super::exit_code(spawn.status()?))
-}
-
-/// The `[tasks.<key>]` identity a CLI token resolves to: the selected task's
-/// `task_output_key`, or the bare token when nothing matches.
-pub(crate) fn task_key_for_token(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    token: &str,
-) -> Result<String> {
-    Ok(core::prepare(ctx, overrides, token)?.task_key)
+    Ok((super::exit_code(spawn.status()?), key))
 }
 
 /// Execute a builtin in-process or spawn a task with piped stdout/stderr (so the caller
@@ -126,17 +126,18 @@ pub(crate) fn dispatch_task_piped(
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            spawn.spawn().map(PipedDispatch::Child)
+            spawn
+                .spawn()
+                .map(|child| PipedDispatch::Child(child, spawn.task_key.clone()))
         }
-        dispatch::Dispatch::Builtin(name) => {
-            crate::run_builtin(ctx, overrides, &name, args).map(PipedDispatch::Completed)
-        }
+        dispatch::Dispatch::Builtin(name) => crate::run_builtin(ctx, overrides, &name, args)
+            .map(|code| PipedDispatch::Completed(code, name)),
     }
 }
 
 pub(crate) enum PipedDispatch {
-    Child(std::process::Child),
-    Completed(i32),
+    Child(std::process::Child, String),
+    Completed(i32, String),
 }
 
 #[cfg(test)]

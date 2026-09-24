@@ -449,32 +449,6 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
-/// `true` when any detected config in `root` has its lockfile on disk.
-pub(crate) fn has_lockfile(root: &Path) -> bool {
-    FILENAMES
-        .iter()
-        .map(|name| root.join(name))
-        .filter(|config| config.is_file())
-        .any(|config| lock_path(&config).is_file())
-}
-
-/// The lockfile mise writes for `config`. It sits beside the config and is
-/// named `mise.lock`, or `mise.local.lock` for a `*.local.toml` config.
-fn lock_path(config: &Path) -> PathBuf {
-    let local = config
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.contains(".local."));
-    let name = if local {
-        "mise.local.lock"
-    } else {
-        "mise.lock"
-    };
-    config
-        .parent()
-        .map_or_else(|| PathBuf::from(name), |dir| dir.join(name))
-}
-
 /// The tool bin directories mise puts on `PATH` for this project, from
 /// `mise bin-paths`. Empty when mise is missing or reports nothing.
 ///
@@ -482,22 +456,16 @@ fn lock_path(config: &Path) -> PathBuf {
 /// manager it just installed is invisible to this process and to the
 /// children runner spawns next.
 pub(crate) fn bin_paths(root: &Path) -> Vec<PathBuf> {
-    let Ok(output) = super::program::command("mise")
-        .arg("bin-paths")
-        .current_dir(root)
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
+    match runner_providers::REGISTRY
+        .by_id(runner_core::ProviderId::Mise)
+        .caps
+        .bins
+        .map(|cap| cap.dirs)
+    {
+        Some(runner_core::BinDirs::Ask(ask)) => ask(root),
+        Some(runner_core::BinDirs::Static(dirs)) => dirs.iter().map(|dir| root.join(dir)).collect(),
+        None => Vec::new(),
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect()
 }
 
 /// What mise says about this project's own health, for `runner doctor`.
@@ -1014,8 +982,7 @@ mod tests {
     use std::fs;
 
     use super::{
-        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, has_lockfile,
-        parse_cli_output, run_cmd,
+        ExtractedTask, detect, extract_tasks, extract_tasks_from_source, parse_cli_output, run_cmd,
     };
     use crate::tool::test_support::TempDir;
     use crate::types::TaskDetail;
@@ -1056,54 +1023,6 @@ mod tests {
         );
         let argv: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
         assert_eq!(argv, ["run", "test", "--", "--watch", "unit"]);
-    }
-
-    #[test]
-    fn no_lockfile_beside_the_config_means_no_lock() {
-        let dir = TempDir::new("mise-install-bare");
-        fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
-        assert!(!has_lockfile(dir.path()));
-    }
-
-    #[test]
-    fn the_lockfile_is_found_beside_a_nested_config() {
-        // mise writes `<config dir>/mise.lock`, so a lockfile next to
-        // `.config/mise.toml` is never `<root>/mise.lock`.
-        let dir = TempDir::new("mise-install-nested-lock");
-        let nested = dir.path().join(".config");
-        fs::create_dir_all(&nested).expect(".config should be created");
-        fs::write(nested.join("mise.toml"), "").expect("config should be written");
-        fs::write(nested.join("mise.lock"), "").expect("lockfile should be written");
-        assert!(has_lockfile(dir.path()));
-    }
-
-    #[test]
-    fn lock_path_follows_the_config_it_belongs_to() {
-        let cases = [
-            ("mise.toml", "mise.lock"),
-            (".mise.toml", "mise.lock"),
-            ("mise.local.toml", "mise.local.lock"),
-            (".mise.local.toml", "mise.local.lock"),
-            ("mise/config.toml", "mise/mise.lock"),
-            (".mise/config.toml", ".mise/mise.lock"),
-            (".config/mise.toml", ".config/mise.lock"),
-            (".config/mise/config.toml", ".config/mise/mise.lock"),
-        ];
-        for (config, expected) in cases {
-            assert_eq!(
-                super::lock_path(std::path::Path::new(config)),
-                std::path::PathBuf::from(expected),
-                "{config}",
-            );
-        }
-    }
-
-    #[test]
-    fn the_lockfile_is_found_beside_the_root_config() {
-        let dir = TempDir::new("mise-install-locked");
-        fs::write(dir.path().join("mise.toml"), "").expect("mise.toml should be written");
-        fs::write(dir.path().join("mise.lock"), "").expect("mise.lock should be written");
-        assert!(has_lockfile(dir.path()));
     }
 
     #[test]

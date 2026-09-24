@@ -146,9 +146,8 @@ fn run_sequential(
     let mut first_failure: Option<i32> = None;
 
     for (index, item) in chain.items.iter().enumerate() {
-        let key = item_key(ctx, overrides, item)?;
         let started = std::time::Instant::now();
-        let code = dispatch_item(ctx, overrides, item, warnings)?;
+        let (code, key) = dispatch_item(ctx, overrides, item, warnings)?;
         let elapsed = started.elapsed();
         crate::commands::emit_task_timing(overrides, &key, item.display_name(), elapsed, code);
         outcomes.push(ItemOutcome {
@@ -260,12 +259,6 @@ fn run_parallel_streaming(
     // reaped, so the threads exit on their own).
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
-            let key = item_key(ctx, overrides, item)?;
-            let prefix = if overrides.emits_groups_for(&key) {
-                render_prefix(item.display_name(), width, colorize)
-            } else {
-                String::new()
-            };
             let started = Instant::now();
             let child = match &item.kind {
                 ChainItemKind::Task(name) => crate::commands::run::dispatch_task_piped(
@@ -282,9 +275,9 @@ fn run_parallel_streaming(
                     anyhow::bail!("install items cannot run in parallel chains")
                 }
             };
-            let mut child = match child {
-                crate::commands::run::PipedDispatch::Child(child) => child,
-                crate::commands::run::PipedDispatch::Completed(code) => {
+            let (mut child, key) = match child {
+                crate::commands::run::PipedDispatch::Child(child, key) => (child, key),
+                crate::commands::run::PipedDispatch::Completed(code, key) => {
                     record_finished(
                         &key,
                         overrides,
@@ -301,6 +294,11 @@ fn run_parallel_streaming(
                     }
                     continue;
                 }
+            };
+            let prefix = if overrides.emits_groups_for(&key) {
+                render_prefix(item.display_name(), width, colorize)
+            } else {
+                String::new()
             };
             let stdout: Box<dyn std::io::Read + Send> =
                 Box::new(child.stdout.take().expect("stdout piped"));
@@ -477,8 +475,7 @@ fn run_parallel_grouped(
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
             let started = std::time::Instant::now();
-            let key = item_key(ctx, overrides, item)?;
-            let (name, mut child, sink) = match &item.kind {
+            let (name, mut child, key, sink) = match &item.kind {
                 ChainItemKind::Task(task_name) => {
                     let sink = Arc::new(BufferSink::new()?);
                     let child = crate::commands::run::dispatch_task_piped(
@@ -488,9 +485,9 @@ fn run_parallel_grouped(
                         &item.args,
                         Some(warnings),
                     )?;
-                    let child = match child {
-                        crate::commands::run::PipedDispatch::Child(child) => child,
-                        crate::commands::run::PipedDispatch::Completed(code) => {
+                    let (child, key) = match child {
+                        crate::commands::run::PipedDispatch::Child(child, key) => (child, key),
+                        crate::commands::run::PipedDispatch::Completed(code, key) => {
                             record_finished(
                                 &key,
                                 overrides,
@@ -508,7 +505,7 @@ fn run_parallel_grouped(
                             continue;
                         }
                     };
-                    (item.display_name().to_string(), child, sink)
+                    (item.display_name().to_string(), child, key, sink)
                 }
                 ChainItemKind::Install { .. } => {
                     anyhow::bail!("install items cannot run in parallel chains")
@@ -779,19 +776,6 @@ fn timing_footer(
         .then(|| crate::commands::task_timing_summary(elapsed, code))
 }
 
-/// The `[tasks.<key>]` identity of a chain item. The install head keeps its
-/// literal `install` key.
-fn item_key(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    item: &ChainItem,
-) -> Result<String> {
-    match &item.kind {
-        ChainItemKind::Task(name) => crate::commands::run::task_key_for_token(ctx, overrides, name),
-        ChainItemKind::Install { .. } => Ok(String::from("install")),
-    }
-}
-
 /// Write a grouped-task block footer to stdout, dimmed when colorizing.
 /// `None` is a no-op so callers can pass the gated footer through unchanged.
 fn write_timing_footer(footer: Option<&str>, colorize: bool) {
@@ -984,14 +968,15 @@ fn dispatch_item(
     overrides: &ResolutionOverrides,
     item: &ChainItem,
     warnings: &mut HashSet<DetectionWarning>,
-) -> Result<i32> {
+) -> Result<(i32, String)> {
     match &item.kind {
         ChainItemKind::Task(name) => {
             // v1 ChainItem.args is always empty; v2 will populate it.
-            crate::commands::run::run(ctx, overrides, name, &item.args, Some(warnings))
+            crate::commands::run::run_with_key(ctx, overrides, name, &item.args, Some(warnings))
         }
         ChainItemKind::Install { flags } => {
             crate::commands::install::install_pms(ctx, overrides, *flags, Some(warnings))
+                .map(|code| (code, "install".into()))
         }
     }
 }

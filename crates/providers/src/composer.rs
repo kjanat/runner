@@ -27,7 +27,7 @@ pub const PROVIDER: Provider = Provider {
                 deny: ScriptMechanism::Flag("--no-scripts"),
                 allow: ScriptMechanism::Default,
             },
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         quiet: QuietSupport::NONE,
         ..Capabilities::NONE

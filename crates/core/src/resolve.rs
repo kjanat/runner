@@ -24,6 +24,32 @@ pub struct Project {
 }
 
 impl Project {
+    /// The provider observed in this scope, inheriting root evidence when absent.
+    #[must_use]
+    pub fn present_in(&self, id: ProviderId, scope: &Scope) -> Option<&Present> {
+        self.present
+            .iter()
+            .find(|p| p.provider == id && &p.scope == scope)
+            .or_else(|| {
+                self.present
+                    .iter()
+                    .find(|p| p.provider == id && p.scope == Scope::Root)
+            })
+    }
+
+    /// Refresh executable directories after observation or a tool installation.
+    pub fn refresh_bins(&mut self, tree: &Tree, registry: &Registry) {
+        for present in &mut self.present {
+            let provider = registry.by_id(present.provider).for_present(present);
+            let dir = crate::plan::scope_dir(tree, &present.scope);
+            present.bin_dirs = match provider.caps.bins.map(|cap| cap.dirs) {
+                Some(BinDirs::Static(dirs)) => dirs.iter().map(|bin| dir.join(bin)).collect(),
+                Some(BinDirs::Ask(ask)) => ask(&dir),
+                None => Vec::new(),
+            };
+        }
+    }
+
     /// The present providers of `ecosystem` with `kind`, strongest evidence first.
     #[must_use]
     pub fn of(&self, ecosystem: Ecosystem, kind: Kind, registry: &Registry) -> Vec<&Present> {
@@ -64,28 +90,19 @@ pub fn resolve(
     let mut present: Vec<Present> = Vec::new();
     for ((id, scope), mut because) in by_key {
         because.sort_by_key(|item| item.weight);
-        let provider = registry.by_id(id);
         let chosen = chosen_by(policy, id).is_some();
         let strongest = because.first().map_or(Weight::Probed, |item| item.weight);
         if strongest == Weight::Probed && !chosen {
             continue;
         }
-        let dir = match &scope {
-            Scope::Root => tree.root.clone(),
-            Scope::Member { dir, .. } => dir.clone(),
-        };
-        let bin_dirs = match provider.caps.bins.map(|bins| bins.dirs) {
-            Some(BinDirs::Static(dirs)) => dirs.iter().map(|d| dir.join(d)).collect(),
-            Some(BinDirs::Ask(ask)) => ask(&dir),
-            None => Vec::new(),
-        };
-        present.push(Present {
+        let observed = Present {
             provider: id,
             scope,
             version: None,
-            bin_dirs,
+            bin_dirs: Vec::new(),
             because,
-        });
+        };
+        present.push(observed);
     }
     for choice in choices(policy) {
         if !present.iter().any(|p| p.provider == choice.id) {
@@ -123,11 +140,13 @@ pub fn resolve(
             }
         }
     }
-    Project {
+    let mut project = Project {
         present,
         tasks,
         warnings,
-    }
+    };
+    project.refresh_bins(tree, registry);
+    project
 }
 
 fn choices(policy: &Policy) -> impl Iterator<Item = &Choice> {

@@ -62,7 +62,7 @@ pub const PROVIDER: Provider = Provider {
                 deny: ScriptMechanism::Default,
                 allow: ScriptMechanism::Flag("--allow-scripts"),
             },
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t!["task", Quiet, Task, Args],

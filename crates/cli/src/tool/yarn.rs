@@ -4,7 +4,6 @@ use std::path::Path;
 #[cfg(test)]
 use std::process::Command;
 
-use runner_core::{Frozen, ScriptMechanism, ScriptRequest, ScriptSupport};
 use serde::Deserialize;
 
 /// Detected via `yarn.lock`.
@@ -23,86 +22,6 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     }
     c.arg(task).args(args);
     c
-}
-
-/// The frozen and script switches for an install in `dir`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InstallMechanisms {
-    /// How to keep the lockfile untouched.
-    pub frozen: Frozen,
-    /// How to deny or allow lifecycle scripts.
-    pub scripts: ScriptSupport,
-    /// Variables set in addition to whatever `scripts` renders.
-    pub env: Vec<(&'static str, &'static str)>,
-}
-
-/// Which switches this yarn takes. Berry (2+) uses `--immutable` and the
-/// `YARN_ENABLE_SCRIPTS` env; Classic takes `--frozen-lockfile` and
-/// `--ignore-scripts` and runs scripts by default. The major version is probed
-/// only when a switch is requested.
-pub(crate) fn install_mechanisms(
-    dir: &Path,
-    frozen: bool,
-    scripts: ScriptRequest,
-) -> InstallMechanisms {
-    let yarn_major = if frozen || scripts != ScriptRequest::Default {
-        detect_major_version(dir)
-    } else {
-        None
-    };
-    mechanisms_for_major(scripts, yarn_major)
-}
-
-fn mechanisms_for_major(scripts: ScriptRequest, yarn_major: Option<u32>) -> InstallMechanisms {
-    let is_berry = matches!(yarn_major, Some(major) if major >= 2);
-    let frozen = if is_berry {
-        Frozen::Flag("--immutable")
-    } else {
-        Frozen::Flag("--frozen-lockfile")
-    };
-    let mut env = Vec::new();
-    let support = match yarn_major {
-        Some(major) if major >= 2 => ScriptSupport {
-            deny: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "false"),
-            allow: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "true"),
-        },
-        Some(_) => ScriptSupport {
-            deny: ScriptMechanism::Flag("--ignore-scripts"),
-            allow: ScriptMechanism::Default,
-        },
-        // Undetected: the flag denies on Classic and the env denies on Berry,
-        // so a misdetected version cannot fail open.
-        None => {
-            if scripts == ScriptRequest::Deny {
-                env.push(("YARN_ENABLE_SCRIPTS", "false"));
-            }
-            ScriptSupport {
-                deny: ScriptMechanism::Flag("--ignore-scripts"),
-                allow: ScriptMechanism::Default,
-            }
-        }
-    };
-    InstallMechanisms {
-        frozen,
-        scripts: support,
-        env,
-    }
-}
-
-fn detect_major_version(dir: &Path) -> Option<u32> {
-    let output = super::program::command("yarn")
-        .arg("--version")
-        .current_dir(dir)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    parse_major_version(String::from_utf8_lossy(&output.stdout).trim())
-}
-
-fn parse_major_version(version: &str) -> Option<u32> {
-    version.split('.').next()?.parse().ok()
 }
 
 /// One line of `yarn bin --json`: a binary the workspace can run and the
@@ -145,79 +64,6 @@ fn parse_accessible_bins(stdout: &str) -> Vec<AccessibleBin> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use runner_core::{Frozen, ScriptMechanism, ScriptRequest, ScriptSupport};
-
-    use super::{mechanisms_for_major, parse_major_version};
-
-    #[test]
-    fn classic_and_undetected_freeze_with_frozen_lockfile() {
-        assert_eq!(
-            mechanisms_for_major(ScriptRequest::Default, Some(1)).frozen,
-            Frozen::Flag("--frozen-lockfile")
-        );
-        assert_eq!(
-            mechanisms_for_major(ScriptRequest::Default, None).frozen,
-            Frozen::Flag("--frozen-lockfile")
-        );
-    }
-
-    #[test]
-    fn berry_freezes_with_immutable() {
-        assert_eq!(
-            mechanisms_for_major(ScriptRequest::Default, Some(4)).frozen,
-            Frozen::Flag("--immutable")
-        );
-    }
-
-    #[test]
-    fn classic_takes_the_ignore_scripts_flag_and_runs_scripts_by_default() {
-        let classic = mechanisms_for_major(ScriptRequest::Deny, Some(1));
-        assert_eq!(
-            classic.scripts,
-            ScriptSupport {
-                deny: ScriptMechanism::Flag("--ignore-scripts"),
-                allow: ScriptMechanism::Default,
-            }
-        );
-        assert!(classic.env.is_empty());
-    }
-
-    #[test]
-    fn berry_toggles_scripts_through_the_env() {
-        let berry = mechanisms_for_major(ScriptRequest::Deny, Some(4));
-        assert_eq!(
-            berry.scripts,
-            ScriptSupport {
-                deny: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "false"),
-                allow: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "true"),
-            }
-        );
-        assert!(berry.env.is_empty());
-    }
-
-    #[test]
-    fn an_undetected_deny_covers_both_mechanisms() {
-        let unknown = mechanisms_for_major(ScriptRequest::Deny, None);
-        assert_eq!(
-            unknown.scripts.deny,
-            ScriptMechanism::Flag("--ignore-scripts")
-        );
-        assert_eq!(unknown.env, vec![("YARN_ENABLE_SCRIPTS", "false")]);
-        assert!(
-            mechanisms_for_major(ScriptRequest::Allow, None)
-                .env
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn parse_major_version_reads_first_segment() {
-        assert_eq!(parse_major_version("4.1.0"), Some(4));
-    }
 }
 
 #[cfg(test)]

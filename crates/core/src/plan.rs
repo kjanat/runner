@@ -102,6 +102,8 @@ pub enum Refusal {
         reason: &'static str,
         /// The origin of the runtime choice.
         chosen_by: Option<Layer>,
+        /// Runtime providers accepting this file under the observed capabilities.
+        alternatives: Vec<ProviderId>,
     },
     /// Nothing on the cascade took the name.
     NotFound {
@@ -227,7 +229,7 @@ pub fn plan(
     registry: &Registry,
 ) -> Result<Plan, Refusal> {
     let mut last = None;
-    for present in candidates(project, policy, op, registry) {
+    for present in candidates(tree, project, policy, op, registry) {
         match plan_with(tree, project, policy, present, op, registry) {
             Ok(made) => return Ok(made),
             Err(refusal @ Refusal::Unsafe(_)) => return Err(refusal),
@@ -253,25 +255,35 @@ pub fn plan(
     }))
 }
 
+fn scope_at(tree: &Tree, path: &Path) -> Scope {
+    tree.members
+        .iter()
+        .filter(|scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir)))
+        .max_by_key(|scope| scope_dir(tree, scope).components().count())
+        .cloned()
+        .unwrap_or(Scope::Root)
+}
+
 /// The present providers that may take `op`, policy choices first.
 fn candidates<'a>(
+    tree: &Tree,
     project: &'a Project,
     policy: &Policy,
     op: &Op<'_>,
     registry: &Registry,
 ) -> Vec<&'a Present> {
+    let scope = match op {
+        Op::Run { task, .. } => task.scope.clone(),
+        Op::RunFile { file, .. } => scope_at(tree, file),
+        _ => scope_at(tree, &tree.cwd),
+    };
     let mut ordered: Vec<&Present> = Vec::new();
     let mut push = |present: &'a Present| {
         if !ordered.iter().any(|seen| std::ptr::eq(*seen, present)) {
             ordered.push(present);
         }
     };
-    let by_choice = |choice: &Choice| {
-        project
-            .present
-            .iter()
-            .find(|present| present.provider == choice.id)
-    };
+    let by_choice = |choice: &Choice| project.present_in(choice.id, &scope);
     if let Some(present) = policy.runtime.as_ref().and_then(by_choice) {
         push(present);
     }
@@ -280,7 +292,10 @@ fn candidates<'a>(
             push(present);
         }
     }
-    for present in &project.present {
+    for observed in &project.present {
+        let Some(present) = project.present_in(observed.provider, &scope) else {
+            continue;
+        };
         let provider = registry.by_id(present.provider);
         let manager = provider.kind.contains(Kind::TOOL_MANAGER);
         if (provider.kind == Kind::RUNTIME && !matches!(op, Op::RunFile { .. }))
@@ -293,29 +308,45 @@ fn candidates<'a>(
     ordered
 }
 
-fn assert_provider_program(program: &str) {
-    debug_assert!(
-        !matches!(
-            program
-                .rsplit(['/', '\\'])
-                .next()
-                .unwrap_or(program)
-                .trim_end_matches(".exe")
-                .to_ascii_lowercase()
-                .as_str(),
-            "sh" | "bash"
-                | "zsh"
-                | "dash"
-                | "ksh"
-                | "mksh"
-                | "ash"
-                | "fish"
-                | "cmd"
-                | "powershell"
-                | "pwsh"
-        ),
-        "provider templates must invoke tools directly"
-    );
+fn optional_file(path: &Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(std::io::Error::new(
+            error.kind(),
+            format!("{}: {error}", path.display()),
+        )),
+    }
+}
+
+fn assert_provider_template(program: &str, template: Template) {
+    let shell = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let shell = shell.trim_end_matches(".exe");
+    for piece in template.0 {
+        let crate::Piece::Lit(flag) = piece else {
+            continue;
+        };
+        let flag = flag.to_ascii_lowercase();
+        let command_string = match shell {
+            "sh" | "bash" | "zsh" | "dash" | "ksh" | "mksh" | "ash" | "fish" => {
+                flag.starts_with('-') && !flag.starts_with("--") && flag.contains('c')
+            }
+            "cmd" => flag == "/c" || flag == "/k",
+            "powershell" | "pwsh" => flag.strip_prefix('-').is_some_and(|flag| {
+                !flag.is_empty()
+                    && ("command".starts_with(flag) || "encodedcommand".starts_with(flag))
+            }),
+            _ => false,
+        };
+        debug_assert!(
+            !command_string,
+            "provider templates must not construct shell commands"
+        );
+    }
 }
 
 /// One op's program, argv template and the terms the command runs under.
@@ -340,6 +371,8 @@ struct Shaping<'c, 'a> {
     tree: &'c Tree,
     policy: &'c Policy,
     provider: &'c Provider,
+    project: &'c Project,
+    registry: &'c Registry,
     present: &'c Present,
     chosen_as_runtime: bool,
     op: Op<'a>,
@@ -472,16 +505,16 @@ impl<'a> Shaping<'_, 'a> {
         args: &'a [String],
     ) -> Result<Shape<'a>, Refusal> {
         let cap = self.provider.caps.run_file.ok_or_else(|| self.refuse())?;
-        if let Some(extension) = source.extension().and_then(|ext| ext.to_str())
-            && let Some((_, reason)) = cap
-                .unsupported
-                .iter()
-                .find(|(ext, _)| extension.eq_ignore_ascii_case(ext))
-        {
+        if let Some(reason) = cap.refusal(source) {
             return Err(Refusal::UnsupportedFile {
                 provider: self.provider.id,
                 file: source.to_owned(),
                 reason,
+                alternatives: self.registry.file_runtimes(
+                    source,
+                    self.project,
+                    &scope_at(self.tree, source),
+                ),
                 chosen_by: self
                     .policy
                     .runtime
@@ -490,14 +523,7 @@ impl<'a> Shaping<'_, 'a> {
                     .map(|choice| choice.from.clone()),
             });
         }
-        let runs = source
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                cap.extensions
-                    .iter()
-                    .any(|known| ext.eq_ignore_ascii_case(known))
-            });
+        let runs = cap.supports(source);
         let interpreted = self.chosen_as_runtime
             && read_shebang(source).is_some_and(|s| {
                 Path::new(&s.program)
@@ -549,13 +575,17 @@ impl<'a> Shaping<'_, 'a> {
     fn install(&self, fill: &mut Fill<'a>, operations: &'a [String]) -> Result<Shape<'a>, Refusal> {
         let cap = self.provider.caps.install.ok_or_else(|| self.refuse())?;
         fill.request.op = operations.first().map(String::as_str);
-        fill.request.frozen = (self.policy.frozen
-            && cap.locked_only_with.is_none_or(|file| {
-                scope_dir(self.tree, &self.present.scope)
-                    .join(file)
-                    .is_file()
-            }))
-        .then_some(cap.frozen);
+        let dir = scope_dir(self.tree, &self.present.scope);
+        let mut locked = cap.locked_only_with.is_empty();
+        if self.policy.frozen {
+            for (config, lock) in cap.locked_only_with {
+                if optional_file(&dir.join(config))? && optional_file(&dir.join(lock))? {
+                    locked = true;
+                    break;
+                }
+            }
+        }
+        fill.request.frozen = (self.policy.frozen && locked).then_some(cap.frozen);
         fill.request.scripts = Some((
             cap.scripts,
             match self.policy.scripts {
@@ -647,6 +677,8 @@ pub fn plan_with(
         tree,
         policy,
         provider: &provider,
+        project,
+        registry,
         present,
         chosen_as_runtime: policy
             .runtime
@@ -658,7 +690,7 @@ pub fn plan_with(
     let Fill { mut request, files } = fill;
     request.files = &files;
     let program = shape.program.ok_or_else(|| shaping.refuse())?;
-    assert_provider_program(program);
+    assert_provider_template(program, shape.template);
     let rendered = shape.template.render(&request);
     let mut argv = Vec::with_capacity(rendered.args.len() + 1);
     argv.push(OsString::from(program));
@@ -1163,7 +1195,7 @@ pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Ta
                 .collect(),
         });
     }
-    found.sort_by_key(|task| task_rank(cascade.policy, cascade.registry, task));
+    found.sort_by_key(|task| task_rank(cascade.policy, cascade.project, cascade.registry, task));
     Ok(found.first().copied())
 }
 
@@ -1230,6 +1262,7 @@ fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
 /// with aliases last.
 fn task_rank(
     policy: &Policy,
+    project: &Project,
     registry: &Registry,
     task: &Task,
 ) -> (usize, usize, u8, ProviderId, bool) {
@@ -1260,7 +1293,7 @@ fn task_rank(
         .filter(|choice| choice.from != Layer::Probe)
         .any(|choice| {
             registry
-                .by_id(choice.id)
+                .effective(choice.id, project, &task.scope)
                 .caps
                 .run_task
                 .is_some_and(|cap| cap.sources.contains(&task.source))
@@ -1275,7 +1308,10 @@ fn task_rank(
     (
         pinned,
         tier,
-        registry.by_id(task.source).caps.task_priority,
+        registry
+            .effective(task.source, project, &task.scope)
+            .caps
+            .task_priority,
         task.source,
         task.alias_of.is_some(),
     )
@@ -1291,7 +1327,15 @@ fn exec_plan(
 ) -> Result<Option<Plan>, Refusal> {
     let manager = rung.needs == Need::ToolManagerExec;
     let op = Op::Exec { name, args };
+    let scope = scope_at(cascade.tree, &cascade.tree.cwd);
     for present in &cascade.project.present {
+        if !cascade
+            .project
+            .present_in(present.provider, &scope)
+            .is_some_and(|chosen| std::ptr::eq(chosen, present))
+        {
+            continue;
+        }
         let provider = cascade
             .registry
             .by_id(present.provider)
@@ -1580,24 +1624,15 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
         });
     }
     let shebang = read_shebang(path);
+    let scope = scope_at(cascade.tree, path);
     if let Some(choice) = &cascade.policy.runtime
-        && let Some(present) = cascade
-            .project
-            .present
-            .iter()
-            .find(|p| p.provider == choice.id)
+        && let Some(present) = cascade.project.present_in(choice.id, &scope)
     {
-        let provider = cascade.registry.by_id(choice.id);
-        let extension_matches = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                provider.caps.run_file.is_some_and(|cap| {
-                    cap.extensions
-                        .iter()
-                        .any(|known| ext.eq_ignore_ascii_case(known))
-                })
-            });
+        let provider = cascade.registry.by_id(choice.id).for_present(present);
+        let extension_matches = provider
+            .caps
+            .run_file
+            .is_some_and(|cap| cap.supports(path) || cap.refusal(path).is_some());
         let interpreter_matches = shebang.as_ref().is_some_and(|s| {
             Path::new(&s.program)
                 .file_name()
@@ -1615,10 +1650,7 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
             );
         }
     }
-    let routed = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| runs_extension(cascade, ext));
+    let routed = runs_file(cascade, path);
     if is_directly_executable(path) && (shebang.is_some() || !routed) {
         return plan_found(
             cascade.tree,
@@ -1652,17 +1684,11 @@ fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Res
     ) {
         Ok(made) => Ok(made),
         Err(refusal @ Refusal::NoCapability { .. }) => {
+            let scope = scope_at(cascade.tree, path);
             for provider in cascade.registry.iter().filter(|p| p.caps.file_fallback) {
-                let scope = cascade
-                    .tree
-                    .members
-                    .iter()
-                    .filter(
-                        |scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir)),
-                    )
-                    .max_by_key(|scope| scope_dir(cascade.tree, scope).components().count())
-                    .cloned()
-                    .unwrap_or(Scope::Root);
+                if cascade.project.present_in(provider.id, &scope).is_some() {
+                    continue;
+                }
                 let present = Present {
                     provider: provider.id,
                     scope: scope.clone(),
@@ -1672,7 +1698,7 @@ fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Res
                         provider: None,
                         signal: None,
                         at: path.to_path_buf(),
-                        scope,
+                        scope: scope.clone(),
                         weight: Weight::Present,
                         declared: None,
                     }],
@@ -1699,24 +1725,29 @@ fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Res
     }
 }
 
-/// Whether a present provider runs files with this extension.
-fn runs_extension(cascade: &Cascade<'_>, ext: &str) -> bool {
+/// Whether an effective provider capability routes this file.
+fn runs_file(cascade: &Cascade<'_>, path: &Path) -> bool {
+    let scope = cascade
+        .tree
+        .members
+        .iter()
+        .filter(|scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir)))
+        .max_by_key(|scope| scope_dir(cascade.tree, scope).components().count())
+        .unwrap_or(&Scope::Root);
     cascade.registry.iter().any(|provider| {
-        (provider.caps.file_fallback
+        let effective = cascade
+            .registry
+            .effective(provider.id, cascade.project, scope);
+        (effective.caps.file_fallback
             || cascade
                 .project
                 .present
                 .iter()
-                .any(|present| present.provider == provider.id))
-            && provider.caps.run_file.is_some_and(|cap| {
-                cap.extensions
-                    .iter()
-                    .any(|known| ext.eq_ignore_ascii_case(known))
-                    || cap
-                        .unsupported
-                        .iter()
-                        .any(|(known, _)| ext.eq_ignore_ascii_case(known))
-            })
+                .any(|p| p.provider == provider.id))
+            && effective
+                .caps
+                .run_file
+                .is_some_and(|cap| cap.supports(path) || cap.refusal(path).is_some())
     })
 }
 #[cfg(test)]
@@ -1868,9 +1899,389 @@ mod tests {
         }
     }
 
+    fn alternative_registry(changed: bool) -> Registry {
+        const ACCEPT: Capabilities = Capabilities {
+            run_file: Some(RunFileCap {
+                extensions: &["widget"],
+                unsupported: &[],
+                program: None,
+                argv: t![File, Args],
+            }),
+            ..Capabilities::NONE
+        };
+        static PROVIDERS: &[Provider] = &[
+            Provider {
+                id: ProviderId::Node,
+                label: "node",
+                kind: Kind::RUNTIME,
+                caps: Capabilities {
+                    run_file: Some(RunFileCap {
+                        extensions: &[],
+                        unsupported: &[("widget", "needs a widget loader")],
+                        program: None,
+                        argv: t![File],
+                    }),
+                    ..Capabilities::NONE
+                },
+                ..FAKES[0]
+            },
+            Provider {
+                id: ProviderId::Bun,
+                label: "bun",
+                kind: Kind::RUNTIME,
+                caps: Capabilities {
+                    variants: &[("no-widgets", Capabilities::NONE)],
+                    ..ACCEPT
+                },
+                ..FAKES[0]
+            },
+            Provider {
+                id: ProviderId::Deno,
+                label: "deno",
+                kind: Kind::RUNTIME,
+                caps: Capabilities::NONE,
+                ..FAKES[0]
+            },
+            Provider {
+                id: ProviderId::Python,
+                label: "python",
+                kind: Kind::RUNTIME,
+                caps: ACCEPT,
+                ..FAKES[0]
+            },
+        ];
+        static CHANGED: &[Provider] = &[
+            PROVIDERS[0],
+            Provider {
+                caps: Capabilities::NONE,
+                ..PROVIDERS[1]
+            },
+            Provider {
+                caps: ACCEPT,
+                ..PROVIDERS[2]
+            },
+            PROVIDERS[3],
+        ];
+        if changed {
+            Registry(CHANGED)
+        } else {
+            Registry(PROVIDERS)
+        }
+    }
+
+    #[test]
+    fn refusal_alternatives_follow_capabilities_and_observed_variants() {
+        let registry = alternative_registry(false);
+        let mut project = Project {
+            present: vec![present(ProviderId::Node, Weight::Declared)],
+            ..Project::default()
+        };
+        let file = PathBuf::from("/p/demo.WIDGET");
+        let refusal = |registry: &Registry, project: &Project| {
+            let error = super::plan_with(
+                &tree(),
+                project,
+                &Policy::default(),
+                &project.present[0],
+                &Op::RunFile {
+                    file: &file,
+                    args: &[],
+                },
+                registry,
+            )
+            .unwrap_err();
+            let Refusal::UnsupportedFile {
+                alternatives,
+                reason,
+                ..
+            } = error
+            else {
+                panic!("expected file refusal")
+            };
+            assert_eq!(reason, "needs a widget loader");
+            alternatives
+        };
+        assert_eq!(
+            refusal(&registry, &project),
+            [ProviderId::Bun, ProviderId::Python]
+        );
+        assert_eq!(
+            refusal(&alternative_registry(true), &project),
+            [ProviderId::Deno, ProviderId::Python]
+        );
+        let mut bun = present(ProviderId::Bun, Weight::Declared);
+        bun.because[0].declared = Some(crate::Declared::Variant("no-widgets".into()));
+        project.present.push(bun.clone());
+        assert_eq!(refusal(&registry, &project), [ProviderId::Python]);
+        let member = Scope::Member {
+            name: "web".into(),
+            dir: "/p/web".into(),
+        };
+        assert_eq!(
+            registry.file_runtimes(&file, &project, &member),
+            [ProviderId::Python]
+        );
+        bun.scope = member.clone();
+        bun.because.clear();
+        project.present.push(bun);
+        assert_eq!(
+            registry.file_runtimes(&file, &project, &member),
+            [ProviderId::Bun, ProviderId::Python]
+        );
+        let scoped_tree = Tree {
+            members: vec![member],
+            ..tree()
+        };
+        let error = super::plan_with(
+            &scoped_tree,
+            &project,
+            &Policy::default(),
+            &project.present[0],
+            &Op::RunFile {
+                file: std::path::Path::new("/p/web/demo.widget"),
+                args: &[],
+            },
+            &registry,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Refusal::UnsupportedFile { alternatives, .. }
+            if alternatives == [ProviderId::Bun, ProviderId::Python])
+        );
+    }
+
+    #[test]
+    fn member_variants_control_file_plans_and_bin_directories() {
+        const MEMBER: Capabilities = Capabilities {
+            run_file: Some(RunFileCap {
+                extensions: &["widget"],
+                unsupported: &[],
+                program: Some("member-runtime"),
+                argv: t![File],
+            }),
+            bins: Some(BinsCap {
+                dirs: BinDirs::Static(&["member-bin"]),
+            }),
+            ..Capabilities::NONE
+        };
+        static PROVIDERS: &[Provider] = &[Provider {
+            id: ProviderId::Node,
+            label: "node",
+            program: Some("base-runtime"),
+            kind: Kind::RUNTIME,
+            caps: Capabilities {
+                variants: &[("member", MEMBER), ("disabled", Capabilities::NONE)],
+                file_fallback: true,
+                run_file: Some(RunFileCap {
+                    extensions: &["widget"],
+                    unsupported: &[],
+                    program: None,
+                    argv: t![File],
+                }),
+                bins: Some(BinsCap {
+                    dirs: BinDirs::Static(&["base-bin"]),
+                }),
+                ..Capabilities::NONE
+            },
+            ..FAKES[0]
+        }];
+        let dir = TempDir::new("member-capabilities");
+        let member_dir = dir.path().join("web");
+        fs::create_dir(&member_dir).unwrap();
+        let file = member_dir.join("demo.widget");
+        fs::write(&file, "widget").unwrap();
+        let scope = Scope::Member {
+            name: "web".into(),
+            dir: member_dir.clone(),
+        };
+        let tree = Tree {
+            root: dir.path().to_owned(),
+            cwd: member_dir.clone(),
+            members: vec![scope.clone()],
+        };
+        let mut member = present(ProviderId::Node, Weight::Declared);
+        member.scope = scope.clone();
+        member.because[0].scope = scope;
+        member.because[0].declared = Some(crate::Declared::Variant("member".into()));
+        let mut project = Project {
+            present: vec![present(ProviderId::Node, Weight::Declared), member],
+            ..Project::default()
+        };
+        project.refresh_bins(&tree, &Registry(PROVIDERS));
+        assert_eq!(project.present[1].bin_dirs, [member_dir.join("member-bin")]);
+        for runtime in [
+            None,
+            Some(Choice {
+                id: ProviderId::Node,
+                from: Layer::Cli,
+            }),
+        ] {
+            let policy = Policy {
+                runtime,
+                ..Policy::default()
+            };
+            let cascade = Cascade {
+                tree: &tree,
+                project: &project,
+                policy: &policy,
+                registry: &Registry(PROVIDERS),
+                builtins: &[],
+                dep: None,
+                confirm: None,
+            };
+            let plan = super::file_plan(&cascade, &file, &[]).unwrap();
+            assert_eq!(plan.argv[0], "member-runtime");
+        }
+        project.present[1].because[0].declared = Some(crate::Declared::Variant("disabled".into()));
+        let policy = Policy::default();
+        let cascade = Cascade {
+            tree: &tree,
+            project: &project,
+            policy: &policy,
+            registry: &Registry(PROVIDERS),
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        assert!(matches!(
+            super::file_plan(&cascade, &file, &[]),
+            Err(Refusal::NoCapability { .. })
+        ));
+    }
+
+    #[test]
+    fn file_capability_exclusions_and_missing_executables_remove_alternatives() {
+        static PROVIDERS: &[Provider] = &[
+            Provider {
+                kind: Kind::RUNTIME,
+                program: None,
+                caps: Capabilities {
+                    run_file: Some(RunFileCap {
+                        extensions: &["ts"],
+                        unsupported: &[],
+                        program: None,
+                        argv: t![File],
+                    }),
+                    ..Capabilities::NONE
+                },
+                ..FAKES[0]
+            },
+            Provider {
+                id: ProviderId::Bun,
+                kind: Kind::RUNTIME,
+                caps: Capabilities {
+                    run_file: Some(RunFileCap {
+                        extensions: &["ts"],
+                        unsupported: &[("ts", "unavailable")],
+                        program: None,
+                        argv: t![File],
+                    }),
+                    ..Capabilities::NONE
+                },
+                ..FAKES[0]
+            },
+        ];
+        assert!(
+            Registry(PROVIDERS)
+                .file_runtimes(
+                    std::path::Path::new("x.ts"),
+                    &Project::default(),
+                    &Scope::Root
+                )
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn task_ranking_uses_the_effective_runtime_sources() {
+        static PROVIDERS: &[Provider] = &[
+            Provider {
+                caps: Capabilities {
+                    variants: &[("source-free", Capabilities::NONE)],
+                    ..FAKES[0].caps
+                },
+                ..FAKES[0]
+            },
+            FAKES[1],
+            FAKES[2],
+            FAKES[3],
+        ];
+        let mut provider = present(ProviderId::Npm, Weight::Declared);
+        provider.because[0].declared = Some(crate::Declared::Variant("source-free".into()));
+        let project = Project {
+            present: vec![provider],
+            ..Project::default()
+        };
+        let policy = Policy {
+            runtime: Some(Choice {
+                id: ProviderId::Npm,
+                from: Layer::Cli,
+            }),
+            ..Policy::default()
+        };
+        let task = task("build");
+        assert_eq!(
+            super::task_rank(&policy, &project, &Registry(PROVIDERS), &task).1,
+            super::task_rank(&Policy::default(), &project, &Registry(PROVIDERS), &task).1
+        );
+        assert!(
+            super::task_rank(&policy, &Project::default(), &Registry(PROVIDERS), &task).1
+                < super::task_rank(&policy, &project, &Registry(PROVIDERS), &task).1
+        );
+    }
+
+    #[test]
+    fn environment_layers_are_resolved_in_the_plan() {
+        let mut policy = Policy::default();
+        policy.env.project = [
+            ("SHARED".into(), "project".into()),
+            ("ONLY_PROJECT".into(), "yes".into()),
+        ]
+        .into();
+        policy.env.tool.insert(
+            ProviderId::Npm,
+            [
+                ("SHARED".into(), "tool".into()),
+                ("ONLY_TOOL".into(), "yes".into()),
+            ]
+            .into(),
+        );
+        policy
+            .env
+            .task
+            .insert("build".into(), [("SHARED".into(), "task".into())].into());
+        for (provider, name, expected, tool_value) in [
+            (ProviderId::Npm, "build", "task", true),
+            (ProviderId::Npm, "test", "tool", true),
+            (ProviderId::Bun, "test", "project", false),
+        ] {
+            let plan = super::plan_with(
+                &tree(),
+                &Project::default(),
+                &policy,
+                &present(provider, Weight::Present),
+                &Op::Run {
+                    task: &task(name),
+                    args: &[],
+                },
+                &Registry(FAKES),
+            )
+            .unwrap();
+            let value = |key: &str| {
+                plan.env
+                    .iter()
+                    .find(|(k, _)| k == key)
+                    .map(|(_, v)| v.to_str().unwrap())
+            };
+            assert_eq!(value("SHARED"), Some(expected));
+            assert_eq!(value("ONLY_PROJECT"), Some("yes"));
+            assert_eq!(value("ONLY_TOOL"), tool_value.then_some("yes"));
+        }
+    }
+
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "provider templates must invoke tools directly")]
+    #[should_panic(expected = "provider templates must not construct shell commands")]
     fn provider_shell_wrapper_violates_the_template_invariant() {
         static SHELL: &[Provider] = &[Provider {
             program: Some("sh"),
@@ -1894,6 +2305,34 @@ mod tests {
             },
             &Registry(SHELL),
         );
+    }
+
+    #[test]
+    fn a_provider_can_run_a_shell_script_without_constructing_a_command_string() {
+        static PROVIDERS: &[Provider] = &[Provider {
+            program: Some("sh"),
+            caps: Capabilities {
+                run_task: Some(RunTaskCap {
+                    argv: t![Task, Args],
+                    sources: &[ProviderId::PackageJson],
+                }),
+                ..Capabilities::NONE
+            },
+            ..FAKES[0]
+        }];
+        let plan = super::plan_with(
+            &tree(),
+            &Project::default(),
+            &Policy::default(),
+            &present(ProviderId::Npm, Weight::Present),
+            &Op::Run {
+                task: &task("./script.sh"),
+                args: &["-c".into(), "user argument".into()],
+            },
+            &Registry(PROVIDERS),
+        )
+        .unwrap();
+        assert_eq!(plan.argv, ["sh", "./script.sh", "-c", "user argument"]);
     }
 
     fn present(provider: ProviderId, weight: Weight) -> Present {

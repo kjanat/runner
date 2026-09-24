@@ -5,11 +5,9 @@
 //! that the detector concluded the provider is part of this tree. Step 7
 //! replaces this module with `observe`.
 
-use std::path::PathBuf;
-
 use runner_core::{
-    BinDirs, Choice, Ecosystem as CoreEcosystem, Evidence, Layer, PerEcosystem, Policy, Present,
-    Project, ProviderId, Scope, SignalId, Task as CoreTask, Tree, Verbosity, Weight,
+    Choice, Ecosystem as CoreEcosystem, Evidence, Layer, PerEcosystem, Policy, Present, Project,
+    ProviderId, Scope, SignalId, Task as CoreTask, Tree, Verbosity, Weight,
 };
 use runner_providers::REGISTRY;
 
@@ -74,7 +72,7 @@ pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::R
                 provider: choice.id,
                 scope: Scope::Root,
                 version: None,
-                bin_dirs: bin_dirs(choice.id, &ctx.root),
+                bin_dirs: Vec::new(),
                 because: vec![Evidence {
                     provider: Some(choice.id),
                     signal: Some(SignalId(0)),
@@ -103,11 +101,12 @@ pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::R
             present.because.push(evidence);
         }
     }
+    found.refresh_bins(&tree, &REGISTRY);
     Ok(found)
 }
 
 /// The core's view of what the detector found.
-pub(crate) fn project(ctx: &ProjectContext) -> Project {
+fn project(ctx: &ProjectContext) -> Project {
     let mut present: Vec<Present> = Vec::new();
     let mut add = |id: ProviderId| {
         if present.iter().any(|seen| seen.provider == id) {
@@ -117,7 +116,7 @@ pub(crate) fn project(ctx: &ProjectContext) -> Project {
             provider: id,
             scope: Scope::Root,
             version: None,
-            bin_dirs: bin_dirs(id, &ctx.root),
+            bin_dirs: Vec::new(),
             because: vec![Evidence {
                 provider: Some(id),
                 signal: Some(SignalId(0)),
@@ -147,15 +146,6 @@ pub(crate) fn project(ctx: &ProjectContext) -> Project {
         present,
         tasks: ctx.tasks.iter().filter_map(task).collect(),
         warnings: Vec::new(),
-    }
-}
-
-/// Where a provider's installed executables live under `root`.
-fn bin_dirs(id: ProviderId, root: &std::path::Path) -> Vec<PathBuf> {
-    match REGISTRY.by_id(id).caps.bins.map(|bins| bins.dirs) {
-        Some(BinDirs::Static(dirs)) => dirs.iter().map(|dir| root.join(dir)).collect(),
-        Some(BinDirs::Ask(ask)) => ask(root),
-        None => Vec::new(),
     }
 }
 
@@ -251,22 +241,6 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
     }
 }
 
-/// Select task metadata through the same core selector used by dispatch.
-pub(crate) fn selected<'a>(
-    ctx: &'a ProjectContext,
-    overrides: &ResolutionOverrides,
-    token: &str,
-) -> Result<Option<&'a Task>, runner_core::Refusal> {
-    let prepared = prepare(ctx, overrides, token)?;
-    selected_in(
-        ctx,
-        &prepared.tree,
-        &prepared.project,
-        &prepared.policy,
-        token,
-    )
-}
-
 fn selected_in<'a>(
     ctx: &'a ProjectContext,
     tree: &Tree,
@@ -355,6 +329,30 @@ pub(crate) fn prepare(
 }
 
 impl Prepared {
+    pub(crate) fn selected<'a>(
+        &self,
+        ctx: &'a ProjectContext,
+        token: &str,
+    ) -> Result<Option<&'a Task>, runner_core::Refusal> {
+        selected_in(ctx, &self.tree, &self.project, &self.policy, token)
+    }
+
+    pub(crate) fn preview(
+        &self,
+        ctx: &ProjectContext,
+        token: &str,
+    ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
+        let mut policy = self.policy.clone();
+        policy.reach = runner_core::ReachPolicy::Allow;
+        let dep = |name: &str| {
+            super::local_dep::installed_binary(ctx, name)
+                .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
+        };
+        let mut cascade = self.cascade(&dep, None);
+        cascade.policy = &policy;
+        runner_core::dispatch(&cascade, token, &[])
+    }
+
     pub(crate) fn cascade<'a>(
         &'a self,
         dep: &'a runner_core::DepFn<'a>,
@@ -370,21 +368,6 @@ impl Prepared {
             confirm,
         }
     }
-}
-
-/// Plan a token without authorizing or executing it, for reports.
-pub(crate) fn preview(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    token: &str,
-) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
-    let mut prepared = prepare(ctx, overrides, token)?;
-    prepared.policy.reach = runner_core::ReachPolicy::Allow;
-    let dep = |name: &str| {
-        super::local_dep::installed_binary(ctx, name)
-            .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
-    };
-    runner_core::dispatch(&prepared.cascade(&dep, None), token, &[])
 }
 
 /// The layer an override came from.
@@ -460,7 +443,7 @@ mod tests {
 
     use runner_core::{ProviderId, Scope};
 
-    use super::{policy, project, source_provider, tree};
+    use super::{policy, project_under, source_provider, tree};
     use crate::resolver::ResolutionOverrides;
     use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
@@ -519,7 +502,7 @@ mod tests {
     #[test]
     fn detected_tools_and_task_sources_all_become_present_providers() {
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);
-        let found = project(&ctx);
+        let found = project_under(&ctx, &runner_core::Policy::default()).unwrap();
         let ids: Vec<ProviderId> = found.present.iter().map(|p| p.provider).collect();
         assert!(ids.contains(&ProviderId::Pnpm));
         assert!(ids.contains(&ProviderId::Just));
@@ -610,7 +593,10 @@ mod tests {
         let dep = |_: &str| Ok(None);
         let cascade = prepared.cascade(&dep, None);
         let selected = runner_core::select(&cascade, "build").unwrap().unwrap();
-        let metadata = super::selected(&ctx, &overrides, "build").unwrap().unwrap();
+        std::fs::write(ctx.root.join("package.json"), "{ invalid").unwrap();
+        let metadata = prepared.selected(&ctx, "build").unwrap().unwrap();
+        assert!(prepared.preview(&ctx, "build").is_ok());
+        assert!(super::prepare(&ctx, &overrides, "build").is_err());
         assert_eq!(super::task(metadata).as_ref(), Some(selected));
         assert_eq!(prepared.task_key, super::super::task_output_key(metadata));
         let (_, runner_core::Dispatch::Plan(plan)) =
@@ -634,8 +620,12 @@ mod tests {
         ctx.package_managers = vec![PackageManager::Yarn];
         let overrides = ResolutionOverrides::default();
         for error in [
-            super::preview(&ctx, &overrides, "build").unwrap_err(),
-            super::selected(&ctx, &overrides, "build").unwrap_err(),
+            super::prepare(&ctx, &overrides, "build")
+                .and_then(|p| p.preview(&ctx, "build"))
+                .unwrap_err(),
+            super::prepare(&ctx, &overrides, "build")
+                .and_then(|p| p.selected(&ctx, "build"))
+                .unwrap_err(),
         ] {
             let runner_core::Refusal::Observation { kind, message } = error else {
                 panic!("observation refusal");

@@ -384,6 +384,7 @@ impl Stream {
 
 impl HostVerbosity {
     /// Whether the applied host plan includes its safe quiet flag.
+    #[cfg(test)]
     pub(crate) fn silences(self) -> bool {
         self.diagnostics >= HostDiagnostics::Quiet
     }

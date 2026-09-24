@@ -24,7 +24,7 @@ pub const PROVIDER: Provider = Provider {
             argv: t!["install"],
             frozen: Frozen::Argv(t!["sync"]),
             scripts: ScriptSupport::NONE,
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Args],

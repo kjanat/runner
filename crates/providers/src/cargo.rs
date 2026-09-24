@@ -25,7 +25,7 @@ pub const PROVIDER: Provider = Provider {
             argv: t!["fetch", Frozen],
             frozen: Frozen::Flag("--locked"),
             scripts: ScriptSupport::NONE,
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, Task, Args],

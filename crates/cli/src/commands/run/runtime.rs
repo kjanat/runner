@@ -20,33 +20,13 @@
 //! literally into the task's argv, so deno must not get one. bun accepts args
 //! directly.
 
-#[cfg(test)]
-use std::process::Command;
-
 use crate::resolver::ResolutionOverrides;
-#[cfg(test)]
-use crate::tool;
 use crate::types::{DetectionWarning, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
 
 /// The runtime an explicit `--runtime` / `RUNNER_RUNTIME` / `[runtime].js`
 /// selected, if any.
 pub(super) fn overridden(overrides: &ResolutionOverrides) -> Option<JsRuntime> {
     overrides.js_runtime()
-}
-
-/// Build the `package.json`-script command for `runtime`.
-#[cfg(test)]
-pub(super) fn script_cmd(
-    runtime: JsRuntime,
-    task: &str,
-    args: &[String],
-    verbosity: tool::HostVerbosity,
-) -> Command {
-    match runtime {
-        JsRuntime::Node => tool::node::run_cmd(task, args, verbosity),
-        JsRuntime::Bun => tool::bun::run_cmd_with_runtime(task, args, verbosity, true),
-        JsRuntime::Deno => tool::deno::run_cmd(task, args, verbosity),
-    }
 }
 
 /// Whether the runtime axis replaces the exec primitive the resolver picked.
@@ -65,11 +45,18 @@ pub(super) fn replaces_exec(resolved_pm: Option<PackageManager>) -> bool {
 /// tasks run through `deno task` and nothing else. Every other source (turbo,
 /// make, just, Taskfile, cargo, go, bacon, mise, pyproject) dispatches through
 /// a tool that has no JS runtime to select.
-pub(super) const fn honored_sources(runtime: JsRuntime) -> &'static [TaskSource] {
-    match runtime {
-        JsRuntime::Node | JsRuntime::Bun => &[TaskSource::PackageJson],
-        JsRuntime::Deno => &[TaskSource::DenoJson, TaskSource::PackageJson],
-    }
+pub(super) fn honored_sources(runtime: JsRuntime) -> Vec<TaskSource> {
+    runner_providers::REGISTRY
+        .by_label(runtime.label())
+        .and_then(|provider| provider.caps.run_task)
+        .map_or_else(Vec::new, |cap| {
+            cap.sources
+                .iter()
+                .filter_map(|id| {
+                    TaskSource::from_label(runner_providers::REGISTRY.by_id(*id).label)
+                })
+                .collect()
+        })
 }
 
 /// Whether a task from `source` dispatches on `runtime`.
@@ -77,7 +64,7 @@ pub(crate) fn honors(source: TaskSource, runtime: JsRuntime) -> bool {
     honored_sources(runtime).contains(&source)
 }
 
-/// Effective script-command preview matching what [`script_cmd`] dispatches
+/// Effective script-command preview from the declared runtime template
 /// under a forced runtime, for `why` / `doctor`. `Some` only when `runtime`
 /// actually dispatches `source`; the runtime then reads the script through its
 /// own runner and the resolved package manager is not consulted.
@@ -85,11 +72,27 @@ pub(crate) fn script_preview(runtime: JsRuntime, source: TaskSource, task: &str)
     if !honors(source, runtime) {
         return None;
     }
-    Some(match runtime {
-        JsRuntime::Node => format!("node --run {task}"),
-        JsRuntime::Bun => format!("bun --bun run {task}"),
-        JsRuntime::Deno => format!("deno task {task}"),
-    })
+    let provider = runner_providers::REGISTRY.by_label(runtime.label())?;
+    let template = provider
+        .caps
+        .as_runtime
+        .and_then(|cap| cap.run_task)
+        .or_else(|| provider.caps.run_task.map(|cap| cap.argv))?;
+    let rendered = template.render(&runner_core::Request {
+        task: Some(task),
+        ..runner_core::Request::default()
+    });
+    Some(
+        std::iter::once(provider.program?.to_owned())
+            .chain(
+                rendered
+                    .args
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned()),
+            )
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Report a runtime override the selected task cannot honour.
@@ -199,19 +202,66 @@ pub(crate) fn lifecycle_scripts(ctx: &ProjectContext, task: &str) -> Vec<String>
 
 #[cfg(test)]
 mod tests {
-    use super::{honors, replaces_exec, script_cmd};
-    use crate::tool::HostVerbosity;
+    use super::{honors, replaces_exec};
     use crate::types::{JsRuntime, PackageManager, TaskSource};
 
-    fn argv(cmd: &std::process::Command) -> Vec<String> {
-        cmd.get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    }
-
     fn script(runtime: JsRuntime, args: &[String]) -> (String, Vec<String>) {
-        let cmd = script_cmd(runtime, "build", args, HostVerbosity::default());
-        (cmd.get_program().to_string_lossy().into_owned(), argv(&cmd))
+        let provider = runner_providers::REGISTRY
+            .by_label(runtime.label())
+            .unwrap();
+        let root = std::env::temp_dir();
+        let tree = runner_core::Tree {
+            cwd: root.clone(),
+            root: root.clone(),
+            members: vec![],
+        };
+        let present = runner_core::Present {
+            provider: provider.id,
+            scope: runner_core::Scope::Root,
+            version: None,
+            bin_dirs: vec![],
+            because: vec![runner_core::Evidence {
+                provider: Some(provider.id),
+                signal: None,
+                at: root,
+                scope: runner_core::Scope::Root,
+                weight: runner_core::Weight::Declared,
+                declared: None,
+            }],
+        };
+        let policy = runner_core::Policy {
+            runtime: Some(runner_core::Choice {
+                id: provider.id,
+                from: runner_core::Layer::Cli,
+            }),
+            ..runner_core::Policy::default()
+        };
+        let task = runner_core::Task {
+            name: "build".into(),
+            source: runner_core::ProviderId::PackageJson,
+            scope: runner_core::Scope::Root,
+            target: None,
+            description: None,
+            alias_of: None,
+            forwards_to: None,
+            detail: runner_core::TaskDetail::default(),
+        };
+        let plan = runner_core::plan_with(
+            &tree,
+            &runner_core::Project::default(),
+            &policy,
+            &present,
+            &runner_core::Op::Run { task: &task, args },
+            &runner_providers::REGISTRY,
+        )
+        .unwrap();
+        (
+            plan.argv[0].to_string_lossy().into_owned(),
+            plan.argv[1..]
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect(),
+        )
     }
 
     #[test]

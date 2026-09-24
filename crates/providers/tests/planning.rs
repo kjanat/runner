@@ -129,6 +129,7 @@ fn discovered_binary_has_evidence_and_no_unrelated_tool_environment() {
 #[test]
 fn frozen_tool_install_requires_its_declared_lockfile() {
     let fixture = Fixture::new();
+    std::fs::write(fixture.0.root.join("mise.toml"), "").unwrap();
     let policy = Policy {
         frozen: true,
         ..Policy::default()
@@ -564,4 +565,134 @@ fn windows_file_plan_uses_posix_shell_paths_and_preserves_existing_interpreters(
     .unwrap();
     let plan = runner_core::file_plan(&cascade, &path, &[]).unwrap();
     assert_eq!(std::path::Path::new(&plan.argv[0]), interpreter);
+}
+
+#[test]
+fn yarn_install_and_exec_use_the_same_observed_capabilities() {
+    for (manifest, frozen_flag, exec_verb, deny_flag, deny_env, allow_env) in [
+        (None, "--frozen-lockfile", "run", true, None, None),
+        (
+            Some("yarn@1.22.0"),
+            "--frozen-lockfile",
+            "run",
+            true,
+            None,
+            None,
+        ),
+        (
+            Some("yarn@4.1.0"),
+            "--immutable",
+            "exec",
+            false,
+            Some("false"),
+            Some("true"),
+        ),
+    ] {
+        let fixture = Fixture::new();
+        if let Some(version) = manifest {
+            std::fs::write(
+                fixture.0.root.join("package.json"),
+                format!(r#"{{"packageManager":"{version}"}}"#),
+            )
+            .unwrap();
+        }
+        let mut present = fixture.present(ProviderId::Yarn);
+        let mut evidence = present.because.clone();
+        runner_core::observe::derive(&fixture.0, &REGISTRY, &mut evidence).unwrap();
+        present.because = evidence;
+        let project = Project {
+            present: vec![present],
+            ..Project::default()
+        };
+        for (scripts, flag, env) in [
+            (ScriptPolicy::Default, false, None),
+            (ScriptPolicy::Deny, deny_flag, deny_env),
+            (ScriptPolicy::Allow, false, allow_env),
+        ] {
+            let policy = Policy {
+                frozen: true,
+                scripts,
+                ..Policy::default()
+            };
+            let plan = plan_with(
+                &fixture.0,
+                &project,
+                &policy,
+                &project.present[0],
+                &Op::Install { operations: &[] },
+                &REGISTRY,
+            )
+            .unwrap();
+            assert!(plan.argv.iter().any(|arg| arg == frozen_flag));
+            assert_eq!(plan.argv.iter().any(|arg| arg == "--ignore-scripts"), flag);
+            assert_eq!(
+                plan.env
+                    .iter()
+                    .find(|(key, _)| key == "YARN_ENABLE_SCRIPTS")
+                    .map(|(_, value)| value.to_str().unwrap()),
+                env
+            );
+            assert!(!plan.because.is_empty());
+            let exec = plan_with(
+                &fixture.0,
+                &project,
+                &policy,
+                &project.present[0],
+                &Op::Exec {
+                    name: "widget",
+                    args: &[],
+                },
+                &REGISTRY,
+            )
+            .unwrap();
+            assert_eq!(exec.argv[1], exec_verb);
+        }
+    }
+}
+
+#[test]
+fn mise_frozen_install_follows_each_declared_config_lock_pair() {
+    let pairs = REGISTRY
+        .by_id(ProviderId::Mise)
+        .caps
+        .install
+        .unwrap()
+        .locked_only_with;
+    assert_eq!(pairs.len(), 8);
+    for (config, lock) in pairs {
+        let fixture = Fixture::new();
+        let config = fixture.0.root.join(config);
+        let lock = fixture.0.root.join(lock);
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        let present = fixture.present(ProviderId::Mise);
+        let policy = Policy {
+            frozen: true,
+            ..Policy::default()
+        };
+        let project = Project::default();
+        let operations = ["install".into()];
+        let planned = || {
+            plan_with(
+                &fixture.0,
+                &project,
+                &policy,
+                &present,
+                &Op::Install {
+                    operations: &operations,
+                },
+                &REGISTRY,
+            )
+            .unwrap()
+        };
+        std::fs::write(&lock, "").unwrap();
+        assert!(!planned().argv.iter().any(|arg| arg == "--locked"));
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::write(&config, "").unwrap();
+        assert!(!planned().argv.iter().any(|arg| arg == "--locked"));
+        std::fs::write(&lock, "").unwrap();
+        let plan = planned();
+        assert_eq!(plan.argv, ["mise", "install", "--locked"]);
+        assert_eq!(plan.trust, runner_core::Trust::Host);
+        assert!(plan.path_prepend.is_empty());
+    }
 }

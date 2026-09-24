@@ -15,7 +15,7 @@ use crate::commands::run::{
     lookup_token, qualified_miss_error, resolve_python_pm, root_runner, source_depth,
     source_priority,
 };
-use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
+use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm};
 use crate::schema::labels;
 use crate::types::{JsRuntime, ProjectContext, Task, TaskSource, WorkspaceMember};
 
@@ -86,15 +86,17 @@ pub(crate) fn why(
     let ambiguous = (!scope.is_pinned())
         .then(|| ambiguous_members(&restricted))
         .flatten();
-    let selected = match crate::commands::run::core::selected(ctx, overrides, task) {
+    let prepared = crate::commands::run::core::prepare(ctx, overrides, task)?;
+    let outcome = prepared.preview(ctx, task);
+    let selected = match prepared.selected(ctx, task) {
         Ok(selected) => selected,
         Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => None,
         Err(error) => return Err(error.into()),
     };
 
-    let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
+    let pm_decision = pm_decision_for_selected(ctx, overrides, selected, prepared.node);
 
-    if !json && print_cascade_result(ctx, overrides, task, root.is_some(), ambiguous.is_some()) {
+    if !json && print_cascade_result(&outcome, task, root.is_some(), ambiguous.is_some()) {
         return Ok(());
     }
     if json {
@@ -107,7 +109,10 @@ pub(crate) fn why(
             pm_decision.as_ref(),
             overrides,
             ctx,
-            decision,
+            Explanation {
+                decision,
+                outcome: &outcome,
+            },
         );
         crate::render::json::print(&report)?;
     } else if let Some(runner) = root {
@@ -193,14 +198,10 @@ struct WhyRuntime {
 }
 
 /// Render non-task cascade outcomes, leaving task details to the report below.
-fn print_cascade_result(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    task: &str,
-    root: bool,
-    ambiguous: bool,
-) -> bool {
-    match crate::commands::run::core::preview(ctx, overrides, task) {
+type Preview = Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal>;
+
+fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bool) -> bool {
+    match outcome {
         Ok((rung, outcome)) if rung.name != "task" && !root => {
             match outcome {
                 runner_core::Dispatch::Builtin(name) => {
@@ -287,6 +288,7 @@ fn pm_decision_for_selected(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     selected: Option<&Task>,
+    node: Result<ResolvedPm, ResolveError>,
 ) -> Option<PmDecision> {
     match selected.map(|task| task.source) {
         // A forced runtime that dispatches the script reads it through its own
@@ -297,9 +299,7 @@ fn pm_decision_for_selected(
         {
             None
         }
-        Some(TaskSource::PackageJson) => Some(PmDecision::Node(
-            Resolver::new(ctx, overrides).resolve_node_pm(),
-        )),
+        Some(TaskSource::PackageJson) => Some(PmDecision::Node(node)),
         Some(TaskSource::PyprojectScripts) => Some(PmDecision::Python(
             resolve_python_pm(ctx, overrides).ok_or_else(|| {
                 "no Python package manager detected to run pyproject scripts; install uv, poetry, \
@@ -495,6 +495,11 @@ struct WhyDecision {
     tried: Vec<&'static str>,
 }
 
+struct Explanation<'a> {
+    decision: WhyDecision,
+    outcome: &'a Preview,
+}
+
 fn build_report<'a>(
     query: &'a str,
     candidates: &[&'a Task],
@@ -502,11 +507,14 @@ fn build_report<'a>(
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &'a ProjectContext,
-    decision: WhyDecision,
+    explanation: Explanation<'_>,
 ) -> WhyReport<'a> {
-    let mut decision = decision;
+    let Explanation {
+        mut decision,
+        outcome,
+    } = explanation;
     let mut selected = selected;
-    match crate::commands::run::core::preview(ctx, overrides, query) {
+    match outcome {
         Ok((rung, outcome)) => {
             decision.tried = runner_core::CASCADE
                 .iter()
@@ -543,7 +551,22 @@ fn build_report<'a>(
     }
     let runtime = overrides.js_runtime();
     let candidate_report = |task: &'a Task| WhyCandidate {
-        task: task_report(task, ctx, runtime, pm_decision, selected),
+        task: {
+            let mut report = task_report(task, ctx, runtime, pm_decision, selected);
+            if selected.is_some_and(|selected| std::ptr::eq(selected, task))
+                && let Ok((_, runner_core::Dispatch::Plan(plan))) = outcome
+            {
+                report.resolved = Some(
+                    plan.argv
+                        .iter()
+                        .map(|arg| arg.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                report.cwd = plan.cwd.display().to_string();
+            }
+            report
+        },
         matched: match_report(query, task, overrides, ctx),
     };
     WhyReport {
@@ -1023,6 +1046,7 @@ fn print_human(
 
 #[cfg(test)]
 mod tests {
+    use crate::resolver::Resolver;
     use std::path::PathBuf;
 
     use super::{
@@ -1077,7 +1101,11 @@ mod tests {
             pm_decision,
             overrides,
             ctx,
-            decision,
+            super::Explanation {
+                decision,
+                outcome: &crate::commands::run::core::prepare(ctx, overrides, query)
+                    .and_then(|p| p.preview(ctx, query)),
+            },
         )
     }
 
@@ -1130,8 +1158,13 @@ mod tests {
         )
         .expect("PM override should parse");
         let selected = ctx.tasks.first();
-        let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected)
-            .expect("pyproject task should resolve PM diagnostics");
+        let pm_decision = pm_decision_for_selected(
+            &ctx,
+            &overrides,
+            selected,
+            Resolver::new(&ctx, &overrides).resolve_node_pm(),
+        )
+        .expect("pyproject task should resolve PM diagnostics");
 
         match pm_decision {
             PmDecision::Python(Ok(decision)) => {
@@ -1174,7 +1207,7 @@ mod tests {
         assert_eq!(task["kind"], "cargo-alias");
         assert_eq!(task["source_pointer"], "alias.t");
         assert_eq!(task["definition"], "test");
-        assert_eq!(task["resolved"], "cargo test");
+        assert_eq!(task["resolved"], "cargo t");
         assert_eq!(task["dependencies"], serde_json::json!([]));
 
         let matched = &json["selected"]["match"];
@@ -1295,12 +1328,7 @@ mod tests {
 
         assert_eq!(json["decision"]["strategy"], "ranked");
         assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
-        // package.json resolved depends on PM resolution, which only the
-        // selected task gets, and no PM decision was passed here.
-        assert_eq!(
-            json["candidates"][0]["task"]["resolved"],
-            serde_json::Value::Null
-        );
+        assert_eq!(json["candidates"][0]["task"]["resolved"], "npm run build");
         assert_eq!(json["candidates"][1]["task"]["resolved"], "just build");
     }
 
@@ -1309,8 +1337,13 @@ mod tests {
         let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
         ctx.package_managers.push(PackageManager::Uv);
         let selected = ctx.tasks.first();
-        let pm_decision = pm_decision_for_selected(&ctx, &ResolutionOverrides::default(), selected)
-            .expect("pyproject task should resolve PM diagnostics");
+        let pm_decision = pm_decision_for_selected(
+            &ctx,
+            &ResolutionOverrides::default(),
+            selected,
+            Resolver::new(&ctx, &ResolutionOverrides::default()).resolve_node_pm(),
+        )
+        .expect("pyproject task should resolve PM diagnostics");
         let candidates = vec![&ctx.tasks[0]];
 
         let report = report(
@@ -1351,7 +1384,12 @@ mod tests {
         let overrides = runtime_overrides("bun");
         let selected = ctx.tasks.first();
         // A forced runtime supersedes PM resolution, exactly as dispatch does.
-        let pm_decision = pm_decision_for_selected(&ctx, &overrides, selected);
+        let pm_decision = pm_decision_for_selected(
+            &ctx,
+            &overrides,
+            selected,
+            Resolver::new(&ctx, &overrides).resolve_node_pm(),
+        );
         assert!(pm_decision.is_none(), "runtime must suppress PM resolution");
 
         let report = report(

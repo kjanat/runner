@@ -262,18 +262,18 @@ supported file when no project runtime takes it. This does not add the runtime
 to `Project.present`: the resulting plan carries the discovered file as evidence.
 `file_interpreters` identifies shebangs an explicitly chosen runtime can replace.
 `RunFileCap.unsupported` records recognized file types a runtime cannot execute;
-`UnsupportedFile` records the provider, path, reason and runtime-choice origin.
-Observation hooks return errors for unreadable or malformed evidence. Only
-missing optional files count as absence.
+`UnsupportedFile` records the provider, path, reason, runtime-choice origin and compatible runtime providers.
+The core derives alternatives from effective capabilities in the file's scope. Clients offer the alternatives their own interfaces support.
+Observation hooks preserve read and parse errors. A missing optional file contributes no evidence.
 `task_priority` orders otherwise unranked task sources. Provider defaults and
 policy preference lists rank candidates; they do not remove later cascade rungs.
 
 ```rust
 pub struct InstallCap {
-    pub argv: Template,                         // ["install"]
+    pub argv: Template,                                            // ["install"]
     pub frozen: Frozen, /* Flag("--frozen-lockfile") | Subcommand("ci") | Env("UV_FROZEN","1") | Unsupported */
     pub scripts: ScriptSupport, /* deny: Flag("--ignore-scripts"), allow: Flag("--no-ignore-scripts") | Env(..) | Default | Unsupported */
-    pub locked_only_with: Option<&'static str>, // mise: `--locked` needs a lockfile present
+    pub locked_only_with: &'static [(&'static str, &'static str)], /* config/lockfile pairs; empty is unconditional */
 }
 
 pub struct RunTaskCap {
@@ -454,6 +454,7 @@ pub enum Refusal {
         file: PathBuf,
         reason: &'static str,
         chosen_by: Option<Layer>,
+        alternatives: Vec<ProviderId>,
     },
     NotFound {
         name: String,
@@ -655,7 +656,7 @@ Provider {
         health: Some(HealthCap { argv: t!["tasks", "validate", "--json"], parse: mise::health }),
         usage: Some(UsageCap { spec: mise::usage_spec }),
         operations: &["install", "bootstrap"],
-        install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: Some("mise.lock"), .. }),
+        install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: &[("mise.toml", "mise.lock")], .. }),
         quiet: QuietSupport { levels: [None, Some(t!["--quiet"]), Some(t!["--quiet"]), Some(t!["--quiet"])], stream: None },
         ..Capabilities::NONE
     },

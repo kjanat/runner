@@ -27,7 +27,7 @@ pub const PROVIDER: Provider = Provider {
             argv: t!["sync", Frozen],
             frozen: Frozen::Flag("--frozen"),
             scripts: ScriptSupport::NONE,
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Args],

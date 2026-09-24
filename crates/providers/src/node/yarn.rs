@@ -43,7 +43,7 @@ pub const PROVIDER: Provider = Provider {
                 deny: ScriptMechanism::Flag("--ignore-scripts"),
                 allow: ScriptMechanism::Default,
             },
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, Task, Args],
@@ -92,7 +92,7 @@ const BERRY: Capabilities = Capabilities {
             deny: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "false"),
             allow: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "true"),
         },
-        locked_only_with: None,
+        locked_only_with: &[],
     }),
     run_task: Some(RunTaskCap {
         argv: t!["run", Task, Args],

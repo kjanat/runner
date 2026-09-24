@@ -48,7 +48,7 @@ pub const PROVIDER: Provider = Provider {
                 deny: ScriptMechanism::Flag("--ignore-scripts"),
                 allow: ScriptMechanism::Flag("--no-ignore-scripts"),
             },
-            locked_only_with: None,
+            locked_only_with: &[],
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Sep("--"), Args],
