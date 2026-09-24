@@ -19,11 +19,25 @@ pub enum Op<'a> {
         /// Arguments forwarded to it.
         args: &'a [String],
     },
+    /// Invoke a task runner without selecting a named task.
+    RunDefault {
+        /// Arguments forwarded to the runner.
+        args: &'a [String],
+    },
     /// Execute a name through the provider's exec primitive.
     Exec {
         /// The name.
         name: &'a str,
         /// Arguments forwarded to it.
+        args: &'a [String],
+    },
+    /// Execute a binary belonging to an explicitly selected package.
+    ExecPackage {
+        /// Package specifier.
+        package: &'a str,
+        /// Binary name.
+        bin: &'a str,
+        /// Arguments forwarded to the binary.
         args: &'a [String],
     },
     /// Run a source file.
@@ -51,7 +65,9 @@ impl Op<'_> {
         match self {
             Self::Install { .. } => "install",
             Self::Run { .. } => "run",
+            Self::RunDefault { .. } => "run-default",
             Self::Exec { .. } => "exec",
+            Self::ExecPackage { .. } => "exec-package",
             Self::RunFile { .. } => "run-file",
             Self::Test { .. } => "test",
             Self::Clean => "clean",

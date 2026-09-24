@@ -14,11 +14,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("cargo", &["-q"])
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -146,6 +143,7 @@ pub(crate) fn find_anchor(root: &Path) -> Option<PathBuf> {
 
 /// Cargo emits `cargo <name> <user-args...>`; recursion expansion is cargo's
 /// own concern at execution time, so we just shell out to the literal name.
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("cargo");
     // cargo's global `-q`/`--quiet` precedes the (alias) subcommand. cargo has

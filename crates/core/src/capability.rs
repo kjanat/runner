@@ -15,10 +15,22 @@ use crate::warning::Warning;
 /// Everything a provider can do, each with the parameters policy can turn on.
 #[derive(Clone, Copy)]
 pub struct Capabilities {
+    /// Use this runtime for supported files when no project runtime takes them.
+    pub file_fallback: bool,
+    /// Shebang interpreters this runtime can replace when explicitly chosen.
+    pub file_interpreters: &'static [&'static str],
+    /// Default source priority when policy has not ranked a source.
+    pub task_priority: u8,
+    /// Capability tables selected by variant evidence from observation.
+    pub variants: &'static [(&'static str, Self)],
     /// Install dependencies.
     pub install: Option<InstallCap>,
+    /// Invoke the task runner without naming a task.
+    pub run_default: Option<Template>,
     /// Run a declared task.
     pub run_task: Option<RunTaskCap>,
+    /// Execute a binary from an explicitly named package.
+    pub package_exec: Option<ExecCap>,
     /// Execute a name.
     pub exec: Option<ExecCap>,
     /// Run a source file.
@@ -46,8 +58,14 @@ pub struct Capabilities {
 impl Capabilities {
     /// A provider that can do nothing yet.
     pub const NONE: Self = Self {
+        file_fallback: false,
+        file_interpreters: &[],
+        task_priority: 2,
+        variants: &[],
         install: None,
+        run_default: None,
         run_task: None,
+        package_exec: None,
         exec: None,
         run_file: None,
         test: None,
@@ -146,6 +164,8 @@ bitflags::bitflags! {
 /// package-manager form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeCap {
+    /// Execute a binary from a selected package on this runtime.
+    pub package_exec: Option<Template>,
     /// Run a declared task on this runtime.
     pub run_task: Option<Template>,
     /// Execute a name on this runtime.

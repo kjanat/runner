@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 
 use anyhow::Context as _;
@@ -16,6 +17,7 @@ pub(crate) const PYTHON_BIN: &str = if cfg!(windows) { "python" } else { "python
 /// `<python> <file> [args...]`, execute a local Python script with the
 /// system interpreter. The uv path (`uv run <file>`) is preferred when a
 /// uv project is detected; this is the plain fallback.
+#[cfg(test)]
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command(PYTHON_BIN);
     c.arg(file).args(args);

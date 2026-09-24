@@ -1,11 +1,8 @@
 //! Bun, all-in-one JavaScript runtime, bundler, and package manager.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("bun", &["--silent"])
-}
 
 /// Detected via `bun.lockb` (binary) or `bun.lock` (text).
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -13,6 +10,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 }
 
 /// `bun run <task> [args...]`
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     run_cmd_with_runtime(task, args, verbosity, false)
 }
@@ -23,6 +21,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
 /// dependency bin carrying a `#!/usr/bin/env node` shebang also runs on bun
 /// instead of the system Node. It goes before `run`: as a subcommand flag it
 /// would be forwarded to the script.
+#[cfg(test)]
 pub(crate) fn run_cmd_with_runtime(
     task: &str,
     args: &[String],
@@ -43,31 +42,10 @@ pub(crate) fn run_cmd_with_runtime(
     c
 }
 
-/// `bun x --package <package> <bin> [args...]`
-pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
-    exec_package_cmd_with_runtime(package, bin, args, false)
-}
-
-/// `bun x [--bun] --package <package> <bin> [args...]`; `--bun` as in
-/// [`exec_cmd_with_runtime`].
-pub(crate) fn exec_package_cmd_with_runtime(
-    package: &str,
-    bin: &str,
-    args: &[String],
-    force_bun_runtime: bool,
-) -> Command {
-    let mut c = super::program::command("bun");
-    c.arg("x");
-    if force_bun_runtime {
-        c.arg("--bun");
-    }
-    c.arg("--package").arg(package).arg(bin).args(args);
-    c
-}
-
 /// `bun <file> [args...]`, execute a local script file with the Bun
 /// runtime. Distinct from [`exec_cmd`] (`bun x`), which fetches and runs a
 /// remote package; this runs an on-disk path the caller already resolved.
+#[cfg(test)]
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("bun");
     c.arg(file).args(args);

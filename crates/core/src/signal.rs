@@ -55,6 +55,8 @@ pub struct SignalId(pub usize);
 /// What a manifest declared about a provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Declared {
+    /// A provider variant identified by its observation hook.
+    Variant(String),
     /// The manifest names the provider without pinning a version.
     Named,
     /// A version or version constraint.

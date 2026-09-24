@@ -8,6 +8,10 @@ use crate::capability::{Frozen, ScriptMechanism, ScriptSupport};
 /// One position in an argv template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Piece {
+    /// Concatenate rendered pieces into one argument.
+    Concat(&'static [Self]),
+    /// An explicitly selected package.
+    Package,
     /// A fixed word.
     Lit(&'static str),
     /// The task name or target.
@@ -71,6 +75,8 @@ pub enum ScriptRequest {
 /// The values a render fills the pieces with.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Request<'a> {
+    /// The explicitly selected package.
+    pub package: Option<&'a str>,
     /// For [`Piece::Task`].
     pub task: Option<&'a str>,
     /// For [`Piece::Name`].
@@ -124,6 +130,16 @@ impl Template {
 impl Piece {
     fn render(self, request: &Request<'_>, out: &mut Rendered) {
         match self {
+            Self::Package => out.args.extend(request.package.map(OsString::from)),
+            Self::Concat(pieces) => {
+                let rendered = Template(pieces).render(request);
+                let mut word = OsString::new();
+                for part in rendered.args {
+                    word.push(part);
+                }
+                out.args.push(word);
+                out.env.extend(rendered.env);
+            }
             Self::Lit(word) => out.args.push(word.into()),
             Self::Task => out.args.extend(request.task.map(OsString::from)),
             Self::Name => out.args.extend(request.name.map(OsString::from)),

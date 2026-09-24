@@ -1,6 +1,7 @@
 //! Yarn, Node.js package manager.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
 
 use runner_core::{Frozen, ScriptMechanism, ScriptRequest, ScriptSupport};
@@ -11,15 +12,8 @@ pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("yarn.lock").exists()
 }
 
-pub(crate) fn quiet_capabilities(dir: &Path) -> super::HostQuietCapabilities {
-    if detect_major_version(dir) == Some(1) {
-        super::HostQuietCapabilities::quiet("yarn-classic", &["--silent"])
-    } else {
-        super::HostQuietCapabilities::unsupported("yarn-berry", "--silent is Yarn Classic-only")
-    }
-}
-
 /// `yarn <task> [args...]` (yarn infers `run`).
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("yarn");
     // `--silent` is yarn's global quiet switch (classic `-s`/`--silent`).
@@ -151,35 +145,6 @@ fn parse_accessible_bins(stdout: &str) -> Vec<AccessibleBin> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
-}
-
-/// `yarn dlx --package <package> <bin> [args...]`, Yarn 2+ only; classic
-/// Yarn has no package-selecting exec.
-pub(crate) fn exec_package_cmd(
-    dir: &Path,
-    package: &str,
-    bin: &str,
-    args: &[String],
-) -> Option<Command> {
-    exec_package_cmd_with_major(detect_major_version(dir), package, bin, args)
-}
-
-fn exec_package_cmd_with_major(
-    yarn_major: Option<u32>,
-    package: &str,
-    bin: &str,
-    args: &[String],
-) -> Option<Command> {
-    if yarn_major.is_none_or(|major| major < 2) {
-        return None;
-    }
-    let mut c = super::program::command("yarn");
-    c.arg("dlx")
-        .arg("--package")
-        .arg(package)
-        .arg(bin)
-        .args(args);
-    Some(c)
 }
 
 #[cfg(test)]

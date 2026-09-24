@@ -2,11 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("deno", &["-q"])
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -219,6 +216,7 @@ fn extract_tasks_from(path: &Path) -> anyhow::Result<Vec<(String, Option<String>
 }
 
 /// `deno task <task> [args...]`
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("deno");
     c.arg("task");
@@ -232,37 +230,11 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
-/// `deno x npm:<package>/<bin> [args...]`
-pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
-    let mut c = super::program::command("deno");
-    c.arg("x").arg(format!("npm:{package}/{bin}")).args(args);
-    c
-}
-
-/// Permissions granted to a local file run on Deno: filesystem, network,
-/// environment, subprocess and system-info access. Deno denies all of these by
-/// default and ignores the file's shebang, so without them a file that runs
-/// unprompted under node or bun dies under deno the moment it reads a file, hits
-/// the network, or looks at an env var. Stops short of `-A`, whose extra
-/// `--allow-import` would let the file fetch and execute code from any host;
-/// node rejects a remote `http(s)` import and bun cannot resolve one, so Deno's
-/// default import allowlist is the honest match and stays in force.
-pub(crate) const RUN_FILE_PERMISSIONS: &[&str] = &[
-    "--allow-read",
-    "--allow-write",
-    "--allow-net",
-    "--allow-env",
-    "--allow-run",
-    "--allow-sys",
-];
-
-/// `deno run <perms> <file> [args...]`, execute a local source file with the
-/// Deno runtime. Distinct from [`exec_cmd`] (`deno x`), which resolves a
-/// remote `npm:`/`jsr:` package; this runs an on-disk path. See
-/// [`RUN_FILE_PERMISSIONS`] for the grant and why it is not `-A`.
+/// Run a local file with Deno's default permissions; callers pass explicit grants.
+#[cfg(test)]
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("deno");
-    c.arg("run").args(RUN_FILE_PERMISSIONS).arg(file).args(args);
+    c.arg("run").arg(file).args(args);
     c
 }
 
@@ -315,7 +287,6 @@ mod tests {
     use crate::tool::test_support::TempDir;
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn run_file_cmd_grants_no_permissions() {
         let args = [String::from("--port"), String::from("8080")];
         let cmd = run_file_cmd(Path::new("/abs/server.ts"), &args);

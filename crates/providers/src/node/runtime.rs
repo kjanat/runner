@@ -28,6 +28,14 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: &[],
     caps: Capabilities {
+        package_exec: Some(ExecCap {
+            program: Some("npx"),
+            argv: t!["--package", Package, "--", Name, Args],
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
+        file_fallback: true,
+        file_interpreters: &["node", "nodejs", "bun", "deno"],
         run_task: Some(RunTaskCap {
             argv: t!["--run", Task, Sep("--"), Args],
             sources: &[ProviderId::PackageJson],

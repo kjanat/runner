@@ -83,6 +83,8 @@ impl Plan {
 /// Why no plan was made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
+    /// An observation or input could not be interpreted safely.
+    Invalid(String),
     /// Nothing on the cascade took the name.
     NotFound {
         /// The name.
@@ -188,13 +190,18 @@ pub fn plan(
 ) -> Result<Plan, Refusal> {
     let mut last = None;
     for present in candidates(project, policy, op, registry) {
-        let chosen = chosen_by(policy, present.provider).is_some();
         match plan_with(tree, project, policy, present, op, registry) {
             Ok(made) => return Ok(made),
             Err(refusal @ Refusal::Unsafe(_)) => return Err(refusal),
-            // A provider the user named never silently hands the op to
-            // another one.
-            Err(refusal) if chosen => return Err(refusal),
+            Err(refusal)
+                if matches!(op, Op::Test { .. })
+                    && policy
+                        .runtime
+                        .as_ref()
+                        .is_some_and(|choice| choice.id == present.provider) =>
+            {
+                return Err(refusal);
+            }
             Err(refusal) => last = Some(refusal),
         }
     }
@@ -205,16 +212,6 @@ pub fn plan(
             .map_or(ProviderId::ALL[0], |present| present.provider),
         op: op.name(),
     }))
-}
-
-/// The choice that names `id`, when policy made one.
-fn chosen_by(policy: &Policy, id: ProviderId) -> Option<&Choice> {
-    policy
-        .runtime
-        .iter()
-        .chain(policy.pm.0.values())
-        .chain(policy.runner.iter())
-        .find(|choice| choice.id == id)
 }
 
 /// The present providers that may take `op`, policy choices first.
@@ -247,7 +244,9 @@ fn candidates<'a>(
     for present in &project.present {
         let provider = registry.by_id(present.provider);
         let manager = provider.kind.contains(Kind::TOOL_MANAGER);
-        if provider.kind == Kind::RUNTIME || (manager && matches!(op, Op::Exec { .. })) {
+        if (provider.kind == Kind::RUNTIME && !matches!(op, Op::RunFile { .. }))
+            || (manager && matches!(op, Op::Exec { .. }))
+        {
             continue;
         }
         push(present);
@@ -276,7 +275,7 @@ struct Fill<'a> {
 struct Shaping<'c, 'a> {
     tree: &'c Tree,
     policy: &'c Policy,
-    provider: &'static Provider,
+    provider: &'c Provider,
     present: &'c Present,
     chosen_as_runtime: bool,
     op: Op<'a>,
@@ -302,7 +301,47 @@ impl<'a> Shaping<'_, 'a> {
     fn shape(&self, fill: &mut Fill<'a>) -> Result<Shape<'a>, Refusal> {
         match self.op {
             Op::Run { task, args } => self.run(fill, task, args),
+            Op::RunDefault { args } => {
+                fill.request.args = args;
+                Ok(Shape {
+                    program: self.provider.program,
+                    template: self
+                        .provider
+                        .caps
+                        .run_default
+                        .ok_or_else(|| self.refuse())?,
+                    reach: Reach::Local,
+                    trust: Trust::Project,
+                    cwd: scope_dir(self.tree, &self.present.scope),
+                    task: Some(self.provider.label),
+                })
+            }
             Op::Exec { name, args } => self.exec(fill, name, args),
+            Op::ExecPackage { package, bin, args } => {
+                let cap = self
+                    .provider
+                    .caps
+                    .package_exec
+                    .ok_or_else(|| self.refuse())?;
+                fill.request.package = Some(package);
+                fill.request.name = Some(bin);
+                fill.request.args = args;
+                let template = self
+                    .provider
+                    .caps
+                    .as_runtime
+                    .and_then(|cap| cap.package_exec)
+                    .filter(|_| self.chosen_as_runtime)
+                    .unwrap_or(cap.argv);
+                Ok(Shape {
+                    program: cap.program.or(self.provider.program),
+                    template,
+                    reach: cap.reach,
+                    trust: self.trust(),
+                    cwd: self.tree.cwd.clone(),
+                    task: None,
+                })
+            }
             Op::RunFile { file, args } => self.run_file(fill, file, args),
             Op::Test { args } => self.test(fill, args),
             Op::Install { operations } => self.install(fill, operations),
@@ -373,7 +412,14 @@ impl<'a> Shaping<'_, 'a> {
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| cap.extensions.contains(&ext));
-        if !runs {
+        let interpreted = self.chosen_as_runtime
+            && read_shebang(source).is_some_and(|s| {
+                Path::new(&s.program)
+                    .file_name()
+                    .and_then(|p| p.to_str())
+                    .is_some_and(|name| self.provider.caps.file_interpreters.contains(&name))
+            });
+        if !runs && !interpreted {
             return Err(self.refuse());
         }
         fill.request.file = Some(source);
@@ -470,7 +516,7 @@ pub fn plan_with(
     op: &Op<'_>,
     registry: &Registry,
 ) -> Result<Plan, Refusal> {
-    let provider = registry.by_id(present.provider);
+    let provider = registry.by_id(present.provider).for_present(present);
     let quiet = provider.caps.quiet;
     let mut clamps = Vec::new();
     if policy.verbosity != Verbosity::Normal && policy.verbosity.index() > quiet.strongest() {
@@ -506,6 +552,7 @@ pub fn plan_with(
     let mut fill = Fill {
         request: Request {
             quiet: quiet.at(policy.verbosity.index()),
+            stream: policy.host_stderr.then_some(quiet.stream).flatten(),
             ..Request::default()
         },
         files: Vec::new(),
@@ -513,7 +560,7 @@ pub fn plan_with(
     let shaping = Shaping {
         tree,
         policy,
-        provider,
+        provider: &provider,
         present,
         chosen_as_runtime: policy
             .runtime
@@ -528,6 +575,11 @@ pub fn plan_with(
     let rendered = shape.template.render(&request);
     let mut argv = Vec::with_capacity(rendered.args.len() + 1);
     argv.push(OsString::from(program));
+    if policy.host_stderr
+        && let Some(stream) = quiet.stream
+    {
+        argv.extend(stream.render(&Request::default()).args);
+    }
     argv.extend(rendered.args);
     let mut env = rendered.env;
     env.extend(env_layers(policy, Some(provider.id), shape.task)?);
@@ -779,7 +831,7 @@ pub enum Dispatch {
 }
 
 /// The binary an installed dependency declares.
-pub type DepFn<'a> = dyn Fn(&str) -> Option<PathBuf> + 'a;
+pub type DepFn<'a> = dyn Fn(&str) -> Result<Option<PathBuf>, Refusal> + 'a;
 
 /// Asks the user whether a rung may fetch.
 pub type ConfirmFn<'a> = dyn Fn(&str, &str) -> bool + 'a;
@@ -871,11 +923,11 @@ fn rung_dispatch(
             if !has_local_prefix(token) {
                 return Ok(None);
             }
-            Some(dispatched(file_plan(
-                cascade,
-                &resolve_path(&cascade.tree.cwd, token),
-                args,
-            )?))
+            let path = resolve_path(&cascade.tree.cwd, token);
+            if path.is_dir() {
+                return Ok(None);
+            }
+            Some(dispatched(file_plan(cascade, &path, args)?))
         }
         Need::Task => match select(cascade, token)? {
             Some(task) => Some(dispatched(plan(
@@ -894,11 +946,10 @@ fn rung_dispatch(
             }
             Some(dispatched(file_plan(cascade, &path, args)?))
         }
-        Need::InstalledDep => cascade
-            .dep
-            .and_then(|ask| ask(token))
-            .map(found)
-            .transpose()?,
+        Need::InstalledDep => match cascade.dep.map(|ask| ask(token)).transpose()?.flatten() {
+            Some(path) => Some(dispatched(file_plan(cascade, &path, args)?)),
+            None => None,
+        },
         Need::Cap(Cap::Test) => {
             if token != "test" || select(cascade, token)?.is_some() {
                 return Ok(None);
@@ -920,7 +971,24 @@ fn rung_dispatch(
         Need::ProjectBins => probe_in_dirs(&bin_dirs(cascade.project, &Scope::Root), token)
             .map(found)
             .transpose()?,
-        Need::HostPath => probe_with(token, &[]).map(found).transpose()?,
+        Need::HostPath => {
+            let root = cascade.project.present.iter().find(|p| {
+                let provider = cascade.registry.by_id(p.provider);
+                provider.program == Some(token) && provider.caps.run_default.is_some()
+            });
+            if let Some(present) = root {
+                Some(dispatched(plan_with(
+                    cascade.tree,
+                    cascade.project,
+                    cascade.policy,
+                    present,
+                    &Op::RunDefault { args },
+                    cascade.registry,
+                )?))
+            } else {
+                probe_with(token, &[]).map(found).transpose()?
+            }
+        }
         Need::ToolManagerExec | Need::Cap(Cap::Exec) => {
             exec_plan(cascade, rung, token, args)?.map(dispatched)
         }
@@ -932,10 +1000,9 @@ fn dispatched(made: Plan) -> Dispatch {
     Dispatch::Plan(Box::new(made))
 }
 
-/// The builtin verb `token` names, when no task shadows it.
+/// The builtin verb `token` names. Explicit qualifiers bypass this rung.
 fn builtin(cascade: &Cascade<'_>, token: &str) -> Option<String> {
-    let shadowed = cascade.project.tasks.iter().any(|task| task.name == token);
-    (!shadowed && cascade.builtins.contains(&token)).then(|| token.to_owned())
+    cascade.builtins.contains(&token).then(|| token.to_owned())
 }
 
 /// Refuse a fetching plan the policy or the user does not want.
@@ -957,19 +1024,42 @@ fn gate(cascade: &Cascade<'_>, rung: Rung, name: &str, made: &Plan) -> Result<()
 ///
 /// `Ambiguous` when several workspace members define the name and no nearer
 /// scope does.
-fn select<'a>(cascade: &'a Cascade<'_>, name: &str) -> Result<Option<&'a Task>, Refusal> {
+pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Task>, Refusal> {
+    let (mut scope, mut source, mut name) = task_address(cascade, token);
+    if !cascade.project.tasks.iter().any(|t| {
+        t.name == name
+            && source.is_none_or(|s| s == t.source)
+            && scope.is_none_or(|s| scope_matches(&t.scope, s))
+    }) && cascade.project.tasks.iter().any(|t| t.name == token)
+    {
+        scope = None;
+        source = None;
+        name = token;
+    }
+
     let mut found: Vec<&Task> = cascade
         .project
         .tasks
         .iter()
-        .filter(|task| task.name == name)
+        .filter(|task| {
+            task.name == name
+                && source.is_none_or(|source| task.source == source)
+                && scope.is_none_or(|scope| scope_matches(&task.scope, scope))
+        })
         .collect();
     let Some(nearest) = found
         .iter()
         .map(|task| scope_rank(cascade.tree, &task.scope))
         .min()
     else {
-        return Ok(None);
+        return if source.is_some() || scope.is_some() {
+            Err(Refusal::NotFound {
+                name: token.into(),
+                tried: CASCADE[..3].to_vec(),
+            })
+        } else {
+            Ok(None)
+        };
     };
     found.retain(|task| scope_rank(cascade.tree, &task.scope) == nearest);
     let mut members: Vec<&Scope> = Vec::new();
@@ -990,6 +1080,54 @@ fn select<'a>(cascade: &'a Cascade<'_>, name: &str) -> Result<Option<&'a Task>, 
     Ok(found.first().copied())
 }
 
+fn scope_matches(scope: &Scope, spelling: &str) -> bool {
+    match scope {
+        Scope::Root => spelling == "root",
+        Scope::Member { name, dir } => name == spelling || dir.ends_with(spelling),
+    }
+}
+
+fn task_address<'a>(
+    cascade: &Cascade<'_>,
+    token: &'a str,
+) -> (Option<&'a str>, Option<ProviderId>, &'a str) {
+    let source = |label| {
+        cascade
+            .registry
+            .by_label(label)
+            .filter(|p| p.kind.contains(Kind::TASK_SOURCE))
+            .map(|p| p.id)
+    };
+    if let Some((prefix, name)) = token.split_once('#') {
+        let (scope, label) = prefix
+            .split_once(':')
+            .map_or((None, prefix), |(s, l)| (Some(s), l));
+        if let Some(id) = source(label) {
+            return (scope, Some(id), name);
+        }
+    }
+    if let Some((prefix, rest)) = token.split_once(':') {
+        if let Some(id) = source(prefix) {
+            return (None, Some(id), rest);
+        }
+        if prefix == "root"
+            || cascade
+                .tree
+                .members
+                .iter()
+                .any(|s| scope_matches(s, prefix))
+        {
+            if let Some((label, name)) = rest.split_once(':')
+                && let Some(id) = source(label)
+            {
+                return (Some(prefix), Some(id), name);
+            }
+            return (Some(prefix), None, rest);
+        }
+    }
+    (None, None, token)
+}
+
 /// How far a scope is from the invocation directory: the member holding it,
 /// then the root, then every other member.
 fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
@@ -1003,7 +1141,26 @@ fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
 /// The order same-named tasks are tried: the runner policy chose, then the
 /// sources its package manager or runtime dispatches, then registry order,
 /// with aliases last.
-fn task_rank(policy: &Policy, registry: &Registry, task: &Task) -> (u8, ProviderId, bool) {
+fn task_rank(
+    policy: &Policy,
+    registry: &Registry,
+    task: &Task,
+) -> (usize, usize, u8, ProviderId, bool) {
+    let pinned = if policy.runner.is_none()
+        && policy
+            .pm
+            .0
+            .values()
+            .all(|choice| choice.from == Layer::Probe)
+    {
+        policy
+            .task_sources
+            .get(&task.name)
+            .and_then(|sources| sources.iter().position(|id| *id == task.source))
+            .unwrap_or(usize::MAX)
+    } else {
+        usize::MAX
+    };
     let chosen = policy
         .runner
         .as_ref()
@@ -1013,6 +1170,7 @@ fn task_rank(policy: &Policy, registry: &Registry, task: &Task) -> (u8, Provider
         .0
         .values()
         .chain(policy.runtime.iter())
+        .filter(|choice| choice.from != Layer::Probe)
         .any(|choice| {
             registry
                 .by_id(choice.id)
@@ -1020,8 +1178,20 @@ fn task_rank(policy: &Policy, registry: &Registry, task: &Task) -> (u8, Provider
                 .run_task
                 .is_some_and(|cap| cap.sources.contains(&task.source))
         });
-    let tier = u8::from(!chosen) + u8::from(!chosen && !dispatched);
-    (tier, task.source, task.alias_of.is_some())
+    let tier = if chosen {
+        0
+    } else if let Some(rank) = policy.prefer.iter().position(|id| *id == task.source) {
+        rank + 1
+    } else {
+        policy.prefer.len() + 1 + usize::from(!dispatched)
+    };
+    (
+        pinned,
+        tier,
+        registry.by_id(task.source).caps.task_priority,
+        task.source,
+        task.alias_of.is_some(),
+    )
 }
 
 /// The exec plan for `rung`: a tool manager's primitive, or any other present
@@ -1035,7 +1205,19 @@ fn exec_plan(
     let manager = rung.needs == Need::ToolManagerExec;
     let op = Op::Exec { name, args };
     for present in &cascade.project.present {
-        let provider = cascade.registry.by_id(present.provider);
+        let provider = cascade
+            .registry
+            .by_id(present.provider)
+            .for_present(present);
+        if provider.kind == Kind::RUNTIME
+            && cascade
+                .policy
+                .runtime
+                .as_ref()
+                .is_none_or(|choice| choice.id != provider.id)
+        {
+            continue;
+        }
         if provider.kind.contains(Kind::TOOL_MANAGER) != manager {
             continue;
         }
@@ -1120,50 +1302,143 @@ fn probe_in_dirs(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
     probe_in(name, &joined, std::env::var_os("PATHEXT").as_deref())
 }
 
-/// The interpreter a `#!` line names.
+/// The interpreter and arguments in a file's shebang.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shebang {
-    /// The interpreter.
+    /// Interpreter program.
     pub program: String,
-    /// The one argument the kernel passes it, when the line has one.
-    pub arg: Option<String>,
+    /// Arguments, respecting the kernel's single argument and `env -S` splitting.
+    pub args: Vec<String>,
 }
 
-/// The `#!` line of `path`, resolved through `env`.
+/// Read only the bounded shebang header of a source file.
 #[must_use]
 pub fn read_shebang(path: &Path) -> Option<Shebang> {
-    let head = std::fs::read(path).ok()?;
-    let head = head.get(..head.len().min(512))?;
-    let text = String::from_utf8_lossy(head);
-    let line = text.lines().next()?.strip_prefix("#!")?.trim();
-    let mut words = line.split_whitespace();
-    let first = words.next()?;
-    let rest: Vec<&str> = words.collect();
-    if Path::new(first)
-        .file_name()
-        .is_none_or(|name| name != "env")
-    {
-        return Some(Shebang {
-            program: first.to_owned(),
-            arg: (!rest.is_empty()).then(|| rest.join(" ")),
-        });
+    use std::io::Read as _;
+    let mut head = [0; 512];
+    let read = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let text = std::str::from_utf8(&head[..read]).ok()?;
+    parse_shebang(text.lines().next()?)
+}
+
+fn parse_shebang(line: &str) -> Option<Shebang> {
+    let body = line.strip_prefix("#!")?.trim();
+    if body.is_empty() {
+        return None;
     }
-    let mut rest = rest.into_iter();
-    let mut next = rest.next()?;
-    if next == "-S" || next == "--split-string" {
-        next = rest.next()?;
-    } else if let Some(split) = next.strip_prefix("-S") {
-        let tail: Vec<&str> = rest.collect();
-        return Some(Shebang {
-            program: split.to_owned(),
-            arg: (!tail.is_empty()).then(|| tail.join(" ")),
-        });
+    let (interpreter, rest) = match body.split_once(char::is_whitespace) {
+        Some((interp, rest)) => (interp, rest.trim()),
+        None => (body, ""),
+    };
+
+    if is_env(interpreter) {
+        // `env -S` / `--split-string` re-splits its single kernel argument with
+        // env's own quote-aware parser, so quoted args (`-S deno run
+        // --allow-read="a b"`) stay one token. Plain `env` (no `-S`) does NOT
+        // split: the kernel's single argument is the program name, so
+        // `#!/usr/bin/env python3 -O` resolves to the (bogus) program
+        // `"python3 -O"` exactly as the kernel would run it; `-S` is what adds
+        // the splitting.
+        let split_form = rest
+            .strip_prefix("--split-string=")
+            .or_else(|| rest.strip_prefix("--split-string"))
+            .or_else(|| rest.strip_prefix("-S"))
+            .map(str::trim);
+        let words = split_form.map_or_else(|| single_arg(rest), split_env_string);
+        let mut parts = words.into_iter();
+        let program = parts.next()?;
+        let args = parts.collect();
+        return Some(Shebang { program, args });
     }
-    let tail: Vec<&str> = rest.collect();
+
+    // Direct interpreter: the kernel passes the whole remainder as one argument.
     Some(Shebang {
-        program: next.to_owned(),
-        arg: (!tail.is_empty()).then(|| tail.join(" ")),
+        program: interpreter.to_string(),
+        args: single_arg(rest),
     })
+}
+
+/// The interpreter's single argument as the kernel passes it: the entire
+/// remainder kept intact (internal spaces and all), or no argument at all when
+/// the remainder is empty. Used by plain `env` and direct-interpreter shebangs,
+/// neither of which the kernel whitespace-splits.
+fn single_arg(rest: &str) -> Vec<String> {
+    if rest.is_empty() {
+        Vec::new()
+    } else {
+        vec![rest.to_owned()]
+    }
+}
+
+/// Split an `env -S` / `--split-string` argument the way GNU `env`'s
+/// split-string parser does for the cases shebangs actually use: ASCII
+/// whitespace separates words, while single quotes, double quotes, and a
+/// backslash keep a run, embedded spaces and all, as one word. This
+/// preserves quoted arguments (`--allow-read="a b"`) that `split_whitespace`
+/// would tear in two. The exotic `\t`/`\n`/`\c` escape sequences env also
+/// understands are vanishingly rare in shebangs and intentionally unmodeled.
+fn split_env_string(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_ascii_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            '\'' => {
+                started = true;
+                for quoted in chars.by_ref() {
+                    if quoted == '\'' {
+                        break;
+                    }
+                    current.push(quoted);
+                }
+            }
+            '"' => {
+                started = true;
+                while let Some(quoted) = chars.next() {
+                    match quoted {
+                        '"' => break,
+                        '\\' => match chars.next() {
+                            Some(esc @ ('"' | '\\' | '$' | '`')) => current.push(esc),
+                            Some(other) => {
+                                current.push('\\');
+                                current.push(other);
+                            }
+                            None => current.push('\\'),
+                        },
+                        _ => current.push(quoted),
+                    }
+                }
+            }
+            '\\' => {
+                started = true;
+                if let Some(escaped) = chars.next() {
+                    current.push(escaped);
+                }
+            }
+            _ => {
+                started = true;
+                current.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(current);
+    }
+    words
+}
+
+/// Whether `interpreter` is the `env` launcher (by file name).
+fn is_env(interpreter: &str) -> bool {
+    Path::new(interpreter)
+        .file_name()
+        .is_some_and(|name| name == "env")
 }
 
 /// Whether the kernel can spawn `path` by itself.
@@ -1195,6 +1470,22 @@ pub fn is_directly_executable(path: &Path) -> bool {
 /// `NotFound` when the path is not a file, `NoCapability` when no present
 /// runtime runs its extension.
 pub fn file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<Plan, Refusal> {
+    let mut made = file_plan_inner(cascade, path, args)?;
+    made.found = Some(path.to_path_buf());
+    if !made.because.iter().any(|e| e.at == path) {
+        made.because.push(Evidence {
+            provider: None,
+            signal: None,
+            at: path.to_path_buf(),
+            scope: made.scope.clone(),
+            weight: Weight::Present,
+            declared: None,
+        });
+    }
+    Ok(made)
+}
+
+fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<Plan, Refusal> {
     if !path.is_file() {
         return Err(Refusal::NotFound {
             name: path.display().to_string(),
@@ -1202,6 +1493,40 @@ pub fn file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<
         });
     }
     let shebang = read_shebang(path);
+    if let Some(choice) = &cascade.policy.runtime
+        && let Some(present) = cascade
+            .project
+            .present
+            .iter()
+            .find(|p| p.provider == choice.id)
+    {
+        let provider = cascade.registry.by_id(choice.id);
+        let extension_matches = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                provider
+                    .caps
+                    .run_file
+                    .is_some_and(|cap| cap.extensions.contains(&ext))
+            });
+        let interpreter_matches = shebang.as_ref().is_some_and(|s| {
+            Path::new(&s.program)
+                .file_name()
+                .and_then(|p| p.to_str())
+                .is_some_and(|p| provider.caps.file_interpreters.contains(&p))
+        });
+        if extension_matches || interpreter_matches {
+            return plan_with(
+                cascade.tree,
+                cascade.project,
+                cascade.policy,
+                present,
+                &Op::RunFile { file: path, args },
+                cascade.registry,
+            );
+        }
+    }
     let routed = path
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1217,7 +1542,7 @@ pub fn file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<
     }
     if let Some(shebang) = shebang {
         let mut words = vec![OsString::from(&shebang.program)];
-        words.extend(shebang.arg.map(OsString::from));
+        words.extend(shebang.args.into_iter().map(OsString::from));
         words.push(OsString::from(path));
         words.extend(args.iter().map(OsString::from));
         return plan_argv(
@@ -1228,24 +1553,80 @@ pub fn file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<
             words,
         );
     }
-    plan(
+    runtime_file_plan(cascade, path, args)
+}
+
+fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<Plan, Refusal> {
+    let op = Op::RunFile { file: path, args };
+    match plan(
         cascade.tree,
         cascade.project,
         cascade.policy,
-        &Op::RunFile { file: path, args },
+        &op,
         cascade.registry,
-    )
+    ) {
+        Ok(made) => Ok(made),
+        Err(refusal @ Refusal::NoCapability { .. }) => {
+            for provider in cascade.registry.iter().filter(|p| p.caps.file_fallback) {
+                let scope = cascade
+                    .tree
+                    .members
+                    .iter()
+                    .filter(
+                        |scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir)),
+                    )
+                    .max_by_key(|scope| scope_dir(cascade.tree, scope).components().count())
+                    .cloned()
+                    .unwrap_or(Scope::Root);
+                let present = Present {
+                    provider: provider.id,
+                    scope: scope.clone(),
+                    version: None,
+                    bin_dirs: vec![],
+                    because: vec![Evidence {
+                        provider: None,
+                        signal: None,
+                        at: path.to_path_buf(),
+                        scope,
+                        weight: Weight::Present,
+                        declared: None,
+                    }],
+                };
+                match plan_with(
+                    cascade.tree,
+                    cascade.project,
+                    cascade.policy,
+                    &present,
+                    &op,
+                    cascade.registry,
+                ) {
+                    Ok(mut made) => {
+                        made.found = Some(path.to_path_buf());
+                        return Ok(made);
+                    }
+                    Err(Refusal::NoCapability { .. }) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(refusal)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Whether a present provider runs files with this extension.
 fn runs_extension(cascade: &Cascade<'_>, ext: &str) -> bool {
-    cascade.project.present.iter().any(|present| {
-        cascade
-            .registry
-            .by_id(present.provider)
-            .caps
-            .run_file
-            .is_some_and(|cap| cap.extensions.contains(&ext))
+    cascade.registry.iter().any(|provider| {
+        (provider.caps.file_fallback
+            || cascade
+                .project
+                .present
+                .iter()
+                .any(|present| present.provider == provider.id))
+            && provider
+                .caps
+                .run_file
+                .is_some_and(|cap| cap.extensions.contains(&ext))
     })
 }
 #[cfg(test)]
@@ -1339,6 +1720,7 @@ mod tests {
                     argv: t![File, Args],
                 }),
                 as_runtime: Some(RuntimeCap {
+                    package_exec: None,
                     run_task: Some(t!["--bun", "run", Task, Args]),
                     exec: Some(t!["x", "--bun", Name, Args]),
                 }),
@@ -1708,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn a_builtin_verb_is_taken_by_the_first_rung_unless_a_task_shadows_it() {
+    fn a_builtin_verb_always_precedes_a_same_named_task() {
         let registry = Registry(FAKES);
         let policy = Policy::default();
         let tree = tree();
@@ -1728,9 +2110,9 @@ mod tests {
             warnings: Vec::new(),
         };
         let found = dispatch(&cascade(&tree, &shadowed, &policy, &registry), "list", &[])
-            .expect("the task rung takes it");
-        assert_eq!(rung_of(&found), "task");
-        assert_eq!(argv(&found), ["npm", "run", "list"]);
+            .expect("the builtin rung takes it despite the task");
+        assert_eq!(rung_of(&found), "builtin");
+        assert_eq!(found.1, Dispatch::Builtin("list".to_owned()));
     }
 
     #[test]
@@ -1950,7 +2332,11 @@ mod tests {
                 read_shebang(&path),
                 Some(Shebang {
                     program: program.to_owned(),
-                    arg: arg.map(ToOwned::to_owned),
+                    args: arg
+                        .into_iter()
+                        .flat_map(str::split_whitespace)
+                        .map(ToOwned::to_owned)
+                        .collect(),
                 }),
                 "{line}"
             );

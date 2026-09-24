@@ -1,13 +1,11 @@
 //! pnpm, fast, disk-efficient Node.js package manager.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
 
+#[cfg(test)]
 use super::HostVerbosity;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("pnpm", &["--silent"]).with_stderr_diversion()
-}
 
 /// Detected via `pnpm-lock.yaml`.
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -21,6 +19,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// stderr") keeps **stdout** clean for the task alone, the exact primitive a
 /// machine-readable pipeline wants, so [`HostVerbosity::diverts_to_stderr`]
 /// appends it.
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: HostVerbosity) -> Command {
     let mut c = super::program::command("pnpm");
     if verbosity.silences() {
@@ -33,16 +32,6 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: HostVerbosity) -> 
     if !args.is_empty() {
         c.arg("--").args(args);
     }
-    c
-}
-
-/// `pnpm --package=<package> dlx <bin> [args...]`
-pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
-    let mut c = super::program::command("pnpm");
-    c.arg(format!("--package={package}"))
-        .arg("dlx")
-        .arg(bin)
-        .args(args);
     c
 }
 

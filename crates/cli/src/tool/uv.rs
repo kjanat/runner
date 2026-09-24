@@ -1,11 +1,8 @@
 //! uv, fast Python package manager.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("uv", &["--quiet"])
-}
 
 /// Detected via `uv.lock`.
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -20,6 +17,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// environment first if needed, exactly the dispatch path a
 /// `[project.scripts]` task wants. This is distinct from [`exec_cmd`]
 /// (`uvx`), which fetches and runs an arbitrary tool from `PyPI`.
+#[cfg(test)]
 pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("uv");
     // uv's global `-q`/`--quiet` precedes the `run` subcommand. It has no
@@ -31,17 +29,11 @@ pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbo
     c
 }
 
-/// `uvx --from <package> <bin> [args...]`
-pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
-    let mut c = super::program::command("uvx");
-    c.arg("--from").arg(package).arg(bin).args(args);
-    c
-}
-
 /// `uv run <file> [args...]`, execute a local Python script inside the
 /// project environment. `uv run` accepts a script path directly, syncing
 /// the environment first when needed. Distinct from [`exec_cmd`] (`uvx`),
 /// which fetches and runs a `PyPI` tool.
+#[cfg(test)]
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = super::program::command("uv");
     c.arg("run").arg(file).args(args);

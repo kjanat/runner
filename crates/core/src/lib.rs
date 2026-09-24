@@ -41,7 +41,7 @@ pub use op::Op;
 pub use plan::{
     Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, Trust, Unsafe, discover,
     dispatch, dispatch_from, ecosystem_of, file_plan, has_local_prefix, is_directly_executable,
-    plan, plan_argv, plan_found, plan_with, read_shebang, resolve_path, scope_dir,
+    plan, plan_argv, plan_found, plan_with, read_shebang, resolve_path, scope_dir, select,
 };
 pub use policy::{Choice, Layer, PerEcosystem, Policy, ReachPolicy, ScriptPolicy, TrustPolicy};
 pub use probe::{Prober, probe_in, probe_with};

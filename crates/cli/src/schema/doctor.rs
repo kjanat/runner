@@ -953,25 +953,11 @@ fn tasks<'a>(
                 python_pm_label,
             ),
             scope: task.scope(),
-            self_executable: deno_task_self_executable(ctx, task),
+            self_executable: false,
             source: anchors.get(&(task.scope(), task.source)).cloned().flatten(),
             source_pointer: super::labels::source_pointer(task),
         })
         .collect()
-}
-
-/// Whether runner can run `task` without its source's primary tool.
-///
-/// Only deno tasks that runner can drive through the embedded task shell
-/// (leaf command, no `dependencies`, no `deno` invocation) qualify; every
-/// other source has no in-process fallback and is therefore `false`.
-fn deno_task_self_executable(ctx: &ProjectContext, task: &Task) -> bool {
-    if task.source != TaskSource::DenoJson {
-        return false;
-    }
-    crate::tool::deno::find_config_upwards(task.dir(&ctx.root))
-        .and_then(|config| crate::tool::deno_exec::plan(&config, &task.name))
-        .is_some_and(|plan| plan.self_executable())
 }
 
 /// Container key holding tasks inside the source file.
@@ -1028,22 +1014,8 @@ fn tools(
         ));
     }
 
-    // Deno is required only when at least one deno task can't be
-    // self-executed (it has dependencies or invokes `deno`); a project
-    // whose deno tasks all run through the embedded shell does not need
-    // the binary. Every other tool has no in-process fallback.
-    let deno_required = ctx
-        .tasks
-        .iter()
-        .filter(|task| task.source == TaskSource::DenoJson)
-        .any(|task| !deno_task_self_executable(ctx, task));
-
     for pm in &ctx.package_managers {
-        let required = if *pm == PackageManager::Deno {
-            deno_required
-        } else {
-            true
-        };
+        let required = true;
         tools.push(probe_tool(
             pm_binary_name(*pm),
             DependencyKind::PackageManager,

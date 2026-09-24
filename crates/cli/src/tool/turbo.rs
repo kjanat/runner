@@ -2,11 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::unsupported("turbo", "--output-logs suppresses task logs")
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -77,6 +74,7 @@ fn classify_task_key(name: String) -> Option<String> {
 }
 
 /// `turbo run <task> [-- args...]`
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
     // Both verbosity axes no-op here. turbo has no `--silent` that targets only
     // its own summary; its `--output-logs` knob hides the *task's* logs (on

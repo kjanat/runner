@@ -1,13 +1,11 @@
 //! npm, the default Node.js package manager.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
 
+#[cfg(test)]
 use super::HostVerbosity;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("npm", &["--silent"])
-}
 
 /// Detected via `package-lock.json`.
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -22,6 +20,7 @@ pub(crate) fn detect(dir: &Path) -> bool {
 /// stderr. `--silent` suppresses both forms so a `-q` pipeline stays clean. npm
 /// has no stdout-diversion primitive, so
 /// [`HostVerbosity::diverts_to_stderr`] is a no-op here.
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: HostVerbosity) -> Command {
     let mut c = super::program::command("npm");
     if verbosity.silences() {
@@ -31,17 +30,6 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: HostVerbosity) -> 
     if !args.is_empty() {
         c.arg("--").args(args);
     }
-    c
-}
-
-/// `npx --package <package> -- <bin> [args...]`
-pub(crate) fn exec_package_cmd(package: &str, bin: &str, args: &[String]) -> Command {
-    let mut c = super::program::command("npx");
-    c.arg("--package")
-        .arg(package)
-        .arg("--")
-        .arg(bin)
-        .args(args);
     c
 }
 

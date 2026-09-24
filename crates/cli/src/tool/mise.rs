@@ -19,13 +19,10 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 
 use crate::types::TaskDetail;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("mise", &["--quiet"])
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -437,6 +434,7 @@ impl MiseJsonTask {
 /// supplied args keeps forwarded flags (`--watch`, `--release`) out of
 /// mise's own argument parser. Empty arg lists drop the separator so the
 /// rendered command line stays clean.
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("mise");
     // mise's global `-q`/`--quiet` precedes the `run` subcommand. It has no

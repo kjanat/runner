@@ -10,7 +10,7 @@ use runner_core::{
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Go,
     label: "go",
-    aliases: &[],
+    aliases: &["go.mod"],
     ecosystem: Ecosystem::Go,
     kind: Kind::PACKAGE_MANAGER.union(Kind::TASK_SOURCE),
     program: Some("go"),

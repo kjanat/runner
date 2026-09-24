@@ -218,7 +218,6 @@ fn runner_info_is_the_deprecated_alias_even_when_a_task_is_named_info() {
 }
 
 #[test]
-#[ignore = "docs/architecture.md section 10 step 4: run on the core"]
 fn run_info_is_the_builtin_and_the_recipe_needs_a_qualifier() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");

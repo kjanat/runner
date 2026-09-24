@@ -12,8 +12,8 @@ use serde::Serialize;
 
 use crate::commands::run::{
     ResolvedPythonPm, ScopeQuery, TokenLookup, allowed_runner_sources, ambiguous_members,
-    lookup_token, qualified_miss_error, resolve_python_pm, root_runner, runner_constraint_error,
-    select_task_entry, source_depth, source_priority,
+    lookup_token, qualified_miss_error, resolve_python_pm, root_runner, source_depth,
+    source_priority,
 };
 use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::schema::labels;
@@ -81,25 +81,18 @@ pub(crate) fn why(
         .then(|| root_runner(ctx, overrides, task_name))
         .flatten();
 
-    if root.is_none()
-        && restricted.is_empty()
-        && qualifier.is_none()
-        && !scope.is_pinned()
-        && let Some(reason) = runner_constraint_error(overrides, &candidates)
-    {
-        return Err(reason.into());
-    }
-
     // A bare name several members define (and the root does not) has no
     // winner: `run` refuses it, so `why` reports the tie instead of ranking.
     let ambiguous = (!scope.is_pinned())
         .then(|| ambiguous_members(&restricted))
         .flatten();
-    let selected = (!restricted.is_empty() && ambiguous.is_none())
-        .then(|| select_task_entry(ctx, overrides, &restricted));
+    let selected = crate::commands::run::core::selected(ctx, overrides, task);
 
     let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
 
+    if !json && print_cascade_result(ctx, overrides, task, root.is_some(), ambiguous.is_some()) {
+        return Ok(());
+    }
     if json {
         let decision =
             decision_report(&candidates, selected, qualifier, ambiguous.as_deref(), root);
@@ -193,6 +186,49 @@ struct WhyRuntime {
                        skip."
     )]
     note: Option<String>,
+}
+
+/// Render non-task cascade outcomes, leaving task details to the report below.
+fn print_cascade_result(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    task: &str,
+    root: bool,
+    ambiguous: bool,
+) -> bool {
+    match crate::commands::run::core::preview(ctx, overrides, task) {
+        Ok((rung, outcome)) if rung.name != "task" && !root => {
+            match outcome {
+                runner_core::Dispatch::Builtin(name) => {
+                    println!("Built-in {name} takes precedence over project tasks.");
+                }
+                runner_core::Dispatch::Plan(plan) => println!(
+                    "Resolved {task:?} at {}: {}",
+                    rung.name,
+                    plan.argv
+                        .iter()
+                        .map(|arg| arg.to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+            }
+            return true;
+        }
+        Err(runner_core::Refusal::Ambiguous { .. }) if ambiguous => {}
+        Err(runner_core::Refusal::NotFound { tried, .. }) => {
+            println!(
+                "No plan for {task:?}; tried {}",
+                tried.iter().map(|r| r.name).collect::<Vec<_>>().join(", ")
+            );
+            return true;
+        }
+        Err(refusal) => {
+            println!("Refused {task:?}: {refusal:?}");
+            return true;
+        }
+        Ok(_) => {}
+    }
+    false
 }
 
 /// Whether a forced runtime dispatches `source` itself, so `commands::run` skips
@@ -445,10 +481,14 @@ struct WhyMatch<'a> {
 struct WhyDecision {
     #[schemars(
         description = "Selection branch taken: `single-candidate`, `ranked`, `filtered`, \
-                       `ambiguous`, `runner-root`, or `exec-fallback`."
+                       `ambiguous`, `runner-root`, `not-found`, `refused`, or the resolving \
+                       cascade rung."
     )]
     strategy: &'static str,
     reason: String,
+    /// Cascade rungs visited while planning this token.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tried: Vec<&'static str>,
 }
 
 fn build_report<'a>(
@@ -460,6 +500,43 @@ fn build_report<'a>(
     ctx: &'a ProjectContext,
     decision: WhyDecision,
 ) -> WhyReport<'a> {
+    let mut decision = decision;
+    let mut selected = selected;
+    match crate::commands::run::core::preview(ctx, overrides, query) {
+        Ok((rung, outcome)) => {
+            decision.tried = runner_core::CASCADE
+                .iter()
+                .take_while(|r| r.name != rung.name)
+                .map(|r| r.name)
+                .chain(std::iter::once(rung.name))
+                .collect();
+            if matches!(outcome, runner_core::Dispatch::Builtin(_)) {
+                selected = None;
+                decision.strategy = "builtin";
+                decision.reason = "built-in commands take precedence over project tasks".into();
+            }
+            if selected.is_none() && candidates.is_empty() {
+                decision.strategy = rung.name;
+            }
+        }
+        Err(runner_core::Refusal::NotFound { tried, .. }) => {
+            if candidates.is_empty() {
+                decision.strategy = "not-found";
+                decision.reason = "no cascade rung resolves this token".into();
+            }
+            decision.tried = tried.iter().map(|r| r.name).collect();
+            selected = None;
+        }
+        Err(runner_core::Refusal::Ambiguous { .. }) => {
+            decision.strategy = "ambiguous";
+            selected = None;
+        }
+        Err(refusal) => {
+            decision.strategy = "refused";
+            decision.reason = format!("{refusal:?}");
+            selected = None;
+        }
+    }
     let runtime = overrides.js_runtime();
     let candidate_report = |task: &'a Task| WhyCandidate {
         task: task_report(task, ctx, runtime, pm_decision, selected),
@@ -611,6 +688,7 @@ fn decision_report(
 ) -> WhyDecision {
     if let Some(runner) = root {
         return WhyDecision {
+            tried: Vec::new(),
             strategy: "runner-root",
             reason: format!(
                 "no task matched; `runner run` invokes {}'s own entry point and lets it pick its \
@@ -621,6 +699,7 @@ fn decision_report(
     }
     if candidates.is_empty() {
         return WhyDecision {
+            tried: Vec::new(),
             strategy: "exec-fallback",
             reason: "no task matched; `runner run` would route the name through the primary \
                      package manager's exec primitive"
@@ -630,6 +709,7 @@ fn decision_report(
     if let Some(members) = ambiguous {
         let names: Vec<&str> = members.iter().map(|member| member.label.as_str()).collect();
         return WhyDecision {
+            tried: Vec::new(),
             strategy: "ambiguous",
             reason: format!(
                 "{} workspace members define this name and the root does not; `runner run` \
@@ -659,17 +739,20 @@ fn decision_report(
             },
         );
         return WhyDecision {
+            tried: Vec::new(),
             strategy: "filtered",
             reason,
         };
     }
     if candidates.len() == 1 {
         return WhyDecision {
+            tried: Vec::new(),
             strategy: "single-candidate",
             reason: "exact task name matched one candidate".to_string(),
         };
     }
     WhyDecision {
+        tried: Vec::new(),
         strategy: "ranked",
         reason: format!(
             "{} candidates; lowest (source_priority, source_depth, display_order, alias-last) key \
@@ -1012,7 +1095,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn why_renders_the_runner_constraint_refusal() {
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);
         let overrides = ResolutionOverrides::from_cli_and_env(
@@ -1105,7 +1187,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn report_refuses_an_unmatched_name_and_lists_the_rungs_tried() {
         let ctx = context(vec![]);
         let report = report(
@@ -1172,11 +1253,30 @@ mod tests {
     }
 
     #[test]
+    fn report_builtin_takes_precedence_over_a_same_named_task() {
+        let ctx = context(vec![task("list", TaskSource::Justfile)]);
+        let report = report(
+            "list",
+            &[&ctx.tasks[0]],
+            ctx.tasks.first(),
+            None,
+            &ResolutionOverrides::default(),
+            &ctx,
+            None,
+        );
+        let json = serde_json::to_value(report).unwrap();
+        assert_eq!(json["decision"]["strategy"], "builtin");
+        assert_eq!(json["decision"]["tried"], serde_json::json!(["builtin"]));
+        assert!(json["selected"].is_null());
+    }
+
+    #[test]
     fn report_ranks_multiple_candidates() {
-        let ctx = context(vec![
+        let mut ctx = context(vec![
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
+        ctx.package_managers.push(PackageManager::Npm);
         let candidates: Vec<&Task> = ctx.tasks.iter().collect();
         let report = report(
             "build",

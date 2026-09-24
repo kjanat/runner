@@ -1679,6 +1679,6 @@ mod registry_drift {
                     && TaskSource::from_label(label).is_none()
             })
             .collect();
-        assert_eq!(unknown, ["volta"]);
+        assert_eq!(unknown, ["volta", "python"]);
     }
 }

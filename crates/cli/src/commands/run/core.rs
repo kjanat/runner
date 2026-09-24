@@ -84,6 +84,25 @@ pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> Project {
             },
         );
     }
+    let tree = tree(ctx);
+    let evidence: Vec<_> = found
+        .present
+        .iter()
+        .flat_map(|p| p.because.iter().cloned())
+        .collect();
+    for provider in REGISTRY.iter() {
+        if let Some(hook) = provider.hooks.after_observe {
+            for evidence in hook(&tree, &evidence) {
+                if let Some(present) = found
+                    .present
+                    .iter_mut()
+                    .find(|p| Some(p.provider) == evidence.provider && p.scope == evidence.scope)
+                {
+                    present.because.push(evidence);
+                }
+            }
+        }
+    }
     found
 }
 
@@ -186,6 +205,32 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
         );
     }
     Policy {
+        prefer: overrides
+            .prefer_sources
+            .iter()
+            .copied()
+            .chain(
+                overrides
+                    .prefer_runners
+                    .iter()
+                    .filter_map(|runner| runner.task_source()),
+            )
+            .filter_map(source_provider)
+            .collect(),
+        task_sources: overrides
+            .task_source_overrides
+            .iter()
+            .map(|(name, sources)| {
+                (
+                    name.clone(),
+                    sources
+                        .iter()
+                        .copied()
+                        .filter_map(source_provider)
+                        .collect(),
+                )
+            })
+            .collect(),
         pm,
         runner: overrides
             .runner
@@ -199,10 +244,119 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
         scripts: runner_core::ScriptPolicy::Default,
         reach: overrides.reach,
         verbosity: verbosity(overrides),
+        host_stderr: false,
         env: env_layers(overrides),
         tool_ops: tool_ops(overrides),
         trust: runner_core::TrustPolicy::Project,
     }
+}
+
+/// Select task metadata through the same core selector used by dispatch.
+pub(crate) fn selected<'a>(
+    ctx: &'a ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> Option<&'a Task> {
+    let tree = tree(ctx);
+    let policy = policy(overrides);
+    let project = project_under(ctx, &policy);
+    let cascade = runner_core::Cascade {
+        tree: &tree,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: None,
+        confirm: None,
+    };
+    let selected = runner_core::select(&cascade, token).ok().flatten()?;
+    ctx.tasks
+        .iter()
+        .find(|entry| task(entry).as_ref() == Some(selected))
+}
+
+/// Inputs shared by execution and explanation while the detector/resolver migrate.
+pub(crate) struct Prepared {
+    pub tree: Tree,
+    pub policy: Policy,
+    pub project: Project,
+    pub node: Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
+    pub requested: crate::tool::HostVerbosity,
+}
+
+pub(crate) fn prepare(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> Prepared {
+    let tree = tree(ctx);
+    let mut policy = policy(overrides);
+    let node = crate::resolver::Resolver::new(ctx, overrides).resolve_node_pm();
+    if let Ok(decision) = &node
+        && let Some(id) = provider(decision.pm.label())
+    {
+        policy
+            .pm
+            .0
+            .entry(ecosystem_of(decision.pm.ecosystem()))
+            .or_insert(Choice {
+                id,
+                from: Layer::Probe,
+            });
+    }
+    let key =
+        selected(ctx, overrides, token).map_or_else(|| token.to_owned(), super::task_output_key);
+    let requested = overrides.host_verbosity_for(&key);
+    policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
+    policy.verbosity = match requested.diagnostics {
+        crate::tool::HostDiagnostics::Normal => Verbosity::Normal,
+        crate::tool::HostDiagnostics::Quiet => Verbosity::Quiet,
+        crate::tool::HostDiagnostics::Reduced => Verbosity::VeryQuiet,
+    };
+    if overrides.explain {
+        policy.reach = runner_core::ReachPolicy::Allow;
+    }
+    let project = project_under(ctx, &policy);
+    Prepared {
+        tree,
+        policy,
+        project,
+        node,
+        requested,
+    }
+}
+
+impl Prepared {
+    pub(crate) fn cascade<'a>(
+        &'a self,
+        dep: &'a runner_core::DepFn<'a>,
+        confirm: Option<&'a runner_core::ConfirmFn<'a>>,
+    ) -> runner_core::Cascade<'a> {
+        runner_core::Cascade {
+            tree: &self.tree,
+            project: &self.project,
+            policy: &self.policy,
+            registry: &REGISTRY,
+            builtins: &["install", "clean", "list", "info", "completions"],
+            dep: Some(dep),
+            confirm,
+        }
+    }
+}
+
+/// Plan a token without authorizing or executing it, for reports.
+pub(crate) fn preview(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
+    let mut prepared = prepare(ctx, overrides, token);
+    prepared.policy.reach = runner_core::ReachPolicy::Allow;
+    let dep = |name: &str| {
+        super::local_dep::installed_binary(ctx, name)
+            .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
+    };
+    runner_core::dispatch(&prepared.cascade(&dep, None), token, &[])
 }
 
 /// The layer an override came from.

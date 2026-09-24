@@ -26,7 +26,9 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Result, anyhow, bail};
@@ -63,6 +65,7 @@ pub(super) struct LocalDispatch {
 /// - `Err(_)`, `token` is unambiguously a local path that cannot be run
 ///   (a missing file behind an explicit `./`/`/`/`~` prefix, or a file of
 ///   unrecognized type); surfaced as a clear error rather than a 404.
+#[cfg(test)]
 pub(super) fn try_path_token(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -102,6 +105,7 @@ pub(super) fn try_path_token(
 ///   in a node-only project). Surfaces the same clear error the explicit `./`
 ///   form raises, never a swallowed `None` that mis-routes an existing file
 ///   into `pnpm exec`/`npx` and a registry 404 (#69).
+#[cfg(test)]
 pub(super) fn try_bare_file(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -145,6 +149,7 @@ pub(super) fn bare_file_in(
 /// Resolve an already-path-like `token` (canonicalized to `path`) into a
 /// dispatch. Split from [`try_path_token`] so the filesystem-dependent logic
 /// can be unit-tested against temp files with absolute paths.
+#[cfg(test)]
 fn dispatch_for_path(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -333,6 +338,7 @@ const fn is_windows_drive_abs(token: &str) -> bool {
 /// child will run in. An absolute path (or a `~`-expanded one) is passed to
 /// the spawned command verbatim so the child's working directory cannot
 /// reinterpret it.
+#[cfg(test)]
 fn resolve_path(base: &Path, token: &str) -> PathBuf {
     let expanded = crate::expand_tilde(Path::new(token));
     if expanded.is_absolute() {
@@ -793,10 +799,7 @@ fn py_runtime(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Runtime 
 fn command_for_runtime(runtime: Runtime, file: &Path, args: &[String]) -> (String, Command) {
     match runtime {
         Runtime::Bun => (String::from("bun"), tool::bun::run_file_cmd(file, args)),
-        Runtime::Deno => (
-            format!("deno run {}", tool::deno::RUN_FILE_PERMISSIONS.join(" ")),
-            tool::deno::run_file_cmd(file, args),
-        ),
+        Runtime::Deno => ("deno run".to_string(), tool::deno::run_file_cmd(file, args)),
         Runtime::Node => (String::from("node"), tool::node::run_file_cmd(file, args)),
         Runtime::Uv => (String::from("uv run"), tool::uv::run_file_cmd(file, args)),
         Runtime::Python => (
@@ -839,7 +842,9 @@ fn windows_script_command(file: &Path, args: &[String]) -> (&'static str, Comman
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    #[cfg(test)]
+    use std::path::PathBuf;
 
     use super::{
         Runtime, SourceRouting, bare_file_in, build_command, dispatch_for_path, has_local_prefix,
@@ -882,10 +887,7 @@ mod tests {
     }
 
     fn deno_run_label() -> String {
-        format!(
-            "deno run {}",
-            crate::tool::deno::RUN_FILE_PERMISSIONS.join(" ")
-        )
+        "deno run".into()
     }
 
     #[test]

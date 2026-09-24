@@ -35,6 +35,20 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: super::WRITES,
     caps: Capabilities {
+        package_exec: Some(ExecCap {
+            program: None,
+            argv: runner_core::Template(&[
+                runner_core::Piece::Concat(&[
+                    runner_core::Piece::Lit("--package="),
+                    runner_core::Piece::Package,
+                ]),
+                runner_core::Piece::Lit("dlx"),
+                runner_core::Piece::Name,
+                runner_core::Piece::Args,
+            ]),
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
         install: Some(InstallCap {
             argv: t!["install", Frozen, Scripts],
             frozen: Frozen::Flag("--frozen-lockfile"),

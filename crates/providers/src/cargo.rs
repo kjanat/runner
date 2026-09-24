@@ -9,7 +9,7 @@ use runner_core::{
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Cargo,
     label: "cargo",
-    aliases: &[],
+    aliases: &["cargo-alias"],
     ecosystem: Ecosystem::Rust,
     kind: Kind::PACKAGE_MANAGER.union(Kind::TASK_SOURCE),
     program: Some("cargo"),
@@ -20,6 +20,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: &["target"],
     caps: Capabilities {
+        task_priority: 3,
         install: Some(InstallCap {
             argv: t!["fetch", Frozen],
             frozen: Frozen::Flag("--locked"),

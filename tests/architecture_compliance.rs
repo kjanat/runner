@@ -220,3 +220,61 @@ fn a_host_manager_plan_cannot_resolve_to_a_project_shim() {
         "host\n"
     );
 }
+
+#[test]
+fn go_task_keeps_vcs_stamping_in_the_planned_environment() {
+    let fixture = Fixture::new();
+    fixture.file("go.mod", "module example.com/auditgo\n\ngo 1.24\n");
+    fixture.file("main.go", "package main\nfunc main() {}\n");
+    std::fs::create_dir(fixture.0.join(".git")).unwrap();
+    fixture.program("git");
+    fixture.program("go");
+    fixture.file(
+        "bin/go",
+        "#!/bin/sh\ncase \"$1\" in\n version) echo 'go version go1.24.0 linux/amd64';;\n run) \
+         printf '%s\\n' \"$GOFLAGS\" >> \"$AUDIT_LOG\";;\nesac\n",
+    );
+    let output = fixture.run(&["run", "auditgo"], "local");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.0.join("executed")).unwrap(),
+        "-buildvcs=true\n"
+    );
+}
+
+#[test]
+#[cfg(debug_assertions)]
+fn cli_cannot_spawn_a_shell_command_string_through_the_host_rung() {
+    let fixture = Fixture::new();
+    fixture.program("sh");
+    let output = fixture.run(&["run", "sh", "-c", "exit 0"], "allow");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("never a shell string"));
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn cli_yarn_variant_uses_the_observed_package_manager_declaration() {
+    for (version, verb) in [("1.22.22", "run"), ("4.0.0", "exec")] {
+        let fixture = Fixture::new();
+        fixture.file(
+            "package.json",
+            &format!(r#"{{"packageManager":"yarn@{version}"}}"#),
+        );
+        std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
+        fixture.file("yarn.lock", "");
+        fixture.program("yarn");
+        let output = fixture.run(&["run", "runner-local-variant-tool"], "local");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executed = std::fs::read_to_string(fixture.0.join("executed")).unwrap();
+        assert_eq!(executed.trim(), format!("{verb} runner-local-variant-tool"));
+    }
+}

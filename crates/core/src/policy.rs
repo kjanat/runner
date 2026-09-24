@@ -115,6 +115,10 @@ pub struct Policy {
     pub pm: PerEcosystem<Choice>,
     /// The task runner.
     pub runner: Option<Choice>,
+    /// Preferred task sources, in order; other sources remain candidates.
+    pub prefer: Vec<ProviderId>,
+    /// Per-task source rankings from configuration.
+    pub task_sources: BTreeMap<String, Vec<ProviderId>>,
     /// The runtime.
     pub runtime: Option<Choice>,
     /// Whether installs must not touch the lockfile.
@@ -125,6 +129,8 @@ pub struct Policy {
     pub reach: ReachPolicy,
     /// The host diagnostic level.
     pub verbosity: Verbosity,
+    /// Divert host diagnostics to stderr where the provider supports it.
+    pub host_stderr: bool,
     /// Environment layers.
     pub env: EnvLayers,
     /// The operations each tool manager runs on install.

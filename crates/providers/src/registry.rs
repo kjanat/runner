@@ -25,6 +25,7 @@ pub static PROVIDERS: &[Provider] = &[
     crate::runners::bacon::PROVIDER,
     crate::managers::volta::PROVIDER,
     crate::node::runtime::PROVIDER,
+    crate::python::runtime::PROVIDER,
     crate::node::package_json::PROVIDER,
     crate::python::pyproject::PROVIDER,
 ];

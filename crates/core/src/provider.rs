@@ -47,6 +47,8 @@ pub enum ProviderId {
     Volta,
     /// Node.js.
     Node,
+    /// Python source files.
+    Python,
     /// The `package.json` scripts table.
     PackageJson,
     /// The `pyproject.toml` scripts table.
@@ -55,7 +57,7 @@ pub enum ProviderId {
 
 impl ProviderId {
     /// Every id, in registry order.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::Npm,
         Self::Yarn,
         Self::Pnpm,
@@ -77,6 +79,7 @@ impl ProviderId {
         Self::Bacon,
         Self::Volta,
         Self::Node,
+        Self::Python,
         Self::PackageJson,
         Self::Pyproject,
     ];

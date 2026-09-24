@@ -9,7 +9,7 @@ use runner_core::{
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Turbo,
     label: "turbo",
-    aliases: &[],
+    aliases: &["turbo.json", "turbo.jsonc"],
     ecosystem: Ecosystem::Node,
     kind: Kind::TASK_SOURCE,
     program: Some("turbo"),
@@ -20,6 +20,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: &[],
     caps: Capabilities {
+        task_priority: 0,
         run_task: Some(RunTaskCap {
             argv: t!["run", Task, Sep("--"), Args],
             sources: &[ProviderId::Turbo],

@@ -1019,48 +1019,26 @@ fn dispatch_run(
             "task name required (drop -s/-p for single-task mode or supply at least one task name)"
         );
     };
-    if args.is_empty()
-        && let Some(code) = run_path_builtin_fallback(ctx, overrides, task)?
-    {
-        return Ok(code);
-    }
     commands::run(ctx, overrides, task, &args, None)
 }
 
-/// Run-path fallback for builtin verbs.
-///
-/// When a bare, arg-less `run`/`runner run` token names a built-in verb and
-/// no same-named task exists, run that built-in's default (no-flag) form,
-/// the same behavior the explicit `runner <verb>` subcommand provides. A
-/// project task of the same name takes precedence (handled by the early
-/// `has_task` return → falls through to `commands::run`).
-///
-/// Returns `Ok(Some(code))` when the fallback handled the token, `Ok(None)`
-/// to fall through to `commands::run` (task dispatch / PM-exec).
-///
-/// Qualified tokens (`source:verb`) carry the `source:` prefix, so they never
-/// match a bare verb arm and fall through untouched, no qualifier parsing
-/// needed here. `info` maps to a plain `list` (no deprecation warning): the
-/// deprecation is specific to the explicit `runner info` subcommand, and
-/// emitting it on the run path, where the user typed `run info`, would be
-/// misleading and would spuriously fire the GitHub Actions annotation.
+/// Render a builtin selected by the core's first cascade rung.
+/// A same-named task is addressed through an explicit source qualifier.
 fn run_path_builtin_fallback(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
     name: &str,
 ) -> Result<Option<i32>> {
-    if has_task(ctx, name) {
-        return Ok(None);
-    }
     let code = match name {
         "install" => commands::install(ctx, overrides, commands::install::InstallFlags::default())?,
         "clean" => {
             commands::clean(ctx, overrides, false, false)?;
             0
         }
-        // `info` maps to a plain `list`: the deprecation warning is specific
-        // to the explicit `runner info` subcommand, not the run path.
         "list" | "info" => {
+            if name == "info" && overrides.shows_warnings() {
+                eprintln!("warn: `runner info` is deprecated; use `runner list`");
+            }
             commands::list(ctx, overrides, false, false, None)?;
             0
         }
@@ -1346,6 +1324,7 @@ fn dispatch_schema(all: bool, output: Option<&Path>) -> Result<i32> {
 }
 
 /// Whether the detected project defines a task with the given name.
+#[cfg(test)]
 fn has_task(ctx: &types::ProjectContext, name: &str) -> bool {
     ctx.tasks.iter().any(|task| task.name == name)
 }

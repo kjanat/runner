@@ -2,11 +2,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::unsupported("node", "node --run has no host diagnostic switch")
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -37,6 +34,7 @@ pub(crate) fn has_package_json(dir: &Path) -> bool {
 /// `node <file> [args...]`, execute a local source file with the Node.js
 /// runtime. Used as the default JS/TS runtime for local-file dispatch when
 /// the project is neither a Bun nor a Deno project.
+#[cfg(test)]
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = program::command("node");
     c.arg(file).args(args);
@@ -52,6 +50,7 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
 /// script's argument, never node's watch mode.
 ///
 /// `node --run` writes nothing of its own, so both verbosity axes no-op.
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
     let mut c = program::command("node");
     c.arg("--run").arg(task);

@@ -4,11 +4,8 @@
 //! including `.dist` overrides.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("go-task", &["-s"])
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -144,6 +141,7 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 }
 
 /// `task <task> [args...]`
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = root_cmd(&[], verbosity);
     c.arg(task).args(args);
@@ -151,6 +149,7 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
 }
 
 /// `task [-s] [args...]`, leaving the task to the Taskfile's default.
+#[cfg(test)]
 pub(crate) fn root_cmd(args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("task");
     // go-task's `-s`/`--silent` disables task-name and command echo. It has no

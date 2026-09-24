@@ -25,14 +25,15 @@ Anything that cannot be derived from it does not belong in the core.
 ## 2. Pipeline
 
 ```text
-observe(tree)            -> Vec<Evidence>
+observe(tree)            -> Result<Vec<Evidence>, io::Error>
 resolve(evidence, policy) -> Project { present: Vec<Present>, tasks: Vec<Task>, warnings }
 plan(project, op, policy) -> Result<Plan, Refusal>
 execute(plan)             -> ExitStatus
 explain(plan | project)   -> Report
 ```
 
-Each subcommand is one of these stages exposed.
+Each subcommand is one of these stages exposed. A failed read-only observation
+query is an error with its provider and scope, never an empty evidence list.
 
 | Subcommand                    | Stops after | Notes                                               |
 | ----------------------------- | ----------- | --------------------------------------------------- |
@@ -234,6 +235,8 @@ capability parameter. Add the parameter.
 pub struct Capabilities {
     pub install: Option<InstallCap>,
     pub run_task: Option<RunTaskCap>,
+    pub run_default: Option<Template>,
+    pub package_exec: Option<ExecCap>,
     pub exec: Option<ExecCap>,
     pub run_file: Option<RunFileCap>,
     pub test: Option<TestCap>,
@@ -244,10 +247,22 @@ pub struct Capabilities {
     pub usage: Option<UsageCap>,
     pub operations: &'static [&'static str],
     pub quiet: QuietSupport,
+    pub variants: &'static [(&'static str, Self)],
+    pub file_fallback: bool,
+    pub file_interpreters: &'static [&'static str],
+    pub task_priority: u8,
 }
 ```
 
 Each capability holds an argv template and the parameters policy can turn on.
+Observation hooks can derive `Declared::Variant` evidence; planning selects the
+matching capability table without branching on provider identity. Yarn uses this
+for Classic versus Berry. `file_fallback` declares a default interpreter for a
+supported file when no project runtime takes it. This does not add the runtime
+to `Project.present`: the resulting plan carries the discovered file as evidence.
+`file_interpreters` identifies shebangs an explicitly chosen runtime can replace.
+`task_priority` orders otherwise unranked task sources. Provider defaults and
+policy preference lists rank candidates; they do not remove later cascade rungs.
 
 ```rust
 pub struct InstallCap {
@@ -360,11 +375,14 @@ pub enum Layer {
 pub struct Policy {
     pub pm: PerEcosystem<Choice>, // `--pm`, `RUNNER_PM`, `[pm].<eco>`
     pub runner: Option<Choice>,   // `--runner`, `RUNNER_RUNNER`, `[tasks].prefer`
+    pub prefer: Vec<ProviderId>,  // rank-only source preference
+    pub task_sources: BTreeMap<String, Vec<ProviderId>>, // per-task source order
     pub runtime: Option<Choice>,  // `--runtime`, `RUNNER_RUNTIME`, `[runtime].js`
     pub frozen: bool,
     pub scripts: ScriptPolicy,
     pub reach: ReachPolicy, // Ask | Allow | Local
     pub verbosity: Verbosity,
+    pub host_stderr: bool,
     pub env: EnvLayers,                              // project, per tool, per task
     pub tool_ops: BTreeMap<ProviderId, Vec<String>>, // `[tools.<name>].install`
     pub trust: TrustPolicy,                          // see section 6
@@ -442,7 +460,11 @@ pub enum Refusal {
 
 A `Plan` is complete. `execute` adds nothing and decides nothing. That is
 what makes `why`, `--explain`, `doctor` and the arrow line agree, because
-they all print the same struct.
+they all print the same struct. Command construction, synchronous execution and
+parallel spawning share the evidence and shell-string guards. Configured execution
+also checks that the command's argv still equals the plan. The CLI run path requires
+a plan; it cannot fall back to spawning an unplanned command. Task bodies are left
+to their owning tools, including `deno task`; runner does not evaluate shell strings.
 
 `Trust` is set by the op. Toolchain installs and health checks are `Host`.
 Everything the project asked for is `Project`. See section 6.
@@ -734,7 +756,7 @@ never reimplements any of these.
 fn run(args) -> ExitStatus {
     let tree = Tree::open(args.dir)?;
     let policy = Policy::from(&args, &config::load(&tree)?);
-    let evidence = observe(&tree);
+    let evidence = observe(&tree)?;
     let project = resolve(&tree, evidence, &policy);
     let plan = plan(&project, &Op::from(&args), &policy)?;
     if args.explain { return render::explain(&plan); }

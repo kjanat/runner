@@ -28,9 +28,10 @@
 
 use anyhow::Result;
 
-mod core;
+pub(crate) mod core;
 mod dispatch;
 mod local_dep;
+#[cfg(test)]
 mod local_file;
 mod qualify;
 mod runtime;
@@ -38,7 +39,7 @@ mod select;
 
 pub(crate) use qualify::{
     ScopeQuery, TokenLookup, allowed_runner_sources, lookup_token, precheck_task,
-    qualified_miss_error, root_runner, runner_constraint_error,
+    qualified_miss_error, root_runner,
 };
 pub(crate) use select::{
     ambiguous_members, narrow_scope, select_task_entry, source_depth, source_priority,
@@ -91,12 +92,15 @@ pub(crate) fn run(
     let key = task_key_for_token(ctx, overrides, task);
     let _group = super::task_group(overrides, task, &key);
     match dispatch {
-        dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
-        dispatch::Dispatch::DenoSelfExec(self_exec) => {
-            let (stdout, stderr) = overrides.task_streams_for(&key);
-            super::print_output_explain(overrides, &key);
-            self_exec.run(stdout, stderr)
+        dispatch::Dispatch::Builtin(name) => {
+            if args.is_empty() {
+                return Ok(crate::run_path_builtin_fallback(ctx, overrides, &name)?.unwrap_or(0));
+            }
+            Ok(super::exit_code(runner_core::execute(&builtin_plan(
+                ctx, overrides, &name, args,
+            )?)?))
         }
+        dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
     }
 }
 
@@ -115,22 +119,7 @@ pub(crate) fn task_key_for_token(
     overrides: &ResolutionOverrides,
     token: &str,
 ) -> String {
-    let (lookup, found) = lookup_token(ctx, token);
-    let task = if found.is_empty() {
-        None
-    } else {
-        Some(lookup.qualifier.map_or_else(
-            || select_task_entry(ctx, overrides, &found),
-            |source| {
-                found
-                    .iter()
-                    .find(|task| task.source == source)
-                    .copied()
-                    .unwrap_or_else(|| select_task_entry(ctx, overrides, &found))
-            },
-        ))
-    };
-    task.map_or_else(|| lookup.task_name.to_string(), task_output_key)
+    core::selected(ctx, overrides, token).map_or_else(|| token.to_string(), task_output_key)
 }
 
 /// Resolve `task` and spawn it with piped stdout/stderr (so the caller
@@ -147,8 +136,6 @@ pub(crate) fn dispatch_task_piped(
 ) -> Result<std::process::Child> {
     use std::process::Stdio;
 
-    // Chain mode disables deno self-exec (in-process execution can't be
-    // piped/spawned as a child), so resolution always yields a Command.
     match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, false)? {
         dispatch::Dispatch::Spawn(mut spawn) => {
             spawn
@@ -158,11 +145,39 @@ pub(crate) fn dispatch_task_piped(
                 .stderr(Stdio::piped());
             spawn.spawn()
         }
-        dispatch::Dispatch::DenoSelfExec(_) => {
-            anyhow::bail!("internal: deno self-exec is not available in chain mode")
+        dispatch::Dispatch::Builtin(name) => {
+            let plan = builtin_plan(ctx, overrides, &name, args)?;
+            let mut command = runner_core::execute::command(&plan);
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            runner_core::execute::spawn(&plan, &mut command).map_err(Into::into)
         }
     }
 }
+fn builtin_plan(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    name: &str,
+    args: &[String],
+) -> Result<runner_core::Plan> {
+    let prepared = core::prepare(ctx, overrides, name);
+    let args = std::iter::once(name.to_owned())
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut plan = runner_core::plan_found(
+        &prepared.tree,
+        &prepared.project,
+        &prepared.policy,
+        std::env::current_exe()?,
+        &args,
+    )
+    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    super::configure_plan(&mut plan, overrides, name);
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

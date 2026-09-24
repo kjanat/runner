@@ -99,8 +99,15 @@
           "type": "string"
         },
         "strategy": {
-          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, `ambiguous`, `runner-root`, or `exec-fallback`.",
+          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, `ambiguous`, `runner-root`, `not-found`, `refused`, or the resolving cascade rung.",
           "type": "string"
+        },
+        "tried": {
+          "description": "Cascade rungs visited while planning this token.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

@@ -92,7 +92,13 @@ pub(crate) fn install_pms(
     if plan.pms.is_empty() {
         if let Some(task) = task {
             drop(group);
-            return super::run::run(ctx, overrides, &ctx.spelling(task), &[], sink);
+            return super::run::run(
+                ctx,
+                overrides,
+                &format!("{}:{}", task.source.label(), task.name),
+                &[],
+                sink,
+            );
         }
         return Ok(0);
     }

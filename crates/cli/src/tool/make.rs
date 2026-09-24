@@ -1,11 +1,8 @@
 //! GNU Make, build automation via `Makefile`.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("make", &["-s"])
-}
 
 use anyhow::Context as _;
 
@@ -111,6 +108,7 @@ fn is_suffix_rule(target: &str) -> bool {
 }
 
 /// `make <task> [args...]`
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = root_cmd(&[], verbosity);
     c.arg(task).args(args);
@@ -145,6 +143,7 @@ fn is_assignment(arg: &str) -> bool {
 }
 
 /// `make [-s] [args...]`, leaving the goal to the Makefile's default.
+#[cfg(test)]
 pub(crate) fn root_cmd(args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("make");
     // `make -s` (silent mode) suppresses the command echo. make has no

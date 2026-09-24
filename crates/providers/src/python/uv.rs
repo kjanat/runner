@@ -17,6 +17,12 @@ pub const PROVIDER: Provider = Provider {
     signals: &[Signal::Lockfile("uv.lock"), Signal::Probe("uv")],
     writes: &[".venv"],
     caps: Capabilities {
+        package_exec: Some(ExecCap {
+            program: Some("uvx"),
+            argv: t!["--from", Package, Name, Args],
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
         install: Some(InstallCap {
             argv: t!["sync", Frozen],
             frozen: Frozen::Flag("--frozen"),

@@ -16,7 +16,10 @@ pub const PROVIDER: Provider = Provider {
         Signal::File("package.yaml"),
     ],
     writes: &[],
-    caps: Capabilities::NONE,
+    caps: Capabilities {
+        task_priority: 1,
+        ..Capabilities::NONE
+    },
     tasks: None,
     version: None,
     hooks: Hooks::NONE,

@@ -39,6 +39,13 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: super::WRITES,
     caps: Capabilities {
+        package_exec: Some(ExecCap {
+            program: None,
+            argv: t!["x", "--package", Package, Name, Args],
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
+        file_interpreters: &["node", "nodejs", "bun", "deno"],
         install: Some(InstallCap {
             argv: t!["install", Frozen, Scripts],
             frozen: Frozen::Flag("--frozen-lockfile"),
@@ -74,6 +81,7 @@ pub const PROVIDER: Provider = Provider {
         }),
         clean: Some(super::CLEAN),
         as_runtime: Some(RuntimeCap {
+            package_exec: Some(t!["x", "--bun", "--package", Package, Name, Args]),
             run_task: Some(t!["--bun", "run", Quiet, Task, Args]),
             exec: Some(t!["x", "--bun", Name, Args]),
         }),

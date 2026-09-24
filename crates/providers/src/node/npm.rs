@@ -35,6 +35,12 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: super::WRITES,
     caps: Capabilities {
+        package_exec: Some(ExecCap {
+            program: Some("npx"),
+            argv: t!["--package", Package, "--", Name, Args],
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
         install: Some(InstallCap {
             argv: t!["install", Scripts],
             frozen: Frozen::Argv(t!["ci", Scripts]),

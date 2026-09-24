@@ -20,9 +20,11 @@
 //! literally into the task's argv, so deno must not get one. bun accepts args
 //! directly.
 
+#[cfg(test)]
 use std::process::Command;
 
 use crate::resolver::ResolutionOverrides;
+#[cfg(test)]
 use crate::tool;
 use crate::types::{DetectionWarning, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
 
@@ -33,6 +35,7 @@ pub(super) fn overridden(overrides: &ResolutionOverrides) -> Option<JsRuntime> {
 }
 
 /// Build the `package.json`-script command for `runtime`.
+#[cfg(test)]
 pub(super) fn script_cmd(
     runtime: JsRuntime,
     task: &str,
@@ -43,27 +46,6 @@ pub(super) fn script_cmd(
         JsRuntime::Node => tool::node::run_cmd(task, args, verbosity),
         JsRuntime::Bun => tool::bun::run_cmd_with_runtime(task, args, verbosity, true),
         JsRuntime::Deno => tool::deno::run_cmd(task, args, verbosity),
-    }
-}
-
-/// Build the package-selecting exec command for `runtime`, plus its trace
-/// label.
-pub(super) fn exec_package_cmd(
-    runtime: JsRuntime,
-    package: &str,
-    bin: &str,
-    args: &[String],
-) -> (&'static str, Command) {
-    match runtime {
-        JsRuntime::Node => (
-            "npx --package",
-            tool::npm::exec_package_cmd(package, bin, args),
-        ),
-        JsRuntime::Bun => (
-            "bun x --bun --package",
-            tool::bun::exec_package_cmd_with_runtime(package, bin, args, true),
-        ),
-        JsRuntime::Deno => ("deno x", tool::deno::exec_package_cmd(package, bin, args)),
     }
 }
 

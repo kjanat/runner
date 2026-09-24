@@ -63,7 +63,6 @@ fn runner_list_is_always_builtin_even_with_a_list_task() {
 }
 
 #[test]
-#[ignore = "docs/architecture.md section 10 step 4: run on the core"]
 fn run_list_is_the_builtin_and_the_recipe_needs_a_qualifier() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");

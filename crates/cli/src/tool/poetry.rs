@@ -1,11 +1,8 @@
 //! Poetry, Python dependency manager.
 
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::quiet("poetry", &["--quiet"])
-}
 
 /// Detected via `poetry.lock` or Poetry markers in `pyproject.toml`.
 pub(crate) fn detect(dir: &Path) -> bool {
@@ -52,6 +49,7 @@ fn is_poetry_pyproject(content: &str) -> bool {
 
 /// `poetry run <script> [args...]`, run a `[project.scripts]` console
 /// entry point inside the project's virtualenv.
+#[cfg(test)]
 pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
     let mut c = super::program::command("poetry");
     // poetry's global `-q`/`--quiet` precedes the `run` subcommand. It has no

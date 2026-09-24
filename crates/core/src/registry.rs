@@ -22,6 +22,7 @@ pub type BeforePlanFn = fn(&Present, &Op<'_>, &mut Vec<Warning>);
 pub type AfterObserveFn = fn(&Tree, &[Evidence]) -> Vec<Evidence>;
 
 /// One tool runner knows about.
+#[derive(Clone, Copy)]
 pub struct Provider {
     /// Registry index.
     pub id: ProviderId,
@@ -50,6 +51,26 @@ pub struct Provider {
 }
 
 impl Provider {
+    /// Select the capability table named by this scope's observed variant.
+    #[must_use]
+    pub fn for_present(&self, present: &Present) -> Self {
+        let caps = present
+            .because
+            .iter()
+            .find_map(|evidence| {
+                let Some(crate::Declared::Variant(name)) = &evidence.declared else {
+                    return None;
+                };
+                self.caps
+                    .variants
+                    .iter()
+                    .find(|(label, _)| *label == name)
+                    .map(|(_, caps)| *caps)
+            })
+            .unwrap_or(self.caps);
+        Self { caps, ..*self }
+    }
+
     /// Whether `spelling` is the label or one of the aliases.
     #[must_use]
     pub fn answers_to(&self, spelling: &str) -> bool {

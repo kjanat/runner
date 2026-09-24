@@ -9,11 +9,8 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(test)]
 use std::process::Command;
-
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::unsupported("bacon", "no host-only quiet mode")
-}
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -163,20 +160,12 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 /// rejected as an unknown flag or, worse, interpreted as a bacon option. We
 /// always insert `--` when args are present so flags and positionals reach
 /// the underlying job verbatim.
+#[cfg(test)]
 pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
     // bacon is an interactive TUI with no meaningful "quiet" mode and no
     // stdout-diversion primitive, so both verbosity axes no-op here.
     let mut c = super::program::command("bacon");
     c.arg(task);
-    if !args.is_empty() {
-        c.arg("--").args(args);
-    }
-    c
-}
-
-/// `bacon [-- args...]`, leaving the job to bacon's default.
-pub(crate) fn root_cmd(args: &[String], _verbosity: super::HostVerbosity) -> Command {
-    let mut c = super::program::command("bacon");
     if !args.is_empty() {
         c.arg("--").args(args);
     }

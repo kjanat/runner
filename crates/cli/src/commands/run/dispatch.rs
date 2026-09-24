@@ -1,15 +1,6 @@
-//! Resolve a task token to a fully-configured [`Command`] (including
-//! the `→` arrow trace) and the supporting fallback paths.
-//!
-//! Three flavors of dispatch share this code:
-//! - normal entry: `resolve_dispatch` matched a [`crate::types::Task`]
-//!   and builds the per-source run command via [`build_run_command`];
-//! - the `test` shorthand: `runner test` with no `test` task runs the
-//!   ecosystem's built-in test runner (`bun test`, `node --test`, `deno
-//!   test`, `cargo test`, `go test ./...`, `python -m unittest`);
-//! - PM-exec fallback: no task matched, so the token is run through
-//!   `npx`/`bun x`/`pnpm exec`/`deno x`/`uvx` or spawned from `$PATH`
-//!   directly when the resolver landed on a PM without an exec primitive.
+//! Plan run requests through the core, add invocation metadata and stdio,
+//! then execute the plan through the guarded executor. Provider declarations
+//! own argv construction; the CLI retains presentation and launch diagnostics.
 
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -17,17 +8,10 @@ use std::process::{Child, Command, ExitStatus};
 
 use anyhow::{Result, anyhow, bail};
 
-use super::qualify::{
-    ScopeQuery, TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
-    member_ambiguity_error, qualified_miss_error, reversed_qualifier_error,
-    runner_constraint_error,
-};
 use super::runtime;
-use super::select::{ambiguous_members, select_task_entry};
 use crate::render::arrow::print_dispatch_arrow;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::tool;
-use crate::tool::deno_exec::DenoTaskPlan;
 use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
@@ -129,73 +113,21 @@ fn check_mise_usage(ctx: &ProjectContext, entry: &Task, args: &[String]) -> Resu
     )
 }
 
-fn host_verbosity(
-    overrides: &ResolutionOverrides,
-    task: &Task,
-    host: &str,
-    capabilities: tool::HostQuietCapabilities,
-) -> tool::HostVerbosity {
-    host_verbosity_for_key(overrides, &super::task_output_key(task), host, capabilities)
-}
-
-fn host_verbosity_for_key(
-    overrides: &ResolutionOverrides,
-    task_key: &str,
-    host: &str,
-    capabilities: tool::HostQuietCapabilities,
-) -> tool::HostVerbosity {
-    let requested = overrides.host_verbosity_for(task_key);
-    let applied = requested.diagnostics.min(capabilities.max_diagnostics);
-    let stream = if capabilities.diverts_to_stderr {
-        requested.stream
-    } else {
-        tool::Stream::Inherit
-    };
-    let mut args = if applied >= tool::HostDiagnostics::Quiet {
-        capabilities.quiet_args.to_vec()
-    } else {
-        Vec::new()
-    };
-    if stream == tool::Stream::Stderr {
-        args.push("--use-stderr");
-    }
-    let limitation = if requested.diagnostics > applied {
-        format!(" limitation={:?}", capabilities.limitation)
-    } else {
-        String::new()
-    };
-    crate::commands::print_explain(
-        overrides,
-        &format!(
-            "host: {host} diagnostics={} applied={} args=[{}] stream={} matrix={}{}",
-            requested.diagnostics.label(),
-            applied.label(),
-            args.join(" "),
-            stream.label(),
-            capabilities.matrix_id,
-            limitation,
-        ),
-    );
-    tool::HostVerbosity {
-        diagnostics: applied,
-        stream,
-    }
-}
-
 /// Outcome of resolving a task: a spawnable process, or a deno task to
 /// run in-process via the embedded task shell.
 #[derive(Debug)]
 pub(super) enum Dispatch {
+    /// A runner verb selected by the first cascade rung.
+    Builtin(String),
     /// A configured process to spawn (`.status()` / `.spawn()`).
-    Spawn(SpawnDispatch),
-    /// A deno task resolved for in-process execution (no `deno` binary).
-    DenoSelfExec(DenoSelfExec),
+    Spawn(Box<SpawnDispatch>),
 }
 
 /// A command plus any resolver decision needed to diagnose spawn failure.
 #[derive(Debug)]
 pub(super) struct SpawnDispatch {
     command: Command,
+    plan: Box<runner_core::Plan>,
     diagnostic: SpawnDiagnostic,
 }
 
@@ -207,24 +139,38 @@ enum SpawnDiagnostic {
 }
 
 impl SpawnDispatch {
-    const fn passthrough(command: Command) -> Self {
+    #[cfg(test)]
+    fn passthrough(command: Command) -> Self {
+        let cwd = std::env::temp_dir();
+        let tree = runner_core::Tree {
+            root: cwd.clone(),
+            cwd,
+            members: vec![],
+        };
+        let argv = std::iter::once(command.get_program())
+            .chain(command.get_args())
+            .map(OsStr::to_os_string)
+            .collect();
+        let plan = runner_core::plan_argv(
+            &tree,
+            &runner_core::Project::default(),
+            &runner_core::Policy::default(),
+            command.get_program().into(),
+            argv,
+        )
+        .expect("test plan");
         Self {
             command,
+            plan: Box::new(plan),
             diagnostic: SpawnDiagnostic::Passthrough,
         }
     }
 
-    const fn package_manager(command: Command, decision: ResolvedPm) -> Self {
+    #[cfg(test)]
+    fn package_manager(command: Command, decision: ResolvedPm) -> Self {
         Self {
-            command,
             diagnostic: SpawnDiagnostic::ResolvedPackageManager(decision),
-        }
-    }
-
-    const fn python_package_manager(command: Command, decision: ResolvedPythonPm) -> Self {
-        Self {
-            command,
-            diagnostic: SpawnDiagnostic::ResolvedPythonPackageManager(decision),
+            ..Self::passthrough(command)
         }
     }
 
@@ -233,15 +179,13 @@ impl SpawnDispatch {
     }
 
     pub(super) fn status(&mut self) -> Result<ExitStatus> {
-        self.command
-            .status()
-            .map_err(|error| self.spawn_error(error))
+        let result = runner_core::execute::status(&self.plan, &mut self.command);
+        result.map_err(|error| self.spawn_error(error))
     }
 
     pub(super) fn spawn(&mut self) -> Result<Child> {
-        self.command
-            .spawn()
-            .map_err(|error| self.spawn_error(error))
+        let result = runner_core::execute::spawn(&self.plan, &mut self.command);
+        result.map_err(|error| self.spawn_error(error))
     }
 
     fn spawn_error(&self, error: io::Error) -> anyhow::Error {
@@ -336,304 +280,45 @@ fn env_key_matches(actual: &OsStr, expected: &str) -> bool {
     }
 }
 
-/// A deno task resolved for in-process execution.
-#[derive(Debug)]
-pub(super) struct DenoSelfExec {
-    plan: DenoTaskPlan,
-    args: Vec<String>,
-    cwd: std::path::PathBuf,
-}
-
-impl DenoSelfExec {
-    /// Run the task in-process, returning its exit code.
-    pub(super) fn run(&self, stdout: tool::TaskStream, stderr: tool::TaskStream) -> Result<i32> {
-        tool::deno_exec::run(&self.plan, &self.args, &self.cwd, stdout, stderr)
-    }
-}
-
-/// Whether a `deno` binary is resolvable on `$PATH`.
-fn deno_present() -> bool {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let pathext = std::env::var_os("PATHEXT");
-    crate::resolver::probe_path_for_doctor("deno", &path, pathext.as_deref()).is_some()
-}
-
-/// Decide whether to run a deno `entry` in-process instead of spawning
-/// `deno task`. Returns `Ok(Some(_))` to self-exec, `Ok(None)` to fall
-/// through to `deno task`, or `Err` when deno is required (the task has
-/// dependencies or invokes `deno`) but isn't installed.
-///
-/// Default policy self-execs only as a fallback when deno is absent; the
-/// `unstable-deno-exec` feature makes self-exec primary.
-fn decide_deno_self_exec(
-    ctx: &ProjectContext,
-    entry: &Task,
-    args: &[String],
-    allow_self_exec: bool,
-) -> Result<Option<DenoSelfExec>> {
-    if entry.source != TaskSource::DenoJson {
-        return Ok(None);
-    }
-    let deno = deno_present();
-    let self_exec_first = cfg!(feature = "unstable-deno-exec");
-    if !allow_self_exec || (deno && !self_exec_first) {
-        return Ok(None);
-    }
-
-    let dir = entry.dir(&ctx.root);
-    let plan = tool::deno::find_config_upwards(dir)
-        .and_then(|path| tool::deno_exec::plan(&path, &entry.name));
-    match plan {
-        Some(plan) if plan.self_executable() => Ok(Some(DenoSelfExec {
-            plan,
-            args: args.to_vec(),
-            cwd: dir.to_path_buf(),
-        })),
-        // Not self-executable: real deno can still run it; otherwise bail.
-        _ if deno => Ok(None),
-        _ => bail!(
-            "task {:?} needs deno (it has dependencies or invokes `deno`), but deno is not \
-             installed",
-            entry.name
-        ),
-    }
-}
-
-/// Resolve `task` to a fully-configured command without spawning it.
-///
-/// Walks the same cascade for every caller, warning emission, qualified
-/// vs unqualified lookup, runner constraint check, resolver chain,
-/// bun-test special case, PM-exec fallback, or a normal task entry,
-/// and returns a [`SpawnDispatch`] whose command working directory + env have
-/// already been set via [`crate::commands::configure_command`]. Callers attach
-/// stdio and invoke `.status()` / `.spawn()` according to their needs.
-///
-/// Fallbacks (resolver + bun-test + PM-exec) are scoped to unqualified
-/// lookups so a qualified miss like `runner run justfile:test` bails on
-/// the qualifier rather than silently dispatching `bun test`.
-///
-/// The resolver call sits inside the unqualified branch so qualified
-/// misses skip PM resolution entirely. Only a soft `NoSignalsFound`
-/// collapses to `None` (letting `runner run somebin` direct-spawn);
-/// hard errors (`--fallback=error`, manifest `onFail = Error`, …)
-/// propagate so the user sees the real diagnostic.
+/// Resolve a token through the core cascade, or an explicit package operation.
+/// No command is spawned here; both synchronous and parallel callers receive
+/// the same complete plan, configured command and launch diagnostics.
 pub(super) fn resolve_dispatch(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     task: &str,
     args: &[String],
     mut sink: crate::commands::WarningSink<'_>,
-    allow_self_exec: bool,
+    _allow_self_exec: bool,
 ) -> Result<Dispatch> {
     crate::commands::print_warnings(ctx, overrides, sink.as_deref_mut());
     if let Some(selected) = dispatch_by_package(ctx, overrides, task, args, sink.as_deref_mut())? {
         return Ok(selected);
     }
 
-    // Local-file execution short-circuit: a token with an explicit
-    // local-path prefix (`./`, `../`, `/`, `\`, `~`, or a Windows drive
-    // root) that resolves to an existing file is run as that file
-    // (executable / shebang / source-by-runtime) and must never reach the
-    // PM-exec fallback, which would treat a local path as a remote package
-    // spec. Runs before task lookup so an explicit path outranks a
-    // same-named task. A separator-bearing but *relative* token (`bin/tool`)
-    // is intentionally left for the after-miss `try_bare_file` fallback so a
-    // matching task (e.g. a `make bin/tool` target) wins first.
-    if let Some(local) = super::local_file::try_path_token(ctx, overrides, task, args)? {
-        return Ok(spawn_local(ctx, overrides, task, args, local));
-    }
-
-    let (lookup, found) = lookup_token(ctx, task);
-    let TokenLookup {
-        qualifier,
-        scope,
-        task_name,
-    } = lookup;
-
-    if matches!(scope, ScopeQuery::Unresolved { .. }) {
-        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
-    }
-
-    // `--runner X` / `[task_runner].prefer` is restrictive: when set, a
-    // candidate that isn't under one of the allowed sources is treated
-    // as non-existent. A qualifier (`runner.json:task`, `member:task`) is
-    // the user narrowing explicitly and outranks the runner constraint;
-    // the qualified branch below applies its own match.
-    let restricted: Vec<_> = if qualifier.is_some() || scope.is_pinned() {
-        found.clone()
-    } else if let Some(allowed) = allowed_runner_sources(overrides) {
-        found
-            .iter()
-            .copied()
-            .filter(|t| allowed.contains(&t.source))
-            .collect()
-    } else {
-        found.clone()
-    };
-
-    if restricted.is_empty() {
-        // Restrictive override active but no candidate matched: hard
-        // error per the resolved design decision (explicit intent
-        // never silently downgrades). Skipped for qualified misses,
-        // the qualifier (`justfile:foo`, `rfc:foo`) is stronger user
-        // intent than `--runner` / `[task_runner].prefer`, so report the
-        // qualified miss directly instead of surfacing a runner-constraint
-        // error the user can't act on.
-        if qualifier.is_none() && !scope.is_pinned() {
-            // Fast-fail on the reversed qualifier shape (`task:source`).
-            // Without this guard, `lint:cargo` slips through as an
-            // unqualified bare name, hits the PM-exec fallback below,
-            // and surfaces a cryptic `ENOENT` from the OS spawning a
-            // binary literally named `lint:cargo`.
-            if let Some((src, task_part)) = detect_reversed_qualifier(task) {
-                return Err(reversed_qualifier_error(ctx, task, src, task_part));
-            }
-
-            if let Some(dispatch) =
-                runner_root_invocation(ctx, overrides, task_name, args, sink.as_deref_mut())?
-            {
-                return Ok(dispatch);
-            }
-
-            if let Some(reason) = runner_constraint_error(overrides, &found) {
-                return Err(reason.into());
-            }
-
-            // Local file without an explicit prefix: a token that names a
-            // runnable file under the project root, a bare name (`main.ts`,
-            // `build.sh`) or a relative path with a separator (`bin/tool`), runs
-            // as that file. Sits *after* the runner-constraint hard error (an
-            // explicit `--runner` never silently downgrades to a coincidental
-            // file) but *before* PM resolution, so a local file still runs when
-            // node-PM resolution would hard-error for reasons unrelated to it (a
-            // strict devEngines/`packageManager` mismatch, an incompatible
-            // `--pm`); running `main.ts` via its runtime doesn't need the
-            // package.json PM. Tasks already matched above (`restricted` is empty
-            // here), so this never shadows a same-named task, and `bun x`/`npx`
-            // never sees a local file.
-            if let Some(local) = super::local_file::try_bare_file(ctx, overrides, task_name, args)?
-            {
-                return Ok(spawn_local(ctx, overrides, task_name, args, local));
-            }
-
-            // Locally installed dependency: run the binary its manifest
-            // declares. Sits alongside the local-file branch, before PM
-            // resolution, for the same reason, an installed package needs no
-            // package manager to run, and `npx` would treat the already-present
-            // directory as a registry spec (an npm alias resolves to a 404).
-            if let Some(dep) =
-                super::local_dep::try_installed_package(ctx, overrides, task_name, args)?
-            {
-                print_pm_explain(overrides, &dep.describe);
-                return Ok(spawn_local(ctx, overrides, task_name, args, dep.dispatch));
-            }
-
-            return dispatch_after_miss(ctx, overrides, task_name, args, sink);
-        }
-
-        // Qualified miss (colon or FQN syntax): the qualifier is explicit
-        // task-lookup intent, so error here, never fall through to
-        // PM-exec, which would hand the token to bun x/npx as a package
-        // spec and resolve it off the network.
-        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
-    }
-
-    let entry = if let Some(source) = qualifier {
-        let matched: Vec<_> = restricted
-            .iter()
-            .copied()
-            .filter(|t| t.source == source)
-            .collect();
-        if matched.is_empty() {
-            return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
-        }
-        if !scope.is_pinned()
-            && let Some(members) = ambiguous_members(&matched)
-        {
-            return Err(member_ambiguity_error(task_name, &members));
-        }
-        select_task_entry(ctx, overrides, &matched)
-    } else {
-        if !scope.is_pinned()
-            && let Some(members) = ambiguous_members(&restricted)
-        {
-            return Err(member_ambiguity_error(task_name, &members));
-        }
-        select_task_entry(ctx, overrides, &restricted)
-    };
-    let dir = entry.dir(&ctx.root);
-    let task_key = super::task_output_key(entry);
-    print_scope_explain(ctx, overrides, entry);
-
-    // The one place a matched task's source is known: report a `--runtime`
-    // the winning source cannot honour, so an explicit runtime is never a
-    // silent no-op on the make/just/turbo/… paths.
-    runtime::report_unhonored(overrides, entry, sink.as_deref_mut());
-
-    // Refuse a task already being dispatched further up this process
-    // lineage. Checked before anything is spawned or run in-process, and
-    // before the arrow, so the diagnostic is the only output a cycle
-    // produces.
-    let task_stack = crate::commands::push_task_frame(dir, entry.source, &entry.name)?;
-
-    check_mise_usage(ctx, entry, args)?;
-    check_make_args(entry, args)?;
-
-    // Deno tasks may run in-process via the embedded task shell (no deno
-    // binary) per policy; otherwise fall through to `deno task`.
-    let arrow =
-        |label: &str| print_dispatch_arrow(overrides, &task_key, label, &ctx.spelling(entry), args);
-    if let Some(self_exec) = decide_deno_self_exec(ctx, entry, args, allow_self_exec)? {
-        arrow("deno-shell");
-        return Ok(Dispatch::DenoSelfExec(self_exec));
-    }
-
-    arrow(entry.source.label());
-    spawn_task(ctx, overrides, entry, args, sink, task_stack)
-}
-
-/// Assemble the child process for a matched task entry.
-fn spawn_task(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    entry: &Task,
-    args: &[String],
-    sink: crate::commands::WarningSink<'_>,
-    task_stack: OsString,
-) -> Result<Dispatch> {
-    let mut spawn = build_run_command(ctx, overrides, entry, args, sink)?;
-    crate::commands::configure_command(spawn.command_mut(), entry.dir(&ctx.root), overrides);
-    crate::commands::apply_env_layers(
-        spawn.command_mut(),
-        overrides,
-        Some(entry.source.label()),
-        Some(entry.name.as_str()),
-    );
-    if entry.source == TaskSource::GoPackage {
-        tool::go_pm::stamp_vcs(spawn.command_mut(), &ctx.root);
-    }
-    let task_key = super::task_output_key(entry);
-    crate::commands::configure_task_streams(spawn.command_mut(), overrides, &task_key);
-    spawn
-        .command_mut()
-        .env(crate::commands::TASK_STACK_ENV, task_stack);
-    Ok(Dispatch::Spawn(spawn))
+    super::qualify::precheck_task(ctx, overrides, task)?;
+    dispatch_plan(ctx, overrides, task, args, sink)
 }
 
 /// Print the arrow for a local file or installed binary and configure its
 /// process for the project.
-fn spawn_local(
-    ctx: &ProjectContext,
+fn spawn_plan(
     overrides: &ResolutionOverrides,
     token: &str,
     args: &[String],
-    local: super::local_file::LocalDispatch,
+    mut plan: runner_core::Plan,
 ) -> Dispatch {
-    let mut command = local.command;
-    print_dispatch_arrow(overrides, token, &local.label, token, args);
-    crate::commands::configure_command(&mut command, &ctx.cwd, overrides);
+    crate::commands::configure_plan(&mut plan, overrides, token);
+    crate::render::explain::print_plan(overrides, &plan);
+    print_dispatch_arrow(overrides, token, &plan_label(&plan, token), token, args);
+    let mut command = runner_core::execute::command(&plan);
     crate::commands::configure_task_streams(&mut command, overrides, token);
-    Dispatch::Spawn(SpawnDispatch::passthrough(command))
+    let spawn = SpawnDispatch {
+        command,
+        plan: Box::new(plan),
+        diagnostic: SpawnDiagnostic::Passthrough,
+    };
+    Dispatch::Spawn(Box::new(spawn))
 }
 
 /// `--package <package> <bin>`: the binary from the package's own manifest
@@ -646,7 +331,7 @@ fn dispatch_by_package(
     overrides: &ResolutionOverrides,
     bin: &str,
     args: &[String],
-    mut sink: crate::commands::WarningSink<'_>,
+    sink: crate::commands::WarningSink<'_>,
 ) -> Result<Option<Dispatch>> {
     if let Some(spec) = bin.strip_prefix("npm:") {
         bail!(
@@ -659,7 +344,7 @@ fn dispatch_by_package(
     };
     if let Some(dep) = super::local_dep::try_selected_package(ctx, overrides, package, bin, args)? {
         print_pm_explain(overrides, &dep.describe);
-        return Ok(Some(spawn_local(ctx, overrides, bin, args, dep.dispatch)));
+        return Ok(Some(spawn_plan(overrides, bin, args, dep.plan)));
     }
     if let Some(shadow) = project_bin(&ctx.cwd, bin) {
         bail!(
@@ -682,11 +367,7 @@ fn dispatch_by_package(
         }
         _ => match Resolver::new(ctx, overrides).resolve_node_pm() {
             Ok(decision) => {
-                crate::commands::print_warning_slice(
-                    &decision.warnings,
-                    overrides,
-                    sink.as_deref_mut(),
-                );
+                crate::commands::print_warning_slice(&decision.warnings, overrides, sink);
                 print_pm_explain(overrides, &decision.describe());
                 Some(decision.pm)
             }
@@ -694,129 +375,113 @@ fn dispatch_by_package(
             Err(e) => return Err(e.into()),
         },
     };
-    let (label, mut cmd) = match runtime::overridden(overrides) {
-        Some(rt) if runtime::replaces_exec(resolved_pm) => {
-            runtime::exec_package_cmd(rt, package, bin, args)
-        }
-        Some(rt) => {
-            runtime::report_unapplied_exec(overrides, rt, resolved_pm, sink);
-            package_exec_command(ctx, resolved_pm, package, bin, args)?
-        }
-        None => package_exec_command(ctx, resolved_pm, package, bin, args)?,
-    };
-    crate::commands::authorize_fetch(overrides, &format!("{package} ({bin})"), label)?;
-    print_dispatch_arrow(overrides, bin, label, bin, args);
-    crate::commands::configure_command(&mut cmd, &ctx.cwd, overrides);
-    crate::commands::configure_task_streams(&mut cmd, overrides, bin);
-    Ok(Some(Dispatch::Spawn(SpawnDispatch::passthrough(cmd))))
-}
-
-/// The package manager's own way of running `bin` from `package` without
-/// installing it into the project.
-fn package_exec_command(
-    ctx: &ProjectContext,
-    resolved_pm: Option<PackageManager>,
-    package: &str,
-    bin: &str,
-    args: &[String],
-) -> Result<(&'static str, Command)> {
-    let pm = resolved_pm
-        .or_else(|| ctx.package_managers.iter().copied().find(|pm| pm.is_node()))
-        .or_else(|| ctx.package_managers.first().copied());
-    Ok(match pm {
-        Some(PackageManager::Npm) => (
-            "npx --package",
-            tool::npm::exec_package_cmd(package, bin, args),
-        ),
-        Some(PackageManager::Bun) => (
-            "bun x --package",
-            tool::bun::exec_package_cmd(package, bin, args),
-        ),
-        Some(PackageManager::Pnpm) => {
-            ("pnpm dlx", tool::pnpm::exec_package_cmd(package, bin, args))
-        }
-        Some(PackageManager::Yarn) => {
-            match tool::yarn::exec_package_cmd(&ctx.root, package, bin, args) {
-                Some(command) => ("yarn dlx", command),
-                None => bail!(
-                    "{package} is not installed and Yarn 1 has no package-selecting exec; install \
-                     it or pick another package manager with --pm"
-                ),
-            }
-        }
-        Some(PackageManager::Deno) => ("deno x", tool::deno::exec_package_cmd(package, bin, args)),
-        Some(PackageManager::Uv) => ("uvx --from", tool::uv::exec_package_cmd(package, bin, args)),
-        Some(other) => bail!(
+    let mut prepared = super::core::prepare(ctx, overrides, bin);
+    if !runtime::replaces_exec(resolved_pm) {
+        prepared.policy.runtime = None;
+    }
+    let chosen = prepared
+        .policy
+        .runtime
+        .as_ref()
+        .map(|choice| choice.id)
+        .or_else(|| resolved_pm.and_then(|pm| super::core::provider(pm.label())));
+    let present = chosen
+        .and_then(|id| prepared.project.present.iter().find(|p| p.provider == id))
+        .ok_or_else(|| {
+            anyhow!(
+                "{package} is not installed and no package manager was detected to fetch it; pick \
+                 one with --pm"
+            )
+        })?;
+    let plan = runner_core::plan_with(
+        &prepared.tree,
+        &prepared.project,
+        &prepared.policy,
+        present,
+        &runner_core::Op::ExecPackage { package, bin, args },
+        &runner_providers::REGISTRY,
+    )
+    .map_err(|refusal| match refusal {
+        runner_core::Refusal::NoCapability { .. } => anyhow!(
             "{package} is not installed and {} has no package-selecting exec; install it or pick \
              another package manager with --pm",
-            other.label()
+            runner_providers::REGISTRY.by_id(present.provider).label
         ),
-        None => bail!(
-            "{package} is not installed and no package manager was detected to fetch it; pick one \
-             with --pm"
-        ),
-    })
+        other => refusal_error(ctx, bin, &other),
+    })?;
+    crate::commands::authorize_fetch(overrides, &format!("{package} ({bin})"), "exec-package")?;
+    Ok(Some(spawn_plan(overrides, bin, args, plan)))
 }
 
-/// The tail of the cascade, reached once the token matched no task, no local
-/// file, and no installed dependency: the `test` shorthand, the project's bin
-/// dirs and `PATH`, then the fetching rungs, `mise exec` ahead of the
-/// package-exec primitive. Walked by the core from its own table.
-fn dispatch_after_miss(
+/// Walk the complete core cascade and configure the selected plan for execution.
+fn dispatch_plan(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     task_name: &str,
     args: &[String],
     mut sink: crate::commands::WarningSink<'_>,
 ) -> Result<Dispatch> {
-    let resolved_pm = match Resolver::new(ctx, overrides).resolve_node_pm() {
-        Ok(decision) => {
-            crate::commands::print_warning_slice(
-                &decision.warnings,
-                overrides,
-                sink.as_deref_mut(),
-            );
-            print_pm_explain(overrides, &decision.describe());
-            Some(decision.pm)
-        }
-        Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
-        Err(e) => return Err(e.into()),
-    };
+    let prepared = super::core::prepare(ctx, overrides, task_name);
+    let resolved_pm = prepared.node.as_ref().ok().map(|decision| decision.pm);
+    let requested = prepared.requested;
+    let policy = &prepared.policy;
+    let project = &prepared.project;
+    if let Ok(decision) = &prepared.node {
+        crate::commands::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
+        print_pm_explain(overrides, &decision.describe());
+    }
     if let Some(rt) = runtime::overridden(overrides)
         && !runtime::replaces_exec(resolved_pm)
     {
-        runtime::report_unapplied_exec(overrides, rt, resolved_pm, sink);
+        runtime::report_unapplied_exec(overrides, rt, resolved_pm, sink.as_deref_mut());
     }
 
-    let tree = super::core::tree(ctx);
-    let mut policy = super::core::policy(overrides);
-    if overrides.explain {
-        policy.reach = runner_core::ReachPolicy::Allow;
-    }
-    // The runtime axis moves a JavaScript process tree; it never displaces
-    // another ecosystem's exec primitive.
-    if !runtime::replaces_exec(resolved_pm) {
-        policy.runtime = None;
-    }
-    let project = super::core::project_under(ctx, &policy);
+    let dep = |name: &str| {
+        super::local_dep::installed_binary(ctx, name)
+            .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
+    };
     let confirm = |name: &str, rung: &str| crate::commands::confirm_fetch(name, rung);
-    let cascade = runner_core::Cascade {
-        tree: &tree,
-        project: &project,
-        policy: &policy,
-        registry: &runner_providers::REGISTRY,
-        builtins: &[],
-        dep: None,
-        confirm: Some(&confirm),
-    };
-    let (rung, dispatched) = runner_core::dispatch_from(&cascade, "test", task_name, args)
+    let cascade = prepared.cascade(&dep, Some(&confirm));
+    let (rung, dispatched) = runner_core::dispatch(&cascade, task_name, args)
         .map_err(|refusal| refusal_error(ctx, task_name, &refusal))?;
-    let runner_core::Dispatch::Plan(mut plan) = dispatched else {
-        bail!("internal: the builtin rung is the caller's, not the cascade's");
+    let mut plan = match dispatched {
+        runner_core::Dispatch::Builtin(name) => return Ok(Dispatch::Builtin(name)),
+        runner_core::Dispatch::Plan(plan) => plan,
     };
-    crate::commands::configure_plan(&mut plan, overrides, task_name);
+    let entry = if rung.name == "task" {
+        runner_core::select(&cascade, task_name)
+            .ok()
+            .flatten()
+            .and_then(|selected| {
+                ctx.tasks
+                    .iter()
+                    .find(|entry| super::core::task(entry).as_ref() == Some(selected))
+            })
+    } else {
+        None
+    };
+    let task_key = entry.map_or_else(|| task_name.to_owned(), super::task_output_key);
+    prepare_task(ctx, overrides, entry, args, &mut plan, sink)?;
+    prepare_host(ctx, task_name, rung, &mut plan)?;
+    crate::commands::configure_plan(&mut plan, overrides, &task_key);
+    if entry.is_some_and(|entry| entry.source == TaskSource::GoPackage) {
+        preserve_go_environment(&mut plan, &ctx.root);
+    }
+    explain_host(overrides, &plan, project, requested, policy.verbosity);
     crate::render::explain::print_plan(overrides, &plan);
-    let label = plan_label(&plan, task_name);
+    let label = entry.map_or_else(
+        || plan_label(&plan, task_name),
+        |entry| entry.source.label().to_string(),
+    );
+    if rung.name == "dep"
+        && let Some(found) = &plan.found
+    {
+        let bin = found.file_name().unwrap_or_default().to_string_lossy();
+        print_pm_explain(
+            overrides,
+            &format!("{bin} from {} (local dependency)", found.display()),
+        );
+    }
     let arrow_name = if rung.name == "test" {
         "test"
     } else {
@@ -824,10 +489,144 @@ fn dispatch_after_miss(
     };
     print_dispatch_arrow(overrides, task_name, &label, arrow_name, args);
     let mut cmd = runner_core::execute::command(&plan);
-    let (stdout, stderr) = overrides.task_streams_for(task_name);
-    crate::commands::print_output_explain(overrides, task_name);
+    let (stdout, stderr) = overrides.task_streams_for(&task_key);
+    crate::commands::print_output_explain(overrides, &task_key);
     crate::commands::set_task_stdio(&mut cmd, stdout, stderr);
-    Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
+    let diagnostic = if entry.is_some_and(|e| e.source == TaskSource::PackageJson)
+        && overrides.runtime.is_none()
+    {
+        SpawnDiagnostic::ResolvedPackageManager(prepared.node?)
+    } else if entry.is_some_and(|e| e.source == TaskSource::PyprojectScripts) {
+        SpawnDiagnostic::ResolvedPythonPackageManager(
+            resolve_python_pm(ctx, overrides)
+                .ok_or_else(|| anyhow!("no Python package manager can run this script"))?,
+        )
+    } else {
+        SpawnDiagnostic::Passthrough
+    };
+    let spawn = SpawnDispatch {
+        command: cmd,
+        plan,
+        diagnostic,
+    };
+    Ok(Dispatch::Spawn(Box::new(spawn)))
+}
+
+fn prepare_host(
+    ctx: &ProjectContext,
+    task_name: &str,
+    rung: runner_core::Rung,
+    plan: &mut runner_core::Plan,
+) -> Result<()> {
+    if rung.name == "host"
+        && let Some(provider) = plan.provider
+        && runner_providers::REGISTRY
+            .by_id(provider)
+            .caps
+            .run_default
+            .is_some()
+        && let Some(source) =
+            TaskSource::from_label(runner_providers::REGISTRY.by_id(provider).label)
+    {
+        let stack = crate::commands::push_task_frame(&ctx.root, source, task_name)?;
+        plan.env
+            .push((crate::commands::TASK_STACK_ENV.into(), stack));
+    }
+    Ok(())
+}
+
+fn prepare_task(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    entry: Option<&Task>,
+    args: &[String],
+    plan: &mut runner_core::Plan,
+    mut sink: crate::commands::WarningSink<'_>,
+) -> Result<()> {
+    if let Some(entry) = entry {
+        print_scope_explain(ctx, overrides, entry);
+        runtime::report_unhonored(overrides, entry, sink.as_deref_mut());
+        if entry.source == TaskSource::PackageJson
+            && let Some(over) = &overrides.runtime
+        {
+            print_pm_explain(overrides, &over.describe());
+            if over.runtime == JsRuntime::Node {
+                if let tool::node::NodeRunSupport::TooOld { version } =
+                    tool::node::node_run_support()
+                {
+                    bail!(
+                        "--runtime node needs Node 22 or newer, but the node on PATH is {version}"
+                    );
+                }
+                runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
+            }
+        }
+
+        check_mise_usage(ctx, entry, args)?;
+        check_make_args(entry, args)?;
+        let stack =
+            crate::commands::push_task_frame(entry.dir(&ctx.root), entry.source, &entry.name)?;
+        plan.env
+            .push((crate::commands::TASK_STACK_ENV.into(), stack));
+    }
+    Ok(())
+}
+
+// Environment layering still belongs to the CLI until migration step 5.
+// Retain Go's existing VCS opt-in in the plan so explain and execution agree.
+fn preserve_go_environment(plan: &mut runner_core::Plan, root: &std::path::Path) {
+    let mut command = runner_core::execute::command(plan);
+    tool::go_pm::stamp_vcs(&mut command, root);
+    if let Some((key, Some(value))) = command.get_envs().find(|(key, _)| *key == "GOFLAGS") {
+        plan.env.retain(|(name, _)| name != key);
+        plan.env_remove.retain(|name| name != key);
+        plan.env.push((key.to_owned(), value.to_owned()));
+    }
+}
+
+fn explain_host(
+    overrides: &ResolutionOverrides,
+    plan: &runner_core::Plan,
+    project: &runner_core::Project,
+    requested: tool::HostVerbosity,
+    verbosity: runner_core::Verbosity,
+) {
+    if let Some(provider) = plan.provider {
+        let descriptor = runner_providers::REGISTRY.by_id(provider);
+        let quiet = project
+            .present
+            .iter()
+            .find(|p| p.provider == provider)
+            .map_or(descriptor.caps.quiet, |present| {
+                descriptor.for_present(present).caps.quiet
+            });
+        let applied = requested.diagnostics.min(if quiet.strongest() == 0 {
+            tool::HostDiagnostics::Normal
+        } else {
+            tool::HostDiagnostics::Reduced
+        });
+        let quiet_args = quiet
+            .at(verbosity.index())
+            .map(|template| template.render(&runner_core::Request::default()).args)
+            .unwrap_or_default();
+        crate::commands::print_explain(
+            overrides,
+            &format!(
+                "host: {} diagnostics={} applied={} args=[{}] stream={} matrix={} limitation={:?}",
+                descriptor.label,
+                requested.diagnostics.label(),
+                applied.label(),
+                quiet_args
+                    .iter()
+                    .map(|s| s.to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                requested.stream.label(),
+                descriptor.label,
+                quiet.limitation
+            ),
+        );
+    }
 }
 
 /// The arrow label for a plan: the program plus the literal words it puts
@@ -866,6 +665,7 @@ fn refusal_error(
 ) -> anyhow::Error {
     use runner_core::Refusal;
     match refusal {
+        Refusal::Invalid(message) => anyhow!("{message}"),
         Refusal::NotFound { name, tried } => {
             let rungs: Vec<&str> = tried.iter().map(|rung| rung.name).collect();
             anyhow!(
@@ -911,47 +711,6 @@ fn project_bin(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> 
     crate::resolver::probe::probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
 }
 
-/// `run make`, `run just`, `run task`, `run bacon`: the runner's own entry
-/// point, letting it pick its default target, when
-/// [`super::qualify::root_runner`] admits the token. Runs at the project
-/// root, where the runner's file was detected, and takes the task frame,
-/// env layers and runtime diagnostic a named task would.
-fn runner_root_invocation(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    token: &str,
-    args: &[String],
-    sink: crate::commands::WarningSink<'_>,
-) -> Result<Option<Dispatch>> {
-    use crate::types::TaskRunner;
-    let Some(runner) = super::qualify::root_runner(ctx, overrides, token) else {
-        return Ok(None);
-    };
-    let Some(source) = runner.task_source() else {
-        return Ok(None);
-    };
-    runtime::report_unhonored_source(overrides, token, source, sink);
-    let task_stack = crate::commands::push_task_frame(&ctx.root, source, token)?;
-    let verbosity = |caps| host_verbosity_for_key(overrides, token, token, caps);
-    let mut command = match runner {
-        TaskRunner::Make => tool::make::root_cmd(args, verbosity(tool::make::quiet_capabilities())),
-        TaskRunner::Just => tool::just::root_cmd(args, verbosity(tool::just::quiet_capabilities())),
-        TaskRunner::GoTask => {
-            tool::go_task::root_cmd(args, verbosity(tool::go_task::quiet_capabilities()))
-        }
-        TaskRunner::Bacon => {
-            tool::bacon::root_cmd(args, verbosity(tool::bacon::quiet_capabilities()))
-        }
-        TaskRunner::Turbo | TaskRunner::Nx | TaskRunner::Mise => return Ok(None),
-    };
-    print_dispatch_arrow(overrides, token, token, "(default)", args);
-    crate::commands::configure_command(&mut command, &ctx.root, overrides);
-    crate::commands::apply_env_layers(&mut command, overrides, Some(token), Some(token));
-    crate::commands::configure_task_streams(&mut command, overrides, token);
-    command.env(crate::commands::TASK_STACK_ENV, task_stack);
-    Ok(Some(Dispatch::Spawn(SpawnDispatch::passthrough(command))))
-}
-
 /// Python package manager decision for `[project.scripts]` dispatch.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedPythonPm {
@@ -985,165 +744,6 @@ impl ResolvedPythonPm {
 }
 
 /// Build a [`Command`] for the given task source and package manager.
-#[allow(
-    clippy::too_many_lines,
-    reason = "exhaustive task-source dispatch keeps host capability and command selection together"
-)]
-fn build_run_command(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    entry: &Task,
-    args: &[String],
-    sink: crate::commands::WarningSink<'_>,
-) -> Result<SpawnDispatch> {
-    // Deep-merge the global (CLI/env) quiet level + stream over this task's
-    // `[tasks.<name>].verbosity` config into the flags the host tool gets.
-    let unsupported = |id, reason| tool::HostQuietCapabilities::unsupported(id, reason);
-    let command = match entry.source {
-        TaskSource::TurboJson => {
-            let hv = host_verbosity(overrides, entry, "turbo", tool::turbo::quiet_capabilities());
-            tool::turbo::run_cmd(&entry.name, args, hv)
-        }
-        TaskSource::PackageJson => {
-            // An explicit runtime override outranks the resolved PM: which
-            // runtime the script's process tree runs on is a separate question
-            // from who installed the dependencies, and all three runtimes read
-            // `package.json` scripts whatever wrote the lockfile.
-            if let Some(over) = overrides.runtime.as_ref() {
-                print_pm_explain(overrides, &over.describe());
-                if over.runtime == JsRuntime::Node {
-                    if let tool::node::NodeRunSupport::TooOld { version } =
-                        tool::node::node_run_support()
-                    {
-                        bail!(
-                            "--runtime node runs `node --run`, which needs Node 22 or newer, but \
-                             the node on PATH is {version}.\nhint: upgrade Node, use --runtime \
-                             bun / --runtime deno, or drop --runtime to run the script through \
-                             the detected package manager.",
-                        );
-                    }
-                    runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
-                }
-                let capabilities = match over.runtime {
-                    JsRuntime::Node => tool::node::quiet_capabilities(),
-                    JsRuntime::Bun => tool::bun::quiet_capabilities(),
-                    JsRuntime::Deno => tool::deno::quiet_capabilities(),
-                };
-                let hv = host_verbosity(overrides, entry, over.runtime.label(), capabilities);
-                return Ok(SpawnDispatch::passthrough(runtime::script_cmd(
-                    over.runtime,
-                    &entry.name,
-                    args,
-                    hv,
-                )));
-            }
-            let decision = Resolver::new(ctx, overrides).resolve_node_pm()?;
-            crate::commands::print_warning_slice(&decision.warnings, overrides, sink);
-            print_pm_explain(overrides, &decision.describe());
-            let capabilities = match decision.pm {
-                PackageManager::Npm => tool::npm::quiet_capabilities(),
-                PackageManager::Yarn => tool::yarn::quiet_capabilities(&ctx.root),
-                PackageManager::Pnpm => tool::pnpm::quiet_capabilities(),
-                PackageManager::Bun => tool::bun::quiet_capabilities(),
-                PackageManager::Deno => tool::deno::quiet_capabilities(),
-                other => unsupported(other.label(), "not a script-dispatch adapter"),
-            };
-            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
-            let command = match decision.pm {
-                PackageManager::Npm => tool::npm::run_cmd(&entry.name, args, hv),
-                PackageManager::Yarn => tool::yarn::run_cmd(&entry.name, args, hv),
-                PackageManager::Pnpm => tool::pnpm::run_cmd(&entry.name, args, hv),
-                PackageManager::Bun => tool::bun::run_cmd(&entry.name, args, hv),
-                PackageManager::Deno => tool::deno::run_cmd(&entry.name, args, hv),
-                other => bail!("{} cannot run scripts", other.label()),
-            };
-            return Ok(SpawnDispatch::package_manager(command, decision));
-        }
-        TaskSource::Makefile => tool::make::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(overrides, entry, "make", tool::make::quiet_capabilities()),
-        ),
-        TaskSource::Justfile => tool::just::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(overrides, entry, "just", tool::just::quiet_capabilities()),
-        ),
-        TaskSource::Taskfile => tool::go_task::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(
-                overrides,
-                entry,
-                "go-task",
-                tool::go_task::quiet_capabilities(),
-            ),
-        ),
-        TaskSource::DenoJson => tool::deno::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(overrides, entry, "deno", tool::deno::quiet_capabilities()),
-        ),
-        TaskSource::CargoAliases => tool::cargo_aliases::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(
-                overrides,
-                entry,
-                "cargo",
-                tool::cargo_aliases::quiet_capabilities(),
-            ),
-        ),
-        TaskSource::GoPackage => {
-            let Some(run_target) = entry.run_target.as_deref() else {
-                bail!("go task {:?} is missing its run target", entry.name);
-            };
-            let hv = host_verbosity(overrides, entry, "go", tool::go_pm::quiet_capabilities());
-            tool::go_pm::run_cmd(run_target, args, hv)
-        }
-        TaskSource::BaconToml => tool::bacon::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(overrides, entry, "bacon", tool::bacon::quiet_capabilities()),
-        ),
-        TaskSource::MiseToml => tool::mise::run_cmd(
-            &entry.name,
-            args,
-            host_verbosity(overrides, entry, "mise", tool::mise::quiet_capabilities()),
-        ),
-        TaskSource::PyprojectScripts => {
-            let Some(decision) = resolve_python_pm(ctx, overrides) else {
-                bail!(
-                    "no Python package manager detected to run {:?}; install uv, poetry, or pipenv",
-                    entry.name,
-                );
-            };
-            print_pm_explain(overrides, &decision.describe());
-            let capabilities = match decision.pm {
-                PackageManager::Uv => tool::uv::quiet_capabilities(),
-                PackageManager::Poetry => tool::poetry::quiet_capabilities(),
-                PackageManager::Pipenv => tool::pipenv::quiet_capabilities(),
-                other => unsupported(other.label(), "not a pyproject script adapter"),
-            };
-            let hv = host_verbosity(overrides, entry, decision.pm.label(), capabilities);
-            let command = match decision.pm {
-                PackageManager::Uv => tool::uv::run_cmd(&entry.name, args, hv),
-                PackageManager::Poetry => tool::poetry::run_cmd(&entry.name, args, hv),
-                PackageManager::Pipenv => tool::pipenv::run_cmd(&entry.name, args, hv),
-                other => bail!("{} cannot run pyproject scripts", other.label()),
-            };
-            return Ok(SpawnDispatch::python_package_manager(command, decision));
-        }
-    };
-    Ok(SpawnDispatch::passthrough(command))
-}
-
-/// Pick the Python package manager that dispatches a `[project.scripts]`
-/// entry: an explicit Python-ecosystem `--pm` / `RUNNER_PM` override
-/// first, then a `[pm].python` `runner.toml` override, then the PM
-/// detected for the project. A non-Python `--pm` (e.g. `--pm pnpm` in a
-/// mixed repo) is ignored here rather than forced, falling through to the
-/// detected Python PM.
 pub(crate) fn resolve_python_pm(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -1201,7 +801,9 @@ mod tests {
     fn expect_command(dispatch: Dispatch) -> Command {
         match dispatch {
             Dispatch::Spawn(spawn) => spawn.command,
-            Dispatch::DenoSelfExec(_) => panic!("expected a spawnable command, got deno self-exec"),
+            Dispatch::Builtin(_) => {
+                panic!("expected a spawnable command")
+            }
         }
     }
 
@@ -1794,53 +1396,52 @@ mod tests {
         );
     }
 
+    fn package_command(
+        ctx: &ProjectContext,
+        pm: Option<PackageManager>,
+        package: &str,
+        bin: &str,
+        args: &[String],
+    ) -> anyhow::Result<Command> {
+        let overrides = ResolutionOverrides {
+            package: Some(package.into()),
+            pm: pm.map(|pm| crate::resolver::PmOverride {
+                pm,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            reach: runner_core::ReachPolicy::Allow,
+            ..ResolutionOverrides::default()
+        };
+        resolve_dispatch(ctx, &overrides, bin, args, None, true).map(expect_command)
+    }
+
     #[test]
     fn a_missing_selected_package_goes_to_the_manager_with_its_name() {
         let mut ctx = context();
         ctx.package_managers.push(PackageManager::Bun);
         let args = [String::from("-v")];
-        let (label, command) = super::package_exec_command(
-            &ctx,
-            Some(PackageManager::Bun),
-            "typescript",
-            "tsc",
-            &args,
-        )
-        .expect("bun has a package-selecting exec");
-        assert_eq!(label, "bun x --package");
+        let command = package_command(&ctx, Some(PackageManager::Bun), "typescript", "tsc", &args)
+            .expect("bun has a package-selecting exec");
         assert_eq!(
             command_args(&command),
             ["x", "--package", "typescript", "tsc", "-v"]
         );
 
-        let (label, command) = super::package_exec_command(
-            &ctx,
-            Some(PackageManager::Npm),
-            "typescript",
-            "tsc",
-            &args,
-        )
-        .expect("npx has --package");
-        assert_eq!(label, "npx --package");
+        let command = package_command(&ctx, Some(PackageManager::Npm), "typescript", "tsc", &args)
+            .expect("npx has --package");
         assert_eq!(
             command_args(&command),
             ["--package", "typescript", "--", "tsc", "-v"]
         );
 
-        let (_, command) = super::package_exec_command(
-            &ctx,
-            Some(PackageManager::Pnpm),
-            "typescript",
-            "tsc",
-            &args,
-        )
-        .expect("pnpm dlx has --package");
+        let command = package_command(&ctx, Some(PackageManager::Pnpm), "typescript", "tsc", &args)
+            .expect("pnpm dlx has --package");
         assert_eq!(
             command_args(&command),
             ["--package=typescript", "dlx", "tsc", "-v"]
         );
 
-        let err = super::package_exec_command(
+        let err = package_command(
             &ctx,
             Some(PackageManager::Cargo),
             "typescript",
@@ -1894,7 +1495,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn run_make_under_a_just_runner_choice_reaches_the_host_rung() {
         let mut ctx = context();
         ctx.task_runners.push(TaskRunner::Make);
@@ -1941,7 +1541,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn run_make_under_a_prefer_list_without_make_reaches_the_host_rung() {
         let mut ctx = context();
         ctx.task_runners.push(TaskRunner::Make);

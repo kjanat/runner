@@ -23,7 +23,7 @@ const MANIFEST: [Signal; 2] = crate::node::manifest_signals(package_manager, dev
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Deno,
     label: "deno",
-    aliases: &[],
+    aliases: &["deno.json", "deno.jsonc"],
     ecosystem: Ecosystem::Deno,
     kind: Kind::PACKAGE_MANAGER
         .union(Kind::TASK_SOURCE)
@@ -39,6 +39,22 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: crate::node::WRITES,
     caps: Capabilities {
+        package_exec: Some(ExecCap {
+            program: None,
+            argv: runner_core::Template(&[
+                runner_core::Piece::Lit("x"),
+                runner_core::Piece::Concat(&[
+                    runner_core::Piece::Lit("npm:"),
+                    runner_core::Piece::Package,
+                    runner_core::Piece::Lit("/"),
+                    runner_core::Piece::Name,
+                ]),
+                runner_core::Piece::Args,
+            ]),
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
+        file_interpreters: &["node", "nodejs", "bun", "deno"],
         install: Some(InstallCap {
             argv: t!["install", Frozen, Scripts],
             frozen: Frozen::Flag("--frozen"),

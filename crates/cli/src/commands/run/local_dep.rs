@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
-use super::local_file::{LocalDispatch, bare_file_in};
 use crate::resolver::ResolutionOverrides;
 use crate::types::ProjectContext;
 
@@ -25,52 +24,31 @@ struct Manifest {
 
 /// An installed dependency and the binary it was resolved to.
 pub(super) struct ResolvedBin {
-    pub(super) dispatch: LocalDispatch,
+    pub(super) plan: runner_core::Plan,
     /// `--explain` trace body naming the package directory and binary.
     pub(super) describe: String,
 }
 
-/// Try to interpret `token` as a locally installed dependency and dispatch
-/// the binary it declares.
-///
-/// Returns:
-/// - `Ok(None)`, `token` is not a bare package name or is not installed
-///   under any `node_modules` from the project root upwards; the caller
-///   continues to the PM-exec fallback.
-/// - `Ok(Some(_))`, the package declares exactly one usable binary (or one
-///   whose name matches the package), resolved to a real file on disk.
-/// - `Err(_)`, the package is installed but its binaries are ambiguous,
-///   absent, or missing from disk. Reported directly rather than degraded
-///   into an `npx` call that would re-download and fail differently.
-pub(super) fn try_installed_package(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    token: &str,
-    args: &[String],
-) -> Result<Option<ResolvedBin>> {
+/// Observe an installed package's declared binary without choosing how to run it.
+pub(super) fn installed_binary(ctx: &ProjectContext, token: &str) -> Result<Option<PathBuf>> {
     if !is_package_name(token) {
         return Ok(None);
     }
     let Some(dir) = installed_dir(&ctx.cwd, token) else {
         return Ok(None);
     };
-    let manifest: Manifest = match std::fs::read_to_string(dir.join("package.json")) {
-        Ok(raw) => serde_json::from_str(&raw)?,
-        Err(_) => return Ok(None),
-    };
-
-    let (bin_name, bin_path) = select_bin(token, &manifest)?;
-    let Some(dispatch) = bare_file_in(ctx, overrides, &dir, &bin_path, args)? else {
+    let manifest: Manifest =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("package.json"))?)?;
+    let (name, path) = select_bin(token, &manifest)?;
+    let path = dir.join(path);
+    if !path.is_file() {
         bail!(
-            "{token} declares a `{bin_name}` binary at {}, but nothing is there.\nhint: reinstall \
+            "{token} declares a `{name}` binary at {}, but nothing is there.\nhint: reinstall \
              dependencies.",
-            dir.join(&bin_path).display(),
+            path.display()
         );
-    };
-    Ok(Some(ResolvedBin {
-        describe: format!("{bin_name} from {} (local dependency)", dir.display()),
-        dispatch,
-    }))
+    }
+    Ok(Some(path))
 }
 
 /// `--package <package> <bin>`: the binary `bin` that the installed
@@ -98,16 +76,21 @@ pub(super) fn try_selected_package(
         Err(_) => return Ok(None),
     };
     let bin_path = declared_bin(package, bin, &manifest)?;
-    let Some(dispatch) = bare_file_in(ctx, overrides, &dir, &bin_path, args)? else {
+    let path = dir.join(&bin_path);
+    if !path.is_file() {
         bail!(
             "{package} declares `{bin}` at {}, but nothing is there.\nhint: reinstall \
              dependencies.",
-            dir.join(&bin_path).display(),
+            path.display()
         );
-    };
+    }
+    let prepared = super::core::prepare(ctx, overrides, bin);
+    let dep = |_: &str| Ok(None);
+    let plan = runner_core::file_plan(&prepared.cascade(&dep, None), &path, args)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(Some(ResolvedBin {
         describe: format!("{bin} from {} (package {package})", dir.display()),
-        dispatch,
+        plan,
     }))
 }
 
@@ -132,13 +115,25 @@ fn pnp_selected_package(
     let Some(found) = pnp_bin(&bins, package, bin)? else {
         return Ok(None);
     };
-    let command = crate::tool::yarn::run_cmd(bin, args, overrides.host_verbosity_for(bin));
+    let prepared = super::core::prepare(ctx, overrides, bin);
+    let present = prepared
+        .project
+        .present
+        .iter()
+        .find(|p| p.provider == runner_core::ProviderId::Yarn)
+        .ok_or_else(|| anyhow::anyhow!("Plug'n'Play requires an observed Yarn provider"))?;
+    let plan = runner_core::plan_with(
+        &prepared.tree,
+        &prepared.project,
+        &prepared.policy,
+        present,
+        &runner_core::Op::Exec { name: bin, args },
+        &runner_providers::REGISTRY,
+    )
+    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(Some(ResolvedBin {
         describe: format!("{bin} from {} (package {package}, Plug'n'Play)", found.path),
-        dispatch: LocalDispatch {
-            label: "yarn run".to_string(),
-            command,
-        },
+        plan,
     }))
 }
 

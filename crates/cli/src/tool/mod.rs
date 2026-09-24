@@ -27,8 +27,6 @@ pub(crate) mod cargo_pm;
 pub(crate) mod composer;
 /// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
 pub(crate) mod deno;
-/// In-process execution of deno tasks via `deno_task_shell` (no deno binary).
-pub(crate) mod deno_exec;
 /// Shared filesystem helpers for tool modules.
 pub(crate) mod files;
 /// Git queries used by detection.
@@ -61,9 +59,6 @@ pub(crate) mod poetry;
 pub(crate) mod program;
 /// Shared Python tooling helpers.
 pub(crate) mod python;
-/// Cross-platform in-process shell runner (`deno_task_shell`), reusable
-/// for any tool whose task bodies are shell command strings.
-pub(crate) mod shell;
 /// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).
 pub(crate) mod turbo;
 /// uv, a fast Python package manager (`uv.lock`).
@@ -234,47 +229,6 @@ impl OutputPolicy {
     }
 }
 
-/// Audited host capabilities. `quiet_args` contains only static host flags,
-/// never task arguments, so `--explain` can report it without leaking input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HostQuietCapabilities {
-    pub max_diagnostics: HostDiagnostics,
-    pub quiet_args: &'static [&'static str],
-    pub matrix_id: &'static str,
-    pub limitation: &'static str,
-    pub diverts_to_stderr: bool,
-}
-
-impl HostQuietCapabilities {
-    pub(crate) const fn quiet(
-        matrix_id: &'static str,
-        quiet_args: &'static [&'static str],
-    ) -> Self {
-        Self {
-            max_diagnostics: HostDiagnostics::Quiet,
-            quiet_args,
-            matrix_id,
-            limitation: "no stronger task-output-preserving reduction",
-            diverts_to_stderr: false,
-        }
-    }
-
-    pub(crate) const fn unsupported(matrix_id: &'static str, limitation: &'static str) -> Self {
-        Self {
-            max_diagnostics: HostDiagnostics::Normal,
-            quiet_args: &[],
-            matrix_id,
-            limitation,
-            diverts_to_stderr: false,
-        }
-    }
-
-    pub(crate) const fn with_stderr_diversion(mut self) -> Self {
-        self.diverts_to_stderr = true;
-        self
-    }
-}
-
 /// Whether to keep the host's **stdout** clean by diverting its diagnostics to
 /// stderr. Orthogonal to [`QuietLevel`]: a caller can ask for a clean stdout
 /// pipeline without silencing, or silence without diverting.
@@ -435,6 +389,7 @@ impl HostVerbosity {
     }
 
     /// `true` when stdout should be kept clean by moving diagnostics to stderr.
+    #[cfg(test)]
     pub(crate) fn diverts_to_stderr(self) -> bool {
         self.stream == Stream::Stderr
     }

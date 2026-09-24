@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 
 use super::select::{ambiguous_members, narrow_scope};
-use crate::resolver::{ResolutionOverrides, ResolveError};
+use crate::resolver::ResolutionOverrides;
 use crate::types::{
     DetectionWarning, ProjectContext, Task, TaskRunner, TaskSource, WorkspaceMember,
 };
@@ -407,7 +407,7 @@ pub(crate) fn precheck_task(
     // active `--runner` / `[task_runner].prefer` constraint would make precheck
     // compute `found = []` and bail with a runner-constraint error, aborting a
     // whole chain (or install --parallel) over a token that single-run executes.
-    if super::local_file::has_local_prefix(task) {
+    if runner_core::has_local_prefix(task) {
         return Ok(());
     }
 
@@ -422,17 +422,7 @@ pub(crate) fn precheck_task(
         return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
     }
 
-    let restricted: Vec<_> = if qualifier.is_some() || scope.is_pinned() {
-        found.clone()
-    } else if let Some(allowed) = allowed_runner_sources(overrides) {
-        found
-            .iter()
-            .copied()
-            .filter(|t| allowed.contains(&t.source))
-            .collect()
-    } else {
-        found.clone()
-    };
+    let restricted = found.clone();
 
     if !restricted.is_empty() {
         // For qualified inputs, also confirm the named source actually
@@ -461,10 +451,6 @@ pub(crate) fn precheck_task(
 
     if root_runner(ctx, overrides, task_name).is_some() {
         return Ok(());
-    }
-
-    if let Some(reason) = runner_constraint_error(overrides, &found) {
-        return Err(reason.into());
     }
 
     // Unqualified miss with no constraint and no reversed shape: dispatch
@@ -528,60 +514,6 @@ pub(crate) fn allowed_runner_sources(
             .filter_map(|r| r.task_source())
             .collect();
         return Some(set);
-    }
-    None
-}
-
-/// Convert a "no candidate satisfied the runner constraint" outcome
-/// into the right [`ResolveError`] for the user.
-///
-/// Distinguishes three failure shapes the user benefits from seeing
-/// separately:
-/// - `--runner nx` (a runner with no task-extraction support today) →
-///   the override is unsatisfiable in principle, not just here.
-/// - `--runner just` but no Justfile in this project → override is
-///   set, candidates exist for the task elsewhere, but none under
-///   `Justfile`.
-/// - `[task_runner].prefer = [...]` with a task only under sources
-///   absent from the list → analogous shape for the prefer-list.
-pub(crate) fn runner_constraint_error(
-    overrides: &ResolutionOverrides,
-    found: &[&Task],
-) -> Option<ResolveError> {
-    if let Some(ovr) = overrides.runner.as_ref() {
-        let label = ovr.runner.label();
-        if ovr.runner.task_source().is_none() {
-            return Some(ResolveError::InvalidOverride {
-                value: label.to_string(),
-                reason: "no task source is registered for this runner; cannot restrict candidates",
-            });
-        }
-        let reason = if found.is_empty() {
-            "no task with that name exists in the project"
-        } else {
-            "no candidate task is registered under this runner's source"
-        };
-        return Some(ResolveError::InvalidOverride {
-            value: label.to_string(),
-            reason,
-        });
-    }
-    if !overrides.prefer_runners.is_empty() {
-        // Stringify the list once for the user; the static `reason`
-        // string can't carry the list, so the dynamic value field
-        // does double duty as both the offending input and the
-        // detail. Surfaced verbatim by the `Display` impl as
-        // `invalid override value "[just, turbo]": ...`.
-        let names = overrides
-            .prefer_runners
-            .iter()
-            .map(|r| r.label())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Some(ResolveError::InvalidOverride {
-            value: format!("[{names}]"),
-            reason: "[task_runner].prefer matched no candidate task source",
-        });
     }
     None
 }
@@ -1028,7 +960,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn precheck_passes_root_invocation_under_a_prefer_list_without_make() {
         let mut ctx = context();
         ctx.task_runners.push(TaskRunner::Make);
@@ -1042,7 +973,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 4: run on the core"]
     fn precheck_passes_a_bare_miss_under_a_runner_choice_to_the_cascade() {
         let overrides = ResolutionOverrides {
             prefer_runners: vec![TaskRunner::Just],

@@ -201,3 +201,89 @@ fn loader_refusals_cannot_fall_through_to_another_exec_provider() {
         ));
     }
 }
+
+#[test]
+fn failed_read_only_queries_are_errors_with_provider_and_scope() {
+    fn fails(_: &std::path::Path) -> std::io::Result<Vec<Evidence>> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "query denied",
+        ))
+    }
+    static PROVIDERS: &[runner_core::Provider] = &[runner_core::Provider {
+        signals: &[runner_core::Signal::Ask(fails)],
+        ..runner_providers::managers::mise::PROVIDER
+    }];
+    let fixture = Fixture::new();
+    let error = runner_core::observe(&fixture.0, &runner_core::Registry(PROVIDERS)).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let message = error.to_string();
+    assert!(message.contains("mise") && message.contains("query denied"));
+    assert!(message.contains(fixture.0.root.to_str().unwrap()));
+}
+
+#[test]
+fn yarn_observation_selects_classic_or_berry_local_exec() {
+    for (lock, expected) in [
+        ("# yarn lockfile v1\n", "run"),
+        ("__metadata:\n  version: 8\n", "exec"),
+    ] {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.root.join("yarn.lock"), lock).unwrap();
+        let policy = Policy {
+            reach: ReachPolicy::Local,
+            ..Policy::default()
+        };
+        let evidence = runner_core::observe(&fixture.0, &REGISTRY).unwrap();
+        let project = runner_core::resolve(&fixture.0, evidence, &policy, &REGISTRY);
+        let cascade = Cascade {
+            tree: &fixture.0,
+            project: &project,
+            policy: &policy,
+            registry: &REGISTRY,
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        let (rung, Dispatch::Plan(plan)) =
+            runner_core::dispatch(&cascade, "runner-variant-test-not-on-path", &[]).unwrap()
+        else {
+            panic!("expected plan")
+        };
+        assert_eq!(rung.name, "local-exec");
+        assert_eq!(plan.argv[0], "yarn");
+        assert_eq!(plan.argv[1], expected);
+    }
+}
+
+#[test]
+fn file_fallback_is_selected_from_registry_without_inventing_project_presence() {
+    let fixture = Fixture::new();
+    let project = Project::default();
+    let policy = Policy::default();
+    for (file, program) in [
+        ("main.js", "node"),
+        ("main.py", if cfg!(windows) { "python" } else { "python3" }),
+    ] {
+        let path = fixture.0.root.join(file);
+        std::fs::write(&path, "").unwrap();
+        let cascade = Cascade {
+            tree: &fixture.0,
+            project: &project,
+            policy: &policy,
+            registry: &REGISTRY,
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        let (rung, Dispatch::Plan(plan)) = runner_core::dispatch(&cascade, file, &[]).unwrap()
+        else {
+            panic!("expected file plan")
+        };
+        assert_eq!(rung.name, "file");
+        assert_eq!(plan.argv[0], program);
+        assert_eq!(plan.because[0].at, path);
+        assert!(plan.because[0].provider.is_none());
+        assert!(project.present.is_empty());
+    }
+}

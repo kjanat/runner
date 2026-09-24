@@ -1,5 +1,6 @@
 //! Look for every provider's signals in a tree. Read only.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::evidence::{Evidence, Weight};
@@ -11,8 +12,10 @@ use crate::tree::Tree;
 
 /// Every signal of every provider found in `tree`, root first, then each
 /// member, then whatever the `after_observe` hooks derive.
-#[must_use]
-pub fn observe(tree: &Tree, registry: &Registry) -> Vec<Evidence> {
+/// # Errors
+///
+/// Returns the provider, scope and underlying error when a read-only query fails.
+pub fn observe(tree: &Tree, registry: &Registry) -> io::Result<Vec<Evidence>> {
     let prober = Prober::new();
     let mut found = Vec::new();
     let scopes = std::iter::once((Scope::Root, tree.root.as_path())).chain(
@@ -24,15 +27,27 @@ pub fn observe(tree: &Tree, registry: &Registry) -> Vec<Evidence> {
     for (scope, dir) in scopes {
         for provider in registry.iter() {
             for (index, signal) in provider.signals.iter().enumerate() {
-                found.extend(look(
-                    provider,
-                    SignalId(index),
-                    signal,
-                    &scope,
-                    dir,
-                    tree,
-                    &prober,
-                ));
+                found.extend(
+                    look(
+                        provider,
+                        SignalId(index),
+                        signal,
+                        &scope,
+                        dir,
+                        tree,
+                        &prober,
+                    )
+                    .map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!(
+                                "{} observation in {} failed: {error}",
+                                provider.label,
+                                dir.display()
+                            ),
+                        )
+                    })?,
+                );
             }
         }
     }
@@ -41,7 +56,7 @@ pub fn observe(tree: &Tree, registry: &Registry) -> Vec<Evidence> {
             found.extend(hook(tree, &found));
         }
     }
-    found
+    Ok(found)
 }
 
 fn look(
@@ -52,7 +67,7 @@ fn look(
     dir: &Path,
     tree: &Tree,
     prober: &Prober,
-) -> Vec<Evidence> {
+) -> io::Result<Vec<Evidence>> {
     let evidence = |at: PathBuf, weight: Weight, declared: Option<Declared>| Evidence {
         provider: Some(provider.id),
         signal: Some(id),
@@ -61,7 +76,7 @@ fn look(
         weight,
         declared,
     };
-    match signal {
+    Ok(match signal {
         Signal::File(name) => file_in(dir, name)
             .map(|at| evidence(at, Weight::Configured, None))
             .into_iter()
@@ -81,7 +96,7 @@ fn look(
             .collect(),
         Signal::EnvVar(name) => {
             if *scope != Scope::Root {
-                return Vec::new();
+                return Ok(Vec::new());
             }
             std::env::var_os(name)
                 .map(|value| evidence(PathBuf::from(value), Weight::Present, None))
@@ -90,7 +105,7 @@ fn look(
         }
         Signal::Probe(name) => {
             if *scope != Scope::Root {
-                return Vec::new();
+                return Ok(Vec::new());
             }
             prober
                 .probe(name)
@@ -98,8 +113,8 @@ fn look(
                 .into_iter()
                 .collect()
         }
-        Signal::Ask(ask) => ask(dir).unwrap_or_default(),
-    }
+        Signal::Ask(ask) => return ask(dir),
+    })
 }
 
 fn file_in(dir: &Path, name: &str) -> Option<PathBuf> {

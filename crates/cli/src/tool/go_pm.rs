@@ -5,10 +5,6 @@ use std::path::{Path, PathBuf};
 
 use std::process::Command;
 
-pub(crate) const fn quiet_capabilities() -> super::HostQuietCapabilities {
-    super::HostQuietCapabilities::unsupported("go", "go run has no host-only quiet mode")
-}
-
 /// Directories that may be cleaned in a Go project.
 pub(crate) const CLEAN_DIRS: &[&str] = &["vendor"];
 
@@ -144,6 +140,7 @@ fn is_main_package_line(line: &str) -> bool {
 
 /// `go run <target> <args...>`. The caller stamps VCS data once the env
 /// layers are applied, through [`stamp_vcs`].
+#[cfg(test)]
 pub(crate) fn run_cmd(target: &str, args: &[String], _verbosity: super::HostVerbosity) -> Command {
     // `go run` has no quiet flag and no stdout-diversion primitive, so both
     // verbosity axes no-op here.
@@ -156,6 +153,7 @@ pub(crate) fn run_cmd(target: &str, args: &[String], _verbosity: super::HostVerb
 /// Generalizes the slash-containing-token Go special case in the PM-exec
 /// fallback to the local-file dispatch path. Never VCS-stamped: a file
 /// builds as `command-line-arguments`, which Go stamps with nothing.
+#[cfg(test)]
 pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
     let mut c = go_run();
     c.arg(file).args(args);
@@ -163,6 +161,7 @@ pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
 }
 
 /// `go run`
+#[cfg(test)]
 fn go_run() -> Command {
     let mut c = super::program::command("go");
     c.arg("run");
