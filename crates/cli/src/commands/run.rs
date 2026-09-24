@@ -31,8 +31,6 @@ use anyhow::Result;
 pub(crate) mod core;
 mod dispatch;
 mod local_dep;
-#[cfg(test)]
-mod local_file;
 mod qualify;
 mod runtime;
 mod select;
@@ -78,38 +76,23 @@ pub(crate) fn run(
     args: &[String],
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
-    let dispatch = dispatch::resolve_dispatch(ctx, overrides, task, args, sink, true)?;
-    if overrides.explain {
-        if let dispatch::Dispatch::Spawn(mut spawn) = dispatch {
-            crate::render::explain::print_command(overrides, spawn.command_mut());
+    let mut spawn = match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, true)? {
+        dispatch::Dispatch::Builtin(name) => {
+            return crate::run_builtin(ctx, overrides, &name, args);
         }
+        dispatch::Dispatch::Spawn(spawn) => spawn,
+    };
+    if overrides.explain {
+        crate::render::explain::print_command(overrides, spawn.command_mut());
         return Ok(0);
     }
     // Wrap the child's output in a collapsible GitHub Actions group
     // (`runner: <task>`) when enabled. Opened after resolution so the `→`
     // dispatch arrow stays visible above the fold and a resolver error
     // never leaves an empty group; the guard closes the group on drop.
-    let key = task_key_for_token(ctx, overrides, task);
+    let key = task_key_for_token(ctx, overrides, task)?;
     let _group = super::task_group(overrides, task, &key);
-    match dispatch {
-        dispatch::Dispatch::Builtin(name) => {
-            if args.is_empty() {
-                return Ok(crate::run_path_builtin_fallback(ctx, overrides, &name)?.unwrap_or(0));
-            }
-            Ok(super::exit_code(runner_core::execute(&builtin_plan(
-                ctx, overrides, &name, args,
-            )?)?))
-        }
-        dispatch::Dispatch::Spawn(mut spawn) => Ok(super::exit_code(spawn.status()?)),
-    }
-}
-
-pub(crate) fn task_streams_for_token(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    token: &str,
-) -> (crate::tool::TaskStream, crate::tool::TaskStream) {
-    overrides.task_streams_for(&task_key_for_token(ctx, overrides, token))
+    Ok(super::exit_code(spawn.status()?))
 }
 
 /// The `[tasks.<key>]` identity a CLI token resolves to: the selected task's
@@ -118,11 +101,11 @@ pub(crate) fn task_key_for_token(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     token: &str,
-) -> String {
-    core::selected(ctx, overrides, token).map_or_else(|| token.to_string(), task_output_key)
+) -> Result<String> {
+    Ok(core::prepare(ctx, overrides, token)?.task_key)
 }
 
-/// Resolve `task` and spawn it with piped stdout/stderr (so the caller
+/// Execute a builtin in-process or spawn a task with piped stdout/stderr (so the caller
 /// can multiplex output) and `Stdio::null()` stdin (so parallel
 /// siblings don't compete for the parent TTY or interfere with each
 /// other's terminal modes). Used by the parallel chain executor
@@ -133,7 +116,7 @@ pub(crate) fn dispatch_task_piped(
     task: &str,
     args: &[String],
     sink: super::WarningSink<'_>,
-) -> Result<std::process::Child> {
+) -> Result<PipedDispatch> {
     use std::process::Stdio;
 
     match dispatch::resolve_dispatch(ctx, overrides, task, args, sink, false)? {
@@ -143,39 +126,17 @@ pub(crate) fn dispatch_task_piped(
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            spawn.spawn()
+            spawn.spawn().map(PipedDispatch::Child)
         }
         dispatch::Dispatch::Builtin(name) => {
-            let plan = builtin_plan(ctx, overrides, &name, args)?;
-            let mut command = runner_core::execute::command(&plan);
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            runner_core::execute::spawn(&plan, &mut command).map_err(Into::into)
+            crate::run_builtin(ctx, overrides, &name, args).map(PipedDispatch::Completed)
         }
     }
 }
-fn builtin_plan(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    name: &str,
-    args: &[String],
-) -> Result<runner_core::Plan> {
-    let prepared = core::prepare(ctx, overrides, name);
-    let args = std::iter::once(name.to_owned())
-        .chain(args.iter().cloned())
-        .collect::<Vec<_>>();
-    let mut plan = runner_core::plan_found(
-        &prepared.tree,
-        &prepared.project,
-        &prepared.policy,
-        std::env::current_exe()?,
-        &args,
-    )
-    .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-    super::configure_plan(&mut plan, overrides, name);
-    Ok(plan)
+
+pub(crate) enum PipedDispatch {
+    Child(std::process::Child),
+    Completed(i32),
 }
 
 #[cfg(test)]

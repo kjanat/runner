@@ -84,7 +84,7 @@ pub(super) fn try_selected_package(
             path.display()
         );
     }
-    let prepared = super::core::prepare(ctx, overrides, bin);
+    let prepared = super::core::prepare(ctx, overrides, bin)?;
     let dep = |_: &str| Ok(None);
     let plan = runner_core::file_plan(&prepared.cascade(&dep, None), &path, args)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
@@ -115,7 +115,7 @@ fn pnp_selected_package(
     let Some(found) = pnp_bin(&bins, package, bin)? else {
         return Ok(None);
     };
-    let prepared = super::core::prepare(ctx, overrides, bin);
+    let prepared = super::core::prepare(ctx, overrides, bin)?;
     let present = prepared
         .project
         .present

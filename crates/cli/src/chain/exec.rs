@@ -146,10 +146,10 @@ fn run_sequential(
     let mut first_failure: Option<i32> = None;
 
     for (index, item) in chain.items.iter().enumerate() {
+        let key = item_key(ctx, overrides, item)?;
         let started = std::time::Instant::now();
         let code = dispatch_item(ctx, overrides, item, warnings)?;
         let elapsed = started.elapsed();
-        let key = item_key(ctx, overrides, item);
         crate::commands::emit_task_timing(overrides, &key, item.display_name(), elapsed, code);
         outcomes.push(ItemOutcome {
             name: item.display_name().to_string(),
@@ -248,8 +248,9 @@ fn run_parallel_streaming(
     // Spawn each task with piped stdio and start reader threads. The
     // `Instant` recorded at spawn anchors the per-task wall-clock duration
     // reported when the child is reaped.
-    let mut children: Vec<(String, Instant, Child)> = Vec::with_capacity(chain.items.len());
+    let mut children: Vec<(String, String, Instant, Child)> = Vec::with_capacity(chain.items.len());
     let mut reader_handles = Vec::new();
+    let mut first_failure: Option<i32> = None;
 
     // Spawn loop. On any per-item failure (resolver error or the Install
     // bail-out below), already-spawned children would otherwise outlive
@@ -259,14 +260,14 @@ fn run_parallel_streaming(
     // reaped, so the threads exit on their own).
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
-            let key = item_key(ctx, overrides, item);
+            let key = item_key(ctx, overrides, item)?;
             let prefix = if overrides.emits_groups_for(&key) {
                 render_prefix(item.display_name(), width, colorize)
             } else {
                 String::new()
             };
             let started = Instant::now();
-            let mut child = match &item.kind {
+            let child = match &item.kind {
                 ChainItemKind::Task(name) => crate::commands::run::dispatch_task_piped(
                     ctx,
                     overrides,
@@ -281,12 +282,31 @@ fn run_parallel_streaming(
                     anyhow::bail!("install items cannot run in parallel chains")
                 }
             };
+            let mut child = match child {
+                crate::commands::run::PipedDispatch::Child(child) => child,
+                crate::commands::run::PipedDispatch::Completed(code) => {
+                    record_finished(
+                        &key,
+                        overrides,
+                        outcomes,
+                        item.display_name().to_owned(),
+                        started.elapsed(),
+                        code,
+                    );
+                    if code != 0 {
+                        first_failure.get_or_insert(code);
+                        if matches!(chain.failure, FailurePolicy::KillOnFail) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            };
             let stdout: Box<dyn std::io::Read + Send> =
                 Box::new(child.stdout.take().expect("stdout piped"));
             let stderr: Box<dyn std::io::Read + Send> =
                 Box::new(child.stderr.take().expect("stderr piped"));
-            let (stdout_policy, stderr_policy) =
-                crate::commands::run::task_streams_for_token(ctx, overrides, item.display_name());
+            let (stdout_policy, stderr_policy) = overrides.task_streams_for(&key);
             let sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
                 Arc::clone(&base),
                 stdout_policy == crate::tool::TaskStream::Inherit,
@@ -299,7 +319,7 @@ fn run_parallel_streaming(
                 ],
                 &sink,
             ));
-            children.push((item.display_name().to_string(), started, child));
+            children.push((item.display_name().to_string(), key, started, child));
         }
         Ok(())
     })();
@@ -314,25 +334,24 @@ fn run_parallel_streaming(
 
     // Poll children. On first failure with KillOnFail, kill remaining
     // siblings; otherwise let them finish naturally.
-    let mut remaining: Vec<(String, Instant, Child)> = children;
-    let mut first_failure: Option<i32> = None;
+    let mut remaining: Vec<(String, String, Instant, Child)> = children;
     let kill_on_fail = matches!(chain.failure, FailurePolicy::KillOnFail);
 
     while !remaining.is_empty() {
-        let mut next: Vec<(String, Instant, Child)> = Vec::with_capacity(remaining.len());
+        let mut next: Vec<(String, String, Instant, Child)> = Vec::with_capacity(remaining.len());
         // A `try_wait` error must not orphan the siblings: `Child::drop`
         // does not kill, so bail out through the same kill + reap cleanup
         // the spawn phase uses instead of `?`-ing mid-iteration.
         let mut poll_error: Option<anyhow::Error> = None;
         let mut pending = std::mem::take(&mut remaining).into_iter();
-        for (name, started, mut child) in pending.by_ref() {
+        for (name, key, started, mut child) in pending.by_ref() {
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let code = crate::commands::exit_code(status);
                     if code != 0 {
                         first_failure.get_or_insert(code);
                     }
-                    record_finished(ctx, overrides, outcomes, name, started.elapsed(), code);
+                    record_finished(&key, overrides, outcomes, name, started.elapsed(), code);
                 }
                 Ok(None) => {
                     if kill_on_fail && first_failure.is_some() {
@@ -343,12 +362,12 @@ fn run_parallel_streaming(
                         let elapsed = started.elapsed();
                         match child.wait().ok().and_then(natural_exit_code) {
                             Some(code) => {
-                                record_finished(ctx, overrides, outcomes, name, elapsed, code);
+                                record_finished(&key, overrides, outcomes, name, elapsed, code);
                             }
-                            None => record_killed(ctx, overrides, outcomes, name, elapsed),
+                            None => record_killed(&key, overrides, outcomes, name, elapsed),
                         }
                     } else {
-                        next.push((name, started, child));
+                        next.push((name, key, started, child));
                     }
                 }
                 Err(e) => {
@@ -385,15 +404,14 @@ fn run_parallel_streaming(
 /// end-of-chain summary. Shared by the normal-exit and SIGKILL branches, so
 /// a killed sibling appears in the summary with the work it did manage.
 fn record_finished(
-    ctx: &ProjectContext,
+    key: &str,
     overrides: &ResolutionOverrides,
     outcomes: &mut Vec<ItemOutcome>,
     name: String,
     elapsed: std::time::Duration,
     code: i32,
 ) {
-    let key = crate::commands::run::task_key_for_token(ctx, overrides, &name);
-    crate::commands::emit_task_timing(overrides, &key, &name, elapsed, code);
+    crate::commands::emit_task_timing(overrides, key, &name, elapsed, code);
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Ran { code, elapsed },
@@ -403,14 +421,13 @@ fn record_finished(
 /// Emit a killed streaming-chain sibling's timing line and record it for the
 /// end-of-chain summary, distinct from a real failure.
 fn record_killed(
-    ctx: &ProjectContext,
+    key: &str,
     overrides: &ResolutionOverrides,
     outcomes: &mut Vec<ItemOutcome>,
     name: String,
     elapsed: std::time::Duration,
 ) {
-    let key = crate::commands::run::task_key_for_token(ctx, overrides, &name);
-    crate::commands::emit_task_killed(overrides, &key, &name, elapsed);
+    crate::commands::emit_task_killed(overrides, key, &name, elapsed);
     outcomes.push(ItemOutcome {
         name,
         status: ItemStatus::Killed { elapsed },
@@ -456,10 +473,11 @@ fn run_parallel_grouped(
     // explicit-cleanup contract as the streaming path: a spawn failure must
     // kill + reap already-spawned children and stop accepting reader output.
     let mut tasks: Vec<GroupedTask> = Vec::with_capacity(chain.items.len());
+    let mut first_failure: Option<i32> = None;
     let spawn_outcome: Result<()> = (|| {
         for item in &chain.items {
             let started = std::time::Instant::now();
-            let key = item_key(ctx, overrides, item);
+            let key = item_key(ctx, overrides, item)?;
             let (name, mut child, sink) = match &item.kind {
                 ChainItemKind::Task(task_name) => {
                     let sink = Arc::new(BufferSink::new()?);
@@ -470,6 +488,26 @@ fn run_parallel_grouped(
                         &item.args,
                         Some(warnings),
                     )?;
+                    let child = match child {
+                        crate::commands::run::PipedDispatch::Child(child) => child,
+                        crate::commands::run::PipedDispatch::Completed(code) => {
+                            record_finished(
+                                &key,
+                                overrides,
+                                outcomes,
+                                item.display_name().to_owned(),
+                                started.elapsed(),
+                                code,
+                            );
+                            if code != 0 {
+                                first_failure.get_or_insert(code);
+                                if matches!(chain.failure, FailurePolicy::KillOnFail) {
+                                    break;
+                                }
+                            }
+                            continue;
+                        }
+                    };
                     (item.display_name().to_string(), child, sink)
                 }
                 ChainItemKind::Install { .. } => {
@@ -484,8 +522,7 @@ fn run_parallel_grouped(
             // unsizes to the trait object; `Arc::clone(&sink)` would instead
             // infer its generic from the annotation and fail to coerce.
             let base: Arc<dyn LineSink> = sink.clone();
-            let (stdout_policy, stderr_policy) =
-                crate::commands::run::task_streams_for_token(ctx, overrides, item.display_name());
+            let (stdout_policy, stderr_policy) = overrides.task_streams_for(&key);
             let dyn_sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
                 base,
                 stdout_policy == crate::tool::TaskStream::Inherit,
@@ -527,7 +564,6 @@ fn run_parallel_grouped(
     // blocks appear in completion order (first done, first shown). Only this
     // thread writes them, one at a time, so blocks never overlap.
     let mut remaining = tasks;
-    let mut first_failure: Option<i32> = None;
     let kill_on_fail = matches!(chain.failure, FailurePolicy::KillOnFail);
 
     while !remaining.is_empty() {
@@ -745,10 +781,14 @@ fn timing_footer(
 
 /// The `[tasks.<key>]` identity of a chain item. The install head keeps its
 /// literal `install` key.
-fn item_key(ctx: &ProjectContext, overrides: &ResolutionOverrides, item: &ChainItem) -> String {
+fn item_key(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    item: &ChainItem,
+) -> Result<String> {
     match &item.kind {
         ChainItemKind::Task(name) => crate::commands::run::task_key_for_token(ctx, overrides, name),
-        ChainItemKind::Install { .. } => String::from("install"),
+        ChainItemKind::Install { .. } => Ok(String::from("install")),
     }
 }
 
@@ -891,10 +931,12 @@ impl ItemOutcome {
 /// Kill + reap streaming-chain children that must not outlive an error
 /// return: `Child::drop` does not kill, so every early exit routes
 /// through here.
-fn kill_and_reap<I: IntoIterator<Item = (String, std::time::Instant, std::process::Child)>>(
+fn kill_and_reap<
+    I: IntoIterator<Item = (String, String, std::time::Instant, std::process::Child)>,
+>(
     children: I,
 ) {
-    for (_, _, mut c) in children {
+    for (_, _, _, mut c) in children {
         let _ = c.kill();
         let _ = c.wait();
     }

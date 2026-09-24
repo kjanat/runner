@@ -19,7 +19,7 @@ pub type VersionFn = fn(&Present) -> Result<String, Warning>;
 pub type BeforePlanFn = fn(&Present, &Op<'_>, &mut Vec<Warning>);
 
 /// Evidence derived from other evidence.
-pub type AfterObserveFn = fn(&Tree, &[Evidence]) -> Vec<Evidence>;
+pub type AfterObserveFn = fn(&Tree, &[Evidence]) -> std::io::Result<Vec<Evidence>>;
 
 /// One tool runner knows about.
 #[derive(Clone, Copy)]

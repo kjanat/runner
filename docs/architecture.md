@@ -83,8 +83,8 @@ it.
    it.
 9. **No shell.** A plan is an argv. runner never renders a command line for a
    shell to parse. Tools that take a script body receive it as one argument.
-   Enforced by a test that greps plans for `sh -c`, `cmd /c` and
-   `powershell -Command`.
+   Provider-template tests enforce direct tool invocation. Explicit user shell
+   commands retain their supplied arguments.
 
 ## 4. Core types
 
@@ -209,7 +209,7 @@ pub struct Provider {
 
 pub struct Hooks {
     pub before_plan: Option<fn(&Present, &Op, &mut Vec<Warning>)>,
-    pub after_observe: Option<fn(&Tree, &[Evidence]) -> Vec<Evidence>>,
+    pub after_observe: Option<fn(&Tree, &[Evidence]) -> Result<Vec<Evidence>, io::Error>>,
 }
 ```
 
@@ -261,6 +261,10 @@ for Classic versus Berry. `file_fallback` declares a default interpreter for a
 supported file when no project runtime takes it. This does not add the runtime
 to `Project.present`: the resulting plan carries the discovered file as evidence.
 `file_interpreters` identifies shebangs an explicitly chosen runtime can replace.
+`RunFileCap.unsupported` records recognized file types a runtime cannot execute;
+`UnsupportedFile` records the provider, path, reason and runtime-choice origin.
+Observation hooks return errors for unreadable or malformed evidence. Only
+missing optional files count as absence.
 `task_priority` orders otherwise unranked task sources. Provider defaults and
 policy preference lists rank candidates; they do not remove later cascade rungs.
 
@@ -285,6 +289,7 @@ pub struct ExecCap {
 }
 
 pub struct RunFileCap {
+    pub unsupported: &'static [(&'static str, &'static str)], // extension and refusal reason
     pub program: Option<&'static str>,
     pub extensions: &'static [&'static str],
     pub argv: Template,
@@ -439,6 +444,17 @@ pub enum Reach {
 }
 
 pub enum Refusal {
+    Invalid(String),
+    Observation {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    UnsupportedFile {
+        provider: ProviderId,
+        file: PathBuf,
+        reason: &'static str,
+        chosen_by: Option<Layer>,
+    },
     NotFound {
         name: String,
         tried: Vec<Rung>,
@@ -461,9 +477,11 @@ pub enum Refusal {
 A `Plan` is complete. `execute` adds nothing and decides nothing. That is
 what makes `why`, `--explain`, `doctor` and the arrow line agree, because
 they all print the same struct. Command construction, synchronous execution and
-parallel spawning share the evidence and shell-string guards. Configured execution
+parallel spawning share the evidence guard. Provider planning asserts that its templates
+invoke tools directly. Explicit user shell commands preserve their argv. Configured execution
 also checks that the command's argv still equals the plan. The CLI run path requires
-a plan; it cannot fall back to spawning an unplanned command. Task bodies are left
+a plan for subprocesses. `Dispatch::Builtin` executes in-process and explain renders
+that action. Task bodies are left
 to their owning tools, including `deno task`; runner does not evaluate shell strings.
 
 `Trust` is set by the op. Toolchain installs and health checks are `Host`.

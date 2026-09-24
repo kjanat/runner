@@ -51,12 +51,27 @@ pub fn observe(tree: &Tree, registry: &Registry) -> io::Result<Vec<Evidence>> {
             }
         }
     }
+    derive(tree, registry, &mut found)?;
+    Ok(found)
+}
+
+/// Add provider-derived evidence, preserving errors from every hook.
+///
+/// # Errors
+/// Returns the provider and the hook's contextual observation error.
+pub fn derive(tree: &Tree, registry: &Registry, found: &mut Vec<Evidence>) -> io::Result<()> {
     for provider in registry.iter() {
         if let Some(hook) = provider.hooks.after_observe {
-            found.extend(hook(tree, &found));
+            let derived = hook(tree, found).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("{} observation failed: {error}", provider.label),
+                )
+            })?;
+            found.extend(derived);
         }
     }
-    Ok(found)
+    Ok(())
 }
 
 fn look(

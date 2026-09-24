@@ -66,6 +66,7 @@ pub const PROVIDER: Provider = Provider {
             accepts: NameShape::BARE.union(NameShape::VERSIONED),
         }),
         run_file: Some(RunFileCap {
+            unsupported: &[],
             program: None,
             extensions: SCRIPT_EXTENSIONS,
             argv: t![File, Args],

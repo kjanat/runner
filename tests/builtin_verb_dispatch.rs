@@ -2,8 +2,8 @@
 //!
 //! The explicit `runner <verb>` subcommand is ALWAYS the builtin: a
 //! same-named project task never shadows it. The run path (`run <verb>` /
-//! `runner run <verb>`) runs a same-named task when one exists, else falls
-//! back to the builtin's default (no-flag) form.
+//! `runner run <verb>`) also selects the builtin first; a same-named task
+//! requires an explicit source qualifier.
 //!
 //! `list` is the exercise verb here: its builtin is cheap (renders the task
 //! list, spawns nothing), unlike `install`/`clean` which would shell out to

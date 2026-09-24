@@ -57,3 +57,5 @@ pub use template::{Piece, Rendered, Request, ScriptRequest, Template};
 pub use tree::Tree;
 pub use verbosity::Verbosity;
 pub use warning::Warning;
+
+mod script;

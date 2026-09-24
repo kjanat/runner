@@ -38,6 +38,7 @@ pub const PROVIDER: Provider = Provider {
             accepts: NameShape::PATH_LIKE.union(NameShape::VERSIONED),
         }),
         run_file: Some(RunFileCap {
+            unsupported: &[],
             program: None,
             extensions: &["go"],
             argv: t!["run", File, Args],

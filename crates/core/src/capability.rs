@@ -188,6 +188,8 @@ pub struct ExecCap {
 /// Run a source file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunFileCap {
+    /// Recognized extensions this runtime refuses, with a user-facing reason.
+    pub unsupported: &'static [(&'static str, &'static str)],
     /// The program, when it differs from the provider's.
     pub program: Option<&'static str>,
     /// File extensions it takes, without the dot.

@@ -13,6 +13,8 @@ use runner_core::{
 };
 use runner_providers::REGISTRY;
 
+const BUILTINS: &[&str] = &["install", "clean", "list", "info", "completions"];
+
 use crate::resolver::ResolutionOverrides;
 use crate::types::{Ecosystem, JsRuntime, ProjectContext, Task, TaskRunner, TaskSource};
 
@@ -51,7 +53,7 @@ pub(crate) fn tree(ctx: &ProjectContext) -> Tree {
 /// The core's view of what the detector found, plus every provider policy
 /// named. A provider the user named is part of the project whether or not
 /// detection saw it; a missing binary fails at the spawn, naming itself.
-pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> Project {
+pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::Result<Project> {
     let mut found = project(ctx);
     let chosen: Vec<&Choice> = policy
         .runtime
@@ -85,25 +87,23 @@ pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> Project {
         );
     }
     let tree = tree(ctx);
-    let evidence: Vec<_> = found
+    let mut evidence: Vec<_> = found
         .present
         .iter()
         .flat_map(|p| p.because.iter().cloned())
         .collect();
-    for provider in REGISTRY.iter() {
-        if let Some(hook) = provider.hooks.after_observe {
-            for evidence in hook(&tree, &evidence) {
-                if let Some(present) = found
-                    .present
-                    .iter_mut()
-                    .find(|p| Some(p.provider) == evidence.provider && p.scope == evidence.scope)
-                {
-                    present.because.push(evidence);
-                }
-            }
+    let observed = evidence.len();
+    runner_core::observe::derive(&tree, &REGISTRY, &mut evidence)?;
+    for evidence in evidence.into_iter().skip(observed) {
+        if let Some(present) = found
+            .present
+            .iter_mut()
+            .find(|p| Some(p.provider) == evidence.provider && p.scope == evidence.scope)
+        {
+            present.because.push(evidence);
         }
     }
-    found
+    Ok(found)
 }
 
 /// The core's view of what the detector found.
@@ -256,23 +256,40 @@ pub(crate) fn selected<'a>(
     ctx: &'a ProjectContext,
     overrides: &ResolutionOverrides,
     token: &str,
-) -> Option<&'a Task> {
-    let tree = tree(ctx);
-    let policy = policy(overrides);
-    let project = project_under(ctx, &policy);
+) -> Result<Option<&'a Task>, runner_core::Refusal> {
+    let prepared = prepare(ctx, overrides, token)?;
+    selected_in(
+        ctx,
+        &prepared.tree,
+        &prepared.project,
+        &prepared.policy,
+        token,
+    )
+}
+
+fn selected_in<'a>(
+    ctx: &'a ProjectContext,
+    tree: &Tree,
+    project: &Project,
+    policy: &Policy,
+    token: &str,
+) -> Result<Option<&'a Task>, runner_core::Refusal> {
     let cascade = runner_core::Cascade {
-        tree: &tree,
-        project: &project,
-        policy: &policy,
+        tree,
+        project,
+        policy,
         registry: &REGISTRY,
         builtins: &[],
         dep: None,
         confirm: None,
     };
-    let selected = runner_core::select(&cascade, token).ok().flatten()?;
-    ctx.tasks
+    let Some(selected) = runner_core::select(&cascade, token)? else {
+        return Ok(None);
+    };
+    Ok(ctx
+        .tasks
         .iter()
-        .find(|entry| task(entry).as_ref() == Some(selected))
+        .find(|entry| task(entry).as_ref() == Some(selected)))
 }
 
 /// Inputs shared by execution and explanation while the detector/resolver migrate.
@@ -282,13 +299,14 @@ pub(crate) struct Prepared {
     pub project: Project,
     pub node: Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
     pub requested: crate::tool::HostVerbosity,
+    pub task_key: String,
 }
 
 pub(crate) fn prepare(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     token: &str,
-) -> Prepared {
+) -> Result<Prepared, runner_core::Refusal> {
     let tree = tree(ctx);
     let mut policy = policy(overrides);
     let node = crate::resolver::Resolver::new(ctx, overrides).resolve_node_pm();
@@ -304,8 +322,18 @@ pub(crate) fn prepare(
                 from: Layer::Probe,
             });
     }
-    let key =
-        selected(ctx, overrides, token).map_or_else(|| token.to_owned(), super::task_output_key);
+    let project = project_under(ctx, &policy)?;
+    let key = if BUILTINS.contains(&token) {
+        token.to_owned()
+    } else {
+        match selected_in(ctx, &tree, &project, &policy, token) {
+            Ok(selected) => selected.map_or_else(|| token.to_owned(), super::task_output_key),
+            Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => {
+                token.to_owned()
+            }
+            Err(error) => return Err(error),
+        }
+    };
     let requested = overrides.host_verbosity_for(&key);
     policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
     policy.verbosity = match requested.diagnostics {
@@ -316,14 +344,14 @@ pub(crate) fn prepare(
     if overrides.explain {
         policy.reach = runner_core::ReachPolicy::Allow;
     }
-    let project = project_under(ctx, &policy);
-    Prepared {
+    Ok(Prepared {
         tree,
         policy,
         project,
         node,
         requested,
-    }
+        task_key: key,
+    })
 }
 
 impl Prepared {
@@ -337,7 +365,7 @@ impl Prepared {
             project: &self.project,
             policy: &self.policy,
             registry: &REGISTRY,
-            builtins: &["install", "clean", "list", "info", "completions"],
+            builtins: BUILTINS,
             dep: Some(dep),
             confirm,
         }
@@ -350,7 +378,7 @@ pub(crate) fn preview(
     overrides: &ResolutionOverrides,
     token: &str,
 ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
-    let mut prepared = prepare(ctx, overrides, token);
+    let mut prepared = prepare(ctx, overrides, token)?;
     prepared.policy.reach = runner_core::ReachPolicy::Allow;
     let dep = |name: &str| {
         super::local_dep::installed_binary(ctx, name)
@@ -544,5 +572,76 @@ mod tests {
             ..ResolutionOverrides::default()
         };
         assert_eq!(policy(&overrides).reach, runner_core::ReachPolicy::Local);
+    }
+
+    #[test]
+    fn selected_metadata_and_dispatch_share_prepared_policy_and_evidence() {
+        use crate::resolver::{OverrideOrigin, RuntimeOverride};
+        let dir = crate::tool::test_support::TempDir::new("selection-context");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager":"yarn@4.0.0"}"#,
+        )
+        .unwrap();
+        let mut ctx = context(vec![
+            task("build", TaskSource::PackageJson),
+            task("build", TaskSource::Justfile),
+        ]);
+        ctx.root = dir.path().to_owned();
+        ctx.cwd = ctx.root.clone();
+        ctx.package_managers = vec![PackageManager::Yarn];
+        let overrides = ResolutionOverrides {
+            runtime: Some(RuntimeOverride {
+                runtime: crate::types::JsRuntime::Bun,
+                origin: OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+        let prepared = super::prepare(&ctx, &overrides, "build").unwrap();
+        assert!(
+            prepared
+                .project
+                .present
+                .iter()
+                .any(|p| p.provider == ProviderId::Bun)
+        );
+        assert!(prepared.project.present.iter().flat_map(|p| &p.because)
+            .any(|e| matches!(&e.declared, Some(runner_core::Declared::Variant(v)) if v == "berry")));
+        let dep = |_: &str| Ok(None);
+        let cascade = prepared.cascade(&dep, None);
+        let selected = runner_core::select(&cascade, "build").unwrap().unwrap();
+        let metadata = super::selected(&ctx, &overrides, "build").unwrap().unwrap();
+        assert_eq!(super::task(metadata).as_ref(), Some(selected));
+        assert_eq!(prepared.task_key, super::super::task_output_key(metadata));
+        let (_, runner_core::Dispatch::Plan(plan)) =
+            runner_core::dispatch(&cascade, "build", &[]).unwrap()
+        else {
+            panic!("expected task plan");
+        };
+        assert_eq!(plan.scope, selected.scope);
+        assert!(plan.argv.iter().any(|arg| arg == "build"));
+    }
+
+    #[test]
+    fn preview_preserves_observation_error_kind() {
+        let dir = crate::tool::test_support::TempDir::new("preview-error");
+        let path = dir.path().join("package.json");
+        std::fs::create_dir(&path).unwrap();
+        let expected = std::fs::read_to_string(&path).unwrap_err().kind();
+        let mut ctx = context(Vec::new());
+        ctx.root = dir.path().to_owned();
+        ctx.cwd = ctx.root.clone();
+        ctx.package_managers = vec![PackageManager::Yarn];
+        let overrides = ResolutionOverrides::default();
+        for error in [
+            super::preview(&ctx, &overrides, "build").unwrap_err(),
+            super::selected(&ctx, &overrides, "build").unwrap_err(),
+        ] {
+            let runner_core::Refusal::Observation { kind, message } = error else {
+                panic!("observation refusal");
+            };
+            assert_eq!(kind, expected);
+            assert!(message.contains("package.json") && message.contains("yarn"));
+        }
     }
 }

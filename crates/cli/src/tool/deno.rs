@@ -230,14 +230,6 @@ pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosi
     c
 }
 
-/// Run a local file with Deno's default permissions; callers pass explicit grants.
-#[cfg(test)]
-pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
-    let mut c = super::program::command("deno");
-    c.arg("run").arg(file).args(args);
-    c
-}
-
 /// Whether this Deno project materializes a local `node_modules/`, in which
 /// case `deno install` writes the same directory a node-ecosystem PM
 /// (`npm`/`yarn`/`pnpm`/`bun`) would.
@@ -281,27 +273,9 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        detect, extract_tasks, extract_tasks_in, find_config_upwards, run_file_cmd,
-        workspace_pattern_matches,
+        detect, extract_tasks, extract_tasks_in, find_config_upwards, workspace_pattern_matches,
     };
     use crate::tool::test_support::TempDir;
-
-    #[test]
-    fn run_file_cmd_grants_no_permissions() {
-        let args = [String::from("--port"), String::from("8080")];
-        let cmd = run_file_cmd(Path::new("/abs/server.ts"), &args);
-        let built: Vec<_> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(cmd.get_program().to_string_lossy(), "deno");
-        assert_eq!(built, ["run", "/abs/server.ts", "--port", "8080"]);
-        assert!(
-            !built.iter().any(|a| a.starts_with("--allow-") || a == "-A"),
-            "permissions are the project's: {built:?}"
-        );
-    }
 
     #[test]
     fn writes_node_modules_reads_node_modules_dir() {

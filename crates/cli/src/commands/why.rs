@@ -86,7 +86,11 @@ pub(crate) fn why(
     let ambiguous = (!scope.is_pinned())
         .then(|| ambiguous_members(&restricted))
         .flatten();
-    let selected = crate::commands::run::core::selected(ctx, overrides, task);
+    let selected = match crate::commands::run::core::selected(ctx, overrides, task) {
+        Ok(selected) => selected,
+        Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => None,
+        Err(error) => return Err(error.into()),
+    };
 
     let pm_decision = pm_decision_for_selected(ctx, overrides, selected);
 

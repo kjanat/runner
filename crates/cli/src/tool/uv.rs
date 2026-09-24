@@ -29,22 +29,10 @@ pub(crate) fn run_cmd(script: &str, args: &[String], verbosity: super::HostVerbo
     c
 }
 
-/// `uv run <file> [args...]`, execute a local Python script inside the
-/// project environment. `uv run` accepts a script path directly, syncing
-/// the environment first when needed. Distinct from [`exec_cmd`] (`uvx`),
-/// which fetches and runs a `PyPI` tool.
-#[cfg(test)]
-pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
-    let mut c = super::program::command("uv");
-    c.arg("run").arg(file).args(args);
-    c
-}
-
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
 
-    use super::{run_cmd, run_file_cmd};
+    use super::run_cmd;
 
     #[test]
     fn run_uses_uv_run_with_script_and_args() {
@@ -62,19 +50,5 @@ mod tests {
         .collect();
 
         assert_eq!(built, ["run", "greenpy", "--flag"]);
-    }
-
-    #[test]
-    fn run_file_cmd_uses_uv_run_with_path() {
-        // A local `.py` file in a uv project dispatches as
-        // `uv run <file>` (project-environment execution), not `uvx`.
-        let cmd = run_file_cmd(Path::new("/abs/task.py"), &[String::from("--once")]);
-        let built: Vec<_> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(cmd.get_program().to_string_lossy(), "uv");
-        assert_eq!(built, ["run", "/abs/task.py", "--once"]);
     }
 }

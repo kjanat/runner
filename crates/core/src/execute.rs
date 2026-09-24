@@ -5,38 +5,13 @@ use std::process::{Child, Command, ExitStatus};
 
 use crate::plan::{Plan, Trust};
 
-/// Whether `plan` hands a command line to a shell to parse.
-#[must_use]
-pub fn invokes_a_shell(plan: &Plan) -> bool {
-    let words: Vec<String> = plan
-        .argv
-        .iter()
-        .map(|word| word.to_string_lossy().to_ascii_lowercase())
-        .collect();
-    let program = words
-        .first()
-        .map(|p| p.rsplit(['/', '\\']).next().unwrap_or(p).to_owned())
-        .unwrap_or_default();
-    let flag = words.get(1).map(String::as_str);
-    match program.trim_end_matches(".exe") {
-        "sh" | "bash" | "zsh" | "dash" => flag == Some("-c"),
-        "cmd" => flag == Some("/c"),
-        "powershell" | "pwsh" => words.iter().any(|w| w == "-command" || w == "-c"),
-        _ => false,
-    }
-}
-
 /// The command `plan` describes.
 #[must_use]
 /// # Panics
 ///
-/// In debug builds, when the plan carries no evidence or invokes a shell.
+/// In debug builds, when the plan carries no evidence.
 pub fn command(plan: &Plan) -> Command {
     debug_assert!(!plan.because.is_empty(), "a plan without evidence is a bug");
-    debug_assert!(
-        !invokes_a_shell(plan),
-        "a plan is an argv, never a shell string"
-    );
     let mut argv = plan.argv.iter();
     let program = argv.next().cloned().unwrap_or_default();
     let mut cmd = Command::new(program);
@@ -68,7 +43,7 @@ pub fn command(plan: &Plan) -> Command {
 ///
 /// # Panics
 ///
-/// In debug builds, when the plan carries no evidence or invokes a shell.
+/// In debug builds, when the plan carries no evidence.
 pub fn execute(plan: &Plan) -> io::Result<ExitStatus> {
     status(plan, &mut command(plan))
 }
@@ -79,7 +54,7 @@ pub fn execute(plan: &Plan) -> io::Result<ExitStatus> {
 /// Returns process spawn or wait errors.
 ///
 /// # Panics
-/// In debug builds, refuses missing evidence, shell strings, and changed argv.
+/// In debug builds, refuses missing evidence and changed argv.
 pub fn status(plan: &Plan, command: &mut Command) -> io::Result<ExitStatus> {
     validate_command(plan, command);
     command.status()
@@ -100,10 +75,6 @@ pub fn spawn(plan: &Plan, command: &mut Command) -> io::Result<Child> {
 fn validate_command(plan: &Plan, command: &Command) {
     debug_assert!(!plan.because.is_empty(), "a plan without evidence is a bug");
     debug_assert!(
-        !invokes_a_shell(plan),
-        "a plan is an argv, never a shell string"
-    );
-    debug_assert!(
         plan.argv
             .iter()
             .map(std::ffi::OsString::as_os_str)
@@ -117,7 +88,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use super::{command, invokes_a_shell};
+    use super::command;
     use crate::plan::{Plan, Trust};
     use crate::provider::ProviderId;
     use crate::reach::Reach;
@@ -149,27 +120,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_strings_are_recognised() {
-        assert!(invokes_a_shell(&plan(
-            &["sh", "-c", "npm test"],
-            Trust::Project
-        )));
-        assert!(invokes_a_shell(&plan(
-            &["cmd", "/c", "npm test"],
-            Trust::Project
-        )));
-        assert!(invokes_a_shell(&plan(
-            &["powershell", "-Command", "npm test"],
-            Trust::Project
-        )));
-        assert!(!invokes_a_shell(&plan(&["npm", "test"], Trust::Project)));
-        assert!(!invokes_a_shell(&plan(
-            &["sh", "script.sh"],
-            Trust::Project
-        )));
-    }
-
-    #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "a plan without evidence")]
     fn command_construction_rejects_missing_evidence() {
@@ -179,10 +129,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "never a shell string")]
-    fn command_construction_rejects_shell_strings() {
-        let _ = command(&plan(&["sh", "-c", "exit 0"], Trust::Project));
+    fn explicit_shell_arguments_are_preserved() {
+        let made = plan(&["bash", "-lc", "printf hello"], Trust::Host);
+        let command = command(&made);
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["-lc", "printf hello"]
+        );
     }
 
     #[test]

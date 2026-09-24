@@ -112,30 +112,92 @@ const BERRY: Capabilities = Capabilities {
 fn after_observe(
     tree: &runner_core::Tree,
     evidence: &[runner_core::Evidence],
-) -> Vec<runner_core::Evidence> {
+) -> std::io::Result<Vec<runner_core::Evidence>> {
     let mut derived = Vec::new();
+    let mut scopes = Vec::new();
     for item in evidence
         .iter()
         .filter(|e| e.provider == Some(ProviderId::Yarn))
     {
+        if scopes.contains(&item.scope) {
+            continue;
+        }
+        scopes.push(item.scope.clone());
         let dir = match &item.scope {
             runner_core::Scope::Root => &tree.root,
             runner_core::Scope::Member { dir, .. } => dir,
         };
-        let declared_berry = matches!(&item.declared, Some(Declared::Version(version)) if version.split('.').next().and_then(|v| v.parse::<u32>().ok()).is_some_and(|major| major >= 2));
-        let manifest_berry = std::fs::read_to_string(dir.join("package.json")).ok()
-            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-            .and_then(|manifest| manifest.get("packageManager").and_then(package_manager))
-            .is_some_and(|declared| matches!(declared, Declared::Version(version) if version.split('.').next().and_then(|v| v.parse::<u32>().ok()).is_some_and(|major| major >= 2)));
-        let lock_berry = std::fs::read_to_string(dir.join("yarn.lock"))
-            .is_ok_and(|text| text.lines().any(|line| line == "__metadata:"));
-        if declared_berry || manifest_berry || dir.join(".yarnrc.yml").is_file() || lock_berry {
-            let mut variant = item.clone();
-            variant.declared = Some(Declared::Variant("berry".into()));
-            if !derived.contains(&variant) {
-                derived.push(variant);
+        let manifest = dir.join("package.json");
+        let manifest_berry = match read_optional(&manifest)? {
+            Some(text) => {
+                let value: Value = serde_json::from_str(&text).map_err(|error| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("{}: {error}", manifest.display()),
+                    )
+                })?;
+                value
+                    .get("packageManager")
+                    .and_then(package_manager)
+                    .as_ref()
+                    .is_some_and(is_berry)
             }
+            None => false,
+        };
+        let lock = dir.join("yarn.lock");
+        let lock_berry = read_optional(&lock)?
+            .is_some_and(|text| text.lines().any(|line| line == "__metadata:"));
+        let config = dir.join(".yarnrc.yml");
+        let configured = match std::fs::metadata(&config) {
+            Ok(metadata) => metadata.is_file(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(at_path(&config, &error)),
+        };
+        let declaration = evidence.iter().find(|e| {
+            e.provider == item.provider
+                && e.scope == item.scope
+                && e.declared.as_ref().is_some_and(is_berry)
+        });
+        if declaration.is_some() || manifest_berry || configured || lock_berry {
+            let mut variant = item.clone();
+            variant.at = declaration.map_or_else(
+                || {
+                    if manifest_berry {
+                        manifest
+                    } else if configured {
+                        config
+                    } else {
+                        lock
+                    }
+                },
+                |declaration| declaration.at.clone(),
+            );
+            variant.declared = Some(Declared::Variant("berry".into()));
+            derived.push(variant);
         }
     }
-    derived
+    Ok(derived)
+}
+
+fn is_berry(declared: &Declared) -> bool {
+    let Declared::Version(version) = declared else {
+        return false;
+    };
+    version
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 2)
+}
+
+fn at_path(path: &std::path::Path, error: &std::io::Error) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+}
+
+fn read_optional(path: &std::path::Path) -> std::io::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(at_path(path, &error)),
+    }
 }

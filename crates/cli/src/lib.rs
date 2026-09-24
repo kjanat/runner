@@ -1022,33 +1022,113 @@ fn dispatch_run(
     commands::run(ctx, overrides, task, &args, None)
 }
 
-/// Render a builtin selected by the core's first cascade rung.
-/// A same-named task is addressed through an explicit source qualifier.
-fn run_path_builtin_fallback(
+#[derive(clap::Parser)]
+struct BuiltinArgs {
+    #[arg(long, global = true)]
+    schema_version: Option<u32>,
+    #[command(subcommand)]
+    command: args::Command,
+}
+
+fn run_builtin(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
     name: &str,
-) -> Result<Option<i32>> {
-    let code = match name {
-        "install" => commands::install(ctx, overrides, commands::install::InstallFlags::default())?,
-        "clean" => {
-            commands::clean(ctx, overrides, false, false)?;
-            0
-        }
-        "list" | "info" => {
-            if name == "info" && overrides.shows_warnings() {
-                eprintln!("warn: `runner info` is deprecated; use `runner list`");
-            }
-            commands::list(ctx, overrides, false, false, None)?;
-            0
-        }
-        "completions" => {
-            commands::completions(None, None)?;
-            0
-        }
-        _ => return Ok(None),
+    args: &[String],
+) -> Result<i32> {
+    let parsed = match <BuiltinArgs as clap::Parser>::try_parse_from(
+        ["runner", name]
+            .into_iter()
+            .chain(args.iter().map(String::as_str)),
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => return render_clap_error(&error, !overrides.shows_errors()),
     };
-    Ok(Some(code))
+    dispatch_builtin(ctx, overrides, parsed.command, parsed.schema_version)
+}
+
+fn dispatch_builtin(
+    ctx: &types::ProjectContext,
+    overrides: &resolver::ResolutionOverrides,
+    command: args::Command,
+    schema_version: Option<u32>,
+) -> Result<i32> {
+    let mut effective = overrides.clone();
+    apply_script_policy_flags(Some(&command), &mut effective);
+    if let args::Command::Install { failure, .. } = &command {
+        if failure.kill_on_fail {
+            effective.failure_policy = chain::FailurePolicy::KillOnFail;
+        } else if failure.keep_going {
+            effective.failure_policy = chain::FailurePolicy::KeepGoing;
+        }
+    }
+    let overrides = &effective;
+    if overrides.explain {
+        render::explain::print_explain(
+            overrides,
+            &format!(
+                "builtin: {command:?}; execution: in-process; cwd: {}",
+                ctx.cwd.display()
+            ),
+        );
+        if !matches!(
+            command,
+            args::Command::Install { .. } | args::Command::Clean { .. }
+        ) {
+            return Ok(0);
+        }
+    }
+    match command {
+        args::Command::Install {
+            frozen,
+            no_tools,
+            tasks,
+            mode,
+            failure,
+            ..
+        } => dispatch_install(
+            ctx,
+            overrides,
+            commands::install::InstallFlags { frozen, no_tools },
+            mode,
+            failure,
+            &tasks,
+        ),
+        args::Command::Clean {
+            yes,
+            include_framework,
+        } => {
+            commands::clean(ctx, overrides, yes, include_framework)?;
+            Ok(0)
+        }
+        args::Command::List { raw, json, source } => {
+            schema_version_for_json(json, schema_version)?;
+            commands::list(ctx, overrides, raw, json, source.as_deref())?;
+            Ok(0)
+        }
+        args::Command::Info { json } => {
+            if overrides.shows_warnings() {
+                eprintln!(
+                    "{} `runner info` is deprecated; use `runner list`",
+                    "warn:".yellow().bold()
+                );
+                if actions_rs::env::is_github_actions() {
+                    eprintln!(
+                        "::warning title=Deprecation::`runner info` is deprecated; use `runner \
+                         list`"
+                    );
+                }
+            }
+            schema_version_for_json(json, schema_version)?;
+            commands::list(ctx, overrides, false, json, None)?;
+            Ok(0)
+        }
+        args::Command::Completions { shell, output } => {
+            commands::completions(shell, output.as_deref())?;
+            Ok(0)
+        }
+        _ => bail!("expected a builtin command"),
+    }
 }
 
 /// Validate `--schema-version=N` for schema-aware (`--json`) output.
@@ -1100,7 +1180,7 @@ fn build_overrides(
         },
         loaded_config,
     )?;
-    apply_script_policy_flags(cli, &mut overrides);
+    apply_script_policy_flags(cli.command.as_ref(), &mut overrides);
     Ok(overrides)
 }
 
@@ -1112,12 +1192,15 @@ fn build_overrides(
 /// resolution untouched. clap marks the two mutually exclusive, so at most one
 /// is set. Threading them here (rather than as more `from_cli_and_env`
 /// arguments) keeps that constructor's signature stable.
-const fn apply_script_policy_flags(cli: &args::Cli, overrides: &mut resolver::ResolutionOverrides) {
+const fn apply_script_policy_flags(
+    command: Option<&args::Command>,
+    overrides: &mut resolver::ResolutionOverrides,
+) {
     if let Some(args::Command::Install {
         no_scripts,
         scripts,
         ..
-    }) = cli.command.as_ref()
+    }) = command
     {
         if *no_scripts {
             overrides.script_policy = resolver::ScriptPolicy::Deny;
@@ -1209,31 +1292,13 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
 
     let result = match cli.command {
         None => commands::info(&ctx, &overrides, false).map(|()| 0),
-        // `info` is a deprecated alias for `list`. Bare `runner` (the
-        // `None` arm above) keeps the dashboard; only the explicit verb
-        // is deprecated.
-        Some(args::Command::Info { json }) => {
-            if overrides.shows_warnings() {
-                eprintln!(
-                    "{} `runner info` is deprecated; use `runner list`",
-                    "warn:".yellow().bold(),
-                );
-                // Under GitHub Actions, also emit a workflow-command
-                // annotation so the deprecation surfaces in the run summary
-                // / inline, not just buried in the step log. Kept on stderr
-                // so `runner info --json` stdout stays a clean pipe; the
-                // runner scans both streams for `::` commands.
-                if actions_rs::env::is_github_actions() {
-                    eprintln!(
-                        "::warning title=Deprecation::`runner info` is deprecated; use `runner \
-                         list`"
-                    );
-                }
-            }
-            schema_version_for_json(json, cli.global.schema_version)?;
-            commands::list(&ctx, &overrides, false, json, None)?;
-            Ok(0)
-        }
+        Some(
+            command @ (args::Command::Info { .. }
+            | args::Command::Install { .. }
+            | args::Command::Clean { .. }
+            | args::Command::List { .. }
+            | args::Command::Completions { .. }),
+        ) => dispatch_builtin(&ctx, &overrides, command, cli.global.schema_version),
         Some(args::Command::Run {
             task, args, mode, ..
         }) => dispatch_run(&ctx, &overrides, task, args, mode),
@@ -1244,37 +1309,6 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
             } else {
                 commands::run(&ctx, &overrides, &args[0], &args[1..], None)
             }
-        }
-        Some(args::Command::Install {
-            frozen,
-            no_tools,
-            tasks,
-            mode,
-            failure,
-            ..
-        }) => dispatch_install(
-            &ctx,
-            &overrides,
-            commands::install::InstallFlags { frozen, no_tools },
-            mode,
-            failure,
-            &tasks,
-        ),
-        Some(args::Command::Clean {
-            yes,
-            include_framework,
-        }) => {
-            commands::clean(&ctx, &overrides, yes, include_framework)?;
-            Ok(0)
-        }
-        Some(args::Command::List { raw, json, source }) => {
-            schema_version_for_json(json, cli.global.schema_version)?;
-            commands::list(&ctx, &overrides, raw, json, source.as_deref())?;
-            Ok(0)
-        }
-        Some(args::Command::Completions { shell, output }) => {
-            commands::completions(shell, output.as_deref())?;
-            Ok(0)
         }
         #[cfg(feature = "man")]
         Some(args::Command::Man { output }) => dispatch_man(output.as_deref()),

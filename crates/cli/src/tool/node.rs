@@ -31,16 +31,6 @@ pub(crate) fn has_package_json(dir: &Path) -> bool {
     find_manifest(dir).is_some()
 }
 
-/// `node <file> [args...]`, execute a local source file with the Node.js
-/// runtime. Used as the default JS/TS runtime for local-file dispatch when
-/// the project is neither a Bun nor a Deno project.
-#[cfg(test)]
-pub(crate) fn run_file_cmd(file: &Path, args: &[String]) -> Command {
-    let mut c = program::command("node");
-    c.arg(file).args(args);
-    c
-}
-
 /// `node --run <task> [-- args...]` (Node 22+), Node's own `package.json`
 /// script runner.
 ///
@@ -768,25 +758,9 @@ mod tests {
 
     use super::{
         detect_pm_from_field, extract_scripts, extract_scripts_upwards, find_manifest_upwards,
-        run_file_cmd,
     };
     use crate::tool::test_support::TempDir;
     use crate::types::PackageManager;
-
-    #[test]
-    fn run_file_cmd_uses_node_with_file() {
-        use std::path::Path;
-
-        let args = [String::from("--inspect")];
-        let cmd = run_file_cmd(Path::new("/abs/index.mjs"), &args);
-        let built: Vec<_> = cmd
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-
-        assert_eq!(cmd.get_program().to_string_lossy(), "node");
-        assert_eq!(built, ["/abs/index.mjs", "--inspect"]);
-    }
 
     #[test]
     fn detect_pm_from_field_supports_package_json5() {

@@ -19,6 +19,7 @@ pub const PROVIDER: Provider = Provider {
     caps: Capabilities {
         file_fallback: true,
         run_file: Some(RunFileCap {
+            unsupported: &[],
             program: None,
             argv: t![File, Args],
             extensions: &["py"],

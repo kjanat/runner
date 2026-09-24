@@ -5,7 +5,6 @@ use runner_core::{
     Reach, RunFileCap, RunTaskCap, Signal, t,
 };
 
-use super::bun::SCRIPT_EXTENSIONS;
 use super::manifest::engines_node;
 
 /// Node.js.
@@ -47,8 +46,12 @@ pub const PROVIDER: Provider = Provider {
             accepts: NameShape::BARE.union(NameShape::VERSIONED),
         }),
         run_file: Some(RunFileCap {
+            unsupported: &[
+                ("jsx", "Node has no JSX transform"),
+                ("tsx", "Node has no TSX transform"),
+            ],
             program: None,
-            extensions: SCRIPT_EXTENSIONS,
+            extensions: &["js", "mjs", "cjs", "ts", "mts", "cts"],
             argv: t![File, Args],
         }),
         test: Some(super::TEST),

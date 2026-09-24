@@ -375,7 +375,7 @@ fn dispatch_by_package(
             Err(e) => return Err(e.into()),
         },
     };
-    let mut prepared = super::core::prepare(ctx, overrides, bin);
+    let mut prepared = super::core::prepare(ctx, overrides, bin)?;
     if !runtime::replaces_exec(resolved_pm) {
         prepared.policy.runtime = None;
     }
@@ -421,7 +421,7 @@ fn dispatch_plan(
     args: &[String],
     mut sink: crate::commands::WarningSink<'_>,
 ) -> Result<Dispatch> {
-    let prepared = super::core::prepare(ctx, overrides, task_name);
+    let prepared = super::core::prepare(ctx, overrides, task_name)?;
     let resolved_pm = prepared.node.as_ref().ok().map(|decision| decision.pm);
     let requested = prepared.requested;
     let policy = &prepared.policy;
@@ -666,6 +666,23 @@ fn refusal_error(
     use runner_core::Refusal;
     match refusal {
         Refusal::Invalid(message) => anyhow!("{message}"),
+        Refusal::Observation { kind, message } => io::Error::new(*kind, message.clone()).into(),
+        Refusal::UnsupportedFile {
+            provider,
+            file,
+            reason,
+            chosen_by,
+        } => {
+            let origin = chosen_by
+                .as_ref()
+                .map_or_else(String::new, |layer| format!(" (chosen by {layer:?})"));
+            anyhow!(
+                "{} cannot run {}{origin}: {reason}. Use --runtime bun or --runtime deno for \
+                 JSX/TSX.",
+                runner_providers::REGISTRY.by_id(*provider).label,
+                file.display()
+            )
+        }
         Refusal::NotFound { name, tried } => {
             let rungs: Vec<&str> = tried.iter().map(|rung| rung.name).collect();
             anyhow!(

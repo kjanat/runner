@@ -85,6 +85,24 @@ impl Plan {
 pub enum Refusal {
     /// An observation or input could not be interpreted safely.
     Invalid(String),
+    /// Observation failed with an operating-system error.
+    Observation {
+        /// The original I/O error kind.
+        kind: std::io::ErrorKind,
+        /// The contextual error message.
+        message: String,
+    },
+    /// A runtime recognises a file type but cannot execute it.
+    UnsupportedFile {
+        /// The selected runtime.
+        provider: ProviderId,
+        /// The source file.
+        file: PathBuf,
+        /// The provider's capability limitation.
+        reason: &'static str,
+        /// The origin of the runtime choice.
+        chosen_by: Option<Layer>,
+    },
     /// Nothing on the cascade took the name.
     NotFound {
         /// The name.
@@ -114,6 +132,26 @@ pub enum Refusal {
     /// The request would cross a trust boundary.
     Unsafe(Unsafe),
 }
+
+impl From<std::io::Error> for Refusal {
+    fn from(error: std::io::Error) -> Self {
+        Self::Observation {
+            kind: error.kind(),
+            message: error.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid(message) | Self::Observation { message, .. } => f.write_str(message),
+            _ => write!(f, "{self:?}"),
+        }
+    }
+}
+
+impl std::error::Error for Refusal {}
 
 /// A trust boundary a request would cross.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,7 +240,8 @@ pub fn plan(
             {
                 return Err(refusal);
             }
-            Err(refusal) => last = Some(refusal),
+            Err(refusal @ Refusal::NoCapability { .. }) => last = Some(refusal),
+            Err(refusal) => return Err(refusal),
         }
     }
     Err(last.unwrap_or_else(|| Refusal::NoCapability {
@@ -252,6 +291,31 @@ fn candidates<'a>(
         push(present);
     }
     ordered
+}
+
+fn assert_provider_program(program: &str) {
+    debug_assert!(
+        !matches!(
+            program
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(program)
+                .trim_end_matches(".exe")
+                .to_ascii_lowercase()
+                .as_str(),
+            "sh" | "bash"
+                | "zsh"
+                | "dash"
+                | "ksh"
+                | "mksh"
+                | "ash"
+                | "fish"
+                | "cmd"
+                | "powershell"
+                | "pwsh"
+        ),
+        "provider templates must invoke tools directly"
+    );
 }
 
 /// One op's program, argv template and the terms the command runs under.
@@ -408,10 +472,32 @@ impl<'a> Shaping<'_, 'a> {
         args: &'a [String],
     ) -> Result<Shape<'a>, Refusal> {
         let cap = self.provider.caps.run_file.ok_or_else(|| self.refuse())?;
+        if let Some(extension) = source.extension().and_then(|ext| ext.to_str())
+            && let Some((_, reason)) = cap
+                .unsupported
+                .iter()
+                .find(|(ext, _)| extension.eq_ignore_ascii_case(ext))
+        {
+            return Err(Refusal::UnsupportedFile {
+                provider: self.provider.id,
+                file: source.to_owned(),
+                reason,
+                chosen_by: self
+                    .policy
+                    .runtime
+                    .as_ref()
+                    .filter(|choice| choice.id == self.provider.id)
+                    .map(|choice| choice.from.clone()),
+            });
+        }
         let runs = source
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| cap.extensions.contains(&ext));
+            .is_some_and(|ext| {
+                cap.extensions
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+            });
         let interpreted = self.chosen_as_runtime
             && read_shebang(source).is_some_and(|s| {
                 Path::new(&s.program)
@@ -572,6 +658,7 @@ pub fn plan_with(
     let Fill { mut request, files } = fill;
     request.files = &files;
     let program = shape.program.ok_or_else(|| shaping.refuse())?;
+    assert_provider_program(program);
     let rendered = shape.template.render(&request);
     let mut argv = Vec::with_capacity(rendered.args.len() + 1);
     argv.push(OsString::from(program));
@@ -1505,10 +1592,11 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
             .extension()
             .and_then(|ext| ext.to_str())
             .is_some_and(|ext| {
-                provider
-                    .caps
-                    .run_file
-                    .is_some_and(|cap| cap.extensions.contains(&ext))
+                provider.caps.run_file.is_some_and(|cap| {
+                    cap.extensions
+                        .iter()
+                        .any(|known| ext.eq_ignore_ascii_case(known))
+                })
             });
         let interpreter_matches = shebang.as_ref().is_some_and(|s| {
             Path::new(&s.program)
@@ -1541,10 +1629,7 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
         );
     }
     if let Some(shebang) = shebang {
-        let mut words = vec![OsString::from(&shebang.program)];
-        words.extend(shebang.args.into_iter().map(OsString::from));
-        words.push(OsString::from(path));
-        words.extend(args.iter().map(OsString::from));
+        let words = crate::script::shebang_argv(&shebang, path, &cascade.tree.cwd, args);
         return plan_argv(
             cascade.tree,
             cascade.project,
@@ -1623,10 +1708,15 @@ fn runs_extension(cascade: &Cascade<'_>, ext: &str) -> bool {
                 .present
                 .iter()
                 .any(|present| present.provider == provider.id))
-            && provider
-                .caps
-                .run_file
-                .is_some_and(|cap| cap.extensions.contains(&ext))
+            && provider.caps.run_file.is_some_and(|cap| {
+                cap.extensions
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+                    || cap
+                        .unsupported
+                        .iter()
+                        .any(|(known, _)| ext.eq_ignore_ascii_case(known))
+            })
     })
 }
 #[cfg(test)]
@@ -1715,6 +1805,7 @@ mod tests {
                     accepts: NameShape::BARE,
                 }),
                 run_file: Some(RunFileCap {
+                    unsupported: &[],
                     program: None,
                     extensions: &["ts", "js"],
                     argv: t![File, Args],
@@ -1775,6 +1866,34 @@ mod tests {
             root: PathBuf::from("/p"),
             members: Vec::new(),
         }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "provider templates must invoke tools directly")]
+    fn provider_shell_wrapper_violates_the_template_invariant() {
+        static SHELL: &[Provider] = &[Provider {
+            program: Some("sh"),
+            caps: Capabilities {
+                run_task: Some(RunTaskCap {
+                    argv: t!["-c", Task, Args],
+                    sources: &[ProviderId::PackageJson],
+                }),
+                ..Capabilities::NONE
+            },
+            ..FAKES[0]
+        }];
+        let _ = super::plan_with(
+            &tree(),
+            &Project::default(),
+            &Policy::default(),
+            &present(ProviderId::Npm, Weight::Present),
+            &Op::Run {
+                task: &task("hello"),
+                args: &[],
+            },
+            &Registry(SHELL),
+        );
     }
 
     fn present(provider: ProviderId, weight: Weight) -> Present {
