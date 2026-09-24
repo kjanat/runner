@@ -74,8 +74,8 @@ pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> Project {
                 version: None,
                 bin_dirs: bin_dirs(choice.id, &ctx.root),
                 because: vec![Evidence {
-                    provider: choice.id,
-                    signal: SignalId(0),
+                    provider: Some(choice.id),
+                    signal: Some(SignalId(0)),
                     at: ctx.root.clone(),
                     scope: Scope::Root,
                     weight: Weight::Declared,
@@ -100,8 +100,8 @@ pub(crate) fn project(ctx: &ProjectContext) -> Project {
             version: None,
             bin_dirs: bin_dirs(id, &ctx.root),
             because: vec![Evidence {
-                provider: id,
-                signal: SignalId(0),
+                provider: Some(id),
+                signal: Some(SignalId(0)),
                 at: ctx.root.clone(),
                 scope: Scope::Root,
                 weight: Weight::Present,

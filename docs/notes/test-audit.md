@@ -13,6 +13,8 @@ Section 10 of `docs/architecture.md` sorts every test into spec, pinned accident
 
 **Pinned accident.** The test asserts what the code happens to do where the document says otherwise. Each one is rewritten to the intended behaviour and carries `#[ignore = "docs/architecture.md section 10 step N: <name>"]`, N being the migration step that makes it pass. `cargo test --workspace -- --ignored` runs the list of deliberate behaviour changes. A test of something the document removes is deleted instead; the test modules of `tool/deno_exec.rs` and `tool/shell.rs` went that way.
 
+The explanation-only fix enables `explain_reports_output_policy_for_local_files_without_running_them`. Regression suites in `tests/architecture_compliance.rs` and `crates/providers/tests/planning.rs` cover the related execution, reach, trust, evidence, and install-capability contracts.
+
 | step | name                       |
 | ---- | -------------------------- |
 | 4    | run on the core            |

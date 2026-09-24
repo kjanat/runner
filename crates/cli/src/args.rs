@@ -1927,8 +1927,8 @@ pub(crate) struct GlobalOpts {
     )]
     pub on_mismatch: Option<String>,
 
-    /// Print a one-line trace describing how the package manager was
-    /// resolved. The resolver also enables this when `$RUNNER_EXPLAIN`
+    /// Explain the planned command without executing it. The resolver
+    /// also enables this when `$RUNNER_EXPLAIN`
     /// is set to a truthy value (env reads live in `crate::resolver`,
     /// not clap).
     #[arg(
@@ -1936,7 +1936,7 @@ pub(crate) struct GlobalOpts {
         global = true,
         display_order = help_order::EXPLAIN,
         help = concat!(
-            "PM resolution trace ",
+            "Explain the command without executing it ",
             "[env: ", cyan!("RUNNER_EXPLAIN"), "]"
         ),
     )]

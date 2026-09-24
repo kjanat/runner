@@ -88,6 +88,11 @@ pub static CASCADE: &[Rung] = &[
         reach: Reach::Local,
     },
     Rung {
+        name: "local-exec",
+        needs: Need::Cap(Cap::Exec),
+        reach: Reach::Local,
+    },
+    Rung {
         name: "manager",
         needs: Need::ToolManagerExec,
         reach: Reach::Network,

@@ -24,10 +24,10 @@ pub enum Weight {
 /// A signal that was found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evidence {
-    /// The provider the signal belongs to.
-    pub provider: ProviderId,
-    /// Which of the provider's signals matched.
-    pub signal: SignalId,
+    /// The provider the signal belongs to, or `None` for a discovered file or binary.
+    pub provider: Option<ProviderId>,
+    /// Which of the provider's signals matched, when a provider owns the evidence.
+    pub signal: Option<SignalId>,
     /// Where it was found.
     pub at: PathBuf,
     /// The workspace member it belongs to.

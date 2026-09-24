@@ -20,6 +20,10 @@ pub const LOADER_HOOKS: &[&str] = &[
 /// Whether project trust may set `name`.
 #[must_use]
 pub fn project_may_set(name: &str) -> bool {
+    #[cfg(windows)]
+    let name = name.to_ascii_uppercase();
+    #[cfg(windows)]
+    let name = name.as_str();
     !LOADER_HOOKS.contains(&name) && !name.starts_with("DYLD_")
 }
 

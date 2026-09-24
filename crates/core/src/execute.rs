@@ -35,6 +35,9 @@ pub fn command(plan: &Plan) -> Command {
     cmd.args(argv)
         .current_dir(&plan.cwd)
         .envs(plan.env.iter().cloned());
+    for key in &plan.env_remove {
+        cmd.env_remove(key);
+    }
     if plan.trust == Trust::Project && !plan.path_prepend.is_empty() {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let joined = std::env::join_paths(
@@ -85,6 +88,7 @@ mod tests {
             argv: argv.iter().map(OsString::from).collect(),
             cwd: std::env::temp_dir(),
             env: vec![(OsString::from("RUNNER_TEST"), OsString::from("1"))],
+            env_remove: Vec::new(),
             path_prepend: vec![PathBuf::from("/project/node_modules/.bin")],
             trust,
             reach: Reach::Local,

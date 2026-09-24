@@ -4,6 +4,56 @@ use colored::Colorize;
 
 use crate::resolver::ResolutionOverrides;
 
+/// Render the command that will execute, without environment values.
+pub(crate) fn print_command(overrides: &ResolutionOverrides, command: &std::process::Command) {
+    if !overrides.explain {
+        return;
+    }
+    print_explain(
+        overrides,
+        &format!(
+            "argv: {:?}",
+            std::iter::once(command.get_program())
+                .chain(command.get_args())
+                .collect::<Vec<_>>()
+        ),
+    );
+    print_explain(
+        overrides,
+        &format!(
+            "cwd: {:?}; env keys: {:?}",
+            command.get_current_dir(),
+            command.get_envs().map(|(key, _)| key).collect::<Vec<_>>()
+        ),
+    );
+}
+
+pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Plan) {
+    if !overrides.explain {
+        return;
+    }
+    print_explain(
+        overrides,
+        &format!(
+            "trust: {:?}; reach: {:?}; scope: {:?}; evidence: {:?}; decided by: {:?}",
+            plan.trust,
+            plan.reach,
+            plan.scope,
+            plan.because.iter().map(|e| &e.at).collect::<Vec<_>>(),
+            plan.decided_by
+        ),
+    );
+    for clamp in &plan.clamps {
+        print_explain(
+            overrides,
+            &format!(
+                "{} -> {} ({})",
+                clamp.requested, clamp.granted, clamp.reason
+            ),
+        );
+    }
+}
+
 /// Emit one `--explain` trace line (`· runner <body>`), or nothing when
 /// explain is off. An explicit `--explain` overrides quiet presentation so the
 /// selected policy and any host limitation remain inspectable.

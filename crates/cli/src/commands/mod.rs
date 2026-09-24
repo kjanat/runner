@@ -121,6 +121,45 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
     if emits_group(overrides) && !overrides.emits_groups_for(task) {
         command.env_remove(GROUP_ACTIVE_ENV);
     }
+    set_task_stdio(command, stdout, stderr);
+}
+
+/// Complete the invocation metadata before a core plan is rendered or executed.
+fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides, task: &str) {
+    let mut metadata = Command::new("runner");
+    configure_spawn(&mut metadata, &plan.cwd, overrides);
+    if emits_group(overrides) && !overrides.emits_groups_for(task) {
+        metadata.env_remove(GROUP_ACTIVE_ENV);
+    }
+    for (key, value) in metadata.get_envs() {
+        plan.env.retain(|(seen, _)| seen != key);
+        if let Some(value) = value {
+            plan.env.push((key.to_owned(), value.to_owned()));
+        } else {
+            plan.env_remove.push(key.to_owned());
+        }
+    }
+    #[cfg(windows)]
+    if let Some(name) = plan.argv.first().and_then(|program| program.to_str()) {
+        let command = runner_core::execute::command(plan);
+        let path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value.map(OsStr::to_os_string))
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
+        let pathext = std::env::var_os("PATHEXT");
+        if let Some(resolved) = runner_core::probe_in(name, &path, pathext.as_deref()) {
+            plan.argv[0] = resolved.into_os_string();
+        }
+    }
+}
+
+fn set_task_stdio(
+    command: &mut Command,
+    stdout: crate::tool::TaskStream,
+    stderr: crate::tool::TaskStream,
+) {
     command.stdout(match stdout {
         crate::tool::TaskStream::Inherit => Stdio::inherit(),
         crate::tool::TaskStream::Discard => Stdio::null(),
@@ -129,6 +168,31 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
         crate::tool::TaskStream::Inherit => Stdio::inherit(),
         crate::tool::TaskStream::Discard => Stdio::null(),
     });
+}
+
+/// Ask for network consent independently of output verbosity.
+fn confirm_fetch(name: &str, rung: &str) -> bool {
+    use std::io::{self, IsTerminal, Write};
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return true;
+    }
+    eprint!("{} may fetch via {rung}; continue? [y/N] ", name.bold());
+    if io::stderr().flush().is_err() {
+        return false;
+    }
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+}
+
+fn authorize_fetch(overrides: &ResolutionOverrides, name: &str, rung: &str) -> anyhow::Result<()> {
+    if !overrides.explain
+        && !runner_core::reach::permitted(runner_core::Reach::Network, overrides.reach, || {
+            confirm_fetch(name, rung)
+        })
+    {
+        anyhow::bail!("{name}: fetching via {rung} refused by reach policy or user");
+    }
+    Ok(())
 }
 
 /// Every existing `node_modules/.bin` from `dir` up to the filesystem

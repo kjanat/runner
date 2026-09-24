@@ -165,8 +165,8 @@ pub enum Weight {
 }
 
 pub struct Evidence {
-    pub provider: ProviderId,
-    pub signal: SignalId,
+    pub provider: Option<ProviderId>, // None for a discovered file or binary
+    pub signal: Option<SignalId>,     // None when no provider signal owns the evidence
     pub at: PathBuf,
     pub scope: Scope,
     pub weight: Weight,
@@ -401,6 +401,7 @@ pub struct Plan {
     pub argv: Vec<OsString>,          // program first, never a shell string
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
     pub path_prepend: Vec<PathBuf>, // empty when trust is Host
     pub trust: Trust,
     pub reach: Reach,
@@ -497,6 +498,11 @@ pub static CASCADE: &[Rung] = &[
         reach: Reach::Local,
     },
     Rung {
+        name: "local-exec",
+        needs: Need::Cap(Cap::Exec),
+        reach: Reach::Local,
+    },
+    Rung {
         name: "manager",
         needs: Need::ToolManagerExec,
         reach: Reach::Network,
@@ -511,7 +517,10 @@ pub static CASCADE: &[Rung] = &[
 
 The table is data so article 4 can be a test. The prompt lives in
 `plan`, keyed on `reach` and `policy.reach`, and it is the same prompt for
-every network rung.
+every network rung. Exec capabilities are tried only in the rung matching
+their declared reach; a local exec capability precedes fetching tool managers.
+Installs use the same reach policy before spawning. Explanation stops before
+authorization and execution, so it can show a network plan under `local`.
 
 ### 4.8 Versions
 

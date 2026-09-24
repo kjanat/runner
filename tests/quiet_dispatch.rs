@@ -651,7 +651,6 @@ fn explain_reports_exact_applied_host_args() {
 }
 
 #[test]
-#[ignore = "docs/architecture.md section 10 step 4: run on the core"]
 fn explain_reports_output_policy_for_local_files_without_running_them() {
     if !tool_available("python3") {
         eprintln!("skipping: `python3` not found on PATH");

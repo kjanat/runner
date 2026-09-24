@@ -76,6 +76,9 @@ pub(crate) fn install_pms(
 
     report_plan(&plan, overrides);
     warn_unsupported_script_policy(&plan.pms, overrides);
+    if !plan.pms.is_empty() || tools.is_some() {
+        super::authorize_fetch(overrides, "install", "install")?;
+    }
 
     // Collapse the whole install (single- or multi-PM) under one
     // `runner: install` GitHub Actions group when enabled.
@@ -244,6 +247,10 @@ fn run_tool_operation(
     super::configure_host_command(&mut cmd, &ctx.root, overrides);
     super::apply_env_layers(&mut cmd, overrides, Some(runner.label()), None);
     super::configure_task_streams(&mut cmd, overrides, "install");
+    if overrides.explain {
+        crate::render::explain::print_command(overrides, &cmd);
+        return Ok(None);
+    }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -595,6 +602,10 @@ fn install_single(
     super::apply_env_layers(&mut cmd, overrides, Some(pm.label()), None);
     super::configure_command(&mut cmd, &ctx.root, overrides);
     super::configure_task_streams(&mut cmd, overrides, "install");
+    if overrides.explain {
+        crate::render::explain::print_command(overrides, &cmd);
+        return Ok(0);
+    }
     let mut child = cmd
         .spawn()
         .map_err(|error| spawn_error(pm, cmd.get_program(), error))?;
@@ -686,6 +697,12 @@ fn run_installs_parallel(
     frozen: bool,
     overrides: &ResolutionOverrides,
 ) -> Result<i32> {
+    if overrides.explain {
+        for pm in &plan.pms {
+            install_single(ctx, *pm, frozen, overrides)?;
+        }
+        return Ok(0);
+    }
     super::print_output_explain(overrides, "install");
     let lanes = install_lanes(plan);
     let names: Vec<&str> = plan.pms.iter().map(|pm| pm.label()).collect();

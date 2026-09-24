@@ -3,12 +3,12 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::capability::{Discovery, NameShape, RunTaskCap};
+use crate::capability::{Discovery, NameShape, RunTaskCap, ScriptMechanism};
 use crate::cascade::{CASCADE, Cap, Need, Rung};
 use crate::env::project_may_set;
 use crate::evidence::{Evidence, Present, Weight};
 use crate::op::Op;
-use crate::policy::{Choice, Layer, Policy, ReachPolicy, ScriptPolicy, TrustPolicy};
+use crate::policy::{Choice, Layer, Policy, ScriptPolicy, TrustPolicy};
 use crate::probe::{probe_in, probe_with};
 use crate::provider::{Ecosystem, Kind, ProviderId};
 use crate::reach::Reach;
@@ -54,6 +54,8 @@ pub struct Plan {
     pub cwd: PathBuf,
     /// Environment added to the inherited one.
     pub env: Vec<(OsString, OsString)>,
+    /// Inherited variables removed from the child.
+    pub env_remove: Vec<OsString>,
     /// Directories put before `PATH`. Empty when trust is `Host`.
     pub path_prepend: Vec<PathBuf>,
     /// Whose `PATH`.
@@ -415,7 +417,13 @@ impl<'a> Shaping<'_, 'a> {
     fn install(&self, fill: &mut Fill<'a>, operations: &'a [String]) -> Result<Shape<'a>, Refusal> {
         let cap = self.provider.caps.install.ok_or_else(|| self.refuse())?;
         fill.request.op = operations.first().map(String::as_str);
-        fill.request.frozen = self.policy.frozen.then_some(cap.frozen);
+        fill.request.frozen = (self.policy.frozen
+            && cap.locked_only_with.is_none_or(|file| {
+                scope_dir(self.tree, &self.present.scope)
+                    .join(file)
+                    .is_file()
+            }))
+        .then_some(cap.frozen);
         fill.request.scripts = Some((
             cap.scripts,
             match self.policy.scripts {
@@ -472,6 +480,29 @@ pub fn plan_with(
             reason: quiet.limitation,
         });
     }
+    if matches!(op, Op::Install { .. })
+        && let Some(cap) = provider.caps.install
+    {
+        let mechanism = match policy.scripts {
+            ScriptPolicy::Default => None,
+            ScriptPolicy::Deny => Some(("deny", cap.scripts.deny)),
+            ScriptPolicy::Allow => Some(("allow", cap.scripts.allow)),
+        };
+        if let Some((requested, mechanism)) = mechanism {
+            let reason = match mechanism {
+                ScriptMechanism::Unsupported => Some("provider cannot enforce this script policy"),
+                ScriptMechanism::Warn(reason) => Some(reason),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                clamps.push(Clamp {
+                    requested: format!("scripts={requested}"),
+                    granted: "provider script defaults".into(),
+                    reason,
+                });
+            }
+        }
+    }
     let mut fill = Fill {
         request: Request {
             quiet: quiet.at(policy.verbosity.index()),
@@ -499,7 +530,7 @@ pub fn plan_with(
     argv.push(OsString::from(program));
     argv.extend(rendered.args);
     let mut env = rendered.env;
-    env.extend(env_layers(policy, provider.id, shape.task)?);
+    env.extend(env_layers(policy, Some(provider.id), shape.task)?);
     let scope = match op {
         Op::Run { task, .. } => task.scope.clone(),
         _ => present.scope.clone(),
@@ -514,6 +545,7 @@ pub fn plan_with(
         argv,
         cwd: shape.cwd,
         env,
+        env_remove: Vec::new(),
         path_prepend,
         trust: shape.trust,
         reach: shape.reach,
@@ -525,14 +557,16 @@ pub fn plan_with(
 }
 
 /// A plan for a file or binary a rung found, with no provider behind it.
-#[must_use]
+///
+/// # Errors
+/// Refuses forbidden project environment variables.
 pub fn plan_found(
     tree: &Tree,
     project: &Project,
     policy: &Policy,
     found: PathBuf,
     args: &[String],
-) -> Plan {
+) -> Result<Plan, Refusal> {
     let mut words = Vec::with_capacity(args.len() + 1);
     words.push(OsString::from(&found));
     words.extend(args.iter().map(OsString::from));
@@ -540,32 +574,50 @@ pub fn plan_found(
 }
 
 /// A plan for an argv a rung built around a file it found.
-#[must_use]
+///
+/// # Errors
+/// Refuses forbidden project environment variables.
 pub fn plan_argv(
     tree: &Tree,
     project: &Project,
     policy: &Policy,
     found: PathBuf,
     argv: Vec<OsString>,
-) -> Plan {
-    Plan {
+) -> Result<Plan, Refusal> {
+    let scope = tree
+        .members
+        .iter()
+        .filter_map(|scope| match scope {
+            Scope::Member { dir, .. } if tree.cwd.starts_with(dir) => {
+                Some((dir.components().count(), scope))
+            }
+            _ => None,
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map_or(Scope::Root, |(_, scope)| scope.clone());
+    let evidence = Evidence {
+        provider: None,
+        signal: None,
+        at: found.clone(),
+        scope: scope.clone(),
+        weight: Weight::Present,
+        declared: None,
+    };
+    Ok(Plan {
         provider: None,
         found: Some(found),
         argv,
         cwd: tree.cwd.clone(),
-        env: env_layers(policy, ProviderId::ALL[0], None)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|(key, _)| project_may_set(&key.to_string_lossy()))
-            .collect(),
-        path_prepend: bin_dirs(project, &Scope::Root),
+        env: env_layers(policy, None, None)?,
+        env_remove: Vec::new(),
+        path_prepend: bin_dirs(project, &scope),
         trust: Trust::Project,
         reach: Reach::Local,
         clamps: Vec::new(),
-        because: Vec::new(),
+        because: vec![evidence],
         decided_by: Vec::new(),
-        scope: Scope::Root,
-    }
+        scope,
+    })
 }
 
 /// The run-task template `provider` uses for `source`, the runtime form when
@@ -624,12 +676,12 @@ fn bin_dirs(project: &Project, scope: &Scope) -> Vec<PathBuf> {
 /// The project, tool and task env layers, narrowest last, filtered by trust.
 fn env_layers(
     policy: &Policy,
-    provider: ProviderId,
+    provider: Option<ProviderId>,
     task: Option<&str>,
 ) -> Result<Vec<(OsString, OsString)>, Refusal> {
     let layers = [
         Some(&policy.env.project),
-        policy.env.tool.get(&provider),
+        provider.and_then(|provider| policy.env.tool.get(&provider)),
         task.and_then(|task| policy.env.task.get(task)),
     ];
     let mut out: Vec<(OsString, OsString)> = Vec::new();
@@ -810,13 +862,7 @@ fn rung_dispatch(
     args: &[String],
 ) -> Result<Option<Dispatch>, Refusal> {
     let found = |path: PathBuf| {
-        dispatched(plan_found(
-            cascade.tree,
-            cascade.project,
-            cascade.policy,
-            path,
-            args,
-        ))
+        plan_found(cascade.tree, cascade.project, cascade.policy, path, args).map(dispatched)
     };
 
     Ok(match rung.needs {
@@ -848,7 +894,11 @@ fn rung_dispatch(
             }
             Some(dispatched(file_plan(cascade, &path, args)?))
         }
-        Need::InstalledDep => cascade.dep.and_then(|ask| ask(token)).map(found),
+        Need::InstalledDep => cascade
+            .dep
+            .and_then(|ask| ask(token))
+            .map(found)
+            .transpose()?,
         Need::Cap(Cap::Test) => {
             if token != "test" || select(cascade, token)?.is_some() {
                 return Ok(None);
@@ -860,13 +910,17 @@ fn rung_dispatch(
                 &Op::Test { args },
                 cascade.registry,
             )
-            .ok()
             .map(dispatched)
+            .map(Some)
+            .or_else(|refusal| match refusal {
+                Refusal::NoCapability { .. } => Ok(None),
+                _ => Err(refusal),
+            })?
         }
-        Need::ProjectBins => {
-            probe_in_dirs(&bin_dirs(cascade.project, &Scope::Root), token).map(found)
-        }
-        Need::HostPath => probe_with(token, &[]).map(found),
+        Need::ProjectBins => probe_in_dirs(&bin_dirs(cascade.project, &Scope::Root), token)
+            .map(found)
+            .transpose()?,
+        Need::HostPath => probe_with(token, &[]).map(found).transpose()?,
         Need::ToolManagerExec | Need::Cap(Cap::Exec) => {
             exec_plan(cascade, rung, token, args)?.map(dispatched)
         }
@@ -886,21 +940,15 @@ fn builtin(cascade: &Cascade<'_>, token: &str) -> Option<String> {
 
 /// Refuse a fetching plan the policy or the user does not want.
 fn gate(cascade: &Cascade<'_>, rung: Rung, name: &str, made: &Plan) -> Result<(), Refusal> {
-    if made.reach == Reach::Local {
+    if crate::reach::permitted(made.reach, cascade.policy.reach, || {
+        cascade.confirm.is_none_or(|ask| ask(name, rung.name))
+    }) {
         return Ok(());
     }
-    let declined = Err(Refusal::Declined {
+    Err(Refusal::Declined {
         name: name.to_owned(),
         rung,
-    });
-    match cascade.policy.reach {
-        ReachPolicy::Allow => Ok(()),
-        ReachPolicy::Local => declined,
-        ReachPolicy::Ask => match cascade.confirm {
-            Some(ask) if !ask(name, rung.name) => declined,
-            Some(_) | None => Ok(()),
-        },
-    }
+    })
 }
 
 /// The task `name` addresses, narrowed to the nearest scope.
@@ -991,6 +1039,9 @@ fn exec_plan(
         if provider.kind.contains(Kind::TOOL_MANAGER) != manager {
             continue;
         }
+        if provider.caps.exec.is_none_or(|cap| cap.reach != rung.reach) {
+            continue;
+        }
         match plan_with(
             cascade.tree,
             cascade.project,
@@ -1000,7 +1051,7 @@ fn exec_plan(
             cascade.registry,
         ) {
             Ok(made) => return Ok(Some(made)),
-            Err(Refusal::Unsafe(_) | Refusal::NoCapability { .. }) => {}
+            Err(Refusal::Unsafe(Unsafe::NameShape { .. }) | Refusal::NoCapability { .. }) => {}
             Err(refusal) => return Err(refusal),
         }
     }
@@ -1156,26 +1207,26 @@ pub fn file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Result<
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| runs_extension(cascade, ext));
     if is_directly_executable(path) && (shebang.is_some() || !routed) {
-        return Ok(plan_found(
+        return plan_found(
             cascade.tree,
             cascade.project,
             cascade.policy,
             path.to_path_buf(),
             args,
-        ));
+        );
     }
     if let Some(shebang) = shebang {
         let mut words = vec![OsString::from(&shebang.program)];
         words.extend(shebang.arg.map(OsString::from));
         words.push(OsString::from(path));
         words.extend(args.iter().map(OsString::from));
-        return Ok(plan_argv(
+        return plan_argv(
             cascade.tree,
             cascade.project,
             cascade.policy,
-            PathBuf::from(shebang.program),
+            path.to_path_buf(),
             words,
-        ));
+        );
     }
     plan(
         cascade.tree,
@@ -1351,8 +1402,8 @@ mod tests {
             version: None,
             bin_dirs: vec![PathBuf::from("/p/node_modules/.bin")],
             because: vec![Evidence {
-                provider,
-                signal: SignalId(0),
+                provider: Some(provider),
+                signal: Some(SignalId(0)),
                 at: PathBuf::from("/p/lock"),
                 scope: Scope::Root,
                 weight,

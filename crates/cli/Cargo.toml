@@ -42,6 +42,10 @@ name = "builtin_verb_dispatch"
 path = "../../tests/builtin_verb_dispatch.rs"
 
 [[test]]
+name = "architecture_compliance"
+path = "../../tests/architecture_compliance.rs"
+
+[[test]]
 name = "chain_integration"
 path = "../../tests/chain_integration.rs"
 

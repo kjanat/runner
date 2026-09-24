@@ -16,7 +16,6 @@ use std::io;
 use std::process::{Child, Command, ExitStatus};
 
 use anyhow::{Result, anyhow, bail};
-use colored::Colorize;
 
 use super::qualify::{
     ScopeQuery, TokenLookup, allowed_runner_sources, detect_reversed_qualifier, lookup_token,
@@ -705,7 +704,7 @@ fn dispatch_by_package(
         }
         None => package_exec_command(ctx, resolved_pm, package, bin, args)?,
     };
-    confirm_fetch(overrides, label, &format!("{package} ({bin})"))?;
+    crate::commands::authorize_fetch(overrides, &format!("{package} ({bin})"), label)?;
     print_dispatch_arrow(overrides, bin, label, bin, args);
     crate::commands::configure_command(&mut cmd, &ctx.cwd, overrides);
     crate::commands::configure_task_streams(&mut cmd, overrides, bin);
@@ -791,13 +790,16 @@ fn dispatch_after_miss(
 
     let tree = super::core::tree(ctx);
     let mut policy = super::core::policy(overrides);
+    if overrides.explain {
+        policy.reach = runner_core::ReachPolicy::Allow;
+    }
     // The runtime axis moves a JavaScript process tree; it never displaces
     // another ecosystem's exec primitive.
     if !runtime::replaces_exec(resolved_pm) {
         policy.runtime = None;
     }
     let project = super::core::project_under(ctx, &policy);
-    let confirm = |name: &str, rung: &str| confirm_rung(overrides, name, rung);
+    let confirm = |name: &str, rung: &str| crate::commands::confirm_fetch(name, rung);
     let cascade = runner_core::Cascade {
         tree: &tree,
         project: &project,
@@ -809,9 +811,11 @@ fn dispatch_after_miss(
     };
     let (rung, dispatched) = runner_core::dispatch_from(&cascade, "test", task_name, args)
         .map_err(|refusal| refusal_error(ctx, task_name, &refusal))?;
-    let runner_core::Dispatch::Plan(plan) = dispatched else {
+    let runner_core::Dispatch::Plan(mut plan) = dispatched else {
         bail!("internal: the builtin rung is the caller's, not the cascade's");
     };
+    crate::commands::configure_plan(&mut plan, overrides, task_name);
+    crate::render::explain::print_plan(overrides, &plan);
     let label = plan_label(&plan, task_name);
     let arrow_name = if rung.name == "test" {
         "test"
@@ -820,8 +824,9 @@ fn dispatch_after_miss(
     };
     print_dispatch_arrow(overrides, task_name, &label, arrow_name, args);
     let mut cmd = runner_core::execute::command(&plan);
-    crate::commands::configure_command(&mut cmd, &ctx.cwd, overrides);
-    crate::commands::configure_task_streams(&mut cmd, overrides, task_name);
+    let (stdout, stderr) = overrides.task_streams_for(task_name);
+    crate::commands::print_output_explain(overrides, task_name);
+    crate::commands::set_task_stdio(&mut cmd, stdout, stderr);
     Ok(Dispatch::Spawn(SpawnDispatch::passthrough(cmd)))
 }
 
@@ -899,52 +904,11 @@ fn refusal_error(
     }
 }
 
-/// Ask before a rung that may download `name`, per `policy.reach`. Only a
-/// terminal is asked; a pipe gets the fetch, as before.
-fn confirm_rung(overrides: &ResolutionOverrides, name: &str, rung: &str) -> bool {
-    use std::io::{IsTerminal, Write};
-    if !overrides.shows_progress() || !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return true;
-    }
-    eprint!(
-        "{} not found locally; fetch it via the {rung} rung? [y/N] ",
-        name.bold()
-    );
-    if io::stderr().flush().is_err() {
-        return true;
-    }
-    let mut input = String::new();
-    if io::stdin().read_line(&mut input).is_err() {
-        return true;
-    }
-    input.trim().eq_ignore_ascii_case("y")
-}
-
 /// `name` in the project's own `node_modules/.bin` dirs alone.
 fn project_bin(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
     let bins = crate::commands::node_bin_dirs(dir);
     let search = std::env::join_paths(bins).ok()?;
     crate::resolver::probe::probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
-}
-
-/// Asks before a rung that may download `name`. Only a terminal is asked;
-/// a pipe gets the fetch, as before.
-fn confirm_fetch(overrides: &ResolutionOverrides, label: &str, name: &str) -> Result<()> {
-    use std::io::{IsTerminal, Write};
-    if !overrides.shows_progress() || !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return Ok(());
-    }
-    eprint!(
-        "{} not found locally; fetch it via {label}? [y/N] ",
-        name.bold()
-    );
-    io::stderr().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim().eq_ignore_ascii_case("y") {
-        return Ok(());
-    }
-    bail!("task {name:?} not found; fetch via {label} declined")
 }
 
 /// `run make`, `run just`, `run task`, `run bacon`: the runner's own entry

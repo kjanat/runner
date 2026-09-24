@@ -52,8 +52,11 @@ pub fn resolve(
 ) -> Project {
     let mut by_key: BTreeMap<(ProviderId, Scope), Vec<Evidence>> = BTreeMap::new();
     for item in evidence {
+        let Some(provider) = item.provider else {
+            continue;
+        };
         by_key
-            .entry((item.provider, item.scope.clone()))
+            .entry((provider, item.scope.clone()))
             .or_default()
             .push(item);
     }
@@ -192,8 +195,8 @@ mod tests {
 
     fn found(provider: ProviderId, weight: Weight) -> Evidence {
         Evidence {
-            provider,
-            signal: SignalId(0),
+            provider: Some(provider),
+            signal: Some(SignalId(0)),
             at: PathBuf::from("/p/x"),
             scope: Scope::Root,
             weight,

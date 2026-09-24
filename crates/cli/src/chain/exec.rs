@@ -96,7 +96,12 @@ fn run_chain_with_head(
     // Emit warnings on both success and error paths: a chain that
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.
-    let result = match chain.mode {
+    let mode = if overrides.explain {
+        ChainMode::Sequential
+    } else {
+        chain.mode
+    };
+    let result = match mode {
         ChainMode::Sequential => {
             run_sequential(ctx, overrides, chain, &mut warnings, &mut outcomes)
         }

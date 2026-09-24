@@ -78,6 +78,12 @@ pub(crate) fn run(
     sink: super::WarningSink<'_>,
 ) -> Result<i32> {
     let dispatch = dispatch::resolve_dispatch(ctx, overrides, task, args, sink, true)?;
+    if overrides.explain {
+        if let dispatch::Dispatch::Spawn(mut spawn) = dispatch {
+            crate::render::explain::print_command(overrides, spawn.command_mut());
+        }
+        return Ok(0);
+    }
     // Wrap the child's output in a collapsible GitHub Actions group
     // (`runner: <task>`) when enabled. Opened after resolution so the `→`
     // dispatch arrow stays visible above the fold and a resolver error

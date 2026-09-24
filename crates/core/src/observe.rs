@@ -54,8 +54,8 @@ fn look(
     prober: &Prober,
 ) -> Vec<Evidence> {
     let evidence = |at: PathBuf, weight: Weight, declared: Option<Declared>| Evidence {
-        provider: provider.id,
-        signal: id,
+        provider: Some(provider.id),
+        signal: Some(id),
         at,
         scope: scope.clone(),
         weight,

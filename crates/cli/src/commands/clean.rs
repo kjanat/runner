@@ -21,6 +21,13 @@ pub(crate) fn clean(
     include_framework: bool,
 ) -> Result<()> {
     let targets = collect_targets(ctx, include_framework);
+    if overrides.explain {
+        super::print_explain(
+            overrides,
+            &format!("clean at {}: {:?}", ctx.root.display(), targets),
+        );
+        return Ok(());
+    }
 
     if targets.is_empty() {
         if overrides.shows_progress() {
