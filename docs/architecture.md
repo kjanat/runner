@@ -512,12 +512,21 @@ pub enum Refusal {
         dir: PathBuf,
         patterns: Vec<String>,
     },
+    NoLockfile {
+        provider: ProviderId,
+        dir: PathBuf,
+        lockfiles: Vec<String>, // the provider's `Signal::Lockfile` names
+    },
     Mismatch(Disagreement), // the manifest and a lockfile in one scope name different managers
     Unsafe(Unsafe),
 }
 ```
 
-`Mismatch` is raised by `plan_with` for any op that selects a package manager,
+A frozen install refuses as `NoLockfile` when none of the provider's
+`Signal::Lockfile` names exists in its scope, before the manager is spawned.
+`locked_only_with` is the exception for a provider whose lockfile is opt-in:
+its frozen form is dropped, and nothing is refused, when no config/lockfile
+pair exists. `Mismatch` is raised by `plan_with` for any op that selects a package manager,
 so `run`, `--package`, `exec` and `install` refuse alike under
 `OnMismatch::Refuse`, unless a policy layer chose the manager. The plan's
 scope is the task's scope for a task, the file's scope for a file, the

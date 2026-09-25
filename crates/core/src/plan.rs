@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::capability::{Discovery, NameShape, RunTaskCap, ScriptMechanism};
+use crate::capability::{Discovery, Frozen, NameShape, RunTaskCap, ScriptMechanism};
 use crate::cascade::{CASCADE, Cap, Need, Rung};
 use crate::env::project_may_set;
 use crate::evidence::{Evidence, Present, Weight};
@@ -142,6 +142,15 @@ pub enum Refusal {
         /// The file patterns it looked for.
         patterns: Vec<String>,
     },
+    /// A frozen install was asked of a provider whose lockfile is absent.
+    NoLockfile {
+        /// The provider.
+        provider: ProviderId,
+        /// The directory the lockfile would be in.
+        dir: PathBuf,
+        /// The lockfile names the provider recognises.
+        lockfiles: Vec<String>,
+    },
     /// A manifest and a lockfile name different package managers and policy
     /// refuses to pick one.
     Mismatch(crate::resolve::Disagreement),
@@ -192,6 +201,13 @@ impl std::fmt::Display for Refusal {
                 "no test files found under {}: expected one of {}",
                 dir.display(),
                 patterns.join(", ")
+            ),
+            Self::NoLockfile { dir, lockfiles, .. } => write!(
+                f,
+                "no lockfile under {}: a frozen install needs one of {}; install without --frozen \
+                 to create it",
+                dir.display(),
+                lockfiles.join(", ")
             ),
             Self::Mismatch(disagreement) => write!(
                 f,
@@ -703,6 +719,9 @@ impl<'a> Shaping<'_, 'a> {
                     break;
                 }
             }
+            if locked && !matches!(cap.frozen, Frozen::Unsupported) {
+                self.require_lockfile(&dir)?;
+            }
         }
         fill.request.frozen = (self.policy.frozen && locked).then_some(cap.frozen);
         fill.request.scripts = Some((
@@ -719,6 +738,31 @@ impl<'a> Shaping<'_, 'a> {
             reach: Reach::Network,
             trust: self.trust(),
             cwd: scope_dir(self.tree, &self.present.scope),
+        })
+    }
+
+    fn require_lockfile(&self, dir: &Path) -> Result<(), Refusal> {
+        let lockfiles: Vec<String> = self
+            .provider
+            .signals
+            .iter()
+            .filter_map(|signal| match signal {
+                crate::Signal::Lockfile(name) => Some((*name).to_owned()),
+                _ => None,
+            })
+            .collect();
+        if lockfiles.is_empty() {
+            return Ok(());
+        }
+        for name in &lockfiles {
+            if optional_file(&dir.join(name))? {
+                return Ok(());
+            }
+        }
+        Err(Refusal::NoLockfile {
+            provider: self.provider.id,
+            dir: dir.to_path_buf(),
+            lockfiles,
         })
     }
 

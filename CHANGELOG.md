@@ -242,9 +242,12 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
-- `--frozen` drops the frozen flag when the lockfile the package manager
-  names is absent, and a lifecycle-script policy the manager cannot express
-  is disclosed by `runner install` and `--explain` instead of silently
+- `--frozen` refuses before spawning a package manager whose lockfile is
+  absent, naming the directory and the lockfile it needs, so every manager
+  fails the same way instead of Yarn Classic installing anyway. A mise
+  config without `mise.lock` still installs unlocked, since mise lockfiles
+  are opt-in. A lifecycle-script policy the manager cannot express is
+  disclosed by `runner install` and `--explain` instead of silently
   ignored.
 
 - A name never reaches an exec primitive that cannot take its shape, so

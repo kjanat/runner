@@ -169,6 +169,67 @@ fn frozen_tool_install_requires_its_declared_lockfile() {
 }
 
 #[test]
+fn a_frozen_install_refuses_until_the_lockfile_it_would_pin_exists() {
+    let frozen = Policy {
+        frozen: true,
+        ..Policy::default()
+    };
+    let install = Op::Install { operations: &[] };
+    let project = Project::default();
+    for (id, lockfiles, frozen_form) in [
+        (ProviderId::Npm, &["package-lock.json"][..], "ci"),
+        (ProviderId::Pnpm, &["pnpm-lock.yaml"], "--frozen-lockfile"),
+        (
+            ProviderId::Bun,
+            &["bun.lock", "bun.lockb"],
+            "--frozen-lockfile",
+        ),
+        (ProviderId::Yarn, &["yarn.lock"], "--frozen-lockfile"),
+        (ProviderId::Deno, &["deno.lock"], "--frozen"),
+        (ProviderId::Uv, &["uv.lock"], "--frozen"),
+        (ProviderId::Pipenv, &["Pipfile.lock"], "sync"),
+        (ProviderId::Cargo, &["Cargo.lock"], "--locked"),
+    ] {
+        let fixture = Fixture::new();
+        let present = fixture.present(id);
+        let planned = |policy: &Policy| {
+            plan_with(&fixture.0, &project, policy, &present, &install, &REGISTRY)
+        };
+        assert_eq!(
+            planned(&frozen),
+            Err(Refusal::NoLockfile {
+                provider: id,
+                dir: fixture.0.root.clone(),
+                lockfiles: lockfiles.iter().map(|name| (*name).to_owned()).collect(),
+            }),
+            "{id:?}"
+        );
+        let unfrozen = planned(&Policy::default()).unwrap();
+        assert!(
+            !unfrozen.argv.contains(&frozen_form.into()),
+            "{id:?}: {unfrozen:?}"
+        );
+        std::fs::write(fixture.0.root.join(lockfiles[0]), "").unwrap();
+        let locked = planned(&frozen).unwrap();
+        assert!(
+            locked.argv.contains(&frozen_form.into()),
+            "{id:?}: {locked:?}"
+        );
+    }
+    for id in [
+        ProviderId::Composer,
+        ProviderId::Go,
+        ProviderId::Bundler,
+        ProviderId::Poetry,
+    ] {
+        let fixture = Fixture::new();
+        let present = fixture.present(id);
+        plan_with(&fixture.0, &project, &frozen, &present, &install, &REGISTRY)
+            .unwrap_or_else(|refusal| panic!("{id:?}: {refusal:?}"));
+    }
+}
+
+#[test]
 fn unsupported_and_allowlist_script_policies_are_clamped() {
     let fixture = Fixture::new();
     for (id, scripts, clamped) in [
@@ -619,6 +680,7 @@ fn yarn_install_and_exec_use_the_same_observed_capabilities() {
             )
             .unwrap();
         }
+        std::fs::write(fixture.0.root.join("yarn.lock"), "").unwrap();
         let mut present = fixture.present(ProviderId::Yarn);
         let mut evidence = present.because.clone();
         runner_core::observe::derive(&fixture.0, &REGISTRY, &mut evidence).unwrap();

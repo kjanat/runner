@@ -758,6 +758,17 @@ fn refusal_error(
             dir.display(),
             patterns.join(", ")
         ),
+        Refusal::NoLockfile {
+            provider,
+            dir,
+            lockfiles,
+        } => anyhow!(
+            "{} has no lockfile in {}; `--frozen` needs one of {}. Run `runner install` without \
+             `--frozen` to create it",
+            runner_providers::REGISTRY.by_id(*provider).label,
+            dir.display(),
+            lockfiles.join(", ")
+        ),
         Refusal::Mismatch(disagreement) => {
             let label = |id| runner_providers::REGISTRY.by_id(id).label;
             anyhow!(
