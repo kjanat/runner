@@ -7,7 +7,11 @@
 //! and [`structured_source_label`] are the two call points; everything
 //! else defers to [`TaskSource::label`].
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::{Serialize, Serializer};
 
 use crate::types::{Task, TaskSource};
 
@@ -23,6 +27,100 @@ pub(crate) const fn structured_source_label(source: TaskSource) -> &'static str 
     match source {
         TaskSource::CargoAliases => "cargo-alias",
         _ => flat_source_label(source),
+    }
+}
+
+/// Tool family that executes tasks from this source. Distinct from the
+/// structured `kind` label, which names the extraction mechanism.
+pub(crate) const fn provider_label(source: TaskSource) -> &'static str {
+    match source {
+        TaskSource::PackageJson => "node",
+        TaskSource::DenoJson => "deno",
+        TaskSource::TurboJson => "turbo",
+        TaskSource::Makefile => "make",
+        TaskSource::Justfile => "just",
+        TaskSource::Taskfile => "task",
+        TaskSource::CargoAliases => "cargo",
+        TaskSource::GoPackage => "go",
+        TaskSource::BaconToml => "bacon",
+        TaskSource::MiseToml => "mise",
+        TaskSource::PyprojectScripts => "python",
+    }
+}
+
+fn label_schema(label: fn(TaskSource) -> &'static str) -> Schema {
+    let labels: Vec<&str> = TaskSource::all()
+        .iter()
+        .map(|&source| label(source))
+        .collect();
+    json_schema!({ "type": "string", "enum": labels })
+}
+
+/// A task source serialized as its [`flat_source_label`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FlatSource(pub(crate) TaskSource);
+
+impl Serialize for FlatSource {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(flat_source_label(self.0))
+    }
+}
+
+impl JsonSchema for FlatSource {
+    fn schema_name() -> Cow<'static, str> {
+        "TaskSourceLabel".into()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        "runner::FlatSource".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        label_schema(flat_source_label)
+    }
+}
+
+/// A task source serialized as its [`structured_source_label`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StructuredSource(pub(crate) TaskSource);
+
+impl Serialize for StructuredSource {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(structured_source_label(self.0))
+    }
+}
+
+impl JsonSchema for StructuredSource {
+    fn schema_name() -> Cow<'static, str> {
+        "TaskSourceLabel".into()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        "runner::StructuredSource".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        label_schema(structured_source_label)
+    }
+}
+
+/// A task source serialized as its [`provider_label`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Provider(pub(crate) TaskSource);
+
+impl Serialize for Provider {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(provider_label(self.0))
+    }
+}
+
+impl JsonSchema for Provider {
+    fn schema_name() -> Cow<'static, str> {
+        "ProviderLabel".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        label_schema(provider_label)
     }
 }
 

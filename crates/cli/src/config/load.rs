@@ -65,7 +65,10 @@ pub(crate) struct LoadedConfig {
 
 /// Top-level schema for `runner.toml`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[schemars(
+    deny_unknown_fields,
+    extend("$id" = crate::schema::config_schema_url())
+)]
 pub(crate) struct RunnerConfig {
     /// `[runner]`, independent runner-authored output categories.
     #[serde(default)]
@@ -75,13 +78,17 @@ pub(crate) struct RunnerConfig {
     pub host: HostOutputSection,
     /// `[pm]`, per-ecosystem package-manager overrides.
     #[serde(default)]
+    #[schemars(description = runner_core::Setting::doc_for("pm"))]
     pub pm: PmSection,
     /// `[tasks]`, persistent task-source preference (global order + per-task pins).
     #[serde(default)]
     pub tasks: TasksSection,
-    /// `[install]`, restrict which detected PMs `runner install` runs.
+    /// `[install]`, lifecycle-script and shared-directory policy for installs.
     #[serde(default)]
     pub install: InstallSection,
+    /// `[defaults]`, a project's standing answer to per-invocation flags.
+    #[serde(default)]
+    pub defaults: DefaultsSection,
     /// `[resolution]`, resolver-policy knobs.
     #[serde(default)]
     pub resolution: ResolutionSection,
@@ -99,6 +106,7 @@ pub(crate) struct RunnerConfig {
     pub runtime: RuntimeSection,
     /// `[env]`, variables set on every process runner spawns in this project.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(description = runner_core::Setting::doc_for("env"))]
     pub env: BTreeMap<String, String>,
     /// `[tools]`, per-tool settings keyed by tool label (`mise`, `just`, …).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -118,9 +126,11 @@ pub(crate) struct ToolSettings {
     /// one-element list. Only mise defines more than one operation today
     /// (`install` and `bootstrap`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = runner_core::Setting::doc_for("tools.<name>.install"))]
     pub install: Option<ToolInstall>,
     /// Variables set on every invocation of this tool.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(description = runner_core::Setting::doc_for("tools.<name>.env"))]
     pub env: BTreeMap<String, String>,
 }
 
@@ -179,6 +189,22 @@ pub(crate) struct RunnerOutputSection {
     pub fatal_errors: Option<bool>,
 }
 
+impl RunnerOutputSection {
+    /// The configured value for `output`, when the key is present.
+    pub(crate) const fn get(&self, output: crate::tool::RunnerOutput) -> Option<bool> {
+        use crate::tool::RunnerOutput;
+        match output {
+            RunnerOutput::Progress => self.progress,
+            RunnerOutput::Warnings => self.warnings,
+            RunnerOutput::Errors => self.errors,
+            RunnerOutput::Groups => self.groups,
+            RunnerOutput::TaskTiming => self.task_timing,
+            RunnerOutput::Summary => self.summary,
+            RunnerOutput::FatalErrors => self.fatal_errors,
+        }
+    }
+}
+
 /// `[host]` host-tool output policy. Diagnostics never controls task streams;
 /// adapters clamp unsupported requests to their strongest safe mode.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
@@ -210,7 +236,10 @@ pub(crate) struct RuntimeSection {
     /// JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the
     /// runtime to the detected package manager, the behaviour before this
     /// key existed.
-    #[schemars(extend("enum" = ["node", "bun", "deno", null]))]
+    #[schemars(
+        description = runner_core::Setting::doc_for("runtime.js"),
+        extend("enum" = ["node", "bun", "deno", null])
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub js: Option<String>,
 }
@@ -233,7 +262,10 @@ pub(crate) struct InstallSection {
     /// at its default. Overridden by `RUNNER_INSTALL_SCRIPTS`, then the
     /// `--no-scripts` / `--scripts` flags.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = ["deny", "allow", null]))]
+    #[schemars(
+        description = runner_core::Setting::doc_for("install.scripts"),
+        extend("enum" = nullable(runner_core::Setting::choices_for("install.scripts")))
+    )]
     pub scripts: Option<String>,
 
     /// What to do when two or more package managers in the install set write
@@ -405,6 +437,10 @@ pub(crate) struct TasksSection {
     /// lower-priority fallbacks). E.g. `prefer = ["turbo", "bun"]` makes a
     /// `turbo` task win, then a `package.json` script, then everything else.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(
+        description = runner_core::Setting::doc_for("tasks.prefer"),
+        with = "Vec<TaskPin>"
+    )]
     pub prefer: Vec<String>,
     /// **Legacy** per-task source pins that override [`Self::prefer`] for
     /// specific names: `overrides = { dev = "bun", build = "turbo" }`. Superseded
@@ -416,7 +452,8 @@ pub(crate) struct TasksSection {
         description = "Legacy per-task pins that override `prefer` for specific names: `overrides \
                        = { dev = \"bun\", build = \"turbo\" }`. Superseded by a task entry's \
                        `runner` field. A pin to a source the task doesn't have falls through to \
-                       the normal ranking (no hard error)."
+                       the normal ranking (no hard error).",
+        with = "BTreeMap<String, TaskPin>"
     )]
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, String>,
@@ -437,6 +474,7 @@ pub(crate) struct TasksSection {
 pub(crate) enum TaskSpec {
     /// Shorthand: `build = "turbo"` pins the task's source/runner. Equivalent to
     /// `{ runner = "turbo" }`.
+    #[schemars(with = "TaskPin")]
     Pin(String),
     /// Full form: a table of per-task settings.
     Settings(TaskSettings),
@@ -451,6 +489,7 @@ pub(crate) struct TaskSettings {
     /// [`TasksSection::overrides`] entry (a runner, package manager, or source
     /// label). A pin the task doesn't have falls through to the normal ranking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<TaskPin>")]
     pub runner: Option<String>,
     /// Per-task verbosity, deep-merged over the built-in default and layered
     /// under env/CLI. String shorthand (`"quiet"`) or a `{ level, stream }`
@@ -479,6 +518,7 @@ pub(crate) struct TaskSettings {
     pub task_timing: Option<bool>,
     /// Variables set on this task's process, over the tool and project layers.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(description = runner_core::Setting::doc_for("tasks.<name>.env"))]
     pub env: BTreeMap<String, String>,
 }
 
@@ -489,6 +529,7 @@ pub(crate) struct TaskSettings {
 #[serde(untagged)]
 pub(crate) enum VerbosityConfig {
     /// `verbosity = "quiet"` — sets the level, leaves stream at its default.
+    #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent"]))]
     Level(String),
     /// `verbosity = { level = "quiet", stream = "stderr" }`.
     Table(VerbosityTable),
@@ -515,8 +556,9 @@ pub(crate) struct VerbosityTable {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
-    /// `probe` (default), PATH probe in canonical order when no signals
-    /// match; `npm`, legacy silent fallback; `error`, refuse to proceed.
+    /// `probe` (default) takes a package manager from PATH for a task source
+    /// with no package manager evidence; `error` refuses. `npm` is accepted
+    /// and behaves as `probe`.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(extend("enum" = ["probe", "npm", "error", null]))]
     #[schemars(extend("default" = crate::resolver::FallbackPolicy::default().label()))]
@@ -529,62 +571,50 @@ pub(crate) struct ResolutionSection {
     pub on_mismatch: Option<String>,
 }
 
+/// `[defaults]` section, the value a flag takes when the invocation omits it.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct DefaultsSection {
+    /// Whether a command that can download may run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = runner_core::Setting::doc_for("defaults.fetch"),
+        extend("enum" = nullable(runner_core::Setting::choices_for("defaults.fetch")))
+    )]
+    pub fetch: Option<String>,
+    /// Install without touching the lockfile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(description = runner_core::Setting::doc_for("defaults.frozen"))]
+    pub frozen: Option<bool>,
+}
+
+/// A `[tasks]` pin: a task runner, package manager, or source label.
+struct TaskPin;
+
+impl schemars::JsonSchema for TaskPin {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "TaskPin".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "enum": crate::types::task_source_labels(),
+        })
+    }
+}
+
+/// `choices` plus `null`, the values an optional closed-choice key accepts.
+fn nullable(choices: &[&'static str]) -> Vec<Option<&'static str>> {
+    choices.iter().copied().map(Some).chain([None]).collect()
+}
+
 /// `RunnerConfig`'s schema, generated once per process.
 pub(crate) fn schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut schema = serde_json::to_value(schemars::schema_for!(RunnerConfig))
-            .expect("RunnerConfig schema serializes");
-        for setting in runner_core::SETTINGS {
-            let mut path = Vec::new();
-            let mut node = &schema;
-            let mut found = true;
-            for key in setting.key.split('.') {
-                if let Some(reference) = node
-                    .get("$ref")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|value| value.strip_prefix("#/"))
-                {
-                    path = reference.split('/').map(str::to_owned).collect();
-                    node = schema
-                        .pointer(&format!("/{reference}"))
-                        .expect("local schema reference");
-                }
-                let parts = if key.starts_with('<') {
-                    vec!["additionalProperties"]
-                } else {
-                    vec!["properties", key]
-                };
-                for part in parts {
-                    let Some(child) = node.get(part) else {
-                        found = false;
-                        break;
-                    };
-                    path.push(part.to_owned());
-                    node = child;
-                }
-                if !found {
-                    break;
-                }
-            }
-            if found {
-                let mut node = &mut schema;
-                for part in &path {
-                    node = &mut node[part];
-                }
-                node["description"] = setting.doc.into();
-                if let runner_core::SettingKind::Choice(choices) = setting.kind {
-                    let mut values: Vec<_> = choices
-                        .iter()
-                        .map(|value| serde_json::Value::from(*value))
-                        .collect();
-                    values.push(serde_json::Value::Null);
-                    node["enum"] = values.into();
-                }
-            }
-        }
-        crate::commands::schema::patch_tasks_label_vocab(&mut schema);
-        schema
+        serde_json::to_value(schemars::schema_for!(RunnerConfig))
+            .expect("RunnerConfig schema serializes")
     })
 }
 
@@ -764,7 +794,7 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
     // fail the typed conversion below.
     let value: toml::Value =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
-    let mut warnings = collect_unknown_keys(&value);
+    let warnings = collect_unknown_keys(&value);
     let config: RunnerConfig = value
         .try_into()
         .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -951,6 +981,101 @@ mod tests {
     }
 
     #[test]
+    fn every_declared_config_key_carries_its_declaration() {
+        let schema = super::schema();
+        for setting in runner_core::SETTINGS {
+            let node = setting_path(schema, setting.key)
+                .and_then(|path| schema.pointer(&format!("/{}", path.join("/"))));
+            let Some(node) = node.filter(|_| setting.config) else {
+                assert!(
+                    node.is_none() && !setting.config,
+                    "{}: config={} disagrees with the schema",
+                    setting.key,
+                    setting.config
+                );
+                continue;
+            };
+            assert_eq!(node["description"], setting.doc, "{}", setting.key);
+            if let runner_core::SettingKind::Choice(choices) = setting.kind {
+                assert_eq!(
+                    node["enum"],
+                    serde_json::json!(super::nullable(choices)),
+                    "{}",
+                    setting.key
+                );
+            }
+        }
+    }
+
+    /// The JSON pointer segments of a dotted settings key in `schema`.
+    fn setting_path(schema: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+        let parts: Vec<&str> = key.split('.').collect();
+        find_path(schema, schema, &parts, Vec::new())
+    }
+
+    fn find_path(
+        schema: &serde_json::Value,
+        node: &serde_json::Value,
+        parts: &[&str],
+        path: Vec<String>,
+    ) -> Option<Vec<String>> {
+        let Some((part, rest)) = parts.split_first() else {
+            return Some(path);
+        };
+        if let Some(reference) = node
+            .get("$ref")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.strip_prefix("#/"))
+        {
+            let target = schema.pointer(&format!("/{reference}"))?;
+            return find_path(
+                schema,
+                target,
+                parts,
+                reference.split('/').map(str::to_owned).collect(),
+            );
+        }
+        for (branch, alternatives) in ["anyOf", "oneOf"]
+            .iter()
+            .filter_map(|branch| Some((branch, node.get(branch)?.as_array()?)))
+        {
+            for (index, alternative) in alternatives.iter().enumerate() {
+                let mut nested = path.clone();
+                nested.extend([(*branch).to_owned(), index.to_string()]);
+                if let Some(found) = find_path(schema, alternative, parts, nested) {
+                    return Some(found);
+                }
+            }
+        }
+        let segments = if part.starts_with('<') {
+            vec!["additionalProperties"]
+        } else {
+            vec!["properties", part]
+        };
+        let mut path = path;
+        let mut node = node;
+        for segment in segments {
+            node = node.get(segment)?;
+            path.push(segment.to_owned());
+        }
+        find_path(schema, node, rest, path)
+    }
+
+    #[test]
+    fn defaults_supply_fetch_and_frozen() {
+        let dir = TempDir::new("config-defaults");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[defaults]\nfetch = \"local\"\nfrozen = true\n",
+        )
+        .expect("seed config");
+        let loaded = load(dir.path()).unwrap().unwrap();
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert_eq!(loaded.config.defaults.fetch.as_deref(), Some("local"));
+        assert_eq!(loaded.config.defaults.frozen, Some(true));
+    }
+
+    #[test]
     fn a_task_runner_section_is_an_unknown_key_whatever_tasks_says() {
         for body in [
             "[task_runner]\nprefer = [\"turbo\"]\n",
@@ -971,10 +1096,10 @@ mod tests {
                 "body: {body}"
             );
             assert!(
-                !loaded
+                loaded
                     .warnings
                     .iter()
-                    .any(|w| matches!(w, DetectionWarning::DeprecatedConfigKey { .. })),
+                    .all(|w| matches!(w, DetectionWarning::UnknownConfigKey { .. })),
                 "body: {body}, got: {:?}",
                 loaded.warnings,
             );

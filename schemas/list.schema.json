@@ -57,7 +57,8 @@
           ]
         },
         "source": {
-          "$ref": "#/$defs/TaskSourceLabel"
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "Label of the task's source."
         },
         "usage": {
           "description": "Argument and flag spec in the source's own language (mise: usage KDL).",

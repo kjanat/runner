@@ -398,13 +398,16 @@ fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidat
     let Ok(dir) = completion_dir() else {
         return vec![];
     };
-    let spec = match crate::tool::mise::usage_spec(&dir, task) {
-        Ok(Some(spec)) => spec,
-        Ok(None) => return vec![],
-        Err(error) => {
-            eprintln!("warn: {error}");
-            return vec![];
-        }
+    let ctx = crate::detect::detect(&dir);
+    let Some(entry) = ctx
+        .tasks
+        .iter()
+        .find(|entry| entry.name == task && entry.source == crate::types::TaskSource::MiseToml)
+    else {
+        return vec![];
+    };
+    let Ok(Some(spec)) = crate::tool::mise::usage_spec(entry.dir(&ctx.root), task) else {
+        return vec![];
     };
 
     // A flag that takes a value swallows the next word, so there is nothing
@@ -1768,34 +1771,12 @@ pub(crate) struct Cli {
 /// not global: a selector after a task or subcommand belongs to that command.
 #[derive(Debug, Args)]
 #[group(skip)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each bool is an independently rendered and validated clap flag"
-)]
 pub(crate) struct VersionOpts {
-    /// Print the concise version.
-    #[arg(short = 'v', group = "version-selector", conflicts_with = "json")]
-    pub short_lower: bool,
+    #[command(flatten)]
+    pub short: ShortVersion,
 
-    /// Print the concise version.
-    #[arg(short = 'V', group = "version-selector", conflicts_with = "json")]
-    pub short_upper: bool,
-
-    /// Print detailed build information.
-    #[arg(
-        long = "version",
-        group = "version-selector",
-        group = "detailed-version"
-    )]
-    pub detailed: bool,
-
-    /// Print detailed build information (alias for `--version`).
-    #[arg(
-        long = "build-options",
-        group = "version-selector",
-        group = "detailed-version"
-    )]
-    pub build_options: bool,
+    #[command(flatten)]
+    pub detailed: DetailedVersion,
 
     /// Print the version, build channel, revision, and dirty state.
     #[arg(long, group = "version-selector", conflicts_with = "json")]
@@ -1804,6 +1785,52 @@ pub(crate) struct VersionOpts {
     /// Emit detailed build information as JSON.
     #[arg(long, requires = "detailed-version")]
     pub json: bool,
+}
+
+/// `-v` and `-V`.
+#[derive(Debug, Args)]
+#[group(skip)]
+pub(crate) struct ShortVersion {
+    /// Print the concise version.
+    #[arg(short = 'v', group = "version-selector", conflicts_with = "json")]
+    pub lower: bool,
+
+    /// Print the concise version.
+    #[arg(short = 'V', group = "version-selector", conflicts_with = "json")]
+    pub upper: bool,
+}
+
+impl ShortVersion {
+    pub(crate) const fn requested(&self) -> bool {
+        self.lower || self.upper
+    }
+}
+
+/// `--version` and `--build-options`.
+#[derive(Debug, Args)]
+#[group(skip)]
+pub(crate) struct DetailedVersion {
+    /// Print detailed build information.
+    #[arg(
+        long = "version",
+        group = "version-selector",
+        group = "detailed-version"
+    )]
+    pub version: bool,
+
+    /// Print detailed build information (alias for `--version`).
+    #[arg(
+        long = "build-options",
+        group = "version-selector",
+        group = "detailed-version"
+    )]
+    pub build_options: bool,
+}
+
+impl DetailedVersion {
+    pub(crate) const fn requested(&self) -> bool {
+        self.version || self.build_options
+    }
 }
 
 /// Flags shared by both `runner` and `run`. Carried inline via
@@ -1893,11 +1920,10 @@ pub(crate) struct GlobalOpts {
     )]
     pub package_selection: Option<String>,
 
-    /// What to do when no detection signal matches: `probe` (default,
-    /// PATH probe), `npm` (legacy silent fallback), `error` (refuse).
-    /// The resolver also consults `$RUNNER_FALLBACK` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
+    /// What to do when a task source has no package manager evidence:
+    /// `probe` (default, take one from PATH) or `error` (refuse). `npm` is
+    /// accepted and behaves as `probe`. Also reads `$RUNNER_FALLBACK` when
+    /// omitted.
     #[arg(
         long = "fallback",
         global = true,

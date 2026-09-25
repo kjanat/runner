@@ -1,7 +1,5 @@
 //! Subcommand implementations: info, run, install, clean, list, completions.
 
-#[cfg(windows)]
-use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -76,8 +74,11 @@ fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOver
     if overrides.quiet_level != crate::tool::QuietLevel::Off {
         command.env("RUNNER_QUIET", overrides.quiet_level.as_count().to_string());
     }
-    if overrides.host_stream != crate::tool::Stream::Inherit {
-        command.env("RUNNER_HOST_STREAM", overrides.host_stream.label());
+    if let Some(stream) = overrides
+        .host_stream
+        .filter(|stream| *stream != crate::tool::Stream::Inherit)
+    {
+        command.env("RUNNER_HOST_STREAM", stream.label());
     }
     // Same reasoning for the runtime axis, but only for a CLI flag or ambient
     // env value: those are invocation-scoped and a nested `runner`/`run` should
@@ -101,11 +102,7 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
 }
 
 /// Complete the invocation metadata before a core plan is rendered or executed.
-fn configure_plan(
-    plan: &mut runner_core::Plan,
-    overrides: &ResolutionOverrides,
-    task: &str,
-) -> anyhow::Result<()> {
+fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides, task: &str) {
     let mut metadata = Command::new("runner");
     configure_spawn(&mut metadata, &plan.cwd, overrides);
     if emits_group(overrides) && !overrides.emits_groups_for(task) {
@@ -120,20 +117,32 @@ fn configure_plan(
         }
     }
     #[cfg(windows)]
-    if let Some(name) = plan.argv.first().and_then(|program| program.to_str()) {
-        let command = runner_core::execute::command(plan)?;
-        let path = command
-            .get_envs()
-            .find(|(key, _)| *key == "PATH")
-            .and_then(|(_, value)| value.map(OsStr::to_os_string))
+    if let Some(name) = plan
+        .argv
+        .first()
+        .and_then(|program| program.to_str())
+        .map(str::to_owned)
+    {
+        let prepend = plan.trust == runner_core::Trust::Project && !plan.path_prepend.is_empty();
+        let inherited = plan
+            .env
+            .iter()
+            .rev()
+            .find(|(key, _)| !prepend && key == "PATH")
+            .map(|(_, value)| value.clone())
             .or_else(|| std::env::var_os("PATH"))
             .unwrap_or_default();
+        let dirs = plan
+            .path_prepend
+            .iter()
+            .filter(|_| prepend)
+            .cloned()
+            .chain(std::env::split_paths(&inherited));
         let pathext = std::env::var_os("PATHEXT");
-        if let Some(resolved) = runner_core::probe_in(name, &path, pathext.as_deref()) {
+        if let Some(resolved) = runner_core::probe_in_dirs(&name, dirs, pathext.as_deref()) {
             plan.argv[0] = resolved.into_os_string();
         }
     }
-    Ok(())
 }
 
 fn set_task_stdio(
@@ -209,7 +218,7 @@ pub(crate) fn exit_code(status: ExitStatus) -> i32 {
 /// through an `npm` script) detects it and stays silent instead of emitting a
 /// second `::group::` that would corrupt the parent's fold. Inherited
 /// transitively through intermediate processes; read into
-/// [`ResolutionOverrides::parent_group_open`].
+/// [`ResolutionOverrides::parent`].
 ///
 /// The contract is "a parent is *collecting* your output, don't open your own
 /// group", which is slightly broader than "a literal `::group::` is open right
@@ -372,7 +381,7 @@ const fn group_emission(
 
 /// Whether *this* runner emits a GitHub Actions group around its children:
 /// grouping is on, we're under Actions, a parent runner hasn't already
-/// opened one ([`ResolutionOverrides::parent_group_open`]), and `--quiet`
+/// opened one ([`ResolutionOverrides::parent`]), and `--quiet`
 /// is off. When true, the group-opening sites fire AND children are marked
 /// with [`GROUP_ACTIVE_ENV`] so a nested runner suppresses its own groups.
 /// When false, no group is opened (nested output flows into the parent's
@@ -386,9 +395,9 @@ const fn group_emission(
 /// would close around the wrong lines.
 pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
     group_emission(
-        overrides.group_output,
+        overrides.grouping.group_output,
         actions_rs::env::is_github_actions(),
-        suppression(overrides.parent_group_open, !overrides.emits_groups()),
+        suppression(overrides.parent.group_open, !overrides.emits_groups()),
     )
 }
 
@@ -422,7 +431,7 @@ fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides, sink: W
 /// (`--no-warnings`, or `-qq`+ which folds it in), or a parent runner already
 /// said them for this root.
 const fn silenced(overrides: &ResolutionOverrides) -> bool {
-    overrides.silences_warnings() || overrides.parent_warned
+    overrides.silences_warnings() || overrides.parent.warned
 }
 
 pub(crate) use crate::render::explain::{print_explain, print_output_explain};
@@ -591,7 +600,7 @@ mod tests {
     fn group_emission_gates_on_nesting() {
         // Exercise the pure core directly (no live GITHUB_ACTIONS needed): the
         // nested flag is the load-bearing gate. Holding grouping on + under
-        // Actions, flipping parent_group_open flips the decision, proving the
+        // Actions, flipping parent.group_open flips the decision, proving the
         // nesting suppression actually fires (a tautological test that only
         // checked the env-false path would pass even without the gate).
         assert!(
@@ -805,7 +814,7 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test").unwrap();
+        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test");
         plan
     }
 
@@ -1011,10 +1020,9 @@ mod tests {
         }));
         assert!(!timing_enabled(&ResolutionOverrides {
             output_policy: crate::tool::OutputPolicy {
-                runner: crate::tool::RunnerOutputPolicy {
-                    task_timing: false,
-                    ..crate::tool::OutputPolicy::default().runner
-                },
+                runner: crate::tool::OutputPolicy::default()
+                    .runner
+                    .with(crate::tool::RunnerOutput::TaskTiming, false),
                 ..crate::tool::OutputPolicy::default()
             },
             ..ResolutionOverrides::default()

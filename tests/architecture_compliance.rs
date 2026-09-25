@@ -419,12 +419,7 @@ fn cli_refuses_node_jsx_but_allows_capable_runtimes() {
             assert!(!output.status.success());
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(stderr.contains("node cannot run"), "{stderr}");
-            for id in runner_providers::REGISTRY.file_runtimes(
-                std::path::Path::new(&file),
-                &runner_core::Project::default(),
-                &runner_core::Scope::Root,
-            ) {
-                let label = runner_providers::REGISTRY.by_id(id).label;
+            for label in ["bun", "deno"] {
                 assert!(stderr.contains(&format!("--runtime {label}")), "{stderr}");
             }
             fixture.assert_not_executed();
@@ -632,8 +627,7 @@ fn yarn_install_preview_and_execution_share_the_registry_variant() {
         fixture.program("yarn");
         fixture.file(
             "bin/yarn",
-            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 99.0.0; exit 0; fi\nprintf \
-             '%s|%s\\n' \"$YARN_ENABLE_SCRIPTS\" \"$*\" >> \"$AUDIT_LOG\"\n",
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$YARN_ENABLE_SCRIPTS\" \"$*\" >> \"$AUDIT_LOG\"\n",
         );
         let explained = fixture.run(
             &[
@@ -859,12 +853,7 @@ fn unreadable_installed_package_never_becomes_a_fetch_plan() {
     let fixture = Fixture::new();
     let dir = fixture.0.join("node_modules/audit-dep");
     std::fs::create_dir_all(&dir).unwrap();
-    let manifest = dir.join("package.json");
-    std::fs::write(&manifest, r#"{"name":"audit-dep","bin":"main.js"}"#).unwrap();
-    std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
-    if std::fs::File::open(&manifest).is_ok() {
-        return;
-    }
+    std::fs::create_dir(dir.join("package.json")).unwrap();
     let output = fixture.run(
         &["--explain", "run", "--package", "audit-dep", "audit-dep"],
         "allow",

@@ -692,6 +692,64 @@ impl<'a> Shaping<'_, 'a> {
     }
 }
 
+/// The clamps `policy` needs from `provider` for `op`.
+fn clamps(policy: &Policy, provider: &Provider, op: &Op<'_>) -> Vec<Clamp> {
+    let quiet = provider.caps.quiet;
+    let mut clamps = Vec::new();
+    if policy.verbosity != Verbosity::Normal && policy.verbosity.index() > quiet.strongest() {
+        clamps.push(Clamp {
+            requested: policy.verbosity.label().to_owned(),
+            granted: Verbosity::ALL[quiet.strongest()].label().to_owned(),
+            reason: quiet.limitation,
+        });
+    }
+    let Some(cap) = provider
+        .caps
+        .install
+        .filter(|_| matches!(op, Op::Install { .. }))
+    else {
+        return clamps;
+    };
+    let mechanism = match policy.scripts {
+        ScriptPolicy::Default => return clamps,
+        ScriptPolicy::Deny => ("deny", cap.scripts.deny),
+        ScriptPolicy::Allow => ("allow", cap.scripts.allow),
+    };
+    let reason = match mechanism.1 {
+        ScriptMechanism::Unsupported => "provider cannot enforce this script policy",
+        ScriptMechanism::Warn(reason) => reason,
+        _ => return clamps,
+    };
+    clamps.push(Clamp {
+        requested: format!("scripts={}", mechanism.0),
+        granted: "provider script defaults".into(),
+        reason,
+    });
+    clamps
+}
+
+/// The `[tasks.<key>]` env keys a task answers to.
+fn task_env_keys(op: &Op<'_>, registry: &Registry) -> Vec<String> {
+    let Op::Run { task, .. } = op else {
+        return Vec::new();
+    };
+    let source = registry.by_id(task.source);
+    let labels: Vec<_> = source
+        .aliases
+        .iter()
+        .copied()
+        .chain([source.label])
+        .collect();
+    let mut keys = vec![task.name.clone()];
+    keys.extend(labels.iter().map(|label| format!("{label}#{}", task.name)));
+    keys.extend(
+        labels
+            .iter()
+            .map(|label| format!("{}:{label}#{}", task.scope.label(), task.name)),
+    );
+    keys
+}
+
 /// Turn one request into one command through `present`.
 ///
 /// # Errors
@@ -713,37 +771,7 @@ pub fn plan_with(
         hook(present, op, &mut warnings)?;
     }
     let quiet = provider.caps.quiet;
-    let mut clamps = Vec::new();
-    if policy.verbosity != Verbosity::Normal && policy.verbosity.index() > quiet.strongest() {
-        clamps.push(Clamp {
-            requested: policy.verbosity.label().to_owned(),
-            granted: Verbosity::ALL[quiet.strongest()].label().to_owned(),
-            reason: quiet.limitation,
-        });
-    }
-    if matches!(op, Op::Install { .. })
-        && let Some(cap) = provider.caps.install
-    {
-        let mechanism = match policy.scripts {
-            ScriptPolicy::Default => None,
-            ScriptPolicy::Deny => Some(("deny", cap.scripts.deny)),
-            ScriptPolicy::Allow => Some(("allow", cap.scripts.allow)),
-        };
-        if let Some((requested, mechanism)) = mechanism {
-            let reason = match mechanism {
-                ScriptMechanism::Unsupported => Some("provider cannot enforce this script policy"),
-                ScriptMechanism::Warn(reason) => Some(reason),
-                _ => None,
-            };
-            if let Some(reason) = reason {
-                clamps.push(Clamp {
-                    requested: format!("scripts={requested}"),
-                    granted: "provider script defaults".into(),
-                    reason,
-                });
-            }
-        }
-    }
+    let clamps = clamps(policy, &provider, op);
     let mut fill = Fill {
         request: Request {
             quiet: quiet.at(policy.verbosity.index()),
@@ -780,27 +808,11 @@ pub fn plan_with(
     }
     argv.extend(rendered.args);
     let mut env = rendered.env;
-    let task_keys = match op {
-        Op::Run { task, .. } => {
-            let source = registry.by_id(task.source);
-            let labels: Vec<_> = source
-                .aliases
-                .iter()
-                .copied()
-                .chain([source.label])
-                .collect();
-            let mut keys = vec![task.name.clone()];
-            keys.extend(labels.iter().map(|label| format!("{label}#{}", task.name)));
-            keys.extend(
-                labels
-                    .iter()
-                    .map(|label| format!("{}:{label}#{}", task.scope.label(), task.name)),
-            );
-            keys
-        }
-        _ => Vec::new(),
-    };
-    env.extend(env_layers(policy, Some(provider.id), &task_keys)?);
+    env.extend(env_layers(
+        policy,
+        Some(provider.id),
+        &task_env_keys(op, registry),
+    )?);
     let scope = match op {
         Op::Run { task, .. } => task.scope.clone(),
         _ => present.scope.clone(),
@@ -993,7 +1005,9 @@ fn env_layers(
 
 /// The layer that chose the provider, else the layer its strongest evidence
 /// stands for.
-fn decided_by(policy: &Policy, present: &Present) -> Vec<Layer> {
+/// The layers that chose `present`: a policy choice, else its strongest evidence.
+#[must_use]
+pub fn decided_by(policy: &Policy, present: &Present) -> Vec<Layer> {
     let choice = policy
         .runtime
         .iter()
@@ -1179,16 +1193,19 @@ fn rung_dispatch(
             }
             Some(dispatched(file_plan(cascade, &path, args)?))
         }
-        Need::Task => match select(cascade, token)? {
-            Some(task) => Some(dispatched(plan(
+        Need::Task => {
+            let Some(task) = select(cascade, token)? else {
+                unread_source(cascade)?;
+                return Ok(None);
+            };
+            Some(dispatched(plan(
                 cascade.tree,
                 cascade.project,
                 cascade.policy,
                 &Op::Run { task, args },
                 cascade.registry,
-            )?)),
-            None => None,
-        },
+            )?))
+        }
         Need::RelativeFile => {
             let path = resolve_path(&cascade.tree.cwd, token);
             if !path.is_file() {
@@ -1200,24 +1217,7 @@ fn rung_dispatch(
             Some(path) => Some(dispatched(file_plan(cascade, &path, args)?)),
             None => None,
         },
-        Need::Cap(Cap::Test) => {
-            if token != "test" || select(cascade, token)?.is_some() {
-                return Ok(None);
-            }
-            plan(
-                cascade.tree,
-                cascade.project,
-                cascade.policy,
-                &Op::Test { args },
-                cascade.registry,
-            )
-            .map(dispatched)
-            .map(Some)
-            .or_else(|refusal| match refusal {
-                Refusal::NoCapability { .. } => Ok(None),
-                _ => Err(refusal),
-            })?
-        }
+        Need::Cap(Cap::Test) => test_rung(cascade, token, args)?,
         Need::ProjectBins => probe_in_dirs(
             &bin_dirs(
                 cascade.tree,
@@ -1229,36 +1229,85 @@ fn rung_dispatch(
         )
         .map(found)
         .transpose()?,
-        Need::HostPath => {
-            let scope = scope_at(cascade.tree, &cascade.tree.cwd);
-            let root = cascade.project.present.iter().find(|p| {
-                if !cascade
-                    .project
-                    .present_in(p.provider, &scope)
-                    .is_some_and(|chosen| std::ptr::eq(chosen, *p))
-                {
-                    return false;
-                }
-                let provider = cascade.registry.by_id(p.provider).for_present(p);
-                provider.program == Some(token) && provider.caps.run_default.is_some()
-            });
-            if let Some(present) = root {
-                Some(dispatched(plan_with(
-                    cascade.tree,
-                    cascade.project,
-                    cascade.policy,
-                    present,
-                    &Op::RunDefault { args },
-                    cascade.registry,
-                )?))
-            } else {
-                probe_with(token, &[]).map(found).transpose()?
-            }
-        }
+        Need::HostPath => host_rung(cascade, token, args, found)?,
         Need::ToolManagerExec | Need::Cap(Cap::Exec) => {
             exec_plan(cascade, rung, token, args)?.map(dispatched)
         }
     })
+}
+
+/// Refuse to look past the task rung while a visible task source is unreadable.
+fn unread_source(cascade: &Cascade<'_>) -> Result<(), Refusal> {
+    let scope = scope_at(cascade.tree, &cascade.tree.cwd);
+    let Some(unread) = cascade
+        .project
+        .unread
+        .iter()
+        .find(|unread| unread.scope == Scope::Root || unread.scope == scope)
+    else {
+        return Ok(());
+    };
+    Err(Refusal::Invalid(format!(
+        "{} tasks in {} could not be read: {}",
+        cascade.registry.by_id(unread.provider).label,
+        unread.scope.label(),
+        unread.message
+    )))
+}
+
+/// The built-in test runner, when `test` names no task.
+fn test_rung(
+    cascade: &Cascade<'_>,
+    token: &str,
+    args: &[String],
+) -> Result<Option<Dispatch>, Refusal> {
+    if token != "test" || select(cascade, token)?.is_some() {
+        return Ok(None);
+    }
+    match plan(
+        cascade.tree,
+        cascade.project,
+        cascade.policy,
+        &Op::Test { args },
+        cascade.registry,
+    ) {
+        Ok(made) => Ok(Some(dispatched(made))),
+        Err(Refusal::NoCapability { .. }) => Ok(None),
+        Err(refusal) => Err(refusal),
+    }
+}
+
+/// A present runner's default invocation, else the name on the host `PATH`.
+fn host_rung(
+    cascade: &Cascade<'_>,
+    token: &str,
+    args: &[String],
+    found: impl FnOnce(PathBuf) -> Result<Dispatch, Refusal>,
+) -> Result<Option<Dispatch>, Refusal> {
+    let scope = scope_at(cascade.tree, &cascade.tree.cwd);
+    let root = cascade.project.present.iter().find(|p| {
+        if !cascade
+            .project
+            .present_in(p.provider, &scope)
+            .is_some_and(|chosen| std::ptr::eq(chosen, *p))
+        {
+            return false;
+        }
+        let provider = cascade.registry.by_id(p.provider).for_present(p);
+        provider.program == Some(token) && provider.caps.run_default.is_some()
+    });
+    let Some(present) = root else {
+        return probe_with(token, &[]).map(found).transpose();
+    };
+    plan_with(
+        cascade.tree,
+        cascade.project,
+        cascade.policy,
+        present,
+        &Op::RunDefault { args },
+        cascade.registry,
+    )
+    .map(|made| Some(dispatched(made)))
 }
 
 /// A plan as the cascade returns it.
@@ -1484,16 +1533,27 @@ fn exec_plan(
         )));
     }
 
-    let mut ordered = candidates(
-        cascade.tree,
-        cascade.project,
-        cascade.policy,
-        &op,
-        cascade.registry,
-    );
-    if manager {
-        ordered = cascade.project.present.iter().collect();
-    }
+    let ordered = if manager {
+        cascade
+            .project
+            .present
+            .iter()
+            .filter(|present| {
+                present
+                    .because
+                    .first()
+                    .is_some_and(|evidence| evidence.weight < Weight::Present)
+            })
+            .collect()
+    } else {
+        candidates(
+            cascade.tree,
+            cascade.project,
+            cascade.policy,
+            &op,
+            cascade.registry,
+        )
+    };
     for present in ordered {
         if !cascade
             .project
@@ -1898,23 +1958,12 @@ fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Res
 
 /// Whether an effective provider capability routes this file.
 fn runs_file(cascade: &Cascade<'_>, path: &Path) -> bool {
-    let scope = cascade
-        .tree
-        .members
-        .iter()
-        .filter(|scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir)))
-        .max_by_key(|scope| scope_dir(cascade.tree, scope).components().count())
-        .unwrap_or(&Scope::Root);
+    let scope = scope_at(cascade.tree, path);
     cascade.registry.iter().any(|provider| {
         let effective = cascade
             .registry
-            .effective(provider.id, cascade.project, scope);
-        (effective.caps.file_fallback
-            || cascade
-                .project
-                .present
-                .iter()
-                .any(|p| p.provider == provider.id))
+            .effective(provider.id, cascade.project, &scope);
+        (effective.caps.file_fallback || cascade.project.present_in(provider.id, &scope).is_some())
             && effective
                 .caps
                 .run_file
@@ -2278,7 +2327,7 @@ mod tests {
             present: vec![present(ProviderId::Node, Weight::Declared), member],
             ..Project::default()
         };
-        project.refresh_bins(&tree, &Registry(PROVIDERS)).unwrap();
+        project.refresh_bins(&tree, &Registry(PROVIDERS));
         assert_eq!(project.present[1].bin_dirs, [member_dir.join("member-bin")]);
         for runtime in [
             None,
@@ -2570,7 +2619,7 @@ mod tests {
         let project = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: vec![task("build")],
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let args = ["--watch".to_owned()];
         let policy = Policy {
@@ -2609,7 +2658,7 @@ mod tests {
                 present(ProviderId::Bun, Weight::Probed),
             ],
             tasks: vec![task("build")],
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let policy = Policy {
             runtime: Some(Choice {
@@ -2656,7 +2705,7 @@ mod tests {
         let project = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: Vec::new(),
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let refusal = plan(
             &tree(),
@@ -2679,7 +2728,7 @@ mod tests {
         let go = Project {
             present: vec![present(ProviderId::Go, Weight::Locked)],
             tasks: Vec::new(),
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let made = plan(
             &tree(),
@@ -2715,7 +2764,7 @@ mod tests {
         let project = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: Vec::new(),
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let tree = Tree {
             cwd: dir.path().to_path_buf(),
@@ -2758,7 +2807,7 @@ mod tests {
         let project = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: vec![task("build")],
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let mut policy = Policy::default();
         policy
@@ -2833,7 +2882,7 @@ mod tests {
         let bare = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: Vec::new(),
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let found = dispatch(&cascade(&tree, &bare, &policy, &registry), "list", &[])
             .expect("the builtin rung takes it");
@@ -2843,7 +2892,7 @@ mod tests {
         let shadowed = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: vec![task("list")],
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let found = dispatch(&cascade(&tree, &shadowed, &policy, &registry), "list", &[])
             .expect("the builtin rung takes it despite the task");
@@ -2884,7 +2933,7 @@ mod tests {
         let project = Project {
             present: vec![present(ProviderId::Npm, Weight::Locked)],
             tasks: Vec::new(),
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let local = Policy {
             reach: ReachPolicy::Local,
@@ -2958,7 +3007,7 @@ mod tests {
                 ),
                 scoped("release", Scope::Root),
             ],
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let cascade = cascade(&tree, &project, &policy, &registry);
         let found = dispatch(&cascade, "build", &[]).expect("the member's own task wins");
@@ -2997,7 +3046,7 @@ mod tests {
                     ..task("build")
                 },
             ],
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let refusal = dispatch(&cascade(&tree, &project, &policy, &registry), "build", &[])
             .expect_err("two members, no winner");
@@ -3023,7 +3072,7 @@ mod tests {
         let project = Project {
             present: vec![present(ProviderId::Bun, Weight::Locked)],
             tasks: Vec::new(),
-            warnings: Vec::new(),
+            ..Project::default()
         };
         let cascade = Cascade {
             builtins: &[],

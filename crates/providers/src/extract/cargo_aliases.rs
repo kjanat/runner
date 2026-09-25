@@ -59,7 +59,7 @@ impl ExtractedAlias {
 /// When both extensioned and non-extensioned forms exist in the same
 /// `.cargo/` directory, cargo prefers the file *without* the extension; we
 /// mirror that.
-pub fn find_configs(start: &Path) -> Vec<PathBuf> {
+pub(crate) fn find_configs(start: &Path) -> Vec<PathBuf> {
     let mut configs = Vec::new();
 
     for ancestor in start.ancestors() {
@@ -121,17 +121,18 @@ fn home_dir() -> Option<PathBuf> {
 ///
 /// Returns built-ins on top of user aliases, with the cargo merge rules
 /// applied (deeper > shallower > home > built-ins-can't-be-redefined).
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedAlias>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedAlias>> {
     let configs = find_configs(dir);
     let raw = merge_alias_tables(&configs)?;
     Ok(expand_all(&raw))
 }
 
-/// Pick one path to represent the cargo-aliases source for `root`, the
-/// deepest applicable `.cargo/config{,.toml}` if one exists, otherwise
+/// The file that represents the cargo-aliases source for `root`.
+///
+/// The deepest applicable `.cargo/config{,.toml}` if one exists, otherwise
 /// `<root>/Cargo.toml` so built-ins-only projects still anchor at a real
-/// file. Used by `runner list` for the OSC8 link target and by `runner
-/// run`'s nearest-source ranking.
+/// file.
+#[must_use]
 pub fn find_anchor(root: &Path) -> Option<PathBuf> {
     find_configs(root).into_iter().next().or_else(|| {
         let cargo_toml = root.join("Cargo.toml");
@@ -255,10 +256,10 @@ fn expand_chain(mut tokens: Vec<String>, map: &HashMap<String, Vec<String>>) -> 
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(extracted
         .into_iter()
         .map(|entry| {
@@ -267,7 +268,8 @@ pub fn tasks(
             task.alias_of = (expansion != task.name).then_some(expansion);
             task
         })
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 #[cfg(test)]
 mod tests {

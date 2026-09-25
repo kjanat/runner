@@ -92,30 +92,36 @@ impl<'ctx> Resolver<'ctx> {
             .ok_or_else(no_pm_found_soft)?;
         let pm = PackageManager::from_label(registry.by_id(present.provider).label)
             .expect("package manager label");
-        let via = if let Some(chosen) = chosen {
-            ResolutionStep::Override(chosen.origin.clone())
-        } else if let Some(decl) = declaration.filter(|decl| decl.pm == pm) {
-            match decl.source {
+        let via = match (chosen, declaration.filter(|decl| decl.pm == pm)) {
+            (Some(chosen), _) => ResolutionStep::Override(chosen.origin.clone()),
+            (None, Some(decl)) => match decl.source {
                 ManifestSource::PackageManager => ResolutionStep::ManifestPackageManager,
                 ManifestSource::DevEngines => ResolutionStep::ManifestDevEngines {
                     on_fail: decl.on_fail,
                 },
-            }
-        } else {
-            let evidence = present.because.first().expect("resolved provider evidence");
-            if evidence.weight == runner_core::Weight::Probed {
-                warnings.push(DetectionWarning::PathProbeFallback {
-                    picked: pm,
-                    ecosystem: Ecosystem::Node,
-                    others_available: Vec::new(),
-                });
-                ResolutionStep::PathProbe {
-                    binary: evidence.at.clone(),
-                }
-            } else {
-                ResolutionStep::Observed {
-                    path: evidence.at.clone(),
-                    weight: evidence.weight,
+            },
+            (None, None) => {
+                let evidence = present.because.first().expect("resolved provider evidence");
+                if evidence.weight == runner_core::Weight::Probed {
+                    warnings.push(DetectionWarning::PathProbeFallback {
+                        picked: pm,
+                        ecosystem: Ecosystem::Node,
+                        others_available: probe::node_probe_order()
+                            .into_iter()
+                            .filter(|other| {
+                                *other != pm
+                                    && runner_core::probe_with(other.label(), &[]).is_some()
+                            })
+                            .collect(),
+                    });
+                    ResolutionStep::PathProbe {
+                        binary: evidence.at.clone(),
+                    }
+                } else {
+                    ResolutionStep::Observed {
+                        path: evidence.at.clone(),
+                        weight: evidence.weight,
+                    }
                 }
             }
         };
@@ -165,13 +171,11 @@ where
                 return on_fail_version_mismatch(decl, &declared, &actual, warnings);
             }
             VersionCheck::Unverifiable { reason } => {
-                warnings.push(DetectionWarning::TaskListUnreadable {
-                    source: "package.json",
-                    error: format!(
-                        "cannot evaluate {} version constraint {range}: {reason}",
-                        decl.pm.label()
-                    ),
-                })
+                warnings.push(DetectionWarning::UnverifiableVersion {
+                    pm: decl.pm,
+                    declared: range.to_owned(),
+                    reason,
+                });
             }
             VersionCheck::Satisfied => {}
         }

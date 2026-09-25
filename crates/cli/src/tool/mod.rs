@@ -48,7 +48,6 @@ pub(crate) mod npm;
 /// Nx monorepo build system (`nx.json`).
 pub(crate) mod nx;
 /// Detect `package.json` scripts that wrap a known task runner.
-pub(crate) mod passthrough;
 /// Pipenv, a Python dependency manager (`Pipfile`).
 pub(crate) mod pipenv;
 /// pnpm, a fast Node.js package manager (`pnpm-lock.yaml`).
@@ -118,33 +117,138 @@ pub(crate) enum TaskStream {
     Discard,
 }
 
-/// Independent runner-authored output categories.
+/// One runner-authored output category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "independent output categories"
-)]
-pub(crate) struct RunnerOutputPolicy {
-    pub progress: bool,
-    pub warnings: bool,
-    pub errors: bool,
-    pub groups: bool,
-    pub task_timing: bool,
-    pub summary: bool,
-    pub fatal_errors: bool,
+pub(crate) enum RunnerOutput {
+    Progress,
+    Warnings,
+    Errors,
+    Groups,
+    TaskTiming,
+    Summary,
+    FatalErrors,
 }
 
-impl RunnerOutputPolicy {
-    pub(crate) const fn and(self, other: Self) -> Self {
-        Self {
-            progress: self.progress && other.progress,
-            warnings: self.warnings && other.warnings,
-            errors: self.errors && other.errors,
-            groups: self.groups && other.groups,
-            task_timing: self.task_timing && other.task_timing,
-            summary: self.summary && other.summary,
-            fatal_errors: self.fatal_errors && other.fatal_errors,
+impl RunnerOutput {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Progress,
+        Self::Warnings,
+        Self::Errors,
+        Self::Groups,
+        Self::TaskTiming,
+        Self::Summary,
+        Self::FatalErrors,
+    ];
+
+    /// The `[runner]` key and report field naming this category.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Progress => "progress",
+            Self::Warnings => "warnings",
+            Self::Errors => "errors",
+            Self::Groups => "groups",
+            Self::TaskTiming => "task_timing",
+            Self::Summary => "summary",
+            Self::FatalErrors => "fatal_errors",
         }
+    }
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Progress => 1,
+            Self::Warnings => 1 << 1,
+            Self::Errors => 1 << 2,
+            Self::Groups => 1 << 3,
+            Self::TaskTiming => 1 << 4,
+            Self::Summary => 1 << 5,
+            Self::FatalErrors => 1 << 6,
+        }
+    }
+}
+
+/// The runner-authored output categories an invocation shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RunnerOutputPolicy(u8);
+
+impl RunnerOutputPolicy {
+    pub(crate) const ALL: Self = Self::of(&RunnerOutput::ALL);
+
+    /// Exactly `outputs` shown.
+    pub(crate) const fn of(outputs: &[RunnerOutput]) -> Self {
+        let mut bits = 0;
+        let mut index = 0;
+        while index < outputs.len() {
+            bits |= outputs[index].bit();
+            index += 1;
+        }
+        Self(bits)
+    }
+
+    pub(crate) const fn shows(self, output: RunnerOutput) -> bool {
+        self.0 & output.bit() != 0
+    }
+
+    #[must_use]
+    pub(crate) const fn with(self, output: RunnerOutput, shown: bool) -> Self {
+        if shown {
+            Self(self.0 | output.bit())
+        } else {
+            Self(self.0 & !output.bit())
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn and(self, other: Self) -> Self {
+        Self(self.0 & other.0)
+    }
+}
+
+impl std::fmt::Display for RunnerOutputPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, output) in RunnerOutput::ALL.into_iter().enumerate() {
+            let separator = if index == 0 { "" } else { " " };
+            write!(f, "{separator}{}={}", output.label(), self.shows(output))?;
+        }
+        Ok(())
+    }
+}
+
+impl serde::Serialize for RunnerOutputPolicy {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(RunnerOutput::ALL.len()))?;
+        for output in RunnerOutput::ALL {
+            map.serialize_entry(output.label(), &self.shows(output))?;
+        }
+        map.end()
+    }
+}
+
+impl schemars::JsonSchema for RunnerOutputPolicy {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RunnerOutputPolicy".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let labels = RunnerOutput::ALL.map(RunnerOutput::label);
+        let properties: serde_json::Map<String, serde_json::Value> = labels
+            .iter()
+            .map(|label| {
+                (
+                    (*label).to_owned(),
+                    serde_json::json!({ "type": "boolean" }),
+                )
+            })
+            .collect();
+        schemars::json_schema!({
+            "type": "object",
+            "properties": properties,
+            "required": labels,
+        })
     }
 }
 
@@ -166,63 +270,27 @@ impl OutputPolicy {
     pub(crate) const fn from_quiet(level: QuietLevel) -> Self {
         match level {
             QuietLevel::Off => Self {
-                runner: RunnerOutputPolicy {
-                    progress: true,
-                    warnings: true,
-                    errors: true,
-                    groups: true,
-                    task_timing: true,
-                    summary: true,
-                    fatal_errors: true,
-                },
+                runner: RunnerOutputPolicy::ALL,
                 host_diagnostics: HostDiagnostics::Normal,
             },
             QuietLevel::Quiet => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: true,
-                    errors: true,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: true,
-                },
+                runner: RunnerOutputPolicy::of(&[
+                    RunnerOutput::Warnings,
+                    RunnerOutput::Errors,
+                    RunnerOutput::FatalErrors,
+                ]),
                 host_diagnostics: HostDiagnostics::Normal,
             },
             QuietLevel::VeryQuiet => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: false,
-                    errors: true,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: true,
-                },
+                runner: RunnerOutputPolicy::of(&[RunnerOutput::Errors, RunnerOutput::FatalErrors]),
                 host_diagnostics: HostDiagnostics::Quiet,
             },
             QuietLevel::Silent => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: false,
-                    errors: false,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: true,
-                },
+                runner: RunnerOutputPolicy::of(&[RunnerOutput::FatalErrors]),
                 host_diagnostics: HostDiagnostics::Reduced,
             },
             QuietLevel::Mute => Self {
-                runner: RunnerOutputPolicy {
-                    progress: false,
-                    warnings: false,
-                    errors: false,
-                    groups: false,
-                    task_timing: false,
-                    summary: false,
-                    fatal_errors: false,
-                },
+                runner: RunnerOutputPolicy::of(&[]),
                 host_diagnostics: HostDiagnostics::Reduced,
             },
         }

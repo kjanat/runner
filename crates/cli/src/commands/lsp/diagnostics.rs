@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use lsp_types::{Diagnostic, DiagnosticSeverity, DiagnosticTag, Range};
+use lsp_types::{Diagnostic, DiagnosticSeverity, Range};
 
 use super::text::{LineIndex, find_header_range, find_key_range};
 use crate::config::{self, LoadedConfig, RunnerConfig};
@@ -67,16 +67,12 @@ fn parse_error(text: &str, index: &LineIndex, error: &toml::de::Error) -> Diagno
     error_diagnostic(range, error.message().to_string())
 }
 
-/// Build a `WARNING`-severity diagnostic for an unknown or deprecated key,
-/// anchored at the offending key/section (tagged `DEPRECATED` for the latter).
+/// Build a `WARNING`-severity diagnostic for an unknown key, anchored at the
+/// offending key or section.
 fn warning_diagnostic(text: &str, index: &LineIndex, warning: &DetectionWarning) -> Diagnostic {
-    let (path, tags) = match warning {
-        DetectionWarning::UnknownConfigKey { path } => (path.as_str(), None),
-        DetectionWarning::DeprecatedConfigKey { path, .. } => {
-            (path.as_str(), Some(vec![DiagnosticTag::DEPRECATED]))
-        }
-        // collect_unknown_keys / deprecation_warnings only emit the two above.
-        _ => (warning.source(), None),
+    let path = match warning {
+        DetectionWarning::UnknownConfigKey { path } => path.as_str(),
+        _ => warning.source(),
     };
     let range = range_for_path(text, index, path).unwrap_or_else(|| index.line_range(text, 0));
     Diagnostic {
@@ -84,7 +80,6 @@ fn warning_diagnostic(text: &str, index: &LineIndex, warning: &DetectionWarning)
         severity: Some(DiagnosticSeverity::WARNING),
         source: Some(SOURCE.to_string()),
         message: warning.detail(),
-        tags,
         ..Diagnostic::default()
     }
 }
@@ -150,7 +145,7 @@ fn anchor_from_message(text: &str, index: &LineIndex, message: &str) -> Option<R
 
 #[cfg(test)]
 mod tests {
-    use lsp_types::{DiagnosticSeverity, DiagnosticTag};
+    use lsp_types::DiagnosticSeverity;
 
     use super::{LineIndex, compute};
 
@@ -188,11 +183,7 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("unknown") && d.message.contains("task_runner"))
         );
-        assert!(found.iter().all(|d| {
-            d.tags
-                .as_ref()
-                .is_none_or(|tags| !tags.contains(&DiagnosticTag::DEPRECATED))
-        }));
+        assert!(found.iter().all(|d| d.tags.is_none()));
     }
 
     #[test]

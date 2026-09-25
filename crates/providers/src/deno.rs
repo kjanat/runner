@@ -39,6 +39,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: crate::node::WRITES,
     caps: Capabilities {
+        probe_priority: 4,
         package_exec: Some(ExecCap {
             program: None,
             argv: runner_core::Template(&[

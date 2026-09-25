@@ -1,6 +1,5 @@
 //! Shared Node.js helpers used by all Node package managers.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
@@ -19,12 +18,6 @@ pub(crate) const PACKAGE_JSON_FILENAME: &str = "package.json";
 /// Supported Node manifest filenames, in resolution order.
 pub(crate) const MANIFEST_FILENAMES: &[&str] =
     &[PACKAGE_JSON_FILENAME, "package.json5", "package.yaml"];
-
-/// Directories commonly produced by Node.js toolchains.
-pub(crate) const DEFAULT_CLEAN_DIRS: &[&str] = &["node_modules", ".cache", "dist"];
-
-/// Framework-specific Node build directories removed only on explicit opt-in.
-pub(crate) const FRAMEWORK_CLEAN_DIRS: &[&str] = &[".next", ".parcel-cache", ".svelte-kit"];
 
 /// Returns `true` if `dir` contains a supported package manifest.
 pub(crate) fn has_package_json(dir: &Path) -> bool {
@@ -334,10 +327,6 @@ pub(crate) enum VersionCheck {
     /// guidance that unparseable ranges should not block dispatch.
     Unverifiable {
         /// One-line reason for the skip, suitable for diagnostics.
-        #[allow(
-            dead_code,
-            reason = "consumed by --explain / runner doctor traces in Phase 6+"
-        )]
         reason: String,
     },
 }
@@ -470,24 +459,6 @@ enum ProposalOnFail {
     Download,
 }
 
-/// Parse the supported package manifest and return each script as a
-/// `(name, command)` pair. The command body is needed downstream to
-/// classify passthrough wrappers (e.g. `"build": "turbo run build"`).
-pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    let Some(path) = find_manifest(dir) else {
-        return Ok(Vec::new());
-    };
-    runner_providers::extract::scripts::package(&path)
-}
-
-/// Parse scripts from the nearest supported package manifest while walking upward.
-pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    let Some(path) = find_manifest_upwards(dir) else {
-        return Ok(Vec::new());
-    };
-    runner_providers::extract::scripts::package(&path)
-}
-
 #[derive(Deserialize)]
 struct PackageJson {
     #[serde(default)]
@@ -500,7 +471,6 @@ struct PackageJson {
         deserialize_with = "lenient_dev_engines"
     )]
     dev_engines: Option<DevEngines>,
-    scripts: Option<HashMap<String, String>>,
     #[serde(default, deserialize_with = "lenient_workspaces")]
     workspaces: Option<Vec<String>>,
 }
@@ -586,14 +556,6 @@ fn read_manifest(dir: &Path) -> anyhow::Result<Option<(PathBuf, String)>> {
     read_manifest_file(&path)
 }
 
-fn read_manifest_upwards(dir: &Path) -> anyhow::Result<Option<(PathBuf, String)>> {
-    let Some(path) = find_manifest_upwards(dir) else {
-        return Ok(None);
-    };
-
-    read_manifest_file(&path)
-}
-
 fn read_manifest_file(path: &Path) -> anyhow::Result<Option<(PathBuf, String)>> {
     std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))
@@ -627,22 +589,6 @@ fn parse_package_yaml(content: &str) -> Option<PackageJson> {
         .and_then(yaml_rust2::Yaml::as_str)
         .map(ToOwned::to_owned);
 
-    let scripts = root
-        .iter()
-        .find_map(|(key, value)| (key.as_str() == Some("scripts")).then_some(value))
-        .and_then(yaml_rust2::Yaml::as_hash)
-        .map(|table| {
-            table
-                .iter()
-                .filter_map(|(name, body)| {
-                    let name = name.as_str()?.to_owned();
-                    let body = body.as_str().unwrap_or_default().to_owned();
-                    Some((name, body))
-                })
-                .collect::<HashMap<_, _>>()
-        })
-        .filter(|table| !table.is_empty());
-
     let name = root
         .iter()
         .find_map(|(key, value)| (key.as_str() == Some("name")).then_some(value))
@@ -675,34 +621,15 @@ fn parse_package_yaml(content: &str) -> Option<PackageJson> {
         name,
         package_manager,
         dev_engines: None,
-        scripts,
         workspaces,
     })
-}
-
-fn manifest_format(path: &Path) -> &'static str {
-    if path
-        .file_name()
-        .is_some_and(|name| name == std::ffi::OsStr::new("package.json5"))
-    {
-        "JSON5"
-    } else if path
-        .file_name()
-        .is_some_and(|name| name == std::ffi::OsStr::new("package.yaml"))
-    {
-        "YAML"
-    } else {
-        "JSON"
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::{
-        detect_pm_from_field, extract_scripts, extract_scripts_upwards, find_manifest_upwards,
-    };
+    use super::{detect_pm_from_field, find_manifest_upwards};
     use crate::tool::test_support::TempDir;
     use crate::types::PackageManager;
 
@@ -719,11 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_dev_engines_does_not_poison_scripts_or_pm() {
-        // `devEngines` written as a Corepack-style string instead of the
-        // spec'd object is valid JSON with valid scripts; a strict parse
-        // used to abort the whole manifest (zero tasks + a false "not
-        // valid JSON" warning) and lose the `packageManager` signal.
+    fn malformed_dev_engines_does_not_poison_the_package_manager() {
         let dir = TempDir::new("node-malformed-devengines");
         fs::write(
             dir.path().join("package.json"),
@@ -735,34 +658,7 @@ mod tests {
         )
         .expect("package.json should be written");
 
-        let scripts = extract_scripts(dir.path()).expect("scripts should survive");
-        assert_eq!(
-            scripts,
-            vec![("build".to_string(), "vite build".to_string())]
-        );
         assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Pnpm));
-    }
-
-    #[test]
-    fn extract_scripts_supports_package_json5() {
-        let dir = TempDir::new("node-package-json5-scripts");
-        fs::write(
-            dir.path().join("package.json5"),
-            "{ scripts: { build: 'vite build', test: 'vitest' } }",
-        )
-        .expect("package.json5 should be written");
-
-        let mut scripts =
-            extract_scripts(dir.path()).expect("scripts should parse from package.json5");
-        scripts.sort_unstable();
-
-        assert_eq!(
-            scripts,
-            [
-                ("build".to_owned(), "vite build".to_owned()),
-                ("test".to_owned(), "vitest".to_owned()),
-            ]
-        );
     }
 
     #[test]
@@ -787,50 +683,6 @@ mod tests {
         .expect("package.json should be written");
 
         assert_eq!(detect_pm_from_field(dir.path()), Some(PackageManager::Deno));
-    }
-
-    #[test]
-    fn extract_scripts_supports_package_yaml() {
-        let dir = TempDir::new("node-package-yaml-scripts");
-        fs::write(
-            dir.path().join("package.yaml"),
-            "scripts:\n  build: vite build\n  test: vitest\n",
-        )
-        .expect("package.yaml should be written");
-
-        let mut scripts =
-            extract_scripts(dir.path()).expect("scripts should parse from package.yaml");
-        scripts.sort_unstable();
-
-        assert_eq!(
-            scripts,
-            [
-                ("build".to_owned(), "vite build".to_owned()),
-                ("test".to_owned(), "vitest".to_owned()),
-            ]
-        );
-    }
-
-    #[test]
-    fn extract_scripts_supports_inline_yaml_script_map() {
-        let dir = TempDir::new("node-package-yaml-inline-scripts");
-        fs::write(
-            dir.path().join("package.yaml"),
-            "scripts: { build: vite build, test: vitest }\n",
-        )
-        .expect("package.yaml should be written");
-
-        let mut scripts =
-            extract_scripts(dir.path()).expect("scripts should parse from inline YAML map");
-        scripts.sort_unstable();
-
-        assert_eq!(
-            scripts,
-            [
-                ("build".to_owned(), "vite build".to_owned()),
-                ("test".to_owned(), "vitest".to_owned()),
-            ]
-        );
     }
 
     #[test]
@@ -1220,27 +1072,6 @@ mod tests {
 
         let res = check_version_constraint(PackageManager::Cargo, "not-a-range");
         assert!(matches!(res, VersionCheck::Unverifiable { .. }));
-    }
-
-    #[test]
-    fn extract_scripts_upwards_reads_nearest_manifest() {
-        let dir = TempDir::new("node-scripts-upwards");
-        let nested = dir.path().join("apps").join("site").join("src");
-        fs::create_dir_all(&nested).expect("nested dir should be created");
-        fs::write(
-            dir.path().join("package.json"),
-            r#"{ "scripts": { "root": "1" } }"#,
-        )
-        .expect("root package.json should be written");
-        fs::write(
-            dir.path().join("apps").join("site").join("package.json"),
-            r#"{ "scripts": { "member": "1" } }"#,
-        )
-        .expect("member package.json should be written");
-
-        let tasks = extract_scripts_upwards(&nested).expect("nearest scripts should parse");
-
-        assert_eq!(tasks, [("member".to_owned(), "1".to_owned())]);
     }
 }
 

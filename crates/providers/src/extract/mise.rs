@@ -13,9 +13,8 @@
 //! isn't installed; the fallback only sees the single file it parses,
 //! which is good enough for `runner list` to show a representative view.
 //!
-//! In both paths we filter to tasks whose `source` lives under the
-//! project root so global/system mise tasks don't pollute the project's
-//! task list.
+//! Both paths keep only tasks whose `source` lies inside the enclosing
+//! repository, so global and system mise tasks stay out of the list.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -45,25 +44,28 @@ pub const FILENAMES: &[&str] = &[
 ];
 
 /// Detected when any [`FILENAMES`] entry resolves to a file under `dir`.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
 
 /// Locate the first existing mise config file under `dir`, in precedence
 /// order. Returned as an absolute path when the input is absolute.
+#[must_use]
 pub fn find_file(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, FILENAMES).filter(|path| path.is_file())
 }
 
-/// Surface mise tasks defined in this project. Prefers `mise tasks
-/// --json` (authoritative across all config layers + file-based tasks),
-/// falls back to parsing the first project-local config when mise
-/// isn't on `$PATH`.
+/// Surface mise tasks defined in this project.
+///
+/// Prefers `mise tasks --json`, which is authoritative across all config
+/// layers and file-based tasks, and falls back to parsing the first
+/// project-local config when mise isn't on `$PATH`.
 ///
 /// Hidden tasks (`hide = true`) and underscore-prefixed names are
 /// excluded. Aliases come through as separate `Alias` entries pointing
 /// at their target so the task list can group them.
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<MiseTasks> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<MiseTasks> {
     match cli_tasks(dir) {
         CliOutcome::Tasks(tasks) => Ok(MiseTasks {
             tasks,
@@ -146,10 +148,8 @@ fn first_line(stderr: &[u8]) -> String {
         .map_or_else(String::new, |line| format!(": {line}"))
 }
 
-/// Parse a `mise tasks --json` payload, filtering to tasks whose
-/// `source` lives under `project_root`. Mise's JSON view includes
-/// global config and `~/.config/mise/*` tasks; surfacing those in
-/// `runner list` would lie about what the project owns.
+/// Parse a `mise tasks --json` payload, keeping tasks whose `source` lies
+/// inside the repository around `project_root`.
 fn parse_cli_output(
     stdout: &[u8],
     project_root: &Path,
@@ -428,28 +428,10 @@ impl MiseJsonTask {
     }
 }
 
-/// The tool bin directories mise puts on `PATH` for this project, from
-/// `mise bin-paths`. Empty when mise is missing or reports nothing.
-///
-/// `mise install` installs tools without activating them, so a package
-/// manager it just installed is invisible to this process and to the
-/// children runner spawns next.
-pub fn bin_paths(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    match crate::REGISTRY
-        .by_id(runner_core::ProviderId::Mise)
-        .caps
-        .bins
-        .map(|cap| cap.dirs)
-    {
-        Some(runner_core::BinDirs::Ask(ask)) => ask(root),
-        Some(runner_core::BinDirs::Static(dirs)) => {
-            Ok(dirs.iter().map(|dir| root.join(dir)).collect())
-        }
-        None => Ok(Vec::new()),
-    }
-}
-
 pub(crate) fn parse_missing_health(stdout: &[u8]) -> runner_core::Health {
+    if stdout.trim_ascii().is_empty() {
+        return runner_core::Health::Ok;
+    }
     let parsed = match serde_json::from_slice::<BTreeMap<String, Vec<MissingTool>>>(stdout) {
         Ok(parsed) => parsed,
         Err(error) => return runner_core::Health::Unreadable(error.to_string()),
@@ -473,6 +455,9 @@ pub(crate) fn parse_missing_health(stdout: &[u8]) -> runner_core::Health {
 }
 
 pub(crate) fn parse_task_health(stdout: &[u8]) -> runner_core::Health {
+    if stdout.trim_ascii().is_empty() {
+        return runner_core::Health::Ok;
+    }
     let parsed = match serde_json::from_slice::<ValidateReport>(stdout) {
         Ok(parsed) => parsed,
         Err(error) => return runner_core::Health::Unreadable(error.to_string()),
@@ -490,6 +475,39 @@ pub(crate) fn parse_task_health(stdout: &[u8]) -> runner_core::Health {
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::{parse_missing_health, parse_task_health};
+
+    #[test]
+    fn empty_output_is_nothing_to_report() {
+        for parse in [parse_missing_health, parse_task_health] {
+            assert_eq!(parse(b""), runner_core::Health::Ok);
+            assert_eq!(parse(b" \n"), runner_core::Health::Ok);
+        }
+    }
+
+    #[test]
+    fn missing_tools_and_task_issues_are_reported_in_the_tools_words() {
+        assert_eq!(
+            parse_missing_health(
+                br#"{"node":[{"requested_version":"22","installed":false}],"go":[{"version":"1.23","installed":true}]}"#
+            ),
+            runner_core::Health::Problems(vec!["node@22 is declared but not installed".into()])
+        );
+        assert_eq!(
+            parse_task_health(
+                br#"{"issues":[{"task":"build","severity":"error","message":"bad","details":"line 3"}]}"#
+            ),
+            runner_core::Health::Problems(vec!["build: error: bad (line 3)".into()])
+        );
+        assert!(matches!(
+            parse_task_health(b"not json"),
+            runner_core::Health::Unreadable(_)
+        ));
+    }
 }
 
 /// One entry of `mise ls --missing --json`.
@@ -568,12 +586,14 @@ pub struct UsageFlag {
 
 impl UsageSpec {
     /// `true` when the spec declares nothing worth completing or checking.
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.args.is_empty() && self.flags.is_empty()
     }
 
     /// `true` when `word` is a flag that swallows the word after it, so the
     /// next position holds that flag's value rather than another flag.
+    #[must_use]
     pub fn consumes_value_after(&self, word: &str) -> bool {
         let Some((name, long)) = word
             .strip_prefix("--")
@@ -600,6 +620,7 @@ impl UsageSpec {
     ///
     /// A flag may declare only a short form, so both forms count as
     /// provided and a short-only flag is still reported when absent.
+    #[must_use]
     pub fn missing_required_flags(&self, provided: &[String]) -> Vec<String> {
         self.flags
             .iter()
@@ -618,6 +639,7 @@ impl UsageSpec {
 
 impl UsageFlag {
     /// Every spelling of this flag, long forms first.
+    #[must_use]
     pub fn spellings(&self) -> Vec<String> {
         self.long
             .iter()
@@ -632,7 +654,11 @@ impl UsageFlag {
 /// `None` when mise is missing, the task is unknown, or it declares no spec.
 /// One subprocess per call: the bulk `mise tasks ls --json` carries only the
 /// unparsed KDL string and mise exposes no bulk flag for the parsed form.
-pub fn usage_spec(root: &Path, task: &str) -> anyhow::Result<Option<UsageSpec>> {
+///
+/// # Errors
+/// Returns a spawn failure, a failed query with mise's own message, or
+/// output that is not the expected JSON.
+pub fn usage_spec(root: &Path, task: &str) -> std::io::Result<Option<UsageSpec>> {
     let Some(program) = runner_core::probe_with("mise", &[]) else {
         return Ok(None);
     };
@@ -641,14 +667,15 @@ pub fn usage_spec(root: &Path, task: &str) -> anyhow::Result<Option<UsageSpec>> 
         .current_dir(root)
         .output()?;
     if !output.status.success() {
-        anyhow::bail!(
+        return Err(std::io::Error::other(format!(
             "mise tasks info {task} in {} failed ({}): {}",
             root.display(),
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
-        );
+        )));
     }
-    let info: TaskInfoJson = serde_json::from_slice(&output.stdout)?;
+    let info: TaskInfoJson = serde_json::from_slice(&output.stdout)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     let Some(cmd) = info.usage_spec.and_then(|usage| usage.cmd) else {
         return Ok(None);
     };
@@ -735,9 +762,7 @@ struct UsageFlagJson {
     arg: Option<serde::de::IgnoredAny>,
 }
 
-/// One task entry surfaced to the rest of the crate. Mirrors
-/// [`crate::extract::just::ExtractedTask`] so the detection-layer push helper
-/// can stay symmetric.
+/// One task entry surfaced to the rest of the crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtractedTask {
     /// A runnable task.
@@ -944,13 +969,10 @@ impl<'de> Deserialize<'de> for TaskEntry {
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
-    if let Some(reason) = extracted.degraded {
-        return Err(runner_core::Warning::about(present.provider, reason));
-    }
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     let mut tasks: Vec<_> = extracted
         .tasks
         .into_iter()
@@ -994,7 +1016,14 @@ pub fn tasks(
             tasks[index].scope = scope;
         }
     }
-    Ok(tasks)
+    Ok(runner_core::Extracted {
+        tasks,
+        warnings: extracted
+            .degraded
+            .map(|reason| runner_core::Warning::about(present.provider, reason))
+            .into_iter()
+            .collect(),
+    })
 }
 #[cfg(test)]
 mod tests {
@@ -1486,7 +1515,7 @@ mod tests {
                     name: "test".to_string(),
                     description: Some("Run Go tests".to_string()),
                     detail: Box::new(TaskDetail {
-                        source: Some(source_path.clone()),
+                        source: Some(source_path),
                         ..TaskDetail::default()
                     }),
                 },

@@ -9,9 +9,6 @@ use serde::Deserialize;
 use crate::tool::files;
 use crate::tool::node;
 
-/// Directories produced by Deno.
-pub(crate) const CLEAN_DIRS: &[&str] = &[".deno"];
-
 /// Supported Deno config filenames (priority order).
 pub(crate) const FILENAMES: &[&str] = &["deno.json", "deno.jsonc"];
 
@@ -152,27 +149,6 @@ fn within_boundary(path: &Path, boundary: Option<&Path>) -> bool {
     boundary.is_none_or(|boundary| path == boundary || path.starts_with(boundary))
 }
 
-/// Parse task names and descriptions from `deno.json` / `deno.jsonc`.
-///
-/// Handles both the string form (`"build": "vite build"`) and the object
-/// form (`"build": { "command": "...", "description": "..." }`). Sorted
-/// by name for deterministic output. The self-exec path re-parses the
-/// config for `command` / `dependencies` when it needs them.
-pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
-    let Some(path) = find_config_upwards(dir) else {
-        return Ok(vec![]);
-    };
-    extract_tasks_from(&path)
-}
-
-/// Like [`extract_tasks`], reading only a config located in `dir` itself.
-pub(crate) fn extract_tasks_in(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
-    let Some(path) = files::find_first(dir, FILENAMES).filter(|path| path.is_file()) else {
-        return Ok(vec![]);
-    };
-    extract_tasks_from(&path)
-}
-
 /// The `"name"` declared by the config in `dir`, if any.
 pub(crate) fn config_name(dir: &Path) -> Option<String> {
     #[derive(Deserialize)]
@@ -183,8 +159,6 @@ pub(crate) fn config_name(dir: &Path) -> Option<String> {
     let content = std::fs::read_to_string(path).ok()?;
     json5::from_str::<Partial>(&content).ok()?.name
 }
-
-use runner_providers::extract::scripts::deno as extract_tasks_from;
 
 /// `deno task <task> [args...]`
 #[cfg(test)]
@@ -243,9 +217,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::{
-        detect, extract_tasks, extract_tasks_in, find_config_upwards, workspace_pattern_matches,
-    };
+    use super::{detect, find_config_upwards, workspace_pattern_matches};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -330,60 +302,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_tasks_supports_jsonc_comments_and_trailing_commas() {
-        let dir = TempDir::new("deno-jsonc");
-
-        fs::write(
-            dir.path().join("deno.jsonc"),
-            r#"{
-  // line comment
-  "tasks": {
-    "build": "deno task build",
-    /* block comment */
-    "test": "deno test",
-  },
-}
-"#,
-        )
-        .expect("deno.jsonc should be written");
-
-        let tasks = extract_tasks(dir.path()).expect("deno tasks should parse");
-
-        assert_eq!(
-            tasks,
-            [("build".to_string(), None), ("test".to_string(), None),]
-        );
-    }
-
-    #[test]
-    fn extract_tasks_reads_object_form_descriptions() {
-        let dir = TempDir::new("deno-task-descriptions");
-        fs::write(
-            dir.path().join("deno.json"),
-            r#"{
-  "tasks": {
-    "build": { "command": "vite build", "description": "Bundle for production" },
-    "dev": "vite"
-  }
-}"#,
-        )
-        .expect("deno.json should be written");
-
-        let tasks = extract_tasks(dir.path()).expect("deno tasks should parse");
-
-        assert_eq!(
-            tasks,
-            [
-                (
-                    "build".to_string(),
-                    Some("Bundle for production".to_string())
-                ),
-                ("dev".to_string(), None),
-            ]
-        );
-    }
-
-    #[test]
     fn detect_supports_package_manager_field() {
         let dir = TempDir::new("deno-package-manager-field");
         fs::write(
@@ -401,24 +319,6 @@ mod tests {
         fs::write(dir.path().join("deno.lock"), "{}").expect("deno.lock should be written");
 
         assert!(detect(dir.path()));
-    }
-
-    #[test]
-    fn extract_tasks_in_reads_only_the_directory_itself() {
-        let dir = TempDir::new("deno-tasks-in");
-        let member = dir.path().join("apps").join("empty");
-        fs::create_dir_all(&member).expect("member dir should be created");
-        fs::write(
-            dir.path().join("deno.json"),
-            r#"{ "tasks": { "root": "deno task root" } }"#,
-        )
-        .expect("root deno.json should be written");
-
-        let local = extract_tasks_in(&member).expect("member lookup should succeed");
-        let inherited = extract_tasks(&member).expect("ancestor lookup should succeed");
-
-        assert!(local.is_empty());
-        assert_eq!(inherited, vec![(String::from("root"), None)]);
     }
 
     #[test]

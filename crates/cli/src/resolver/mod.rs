@@ -43,7 +43,7 @@ pub(crate) use overrides::validate_config;
 pub(crate) use policies::parse_quiet_env;
 /// Re-export of the canonical Node PATH-probe order so the doctor's
 /// schema layer doesn't carry its own copy.
-pub(crate) use probe::NODE_PROBE_ORDER;
+pub(crate) use probe::node_probe_order;
 /// Re-export of the pure-function probe variant for the `doctor` subcommand.
 /// Lets `commands::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.
@@ -54,8 +54,9 @@ pub(crate) use probe::probe_in as probe_path_for_doctor;
 #[cfg(test)]
 pub(crate) use types::PmOverride;
 pub(crate) use types::{
-    CliOverrides, CollisionPolicy, DiagnosticFlags, FallbackPolicy, MismatchPolicy, OverrideOrigin,
-    ResolutionOverrides, ResolutionStep, ResolvedPm, Resolver, ScriptPolicy,
+    CliOverrides, CollisionPolicy, DiagnosticFlags, FallbackPolicy, LockfilePolicy, MismatchPolicy,
+    OutputGrouping, OverrideOrigin, OverrideSources, ResolutionOverrides, ResolutionStep,
+    ResolvedPm, Resolver, ScriptPolicy,
 };
 #[cfg(test)]
 pub(crate) use types::{RunnerOverride, RuntimeOverride};
@@ -356,7 +357,7 @@ mod tests {
 
     #[test]
     fn cli_pm_value_parses_to_overrides() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("yarn"),
                 env: None,
@@ -373,7 +374,7 @@ mod tests {
 
     #[test]
     fn env_pm_value_parses_when_cli_absent() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some("bun"),
@@ -389,7 +390,7 @@ mod tests {
 
     #[test]
     fn cli_wins_over_env() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("yarn"),
                 env: Some("bun"),
@@ -405,7 +406,7 @@ mod tests {
 
     #[test]
     fn empty_env_is_treated_as_unset() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some(""),
@@ -419,7 +420,7 @@ mod tests {
 
     #[test]
     fn cli_runner_value_parses_to_overrides() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             runner: SourceValue {
                 cli: Some("just"),
                 env: None,
@@ -435,7 +436,7 @@ mod tests {
 
     #[test]
     fn unknown_pm_label_errors_with_valid_value_list() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("zoot"),
                 env: None,
@@ -452,7 +453,7 @@ mod tests {
 
     #[test]
     fn unknown_runner_label_errors_with_valid_value_list() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             runner: SourceValue {
                 cli: Some("zoot"),
                 env: None,
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn unknown_pm_env_value_names_env_source() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some("zoot"),
@@ -487,7 +488,7 @@ mod tests {
 
     #[test]
     fn unknown_pm_cli_value_names_cli_source() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("zoot"),
                 env: None,
@@ -506,7 +507,7 @@ mod tests {
         // executes deno and captures its REPL banner (ANSI codes included)
         // into the variable.
         let banner = "Deno 2.8.2 exit using ctrl+d\n\u{1b}[33mREPL is running\u{1b}[0m";
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some(banner),
@@ -530,7 +531,7 @@ mod tests {
     #[test]
     fn oversized_pm_value_is_truncated() {
         let huge = "z".repeat(500);
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some(&huge),
@@ -549,7 +550,7 @@ mod tests {
 
     #[test]
     fn unknown_runner_env_value_names_env_source() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             runner: SourceValue {
                 cli: None,
                 env: Some("zoot"),
@@ -733,7 +734,7 @@ mod tests {
 
     #[test]
     fn pm_label_that_names_a_runner_suggests_runner_flag() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("mise"),
                 env: None,
@@ -755,7 +756,7 @@ mod tests {
 
     #[test]
     fn runner_label_that_names_a_pm_suggests_pm_flag() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             runner: SourceValue {
                 cli: Some("pnpm"),
                 env: None,
@@ -777,7 +778,7 @@ mod tests {
 
     #[test]
     fn bundler_alias_bundle_is_accepted() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("bundle"),
                 env: None,
@@ -794,7 +795,7 @@ mod tests {
 
     #[test]
     fn go_task_alias_is_accepted() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             runner: SourceValue {
                 cli: Some("go-task"),
                 env: None,
@@ -862,7 +863,7 @@ mod tests {
     #[test]
     fn config_loaded_value_populates_pm_by_ecosystem() {
         let loaded = loaded_config_with_node("bun");
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -895,7 +896,7 @@ mod tests {
                 ..RunnerConfig::default()
             },
         };
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -911,7 +912,7 @@ mod tests {
     #[test]
     fn config_cross_ecosystem_node_value_rejected_at_parse_time() {
         let loaded = loaded_config_with_node("cargo");
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1124,7 +1125,7 @@ mod tests {
             loaded.warnings
         );
 
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1154,7 +1155,7 @@ mod tests {
             prefer: vec!["bun".to_string(), "turbo".to_string()],
             ..TasksSection::default()
         });
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1179,7 +1180,7 @@ mod tests {
             prefer: vec!["deno".to_string()],
             ..TasksSection::default()
         });
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1199,7 +1200,7 @@ mod tests {
             prefer: vec!["zoot".to_string()],
             ..TasksSection::default()
         });
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1229,7 +1230,7 @@ mod tests {
             loaded.warnings
         );
 
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1247,7 +1248,7 @@ mod tests {
             prefer: vec!["nx".to_string()],
             ..TasksSection::default()
         });
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1271,7 +1272,7 @@ mod tests {
             ]),
             ..TasksSection::default()
         });
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1300,7 +1301,7 @@ mod tests {
             overrides: BTreeMap::from([("build".to_string(), "nx".to_string())]),
             ..TasksSection::default()
         });
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -1514,7 +1515,7 @@ mod tests {
         // Demonstrates the canonical idiom: construct only the fields
         // that matter, default the rest. All sibling tests in this module
         // use the same shape.
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some("yarn"),
                 env: None,
@@ -1537,7 +1538,7 @@ mod tests {
 
     #[test]
     fn quiet_from_env_is_truthy() {
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             quiet: QuietSource {
                 cli: 0,
                 env: Some("1"),
@@ -1554,7 +1555,7 @@ mod tests {
         // Regression (F4): CLI > env — a passed `-q` (count 1) must NOT be
         // escalated to Silent by `RUNNER_QUIET=3`. `silences_warnings` is true
         // only at VeryQuiet+, so it discriminates level 1 from level 3.
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             quiet: QuietSource {
                 cli: 1,
                 env: Some("3"),
@@ -1569,7 +1570,7 @@ mod tests {
         );
 
         // With no CLI flag, the env level applies in full.
-        let env_only = ResolutionOverrides::from_sources(OverrideSources {
+        let env_only = ResolutionOverrides::from_sources(&OverrideSources {
             quiet: QuietSource {
                 cli: 0,
                 env: Some("3"),
@@ -1587,7 +1588,7 @@ mod tests {
     fn runner_quiet_env_saturates_large_numbers() {
         // `RUNNER_QUIET=999` exceeds u8 but must clamp to the named maximum,
         // not fall through to invalid.
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             quiet: QuietSource {
                 cli: 0,
                 env: Some("999"),
@@ -1603,6 +1604,19 @@ mod tests {
     }
 
     #[test]
+    fn quiet_garbage_env_fails_like_every_other_setting() {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
+            quiet: QuietSource {
+                cli: 0,
+                env: Some("loud"),
+            },
+            ..OverrideSources::default()
+        })
+        .expect_err("the strict pass refuses a bad RUNNER_QUIET");
+        assert!(format!("{err}").contains("RUNNER_QUIET=loud"), "{err}");
+    }
+
+    #[test]
     fn host_stream_garbage_env_fails_like_every_other_setting() {
         let sources = || OverrideSources {
             host_stream: SourceValue {
@@ -1612,7 +1626,7 @@ mod tests {
             ..OverrideSources::default()
         };
 
-        let err = ResolutionOverrides::from_sources(sources()).expect_err(
+        let err = ResolutionOverrides::from_sources(&sources()).expect_err(
             "the strict pass refuses a bad RUNNER_HOST_STREAM as it refuses a bad RUNNER_PM",
         );
         let msg = format!("{err}");
@@ -1621,8 +1635,7 @@ mod tests {
 
         let (overrides, warnings) = ResolutionOverrides::from_sources_lenient(sources())
             .expect("the lenient pass absorbs it");
-        assert_eq!(overrides.host_stream, crate::tool::Stream::Inherit);
-        assert!(!overrides.host_stream_invocation_explicit);
+        assert_eq!(overrides.host_stream, None);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         match &warnings[0] {
             DetectionWarning::InvalidEnvOverride { var, raw, .. } => {
@@ -1637,7 +1650,7 @@ mod tests {
     fn host_stream_bad_cli_flag_still_errors() {
         // The explicit flag stays strict (clap normally validates it; the
         // resolver is the backstop).
-        let result = ResolutionOverrides::from_sources(OverrideSources {
+        let result = ResolutionOverrides::from_sources(&OverrideSources {
             host_stream: SourceValue {
                 cli: Some("bogus"),
                 env: None,
@@ -1666,7 +1679,7 @@ mod tests {
                 ..RunnerConfig::default()
             },
         };
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             quiet: QuietSource { cli: 1, env: None },
             config: Some(&loaded),
             ..OverrideSources::default()
@@ -1727,8 +1740,7 @@ mod tests {
     #[test]
     fn explicit_inherit_host_stream_outranks_config_and_task_streams() {
         let mut overrides = ResolutionOverrides {
-            host_stream_invocation_explicit: true,
-            host_stream: crate::tool::Stream::Inherit,
+            host_stream: Some(crate::tool::Stream::Inherit),
             host_stream_config: crate::tool::Stream::Stderr,
             ..ResolutionOverrides::default()
         };
@@ -1833,7 +1845,7 @@ mod tests {
         // override parser must tolerate this so `RUNNER_PM=" pnpm "`
         // works the same as `RUNNER_PM=pnpm` instead of erroring on an
         // "unknown package manager" with the padded label.
-        let from_env = ResolutionOverrides::from_sources(OverrideSources {
+        let from_env = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some(" pnpm "),
@@ -1846,7 +1858,7 @@ mod tests {
             PackageManager::Pnpm
         );
 
-        let from_cli = ResolutionOverrides::from_sources(OverrideSources {
+        let from_cli = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: Some(" yarn\n"),
                 env: None,
@@ -1862,7 +1874,7 @@ mod tests {
         // Whitespace-only values are treated as unset (same as empty
         // strings); without this, `RUNNER_PM="   "` would fail with
         // "unknown package manager \"\"" after the trim.
-        let blank = ResolutionOverrides::from_sources(OverrideSources {
+        let blank = ResolutionOverrides::from_sources(&OverrideSources {
             pm: SourceValue {
                 cli: None,
                 env: Some("   "),
@@ -1983,7 +1995,7 @@ mod tests {
     #[test]
     fn deno_config_value_fills_the_node_slot_and_resolves_for_node_scripts() {
         let loaded = loaded_config_with_node("deno");
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             config: Some(&loaded),
             ..OverrideSources::default()
         })
@@ -2024,7 +2036,7 @@ mod tests {
     #[test]
     fn from_sources_resolves_cli_keep_going() {
         use crate::chain::FailurePolicy;
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: true,
                 env: None,
@@ -2039,7 +2051,7 @@ mod tests {
     fn from_sources_env_overrides_config_for_failure_policy() {
         use crate::chain::FailurePolicy;
         let loaded = test_loaded_config_with_chain(Some(false), None);
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: false,
                 env: Some("1"),
@@ -2053,7 +2065,7 @@ mod tests {
 
     #[test]
     fn from_sources_rejects_both_keep_going_and_kill_on_fail() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: true,
                 env: None,
@@ -2083,7 +2095,7 @@ mod tests {
         // the command line.
         use crate::chain::FailurePolicy;
         let loaded = test_loaded_config_with_chain(None, Some(true));
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: true,
                 env: None,
@@ -2099,7 +2111,7 @@ mod tests {
     fn from_sources_env_truthy_beats_opposite_config_polarity() {
         use crate::chain::FailurePolicy;
         let loaded = test_loaded_config_with_chain(Some(true), None);
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             kill_on_fail: ExplainSource {
                 cli: false,
                 env: Some("1"),
@@ -2114,7 +2126,7 @@ mod tests {
     #[test]
     fn from_sources_cli_flag_beats_opposite_env_polarity() {
         use crate::chain::FailurePolicy;
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: true,
                 env: None,
@@ -2133,7 +2145,7 @@ mod tests {
     fn from_sources_env_false_overrides_config_true_for_failure_policy() {
         use crate::chain::FailurePolicy;
         let loaded = test_loaded_config_with_chain(Some(true), None);
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: false,
                 env: Some("0"),
@@ -2149,7 +2161,7 @@ mod tests {
     fn from_sources_env_false_neutralises_config_conflict() {
         use crate::chain::FailurePolicy;
         let loaded = test_loaded_config_with_chain(Some(true), Some(true));
-        let overrides = ResolutionOverrides::from_sources(OverrideSources {
+        let overrides = ResolutionOverrides::from_sources(&OverrideSources {
             kill_on_fail: ExplainSource {
                 cli: false,
                 env: Some("false"),
@@ -2163,7 +2175,7 @@ mod tests {
 
     #[test]
     fn from_sources_rejects_both_env_vars_truthy() {
-        let err = ResolutionOverrides::from_sources(OverrideSources {
+        let err = ResolutionOverrides::from_sources(&OverrideSources {
             keep_going: ExplainSource {
                 cli: false,
                 env: Some("1"),

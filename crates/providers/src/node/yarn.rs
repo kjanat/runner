@@ -35,34 +35,22 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: super::WRITES,
     caps: Capabilities {
-        variants: &[("berry", BERRY)],
+        probe_priority: 3,
+        variants: &[("classic", CLASSIC), ("berry", BERRY)],
         install: Some(InstallCap {
             argv: t!["install", Frozen, Scripts],
             frozen: Frozen::Flag("--frozen-lockfile"),
             scripts: ScriptSupport {
-                deny: ScriptMechanism::Flag("--ignore-scripts"),
+                deny: ScriptMechanism::FlagAndEnv(
+                    "--ignore-scripts",
+                    "YARN_ENABLE_SCRIPTS",
+                    "false",
+                ),
                 allow: ScriptMechanism::Default,
             },
             locked_only_with: &[],
         }),
-        run_task: Some(RunTaskCap {
-            argv: t![Quiet, Task, Args],
-            sources: &[ProviderId::PackageJson],
-        }),
-        exec: Some(ExecCap {
-            program: None,
-            argv: t!["run", Name, Args],
-            reach: Reach::Local,
-            accepts: NameShape::BARE,
-        }),
-        test: Some(super::TEST),
-        bins: Some(super::BINS),
-        workspaces: Some(WorkspaceCap {
-            members: super::workspace::members,
-        }),
-        clean: Some(super::CLEAN),
-        quiet: QuietSupport::flag(t!["--silent"]),
-        ..Capabilities::NONE
+        ..CLASSIC
     },
     tasks: None,
     version: None,
@@ -70,6 +58,36 @@ pub const PROVIDER: Provider = Provider {
         after_observe: Some(after_observe),
         ..Hooks::NONE
     },
+};
+
+const CLASSIC: Capabilities = Capabilities {
+    install: Some(InstallCap {
+        argv: t!["install", Frozen, Scripts],
+        frozen: Frozen::Flag("--frozen-lockfile"),
+        scripts: ScriptSupport {
+            deny: ScriptMechanism::Flag("--ignore-scripts"),
+            allow: ScriptMechanism::Default,
+        },
+        locked_only_with: &[],
+    }),
+    run_task: Some(RunTaskCap {
+        argv: t![Quiet, Task, Args],
+        sources: &[ProviderId::PackageJson],
+    }),
+    exec: Some(ExecCap {
+        program: None,
+        argv: t!["run", Name, Args],
+        reach: Reach::Local,
+        accepts: NameShape::BARE,
+    }),
+    test: Some(super::TEST),
+    bins: Some(super::BINS),
+    workspaces: Some(WorkspaceCap {
+        members: super::workspace::members,
+    }),
+    clean: Some(super::CLEAN),
+    quiet: QuietSupport::flag(t!["--silent"]),
+    ..Capabilities::NONE
 };
 
 const BERRY: Capabilities = Capabilities {
@@ -127,67 +145,76 @@ fn after_observe(
             runner_core::Scope::Root => &tree.root,
             runner_core::Scope::Member { dir, .. } => dir,
         };
-        let manifest = dir.join("package.json");
-        let manifest_berry = match read_optional(&manifest)? {
-            Some(text) => {
-                let value: Value = serde_json::from_str(&text).map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("{}: {error}", manifest.display()),
-                    )
-                })?;
-                value
-                    .get("packageManager")
-                    .and_then(package_manager)
-                    .as_ref()
-                    .is_some_and(is_berry)
-            }
-            None => false,
+        let Some((at, name)) = variant_of(dir, evidence, item)? else {
+            continue;
         };
-        let lock = dir.join("yarn.lock");
-        let lock_berry = read_optional(&lock)?
-            .is_some_and(|text| text.lines().any(|line| line == "__metadata:"));
-        let config = dir.join(".yarnrc.yml");
-        let configured = match std::fs::metadata(&config) {
-            Ok(metadata) => metadata.is_file(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(error) => return Err(at_path(&config, &error)),
-        };
-        let declaration = evidence.iter().find(|e| {
-            e.provider == item.provider
-                && e.scope == item.scope
-                && e.declared.as_ref().is_some_and(is_berry)
-        });
-        if declaration.is_some() || manifest_berry || configured || lock_berry {
-            let mut variant = item.clone();
-            variant.at = declaration.map_or_else(
-                || {
-                    if manifest_berry {
-                        manifest
-                    } else if configured {
-                        config
-                    } else {
-                        lock
-                    }
-                },
-                |declaration| declaration.at.clone(),
-            );
-            variant.declared = Some(Declared::Variant("berry".into()));
-            derived.push(variant);
-        }
+        let mut variant = item.clone();
+        variant.at = at;
+        variant.declared = Some(Declared::Variant(name.into()));
+        derived.push(variant);
     }
     Ok(derived)
 }
 
-fn is_berry(declared: &Declared) -> bool {
-    let Declared::Version(version) = declared else {
-        return false;
+/// The Yarn line `dir` uses and the file that says so, strongest evidence first.
+///
+/// Every source is read before any is trusted, so a broken file is an error
+/// even when a stronger source answers.
+fn variant_of(
+    dir: &std::path::Path,
+    evidence: &[runner_core::Evidence],
+    item: &runner_core::Evidence,
+) -> std::io::Result<Option<(std::path::PathBuf, &'static str)>> {
+    let manifest = dir.join("package.json");
+    let from_manifest = match read_optional(&manifest)? {
+        Some(text) => serde_json::from_str::<Value>(&text)
+            .map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{}: {error}", manifest.display()),
+                )
+            })?
+            .get("packageManager")
+            .and_then(package_manager)
+            .as_ref()
+            .and_then(line),
+        None => None,
     };
-    version
-        .split('.')
-        .next()
-        .and_then(|major| major.parse::<u32>().ok())
-        .is_some_and(|major| major >= 2)
+    let config = dir.join(".yarnrc.yml");
+    let configured = match std::fs::metadata(&config) {
+        Ok(metadata) => metadata.is_file(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(at_path(&config, &error)),
+    };
+    let lock = dir.join("yarn.lock");
+    let from_lock = read_optional(&lock)?.and_then(|text| {
+        if text.lines().any(|line| line == "__metadata:") {
+            Some("berry")
+        } else {
+            text.lines()
+                .any(|line| line == "# yarn lockfile v1")
+                .then_some("classic")
+        }
+    });
+    let declared = evidence.iter().find_map(|e| {
+        (e.provider == item.provider && e.scope == item.scope)
+            .then(|| e.declared.as_ref().and_then(line))
+            .flatten()
+            .map(|line| (e.at.clone(), line))
+    });
+    Ok(declared
+        .or_else(|| from_manifest.map(|line| (manifest, line)))
+        .or_else(|| configured.then_some((config, "berry")))
+        .or_else(|| from_lock.map(|line| (lock, line))))
+}
+
+/// `classic` for a Yarn 1 version, `berry` for 2 and later.
+fn line(declared: &Declared) -> Option<&'static str> {
+    let Declared::Version(version) = declared else {
+        return None;
+    };
+    let major = version.split('.').next()?.parse::<u32>().ok()?;
+    Some(if major >= 2 { "berry" } else { "classic" })
 }
 
 fn at_path(path: &std::path::Path, error: &std::io::Error) -> std::io::Error {

@@ -39,6 +39,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: super::WRITES,
     caps: Capabilities {
+        probe_priority: 1,
         package_exec: Some(ExecCap {
             program: None,
             argv: t!["x", "--package", Package, Name, Args],

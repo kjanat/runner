@@ -32,6 +32,7 @@ pub enum ExtractedTask {
 
 impl ExtractedTask {
     /// The recipe or alias name.
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
             Self::Recipe { name, .. } | Self::Alias { name, .. } => name,
@@ -40,12 +41,13 @@ impl ExtractedTask {
 }
 
 /// Detected via case-insensitive `justfile`, or hidden `.justfile`.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
 
 /// Parse public recipes and aliases from a justfile.
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let Some(path) = find_file(dir) else {
         return Ok(vec![]);
     };
@@ -345,10 +347,10 @@ fn is_private_attr(trimmed: &str) -> bool {
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(extracted
         .into_iter()
         .map(|entry| match entry {
@@ -359,7 +361,8 @@ pub fn tasks(
                 task
             }
         })
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 
 #[cfg(test)]

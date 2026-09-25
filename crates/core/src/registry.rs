@@ -5,12 +5,12 @@ use crate::evidence::{Evidence, Present};
 use crate::op::Op;
 use crate::provider::{Ecosystem, Hooks, Kind, ProviderId};
 use crate::signal::Signal;
-use crate::task::Task;
+use crate::task::Extracted;
 use crate::tree::Tree;
 use crate::warning::Warning;
 
 /// Task extraction when the format is the tool's own.
-pub type TasksFn = fn(&Present, &Tree) -> Result<Vec<Task>, Warning>;
+pub type TasksFn = fn(&Present, &Tree) -> Result<Extracted, Warning>;
 
 /// Version parsing when `<program> --version` needs a tool-specific parse.
 pub type VersionFn = fn(&Present) -> Result<String, Warning>;
@@ -61,6 +61,11 @@ impl Provider {
                 let Some(crate::Declared::Variant(name)) = &evidence.declared else {
                     return None;
                 };
+                debug_assert!(
+                    self.caps.variants.iter().any(|(label, _)| label == name),
+                    "{} has no {name} capability table",
+                    self.label
+                );
                 self.caps
                     .variants
                     .iter()

@@ -31,11 +31,6 @@
           "const": "medium"
         },
         {
-          "description": "Legacy `--fallback npm` default with no signal at all.",
-          "type": "string",
-          "const": "low"
-        },
-        {
           "description": "Resolution failed.",
           "type": "string",
           "const": "none"
@@ -466,6 +461,14 @@
         }
       ]
     },
+    "LockfilePolicy": {
+      "description": "Whether an install may rewrite the lockfile.",
+      "type": "string",
+      "enum": [
+        "update",
+        "frozen"
+      ]
+    },
     "MismatchPolicy": {
       "description": "How to react when manifest declaration (step 5) and lockfile (step 6)\ndisagree about which package manager the project uses.\n\nSet via `--on-mismatch` / `RUNNER_ON_MISMATCH` /\n`[resolution].on_mismatch`. Independent from\n`devEngines.packageManager` `onFail`. That policy governs whether\nthe *declared* PM can actually run; this one governs whether the\nresolver tolerates the declaration disagreeing with the install\nstate at all.",
       "oneOf": [
@@ -583,6 +586,8 @@
         "failure_policy",
         "fallback",
         "fetch",
+        "install_pms",
+        "lockfile",
         "no_warnings",
         "on_collision",
         "on_mismatch",
@@ -620,6 +625,16 @@
             "allow",
             "local"
           ]
+        },
+        "install_pms": {
+          "description": "The install allowlist. Install has none, so this is always empty.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PackageManager"
+          }
+        },
+        "lockfile": {
+          "$ref": "#/$defs/LockfilePolicy"
         },
         "no_warnings": {
           "type": "boolean"
@@ -958,7 +973,8 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/$defs/TaskSourceLabel"
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "Structured source label (same convention as `why`)."
         },
         "package": {
           "description": "Workspace member identity (`name`, `path`) for member sources; null for root sources."

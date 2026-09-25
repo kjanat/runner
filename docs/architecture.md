@@ -26,14 +26,19 @@ Anything that cannot be derived from it does not belong in the core.
 
 ```text
 observe(tree)            -> Result<Vec<Evidence>, io::Error>
-resolve(evidence, policy) -> Result<Project { present, tasks, warnings }, io::Error>
+resolve(evidence, policy) -> Result<Project { present, tasks, warnings, unread }, io::Error>
 plan(project, op, policy) -> Result<Plan, Refusal>
 execute(plan)             -> ExitStatus
 explain(plan | project)   -> Report
 ```
 
 Each subcommand is one of these stages exposed. A failed read-only observation
-query is an error with its provider and scope, never an empty evidence list.
+query is an error with its provider and scope, never an empty evidence list. A
+task source whose tasks cannot be read is recorded in `Project.unread` with its
+provider, scope and message; `list` reports it, and the run cascade refuses at
+the task rung instead of passing the name to later rungs. A tool manager's
+executable-directory query that fails leaves that provider without directories
+and adds a warning.
 
 | Subcommand                    | Stops after | Notes                                               |
 | ----------------------------- | ----------- | --------------------------------------------------- |
@@ -207,13 +212,13 @@ pub struct Provider {
     pub signals: &'static [Signal],
     pub writes: &'static [&'static str], // install dirs this provider materialises
     pub caps: Capabilities,
-    pub tasks: Option<fn(&Present, &Tree) -> Result<Vec<Task>>>,
+    pub tasks: Option<fn(&Present, &Tree) -> Result<Extracted, Warning>>, /* tasks plus partial-read warnings */
     pub version: Option<fn(&Present) -> Result<String>>,
     pub hooks: Hooks,
 }
 
 pub struct Hooks {
-    pub before_plan: Option<fn(&Present, &Op, &mut Vec<Warning>)>,
+    pub before_plan: Option<fn(&Present, &Op, &mut Vec<Warning>) -> Result<(), Refusal>>,
     pub after_observe: Option<fn(&Tree, &[Evidence]) -> Result<Vec<Evidence>, io::Error>>,
 }
 ```
@@ -225,9 +230,9 @@ and each has a narrow reason:
 - `tasks` when the task format is the tool's own (justfile parsing, `mise
   tasks --json`, `[[bin]]` in `Cargo.toml`, `cmd/<name>` in Go).
 - `version` when `<program> --version` output needs a tool-specific parse.
-- `hooks.before_plan` for a warning the core cannot know, such as bun and
-  pnpm refusing to re-enable dependency build scripts without a manifest
-  allowlist.
+- `hooks.before_plan` for a warning or refusal the core cannot know, such as
+  bun and pnpm refusing to re-enable dependency build scripts without a
+  manifest allowlist, or `node --run` refusing a Node older than 22.
 - `hooks.after_observe` for evidence derived from other evidence, such as
   yarn classic versus berry from the `packageManager` field.
 
@@ -256,28 +261,35 @@ pub struct Capabilities {
     pub file_fallback: bool,
     pub file_interpreters: &'static [&'static str],
     pub task_priority: u8,
+    pub probe_priority: u8, // order among package managers probed on PATH
 }
 ```
 
 Each capability holds an argv template and the parameters policy can turn on.
 Observation hooks can derive `Declared::Variant` evidence; planning selects the
 matching capability table without branching on provider identity. Yarn uses this
-for Classic versus Berry. `file_fallback` declares a default interpreter for a
-supported file when no project runtime takes it. This does not add the runtime
-to `Project.present`: the resulting plan carries the discovered file as evidence.
-`file_interpreters` identifies shebangs an explicitly chosen runtime can replace.
-`RunFileCap.unsupported` records recognized file types a runtime cannot execute;
-`UnsupportedFile` records the provider, path, reason, runtime-choice origin and compatible runtime providers.
-The core derives alternatives from effective capabilities in the file's scope. Clients offer the alternatives their own interfaces support.
-Observation hooks preserve read and parse errors. A missing optional file contributes no evidence.
-`task_priority` orders otherwise unranked task sources. Provider defaults and
-policy preference lists rank candidates; they do not remove later cascade rungs.
+for Classic and Berry; with neither observed, its base table denies scripts
+through both the Classic flag and the Berry variable. `file_fallback` declares a
+default interpreter for a supported file when no project runtime takes it. This
+does not add the runtime to `Project.present`: the resulting plan carries the
+discovered file as evidence. `file_interpreters` identifies shebangs an
+explicitly chosen runtime can replace. `RunFileCap.unsupported` records
+recognized file types a runtime cannot execute; `UnsupportedFile` records the
+provider, path, reason, runtime-choice origin and compatible runtime providers.
+The core derives alternatives from effective capabilities in the file's scope.
+Clients offer the alternatives their own interfaces support. Observation hooks
+preserve read and parse errors. A missing optional file contributes no
+evidence. `task_priority` orders otherwise unranked task sources. Provider
+defaults and policy preference lists rank candidates; they do not remove later
+cascade rungs. When a task source has no present package manager to run it,
+resolution takes the first supporting one on `PATH` in `probe_priority` order,
+unless policy is strict.
 
 ```rust
 pub struct InstallCap {
     pub argv: Template,                                            // ["install"]
     pub frozen: Frozen, /* Flag("--frozen-lockfile") | Subcommand("ci") | Env("UV_FROZEN","1") | Unsupported */
-    pub scripts: ScriptSupport, /* deny: Flag("--ignore-scripts"), allow: Flag("--no-ignore-scripts") | Env(..) | Default | Unsupported */
+    pub scripts: ScriptSupport, /* deny: Flag("--ignore-scripts"), allow: Flag("--no-ignore-scripts") | Env(..) | FlagAndEnv(..) | Default | Unsupported */
     pub locked_only_with: &'static [(&'static str, &'static str)], /* config/lockfile pairs; empty is unconditional */
 }
 
@@ -398,6 +410,7 @@ pub struct Policy {
     pub env: EnvLayers,                              // project, per tool, per task
     pub tool_ops: BTreeMap<ProviderId, Vec<String>>, // `[tools.<name>].install`
     pub trust: TrustPolicy,                          // see section 6
+    pub strict: bool, // `--fallback error`: no package manager from PATH for a task source
 }
 
 pub struct Choice {
@@ -563,6 +576,10 @@ pub static CASCADE: &[Rung] = &[
     },
 ];
 ```
+
+The manager rung runs only a tool manager the project configures. An
+activated shell or a binary on `PATH` is evidence of the tool, not of the
+project asking for it.
 
 The table is data so article 4 can be a test. The prompt lives in
 `plan`, keyed on `reach` and `policy.reach`, and it is the same prompt for

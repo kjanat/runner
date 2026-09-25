@@ -697,9 +697,9 @@ struct VersionRequest {
 }
 
 const fn version_request(options: &args::VersionOpts, quiet: u8) -> Option<VersionRequest> {
-    let kind = if options.short_lower || options.short_upper {
+    let kind = if options.short.requested() {
         VersionKind::Short
-    } else if options.detailed || options.build_options {
+    } else if options.detailed.requested() {
         VersionKind::Detailed
     } else if options.revision {
         VersionKind::Revision
@@ -1269,6 +1269,26 @@ fn dispatch_overrides(
     }
 }
 
+/// Warnings for settings that are set but no longer read.
+fn removed_settings(overrides: &resolver::ResolutionOverrides) -> Vec<types::DetectionWarning> {
+    let mut warnings = Vec::new();
+    if overrides.fallback == resolver::FallbackPolicy::Npm {
+        warnings.push(types::DetectionWarning::Removed {
+            name: "--fallback npm",
+            now: "a task source with no package manager evidence uses the first one on PATH, as \
+                  with --fallback probe",
+        });
+    }
+    if std::env::var_os("RUNNER_INSTALL_PMS").is_some() {
+        warnings.push(types::DetectionWarning::Removed {
+            name: "RUNNER_INSTALL_PMS",
+            now: "runner install uses every detected package manager; set [tools.<name>].install \
+                  = false to leave one out",
+        });
+    }
+    warnings
+}
+
 fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
     let mut ctx = detect::detect(dir);
     // A malformed `runner.toml` must not abort the `config` subcommand;
@@ -1286,9 +1306,10 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
         ctx.warnings.extend(loaded.warnings.iter().cloned());
     }
     let mut overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
+    ctx.warnings.extend(removed_settings(&overrides));
     // The first point where a resolved root and the inherited marker are both
     // in hand, so it is where the nesting question gets answered.
-    overrides.parent_warned = commands::parent_warned_about(&ctx.root);
+    overrides.parent.warned = commands::parent_warned_about(&ctx.root);
 
     let result = match cli.command {
         None => commands::info(&ctx, &overrides, false).map(|()| 0),
@@ -1379,6 +1400,25 @@ mod tests {
     use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
     use crate::types::{Ecosystem, ProjectContext, Task, TaskSource};
+
+    #[test]
+    fn a_legacy_npm_fallback_is_reported_as_no_longer_read() {
+        let overrides = crate::resolver::ResolutionOverrides {
+            fallback: crate::resolver::FallbackPolicy::Npm,
+            ..crate::resolver::ResolutionOverrides::default()
+        };
+        let warnings = super::removed_settings(&overrides);
+        assert!(warnings.iter().any(|warning| {
+            warning
+                .to_string()
+                .contains("--fallback npm is no longer read")
+        }));
+        assert!(
+            super::removed_settings(&crate::resolver::ResolutionOverrides::default())
+                .iter()
+                .all(|warning| !warning.to_string().contains("--fallback"))
+        );
+    }
 
     fn parsed_version(args: &[&str]) -> super::VersionRequest {
         let parsed = parse_cli(args.iter().copied()).expect("valid CLI arguments");

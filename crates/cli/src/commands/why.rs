@@ -301,11 +301,15 @@ fn pm_decision_for_selected(
         }
         Some(TaskSource::PackageJson) => Some(PmDecision::Node(node)),
         Some(TaskSource::PyprojectScripts) => Some(PmDecision::Python(
-            resolve_python_pm(ctx, overrides).ok_or_else(|| {
-                "no Python package manager detected to run pyproject scripts; install uv, poetry, \
-                 or pipenv"
-                    .to_string()
-            }),
+            resolve_python_pm(ctx, overrides)
+                .map_err(|error| error.to_string())
+                .and_then(|resolved| {
+                    resolved.ok_or_else(|| {
+                        "no Python package manager detected to run pyproject scripts; install uv, \
+                         poetry, or pipenv"
+                            .to_string()
+                    })
+                }),
         )),
         _ => None,
     }
@@ -340,12 +344,21 @@ fn pm_resolution(decision: &PmDecision) -> PmResolution {
 /// `runner why --json` payload. Field order mirrors the committed
 /// `schemas/why.example.json`.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-#[schemars(deny_unknown_fields)]
+#[schemars(
+    deny_unknown_fields,
+    title = "runner why <task> --json",
+    description = "JSON schema for `runner why <task> --json`: candidate `{task, match}` pairs \
+                   plus the selection decision.",
+    extend("$id" = crate::schema::schema_url("why"))
+)]
 pub(super) struct WhyReport<'a> {
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
     #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     schema: String,
-    #[schemars(description = "Schema contract version for this JSON payload.")]
+    #[schemars(
+        description = "Schema contract version for this JSON payload.",
+        extend("const" = crate::schema::SCHEMA_VERSION)
+    )]
     schema_version: u32,
     #[schemars(description = "Payload discriminator; always \"runner.why\".")]
     kind: &'static str,
@@ -364,20 +377,11 @@ pub(super) struct WhyReport<'a> {
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "serialized independent output axes"
-)]
 struct WhyOutput {
     #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
     level: &'static str,
-    progress: bool,
-    warnings: bool,
-    errors: bool,
-    groups: bool,
-    task_timing: bool,
-    summary: bool,
-    fatal_errors: bool,
+    #[serde(flatten)]
+    runner: crate::tool::RunnerOutputPolicy,
     #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
     host_diagnostics: &'static str,
     #[schemars(extend("enum" = ["inherit", "stderr"]))]
@@ -408,9 +412,9 @@ struct WhyTask<'a> {
     #[schemars(
         description = "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
     )]
-    provider: &'static str,
+    provider: labels::Provider,
     #[schemars(description = "Task mechanism label (structured source label, e.g. `cargo-alias`).")]
-    kind: &'static str,
+    kind: labels::StructuredSource,
     #[schemars(description = "Config file the task was extracted from, when resolvable.")]
     source: Option<String>,
     #[schemars(
@@ -579,11 +583,7 @@ fn build_report<'a>(
 
 fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> WhyOutput {
     let task_key = selected.map(super::run::task_output_key);
-    let global_host_stream = if overrides.host_stream_invocation_explicit {
-        overrides.host_stream
-    } else {
-        overrides.host_stream_config
-    };
+    let global_host_stream = overrides.global_host_stream();
     let (stdout, stderr) = selected.map_or(
         (
             crate::tool::TaskStream::Inherit,
@@ -606,22 +606,7 @@ fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> Wh
         });
     WhyOutput {
         level: overrides.quiet_level.label(),
-        progress: task_key.as_deref().map_or_else(
-            || overrides.shows_progress(),
-            |key| overrides.shows_progress_for(key),
-        ),
-        warnings: overrides.shows_warnings(),
-        errors: overrides.shows_errors(),
-        groups: task_key.as_deref().map_or_else(
-            || overrides.emits_groups(),
-            |key| overrides.emits_groups_for(key),
-        ),
-        task_timing: task_key.as_deref().map_or_else(
-            || overrides.shows_task_timing(),
-            |key| overrides.shows_task_timing_for(key),
-        ),
-        summary: overrides.shows_summary(),
-        fatal_errors: overrides.shows_fatal_errors(),
+        runner: overrides.runner_output_for(task_key.as_deref()),
         host_diagnostics: diagnostics.label(),
         host_stream: task_key
             .as_deref()
@@ -635,12 +620,11 @@ fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> Wh
 }
 
 fn task_report<'a>(task: &'a Task, ctx: &'a ProjectContext) -> WhyTask<'a> {
-    let kind = labels::structured_source_label(task.source);
     WhyTask {
         name: &task.name,
         fqn: labels::fqn(task),
-        provider: provider_label(task.source),
-        kind,
+        provider: labels::Provider(task.source),
+        kind: labels::StructuredSource(task.source),
         source: labels::source_anchor(task.source, task.dir(&ctx.root))
             .map(|path| path.display().to_string()),
         source_pointer: labels::source_pointer(task),
@@ -775,28 +759,6 @@ fn decision_report(
     }
 }
 
-/// Tool family that executes tasks from this source. Distinct from the
-/// structured `kind` label, which names the extraction mechanism.
-pub(super) const fn provider_label(source: TaskSource) -> &'static str {
-    match source {
-        TaskSource::PackageJson => "node",
-        TaskSource::DenoJson => "deno",
-        TaskSource::TurboJson => "turbo",
-        TaskSource::Makefile => "make",
-        TaskSource::Justfile => "just",
-        TaskSource::Taskfile => "task",
-        TaskSource::CargoAliases => "cargo",
-        TaskSource::GoPackage => "go",
-        TaskSource::BaconToml => "bacon",
-        TaskSource::MiseToml => "mise",
-        TaskSource::PyprojectScripts => "python",
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear human report renderer mirrors the structured report sections"
-)]
 /// The facts the source declared beyond name and description, one line
 /// each, only when present.
 fn print_detail(task: &Task, ctx: &ProjectContext) {
@@ -841,29 +803,30 @@ fn print_detail(task: &Task, ctx: &ProjectContext) {
         lines.push(("timeout", timeout.clone()));
     }
     if let Some(usage) = &detail.usage {
-        // Prefer the signature the source itself renders; fall back to the
-        // raw spec when the source cannot be asked for a parsed one.
-        let rendered = (task.source == TaskSource::MiseToml)
-            .then(
-                || match crate::tool::mise::usage_spec(&ctx.root, &task.name) {
-                    Ok(spec) => spec,
-                    Err(error) => {
-                        eprintln!("warn: {error}");
-                        None
-                    }
-                },
-            )
-            .flatten()
-            .filter(|spec| !spec.signature.trim().is_empty())
-            .map(|spec| format!("{} {}", task.name, spec.signature));
-        lines.push((
-            "usage",
-            rendered.unwrap_or_else(|| usage.replace('\n', "\n              ")),
-        ));
+        lines.push(("usage", usage_line(task, ctx, usage)));
     }
     for (label, value) in lines {
         println!("  {:<12}{}", label.dimmed(), value);
     }
+}
+
+fn usage_line(task: &Task, ctx: &ProjectContext, usage: &str) -> String {
+    // Prefer the signature the source itself renders; fall back to the
+    // raw spec when the source cannot be asked for a parsed one.
+    let rendered = (task.source == TaskSource::MiseToml)
+        .then(
+            || match crate::tool::mise::usage_spec(&ctx.root, &task.name) {
+                Ok(spec) => spec,
+                Err(error) => {
+                    eprintln!("warn: {error}");
+                    None
+                }
+            },
+        )
+        .flatten()
+        .filter(|spec| !spec.signature.trim().is_empty())
+        .map(|spec| format!("{} {}", task.name, spec.signature));
+    rendered.unwrap_or_else(|| usage.replace('\n', "\n              "))
 }
 
 /// One line per candidate with the rank key that ordered it.
@@ -1001,16 +964,9 @@ fn print_human(
     println!();
     println!("{}", "Output policy".bold());
     println!(
-        "  level={} progress={} warnings={} errors={} groups={} task_timing={} summary={} \
-         fatal_errors={} host={} host_stream={} stdout={} stderr={}",
+        "  level={} {} host={} host_stream={} stdout={} stderr={}",
         output.level,
-        output.progress,
-        output.warnings,
-        output.errors,
-        output.groups,
-        output.task_timing,
-        output.summary,
-        output.fatal_errors,
+        output.runner,
         output.host_diagnostics,
         output.host_stream,
         output.task_stdout,

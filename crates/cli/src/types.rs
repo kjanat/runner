@@ -437,6 +437,8 @@ pub(crate) struct NodeVersion {
 pub(crate) enum DetectionWarning {
     /// A finding from provider observation or planning.
     Pipeline(runner_core::Warning),
+    /// A task source whose tasks could not be read.
+    Unread(runner_core::Unread),
     /// Manifest declaration (`packageManager` / `devEngines.packageManager`)
     /// disagrees with the detected lockfile. Declaration wins; the lockfile
     /// is likely stale.
@@ -478,20 +480,21 @@ pub(crate) enum DetectionWarning {
         /// Other PMs found on `PATH` that the resolver did not pick.
         others_available: Vec<PackageManager>,
     },
-    /// `--fallback npm` (or `RUNNER_FALLBACK=npm`) triggered the legacy
-    /// silent default. Surfaces so users aren't surprised by an `npm`
-    /// dispatch in a project that has no `npm` signals.
-    LegacyNpmFallbackUsed {
-        /// Ecosystem the fallback applied to.
-        ecosystem: Ecosystem,
+    /// A setting this build no longer reads.
+    Removed {
+        /// The flag, variable or value as the user spelled it.
+        name: &'static str,
+        /// What happens instead.
+        now: &'static str,
     },
-    /// Task extraction failed for a source (parse error, IO error).
-    /// Detection-side warning; not tied to a resolver chain step.
-    TaskListUnreadable {
-        /// Source label (`"package.json"`, `"justfile"`, etc.).
-        source: &'static str,
-        /// Formatted error chain from the failing reader.
-        error: String,
+    /// A declared package-manager version constraint that cannot be checked.
+    UnverifiableVersion {
+        /// The declared package manager.
+        pm: PackageManager,
+        /// The constraint as written.
+        declared: String,
+        /// Why it cannot be checked.
+        reason: String,
     },
     /// `package.json` declared a `packageManager` value that doesn't
     /// name a script-dispatching PM (typo, unsupported ecosystem,
@@ -547,19 +550,6 @@ pub(crate) enum DetectionWarning {
         /// The declared `pre`/`post` scripts that will not run.
         skipped: Vec<String>,
     },
-    /// `runner.toml` sets a key that still works but has a supported
-    /// successor. The deprecated key keeps functioning (unless `superseded`,
-    /// in which case the successor it conflicts with takes over) so configs
-    /// never break on upgrade; the warning nudges migration.
-    DeprecatedConfigKey {
-        /// Dotted path to the deprecated key, e.g. `"task_runner.prefer"`.
-        path: String,
-        /// Dotted path to the replacement, e.g. `"tasks.prefer"`.
-        replacement: &'static str,
-        /// `true` when the replacement is also set, so the deprecated key is
-        /// ignored this run; `false` when the deprecated key is still in effect.
-        superseded: bool,
-    },
 }
 
 impl DetectionWarning {
@@ -573,16 +563,17 @@ impl DetectionWarning {
             Self::PmMismatch { .. }
             | Self::DevEnginesBinaryMissing { .. }
             | Self::DevEnginesVersionMismatch { .. }
-            | Self::UnparseablePackageManager { .. } => "package.json",
-            Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
-            Self::TaskListUnreadable { source, .. } => source,
-            Self::Pipeline(warning) => match warning.provider {
-                Some(id) => runner_providers::REGISTRY.by_id(id).label,
-                None => "project",
-            },
+            | Self::UnparseablePackageManager { .. }
+            | Self::UnverifiableVersion { .. } => "package.json",
+            Self::PathProbeFallback { .. } => "resolver",
+            Self::Removed { .. } => "runner",
+            Self::Pipeline(warning) => warning
+                .provider
+                .map_or("project", |id| runner_providers::REGISTRY.by_id(id).label),
+            Self::Unread(unread) => runner_providers::REGISTRY.by_id(unread.provider).label,
             Self::InvalidEnvOverride { .. } => "env",
             Self::RuntimeNotApplied { .. } | Self::NodeRunSkipsLifecycle { .. } => "runtime",
-            Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
+            Self::UnknownConfigKey { .. } => "runner.toml",
         }
     }
 
@@ -592,6 +583,11 @@ impl DetectionWarning {
     pub(crate) fn detail(&self) -> String {
         match self {
             Self::Pipeline(warning) => warning.message.clone(),
+            Self::Unread(unread) => format!(
+                "tasks in {} could not be read: {}",
+                unread.scope.label(),
+                unread.message
+            ),
             Self::PmMismatch {
                 declared,
                 field,
@@ -639,11 +635,15 @@ impl DetectionWarning {
                     )
                 }
             }
-            Self::LegacyNpmFallbackUsed { ecosystem } => format!(
-                "no {} signals matched; using npm via --fallback=npm",
-                ecosystem.label(),
+            Self::Removed { name, now } => format!("{name} is no longer read; {now}"),
+            Self::UnverifiableVersion {
+                pm,
+                declared,
+                reason,
+            } => format!(
+                "cannot evaluate {} version constraint {declared}: {reason}",
+                pm.label()
             ),
-            Self::TaskListUnreadable { error, .. } => format!("failed to read tasks: {error}"),
             Self::UnparseablePackageManager { raw } => format!(
                 "packageManager value {raw:?} doesn't name a script-dispatching package manager \
                  (expected one of npm|pnpm|yarn|bun|deno, optionally followed by @<version>); \
@@ -665,23 +665,6 @@ impl DetectionWarning {
                 "unknown key `{path}` ignored: it may be a typo or written by a newer runner. \
                  This build doesn't recognize it; the rest of the config still applies.",
             ),
-            Self::DeprecatedConfigKey {
-                path,
-                replacement,
-                superseded,
-            } => {
-                if *superseded {
-                    format!(
-                        "`{path}` is deprecated and ignored here because `{replacement}` is also \
-                         set; remove `{path}`.",
-                    )
-                } else {
-                    format!(
-                        "`{path}` is deprecated; migrate to `{replacement}` (rank-only, and \
-                         accepts package managers). It still applies for now.",
-                    )
-                }
-            }
         }
     }
 }
@@ -794,11 +777,6 @@ impl ProjectContext {
             .iter()
             .copied()
             .find(|pm| pm.is_node())
-    }
-
-    /// Returns the first detected package manager of any ecosystem.
-    pub(crate) fn primary_pm(&self) -> Option<PackageManager> {
-        self.package_managers.first().copied()
     }
 }
 

@@ -27,13 +27,21 @@ pub const CLEAN: CleanCap = CleanCap {
     ],
 };
 
+/// A `pyproject.toml` table that makes the directory a Python project.
+pub(crate) fn table(value: &serde_json::Value) -> Option<runner_core::Declared> {
+    value.is_object().then_some(runner_core::Declared::Named)
+}
+
 /// The interpreter that runs a `.py` file outside a managed environment.
 pub const INTERPRETER: &str = if cfg!(windows) { "python" } else { "python3" };
 
 /// The test runner a Python project reaches for, most specific first: the one
 /// its virtualenv holds, then the one its config implies, then `unittest`,
 /// which ships with Python.
-pub fn test_runner(dir: &Path) -> std::io::Result<Option<Template>> {
+///
+/// # Errors
+/// Returns a project file read failure other than absence.
+pub(crate) fn test_runner(dir: &Path) -> std::io::Result<Option<Template>> {
     const PYTEST: Template = t!["run", "pytest", Args];
     const NOSE2: Template = t!["run", "nose2", Args];
     const WARD: Template = t!["run", "ward", Args];

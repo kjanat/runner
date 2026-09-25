@@ -347,7 +347,8 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/$defs/TaskSourceLabel"
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "Task mechanism label (structured source label, e.g. `cargo-alias`)."
         },
         "name": {
           "type": "string"
@@ -360,7 +361,8 @@
           }
         },
         "provider": {
-          "$ref": "#/$defs/ProviderLabel"
+          "$ref": "#/$defs/ProviderLabel",
+          "description": "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
         },
         "resolved": {
           "description": "Effective command preview. Null when it depends on a PM resolution that was not performed for this candidate.",

@@ -22,24 +22,9 @@ use crate::types::{
 /// 5. Task extraction (conditional on detected tools)
 pub(crate) fn detect(dir: &Path) -> ProjectContext {
     let workspace = tool::workspace::anchor(dir);
-    let root = workspace.as_ref().map_or_else(
-        || {
-            tool::files::find_in_ancestors(dir, |ancestor| {
-                runner_providers::REGISTRY
-                    .iter()
-                    .flat_map(|p| p.signals)
-                    .any(|signal| match signal {
-                        runner_core::Signal::File(name)
-                        | runner_core::Signal::Lockfile(name)
-                        | runner_core::Signal::FileUpwards(name) => ancestor.join(name).is_file(),
-                        _ => false,
-                    })
-                    .then(|| ancestor.to_owned())
-            })
-            .unwrap_or_else(|| dir.to_owned())
-        },
-        |workspace| workspace.root.clone(),
-    );
+    let root = workspace
+        .as_ref()
+        .map_or_else(|| project_root(dir), |workspace| workspace.root.clone());
     let mut ctx = ProjectContext {
         cwd: dir.to_path_buf(),
         root: root.clone(),
@@ -60,7 +45,7 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     detect_task_runners(dir, &mut ctx);
     detect_node_version(dir, &mut ctx);
     detect_monorepo(dir, &mut ctx);
-    extract_tasks(dir, &mut ctx);
+    extract_tasks(&mut ctx);
 
     let mut tasks = std::mem::take(&mut ctx.tasks);
     tasks.sort_by(|a, b| {
@@ -75,6 +60,28 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     ctx.tasks = tasks;
 
     ctx
+}
+
+/// The nearest ancestor inside the enclosing repository that holds a
+/// provider's own file or lockfile, else `dir`.
+fn project_root(dir: &Path) -> std::path::PathBuf {
+    let Some(boundary) = tool::files::vcs_root(dir) else {
+        return dir.to_owned();
+    };
+    dir.ancestors()
+        .take_while(|ancestor| ancestor.starts_with(&boundary))
+        .find(|ancestor| {
+            runner_providers::REGISTRY
+                .iter()
+                .flat_map(|p| p.signals)
+                .any(|signal| match signal {
+                    runner_core::Signal::File(name) | runner_core::Signal::Lockfile(name) => {
+                        ancestor.join(name).is_file()
+                    }
+                    _ => false,
+                })
+        })
+        .map_or_else(|| dir.to_owned(), Path::to_path_buf)
 }
 
 // Install directories
@@ -117,7 +124,7 @@ fn detect_install_dirs(dir: &Path, ctx: &mut ProjectContext) {
 
 /// Priority among Node PMs whose filesystem signal (lockfile or config
 /// file) is present in the directory: `bun > pnpm > yarn > npm`. Distinct
-/// from [`crate::resolver::NODE_PROBE_ORDER`], the signal-less PATH
+/// from [`crate::resolver::node_probe_order`], the signal-less PATH
 /// fallback, where npm leads.
 const NODE_SIGNAL_PRIORITY: &[PackageManager] = &[
     PackageManager::Bun,
@@ -421,7 +428,7 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 // Task extraction
 
 /// Collect tasks from the registry's provider callbacks.
-fn extract_tasks(_dir: &Path, ctx: &mut ProjectContext) {
+fn extract_tasks(ctx: &mut ProjectContext) {
     let tree = crate::commands::run::core::tree(ctx);
     let registry = &runner_providers::REGISTRY;
     match runner_core::observe::observe(&tree, registry).and_then(|evidence| {
@@ -430,6 +437,8 @@ fn extract_tasks(_dir: &Path, ctx: &mut ProjectContext) {
         Ok(project) => {
             ctx.warnings
                 .extend(project.warnings.into_iter().map(DetectionWarning::Pipeline));
+            ctx.warnings
+                .extend(project.unread.into_iter().map(DetectionWarning::Unread));
             for task in project.tasks {
                 let source = TaskSource::from_label(registry.by_id(task.source).label)
                     .expect("registered task source");
@@ -987,6 +996,23 @@ mod tests {
                 .any(|task| task.source == crate::types::TaskSource::PackageJson
                     && task.name == "ext-build")
         );
+    }
+
+    #[test]
+    fn outside_a_repository_the_root_is_the_invoked_directory() {
+        let dir = TempDir::new("detect-no-repository");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "scripts": { "home": "echo" } }"#,
+        )
+        .expect("ancestor package.json should be written");
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).expect("subdir should be created");
+
+        let ctx = detect(&sub);
+
+        assert_eq!(ctx.root, sub);
+        assert!(ctx.tasks.iter().all(|task| task.name != "home"));
     }
 
     #[test]

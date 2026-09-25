@@ -11,6 +11,16 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::RUNTIME,
     program: Some(if cfg!(windows) { "python" } else { "python3" }),
     signals: &[
+        Signal::ManifestField {
+            file: "pyproject.toml",
+            path: "project",
+            parse: super::table,
+        },
+        Signal::ManifestField {
+            file: "pyproject.toml",
+            path: "build-system",
+            parse: super::table,
+        },
         Signal::File("setup.py"),
         Signal::File("requirements.txt"),
         Signal::Probe(if cfg!(windows) { "python" } else { "python3" }),

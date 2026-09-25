@@ -2,9 +2,6 @@
 
 use std::path::Path;
 
-/// Directories produced by Cargo builds.
-pub(crate) const CLEAN_DIRS: &[&str] = &["target"];
-
 /// Detected via `Cargo.toml`.
 pub(crate) fn detect(dir: &Path) -> bool {
     dir.join("Cargo.toml").exists()

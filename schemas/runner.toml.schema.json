@@ -39,6 +39,33 @@
         }
       }
     },
+    "DefaultsSection": {
+      "description": "`[defaults]` section, the value a flag takes when the invocation omits it.",
+      "type": "object",
+      "properties": {
+        "fetch": {
+          "description": "Whether a command that can download may run.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "ask",
+            "allow",
+            "local",
+            null
+          ]
+        },
+        "frozen": {
+          "description": "Install without touching the lockfile.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "GitHubSection": {
       "description": "`[github]` section, GitHub Actions integration. Both knobs only take\neffect under GitHub Actions (gated at the call site by\n`actions_rs::env::is_github_actions`); in a normal terminal nothing here\nchanges behavior.",
       "type": "object",
@@ -113,7 +140,6 @@
             "string"
           ],
           "enum": [
-            "default",
             "deny",
             "allow",
             null
@@ -174,7 +200,7 @@
       "type": "object",
       "properties": {
         "fallback": {
-          "description": "`probe` (default), PATH probe in canonical order when no signals\nmatch; `npm`, legacy silent fallback; `error`, refuse to proceed.",
+          "description": "`probe` (default) takes a package manager from PATH for a task source\nwith no package manager evidence; `error` refuses. `npm` is accepted\nand behaves as `probe`.",
           "default": "probe",
           "type": [
             "null",
@@ -280,12 +306,38 @@
       },
       "additionalProperties": false
     },
+    "TaskPin": {
+      "type": "string",
+      "enum": [
+        "turbo",
+        "nx",
+        "make",
+        "just",
+        "task",
+        "mise",
+        "bacon",
+        "npm",
+        "yarn",
+        "pnpm",
+        "bun",
+        "cargo",
+        "deno",
+        "uv",
+        "poetry",
+        "pipenv",
+        "go",
+        "bundler",
+        "composer",
+        "package.json",
+        "pyproject.toml"
+      ]
+    },
     "TaskSettings": {
       "description": "The table form of a [`TaskSpec`]: individual per-task settings, each merged\nover the built-in defaults so a partial table only overrides what it names.",
       "type": "object",
       "properties": {
         "env": {
-          "description": "Variables set on this task's process, over the tool and project layers.",
+          "description": "Variables one task gets.",
           "type": "object",
           "additionalProperties": {
             "type": "string"
@@ -307,33 +359,13 @@
         },
         "runner": {
           "description": "Source/runner pin for this task, same meaning as a legacy\n[`TasksSection::overrides`] entry (a runner, package manager, or source\nlabel). A pin the task doesn't have falls through to the normal ranking.",
-          "type": [
-            "null",
-            "string"
-          ],
-          "enum": [
-            "turbo",
-            "nx",
-            "make",
-            "just",
-            "task",
-            "mise",
-            "bacon",
-            "npm",
-            "yarn",
-            "pnpm",
-            "bun",
-            "cargo",
-            "deno",
-            "uv",
-            "poetry",
-            "pipenv",
-            "go",
-            "bundler",
-            "composer",
-            "package.json",
-            "pyproject.toml",
-            null
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskPin"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "stderr": {
@@ -385,31 +417,8 @@
       "description": "A single `[tasks]` entry, addressed by task name the way a crate is addressed\nunder Cargo's `[dependencies]`: either a bare **string** (shorthand for the\ntask's source/runner pin, e.g. `build = \"turbo\"`) or a **table** of per-task\nsettings (`build = { runner = \"turbo\", verbosity = \"quiet\" }`, or a\n`[tasks.build]` sub-table).",
       "anyOf": [
         {
-          "description": "Shorthand: `build = \"turbo\"` pins the task's source/runner. Equivalent to\n`{ runner = \"turbo\" }`.",
-          "type": "string",
-          "enum": [
-            "turbo",
-            "nx",
-            "make",
-            "just",
-            "task",
-            "mise",
-            "bacon",
-            "npm",
-            "yarn",
-            "pnpm",
-            "bun",
-            "cargo",
-            "deno",
-            "uv",
-            "poetry",
-            "pipenv",
-            "go",
-            "bundler",
-            "composer",
-            "package.json",
-            "pyproject.toml"
-          ]
+          "$ref": "#/$defs/TaskPin",
+          "description": "Shorthand: `build = \"turbo\"` pins the task's source/runner. Equivalent to\n`{ runner = \"turbo\" }`."
         },
         {
           "$ref": "#/$defs/TaskSettings",
@@ -425,60 +434,14 @@
           "description": "Legacy per-task pins that override `prefer` for specific names: `overrides = { dev = \"bun\", build = \"turbo\" }`. Superseded by a task entry's `runner` field. A pin to a source the task doesn't have falls through to the normal ranking (no hard error).",
           "type": "object",
           "additionalProperties": {
-            "type": "string",
-            "enum": [
-              "turbo",
-              "nx",
-              "make",
-              "just",
-              "task",
-              "mise",
-              "bacon",
-              "npm",
-              "yarn",
-              "pnpm",
-              "bun",
-              "cargo",
-              "deno",
-              "uv",
-              "poetry",
-              "pipenv",
-              "go",
-              "bundler",
-              "composer",
-              "package.json",
-              "pyproject.toml"
-            ]
+            "$ref": "#/$defs/TaskPin"
           }
         },
         "prefer": {
           "description": "The task source that wins a same-named task.",
           "type": "array",
           "items": {
-            "type": "string",
-            "enum": [
-              "turbo",
-              "nx",
-              "make",
-              "just",
-              "task",
-              "mise",
-              "bacon",
-              "npm",
-              "yarn",
-              "pnpm",
-              "bun",
-              "cargo",
-              "deno",
-              "uv",
-              "poetry",
-              "pipenv",
-              "go",
-              "bundler",
-              "composer",
-              "package.json",
-              "pyproject.toml"
-            ]
+            "$ref": "#/$defs/TaskPin"
           }
         }
       },
@@ -594,6 +557,11 @@
       "description": "`[chain]`, failure policy for multi-task chains.",
       "default": {}
     },
+    "defaults": {
+      "$ref": "#/$defs/DefaultsSection",
+      "description": "`[defaults]`, a project's standing answer to per-invocation flags.",
+      "default": {}
+    },
     "env": {
       "description": "Variables every command gets.",
       "type": "object",
@@ -616,7 +584,7 @@
     },
     "install": {
       "$ref": "#/$defs/InstallSection",
-      "description": "`[install]`, restrict which detected PMs `runner install` runs.",
+      "description": "`[install]`, lifecycle-script and shared-directory policy for installs.",
       "default": {}
     },
     "parallel": {

@@ -137,4 +137,6 @@ pub struct Policy {
     pub tool_ops: BTreeMap<ProviderId, Vec<String>>,
     /// Which trust repository config acts at.
     pub trust: TrustPolicy,
+    /// Refuse instead of taking a package manager from `PATH` for a task source.
+    pub strict: bool,
 }

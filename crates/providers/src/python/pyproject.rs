@@ -10,12 +10,13 @@ pub const PROVIDER: Provider = Provider {
     ecosystem: Ecosystem::Python,
     kind: Kind::TASK_SOURCE,
     program: None,
-    signals: &[Signal::FileUpwards("pyproject.toml")],
+    signals: &[Signal::ManifestField {
+        file: "pyproject.toml",
+        path: "project.scripts",
+        parse: super::table,
+    }],
     writes: &[],
-    caps: Capabilities {
-        clean: Some(super::CLEAN),
-        ..Capabilities::NONE
-    },
+    caps: Capabilities::NONE,
     tasks: Some(crate::extract::scripts::python_tasks),
     version: None,
     hooks: Hooks::NONE,

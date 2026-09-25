@@ -35,6 +35,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: super::WRITES,
     caps: Capabilities {
+        probe_priority: 2,
         package_exec: Some(ExecCap {
             program: None,
             argv: runner_core::Template(&[

@@ -53,16 +53,18 @@ pub fn check(
                 String::from_utf8_lossy(&output.stderr).trim()
             ),
         }),
-        Health::Ok if !output.status.success() => Err(crate::Refusal::Invalid(format!(
-            "{} health failed: {}",
-            provider.label, output.status
-        ))),
+        Health::Ok if !output.status.success() => Err(failed(provider.label, &output)),
         Health::Problems(ref messages) if messages.is_empty() && !output.status.success() => {
-            Err(crate::Refusal::Invalid(format!(
-                "{} health failed: {}",
-                provider.label, output.status
-            )))
+            Err(failed(provider.label, &output))
         }
         result => Ok(result),
     }
+}
+
+fn failed(label: &str, output: &std::process::Output) -> crate::Refusal {
+    crate::Refusal::Invalid(format!(
+        "{label} health failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
 }

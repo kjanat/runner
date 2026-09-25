@@ -31,13 +31,13 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::labels::structured_source_label;
+use super::labels::{StructuredSource, structured_source_label};
 use crate::chain::FailurePolicy;
 use crate::commands::install::InstallPlan;
 use crate::commands::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
 use crate::resolver::{
-    CollisionPolicy, FallbackPolicy, MismatchPolicy, ResolutionOverrides, ResolutionStep, Resolver,
-    ScriptPolicy,
+    CollisionPolicy, FallbackPolicy, LockfilePolicy, MismatchPolicy, OutputGrouping,
+    ResolutionOverrides, ResolutionStep, Resolver, ScriptPolicy,
 };
 use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
@@ -47,12 +47,22 @@ use crate::types::{
 
 /// `runner doctor --json` payload.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-#[schemars(deny_unknown_fields)]
+#[schemars(
+    deny_unknown_fields,
+    title = "runner doctor --json",
+    description = "JSON schema for `runner doctor --json`: structured diagnostic inventory with \
+                   invocation/environment provenance, per-ecosystem decisions, sources, \
+                   fqn-keyed tasks, tools, conflicts, and diagnostics.",
+    extend("$id" = super::schema_url("doctor"))
+)]
 pub(crate) struct DoctorReport<'a> {
     #[serde(rename = "$schema")]
     #[schemars(description = "URI of the JSON Schema that describes this payload.")]
     schema: String,
-    #[schemars(description = "Schema contract version for this JSON payload.")]
+    #[schemars(
+        description = "Schema contract version for this JSON payload.",
+        extend("const" = super::SCHEMA_VERSION)
+    )]
     schema_version: u32,
     #[schemars(description = "Payload discriminator; always \"runner.doctor\".")]
     kind: &'static str,
@@ -141,9 +151,9 @@ struct ProjectInfo<'a> {
 /// `RUNNER_*` env vars, and the `runner.toml` policy sections, reported by
 /// their labels. Where each came from (CLI, env, or config) is on the
 /// `list`/`info` surface instead.
-// Covers every field on `ResolutionOverrides` except `parent_group_open` and
-// `parent_warned`, internal runner-to-runner env markers with nothing to
-// report. `every_resolution_overrides_field_is_reported_or_excluded` (bottom of
+// Covers every field on `ResolutionOverrides` except `parent`, internal
+// runner-to-runner env markers with nothing to report.
+// `every_resolution_overrides_field_is_reported_or_excluded` (bottom of
 // this file) fails the build if a new field misses both this struct and that
 // exclusion list.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
@@ -152,6 +162,8 @@ struct Overrides {
     explain: bool,
     fallback: FallbackPolicy,
     failure_policy: FailurePolicy,
+    /// The install allowlist. Install has none, so this is always empty.
+    install_pms: Vec<PackageManager>,
     no_warnings: bool,
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
@@ -161,12 +173,13 @@ struct Overrides {
     pm: Option<PackageManager>,
     pm_by_ecosystem: BTreeMap<Ecosystem, PackageManager>,
     prefer_runners: Vec<TaskRunner>,
-    prefer_sources: Vec<&'static str>,
+    prefer_sources: Vec<StructuredSource>,
     runner: Option<TaskRunner>,
     runtime: Option<JsRuntime>,
     script_policy: ScriptPolicy,
     #[schemars(extend("enum" = ["ask", "allow", "local"]))]
     fetch: &'static str,
+    lockfile: LockfilePolicy,
     #[schemars(
         description = "Variable names each `env` layer sets, narrowest last. Values are withheld: \
                        this payload is meant to be pasted into a bug report."
@@ -177,49 +190,20 @@ struct Overrides {
                        tool, in order."
     )]
     tool_install: BTreeMap<String, Vec<String>>,
-    task_source_pins: BTreeMap<String, Vec<&'static str>>,
+    task_source_pins: BTreeMap<String, Vec<StructuredSource>>,
 }
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "serialized independent output axes"
-)]
 struct OutputPolicyReport {
     #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
     level: &'static str,
-    progress: bool,
-    warnings: bool,
-    errors: bool,
-    groups: bool,
-    task_timing: bool,
-    summary: bool,
-    fatal_errors: bool,
+    #[serde(flatten)]
+    runner: crate::tool::RunnerOutputPolicy,
     #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
     host_diagnostics: &'static str,
     #[schemars(extend("enum" = ["inherit", "stderr"]))]
     host_stream: &'static str,
-}
-
-/// The three grouping toggles bundled so [`Overrides`] doesn't tip
-/// clippy's bool-count lint; each mirrors a same-named field on
-/// [`ResolutionOverrides`].
-#[derive(schemars::JsonSchema, Debug, Serialize)]
-#[schemars(
-    deny_unknown_fields,
-    description = "Whether task output is grouped into collapsible blocks, under GitHub Actions \
-                   and elsewhere."
-)]
-struct OutputGrouping {
-    /// Broad GitHub Actions grouping switch (`[github].group_output`).
-    group_output: bool,
-    /// Group parallel output under GitHub Actions
-    /// (`[github].group_parallel`).
-    github_group_parallel: bool,
-    /// Group parallel output outside GitHub Actions
-    /// (`[parallel].grouped`).
-    parallel_grouped: bool,
 }
 
 /// One detected ecosystem and the PM decision made for it.
@@ -253,8 +237,6 @@ enum Confidence {
     High,
     /// Inferred: PATH probe found a usable binary.
     Medium,
-    /// Legacy `--fallback npm` default with no signal at all.
-    Low,
     /// Resolution failed.
     None,
 }
@@ -267,7 +249,7 @@ struct SourceEntry<'a> {
     #[schemars(description = "Stable source identity: `src:<scope>:<kind>`.")]
     id: String,
     #[schemars(description = "Structured source label (same convention as `why`).")]
-    kind: &'static str,
+    kind: StructuredSource,
     #[schemars(
         description = "Workspace member identity (`name`, `path`) for member sources; null for \
                        root sources."
@@ -511,17 +493,176 @@ impl<'a> DoctorReport<'a> {
             tools: tools(ctx, overrides, &node_pm),
             conflicts: conflicts(ctx, overrides, plan.as_ref().ok()),
             diagnostics,
-            resolution: ResolutionPolicy {
-                fqn_policy: "exact-only",
-                precedence: vec![
-                    "source-priority",
-                    "source-depth",
-                    "display-order",
-                    "alias-last",
-                ],
-                short_name_policy: "deterministic-precedence",
-            },
+            resolution: resolution_policy(),
         }
+    }
+}
+
+const EXAMPLE_ROOT: &str = "/path/to/project";
+
+impl DoctorReport<'static> {
+    /// The fixed report committed as `schemas/doctor.example.json`.
+    pub(crate) fn example() -> Self {
+        Self {
+            schema: super::schema_url("doctor"),
+            schema_version: super::SCHEMA_VERSION,
+            kind: "runner.doctor",
+            invocation: Invocation {
+                argv: ["runner", "doctor", "--json"].map(String::from).to_vec(),
+                cwd: EXAMPLE_ROOT.to_string(),
+                started_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+            environment: Environment {
+                arch: "x86_64",
+                os: "linux",
+                path_entries: vec!["/usr/local/bin".to_string(), "/usr/bin".to_string()],
+                shell: Some("bash".to_string()),
+            },
+            runner: RunnerInfo {
+                binary: "/usr/local/bin/runner".to_string(),
+                name: "runner".to_string(),
+                version: "0.0.0",
+                schema_versions: SchemaVersions {
+                    doctor: super::SCHEMA_VERSION,
+                    list: super::SCHEMA_VERSION,
+                    why: super::SCHEMA_VERSION,
+                },
+            },
+            project: ProjectInfo {
+                monorepo: false,
+                root: EXAMPLE_ROOT.to_string(),
+                root_source: EXAMPLE_ROOT.to_string(),
+                workspace: None,
+            },
+            overrides: overrides_report(
+                &ResolutionOverrides::from_sources(&crate::resolver::OverrideSources::default())
+                    .expect("overrides without sources build"),
+            ),
+            ecosystems: vec![example_node_ecosystem()],
+            sources: vec![
+                example_source(TaskSource::PackageJson, "package.json", Some("scripts")),
+                example_source(TaskSource::Justfile, "justfile", None),
+            ],
+            tasks: vec![
+                example_task(
+                    TaskSource::PackageJson,
+                    "package.json",
+                    "build",
+                    "bun run build",
+                ),
+                example_task(
+                    TaskSource::PackageJson,
+                    "package.json",
+                    "fmt:update",
+                    "bun run fmt:update",
+                ),
+                example_task(TaskSource::Justfile, "justfile", "build", "just build"),
+            ],
+            tools: vec![
+                example_tool(DependencyKind::Runtime, "node", "24.0.0"),
+                example_tool(DependencyKind::PackageManager, "bun", "1.1.0"),
+                example_tool(DependencyKind::TaskRunner, "just", "1.36.0"),
+            ],
+            conflicts: vec![Conflict::DuplicateTaskName {
+                reason: "2 sources define `build`; lowest (source_priority=1, source_depth=0, \
+                         display_order=0, alias-last) key wins"
+                    .to_string(),
+                selected: "root:package.json#build".to_string(),
+                selector: "build".to_string(),
+                severity: Severity::Info,
+                shadowed: vec!["root:just#build".to_string()],
+            }],
+            diagnostics: Vec::new(),
+            resolution: resolution_policy(),
+        }
+    }
+}
+
+fn example_node_ecosystem() -> EcosystemEntry {
+    EcosystemEntry {
+        decision: EcosystemDecision {
+            confidence: Confidence::High,
+            reason: "bun via package.json \"packageManager\"".to_string(),
+            selected: Some("bun"),
+        },
+        name: "node",
+        root: EXAMPLE_ROOT.to_string(),
+        selected_package_manager: Some("bun"),
+        signals: serde_json::json!({
+            "lockfile_pm": "bun",
+            "manifest_pm": "bun",
+            "path_probe": { "bun": "/usr/bin/bun", "npm": "/usr/bin/npm" },
+        }),
+    }
+}
+
+fn example_source(
+    source: TaskSource,
+    relpath: &str,
+    task_pointer: Option<&'static str>,
+) -> SourceEntry<'static> {
+    SourceEntry {
+        exists: true,
+        id: format!("src:root:{}", structured_source_label(source)),
+        kind: StructuredSource(source),
+        package: None,
+        path: format!("{EXAMPLE_ROOT}/{relpath}"),
+        relpath: relpath.to_string(),
+        scope: "root",
+        task_pointer,
+    }
+}
+
+fn example_task(
+    source: TaskSource,
+    relpath: &str,
+    name: &'static str,
+    resolved: &str,
+) -> DoctorTask<'static> {
+    DoctorTask {
+        aliases: Vec::new(),
+        cwd: EXAMPLE_ROOT.to_string(),
+        definition: None,
+        dependencies: Vec::new(),
+        description: None,
+        fqn: super::labels::fqn_of("root", source, name),
+        is_alias: false,
+        name,
+        resolved: Some(resolved.to_string()),
+        scope: "root",
+        self_executable: false,
+        source: Some(format!("{EXAMPLE_ROOT}/{relpath}")),
+        source_pointer: Some(match source {
+            TaskSource::PackageJson => format!("scripts.{name}"),
+            TaskSource::CargoAliases => format!("alias.{name}"),
+            _ => name.to_string(),
+        }),
+    }
+}
+
+fn example_tool(kind: DependencyKind, name: &'static str, version: &str) -> Tool {
+    Tool {
+        id: format!("tool:{}:{name}", kind.label()),
+        kind,
+        name,
+        probe: ToolProbe::Found {
+            path: format!("/usr/bin/{name}"),
+            version: Some(version.to_string()),
+        },
+        required: true,
+    }
+}
+
+fn resolution_policy() -> ResolutionPolicy {
+    ResolutionPolicy {
+        fqn_policy: "exact-only",
+        precedence: vec![
+            "source-priority",
+            "source-depth",
+            "display-order",
+            "alias-last",
+        ],
+        short_name_policy: "deterministic-precedence",
     }
 }
 
@@ -582,30 +723,16 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         explain: overrides.explain,
         fallback: overrides.fallback,
         failure_policy: overrides.failure_policy,
+        install_pms: Vec::new(),
         no_warnings: overrides.no_warnings,
         on_collision: overrides.on_collision,
-        output_grouping: OutputGrouping {
-            group_output: overrides.group_output,
-            github_group_parallel: overrides.github_group_parallel,
-            parallel_grouped: overrides.parallel_grouped,
-        },
+        output_grouping: overrides.grouping,
         quiet: overrides.quiet_level != crate::tool::QuietLevel::Off,
         output: OutputPolicyReport {
             level: overrides.quiet_level.label(),
-            progress: overrides.shows_progress(),
-            warnings: overrides.shows_warnings(),
-            errors: overrides.shows_errors(),
-            groups: overrides.emits_groups(),
-            task_timing: overrides.shows_task_timing(),
-            summary: overrides.shows_summary(),
-            fatal_errors: overrides.shows_fatal_errors(),
+            runner: overrides.runner_output_for(None),
             host_diagnostics: overrides.output_policy.host_diagnostics.label(),
-            host_stream: if overrides.host_stream_invocation_explicit {
-                overrides.host_stream
-            } else {
-                overrides.host_stream_config
-            }
-            .label(),
+            host_stream: overrides.global_host_stream().label(),
         },
         on_mismatch: overrides.on_mismatch,
         pm: overrides.pm.as_ref().map(|o| o.pm),
@@ -618,12 +745,14 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         prefer_sources: overrides
             .prefer_sources
             .iter()
-            .map(|&source| structured_source_label(source))
+            .copied()
+            .map(StructuredSource)
             .collect(),
         runner: overrides.runner.as_ref().map(|o| o.runner),
         runtime: overrides.runtime.as_ref().map(|o| o.runtime),
         script_policy: overrides.script_policy,
         fetch: overrides.reach.label(),
+        lockfile: overrides.lockfile,
         env: EnvNames {
             project: overrides.env.project.keys().cloned().collect(),
             tool: env_names(&overrides.env.tool),
@@ -636,10 +765,7 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             .map(|(name, sources)| {
                 (
                     name.clone(),
-                    sources
-                        .iter()
-                        .map(|&source| structured_source_label(source))
-                        .collect(),
+                    sources.iter().copied().map(StructuredSource).collect(),
                 )
             })
             .collect(),
@@ -713,7 +839,7 @@ pub(crate) fn has_node_context(
 /// and [`tools`] so neither surface disagrees with what `tasks`
 /// resolves.
 fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
-    resolve_python_pm(ctx, overrides).is_some()
+    resolve_python_pm(ctx, overrides).is_ok_and(|resolved| resolved.is_some())
         || ctx
             .package_managers
             .iter()
@@ -783,12 +909,15 @@ fn node_ecosystem(
 
 fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> EcosystemEntry {
     let resolved = resolve_python_pm(ctx, overrides);
-    let (decision, selected) = resolved.map_or_else(
+    let (decision, selected) = resolved.as_ref().ok().and_then(Option::as_ref).map_or_else(
         || {
             (
                 EcosystemDecision {
                     confidence: Confidence::None,
-                    reason: "no Python package manager detected".to_string(),
+                    reason: resolved.as_ref().err().map_or_else(
+                        || "no Python package manager detected".to_string(),
+                        ToString::to_string,
+                    ),
                     selected: None,
                 },
                 None,
@@ -859,7 +988,6 @@ const fn confidence_for_step(step: &ResolutionStep) -> Confidence {
         | ResolutionStep::ManifestDevEngines { .. }
         | ResolutionStep::Observed { .. } => Confidence::High,
         ResolutionStep::PathProbe { .. } => Confidence::Medium,
-        ResolutionStep::LegacyNpmFallback => Confidence::Low,
     }
 }
 
@@ -877,7 +1005,7 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
     seen.into_iter()
         .map(|task| {
             let source = task.source;
-            let kind = structured_source_label(source);
+            let kind = StructuredSource(source);
             let anchor = super::labels::source_anchor(source, task.dir(&ctx.root));
             let path = anchor
                 .as_ref()
@@ -887,7 +1015,7 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
             });
             SourceEntry {
                 exists: anchor.as_ref().is_some_and(|p| p.is_file()),
-                id: format!("src:{}:{kind}", task.scope()),
+                id: format!("src:{}:{}", task.scope(), structured_source_label(source)),
                 kind,
                 package: task
                     .member
@@ -1511,9 +1639,11 @@ mod tests {
 
         let overrides = ResolutionOverrides {
             failure_policy: FailurePolicy::KeepGoing,
-            group_output: false,
-            github_group_parallel: false,
-            parallel_grouped: true,
+            grouping: crate::resolver::OutputGrouping {
+                group_output: false,
+                github_group_parallel: false,
+                parallel_grouped: true,
+            },
             tool_install: [
                 ("npm".into(), vec!["install".into()]),
                 ("pnpm".into(), Vec::new()),
@@ -1556,14 +1686,7 @@ mod tests {
     /// until listed) and feeds the checked names, so the list can't go
     /// stale relative to the destructure.
     ///
-    /// Two fields are reported under a different name/shape than
-    /// `ResolutionOverrides` uses, both to dodge clippy lints:
-    /// `task_source_overrides` reports as `task_source_pins`
-    /// (`struct_field_names`, it would otherwise end with the struct's
-    /// own name), and `group_output`/`github_group_parallel`/
-    /// `parallel_grouped` nest under `output_grouping`
-    /// (`struct_excessive_bools`). `RENAMED`/the `output_grouping` unnest
-    /// below account for both.
+    /// Fields reported under another name are listed in `RENAMED`.
     #[test]
     fn every_resolution_overrides_field_is_reported_or_excluded() {
         // Internal runner-to-runner plumbing (inherited env markers),
@@ -1575,16 +1698,15 @@ mod tests {
         // level still is, as `quiet`).
         const EXCLUDED: &[&str] = &[
             "package",
-            "parent_group_open",
-            "parent_warned",
+            "parent",
             "host_stream",
-            "host_stream_invocation_explicit",
             "task_verbosity",
             "host_diagnostics_explicit",
         ];
         // Resolver field name -> name it's actually reported under.
         const RENAMED: &[(&str, &str)] = &[
             ("reach", "fetch"),
+            ("grouping", "output_grouping"),
             ("task_source_overrides", "task_source_pins"),
             ("quiet_level", "quiet"),
             ("output_policy", "output"),
@@ -1616,21 +1738,18 @@ mod tests {
             host_diagnostics_explicit,
             output_policy,
             host_stream,
-            host_stream_invocation_explicit,
             host_stream_config,
             task_verbosity,
             explain,
             failure_policy,
-            group_output,
-            github_group_parallel,
-            parallel_grouped,
+            grouping,
             script_policy,
             on_collision,
-            parent_group_open,
-            parent_warned,
+            parent,
             env,
             tool_install,
             reach,
+            lockfile,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
@@ -1638,21 +1757,8 @@ mod tests {
         let top_properties = schema["properties"]
             .as_object()
             .expect("Overrides schema must have properties");
-        let mut reported: std::collections::BTreeSet<&str> =
+        let reported: std::collections::BTreeSet<&str> =
             top_properties.keys().map(String::as_str).collect();
-
-        // Unnest OutputGrouping so its 3 fields match by their
-        // ResolutionOverrides names instead of living behind a
-        // container the resolver struct doesn't have.
-        reported.remove("output_grouping");
-        let grouping_def = top_properties["output_grouping"]["$ref"]
-            .as_str()
-            .and_then(|r| r.strip_prefix("#/$defs/"))
-            .expect("output_grouping field must $ref a $defs entry");
-        let grouping_properties = schema["$defs"][grouping_def]["properties"]
-            .as_object()
-            .unwrap_or_else(|| panic!("{grouping_def}: expected a properties object"));
-        reported.extend(grouping_properties.keys().map(String::as_str));
 
         for field in resolution_overrides_fields {
             if EXCLUDED.contains(&field) {

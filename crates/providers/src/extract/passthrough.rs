@@ -17,7 +17,7 @@
 //! `bacon`, `mise`) with a conservative one-shot matcher: binary,
 //! optional `run` subcommand, same task name, no shell-active tail.
 
-use runner_core::ProviderId as TaskRunner;
+use runner_core::ProviderId;
 
 /// Detect whether `command` is a thin passthrough wrapper for `name`,
 /// returning the task runner it dispatches to (if any).
@@ -32,9 +32,9 @@ use runner_core::ProviderId as TaskRunner;
 /// 5. nx (`nx run <name>`)
 /// 6. bacon
 /// 7. mise (`mise run <name>`)
-pub fn detect_target(name: &str, command: &str) -> Option<TaskRunner> {
+pub(crate) fn detect_target(name: &str, command: &str) -> Option<ProviderId> {
     if crate::extract::turbo::is_self_passthrough(name, command) {
-        return Some(TaskRunner::Turbo);
+        return Some(ProviderId::Turbo);
     }
     for (runner, binary, run_sub) in CANDIDATES {
         if simple_passthrough(name, command, binary, *run_sub) {
@@ -47,13 +47,13 @@ pub fn detect_target(name: &str, command: &str) -> Option<TaskRunner> {
 /// Wrapper patterns for non-turbo runners, `(runner, binary,
 /// run_subcommand)`. `nx` and `mise` use a `run <task>` shape; the rest
 /// take the task name as the first positional.
-const CANDIDATES: &[(TaskRunner, &str, Option<&str>)] = &[
-    (TaskRunner::Just, "just", None),
-    (TaskRunner::Make, "make", None),
-    (TaskRunner::Task, "task", None),
-    (TaskRunner::Nx, "nx", Some("run")),
-    (TaskRunner::Bacon, "bacon", None),
-    (TaskRunner::Mise, "mise", Some("run")),
+const CANDIDATES: &[(ProviderId, &str, Option<&str>)] = &[
+    (ProviderId::Just, "just", None),
+    (ProviderId::Make, "make", None),
+    (ProviderId::Task, "task", None),
+    (ProviderId::Nx, "nx", Some("run")),
+    (ProviderId::Bacon, "bacon", None),
+    (ProviderId::Mise, "mise", Some("run")),
 ];
 
 /// Conservative passthrough matcher: requires `command` to be exactly
@@ -135,39 +135,39 @@ fn is_shell_active(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::detect_target;
-    use runner_core::ProviderId as TaskRunner;
+    use runner_core::ProviderId;
 
     #[test]
     fn detects_just_passthrough() {
-        assert_eq!(detect_target("build", "just build"), Some(TaskRunner::Just));
+        assert_eq!(detect_target("build", "just build"), Some(ProviderId::Just));
     }
 
     #[test]
     fn detects_make_passthrough() {
-        assert_eq!(detect_target("test", "make test"), Some(TaskRunner::Make));
+        assert_eq!(detect_target("test", "make test"), Some(ProviderId::Make));
     }
 
     #[test]
     fn detects_go_task_passthrough() {
-        assert_eq!(detect_target("lint", "task lint"), Some(TaskRunner::Task));
+        assert_eq!(detect_target("lint", "task lint"), Some(ProviderId::Task));
     }
 
     #[test]
     fn detects_nx_passthrough_with_run_subcommand() {
-        assert_eq!(detect_target("build", "nx run build"), Some(TaskRunner::Nx));
+        assert_eq!(detect_target("build", "nx run build"), Some(ProviderId::Nx));
     }
 
     #[test]
     fn detects_bacon_passthrough() {
         assert_eq!(
             detect_target("check", "bacon check"),
-            Some(TaskRunner::Bacon)
+            Some(ProviderId::Bacon)
         );
     }
 
     #[test]
     fn detects_mise_passthrough_with_run_subcommand() {
-        assert_eq!(detect_target("ci", "mise run ci"), Some(TaskRunner::Mise));
+        assert_eq!(detect_target("ci", "mise run ci"), Some(ProviderId::Mise));
     }
 
     #[test]
@@ -356,7 +356,7 @@ mod tests {
         // it's still a thin passthrough.
         assert_eq!(
             detect_target("test", "just test --reporter=verbose"),
-            Some(TaskRunner::Just),
+            Some(ProviderId::Just),
         );
     }
 
@@ -367,7 +367,7 @@ mod tests {
         // wrapper remains thin.
         assert_eq!(
             detect_target("test", "just test -- --watch"),
-            Some(TaskRunner::Just),
+            Some(ProviderId::Just),
         );
     }
 
@@ -377,7 +377,7 @@ mod tests {
         // underlying runner, no shell action.
         assert_eq!(
             detect_target("test", "just test --watch"),
-            Some(TaskRunner::Just)
+            Some(ProviderId::Just)
         );
     }
 
@@ -385,11 +385,11 @@ mod tests {
     fn turbo_passthrough_still_routes_to_turbo_runner() {
         assert_eq!(
             detect_target("build", "turbo run build"),
-            Some(TaskRunner::Turbo)
+            Some(ProviderId::Turbo)
         );
         assert_eq!(
             detect_target("build", "turbo build"),
-            Some(TaskRunner::Turbo)
+            Some(ProviderId::Turbo)
         );
     }
 }

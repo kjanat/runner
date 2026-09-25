@@ -28,6 +28,7 @@ const SPECIAL_TARGETS: &[&str] = &[
 ];
 
 /// Detected via `Makefile`, `GNUmakefile`, or `makefile`.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     FILENAMES.iter().any(|n| dir.join(n).exists())
 }
@@ -43,7 +44,7 @@ pub fn detect(dir: &Path) -> bool {
 /// are present. A target header appearing twice (legal in make) yields
 /// one row; a later duplicate can still contribute the description if
 /// the first occurrence had none.
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let Some(path) = files::find_first(dir, FILENAMES) else {
         return Ok(vec![]);
     };
@@ -140,14 +141,15 @@ fn is_assignment(arg: &str) -> bool {
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(extracted
         .into_iter()
         .map(|(name, description)| super::task(present, name, description))
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 
 #[cfg(test)]
@@ -269,7 +271,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod verbosity_tests {
+mod first_non_assignment_tests {
 
     #[test]
     fn variable_assignments_pass_and_anything_else_is_named() {

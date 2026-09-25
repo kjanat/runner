@@ -94,13 +94,33 @@ fn check_make_args(entry: &Task, args: &[String]) -> Result<()> {
 /// Runs before the dispatch arrow: without it the failure lands after mise
 /// has started the task and whatever it builds has run, and in a parallel
 /// chain the siblings are already going.
-fn check_mise_usage(ctx: &ProjectContext, entry: &Task, args: &[String]) -> Result<()> {
+fn check_mise_usage(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    entry: &Task,
+    args: &[String],
+    sink: crate::commands::WarningSink<'_>,
+) -> Result<()> {
     if entry.source != TaskSource::MiseToml {
         return Ok(());
     }
     let task = entry.name.as_str();
-    let Some(spec) = tool::mise::usage_spec(&ctx.root, task)? else {
-        return Ok(());
+    let spec = match tool::mise::usage_spec(entry.dir(&ctx.root), task) {
+        Ok(Some(spec)) => spec,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            crate::commands::print_warning_slice(
+                &[crate::types::DetectionWarning::Pipeline(
+                    runner_core::Warning::about(
+                        runner_core::ProviderId::Mise,
+                        format!("{error:#}; required flags were not checked"),
+                    ),
+                )],
+                overrides,
+                sink,
+            );
+            return Ok(());
+        }
     };
     let missing = spec.missing_required_flags(args);
     if missing.is_empty() {
@@ -311,7 +331,7 @@ fn spawn_plan(
     args: &[String],
     mut plan: runner_core::Plan,
 ) -> Result<Dispatch> {
-    crate::commands::configure_plan(&mut plan, overrides, token)?;
+    crate::commands::configure_plan(&mut plan, overrides, token);
     crate::render::explain::print_plan(overrides, &plan);
     print_dispatch_arrow(overrides, token, &plan_label(&plan, token), token, args);
     let mut command = runner_core::execute::command(&plan)?;
@@ -463,15 +483,17 @@ fn dispatch_plan(
         None
     };
     prepared.validate_task(entry, overrides)?;
-    let task_key = prepared.task_key.clone();
+    let task_key = entry.map_or_else(|| task_name.to_owned(), super::task_output_key);
     complete_plan(
         ctx,
         overrides,
-        task_name,
-        args,
-        rung,
-        entry,
-        &task_key,
+        &Chosen {
+            token: task_name,
+            args,
+            rung,
+            entry,
+            key: &task_key,
+        },
         &mut plan,
         sink.as_deref_mut(),
     )?;
@@ -507,7 +529,8 @@ fn dispatch_plan(
         SpawnDiagnostic::ResolvedPackageManager(prepared.node?)
     } else if entry.is_some_and(|e| e.source == TaskSource::PyprojectScripts) {
         SpawnDiagnostic::ResolvedPythonPackageManager(
-            python_decision(&plan)
+            plan.provider
+                .and_then(|id| python_decision(id, &plan.decided_by))
                 .ok_or_else(|| anyhow!("planned Python task has no package-manager choice"))?,
         )
     } else {
@@ -522,21 +545,26 @@ fn dispatch_plan(
     Ok(Dispatch::Spawn(Box::new(spawn)))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What the cascade chose for a token, and the `[tasks.<key>]` it answers to.
+pub(super) struct Chosen<'a> {
+    pub(super) token: &'a str,
+    pub(super) args: &'a [String],
+    pub(super) rung: runner_core::Rung,
+    pub(super) entry: Option<&'a Task>,
+    pub(super) key: &'a str,
+}
+
 pub(super) fn complete_plan(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-    token: &str,
-    args: &[String],
-    rung: runner_core::Rung,
-    entry: Option<&Task>,
-    key: &str,
+    chosen: &Chosen<'_>,
     plan: &mut runner_core::Plan,
     sink: crate::commands::WarningSink<'_>,
 ) -> Result<()> {
-    prepare_task(ctx, overrides, entry, args, plan, sink)?;
-    prepare_host(ctx, token, rung, plan)?;
-    crate::commands::configure_plan(plan, overrides, key)?;
+    let entry = chosen.entry;
+    prepare_task(ctx, overrides, entry, chosen.args, plan, sink)?;
+    prepare_host(ctx, chosen.token, chosen.rung, plan)?;
+    crate::commands::configure_plan(plan, overrides, chosen.key);
     if entry.is_some_and(|entry| entry.source == TaskSource::GoPackage) {
         preserve_go_environment(plan, &ctx.root)?;
     }
@@ -577,6 +605,7 @@ fn prepare_task(
 ) -> Result<()> {
     if let Some(entry) = entry {
         print_scope_explain(ctx, overrides, entry);
+        check_mise_usage(ctx, overrides, entry, args, sink.as_deref_mut())?;
         runtime::report_unhonored(overrides, entry, sink.as_deref_mut());
         if entry.source == TaskSource::PackageJson
             && let Some(over) = &overrides.runtime
@@ -587,7 +616,6 @@ fn prepare_task(
             }
         }
 
-        check_mise_usage(ctx, entry, args)?;
         check_make_args(entry, args)?;
         let stack =
             crate::commands::push_task_frame(entry.dir(&ctx.root), entry.source, &entry.name)?;
@@ -825,36 +853,36 @@ impl ResolvedPythonPm {
     }
 }
 
-/// Build a [`Command`] for the given task source and package manager.
+/// The package manager that runs `pyproject.toml` scripts here, if any.
+///
+/// # Errors
+/// Returns an observation failure.
 pub(crate) fn resolve_python_pm(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
-) -> Option<ResolvedPythonPm> {
+) -> io::Result<Option<ResolvedPythonPm>> {
     let policy = super::core::policy(overrides);
-    let project = super::core::project_under(ctx, &policy).ok()?;
-    let task = ctx
-        .tasks
-        .iter()
-        .find(|task| task.source == TaskSource::PyprojectScripts)?;
-    let task = super::core::task(task)?;
-    let plan = runner_core::plan(
-        &super::core::tree(ctx),
-        &project,
-        &policy,
-        &runner_core::Op::Run {
-            task: &task,
-            args: &[],
-        },
-        &runner_providers::REGISTRY,
-    )
-    .ok()?;
-    python_decision(&plan)
+    let project = super::core::project_under(ctx, &policy)?;
+    let tree = super::core::tree(ctx);
+    let scope = runner_core::plan::scope_at(&tree, &tree.cwd);
+    Ok(project
+        .for_source(
+            runner_core::ProviderId::Pyproject,
+            &scope,
+            &policy,
+            &runner_providers::REGISTRY,
+        )
+        .and_then(|present| {
+            python_decision(present.provider, &runner_core::decided_by(&policy, present))
+        }))
 }
 
-fn python_decision(plan: &runner_core::Plan) -> Option<ResolvedPythonPm> {
-    let id = plan.provider?;
+fn python_decision(
+    id: runner_core::ProviderId,
+    decided_by: &[runner_core::Layer],
+) -> Option<ResolvedPythonPm> {
     let pm = PackageManager::from_label(runner_providers::REGISTRY.by_id(id).label)?;
-    let choice = plan.decided_by.first()?;
+    let choice = decided_by.first()?;
     let via = match choice {
         runner_core::Layer::Cli => PythonPmResolution::Override(OverrideOrigin::CliFlag),
         runner_core::Layer::Env => PythonPmResolution::Override(OverrideOrigin::EnvVar),
@@ -874,6 +902,22 @@ mod tests {
     use super::{Dispatch, SpawnDispatch, check_make_args};
     use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolutionStep, ResolvedPm};
     use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+
+    #[test]
+    fn a_locked_python_project_without_scripts_still_names_its_package_manager() {
+        let dir = crate::tool::test_support::TempDir::new("python-pm-no-scripts");
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"demo\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("uv.lock"), "version = 1\n").unwrap();
+        let ctx = crate::detect::detect(dir.path());
+        let resolved = super::resolve_python_pm(&ctx, &ResolutionOverrides::default())
+            .unwrap()
+            .expect("uv.lock names the manager");
+        assert_eq!(resolved.pm, PackageManager::Uv);
+    }
 
     #[test]
     fn runtime_hints_offer_only_client_supported_choices_from_the_refusal() {

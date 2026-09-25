@@ -19,6 +19,7 @@ use super::files;
 pub const FILENAMES: &[&str] = &["bacon.toml"];
 
 /// Detected via `bacon.toml`.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     files::find_first(dir, FILENAMES).is_some()
 }
@@ -31,7 +32,7 @@ pub fn detect(dir: &Path) -> bool {
 /// output won't parse.
 ///
 /// Jobs whose names start with `_` are hidden (just-style convention).
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     if let Some(tasks) = extract_tasks_with_bacon(dir) {
         return Ok(tasks);
     }
@@ -151,15 +152,6 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
     Ok(tasks)
 }
 
-/// `bacon <job> [-- args...]`
-///
-/// Bacon's CLI is `bacon [options] [ARGS] [-- ADDITIONAL_JOB_ARGS]`: any
-/// extra args without the `--` separator get parsed as bacon's own options
-/// (or as a project path), so a value like `--ignored` would either be
-/// rejected as an unknown flag or, worse, interpreted as a bacon option. We
-/// always insert `--` when args are present so flags and positionals reach
-/// the underlying job verbatim.
-
 #[derive(Deserialize)]
 struct BaconDoc {
     #[serde(default)]
@@ -181,14 +173,15 @@ struct JobConfig {
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(extracted
         .into_iter()
         .map(|(name, description)| super::task(present, name, description))
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ pub const FILENAMES: &[&str] = &[
 ];
 
 /// Detected via any supported Taskfile variant.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     files::find_first(dir, FILENAMES).is_some()
 }
@@ -31,7 +32,7 @@ pub fn detect(dir: &Path) -> bool {
 ///
 /// Prefers `task --list-all --json` when available for parity with go-task's
 /// own file resolution behavior, then falls back to lightweight source parsing.
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     if let Some(tasks) = extract_tasks_with_task(dir) {
         return Ok(tasks);
     }
@@ -81,13 +82,7 @@ fn parse_task_list_json(stdout: &[u8]) -> Option<Vec<(String, Option<String>)>> 
     )
 }
 
-/// Fallback used when the `task` binary is absent: parse the Taskfile as
-/// real YAML instead of line-scanning it. The previous hand-rolled
-/// scanner silently dropped legal names its `[alnum]-_` filter didn't
-/// recognize (quoted or namespaced keys like `"build:prod"`) and never
-/// surfaced malformed YAML; a broken Taskfile just yielded zero tasks
-/// with no `TaskListUnreadable` warning. Invalid YAML now errors so
-/// detection can warn.
+/// Parse the Taskfile as YAML when the `task` binary is absent.
 fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let Some(path) = files::find_first(dir, FILENAMES) else {
         return Ok(vec![]);
@@ -145,14 +140,15 @@ fn extract_tasks_from_source(dir: &Path) -> anyhow::Result<Vec<(String, Option<S
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(extracted
         .into_iter()
         .map(|(name, description)| super::task(present, name, description))
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 
 #[cfg(test)]
@@ -188,8 +184,6 @@ mod tests {
 
     #[test]
     fn source_fallback_errors_on_invalid_yaml() {
-        // A broken Taskfile must surface as an error (→ TaskListUnreadable
-        // warning), not silently yield zero tasks.
         let dir = TempDir::new("go-task-broken-yaml");
         fs::write(
             dir.path().join("Taskfile.yml"),

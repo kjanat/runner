@@ -21,6 +21,8 @@ pub struct Capabilities {
     pub file_interpreters: &'static [&'static str],
     /// Default source priority when policy has not ranked a source.
     pub task_priority: u8,
+    /// Order among package managers probed on `PATH` for a task source none runs.
+    pub probe_priority: u8,
     /// Capability tables selected by variant evidence from observation.
     pub variants: &'static [(&'static str, Self)],
     /// Install dependencies.
@@ -61,6 +63,7 @@ impl Capabilities {
         file_fallback: false,
         file_interpreters: &[],
         task_priority: 2,
+        probe_priority: 0,
         variants: &[],
         install: None,
         run_default: None,
@@ -100,6 +103,8 @@ pub enum ScriptMechanism {
     Flag(&'static str),
     /// An environment variable.
     Env(&'static str, &'static str),
+    /// A flag and an environment variable, for a tool whose variant is unknown.
+    FlagAndEnv(&'static str, &'static str, &'static str),
     /// The provider already behaves this way.
     Default,
     /// The provider cannot express it.
@@ -118,10 +123,10 @@ pub struct ScriptSupport {
 }
 
 impl ScriptSupport {
-    /// The provider offers no script switch.
+    /// The provider offers no script switch and always runs its build scripts.
     pub const NONE: Self = Self {
         deny: ScriptMechanism::Unsupported,
-        allow: ScriptMechanism::Unsupported,
+        allow: ScriptMechanism::Default,
     };
 }
 

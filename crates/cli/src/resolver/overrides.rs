@@ -14,12 +14,12 @@ use super::policies::{
     resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
-    CliOverrides, CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources,
-    PmOverride, QuietSource, ResolutionOverrides, RunnerOverride, RuntimeOverride, ScriptPolicy,
-    SourceValue,
+    CliOverrides, CollisionPolicy, DiagnosticFlags, ExplainSource, LockfilePolicy, OutputGrouping,
+    OverrideOrigin, OverrideSources, ParentMarkers, PmOverride, QuietSource, ResolutionOverrides,
+    RunnerOverride, RuntimeOverride, ScriptPolicy, SourceValue,
 };
 use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
-use crate::tool::{QuietLevel, Stream};
+use crate::tool::{QuietLevel, RunnerOutput, Stream};
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, TaskRunner};
 
 impl ResolutionOverrides {
@@ -49,7 +49,7 @@ impl ResolutionOverrides {
             diagnostics,
             failure,
         };
-        let mut built = Self::from_sources(env.sources(cli, config))?;
+        let mut built = Self::from_sources(&env.sources(cli, config))?;
         built.package = overrides.package.map(str::to_owned);
         Ok(built)
     }
@@ -177,11 +177,11 @@ impl ResolutionOverrides {
         ] {
             lenient_env_bool(field, var, &mut warnings);
         }
-        let overrides = Self::from_sources(sources)?;
+        let overrides = Self::from_sources(&sources)?;
         Ok((overrides, warnings))
     }
 
-    /// Pure-function constructor that consumes a fully-populated
+    /// Pure-function constructor over a fully-populated
     /// [`OverrideSources`]. Production code uses
     /// [`Self::from_cli_and_env`], which builds the struct from the
     /// process environment; tests pass values directly so they don't
@@ -192,16 +192,7 @@ impl ResolutionOverrides {
     /// Returns an error if any value does not name a known package manager,
     /// task runner, or fallback policy, or if a `runner.toml` field contains
     /// a PM that does not belong to its target ecosystem.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "OverrideSources is a single-use builder; taking by value keeps the call sites \
-                  moveable"
-    )]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pure constructor preserves cross-axis precedence in one auditable place"
-    )]
-    pub(crate) fn from_sources(sources: OverrideSources<'_>) -> Result<Self> {
+    pub(crate) fn from_sources(sources: &OverrideSources<'_>) -> Result<Self> {
         let pm = parse_override(
             sources.pm.cli,
             sources.pm.env,
@@ -217,16 +208,9 @@ impl ResolutionOverrides {
             |runner, origin| RunnerOverride { runner, origin },
         )?;
 
-        let runtime = resolve_runtime(&sources)?;
-        let reach = sources
-            .reach
-            .cli
-            .or(sources.reach.env)
-            .map(str::trim)
-            .filter(|raw| !raw.is_empty())
-            .map(parse_reach_label)
-            .transpose()?
-            .unwrap_or_default();
+        let runtime = resolve_runtime(sources)?;
+        let reach = resolve_reach(sources)?;
+        let lockfile = resolve_lockfile(sources);
         let fallback =
             resolve_fallback_policy(sources.fallback.cli, sources.fallback.env, sources.config)?;
         let on_mismatch = resolve_mismatch_policy(
@@ -240,101 +224,27 @@ impl ResolutionOverrides {
         let prefer_runners = Vec::new();
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
-        let (quiet_level, host_stream, host_stream_invocation_explicit) =
-            resolve_verbosity(&sources)?;
-        let quiet_explicit =
-            sources.quiet.cli > 0 || sources.quiet.env.and_then(parse_quiet_env).is_some();
-        let host_diagnostics_explicit = quiet_explicit
-            || sources
-                .config
-                .is_some_and(|config| config.config.host.diagnostics.is_some());
-        let mut output_policy = crate::tool::OutputPolicy::default();
-        if let Some(config) = sources.config {
-            let runner = &config.config.runner;
-            output_policy.runner.progress =
-                runner.progress.unwrap_or(output_policy.runner.progress);
-            output_policy.runner.warnings =
-                runner.warnings.unwrap_or(output_policy.runner.warnings);
-            output_policy.runner.errors = runner.errors.unwrap_or(output_policy.runner.errors);
-            output_policy.runner.groups = runner.groups.unwrap_or(output_policy.runner.groups);
-            output_policy.runner.task_timing = runner
-                .task_timing
-                .unwrap_or(output_policy.runner.task_timing);
-            output_policy.runner.summary = runner.summary.unwrap_or(output_policy.runner.summary);
-            output_policy.runner.fatal_errors = runner
-                .fatal_errors
-                .unwrap_or(output_policy.runner.fatal_errors);
-            if let Some(raw) = config.config.host.diagnostics.as_deref() {
-                output_policy.host_diagnostics = crate::tool::HostDiagnostics::from_label(raw)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "[host] diagnostics {raw:?}; expected one of normal, quiet, reduced"
-                        )
-                    })?;
-            }
-        }
+        let (quiet_level, host_stream) = resolve_verbosity(sources)?;
+        let (output_policy, host_diagnostics_explicit) =
+            resolve_output_policy(sources, quiet_level, no_warnings)?;
         let host_stream_config = sources
             .config
             .and_then(|config| config.config.host.stream.as_deref())
             .map(parse_host_stream_label)
             .transpose()?
             .unwrap_or(Stream::Inherit);
-        if quiet_explicit {
-            let preset = crate::tool::OutputPolicy::from_quiet(quiet_level);
-            output_policy.runner = output_policy.runner.and(preset.runner);
-            output_policy.host_diagnostics =
-                output_policy.host_diagnostics.max(preset.host_diagnostics);
-        }
-        if no_warnings {
-            output_policy.runner.warnings = false;
-        }
         let explain = sources.explain.cli || sources.explain.env.is_some_and(is_env_truthy);
         let failure_policy =
             resolve_failure_policy(sources.keep_going, sources.kill_on_fail, sources.config)?;
-        // Output grouping toggles (no CLI/env layer in v1). `group_output`
-        // (default true) is the broad GitHub Actions grouping switch.
-        // Parallel grouping diverges by environment: `github_group_parallel`
-        // (default true) applies under Actions only when `group_output` is
-        // also true; `parallel_grouped` (default false) applies elsewhere.
-        let group_output = sources.config.is_none_or(|c| c.config.github.group_output);
-        let github_group_parallel = sources
-            .config
-            .is_none_or(|c| c.config.github.group_parallel);
-        let parallel_grouped = sources.config.is_some_and(|c| c.config.parallel.grouped);
-        let script_policy = parse_install_scripts(&sources)?;
-        let on_collision = parse_install_on_collision(&sources)?;
-
-        let mut pm_by_ecosystem = HashMap::new();
-        if let Some(loaded) = sources.config {
-            if let Some(raw) = loaded.config.pm.node.as_deref() {
-                let pm_value = parse_node_pm(raw)?;
-                pm_by_ecosystem.insert(
-                    Ecosystem::Node,
-                    PmOverride {
-                        pm: pm_value,
-                        origin: OverrideOrigin::ConfigFile {
-                            path: loaded.path.clone(),
-                        },
-                    },
-                );
-            }
-            if let Some(raw) = loaded.config.pm.python.as_deref() {
-                let pm_value = parse_python_pm(raw)?;
-                pm_by_ecosystem.insert(
-                    Ecosystem::Python,
-                    PmOverride {
-                        pm: pm_value,
-                        origin: OverrideOrigin::ConfigFile {
-                            path: loaded.path.clone(),
-                        },
-                    },
-                );
-            }
-        }
+        let grouping = resolve_grouping(sources);
+        let script_policy = parse_install_scripts(sources)?;
+        let on_collision = parse_install_on_collision(sources)?;
+        let pm_by_ecosystem = config_pm_by_ecosystem(sources)?;
 
         Ok(Self {
             pm,
             reach,
+            lockfile,
             package: None,
             pm_by_ecosystem,
             runner,
@@ -349,32 +259,142 @@ impl ResolutionOverrides {
             host_diagnostics_explicit,
             output_policy,
             host_stream,
-            host_stream_invocation_explicit,
             host_stream_config,
             task_verbosity,
             explain,
             failure_policy,
-            group_output,
-            github_group_parallel,
-            parallel_grouped,
+            grouping,
             script_policy,
             on_collision,
-            env: env_layers(&sources),
-            tool_install: tool_install(&sources),
-            // Set in `dispatch`, which is the first place a resolved project
-            // root and the inherited `RUNNER_WARNED_ROOT` marker are both in
-            // hand. Nothing to capture from `sources`.
-            parent_warned: false,
-            // Set by a parent runner that already opened a GHA group (see
-            // `crate::commands::GROUP_ACTIVE_ENV`), captured into `sources` so this
-            // stays a pure function of its inputs. An internal nesting signal,
-            // not part of the CLI/env/config override layering. Gated through
-            // `is_env_truthy` like every other `RUNNER_*` boolean, so
-            // `=0`/`=false`/empty read as not-nested (the runner only ever
-            // writes `1`). Absent → false.
-            parent_group_open: sources.group_active.is_some_and(is_env_truthy),
+            env: env_layers(sources),
+            tool_install: tool_install(sources),
+            // `warned` is set in `dispatch`, the first place a resolved
+            // project root and the inherited `RUNNER_WARNED_ROOT` marker are
+            // both in hand. `group_open` is gated through `is_env_truthy` like
+            // every other `RUNNER_*` boolean, so `=0`/`=false`/empty read as
+            // not-nested.
+            parent: ParentMarkers {
+                group_open: sources.group_active.is_some_and(is_env_truthy),
+                warned: false,
+            },
         })
     }
+}
+
+/// `--fetch` / `RUNNER_REACH` first, then `[defaults].fetch`.
+fn resolve_reach(sources: &OverrideSources<'_>) -> Result<runner_core::ReachPolicy> {
+    Ok(sources
+        .reach
+        .cli
+        .or(sources.reach.env)
+        .or_else(|| {
+            sources
+                .config
+                .and_then(|loaded| loaded.config.defaults.fetch.as_deref())
+        })
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(parse_reach_label)
+        .transpose()?
+        .unwrap_or_default())
+}
+
+fn resolve_lockfile(sources: &OverrideSources<'_>) -> LockfilePolicy {
+    if sources
+        .config
+        .and_then(|loaded| loaded.config.defaults.frozen)
+        .unwrap_or(false)
+    {
+        LockfilePolicy::Frozen
+    } else {
+        LockfilePolicy::Update
+    }
+}
+
+/// The output policy after `[runner]`/`[host]` config and an explicit quiet
+/// preset, plus whether the host diagnostic axis was chosen explicitly.
+fn resolve_output_policy(
+    sources: &OverrideSources<'_>,
+    quiet_level: QuietLevel,
+    no_warnings: bool,
+) -> Result<(crate::tool::OutputPolicy, bool)> {
+    let quiet_explicit =
+        sources.quiet.cli > 0 || sources.quiet.env.and_then(parse_quiet_env).is_some();
+    let host_diagnostics_explicit = quiet_explicit
+        || sources
+            .config
+            .is_some_and(|config| config.config.host.diagnostics.is_some());
+    let mut output_policy = crate::tool::OutputPolicy::default();
+    if let Some(config) = sources.config {
+        for output in RunnerOutput::ALL {
+            if let Some(shown) = config.config.runner.get(output) {
+                output_policy.runner = output_policy.runner.with(output, shown);
+            }
+        }
+        if let Some(raw) = config.config.host.diagnostics.as_deref() {
+            output_policy.host_diagnostics = crate::tool::HostDiagnostics::from_label(raw)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "[host] diagnostics {raw:?}; expected one of normal, quiet, reduced"
+                    )
+                })?;
+        }
+    }
+    if quiet_explicit {
+        let preset = crate::tool::OutputPolicy::from_quiet(quiet_level);
+        output_policy.runner = output_policy.runner.and(preset.runner);
+        output_policy.host_diagnostics =
+            output_policy.host_diagnostics.max(preset.host_diagnostics);
+    }
+    if no_warnings {
+        output_policy.runner = output_policy.runner.with(RunnerOutput::Warnings, false);
+    }
+    Ok((output_policy, host_diagnostics_explicit))
+}
+
+/// Output grouping toggles (no CLI/env layer in v1). `group_output`
+/// (default true) is the broad GitHub Actions grouping switch.
+/// `github_group_parallel` (default true) applies under Actions only when
+/// `group_output` is also true; `parallel_grouped` (default false) applies
+/// elsewhere.
+fn resolve_grouping(sources: &OverrideSources<'_>) -> OutputGrouping {
+    OutputGrouping {
+        group_output: sources.config.is_none_or(|c| c.config.github.group_output),
+        github_group_parallel: sources
+            .config
+            .is_none_or(|c| c.config.github.group_parallel),
+        parallel_grouped: sources.config.is_some_and(|c| c.config.parallel.grouped),
+    }
+}
+
+/// `[pm].node` and `[pm].python`.
+fn config_pm_by_ecosystem(sources: &OverrideSources<'_>) -> Result<HashMap<Ecosystem, PmOverride>> {
+    let mut pm_by_ecosystem = HashMap::new();
+    let Some(loaded) = sources.config else {
+        return Ok(pm_by_ecosystem);
+    };
+    let origin = || OverrideOrigin::ConfigFile {
+        path: loaded.path.clone(),
+    };
+    if let Some(raw) = loaded.config.pm.node.as_deref() {
+        pm_by_ecosystem.insert(
+            Ecosystem::Node,
+            PmOverride {
+                pm: parse_node_pm(raw)?,
+                origin: origin(),
+            },
+        );
+    }
+    if let Some(raw) = loaded.config.pm.python.as_deref() {
+        pm_by_ecosystem.insert(
+            Ecosystem::Python,
+            PmOverride {
+                pm: parse_python_pm(raw)?,
+                origin: origin(),
+            },
+        );
+    }
+    Ok(pm_by_ecosystem)
 }
 
 /// Resolve the JS-runtime override: `--runtime` / `RUNNER_RUNTIME` first,
@@ -554,7 +574,7 @@ fn parse_script_policy_label(raw: &str) -> Result<ScriptPolicy> {
 ///
 /// Returns the first parse or conflict error in the file.
 pub(crate) fn validate_config(loaded: &LoadedConfig) -> Result<()> {
-    ResolutionOverrides::from_sources(OverrideSources {
+    ResolutionOverrides::from_sources(&OverrideSources {
         config: Some(loaded),
         ..OverrideSources::default()
     })
@@ -634,7 +654,7 @@ mod tests {
     #[test]
     fn script_policy_defaults_when_unset() {
         let overrides =
-            ResolutionOverrides::from_sources(OverrideSources::default()).expect("builds");
+            ResolutionOverrides::from_sources(&OverrideSources::default()).expect("builds");
         assert_eq!(overrides.script_policy, ScriptPolicy::Default);
     }
 
@@ -653,7 +673,7 @@ mod tests {
                 ..OverrideSources::default()
             };
             let overrides =
-                ResolutionOverrides::from_sources(sources).expect("script policy parses");
+                ResolutionOverrides::from_sources(&sources).expect("script policy parses");
             assert_eq!(overrides.script_policy, expected, "raw: {raw:?}");
         }
     }
@@ -679,7 +699,7 @@ mod tests {
             config: Some(&loaded),
             ..OverrideSources::default()
         };
-        let overrides = ResolutionOverrides::from_sources(sources).expect("env wins over config");
+        let overrides = ResolutionOverrides::from_sources(&sources).expect("env wins over config");
         assert_eq!(overrides.script_policy, ScriptPolicy::Deny);
     }
 
@@ -700,7 +720,7 @@ mod tests {
             config: Some(&loaded),
             ..OverrideSources::default()
         };
-        let overrides = ResolutionOverrides::from_sources(sources).expect("config applies");
+        let overrides = ResolutionOverrides::from_sources(&sources).expect("config applies");
         assert_eq!(overrides.script_policy, ScriptPolicy::Deny);
     }
 
@@ -713,7 +733,7 @@ mod tests {
             },
             ..OverrideSources::default()
         };
-        let err = ResolutionOverrides::from_sources(sources).expect_err("unknown value errors");
+        let err = ResolutionOverrides::from_sources(&sources).expect_err("unknown value errors");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("RUNNER_INSTALL_SCRIPTS"),
@@ -734,7 +754,7 @@ mod tests {
                 },
                 ..OverrideSources::default()
             };
-            let err = ResolutionOverrides::from_sources(sources)
+            let err = ResolutionOverrides::from_sources(&sources)
                 .expect_err("case variants must be rejected");
             assert!(
                 format!("{err:#}").contains("unknown script policy"),
@@ -761,26 +781,27 @@ mod tests {
     fn group_active_marker_sets_parent_group_open_truthily() {
         // Threaded through captured sources (no process-env read), so this is
         // testable and `from_sources` stays pure. `1` → nested.
-        let nested = ResolutionOverrides::from_sources(OverrideSources {
+        let nested = ResolutionOverrides::from_sources(&OverrideSources {
             group_active: Some("1"),
             ..OverrideSources::default()
         })
         .expect("builds");
-        assert!(nested.parent_group_open);
+        assert!(nested.parent.group_open);
 
         // `0`/empty read as not-nested, matching the other `RUNNER_*` flags.
         for falsy in ["0", "", "false"] {
-            let o = ResolutionOverrides::from_sources(OverrideSources {
+            let o = ResolutionOverrides::from_sources(&OverrideSources {
                 group_active: Some(falsy),
                 ..OverrideSources::default()
             })
             .expect("builds");
-            assert!(!o.parent_group_open, "{falsy:?} should read as not nested");
+            assert!(!o.parent.group_open, "{falsy:?} should read as not nested");
         }
 
         // Absent → not nested.
-        let absent = ResolutionOverrides::from_sources(OverrideSources::default()).expect("builds");
-        assert!(!absent.parent_group_open);
+        let absent =
+            ResolutionOverrides::from_sources(&OverrideSources::default()).expect("builds");
+        assert!(!absent.parent.group_open);
     }
 
     #[test]
@@ -948,17 +969,18 @@ impl EnvSnapshot {
 /// rather than aborting the run (the doctor/lenient path warns instead). A
 /// bad explicit `--host-stream` still errors. Per-task
 /// `[tasks.<name>].verbosity` config layers under both at dispatch.
-fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Stream, bool)> {
+fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Option<Stream>)> {
     // CLI count wins outright when passed, so env can neither escalate past nor
     // undercut an explicit `-q`; env applies only when no `-q` was given.
     let quiet_level = if sources.quiet.cli > 0 {
         QuietLevel::from_count(sources.quiet.cli)
     } else {
-        sources
-            .quiet
-            .env
-            .and_then(parse_quiet_env)
-            .unwrap_or(QuietLevel::Off)
+        match sources.quiet.env {
+            Some(raw) => parse_quiet_env(raw).ok_or_else(|| {
+                anyhow!("RUNNER_QUIET={raw}: expected a level 0 to 4 or a true/false word")
+            })?,
+            None => QuietLevel::Off,
+        }
     };
 
     let cli_host_stream = sources
@@ -971,22 +993,15 @@ fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Strea
         .env
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let (host_stream, host_stream_invocation_explicit) = match cli_host_stream {
-        // An explicit `--host-stream` stays strict (clap already validated it).
-        Some(raw) => (parse_host_stream_label(raw)?, true),
-        // A typo'd `RUNNER_HOST_STREAM` env value is lenient here, mirroring the
-        // quiet axis (`parse_quiet_env(...).unwrap_or(Off)`): it falls back to
-        // the default instead of aborting every `run`. The doctor path warns.
-        None => match env_host_stream {
-            Some(raw) => (
-                parse_host_stream_label(raw)
-                    .map_err(|error| anyhow!("RUNNER_HOST_STREAM={raw}: {error}"))?,
-                true,
-            ),
-            None => (Stream::Inherit, false),
-        },
+    let host_stream = match (cli_host_stream, env_host_stream) {
+        (Some(raw), _) => Some(parse_host_stream_label(raw)?),
+        (None, Some(raw)) => Some(
+            parse_host_stream_label(raw)
+                .map_err(|error| anyhow!("RUNNER_HOST_STREAM={raw}: {error}"))?,
+        ),
+        (None, None) => None,
     };
-    Ok((quiet_level, host_stream, host_stream_invocation_explicit))
+    Ok((quiet_level, host_stream))
 }
 
 /// Pre-validate one env-sourced override field for the lenient

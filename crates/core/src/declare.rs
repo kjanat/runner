@@ -28,6 +28,8 @@ pub struct Setting {
     pub flag: Option<&'static str>,
     /// What the setting holds.
     pub kind: SettingKind,
+    /// Whether `runner.toml` accepts the key.
+    pub config: bool,
     /// The one line schema, completion and docs print.
     pub doc: &'static str,
 }
@@ -39,6 +41,7 @@ pub static SETTINGS: &[Setting] = &[
         env: Some("RUNNER_PM"),
         flag: Some("pm"),
         kind: SettingKind::ProviderPerEcosystem,
+        config: true,
         doc: "The package manager that installs and runs scripts, per ecosystem.",
     },
     Setting {
@@ -46,6 +49,7 @@ pub static SETTINGS: &[Setting] = &[
         env: Some("RUNNER_RUNNER"),
         flag: Some("runner"),
         kind: SettingKind::Provider,
+        config: true,
         doc: "The task source that wins a same-named task.",
     },
     Setting {
@@ -53,6 +57,7 @@ pub static SETTINGS: &[Setting] = &[
         env: Some("RUNNER_RUNTIME"),
         flag: Some("runtime"),
         kind: SettingKind::Provider,
+        config: true,
         doc: "The JavaScript runtime scripts and files run on.",
     },
     Setting {
@@ -60,13 +65,15 @@ pub static SETTINGS: &[Setting] = &[
         env: None,
         flag: Some("frozen"),
         kind: SettingKind::Bool,
+        config: true,
         doc: "Install without touching the lockfile.",
     },
     Setting {
         key: "install.scripts",
         env: Some("RUNNER_INSTALL_SCRIPTS"),
         flag: Some("scripts"),
-        kind: SettingKind::Choice(&["default", "deny", "allow"]),
+        kind: SettingKind::Choice(&["deny", "allow"]),
+        config: true,
         doc: "What an install does with lifecycle scripts.",
     },
     Setting {
@@ -74,6 +81,7 @@ pub static SETTINGS: &[Setting] = &[
         env: Some("RUNNER_REACH"),
         flag: Some("fetch"),
         kind: SettingKind::Choice(&["ask", "allow", "local"]),
+        config: true,
         doc: "Whether a command that can download may run.",
     },
     Setting {
@@ -81,6 +89,7 @@ pub static SETTINGS: &[Setting] = &[
         env: Some("RUNNER_QUIET"),
         flag: Some("quiet"),
         kind: SettingKind::Choice(&["normal", "quiet", "very-quiet", "silent"]),
+        config: false,
         doc: "How much of a host's own output to suppress.",
     },
     Setting {
@@ -88,6 +97,7 @@ pub static SETTINGS: &[Setting] = &[
         env: None,
         flag: None,
         kind: SettingKind::EnvTable,
+        config: true,
         doc: "Variables every command gets.",
     },
     Setting {
@@ -95,6 +105,7 @@ pub static SETTINGS: &[Setting] = &[
         env: None,
         flag: None,
         kind: SettingKind::EnvTable,
+        config: true,
         doc: "Variables one tool's commands get.",
     },
     Setting {
@@ -102,6 +113,7 @@ pub static SETTINGS: &[Setting] = &[
         env: None,
         flag: None,
         kind: SettingKind::EnvTable,
+        config: true,
         doc: "Variables one task gets.",
     },
     Setting {
@@ -109,14 +121,8 @@ pub static SETTINGS: &[Setting] = &[
         env: None,
         flag: None,
         kind: SettingKind::Operations,
+        config: true,
         doc: "The operations a tool manager runs on install.",
-    },
-    Setting {
-        key: "tasks.<name>.quiet",
-        env: None,
-        flag: None,
-        kind: SettingKind::Bool,
-        doc: "Run the task with the host's quiet flag.",
     },
 ];
 
@@ -147,6 +153,27 @@ impl Setting {
         Self::by_key(key)
             .and_then(|setting| setting.env)
             .expect("declared policy environment variable")
+    }
+
+    /// The doc line declared for a policy key.
+    ///
+    /// # Panics
+    /// Panics for undeclared keys.
+    #[must_use]
+    pub fn doc_for(key: &str) -> &'static str {
+        Self::by_key(key).expect("declared policy key").doc
+    }
+
+    /// The labels a [`SettingKind::Choice`] key accepts.
+    ///
+    /// # Panics
+    /// Panics for keys that are not a closed choice.
+    #[must_use]
+    pub fn choices_for(key: &str) -> &'static [&'static str] {
+        match Self::by_key(key).map(|setting| setting.kind) {
+            Some(SettingKind::Choice(choices)) => choices,
+            _ => panic!("{key} is not a declared choice"),
+        }
     }
 
     /// The row for the `RUNNER_*` variable `env`.

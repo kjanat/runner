@@ -39,20 +39,21 @@ pub use health::Health;
 pub use observe::observe;
 pub use op::Op;
 pub use plan::{
-    Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, Trust, Unsafe, discover,
-    dispatch, dispatch_from, ecosystem_of, file_plan, has_local_prefix, is_directly_executable,
-    plan, plan_argv, plan_found, plan_with, read_shebang, resolve_path, scope_dir, select,
+    Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, Trust, Unsafe, decided_by,
+    discover, dispatch, dispatch_from, ecosystem_of, file_plan, has_local_prefix,
+    is_directly_executable, plan, plan_argv, plan_found, plan_with, read_shebang, resolve_path,
+    scope_dir, select,
 };
 pub use policy::{Choice, Layer, PerEcosystem, Policy, ReachPolicy, ScriptPolicy, TrustPolicy};
-pub use probe::{Prober, probe_in, probe_with};
+pub use probe::{Prober, probe_in, probe_in_dirs, probe_with};
 pub use provider::{Ecosystem, Hooks, Kind, ProviderId};
 pub use reach::Reach;
 pub use registry::{AfterObserveFn, BeforePlanFn, Provider, Registry, TasksFn, VersionFn};
-pub use resolve::{Project, resolve};
+pub use resolve::{Project, Unread, resolve};
 pub use scheme::{Check, ParseError, Scheme, check};
 pub use scope::Scope;
 pub use signal::{Declared, Signal, SignalId};
-pub use task::{Task, TaskDetail};
+pub use task::{Extracted, Task, TaskDetail};
 pub use template::{Piece, Rendered, Request, ScriptRequest, Template};
 pub use tree::Tree;
 pub use verbosity::Verbosity;

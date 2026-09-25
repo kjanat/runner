@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 /// Return the first existing file in `dir` matching `filenames` order.
+#[must_use]
 pub fn find_first(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
     filenames
         .iter()
@@ -10,9 +11,9 @@ pub fn find_first(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
         .find(|path| path.exists())
 }
 
-/// Walk `dir` and its ancestors, bounded to the VCS root when one is
-/// found, returning the first `pred` result that is `Some`. Shared by
-/// every upward probe so the VCS-boundary rule lives in exactly one place.
+/// The first `Some` from `pred` over `dir` and its ancestors.
+///
+/// The walk stops at the enclosing VCS root when there is one.
 pub fn find_in_ancestors<T>(dir: &Path, mut pred: impl FnMut(&Path) -> Option<T>) -> Option<T> {
     let mut ancestors = dir.ancestors();
 
@@ -27,6 +28,7 @@ pub fn find_in_ancestors<T>(dir: &Path, mut pred: impl FnMut(&Path) -> Option<T>
 }
 
 /// Return the first existing file matching `filenames` while walking upward.
+#[must_use]
 pub fn find_first_upwards(dir: &Path, filenames: &[&str]) -> Option<PathBuf> {
     find_in_ancestors(dir, |ancestor| find_first(ancestor, filenames))
 }

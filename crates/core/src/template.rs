@@ -180,6 +180,10 @@ impl Piece {
                     ScriptMechanism::Env(key, value) => {
                         out.env.push((key.into(), value.into()));
                     }
+                    ScriptMechanism::FlagAndEnv(flag, key, value) => {
+                        out.args.push(flag.into());
+                        out.env.push((key.into(), value.into()));
+                    }
                     ScriptMechanism::Default
                     | ScriptMechanism::Unsupported
                     | ScriptMechanism::Warn(_) => {}

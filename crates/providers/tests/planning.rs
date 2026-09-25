@@ -174,6 +174,7 @@ fn unsupported_and_allowlist_script_policies_are_clamped() {
     for (id, scripts, clamped) in [
         (ProviderId::Bun, ScriptPolicy::Allow, true),
         (ProviderId::Cargo, ScriptPolicy::Deny, true),
+        (ProviderId::Cargo, ScriptPolicy::Allow, false),
         (ProviderId::Npm, ScriptPolicy::Deny, false),
     ] {
         let policy = Policy {
@@ -592,7 +593,7 @@ fn windows_file_plan_uses_posix_shell_paths_and_preserves_existing_interpreters(
 #[test]
 fn yarn_install_and_exec_use_the_same_observed_capabilities() {
     for (manifest, frozen_flag, exec_verb, deny_flag, deny_env, allow_env) in [
-        (None, "--frozen-lockfile", "run", true, None, None),
+        (None, "--frozen-lockfile", "run", true, Some("false"), None),
         (
             Some("yarn@1.22.0"),
             "--frozen-lockfile",
@@ -691,7 +692,12 @@ fn mise_frozen_install_follows_each_declared_config_lock_pair() {
             frozen: true,
             ..Policy::default()
         };
-        let project = Project::default();
+        let mut local = fixture.present(ProviderId::Npm);
+        local.bin_dirs = vec![fixture.0.root.join("node_modules/.bin")];
+        let project = Project {
+            present: vec![local],
+            ..Project::default()
+        };
         let operations = ["install".into()];
         let planned = || {
             plan_with(
@@ -891,4 +897,186 @@ fn declared_health_checks_report_findings_and_query_failures() {
     .unwrap();
     assert_eq!(plan.trust, runner_core::Trust::Host);
     assert!(plan.path_prepend.is_empty());
+}
+
+#[test]
+fn an_activated_but_unconfigured_manager_takes_no_miss() {
+    let fixture = Fixture::new();
+    for (weight, manager) in [(Weight::Present, false), (Weight::Configured, true)] {
+        let mut present = fixture.present(ProviderId::Mise);
+        present.because[0].weight = weight;
+        let project = Project {
+            present: vec![present],
+            ..Project::default()
+        };
+        let policy = Policy {
+            reach: ReachPolicy::Allow,
+            ..Policy::default()
+        };
+        let cascade = Cascade {
+            tree: &fixture.0,
+            project: &project,
+            policy: &policy,
+            registry: &REGISTRY,
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        let outcome = runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[]);
+        assert_eq!(
+            matches!(outcome, Ok((rung, _)) if rung.name == "manager"),
+            manager,
+            "{weight:?}"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_task_source_stops_the_cascade_at_the_task_rung() {
+    let fixture = Fixture::new();
+    let project = Project {
+        unread: vec![runner_core::Unread {
+            provider: ProviderId::Just,
+            scope: Scope::Root,
+            message: "justfile: unexpected token".into(),
+        }],
+        ..Project::default()
+    };
+    let policy = Policy {
+        reach: ReachPolicy::Allow,
+        ..Policy::default()
+    };
+    let cascade = Cascade {
+        tree: &fixture.0,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &["list"],
+        dep: None,
+        confirm: None,
+    };
+    let refusal = runner_core::dispatch(&cascade, "build", &[]).unwrap_err();
+    assert!(
+        matches!(&refusal, Refusal::Invalid(message) if message.contains("just tasks in root could not be read")),
+        "{refusal:?}"
+    );
+    assert!(matches!(
+        runner_core::dispatch(&cascade, "list", &[]),
+        Ok((_, Dispatch::Builtin(_)))
+    ));
+}
+
+#[test]
+fn a_turbo_key_for_an_unknown_member_is_a_warning_beside_the_other_tasks() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("turbo.json"),
+        r#"{"tasks":{"lint":{},"ghost#build":{}}}"#,
+    )
+    .unwrap();
+    let present = fixture.present(ProviderId::Turbo);
+    let found = (REGISTRY.by_id(ProviderId::Turbo).tasks.unwrap())(&present, &fixture.0).unwrap();
+    assert_eq!(
+        found
+            .tasks
+            .iter()
+            .map(|task| task.name.as_str())
+            .collect::<Vec<_>>(),
+        ["lint"]
+    );
+    assert!(found.warnings[0].message.contains("ghost#build"));
+}
+
+#[test]
+fn a_tool_only_pyproject_cleans_no_python_directories() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("pyproject.toml"),
+        "[tool.ruff]\nline-length = 88\n",
+    )
+    .unwrap();
+    std::fs::create_dir(fixture.0.root.join("build")).unwrap();
+    let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
+    let project =
+        runner_core::resolve::resolve_presence(&fixture.0, evidence, &Policy::default(), &REGISTRY)
+            .unwrap();
+    assert!(
+        project
+            .present
+            .iter()
+            .all(|present| present.provider != ProviderId::Python)
+    );
+    let plan = runner_core::clean::plan(&fixture.0, &project, &REGISTRY, false).unwrap();
+    assert!(plan.targets.is_empty(), "{:?}", plan.targets);
+
+    std::fs::write(
+        fixture.0.root.join("pyproject.toml"),
+        "[project]\nname = \"demo\"\n",
+    )
+    .unwrap();
+    let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
+    let project =
+        runner_core::resolve::resolve_presence(&fixture.0, evidence, &Policy::default(), &REGISTRY)
+            .unwrap();
+    let plan = runner_core::clean::plan(&fixture.0, &project, &REGISTRY, false).unwrap();
+    assert_eq!(plan.targets.len(), 1, "{:?}", plan.targets);
+}
+
+#[test]
+fn strict_policy_takes_no_package_manager_from_path() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("package.json"),
+        r#"{"scripts":{"build":"echo"}}"#,
+    )
+    .unwrap();
+    for (strict, synthesised) in [(false, true), (true, false)] {
+        let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
+        let policy = Policy {
+            strict,
+            ..Policy::default()
+        };
+        let project =
+            runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY)
+                .unwrap();
+        let has_manager = project
+            .for_source(ProviderId::PackageJson, &Scope::Root, &policy, &REGISTRY)
+            .is_some();
+        if runner_core::probe_with("npm", &[]).is_some() {
+            assert_eq!(has_manager, synthesised, "strict: {strict}");
+        } else {
+            assert!(!has_manager || !strict, "strict: {strict}");
+        }
+    }
+}
+
+#[test]
+fn a_chosen_runtime_replaces_a_js_shebang_and_leaves_a_shell_script_alone() {
+    let fixture = Fixture::new();
+    let policy = Policy {
+        runtime: Some(runner_core::Choice {
+            id: ProviderId::Bun,
+            from: runner_core::Layer::Cli,
+        }),
+        ..Policy::default()
+    };
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Bun)],
+        ..Project::default()
+    };
+    let cascade = Cascade {
+        tree: &fixture.0,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: None,
+        confirm: None,
+    };
+    for (shebang, program) in [("#!/usr/bin/env node\n", "bun"), ("#!/bin/sh\n", "/bin/sh")] {
+        let path = fixture.0.root.join("tool");
+        std::fs::write(&path, shebang).unwrap();
+        let plan = runner_core::file_plan(&cascade, &path, &[]).unwrap();
+        assert_eq!(plan.argv[0], program, "{shebang}");
+    }
 }

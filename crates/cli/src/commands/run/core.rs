@@ -49,6 +49,14 @@ pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::R
     let evidence = runner_core::observe::observe(&tree, &REGISTRY)?;
     let mut project = runner_core::resolve::resolve_presence(&tree, evidence, policy, &REGISTRY)?;
     project.tasks = ctx.tasks.iter().filter_map(task).collect();
+    project.unread = ctx
+        .warnings
+        .iter()
+        .filter_map(|warning| match warning {
+            crate::types::DetectionWarning::Unread(unread) => Some(unread.clone()),
+            _ => None,
+        })
+        .collect();
     Ok(project)
 }
 
@@ -141,6 +149,7 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
         env: env_layers(overrides),
         tool_ops: tool_ops(overrides),
         trust: runner_core::TrustPolicy::Project,
+        strict: overrides.fallback == crate::resolver::FallbackPolicy::Error,
     }
 }
 
@@ -176,7 +185,6 @@ pub(crate) struct Prepared {
     pub project: Project,
     pub node: Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
     pub requested: crate::tool::HostVerbosity,
-    pub task_key: String,
 }
 
 pub(crate) fn prepare(
@@ -191,21 +199,9 @@ pub(crate) fn prepare(
     let key = if BUILTINS.contains(&token) {
         token.to_owned()
     } else {
-        match selected_in(ctx, &tree, &project, &policy, token) {
-            Ok(selected) => selected.map_or_else(|| token.to_owned(), super::task_output_key),
-            Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => {
-                token.to_owned()
-            }
-            Err(error) => return Err(error),
-        }
+        task_key(ctx, &tree, &project, &policy, token)?
     };
-    let requested = overrides.host_verbosity_for(&key);
-    policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
-    policy.verbosity = match requested.diagnostics {
-        crate::tool::HostDiagnostics::Normal => Verbosity::Normal,
-        crate::tool::HostDiagnostics::Quiet => Verbosity::Quiet,
-        crate::tool::HostDiagnostics::Reduced => Verbosity::VeryQuiet,
-    };
+    let requested = apply_host_verbosity(&mut policy, overrides, &key);
     if overrides.explain {
         policy.reach = runner_core::ReachPolicy::Allow;
     }
@@ -215,7 +211,6 @@ pub(crate) fn prepare(
         project,
         node,
         requested,
-        task_key: key,
     })
 }
 
@@ -236,20 +231,8 @@ impl Prepared {
     ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
         let mut policy = self.policy.clone();
         policy.reach = runner_core::ReachPolicy::Allow;
-        let key = match self.selected(ctx, token) {
-            Ok(selected) => selected.map_or_else(|| token.to_owned(), super::task_output_key),
-            Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => {
-                token.to_owned()
-            }
-            Err(error) => return Err(error),
-        };
-        let requested = overrides.host_verbosity_for(&key);
-        policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
-        policy.verbosity = match requested.diagnostics {
-            crate::tool::HostDiagnostics::Normal => Verbosity::Normal,
-            crate::tool::HostDiagnostics::Quiet => Verbosity::Quiet,
-            crate::tool::HostDiagnostics::Reduced => Verbosity::VeryQuiet,
-        };
+        let key = task_key(ctx, &self.tree, &self.project, &self.policy, token)?;
+        apply_host_verbosity(&mut policy, overrides, &key);
         let dep = |name: &str| {
             super::local_dep::installed_binary(ctx, name).map_err(|error| {
                 match error.downcast::<std::io::Error>() {
@@ -272,11 +255,13 @@ impl Prepared {
             super::dispatch::complete_plan(
                 ctx,
                 overrides,
-                token,
-                &[],
-                rung,
-                entry,
-                &key,
+                &super::dispatch::Chosen {
+                    token,
+                    args: &[],
+                    rung,
+                    entry,
+                    key: &key,
+                },
                 plan,
                 Some(&mut warnings),
             )
@@ -354,10 +339,43 @@ fn ecosystem_of(ecosystem: Ecosystem) -> CoreEcosystem {
 
 /// The host diagnostic level the invocation asked for.
 const fn verbosity(overrides: &ResolutionOverrides) -> Verbosity {
-    match overrides.output_policy.host_diagnostics {
+    verbosity_of(overrides.output_policy.host_diagnostics)
+}
+
+const fn verbosity_of(diagnostics: crate::tool::HostDiagnostics) -> Verbosity {
+    match diagnostics {
         crate::tool::HostDiagnostics::Normal => Verbosity::Normal,
         crate::tool::HostDiagnostics::Quiet => Verbosity::Quiet,
         crate::tool::HostDiagnostics::Reduced => Verbosity::VeryQuiet,
+    }
+}
+
+/// Apply the host verbosity and stream `[tasks.<key>]` asks for.
+pub(crate) fn apply_host_verbosity(
+    policy: &mut Policy,
+    overrides: &ResolutionOverrides,
+    key: &str,
+) -> crate::tool::HostVerbosity {
+    let requested = overrides.host_verbosity_for(key);
+    policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
+    policy.verbosity = verbosity_of(requested.diagnostics);
+    requested
+}
+
+/// The `[tasks.<key>]` identity `token` selects, or the token itself.
+fn task_key(
+    ctx: &ProjectContext,
+    tree: &Tree,
+    project: &Project,
+    policy: &Policy,
+    token: &str,
+) -> Result<String, runner_core::Refusal> {
+    match selected_in(ctx, tree, project, policy, token) {
+        Ok(selected) => Ok(selected.map_or_else(|| token.to_owned(), super::task_output_key)),
+        Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => {
+            Ok(token.to_owned())
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -551,7 +569,17 @@ mod tests {
         assert!(prepared.preview(&ctx, &overrides, "build").is_ok());
         assert!(super::prepare(&ctx, &overrides, "build").is_err());
         assert_eq!(super::task(metadata).as_ref(), Some(selected));
-        assert_eq!(prepared.task_key, super::super::task_output_key(metadata));
+        assert_eq!(
+            super::task_key(
+                &ctx,
+                &prepared.tree,
+                &prepared.project,
+                &prepared.policy,
+                "build"
+            )
+            .unwrap(),
+            super::super::task_output_key(metadata)
+        );
         let (_, runner_core::Dispatch::Plan(plan)) =
             runner_core::dispatch(&cascade, "build", &[]).unwrap()
         else {

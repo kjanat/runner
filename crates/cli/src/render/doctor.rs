@@ -26,20 +26,8 @@ pub(crate) struct Human<'a> {
     pub health: &'a [crate::schema::doctor::Diagnostic],
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "linear section-by-section renderer; splitting hurts readability"
-)]
 pub(crate) fn print_human(human: &Human<'_>) {
-    let Human {
-        report,
-        overrides,
-        plan,
-        node_context,
-        tools,
-        health,
-    } = *human;
-    let root = report["root"].as_str().unwrap_or("?");
+    let root = human.report["root"].as_str().unwrap_or("?");
     println!(
         "{} {}",
         "runner doctor".bold(),
@@ -47,6 +35,14 @@ pub(crate) fn print_human(human: &Human<'_>) {
     );
     println!();
 
+    print_detected(human.report);
+    print_overrides(human);
+    print_node_signals(human);
+    print_decisions(human);
+    print_warnings(human);
+}
+
+fn print_detected(report: &Value) {
     let detected = &report["detected"];
     print_section("Detected", |out| {
         let pms = detected["package_managers"]
@@ -82,7 +78,12 @@ pub(crate) fn print_human(human: &Human<'_>) {
             writeln_field(out, "monorepo", "yes");
         }
     });
+}
 
+fn print_overrides(human: &Human<'_>) {
+    let Human {
+        report, overrides, ..
+    } = *human;
     print_section("Overrides", |out| {
         if let Some(pm) = report["overrides"]["pm"].as_object() {
             writeln_field(
@@ -130,7 +131,14 @@ pub(crate) fn print_human(human: &Human<'_>) {
             writeln_field(out, "explain", "on");
         }
     });
+}
 
+fn print_node_signals(human: &Human<'_>) {
+    let Human {
+        report,
+        node_context,
+        ..
+    } = *human;
     print_section("Signals (Node)", |out| {
         if !node_context {
             return;
@@ -162,7 +170,16 @@ pub(crate) fn print_human(human: &Human<'_>) {
             }
         }
     });
+}
 
+fn print_decisions(human: &Human<'_>) {
+    let Human {
+        report,
+        plan,
+        node_context,
+        tools,
+        ..
+    } = *human;
     print_section("Decisions", |out| {
         // `Map<String, Value>` indexes panic on missing keys (unlike
         // `Value` indexing, which yields `Null`). Use `.get` so a
@@ -186,44 +203,54 @@ pub(crate) fn print_human(human: &Human<'_>) {
             writeln_field(out, "tools", runner.label());
         }
         match plan {
-            Ok(plan) => {
-                let pms = plan
-                    .pms
-                    .iter()
-                    .map(|pm| pm.label())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if !pms.is_empty() {
-                    writeln_field(out, "install", &pms);
-                }
-                for shadow in &plan.shadowed {
-                    writeln_field(
-                        out,
-                        shadow.dir,
-                        &format!(
-                            "{} installs it, {} shadowed",
-                            shadow.winner.label(),
-                            shadow.loser.label(),
-                        ),
-                    );
-                }
-                for collision in &plan.collisions {
-                    let names = collision
-                        .writers
-                        .iter()
-                        .map(|pm| pm.label())
-                        .collect::<Vec<_>>()
-                        .join(" then ");
-                    writeln_field(out, "shared tree", &format!("{names} (serialized)"));
-                }
-            }
+            Ok(plan) => write_install_plan(out, plan),
             Err(err) => {
                 writeln!(out, "  {:<20}{}", "install".red(), err.to_string().red())
                     .expect("writeln to String should not fail");
             }
         }
     });
+}
 
+fn write_install_plan(out: &mut String, plan: &InstallPlan) {
+    let pms = plan
+        .pms
+        .iter()
+        .map(|pm| pm.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !pms.is_empty() {
+        writeln_field(out, "install", &pms);
+    }
+    for shadow in &plan.shadowed {
+        writeln_field(
+            out,
+            shadow.dir,
+            &format!(
+                "{} installs it, {} shadowed",
+                shadow.winner.label(),
+                shadow.loser.label(),
+            ),
+        );
+    }
+    for collision in &plan.collisions {
+        let names = collision
+            .writers
+            .iter()
+            .map(|pm| pm.label())
+            .collect::<Vec<_>>()
+            .join(" then ");
+        writeln_field(out, "shared tree", &format!("{names} (serialized)"));
+    }
+}
+
+fn print_warnings(human: &Human<'_>) {
+    let Human {
+        report,
+        plan,
+        health,
+        ..
+    } = *human;
     // Detection warnings, plus the collisions the install plan kept. The
     // collision is the plan's verdict on the effective install set, not a fact
     // about the tree, so it lives here and nowhere else; commands that never

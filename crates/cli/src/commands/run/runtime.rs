@@ -38,13 +38,7 @@ pub(super) fn replaces_exec(resolved_pm: Option<PackageManager>) -> bool {
     resolved_pm.is_none_or(|pm| pm.is_node() || pm == PackageManager::Deno)
 }
 
-/// The task sources `runtime` can dispatch, most-native first, mirroring
-/// [`PackageManager::owned_task_sources`].
-///
-/// `package.json` scripts are readable by all three runtimes. `deno.json`
-/// tasks run through `deno task` and nothing else. Every other source (turbo,
-/// make, just, Taskfile, cargo, go, bacon, mise, pyproject) dispatches through
-/// a tool that has no JS runtime to select.
+/// The task sources the runtime's own `run_task` capability accepts.
 pub(super) fn honored_sources(runtime: JsRuntime) -> Vec<TaskSource> {
     runner_providers::REGISTRY
         .by_label(runtime.label())

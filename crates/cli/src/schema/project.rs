@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::labels::flat_source_label;
+use super::labels::FlatSource;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, Resolver};
 use crate::tool::node::{ManifestSource, detect_pm_from_manifest};
 use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource, Workspace};
@@ -89,7 +89,7 @@ impl<'a> Project<'a> {
             .iter()
             .map(|t| TaskInfo {
                 name: &t.name,
-                source: flat_source_label(t.source),
+                source: FlatSource(t.source),
                 member: t.member.as_ref().map(|member| member.name.as_str()),
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
@@ -137,11 +137,10 @@ impl<'a> Project<'a> {
     /// Project the full report to a `list`-shaped view: just the tasks (filtered by `source` when set)
     /// plus the schema version and root. Drops resolver state because `list` is purely a directory listing for tasks.
     pub(crate) fn into_list_view(self, source: Option<TaskSource>) -> TaskListView<'a> {
-        let target = source.map(flat_source_label);
         let tasks = self
             .tasks
             .into_iter()
-            .filter(|t| target.is_none_or(|expected| expected == t.source))
+            .filter(|t| source.is_none_or(|expected| FlatSource(expected) == t.source))
             .collect();
         TaskListView {
             schema: String::new(),
@@ -154,6 +153,11 @@ impl<'a> Project<'a> {
 
 /// `list --json` projection. Same `schema_version` as [`Project`] so consumers can branch on it.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(
+    title = "runner list --json",
+    description = "JSON schema for `runner list --json`.",
+    extend("$id" = super::schema_url("list"))
+)]
 pub(crate) struct TaskListView<'a> {
     /// URI of the JSON Schema that describes this payload.
     #[serde(rename = "$schema", skip_serializing_if = "str::is_empty")]
@@ -161,7 +165,10 @@ pub(crate) struct TaskListView<'a> {
     pub schema: String,
     /// Identical to [`Project::schema_version`]; consumers can branch on the
     /// unified output contract version.
-    #[schemars(description = "Schema contract version for this JSON payload.")]
+    #[schemars(
+        description = "Schema contract version for this JSON payload.",
+        extend("const" = super::SCHEMA_VERSION)
+    )]
     pub schema_version: u32,
     /// Project root.
     pub root: String,
@@ -410,8 +417,8 @@ pub(crate) enum NodePmDecision {
 pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
-    /// Source label, resolved at build time via [`super::labels::flat_source_label`].
-    pub source: &'static str,
+    /// Label of the task's source.
+    pub source: FlatSource,
     /// Workspace member the task belongs to; absent for root tasks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<&'a str>,
@@ -498,7 +505,7 @@ pub(super) struct ProbeSignals {
     pub(super) volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
 }
 
-/// Probe each Node PM in [`crate::resolver::NODE_PROBE_ORDER`] and report
+/// Probe each Node PM in [`crate::resolver::node_probe_order`] and report
 /// (binary, path) pairs. Used by the doctor signals section; intentionally
 /// calls the real probe so the output reflects what the resolver would see.
 ///
@@ -531,8 +538,9 @@ pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> Prob
         // without the eager push would serialize: `Iterator::map` is
         // lazy, so the next `spawn` wouldn't fire until the previous
         // join returned.
-        let mut handles = Vec::with_capacity(crate::resolver::NODE_PROBE_ORDER.len());
-        for pm in crate::resolver::NODE_PROBE_ORDER {
+        let order = crate::resolver::node_probe_order();
+        let mut handles = Vec::with_capacity(order.len());
+        for pm in order {
             let path = &path;
             let volta = volta.as_ref();
             handles.push(s.spawn(move || {

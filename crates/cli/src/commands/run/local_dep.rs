@@ -209,7 +209,7 @@ fn is_package_name(token: &str) -> bool {
 fn installed_dir(root: &Path, token: &str) -> Option<PathBuf> {
     root.ancestors()
         .map(|ancestor| ancestor.join("node_modules").join(token))
-        .find(|dir| dir.join("package.json").is_file())
+        .find(|dir| dir.is_dir())
 }
 
 /// Pick the binary to run from a dependency's `bin` field.

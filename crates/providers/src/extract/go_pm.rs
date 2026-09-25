@@ -5,15 +5,14 @@ use std::path::{Path, PathBuf};
 
 use std::process::Command;
 
-/// Directories that may be cleaned in a Go project.
-pub const CLEAN_DIRS: &[&str] = &["vendor"];
-
 /// Detected via `go.mod`.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     find_file(dir).is_some()
 }
 
 /// The module manifest in this directory.
+#[must_use]
 pub fn find_file(dir: &Path) -> Option<PathBuf> {
     let path = dir.join("go.mod");
     path.is_file().then_some(path)
@@ -29,7 +28,7 @@ pub struct ExtractedTask {
 }
 
 /// Extract local Go commands from root and `cmd/<name>` packages.
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<ExtractedTask>> {
     let mut tasks = Vec::new();
 
     if contains_main_package(dir)?
@@ -142,9 +141,10 @@ fn is_main_package_line(line: &str) -> bool {
         || tail.starts_with("/*")
 }
 
-/// Turn VCS stamping on for a package-form `go run` inside a checkout Go
-/// recognises, so `debug.ReadBuildInfo` reports the revision instead of
-/// `(devel)`. Go skips the stamp for `go run` by default, and
+/// Turn VCS stamping on for a package-form `go run` inside a checkout.
+///
+/// `debug.ReadBuildInfo` then reports the revision instead of `(devel)`.
+/// Go skips the stamp for `go run` by default, and
 /// `-buildvcs=true` is a hard error outside a checkout, with the VCS tool
 /// missing, or on a toolchain before 1.18, so each is checked first. A
 /// `GOFLAGS` the command already carries, from the env layers, is what gets
@@ -250,10 +250,10 @@ fn decides_buildvcs(flag: &str) -> bool {
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(extracted
         .into_iter()
         .map(|entry| {
@@ -261,7 +261,8 @@ pub fn tasks(
             task.target = Some(entry.run_target);
             task
         })
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 #[cfg(test)]
 mod tests {

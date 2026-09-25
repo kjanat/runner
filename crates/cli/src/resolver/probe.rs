@@ -44,102 +44,32 @@ pub(crate) fn probe(pm: PackageManager) -> Option<PathBuf> {
         .clone()
 }
 
-/// Pure-function variant for tests. Takes `path` and (optionally)
-/// `pathext` directly so the search can be exercised against a temporary
-/// directory.
+/// [`runner_core::probe_in`], the search every `PATH` probe shares.
 pub(crate) fn probe_in(
     name: &str,
     path: &std::ffi::OsStr,
     pathext: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
-    use std::path::Path;
-
-    if name.is_empty() || Path::new(name).components().count() > 1 {
-        return None;
-    }
-
-    let exts: Vec<String> = pathext
-        .map(|pe| {
-            pe.to_string_lossy()
-                .split(';')
-                .filter(|e| !e.is_empty())
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let has_explicit_extension = Path::new(name).extension().is_some();
-
-    for dir in std::env::split_paths(path) {
-        let bare = dir.join(name);
-        if bare.is_file() {
-            return Some(bare);
-        }
-
-        // PATHEXT only applies when there's no explicit extension on `name`.
-        if has_explicit_extension {
-            continue;
-        }
-        for ext in &exts {
-            let candidate = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-
-    None
+    runner_core::probe_in(name, path, pathext)
 }
 
-/// Canonical PATH-probe order for the package managers that can dispatch
-/// Node `package.json` scripts. npm leads: with no lockfile, manifest, or
-/// override signal, a `package.json` is an npm project, and the alternates
-/// only apply when npm is not installed. Lockfile priority in
-/// `detect::detect_local_node_pm` is a separate, signal-driven order.
-pub(crate) const NODE_PROBE_ORDER: &[PackageManager] = &[
-    PackageManager::Npm,
-    PackageManager::Bun,
-    PackageManager::Pnpm,
-    PackageManager::Yarn,
-];
-
-/// Probe `pm` across `extra` directories first, then `$PATH`.
-///
-/// A tool manager installs without activating, so a package manager it
-/// provides is on nobody's `$PATH` until the user's shell runs the
-/// activation hook. Probing `$PATH` alone therefore reports "no package
-/// manager" for a project whose npm comes from mise, and the install
-/// silently does nothing.
-///
-/// Only the `$PATH`-only form is memoized; a call carrying `extra`
-/// searches fresh, since those directories depend on the project.
-pub(crate) fn probe_with(pm: PackageManager, extra: &[PathBuf]) -> Option<PathBuf> {
-    if extra.is_empty() {
-        return probe(pm);
-    }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let search = std::env::join_paths(extra.iter().cloned().chain(std::env::split_paths(&path)))
-        .ok()
-        .unwrap_or(path);
-    probe_in(pm.label(), &search, std::env::var_os("PATHEXT").as_deref())
-}
-
-/// Probe every entry of `order` and return all installed matches in order.
-///
-/// The first element is the resolver's pick under [`FallbackPolicy::Probe`];
-/// the remainder populates `DetectionWarning::PathProbeFallback`'s
-/// `others_available` so users can see what else was installed when the
-/// resolver picked the first PM by precedence.
-///
-/// `extra` holds directories to search ahead of `$PATH`, for tools a
-/// manager provides without activating them. See [`probe_with`].
-pub(crate) fn probe_all(
-    order: &[PackageManager],
-    extra: &[PathBuf],
-) -> Vec<(PackageManager, PathBuf)> {
-    order
+/// The package managers that dispatch `package.json` scripts, in the order
+/// the core probes `PATH` for one.
+pub(crate) fn node_probe_order() -> Vec<PackageManager> {
+    let mut providers: Vec<_> = runner_providers::REGISTRY
         .iter()
-        .filter_map(|&pm| probe_with(pm, extra).map(|path| (pm, path)))
+        .filter(|provider| {
+            provider.kind.contains(runner_core::Kind::PACKAGE_MANAGER)
+                && provider
+                    .caps
+                    .run_task
+                    .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::PackageJson))
+        })
+        .collect();
+    providers.sort_by_key(|provider| provider.caps.probe_priority);
+    providers
+        .into_iter()
+        .filter_map(|provider| PackageManager::from_label(provider.label))
         .collect()
 }
 
@@ -148,7 +78,7 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
 
-    use super::{NODE_PROBE_ORDER, probe_in};
+    use super::{node_probe_order, probe_in};
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -160,14 +90,9 @@ mod tests {
         let dir = TempDir::new("probe-extra");
         let tool_bin = dir.path().join("mise-installs").join("node").join("bin");
         fs::create_dir_all(&tool_bin).expect("tool bin dir should be created");
-        let npm = tool_bin.join("npm");
+        let npm = tool_bin.join(if cfg!(windows) { "npm.exe" } else { "npm" });
         fs::write(&npm, "#!/bin/sh\n").expect("shim should be written");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&npm, fs::Permissions::from_mode(0o755))
-                .expect("shim should be executable");
-        }
+        executable(&npm);
 
         // An empty PATH stands in for a shell that never ran the hook.
         let empty = OsString::new();
@@ -187,8 +112,11 @@ mod tests {
     #[test]
     fn probe_in_finds_executable_by_bare_name() {
         let dir = TempDir::new("probe-bare");
-        let target = dir.path().join("pnpm");
+        let target = dir
+            .path()
+            .join(if cfg!(windows) { "pnpm.exe" } else { "pnpm" });
         fs::write(&target, "#!/bin/sh\n").expect("shim should be written");
+        executable(&target);
 
         let resolved = probe_in("pnpm", &OsString::from(dir.path()), None)
             .expect("pnpm should resolve via bare name");
@@ -214,6 +142,7 @@ mod tests {
         let dir = TempDir::new("probe-pathext");
         let shim = dir.path().join("npm.CMD");
         fs::write(&shim, "@echo off\n").expect("shim should be written");
+        executable(&shim);
 
         let resolved = probe_in(
             "npm",
@@ -252,16 +181,26 @@ mod tests {
 
     #[test]
     fn node_probe_order_is_npm_first() {
-        // A signal-less package.json defaults to npm; bun/pnpm/yarn are
-        // reached only when npm is absent from PATH.
         assert_eq!(
-            NODE_PROBE_ORDER,
-            &[
+            node_probe_order(),
+            [
                 crate::types::PackageManager::Npm,
                 crate::types::PackageManager::Bun,
                 crate::types::PackageManager::Pnpm,
                 crate::types::PackageManager::Yarn,
+                crate::types::PackageManager::Deno,
             ]
         );
+    }
+
+    fn executable(path: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+                .expect("shim should be executable");
+        }
+        #[cfg(not(unix))]
+        let _ = path;
     }
 }

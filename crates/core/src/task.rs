@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::provider::ProviderId;
 use crate::scope::Scope;
+use crate::warning::Warning;
 
 /// A task a provider declared.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +26,24 @@ pub struct Task {
     pub forwards_to: Option<ProviderId>,
     /// Everything else the source declared.
     pub detail: TaskDetail,
+}
+
+/// The tasks a provider read, with findings that did not stop the read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Extracted {
+    /// The tasks.
+    pub tasks: Vec<Task>,
+    /// Findings about a partial read.
+    pub warnings: Vec<Warning>,
+}
+
+impl From<Vec<Task>> for Extracted {
+    fn from(tasks: Vec<Task>) -> Self {
+        Self {
+            tasks,
+            warnings: Vec::new(),
+        }
+    }
 }
 
 /// Structured facts about a task beyond name and description.

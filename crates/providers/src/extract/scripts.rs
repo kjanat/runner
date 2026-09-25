@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 /// Read a Deno task table.
-pub fn deno(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+pub(crate) fn deno(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -32,15 +32,12 @@ pub fn deno(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
 }
 
 /// Read Python console-script entry points.
-pub fn python(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
+pub(crate) fn python(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     let doc: PyprojectDoc =
         toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
 
-    // `BTreeMap` iterates in sorted key order, so the returned list is
-    // already alphabetized, matching the post-extraction sort that
-    // `detect::detect` applies to the full task list.
     Ok(doc
         .project
         .and_then(|project| project.scripts)
@@ -48,6 +45,12 @@ pub fn python(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
         .into_iter()
         .map(|(name, target)| (name, Some(target)))
         .collect())
+}
+
+#[derive(Deserialize)]
+struct Package {
+    #[serde(default)]
+    scripts: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -64,27 +67,28 @@ struct PyprojectProject {
 ///
 /// # Errors
 /// Reports unreadable or malformed manifests.
-pub fn package(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
+pub(crate) fn package(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     if path.extension().is_some_and(|ext| ext == "yaml") {
         let docs = yaml_rust2::YamlLoader::load_from_str(&content)
             .with_context(|| format!("{} is not valid YAML", path.display()))?;
-        let doc = docs.first().context("empty package manifest")?;
-        let scripts = &doc["scripts"];
-        return Ok(scripts
-            .as_hash()
+        let Some(root) = docs.first().and_then(yaml_rust2::Yaml::as_hash) else {
+            anyhow::bail!("{} is not a YAML mapping", path.display());
+        };
+        return Ok(root
+            .iter()
+            .find_map(|(key, value)| (key.as_str() == Some("scripts")).then_some(value))
+            .and_then(yaml_rust2::Yaml::as_hash)
             .into_iter()
             .flatten()
-            .filter_map(|(name, value)| {
-                Some((name.as_str()?.to_owned(), value.as_str()?.to_owned()))
+            .filter_map(|(name, body)| {
+                Some((
+                    name.as_str()?.to_owned(),
+                    body.as_str().unwrap_or_default().to_owned(),
+                ))
             })
             .collect());
-    }
-    #[derive(Deserialize)]
-    struct Package {
-        #[serde(default)]
-        scripts: Option<BTreeMap<String, String>>,
     }
     let manifest: Package = if path.extension().is_some_and(|ext| ext == "json5") {
         json5::from_str(&content)
@@ -100,7 +104,12 @@ fn source(present: &runner_core::Present) -> Option<&Path> {
     present
         .because
         .iter()
-        .find(|e| matches!(e.weight, runner_core::Weight::Configured))
+        .find(|e| {
+            matches!(
+                e.weight,
+                runner_core::Weight::Declared | runner_core::Weight::Configured
+            )
+        })
         .map(|e| e.at.as_path())
 }
 
@@ -111,12 +120,12 @@ fn source(present: &runner_core::Present) -> Option<&Path> {
 pub fn package_tasks(
     present: &runner_core::Present,
     _: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let Some(path) = source(present) else {
-        return Ok(Vec::new());
+        return Ok(runner_core::Extracted::default());
     };
-    let entries =
-        package(path).map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
+    let entries = package(path)
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
     Ok(entries
         .into_iter()
         .map(|(name, command)| {
@@ -124,7 +133,8 @@ pub fn package_tasks(
             task.forwards_to = super::passthrough::detect_target(&task.name, &command);
             task
         })
-        .collect())
+        .collect::<Vec<_>>()
+        .into())
 }
 
 /// Python entry points in the observed scope.
@@ -134,18 +144,19 @@ pub fn package_tasks(
 pub fn python_tasks(
     present: &runner_core::Present,
     _: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let Some(path) = source(present) else {
-        return Ok(Vec::new());
+        return Ok(runner_core::Extracted::default());
     };
     python(path)
         .map(|entries| {
             entries
                 .into_iter()
                 .map(|(name, description)| super::task(present, name, description))
-                .collect()
+                .collect::<Vec<_>>()
+                .into()
         })
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))
 }
 
 /// Deno tasks in the observed scope.
@@ -155,16 +166,157 @@ pub fn python_tasks(
 pub fn deno_tasks(
     present: &runner_core::Present,
     _: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let Some(path) = source(present) else {
-        return Ok(Vec::new());
+        return Ok(runner_core::Extracted::default());
     };
     deno(path)
         .map(|entries| {
             entries
                 .into_iter()
                 .map(|(name, description)| super::task(present, name, description))
-                .collect()
+                .collect::<Vec<_>>()
+                .into()
         })
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{deno, package, python};
+    use crate::extract::test_support::TempDir;
+
+    #[test]
+    fn python_scripts_carry_their_entry_points_sorted() {
+        let dir = TempDir::new("pyproject-scripts");
+        let path = dir.path().join("pyproject.toml");
+        fs::write(
+            &path,
+            "[project]\nname = \"greenpy\"\n\n[project.scripts]\ngreenpy = \
+             \"greenpy.main:main\"\nbodysuit = \"greenpy.bodysuit:main\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            python(&path).unwrap(),
+            [
+                ("bodysuit".into(), Some("greenpy.bodysuit:main".into())),
+                ("greenpy".into(), Some("greenpy.main:main".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pyproject_without_scripts_has_no_tasks() {
+        let dir = TempDir::new("pyproject-no-scripts");
+        let path = dir.path().join("pyproject.toml");
+        fs::write(&path, "[project]\nname = \"greenpy\"\n").unwrap();
+        assert!(python(&path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_pyproject_is_an_error() {
+        let dir = TempDir::new("pyproject-malformed");
+        let path = dir.path().join("pyproject.toml");
+        fs::write(&path, "[project.scripts").unwrap();
+        let error = python(&path).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("failed to parse"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn package_scripts_come_from_every_manifest_format() {
+        for (name, body) in [
+            (
+                "package.json",
+                r#"{ "scripts": { "build": "vite build", "test": "vitest" } }"#,
+            ),
+            (
+                "package.json5",
+                "{ scripts: { build: 'vite build', test: 'vitest' } }",
+            ),
+            (
+                "package.yaml",
+                "scripts:\n  build: vite build\n  test: vitest\n",
+            ),
+            (
+                "package.yaml",
+                "scripts: { build: vite build, test: vitest }\n",
+            ),
+        ] {
+            let dir = TempDir::new("package-scripts");
+            let path = dir.path().join(name);
+            fs::write(&path, body).unwrap();
+            let mut scripts = package(&path).unwrap();
+            scripts.sort_unstable();
+            assert_eq!(
+                scripts,
+                [
+                    ("build".to_owned(), "vite build".to_owned()),
+                    ("test".to_owned(), "vitest".to_owned()),
+                ],
+                "{name}: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_dev_engines_field_keeps_the_scripts() {
+        let dir = TempDir::new("package-devengines");
+        let path = dir.path().join("package.json");
+        fs::write(
+            &path,
+            r#"{ "devEngines": { "packageManager": "pnpm@9.0.0" }, "scripts": { "build": "vite build" } }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            package(&path).unwrap(),
+            [("build".into(), "vite build".into())]
+        );
+    }
+
+    #[test]
+    fn a_yaml_script_without_a_string_body_is_still_a_script() {
+        let dir = TempDir::new("package-yaml-body");
+        let path = dir.path().join("package.yaml");
+        fs::write(&path, "scripts:\n  build: 1\n").unwrap();
+        assert_eq!(package(&path).unwrap(), [("build".into(), String::new())]);
+    }
+
+    #[test]
+    fn a_yaml_manifest_that_is_not_a_mapping_is_an_error() {
+        let dir = TempDir::new("package-yaml-list");
+        let path = dir.path().join("package.yaml");
+        fs::write(&path, "- build\n").unwrap();
+        assert!(package(&path).is_err());
+    }
+
+    #[test]
+    fn deno_tasks_accept_jsonc_and_object_descriptions() {
+        let dir = TempDir::new("deno-jsonc");
+        let path = dir.path().join("deno.jsonc");
+        fs::write(
+            &path,
+            r#"{
+  // line comment
+  "tasks": {
+    "build": { "command": "vite build", "description": "Bundle for production" },
+    /* block comment */
+    "test": "deno test",
+  },
+}
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            deno(&path).unwrap(),
+            [
+                ("build".into(), Some("Bundle for production".into())),
+                ("test".into(), None),
+            ]
+        );
+    }
 }

@@ -344,10 +344,11 @@ pub(super) fn reversed_qualifier_error(
 /// Append one `note:` line per source whose task list failed to load.
 fn append_unreadable_note(ctx: &ProjectContext, msg: &mut String) {
     for warning in &ctx.warnings {
-        if let DetectionWarning::TaskListUnreadable { source, .. } = warning {
+        if let DetectionWarning::Unread(unread) = warning {
             let _ = write!(
                 msg,
-                "\nnote: {source} failed to read, so its tasks are invisible to this lookup",
+                "\nnote: {} failed to read, so its tasks are invisible to this lookup",
+                runner_providers::REGISTRY.by_id(unread.provider).label,
             );
         }
     }
@@ -904,14 +905,13 @@ mod tests {
 
     #[test]
     fn qualified_miss_error_notes_unreadable_source() {
-        // ts-x509 shape: package.json is mid-edit invalid JSON, so its
-        // tasks vanish and every miss error is a red herring unless it
-        // mentions the unreadable source.
         let mut ctx = context();
-        ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: "package.json",
-            error: "invalid JSON".to_string(),
-        });
+        ctx.warnings
+            .push(DetectionWarning::Unread(runner_core::Unread {
+                provider: runner_core::ProviderId::PackageJson,
+                scope: runner_core::Scope::Root,
+                message: "invalid JSON".to_string(),
+            }));
 
         let err = precheck_task(&ctx, &ResolutionOverrides::default(), "deno:lint")
             .expect_err("qualified miss");

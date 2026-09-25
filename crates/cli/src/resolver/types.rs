@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
 use crate::tool::node::OnFail;
-use crate::tool::{HostDiagnostics, HostVerbosity, OutputPolicy, QuietLevel, Stream, TaskStream};
+use crate::tool::{
+    HostDiagnostics, HostVerbosity, OutputPolicy, QuietLevel, RunnerOutput, RunnerOutputPolicy,
+    Stream, TaskStream,
+};
 use crate::types::{
     DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, TaskRunner, TaskSource,
 };
@@ -28,11 +31,6 @@ pub(crate) struct Resolver<'ctx> {
 /// Each field carries an [`OverrideOrigin`] so diagnostic output (Phase 6)
 /// can attribute a decision to the exact source the user set it from.
 #[derive(Debug, Clone, Default)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "settings bag of independent CLI/env/config toggles; an enum state machine would \
-              obscure them, not clarify"
-)]
 pub(crate) struct ResolutionOverrides {
     /// Cross-ecosystem PM override from CLI/env. `--pm`/`RUNNER_PM` are not
     /// ecosystem-qualified; the resolver applies this value only when the
@@ -93,13 +91,12 @@ pub(crate) struct ResolutionOverrides {
     pub host_diagnostics_explicit: bool,
     /// Effective independent category policy after preset + config resolution.
     pub output_policy: OutputPolicy,
-    /// Global stdout-clean intent from `--host-stream` / `RUNNER_HOST_STREAM`.
-    /// Orthogonal to [`Self::quiet_level`]: when [`Stream::Stderr`], hosts that
-    /// can (pnpm) divert their diagnostics to stderr so a pipeline parsing
-    /// stdout stays clean. The global floor under per-task config.
-    pub host_stream: Stream,
-    /// Whether CLI/env explicitly selected host stream, including `inherit`.
-    pub host_stream_invocation_explicit: bool,
+    /// Global stdout-clean intent from `--host-stream` / `RUNNER_HOST_STREAM`,
+    /// when the invocation set one, `inherit` included. Orthogonal to
+    /// [`Self::quiet_level`]: when [`Stream::Stderr`], hosts that can (pnpm)
+    /// divert their diagnostics to stderr so a pipeline parsing stdout stays
+    /// clean. Outranks per-task config.
+    pub host_stream: Option<Stream>,
     /// Global `[host].stream` value; per-task config may override it.
     pub host_stream_config: Stream,
     /// Per-task verbosity partials from `[tasks.<name>].verbosity`, keyed by
@@ -114,23 +111,8 @@ pub(crate) struct ResolutionOverrides {
     /// Resolved from `-k`/`-K` (CLI) → `RUNNER_KEEP_GOING`/`RUNNER_KILL_ON_FAIL`
     /// (env) → `[chain]` (config) → `FailFast`.
     pub failure_policy: FailurePolicy,
-    /// Broad GitHub Actions grouping switch. Sourced from
-    /// `[github].group_output` (default `true`); when false, GitHub Actions
-    /// runs use the same ungrouped output shape as before this feature.
-    pub group_output: bool,
-    /// Whether to group parallel (`-p`) output **under GitHub Actions**:
-    /// buffer each task and print it as one block on completion rather than
-    /// interleaving lines live. Sourced from `[github].group_parallel`
-    /// (default `true`) and only active when [`Self::group_output`] is true.
-    /// The emit site picks this under GitHub Actions and
-    /// [`Self::parallel_grouped`] otherwise.
-    pub github_group_parallel: bool,
-    /// Whether to group parallel (`-p`) output **outside GitHub Actions**.
-    /// Sourced from `[parallel].grouped` (default `false`), so by default
-    /// local parallel runs stay live-prefixed while CI groups; set them to
-    /// match if desired. Only the delimiter style (`::group::` vs a plain
-    /// header) further depends on the environment.
-    pub parallel_grouped: bool,
+    /// `[github]` and `[parallel]` output grouping.
+    pub grouping: OutputGrouping,
     /// Install-time lifecycle-script policy, resolved from
     /// `RUNNER_INSTALL_SCRIPTS` (env) → `[install].scripts` (config). The CLI
     /// `--no-scripts` ([`ScriptPolicy::Deny`]) / `--scripts`
@@ -142,29 +124,60 @@ pub(crate) struct ResolutionOverrides {
     /// `RUNNER_INSTALL_ON_COLLISION` (env) → `[install].on_collision` (config).
     pub on_collision: CollisionPolicy,
     /// What a command that can download may do, resolved from `--fetch`
-    /// (CLI) → `RUNNER_REACH` (env). `ask` prompts on a terminal, `allow`
-    /// proceeds, `local` refuses.
+    /// (CLI) → `RUNNER_REACH` (env) → `[defaults].fetch` (config). `ask`
+    /// prompts on a terminal, `allow` proceeds, `local` refuses.
     pub reach: runner_core::ReachPolicy,
+    /// `[defaults].frozen`: installs keep the lockfile even without `--frozen`.
+    pub lockfile: LockfilePolicy,
     /// `[env]`, `[tools.*].env` and `[tasks.*].env`, kept together because
     /// they are one layered lookup rather than three independent knobs.
     pub env: EnvLayers,
     /// `[tools.<name>].install`, normalized to an ordered operation list.
     /// Absent means the tool's default, which every tool spells `install`.
     pub tool_install: BTreeMap<String, Vec<String>>,
-    /// `true` when a parent `runner`/`run` already opened a GitHub Actions
-    /// log group above this process (signalled via the inherited
-    /// `RUNNER_GROUP_ACTIVE` env marker). GitHub Actions groups don't nest:
-    /// a nested `::endgroup::` closes the parent's group early, so when this
-    /// is set, this runner's own group-opening sites stay silent and output
-    /// flows into the parent's group. Internal/runner-set, never a user
-    /// override.
-    pub parent_group_open: bool,
-    /// `true` when a parent `runner`/`run` already emitted this project's
-    /// detection warnings (signalled via the inherited `RUNNER_WARNED_ROOT`
-    /// env marker, which carries the root it warned about). A script that
-    /// calls `runner` again would otherwise repeat every warning at each
-    /// level. Internal/runner-set, never a user override.
-    pub parent_warned: bool,
+    /// What a parent `runner`/`run` process already did above this one.
+    pub parent: ParentMarkers,
+}
+
+/// Whether task output is grouped into collapsible blocks.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[schemars(
+    deny_unknown_fields,
+    description = "Whether task output is grouped into collapsible blocks, under GitHub Actions \
+                   and elsewhere."
+)]
+pub(crate) struct OutputGrouping {
+    /// Broad GitHub Actions grouping switch (`[github].group_output`).
+    pub group_output: bool,
+    /// Group parallel output under GitHub Actions
+    /// (`[github].group_parallel`).
+    pub github_group_parallel: bool,
+    /// Group parallel output outside GitHub Actions
+    /// (`[parallel].grouped`).
+    pub parallel_grouped: bool,
+}
+
+/// Whether an install may rewrite the lockfile.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum LockfilePolicy {
+    #[default]
+    Update,
+    Frozen,
+}
+
+/// Env markers a parent `runner`/`run` leaves for a nested one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ParentMarkers {
+    /// `true` when a parent already opened a GitHub Actions log group above
+    /// this process (the inherited `RUNNER_GROUP_ACTIVE` marker). A nested
+    /// `::endgroup::` closes the parent's group early, so this runner's own
+    /// group-opening sites stay silent.
+    pub group_open: bool,
+    /// `true` when a parent already emitted this project's detection
+    /// warnings (the inherited `RUNNER_WARNED_ROOT` marker, which carries the
+    /// root it warned about).
+    pub warned: bool,
 }
 
 /// A per-task verbosity partial from `[tasks.<name>].verbosity`. Each axis is
@@ -191,35 +204,31 @@ impl ResolutionOverrides {
     /// was set explicitly, or the quiet level reached `-qq` (which folds in
     /// `--no-warnings`).
     pub(crate) const fn silences_warnings(&self) -> bool {
-        !self.output_policy.runner.warnings
+        !self.shows_warnings()
     }
 
     pub(crate) const fn shows_progress(&self) -> bool {
-        self.output_policy.runner.progress
+        self.output_policy.runner.shows(RunnerOutput::Progress)
     }
 
     pub(crate) const fn shows_warnings(&self) -> bool {
-        self.output_policy.runner.warnings
+        self.output_policy.runner.shows(RunnerOutput::Warnings)
     }
 
     pub(crate) const fn shows_errors(&self) -> bool {
-        self.output_policy.runner.errors
+        self.output_policy.runner.shows(RunnerOutput::Errors)
     }
 
     pub(crate) const fn emits_groups(&self) -> bool {
-        self.output_policy.runner.groups
-    }
-
-    pub(crate) const fn shows_task_timing(&self) -> bool {
-        self.output_policy.runner.task_timing
+        self.output_policy.runner.shows(RunnerOutput::Groups)
     }
 
     pub(crate) const fn shows_summary(&self) -> bool {
-        self.output_policy.runner.summary
+        self.output_policy.runner.shows(RunnerOutput::Summary)
     }
 
     pub(crate) const fn shows_fatal_errors(&self) -> bool {
-        self.output_policy.runner.fatal_errors
+        self.output_policy.runner.shows(RunnerOutput::FatalErrors)
     }
 
     /// Resolve the effective [`HostVerbosity`] for a task, deep-merging the
@@ -235,27 +244,50 @@ impl ResolutionOverrides {
                 .level
                 .map_or(HostDiagnostics::Normal, HostDiagnostics::from_legacy_quiet)
         };
-        let stream = if self.host_stream_invocation_explicit {
-            self.host_stream
-        } else {
-            per_task.stream.unwrap_or(self.host_stream_config)
-        };
+        let stream = self
+            .host_stream
+            .unwrap_or_else(|| per_task.stream.unwrap_or(self.host_stream_config));
         HostVerbosity {
             diagnostics,
             stream,
         }
     }
 
+    /// The host stream every task inherits unless its own config says otherwise.
+    pub(crate) fn global_host_stream(&self) -> Stream {
+        self.host_stream.unwrap_or(self.host_stream_config)
+    }
+
+    /// The runner output categories shown for `task`, or globally for `None`.
+    pub(crate) fn runner_output_for(&self, task: Option<&str>) -> RunnerOutputPolicy {
+        let Some(task) = task else {
+            return self.output_policy.runner;
+        };
+        let per_task = self.task_verbosity_for(task);
+        self.output_policy.runner.and(
+            RunnerOutputPolicy::ALL
+                .with(RunnerOutput::Progress, per_task.progress.unwrap_or(true))
+                .with(RunnerOutput::Groups, per_task.groups.unwrap_or(true))
+                .with(
+                    RunnerOutput::TaskTiming,
+                    per_task.task_timing.unwrap_or(true),
+                ),
+        )
+    }
+
     pub(crate) fn shows_progress_for(&self, task: &str) -> bool {
-        self.shows_progress() && self.task_verbosity_for(task).progress.unwrap_or(true)
+        self.runner_output_for(Some(task))
+            .shows(RunnerOutput::Progress)
     }
 
     pub(crate) fn emits_groups_for(&self, task: &str) -> bool {
-        self.emits_groups() && self.task_verbosity_for(task).groups.unwrap_or(true)
+        self.runner_output_for(Some(task))
+            .shows(RunnerOutput::Groups)
     }
 
     pub(crate) fn shows_task_timing_for(&self, task: &str) -> bool {
-        self.shows_task_timing() && self.task_verbosity_for(task).task_timing.unwrap_or(true)
+        self.runner_output_for(Some(task))
+            .shows(RunnerOutput::TaskTiming)
     }
 
     pub(crate) fn task_streams_for(&self, task: &str) -> (TaskStream, TaskStream) {
@@ -594,10 +626,6 @@ pub(crate) struct RunnerOverride {
     pub runner: TaskRunner,
     /// Where the override came from. Surfaced by `--explain` and `doctor`
     /// so the user can attribute the constraint to its origin.
-    #[allow(
-        dead_code,
-        reason = "consumed by --explain in Phase 6; kept on the type for future trace renderers"
-    )]
     pub origin: OverrideOrigin,
 }
 
@@ -689,11 +717,6 @@ pub(crate) enum ResolutionStep {
         /// the resolver fell back to.
         binary: PathBuf,
     },
-    /// Step 8 (legacy), no signals matched; default to `npm` so that
-    /// `runner run <script>` still has a chance to dispatch. The Phase 5
-    /// default replaces this with a [`Self::PathProbe`]; this variant only
-    /// fires with `--fallback npm`.
-    LegacyNpmFallback,
 }
 
 /// Sources contributing to a [`ResolutionOverrides`].
@@ -858,9 +881,6 @@ impl ResolvedPm {
             }
             ResolutionStep::PathProbe { binary } => {
                 format!("{} via PATH probe at {}", self.pm.label(), binary.display())
-            }
-            ResolutionStep::LegacyNpmFallback => {
-                format!("{} via --fallback=npm (legacy)", self.pm.label())
             }
         }
     }

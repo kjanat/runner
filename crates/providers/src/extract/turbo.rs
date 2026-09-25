@@ -8,19 +8,18 @@ use serde::Deserialize;
 
 use super::files;
 
-/// Directories produced by Turborepo.
-pub const CLEAN_DIRS: &[&str] = &[".turbo"];
-
 /// Supported Turborepo config filenames (priority order). Turborepo v2
 /// accepts both `turbo.json` and `turbo.jsonc` natively.
 pub const FILENAMES: &[&str] = &["turbo.json", "turbo.jsonc"];
 
 /// Resolve the active Turborepo config in `dir`, if any.
+#[must_use]
 pub fn find_config(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, FILENAMES).filter(|path| path.is_file())
 }
 
 /// Detected via `turbo.json` or `turbo.jsonc`.
+#[must_use]
 pub fn detect(dir: &Path) -> bool {
     find_config(dir).is_some()
 }
@@ -28,12 +27,12 @@ pub fn detect(dir: &Path) -> bool {
 /// Parse task names from `turbo.json` / `turbo.jsonc`.
 ///
 /// Supports both v2 (`"tasks"`) and v1 (`"pipeline"`) schemas. Workspace-
-/// scoped entries like `"my-app#build"` are filtered out, while Root Task
-/// entries (`"//#lint"`) are surfaced as their bare name (`"lint"`); both
-/// are invoked the same way as a plain task. JSONC syntax (line comments,
+/// scoped entries like `"my-app#build"` keep their `member#task` key, and
+/// Root Task entries (`"//#lint"`) are surfaced as their bare name
+/// (`"lint"`). JSONC syntax (line comments,
 /// block comments, trailing commas) is accepted under either filename,
 /// matching Turborepo's own parser.
-pub fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn extract_tasks(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[derive(Deserialize)]
     struct Partial {
         tasks: Option<HashMap<String, serde_json::Value>>,
@@ -74,10 +73,10 @@ fn classify_task_key(name: String) -> Option<String> {
     Some(name)
 }
 
-/// Returns `true` if `command` is a thin invocation of `turbo` that targets
-/// the same task name, i.e. `turbo run <name>` or the shorthand
-/// `turbo <name>`, optionally followed by flag tokens (e.g. `--filter web`,
-/// `--concurrency=4`).
+/// Whether `command` is a thin `turbo` invocation of the same task name.
+///
+/// That is `turbo run <name>` or the shorthand `turbo <name>`, optionally
+/// followed by flag tokens (e.g. `--filter web`, `--concurrency=4`).
 ///
 /// The tail after the target name must be flag tokens (`-x`, `--long`,
 /// `--key=value`), values following a non-`=` flag, or args after a
@@ -91,6 +90,7 @@ fn classify_task_key(name: String) -> Option<String> {
 /// to avoid false positives on unrelated wrapper scripts. Errs toward
 /// false negatives (leaving a script visible) on ambiguous tails like
 /// quoted multi-word args or unquoted globs.
+#[must_use]
 pub fn is_self_passthrough(name: &str, command: &str) -> bool {
     let mut tokens = command.split_whitespace();
     if tokens.next() != Some("turbo") {
@@ -211,43 +211,37 @@ fn looks_like_shell_expansion(token: &str) -> bool {
 pub fn tasks(
     present: &runner_core::Present,
     tree: &runner_core::Tree,
-) -> Result<Vec<runner_core::Task>, runner_core::Warning> {
+) -> Result<runner_core::Extracted, runner_core::Warning> {
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
-        .map_err(|e| runner_core::Warning::about(present.provider, e.to_string()))?;
-    extracted
-        .into_iter()
-        .map(|name| {
-            let mut task = super::task(present, name.clone(), None);
-            if let Some((member, bare)) = name.split_once('#') {
-                task.scope = tree
-                    .members
-                    .iter()
-                    .find(|scope| scope.label() == member)
-                    .cloned()
-                    .ok_or_else(|| {
-                        runner_core::Warning::about(
-                            present.provider,
-                            format!("task {name} names an unknown workspace member"),
-                        )
-                    })?;
-                task.name = bare.to_owned();
-                task.target = Some(name);
-            }
-            Ok(task)
-        })
-        .collect()
+        .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
+    let mut found = runner_core::Extracted::default();
+    for name in extracted {
+        let mut task = super::task(present, name.clone(), None);
+        if let Some((member, bare)) = name.split_once('#') {
+            let Some(scope) = tree.members.iter().find(|scope| scope.label() == member) else {
+                found.warnings.push(runner_core::Warning::about(
+                    present.provider,
+                    format!("task {name} names an unknown workspace member"),
+                ));
+                continue;
+            };
+            task.scope = scope.clone();
+            bare.clone_into(&mut task.name);
+            task.target = Some(name);
+        }
+        found.tasks.push(task);
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::literal_string_with_formatting_args,
-    reason = "test fixtures embed bash parameter-expansion strings like `${X:-default}` and \
-              `${X:+alt}` as input to is_self_passthrough; the lint mistakes them for Rust format \
-              args."
-)]
 mod tests {
     use std::fs;
+
+    fn braced(inner: &str) -> String {
+        format!("${{{inner}}}")
+    }
 
     use super::{detect, extract_tasks};
     use crate::extract::test_support::TempDir;
@@ -661,7 +655,7 @@ mod tests {
     fn is_self_passthrough_rejects_braced_var_after_flag() {
         assert!(!is_self_passthrough(
             "build",
-            "turbo run build --filter ${X}"
+            &format!("turbo run build --filter {}", braced("X"))
         ));
     }
 
@@ -669,7 +663,7 @@ mod tests {
     fn is_self_passthrough_rejects_default_var_after_flag() {
         assert!(!is_self_passthrough(
             "build",
-            "turbo run build --filter ${X:-web}"
+            &format!("turbo run build --filter {}", braced("X:-web"))
         ));
     }
 
@@ -677,7 +671,7 @@ mod tests {
     fn is_self_passthrough_rejects_pattern_substitution_after_flag() {
         assert!(!is_self_passthrough(
             "build",
-            "turbo run build --filter ${X//foo/bar}"
+            &format!("turbo run build --filter {}", braced("X//foo/bar"))
         ));
     }
 
@@ -720,23 +714,18 @@ mod tests {
 
     #[test]
     fn is_self_passthrough_rejects_quoted_expansion_after_flag() {
-        // The exact form from the user's bug report:
-        // `"build": "turbo run build \"${X}\""` decodes to
-        // `turbo run build "${X}"`; the quoted form must reject too.
         assert!(!is_self_passthrough(
             "build",
-            "turbo run build --filter \"${X}\""
+            &format!("turbo run build --filter \"{}\"", braced("X"))
         ));
-        // Standalone positional case (already rejected via the
-        // positional rule, but pin behavior under the new rule too).
-        assert!(!is_self_passthrough("build", "turbo run build \"${X}\""));
+        assert!(!is_self_passthrough(
+            "build",
+            &format!("turbo run build \"{}\"", braced("X"))
+        ));
     }
 
     #[test]
     fn is_self_passthrough_rejects_bare_var_positional() {
-        // Standalone `$X` after the target, already rejected by the
-        // positional rule; under the new rule it now rejects via the
-        // explicit shell-expansion check, which is clearer.
         assert!(!is_self_passthrough("build", "turbo run build $X"));
     }
 
@@ -769,27 +758,34 @@ mod tests {
 
     #[test]
     fn looks_like_shell_expansion_matches_full_dollar_family() {
-        for form in [
-            // Parameter expansion variants.
+        let parameters = [
+            "X",
+            "X:-default",
+            "X:=default",
+            "X:?msg",
+            "X:+alt",
+            "X#prefix",
+            "X##prefix",
+            "X%suffix",
+            "X%%suffix",
+            "X/foo/bar",
+            "X//foo/bar",
+            "X^^",
+            "X,,",
+            "#X",
+            "!X",
+            "X[@]",
+            "X[0]",
+            "10",
+        ]
+        .map(braced);
+        let quoted = [
+            format!("\"{}\"", braced("X")),
+            "\"$X\"".to_owned(),
+            format!("\"prefix-{}\"", braced("X")),
+        ];
+        let plain = [
             "$X",
-            "${X}",
-            "${X:-default}",
-            "${X:=default}",
-            "${X:?msg}",
-            "${X:+alt}",
-            "${X#prefix}",
-            "${X##prefix}",
-            "${X%suffix}",
-            "${X%%suffix}",
-            "${X/foo/bar}",
-            "${X//foo/bar}",
-            "${X^^}",
-            "${X,,}",
-            "${#X}",
-            "${!X}",
-            "${X[@]}",
-            "${X[0]}",
-            // Special vars.
             "$@",
             "$*",
             "$#",
@@ -799,20 +795,15 @@ mod tests {
             "$_",
             "$0",
             "$9",
-            "${10}",
-            // Command substitution.
             "$(cmd)",
             "$(cmd --flag)",
-            // Arithmetic expansion.
             "$((1+1))",
             "$((CORES*2))",
-            // Quoted forms with embedded expansion.
-            "\"${X}\"",
-            "\"$X\"",
-            "\"prefix-${X}\"",
-        ] {
+        ]
+        .map(str::to_owned);
+        for form in plain.into_iter().chain(parameters).chain(quoted) {
             assert!(
-                looks_like_shell_expansion(form),
+                looks_like_shell_expansion(&form),
                 "expected `{form}` to be detected as shell expansion"
             );
         }
@@ -954,7 +945,7 @@ mod tests {
         assert!(!is_self_passthrough("build", "turbo run build -- $TARGET"));
         assert!(!is_self_passthrough(
             "build",
-            "turbo run build -- --filter ${SCOPE}"
+            &format!("turbo run build -- --filter {}", braced("SCOPE"))
         ));
         assert!(!is_self_passthrough(
             "build",
