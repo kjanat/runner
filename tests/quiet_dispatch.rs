@@ -392,7 +392,7 @@ fn mute_hides_fatal_text_but_preserves_exit_status() {
     let muted = run_in(proj.path(), &[], &["-qqqq", "package.json:missing"]);
     assert!(!shown.status.success());
     assert!(!muted.status.success());
-    assert!(!shown.stderr.is_empty());
+    assert_ne!(shown.stderr.len(), 0);
     assert!(
         muted.stderr.is_empty(),
         "stderr: {}",
@@ -406,7 +406,7 @@ fn configured_fatal_errors_false_hides_post_resolution_failure() {
         npm_project("configured-fatal").file("runner.toml", "[runner]\nfatal_errors = false\n");
     let output = run_in(proj.path(), &[], &["package.json:missing"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     assert!(
         output.stderr.is_empty(),
         "stderr: {}",
@@ -419,8 +419,8 @@ fn quiet_dashboard_emits_no_operational_output() {
     let proj = make_project("quiet-dashboard");
     let output = run_in(proj.path(), &[], &["-q"]);
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 0);
+    assert_eq!(output.stderr.len(), 0);
 }
 
 #[test]
@@ -428,13 +428,13 @@ fn quiet_clean_emits_no_operational_output() {
     let proj = npm_project("quiet-clean").dir("node_modules");
     let output = runner_in(proj.path(), &[], &["-q", "clean"]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     assert!(String::from_utf8_lossy(&output.stderr).contains("requires --yes"));
 
     let confirmed = runner_in(proj.path(), &[], &["-q", "clean", "--yes"]);
     assert!(confirmed.status.success());
-    assert!(confirmed.stdout.is_empty());
-    assert!(confirmed.stderr.is_empty());
+    assert_eq!(confirmed.stdout.len(), 0);
+    assert_eq!(confirmed.stderr.len(), 0);
 }
 
 #[test]
@@ -442,8 +442,8 @@ fn quiet_clean_without_targets_emits_no_operational_output() {
     let proj = make_project("quiet-clean-empty");
     let output = run_in(proj.path(), &[], &["-q", "clean"]);
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 0);
+    assert_eq!(output.stderr.len(), 0);
 }
 
 #[test]
@@ -767,13 +767,13 @@ fn mute_hides_clap_parse_errors() {
     let proj = make_project("mute-clap");
     let output = run_in(proj.path(), &[], &["-qqqq", "--definitely-invalid"]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 0);
+    assert_eq!(output.stderr.len(), 0);
 
     let clustered = run_in(proj.path(), &[], &["-qqqqZ"]);
     assert!(!clustered.status.success());
-    assert!(clustered.stdout.is_empty());
-    assert!(clustered.stderr.is_empty());
+    assert_eq!(clustered.stdout.len(), 0);
+    assert_eq!(clustered.stderr.len(), 0);
 }
 
 #[test]

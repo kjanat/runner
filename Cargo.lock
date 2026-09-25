@@ -441,8 +441,10 @@ name = "runner-core"
 version = "0.26.2"
 dependencies = [
  "bitflags 2.13.2",
+ "json5",
  "serde_json",
  "toml",
+ "yaml-rust2",
 ]
 
 [[package]]

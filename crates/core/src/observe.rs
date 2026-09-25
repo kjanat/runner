@@ -96,6 +96,10 @@ fn look(
             .map(|at| evidence(at, Weight::Configured, None))
             .into_iter()
             .collect(),
+        Signal::FileCaseless(name) => file_in_caseless(dir, name)?
+            .map(|at| evidence(at, Weight::Configured, None))
+            .into_iter()
+            .collect(),
         Signal::Lockfile(name) => file_in(dir, name)?
             .map(|at| evidence(at, Weight::Locked, None))
             .into_iter()
@@ -108,7 +112,7 @@ fn look(
             })
             .into_iter()
             .collect(),
-        Signal::ManifestField { file, path, parse } => manifest_field(dir, file, path)?
+        Signal::ManifestField { files, path, parse } => manifest_field(dir, files, path)?
             .and_then(|(at, value)| parse(&value).map(|declared| (at, declared)))
             .map(|(at, declared)| evidence(at, Weight::Declared, Some(declared)))
             .into_iter()
@@ -148,6 +152,36 @@ fn file_in(dir: &Path, name: &str) -> io::Result<Option<PathBuf>> {
     }
 }
 
+fn file_in_caseless(dir: &Path, name: &str) -> io::Result<Option<PathBuf>> {
+    if let Some(exact) = file_in(dir, name)? {
+        return Ok(Some(exact));
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("{}: {error}", dir.display()),
+            ));
+        }
+    };
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", dir.display())))?;
+        let matches = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name));
+        if matches && entry.file_type()?.is_file() {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found.into_iter().next())
+}
+
 fn file_upwards(dir: &Path, root: &Path, name: &str) -> io::Result<Option<PathBuf>> {
     for ancestor in dir
         .ancestors()
@@ -162,35 +196,86 @@ fn file_upwards(dir: &Path, root: &Path, name: &str) -> io::Result<Option<PathBu
 
 fn manifest_field(
     dir: &Path,
-    file: &str,
+    files: &[&str],
     path: &str,
 ) -> io::Result<Option<(PathBuf, serde_json::Value)>> {
-    let Some(at) = file_in(dir, file)? else {
+    let mut present = None;
+    for file in files {
+        if let Some(at) = file_in(dir, file)? {
+            present = Some(at);
+            break;
+        }
+    }
+    let Some(at) = present else {
         return Ok(None);
     };
     let text = std::fs::read_to_string(&at)
         .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", at.display())))?;
-    let invalid = |error: String| {
+    let document = parse_manifest(&at, &text).map_err(|error| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{}: {error}", at.display()),
         )
-    };
-    let document: serde_json::Value = if Path::new(file)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
-    {
-        let value =
-            toml::from_str::<toml::Value>(&text).map_err(|error| invalid(error.to_string()))?;
-        serde_json::to_value(value).map_err(|error| invalid(error.to_string()))?
-    } else {
-        serde_json::from_str(&text).map_err(|error| invalid(error.to_string()))?
-    };
+    })?;
     Ok(path
         .split('.')
         .try_fold(&document, |node, key| node.get(key))
         .cloned()
         .map(|value| (at, value)))
+}
+
+/// Read a manifest as JSON, JSON5, YAML or TOML by its extension.
+fn parse_manifest(at: &Path, text: &str) -> Result<serde_json::Value, String> {
+    let extension = at
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("toml") => {
+            let value = toml::from_str::<toml::Value>(text).map_err(|error| error.to_string())?;
+            serde_json::to_value(value).map_err(|error| error.to_string())
+        }
+        Some("json5") => json5::from_str(text).map_err(|error| error.to_string()),
+        Some("yaml" | "yml") => {
+            let documents =
+                yaml_rust2::YamlLoader::load_from_str(text).map_err(|error| error.to_string())?;
+            Ok(documents
+                .into_iter()
+                .next()
+                .map_or(serde_json::Value::Null, yaml_to_json))
+        }
+        _ => serde_json::from_str(text).map_err(|error| error.to_string()),
+    }
+}
+
+fn yaml_to_json(yaml: yaml_rust2::Yaml) -> serde_json::Value {
+    use serde_json::Value;
+    use yaml_rust2::Yaml;
+    match yaml {
+        Yaml::Real(text) => text
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map_or(Value::String(text), Value::Number),
+        Yaml::Integer(number) => Value::from(number),
+        Yaml::String(text) => Value::String(text),
+        Yaml::Boolean(flag) => Value::Bool(flag),
+        Yaml::Array(items) => Value::Array(items.into_iter().map(yaml_to_json).collect()),
+        Yaml::Hash(map) => Value::Object(
+            map.into_iter()
+                .filter_map(|(key, value)| {
+                    let key = match key {
+                        Yaml::String(text) | Yaml::Real(text) => text,
+                        Yaml::Integer(number) => number.to_string(),
+                        Yaml::Boolean(flag) => flag.to_string(),
+                        _ => return None,
+                    };
+                    Some((key, yaml_to_json(value)))
+                })
+                .collect(),
+        ),
+        Yaml::Alias(_) | Yaml::Null | Yaml::BadValue => Value::Null,
+    }
 }
 
 #[cfg(test)]
@@ -213,16 +298,64 @@ mod tests {
             "[build-system]\nbuild-backend = \"poetry.core.masonry.api\"\n",
         )
         .expect("pyproject.toml");
-        let (_, json) = manifest_field(dir.path(), "package.json", "devEngines.packageManager")
+        let (_, json) = manifest_field(dir.path(), &["package.json"], "devEngines.packageManager")
             .expect("read")
             .expect("field");
         assert_eq!(json["name"], "pnpm");
-        let (_, toml) = manifest_field(dir.path(), "pyproject.toml", "build-system.build-backend")
-            .expect("read")
-            .expect("field");
+        let (_, toml) = manifest_field(
+            dir.path(),
+            &["pyproject.toml"],
+            "build-system.build-backend",
+        )
+        .expect("read")
+        .expect("field");
         assert_eq!(toml, "poetry.core.masonry.api");
         assert!(
-            manifest_field(dir.path(), "package.json", "engines.node")
+            manifest_field(dir.path(), &["package.json"], "engines.node")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn manifest_fields_read_json5_and_yaml_and_take_the_first_file_present() {
+        let dir = TempDir::new("observe-formats");
+        fs::write(
+            dir.path().join("package.json5"),
+            "{ packageManager: 'pnpm@9.0.0', // trailing\n}",
+        )
+        .expect("package.json5");
+        fs::write(
+            dir.path().join("package.yaml"),
+            "packageManager: yarn@4.0.0\ndevEngines:\n  packageManager:\n    name: yarn\n    \
+             onFail: warn\n",
+        )
+        .expect("package.yaml");
+        let files = ["package.json", "package.json5", "package.yaml"];
+        let (at, value) = manifest_field(dir.path(), &files, "packageManager")
+            .expect("read")
+            .expect("field");
+        assert!(at.ends_with("package.json5"));
+        assert_eq!(value, "pnpm@9.0.0");
+        let (at, value) =
+            manifest_field(dir.path(), &["package.yaml"], "devEngines.packageManager")
+                .expect("read")
+                .expect("field");
+        assert!(at.ends_with("package.yaml"));
+        assert_eq!(value["name"], "yarn");
+        assert_eq!(value["onFail"], "warn");
+    }
+
+    #[test]
+    fn caseless_files_match_any_spelling() {
+        let dir = TempDir::new("observe-caseless");
+        fs::write(dir.path().join("JUSTFILE"), "").expect("JUSTFILE");
+        assert_eq!(
+            super::file_in_caseless(dir.path(), "justfile").unwrap(),
+            Some(dir.path().join("JUSTFILE"))
+        );
+        assert!(
+            super::file_in_caseless(dir.path(), ".justfile")
                 .unwrap()
                 .is_none()
         );

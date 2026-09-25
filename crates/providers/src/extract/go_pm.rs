@@ -373,7 +373,7 @@ mod tests {
 
         let tasks = extract_tasks(dir.path()).expect("go cmd tasks should parse");
 
-        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
     }
 
     #[test]

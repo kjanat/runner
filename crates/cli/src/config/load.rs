@@ -1255,7 +1255,7 @@ mod tests {
     fn tool_install_normalizes_every_spelling() {
         use super::ToolInstall;
         assert_eq!(ToolInstall::Toggle(true).operations(), ["install"]);
-        assert!(ToolInstall::Toggle(false).operations().is_empty());
+        assert_eq!(ToolInstall::Toggle(false).operations().len(), 0);
         assert_eq!(
             ToolInstall::One("bootstrap".into()).operations(),
             ["bootstrap"]
@@ -1293,7 +1293,7 @@ mod tests {
             "[env]\nANYTHING = \"1\"\n\n[tools.mise]\ninstall = true\nenv = { A = \"b\" }\n",
         )
         .expect("parses");
-        assert!(super::collect_unknown_keys(&doc).is_empty());
+        assert_eq!(super::collect_unknown_keys(&doc).len(), 0);
     }
 
     #[test]
@@ -1353,7 +1353,7 @@ mod tests {
             .install
             .as_ref()
             .expect("the veto is the surviving install knob");
-        assert!(veto.operations().is_empty());
+        assert_eq!(veto.operations().len(), 0);
     }
 
     #[test]

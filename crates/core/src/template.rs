@@ -34,6 +34,8 @@ pub enum Piece {
     Op,
     /// The files a test runner is handed.
     Files,
+    /// The flags the files a test runner is handed call for.
+    FileFlags,
 }
 
 /// An argv after the program.
@@ -89,6 +91,8 @@ pub struct Request<'a> {
     pub args: &'a [String],
     /// For [`Piece::Files`].
     pub files: &'a [PathBuf],
+    /// For [`Piece::FileFlags`].
+    pub file_flags: &'static [&'static str],
     /// The quiet template for the requested level, when the provider has one.
     pub quiet: Option<Template>,
     /// The stream switch, rendered after `quiet` at the same position.
@@ -147,6 +151,9 @@ impl Piece {
             Self::Op => out.args.extend(request.op.map(OsString::from)),
             Self::Args => out.args.extend(request.args.iter().map(OsString::from)),
             Self::Files => out.args.extend(request.files.iter().map(OsString::from)),
+            Self::FileFlags => out
+                .args
+                .extend(request.file_flags.iter().map(OsString::from)),
             Self::Sep(sep) => {
                 if !request.args.is_empty() {
                     out.args.push(sep.into());

@@ -62,26 +62,42 @@ pub(crate) fn detect(dir: &Path) -> ProjectContext {
     ctx
 }
 
-/// The nearest ancestor inside the enclosing repository that holds a
-/// provider's own file or lockfile, else `dir`.
+/// The nearest ancestor inside the enclosing repository that holds a file
+/// any provider's signals name, else `dir`.
 fn project_root(dir: &Path) -> std::path::PathBuf {
     let Some(boundary) = tool::files::vcs_root(dir) else {
         return dir.to_owned();
     };
+    let signals = || runner_providers::REGISTRY.iter().flat_map(|p| p.signals);
+    let exact: Vec<&str> = signals()
+        .flat_map(runner_core::Signal::file_names)
+        .collect();
+    let caseless: Vec<&str> = signals()
+        .filter_map(|signal| match signal {
+            runner_core::Signal::FileCaseless(name) => Some(*name),
+            _ => None,
+        })
+        .collect();
     dir.ancestors()
         .take_while(|ancestor| ancestor.starts_with(&boundary))
         .find(|ancestor| {
-            runner_providers::REGISTRY
-                .iter()
-                .flat_map(|p| p.signals)
-                .any(|signal| match signal {
-                    runner_core::Signal::File(name) | runner_core::Signal::Lockfile(name) => {
-                        ancestor.join(name).is_file()
-                    }
-                    _ => false,
-                })
+            exact.iter().any(|name| ancestor.join(name).is_file())
+                || holds_caseless(ancestor, &caseless)
         })
         .map_or_else(|| dir.to_owned(), Path::to_path_buf)
+}
+
+/// Whether `dir` holds a file spelled like one of `names` in any ASCII case.
+fn holds_caseless(dir: &Path, names: &[&str]) -> bool {
+    !names.is_empty()
+        && std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_file())
+                    && entry.file_name().to_str().is_some_and(|found| {
+                        names.iter().any(|name| found.eq_ignore_ascii_case(name))
+                    })
+            })
+        })
 }
 
 // Install directories
@@ -428,7 +444,7 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 fn extract_tasks(ctx: &mut ProjectContext) {
     let tree = crate::commands::run::core::tree(ctx);
     let registry = &runner_providers::REGISTRY;
-    match runner_core::observe::observe(&tree, registry).and_then(|evidence| {
+    match crate::commands::run::core::observe_evidence(&tree).and_then(|evidence| {
         runner_core::resolve(&tree, evidence, &runner_core::Policy::default(), registry)
     }) {
         Ok(project) => {
@@ -911,6 +927,42 @@ mod tests {
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
+    }
+
+    #[test]
+    fn the_project_root_is_found_from_a_child_directory_for_every_signal_kind() {
+        for (name, body, task) in [
+            (
+                "deno.json",
+                r#"{"tasks":{"build":"deno run build.ts"}}"#,
+                "build",
+            ),
+            (
+                "pyproject.toml",
+                "[project]\nname = \"demo\"\n\n[project.scripts]\ngreenpy = \"greenpy:main\"\n",
+                "greenpy",
+            ),
+            ("JUSTFILE", "build:\n  echo build\n", "build"),
+        ] {
+            let dir = TempDir::new("detect-root-signal");
+            fs::write(dir.path().join(name), body).expect("config");
+            let src = dir.path().join("src");
+            fs::create_dir_all(&src).expect("src");
+            if !commit_in(dir.path(), &[name]) {
+                eprintln!("skipping: git unavailable");
+                return;
+            }
+            let ctx = detect(&src);
+            assert_eq!(ctx.root, dir.path(), "{name}");
+            if name == "JUSTFILE" && runner_core::probe_with("just", &[]).is_none() {
+                continue;
+            }
+            assert!(
+                ctx.tasks.iter().any(|found| found.name == task),
+                "{name}: {:?}",
+                ctx.tasks
+            );
+        }
     }
 
     #[test]

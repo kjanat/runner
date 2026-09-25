@@ -133,6 +133,18 @@ pub enum Refusal {
         /// Every candidate and its scope.
         candidates: Vec<(ProviderId, Scope)>,
     },
+    /// The selected test runner found nothing to run.
+    NoTests {
+        /// The provider whose runner looked.
+        provider: ProviderId,
+        /// The directory it looked under.
+        dir: PathBuf,
+        /// The file patterns it looked for.
+        patterns: Vec<String>,
+    },
+    /// A manifest and a lockfile name different package managers and policy
+    /// refuses to pick one.
+    Mismatch(crate::resolve::Disagreement),
     /// The request would cross a trust boundary.
     Unsafe(Unsafe),
 }
@@ -174,6 +186,18 @@ impl std::fmt::Display for Refusal {
                     .map(|(_, scope)| scope.label())
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::NoTests { dir, patterns, .. } => write!(
+                f,
+                "no test files found under {}: expected one of {}",
+                dir.display(),
+                patterns.join(", ")
+            ),
+            Self::Mismatch(disagreement) => write!(
+                f,
+                "{} declares one package manager and {} pins another",
+                disagreement.manifest.display(),
+                disagreement.lockfile.display()
             ),
             Self::Unsafe(Unsafe::LoaderHook { name }) => write!(
                 f,
@@ -233,6 +257,9 @@ impl NameShape {
     /// The shape of `name`. A scoped package name counts as bare.
     #[must_use]
     pub fn of(name: &str) -> Self {
+        if name.starts_with("jsr:") || name.starts_with("npm:") {
+            return Self::REGISTRY;
+        }
         let rest = name
             .strip_prefix('@')
             .and_then(|scoped| scoped.split_once('/'))
@@ -308,27 +335,6 @@ pub fn plan(
                     op: op.name(),
                 });
             }
-        }
-        let chosen = policy
-            .pm
-            .0
-            .values()
-            .any(|choice| dispatches(registry.by_id(choice.id)));
-        if policy.strict
-            && !chosen
-            && let Some(disagreement) = project.disagreements.iter().find(|d| {
-                d.scope == task.scope
-                    && [d.declared, d.locked]
-                        .iter()
-                        .any(|id| dispatches(registry.by_id(*id)))
-            })
-        {
-            return Err(Refusal::Ambiguous {
-                candidates: vec![
-                    (disagreement.declared, disagreement.scope.clone()),
-                    (disagreement.locked, disagreement.scope.clone()),
-                ],
-            });
         }
     }
     let mut last = None;
@@ -659,12 +665,21 @@ impl<'a> Shaping<'_, 'a> {
                 if !args.iter().any(|arg| !arg.starts_with('-')) {
                     fill.files = discover(&self.tree.cwd, patterns);
                     if fill.files.is_empty() {
-                        return Err(self.refuse());
+                        return Err(Refusal::NoTests {
+                            provider: self.provider.id,
+                            dir: self.tree.cwd.clone(),
+                            patterns: patterns.iter().map(|p| (*p).to_owned()).collect(),
+                        });
                     }
+                }
+                if let Some(flags) = cap.file_flags {
+                    fill.request.file_flags = flags(&fill.files);
                 }
                 cap.argv
             }
-            Discovery::Detect(detect) => detect(&self.tree.cwd)?.ok_or_else(|| self.refuse())?,
+            Discovery::Detect(detect) => {
+                detect(&scope_dir(self.tree, &self.present.scope))?.ok_or_else(|| self.refuse())?
+            }
         };
         fill.request.args = args;
         Ok(Shape {
@@ -760,35 +775,77 @@ fn clamps(policy: &Policy, provider: &Provider, op: &Op<'_>) -> Vec<Clamp> {
     clamps
 }
 
-/// The `[tasks.<key>]` env keys a task answers to.
-fn task_env_keys(op: &Op<'_>, registry: &Registry) -> Vec<String> {
-    let Op::Run { task, .. } = op else {
-        return Vec::new();
-    };
-    let source = registry.by_id(task.source);
-    let labels: Vec<_> = source
-        .aliases
-        .iter()
-        .copied()
-        .chain([source.label])
-        .collect();
-    let mut keys = vec![task.name.clone()];
-    keys.extend(labels.iter().map(|label| format!("{label}#{}", task.name)));
-    keys.extend(
-        labels
+/// The `[tasks.<key>]` env keys a task answers to; a runner's default
+/// invocation answers to the runner's own names.
+fn task_env_keys(op: &Op<'_>, provider: &Provider, registry: &Registry) -> Vec<String> {
+    let spellings = |provider: &Provider| -> Vec<String> {
+        provider
+            .aliases
             .iter()
-            .map(|label| format!("{}:{label}#{}", task.scope.label(), task.name)),
-    );
-    keys
+            .copied()
+            .chain([provider.label])
+            .map(str::to_owned)
+            .collect()
+    };
+    match op {
+        Op::Run { task, .. } => {
+            let labels = spellings(registry.by_id(task.source));
+            let mut keys = vec![task.name.clone()];
+            keys.extend(labels.iter().map(|label| format!("{label}#{}", task.name)));
+            keys.extend(
+                labels
+                    .iter()
+                    .map(|label| format!("{}:{label}#{}", task.scope.label(), task.name)),
+            );
+            keys
+        }
+        Op::RunDefault { .. } => spellings(provider),
+        _ => Vec::new(),
+    }
+}
+
+/// Refuse a package manager whose manifest and lockfile disagree in the
+/// scope it was taken from, unless policy chose it or lets the manifest win.
+fn refuse_mismatch(
+    project: &Project,
+    policy: &Policy,
+    present: &Present,
+    registry: &Registry,
+) -> Result<(), Refusal> {
+    if policy.on_mismatch != crate::policy::OnMismatch::Refuse
+        || !registry
+            .by_id(present.provider)
+            .kind
+            .contains(Kind::PACKAGE_MANAGER)
+        || policy
+            .pm
+            .0
+            .values()
+            .any(|choice| choice.id == present.provider)
+    {
+        return Ok(());
+    }
+    project
+        .disagreements
+        .iter()
+        .find(|d| {
+            d.scope == present.scope
+                && (d.declared == present.provider || d.locked == present.provider)
+        })
+        .map_or(Ok(()), |disagreement| {
+            Err(Refusal::Mismatch(disagreement.clone()))
+        })
 }
 
 /// Turn one request into one command through `present`.
 ///
 /// # Errors
 ///
-/// `NoCapability` when the provider lacks the capability or a test runner
-/// finds nothing to run, `Unsafe` when the name has a shape the exec
-/// primitive does not take or an env layer sets a loader hook.
+/// `NoCapability` when the provider lacks the capability, `NoTests` when a
+/// test runner finds nothing to run, `Mismatch` when policy refuses a
+/// package manager whose manifest and lockfile disagree, `Unsafe` when the
+/// name has a shape the exec primitive does not take or an env layer sets a
+/// loader hook.
 pub fn plan_with(
     tree: &Tree,
     project: &Project,
@@ -799,9 +856,6 @@ pub fn plan_with(
 ) -> Result<Plan, Refusal> {
     let provider = registry.by_id(present.provider).for_present(present);
     let mut warnings = Vec::new();
-    if let Some(hook) = provider.hooks.before_plan {
-        hook(present, op, &mut warnings)?;
-    }
     let quiet = provider.caps.quiet;
     let clamps = clamps(policy, &provider, op);
     let mut fill = Fill {
@@ -826,6 +880,10 @@ pub fn plan_with(
         op: *op,
     };
     let shape = shaping.shape(&mut fill)?;
+    refuse_mismatch(project, policy, present, registry)?;
+    if let Some(hook) = provider.hooks.before_plan {
+        hook(present, op, policy, &mut warnings)?;
+    }
     let Fill { mut request, files } = fill;
     request.files = &files;
     let program = shape.program.ok_or_else(|| shaping.refuse())?;
@@ -833,7 +891,15 @@ pub fn plan_with(
     let rendered = shape.template.render(&request);
     let mut argv = Vec::with_capacity(rendered.args.len() + 1);
     argv.push(OsString::from(program));
+    let own_program = Some(program) == provider.program;
+    let has_quiet_piece = shape
+        .template
+        .0
+        .iter()
+        .any(|piece| matches!(piece, crate::Piece::Quiet));
     if policy.host_stderr
+        && own_program
+        && !has_quiet_piece
         && let Some(stream) = quiet.stream
     {
         argv.extend(stream.render(&Request::default()).args);
@@ -843,11 +909,15 @@ pub fn plan_with(
     env.extend(env_layers(
         policy,
         Some(provider.id),
-        &task_env_keys(op, registry),
+        &task_env_keys(op, &provider, registry),
     )?);
     let scope = match op {
         Op::Run { task, .. } => task.scope.clone(),
-        _ => present.scope.clone(),
+        Op::RunFile { file, .. } => scope_at(tree, file),
+        Op::Exec { .. } | Op::ExecPackage { .. } | Op::Test { .. } => scope_at(tree, &tree.cwd),
+        Op::Install { .. } | Op::RunDefault { .. } | Op::Health { .. } | Op::Clean => {
+            present.scope.clone()
+        }
     };
     let path_prepend = match shape.trust {
         Trust::Host => Vec::new(),
@@ -901,17 +971,12 @@ pub fn plan_argv(
     registry: &Registry,
     argv: Vec<OsString>,
 ) -> Result<Plan, Refusal> {
-    let scope = tree
-        .members
-        .iter()
-        .filter_map(|scope| match scope {
-            Scope::Member { dir, .. } if tree.cwd.starts_with(dir) => {
-                Some((dir.components().count(), scope))
-            }
-            _ => None,
-        })
-        .max_by_key(|(depth, _)| *depth)
-        .map_or(Scope::Root, |(_, scope)| scope.clone());
+    let anchor = if found.starts_with(&tree.root) {
+        found.as_path()
+    } else {
+        tree.cwd.as_path()
+    };
+    let scope = scope_at(tree, anchor);
     let evidence = Evidence {
         provider: None,
         signal: None,
@@ -1287,7 +1352,9 @@ fn unread_source(cascade: &Cascade<'_>) -> Result<(), Refusal> {
     )))
 }
 
-/// The built-in test runner, when `test` names no task.
+/// The built-in test runner, when `test` names no task. A runner that finds
+/// no tests stops the cascade; only a project without a runner falls
+/// through.
 fn test_rung(
     cascade: &Cascade<'_>,
     token: &str,
@@ -1886,10 +1953,12 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
     }
     let shebang = read_shebang(path);
     let scope = scope_at(cascade.tree, path);
-    if let Some(choice) = &cascade.policy.runtime
-        && let Some(present) = cascade.project.present_in(choice.id, &scope)
-    {
-        let provider = cascade.registry.by_id(choice.id).for_present(present);
+    if let Some(choice) = &cascade.policy.runtime {
+        let present = cascade.project.present_in(choice.id, &scope);
+        let provider = cascade
+            .registry
+            .effective(choice.id, cascade.project, &scope);
+        let refused = provider.caps.run_file.and_then(|cap| cap.refusal(path));
         let extension_matches = provider
             .caps
             .run_file
@@ -1901,6 +1970,23 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
                 .is_some_and(|p| provider.caps.file_interpreters.contains(&p))
         });
         if extension_matches || interpreter_matches {
+            let Some(present) = present else {
+                if let Some(reason) = refused {
+                    return Err(Refusal::UnsupportedFile {
+                        provider: provider.id,
+                        file: path.to_owned(),
+                        reason,
+                        chosen_by: Some(choice.from.clone()),
+                        alternatives: cascade
+                            .registry
+                            .file_runtimes(path, cascade.project, &scope),
+                    });
+                }
+                return Err(Refusal::Invalid(format!(
+                    "no evidence for runtime {}",
+                    provider.label
+                )));
+            };
             return plan_with(
                 cascade.tree,
                 cascade.project,
@@ -1957,14 +2043,7 @@ fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Res
                     scope: scope.clone(),
                     version: None,
                     bin_dirs: vec![],
-                    because: vec![Evidence {
-                        provider: None,
-                        signal: None,
-                        at: path.to_path_buf(),
-                        scope: scope.clone(),
-                        weight: Weight::Present,
-                        declared: None,
-                    }],
+                    because: fallback_evidence(cascade.tree, provider, path, &scope)?,
                 };
                 match plan_with(
                     cascade.tree,
@@ -1986,6 +2065,44 @@ fn runtime_file_plan(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Res
         }
         Err(error) => Err(error),
     }
+}
+
+/// The evidence a fallback runtime plans on: the file itself, then whatever
+/// its probes find on the host and whatever its observation hook derives
+/// from that, so a variant the host decides reaches the plan.
+fn fallback_evidence(
+    tree: &Tree,
+    provider: &Provider,
+    path: &Path,
+    scope: &Scope,
+) -> Result<Vec<Evidence>, Refusal> {
+    let mut because = vec![Evidence {
+        provider: None,
+        signal: None,
+        at: path.to_path_buf(),
+        scope: scope.clone(),
+        weight: Weight::Present,
+        declared: None,
+    }];
+    for (index, signal) in provider.signals.iter().enumerate() {
+        if let crate::Signal::Probe(name) = signal
+            && let Some(at) = probe_with(name, &[])
+        {
+            because.push(Evidence {
+                provider: Some(provider.id),
+                signal: Some(crate::SignalId(index)),
+                at,
+                scope: scope.clone(),
+                weight: Weight::Probed,
+                declared: None,
+            });
+        }
+    }
+    if let Some(hook) = provider.hooks.after_observe {
+        let derived = hook(tree, &because)?;
+        because.extend(derived);
+    }
+    Ok(because)
 }
 
 /// Whether an effective provider capability routes this file.
@@ -2056,6 +2173,7 @@ mod tests {
                     program: Some("node"),
                     argv: t!["--test", Args, Files],
                     discovery: Discovery::Files(&["test.js", "*.test.js"]),
+                    file_flags: None,
                 }),
                 bins: Some(BinsCap {
                     dirs: BinDirs::Static(&["node_modules/.bin"]),
@@ -2433,14 +2551,13 @@ mod tests {
                 ..FAKES[0]
             },
         ];
-        assert!(
-            Registry(PROVIDERS)
-                .file_runtimes(
-                    std::path::Path::new("x.ts"),
-                    &Project::default(),
-                    &Scope::Root
-                )
-                .is_empty()
+        assert_eq!(
+            Registry(PROVIDERS).file_runtimes(
+                std::path::Path::new("x.ts"),
+                &Project::default(),
+                &Scope::Root
+            ),
+            []
         );
     }
 
@@ -2677,7 +2794,7 @@ mod tests {
         assert_eq!(made.trust, Trust::Project);
         assert_eq!(made.path_prepend, [PathBuf::from("/p/node_modules/.bin")]);
         assert_eq!(made.decided_by, [Layer::Lockfile(PathBuf::from("/p/lock"))]);
-        assert!(made.clamps.is_empty());
+        assert_eq!(made.clamps, []);
         assert_eq!(made.because.len(), 1);
     }
 
@@ -2826,10 +2943,20 @@ mod tests {
                 &Op::Test { args: &[] },
                 &registry
             ),
-            Err(Refusal::NoCapability {
+            Err(Refusal::NoTests {
                 provider: ProviderId::Npm,
-                op: "test"
+                dir: empty.path().to_path_buf(),
+                patterns: vec!["test.js".to_owned(), "*.test.js".to_owned()],
             })
+        );
+        let outcome = dispatch(
+            &cascade(&tree, &project, &Policy::default(), &registry),
+            "test",
+            &["--watch".to_owned()],
+        );
+        assert!(
+            matches!(outcome, Err(Refusal::NoTests { .. })),
+            "an empty discovery stops the cascade: {outcome:?}"
         );
     }
 
@@ -3086,6 +3213,82 @@ mod tests {
             panic!("a tie is ambiguous");
         };
         assert_eq!(candidates.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fallback_runtime_observes_the_host_before_it_plans() {
+        fn variant(evidence: &[Evidence]) -> Vec<Evidence> {
+            evidence
+                .iter()
+                .filter(|e| e.provider == Some(ProviderId::Node))
+                .map(|e| Evidence {
+                    declared: Some(crate::Declared::Variant("alt".into())),
+                    ..e.clone()
+                })
+                .collect()
+        }
+        const ALT: Capabilities = Capabilities {
+            file_fallback: true,
+            run_file: Some(RunFileCap {
+                extensions: &["widget"],
+                unsupported: &[],
+                program: Some("alt-runtime"),
+                argv: t![File],
+            }),
+            ..Capabilities::NONE
+        };
+        static PROVIDERS: &[Provider] = &[Provider {
+            id: ProviderId::Node,
+            label: "node",
+            program: Some("sh"),
+            kind: Kind::RUNTIME,
+            signals: &[Signal::Probe("sh")],
+            caps: Capabilities {
+                variants: &[("alt", ALT)],
+                file_fallback: true,
+                run_file: Some(RunFileCap {
+                    extensions: &["widget"],
+                    unsupported: &[],
+                    program: None,
+                    argv: t![File],
+                }),
+                ..Capabilities::NONE
+            },
+            hooks: Hooks {
+                before_plan: None,
+                after_observe: Some(|_, evidence| Ok(variant(evidence))),
+            },
+            ..FAKES[0]
+        }];
+        let dir = TempDir::new("fallback-observe");
+        let file = dir.path().join("demo.widget");
+        fs::write(&file, "").unwrap();
+        let tree = Tree {
+            root: dir.path().to_owned(),
+            cwd: dir.path().to_owned(),
+            members: Vec::new(),
+        };
+        let project = Project::default();
+        let policy = Policy::default();
+        let cascade = Cascade {
+            tree: &tree,
+            project: &project,
+            policy: &policy,
+            registry: &Registry(PROVIDERS),
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        let plan = super::file_plan(&cascade, &file, &[]).unwrap();
+        assert_eq!(plan.argv[0], "alt-runtime");
+        assert_eq!(plan.because[0].at, file);
+        assert!(plan.because[0].provider.is_none());
+        assert!(
+            plan.because
+                .iter()
+                .any(|e| e.provider == Some(ProviderId::Node) && e.weight == Weight::Probed)
+        );
     }
 
     #[test]

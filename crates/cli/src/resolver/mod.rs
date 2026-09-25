@@ -349,7 +349,7 @@ mod tests {
         })
         .expect("recognized boolean tokens should parse");
 
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
         assert_eq!(overrides.failure_policy, FailurePolicy::KeepGoing);
         assert!(!overrides.explain);
     }
@@ -377,7 +377,7 @@ mod tests {
         })
         .expect("valid env value should parse");
 
-        assert!(warnings.is_empty());
+        assert_eq!(warnings.len(), 0);
         assert_eq!(
             overrides.pm.expect("pm should be set").pm,
             PackageManager::Bun
@@ -618,8 +618,8 @@ mod tests {
         })
         .expect("an unknown section is never validated");
 
-        assert!(overrides.prefer_sources.is_empty());
-        assert!(overrides.prefer_runners.is_empty());
+        assert_eq!(overrides.prefer_sources.len(), 0);
+        assert_eq!(overrides.prefer_runners.len(), 0);
     }
 
     fn config_with_tasks(tasks: crate::config::TasksSection) -> LoadedConfig {
@@ -655,7 +655,7 @@ mod tests {
             vec![TaskSource::PackageJson, TaskSource::TurboJson],
         );
         // The deprecated list is left empty when `[tasks]` drives selection.
-        assert!(overrides.prefer_runners.is_empty());
+        assert_eq!(overrides.prefer_runners.len(), 0);
     }
 
     #[test]
@@ -724,7 +724,7 @@ mod tests {
         .expect("config should parse");
 
         assert_eq!(overrides.prefer_sources, vec![TaskSource::TurboJson]);
-        assert!(overrides.prefer_runners.is_empty());
+        assert_eq!(overrides.prefer_runners.len(), 0);
     }
 
     #[test]
@@ -741,7 +741,7 @@ mod tests {
         })
         .expect("a known label with no task source parses");
 
-        assert!(overrides.prefer_sources.is_empty());
+        assert_eq!(overrides.prefer_sources.len(), 0);
     }
 
     #[test]

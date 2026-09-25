@@ -44,12 +44,14 @@ pub use plan::{
     is_directly_executable, plan, plan_argv, plan_found, plan_with, read_shebang, resolve_path,
     scope_dir, select,
 };
-pub use policy::{Choice, Layer, PerEcosystem, Policy, ReachPolicy, ScriptPolicy, TrustPolicy};
+pub use policy::{
+    Choice, Layer, OnMismatch, PerEcosystem, Policy, ReachPolicy, ScriptPolicy, TrustPolicy,
+};
 pub use probe::{Prober, probe_in, probe_in_dirs, probe_with};
 pub use provider::{Ecosystem, Hooks, Kind, ProviderId};
 pub use reach::Reach;
 pub use registry::{AfterObserveFn, BeforePlanFn, Provider, Registry, TasksFn, VersionFn};
-pub use resolve::{Disagreement, Project, Unread, resolve};
+pub use resolve::{Disagreement, Project, Unread, prefer_tracked_lockfiles, resolve};
 pub use scheme::{Check, ParseError, Scheme, check};
 pub use scope::Scope;
 pub use signal::{Declared, OnFail, Signal, SignalId};

@@ -169,7 +169,7 @@ mod tests {
 
         let targets = collect_targets(&context(dir.path()), false);
 
-        assert!(targets.is_empty());
+        assert_eq!(targets.len(), 0);
     }
 
     #[test]
@@ -194,6 +194,6 @@ mod tests {
         fs::create_dir(dir.path().join("dist")).unwrap();
         let mut ctx = context(dir.path());
         ctx.package_managers.clear();
-        assert!(collect_targets(&ctx, false).is_empty());
+        assert_eq!(collect_targets(&ctx, false).len(), 0);
     }
 }

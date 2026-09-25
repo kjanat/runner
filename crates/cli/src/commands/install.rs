@@ -1194,7 +1194,7 @@ mod tests {
         let ctx = context(vec![PackageManager::Bun, PackageManager::Pnpm]);
         let mut overrides = override_pm(PackageManager::Bun, OverrideOrigin::CliFlag);
         overrides.tool_install.insert("bun".into(), Vec::new());
-        assert!(select_install_pms(&ctx, &overrides).unwrap().is_empty());
+        assert_eq!(select_install_pms(&ctx, &overrides).unwrap().len(), 0);
     }
 
     #[test]
@@ -1368,7 +1368,7 @@ mod tests {
         let plan = plan_install(&ctx, &overrides).expect("plan");
 
         assert_eq!(plan.pms, vec![PackageManager::Bun]);
-        assert!(plan.collisions.is_empty());
+        assert_eq!(plan.collisions.len(), 0);
         assert!(
             plan.shadowed.is_empty(),
             "nothing was dropped: deno was never in the install set to begin with"
@@ -1386,8 +1386,8 @@ mod tests {
         let plan = plan_install(&ctx, &ResolutionOverrides::default()).expect("plan");
 
         assert_eq!(plan.pms, vec![PackageManager::Bun, PackageManager::Cargo]);
-        assert!(plan.collisions.is_empty());
-        assert!(plan.shadowed.is_empty());
+        assert_eq!(plan.collisions.len(), 0);
+        assert_eq!(plan.shadowed.len(), 0);
     }
 
     #[test]
@@ -1452,7 +1452,7 @@ mod tests {
             fallback: FallbackPolicy::Npm,
             ..Default::default()
         };
-        assert!(select_install_pms(&ctx, &overrides).unwrap().is_empty());
+        assert_eq!(select_install_pms(&ctx, &overrides).unwrap().len(), 0);
     }
 
     #[test]
@@ -1463,7 +1463,7 @@ mod tests {
             fallback: FallbackPolicy::Npm,
             ..Default::default()
         };
-        assert!(select_install_pms(&ctx, &overrides).unwrap().is_empty());
+        assert_eq!(select_install_pms(&ctx, &overrides).unwrap().len(), 0);
     }
 
     #[test]

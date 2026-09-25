@@ -134,26 +134,39 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   that dispatches `package.json` or `pyproject.toml` scripts is chosen from
   the evidence in the task's scope: a `--pm` or `RUNNER_PM` choice, then a
   `runner.toml` choice keyed by the config key's ecosystem, then the
-  manifest, then the lockfile, then an executable on `PATH`. `run`, `why`,
-  `doctor` and `list --json` report the same choice, as `pnpm via
+  manifest's `packageManager`, then its `devEngines.packageManager`, then
+  the lockfile, then an executable on `PATH`. A lockfile the repository
+  tracks outranks an untracked one beside it. `package.json5` and
+  `package.yaml` declare a manager the same way `package.json` does. `run`,
+  `why`, `doctor` and `list --json` report the same choice, as `pnpm via
   pnpm-lock.yaml`, `bun via package.json "devEngines.packageManager"
-  (onFail=warn)` or `npm via PATH probe at /usr/bin/npm`. `[pm].node =
-  "deno"` and `--pm deno` fill the Node slot, since deno dispatches
-  `package.json` scripts. `--pm cargo` on a `package.json` script is refused
-  as a missing capability instead of an invalid override.
+  (onFail=warn)` or `npm via PATH probe at /usr/bin/npm`, and `why` reports
+  it for the scope of the task it selected. `[pm].node = "deno"` and `--pm
+  deno` fill the Node slot, since deno dispatches `package.json` scripts.
+  `--pm cargo` on a `package.json` script is refused as a missing capability
+  instead of an invalid override.
 
 - `devEngines.packageManager` is checked when a plan is made, so an
   install or a package exec through the declared manager sees it too, and
-  an `onFail` of `error` refuses before anything spawns. The declared range
-  is checked against `<manager> --version` with npm semver; a prerelease
-  build clears the range its release clears. A range that cannot be read
-  proceeds with a cannot-evaluate warning.
+  an `onFail` of `error` refuses before anything spawns. The check applies
+  when that field is what selected the manager: a `packageManager` field, a
+  `--pm` choice or a `runner.toml` choice settles the choice without it, and
+  a manager that cannot take the operation is never asked. The declared
+  range is checked against `<manager> --version` with npm semver; a
+  prerelease build clears the range its release clears. A range that cannot
+  be read proceeds with a cannot-evaluate warning.
 
 - A manifest and a lockfile that name different package managers are
-  reported as a disagreement; the manifest still wins. Resolution is strict
-  under `[resolution].on_mismatch = "error"` or `--fallback error`, and a
-  strict run refuses the disagreement as ambiguous unless a `--pm` choice
-  settles it, and takes no package manager from `PATH` for a task source.
+  reported as a disagreement; the manifest still wins. Under
+  `[resolution].on_mismatch = "error"` the disagreement refuses `run`,
+  `--package`, exec and install alike, naming both files and both managers,
+  unless a `--pm` choice settles it. `--fallback error` refuses to take a
+  package manager from `PATH` for a task source and decides nothing else.
+
+- `run test` with no test script and no test files is an error naming the
+  directory and the patterns looked for. It used to fall through to the
+  host `test` binary and exit 0 with nothing run. Discovered TypeScript
+  tests get `--experimental-strip-types` again.
 
 - A task source that cannot be read at the root or the invocation directory
   refuses `run` with the read error instead of falling through to another
@@ -162,11 +175,39 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   warnings for the rest. A Yarn manifest or lockfile that cannot be read
   stops dispatch instead of reading as Classic.
 
-- Yarn Classic or Berry is decided from `packageManager`, `devEngines`,
-  `.yarnrc.yml` and `yarn.lock`, and one decision drives install, `run`,
-  exec and `--package`. Berry's install uses `--immutable` under `--frozen`,
-  and `--no-scripts` denies scripts with `--ignore-scripts` on Classic and
-  `YARN_ENABLE_SCRIPTS=false` on Berry.
+- Yarn Classic or Berry is decided from `packageManager`, `devEngines`
+  (`>=4` and `^1.22` count), `yarn.lock`, `.yarnrc.yml`, and failing all of
+  those from `yarn --version`. A manifest that names another manager says
+  nothing about Yarn, and `.yarnrc.yml` is Yarn config, weaker than any
+  declaration. One decision drives install, `run`, exec and `--package`, in
+  the member the invocation runs in. Berry's install uses `--immutable`
+  under `--frozen`, and `--no-scripts` denies scripts with
+  `--ignore-scripts` on Classic and `YARN_ENABLE_SCRIPTS=false` on Berry.
+
+- `--runtime bun` on a file Bun would run refuses when Bun is absent
+  instead of running Node. A file in a workspace member runs with the
+  member's `node_modules/.bin` first, whichever runtime takes it, and an
+  explicit `./packages/web/tool.sh` from the root gets `web`'s bin dirs.
+
+- `[tasks.make.env]`, `[tasks.just.env]` and the like reach `run make` and
+  the other default invocations again, and `run bacon --ignored` keeps the
+  `--` before the job arguments.
+
+- `deno.json` tasks stay listed when `package.json` names deno as the
+  package manager, `JUSTFILE` in any letter case is a justfile, a `deno.json`
+  or `pyproject.toml` in a parent directory is found from a child
+  directory, a directory holding only `hello.go` runs it with `go run`, and
+  `--pm deno run jsr:@std/http/file-server` reaches `deno x`.
+
+- `run list` and the other builtins take precedence even when two workspace
+  members define a task of that name; the ambiguity used to win.
+
+- `.ps1` files run through PowerShell on every platform, with `-NoProfile
+  -ExecutionPolicy Bypass -File`: `pwsh` when it is on `PATH`, else the
+  `powershell` every Windows ships. A runtime that steps in for a file no
+  project runtime takes now observes the host before it plans, so
+  `--explain` shows which executable won. `--host-stream stderr` puts pnpm's
+  `--use-stderr` on pnpm's own argv once and never on `node --test`.
 
 - Package managers are probed on `PATH` in one declared order (npm, bun,
   pnpm, yarn, deno) wherever a task source has no manager of its own.

@@ -38,6 +38,18 @@ pub struct Evidence {
     pub declared: Option<Declared>,
 }
 
+impl Evidence {
+    /// The order evidence is compared in, strongest first: weight, then the
+    /// declaration's own rank.
+    #[must_use]
+    pub fn strength(&self) -> (Weight, u8) {
+        (
+            self.weight,
+            self.declared.as_ref().map_or(0, Declared::rank),
+        )
+    }
+}
+
 /// A provider with enough evidence to count as part of the project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Present {

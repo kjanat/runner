@@ -9,7 +9,9 @@ pub mod runtime;
 pub mod workspace;
 pub mod yarn;
 
-use runner_core::{BinDirs, BinsCap, CleanCap, Discovery, Signal, TestCap, t};
+use std::path::{Path, PathBuf};
+
+use runner_core::{BinDirs, BinsCap, CleanCap, Discovery, Piece, Signal, Template, TestCap};
 
 /// The manifest filenames, in resolution order.
 pub const MANIFESTS: &[&str] = &["package.json", "package.json5", "package.yaml"];
@@ -55,9 +57,29 @@ pub const TEST_FILES: &[&str] = &[
 /// Node's own test runner, which every Node package manager reaches for.
 pub const TEST: TestCap = TestCap {
     program: Some("node"),
-    argv: t!["--test", Args, Files],
+    argv: Template(&[
+        Piece::FileFlags,
+        Piece::Lit("--test"),
+        Piece::Args,
+        Piece::Files,
+    ]),
     discovery: Discovery::Files(TEST_FILES),
+    file_flags: Some(strip_types),
 };
+
+/// `--experimental-strip-types` when any discovered test file is TypeScript.
+fn strip_types(files: &[PathBuf]) -> &'static [&'static str] {
+    let typescript = |file: &Path| {
+        file.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext, "ts" | "mts" | "cts" | "tsx"))
+    };
+    if files.iter().any(|file| typescript(file)) {
+        &["--experimental-strip-types"]
+    } else {
+        &[]
+    }
+}
 
 /// The two manifest fields that name a package manager.
 #[must_use]
@@ -67,12 +89,12 @@ pub const fn manifest_signals(
 ) -> [Signal; 2] {
     [
         Signal::ManifestField {
-            file: "package.json",
+            files: MANIFESTS,
             path: "packageManager",
             parse: package_manager,
         },
         Signal::ManifestField {
-            file: "package.json",
+            files: MANIFESTS,
             path: "devEngines.packageManager",
             parse: dev_engines,
         },

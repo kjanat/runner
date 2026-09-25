@@ -88,13 +88,27 @@ pub(crate) fn decide(
     policy: &Policy,
     source: ProviderId,
 ) -> Option<PmDecision> {
-    let scope = runner_core::plan::scope_at(tree, &tree.cwd);
-    let present = project.for_source(source, &scope, policy, &REGISTRY)?;
+    decide_in(
+        project,
+        policy,
+        source,
+        &runner_core::plan::scope_at(tree, &tree.cwd),
+    )
+}
+
+/// The package manager that dispatches `source` in `scope`.
+pub(crate) fn decide_in(
+    project: &Project,
+    policy: &Policy,
+    source: ProviderId,
+    scope: &Scope,
+) -> Option<PmDecision> {
+    let present = project.for_source(source, scope, policy, &REGISTRY)?;
     PmDecision::new(
         present.provider,
         &decided_by(policy, present),
         &present.because,
-        &scope,
+        scope,
     )
 }
 
@@ -508,7 +522,7 @@ mod tests {
         let decision = node_decision(&dir, &overrides).expect("pnpm");
         assert_eq!(decision.pm, PackageManager::Pnpm);
         assert!(matches!(decision.layer, Layer::Manifest(_)));
-        assert!(node_warnings(&dir, &overrides).is_empty());
+        assert_eq!(node_warnings(&dir, &overrides).len(), 0);
     }
 
     #[test]
@@ -528,7 +542,7 @@ mod tests {
             node_decision(&dir, &ignore).map(|d| d.pm),
             Some(PackageManager::Yarn)
         );
-        assert!(node_warnings(&dir, &ignore).is_empty());
+        assert_eq!(node_warnings(&dir, &ignore).len(), 0);
         let warn = ResolutionOverrides {
             on_mismatch: MismatchPolicy::Warn,
             ..ResolutionOverrides::default()

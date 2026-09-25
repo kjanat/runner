@@ -6,7 +6,7 @@ use runner_core::{
 };
 use runner_providers::REGISTRY;
 
-const BUILTINS: &[&str] = &["install", "clean", "list", "info", "completions"];
+pub(crate) const BUILTINS: &[&str] = &["install", "clean", "list", "info", "completions"];
 
 use crate::resolver::ResolutionOverrides;
 use crate::types::{Ecosystem, JsRuntime, ProjectContext, Task, TaskRunner, TaskSource};
@@ -43,10 +43,18 @@ pub(crate) fn tree(ctx: &ProjectContext) -> Tree {
     }
 }
 
+/// Every provider's evidence in `tree`, with lockfiles the repository does
+/// not track outranked by one it does.
+pub(crate) fn observe_evidence(tree: &Tree) -> std::io::Result<Vec<runner_core::Evidence>> {
+    let mut evidence = runner_core::observe::observe(tree, &REGISTRY)?;
+    runner_core::prefer_tracked_lockfiles(&mut evidence, &REGISTRY, &crate::tool::git::is_tracked);
+    Ok(evidence)
+}
+
 /// Observe provider facts in every scope before resolving policy.
 pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::Result<Project> {
     let tree = tree(ctx);
-    let evidence = runner_core::observe::observe(&tree, &REGISTRY)?;
+    let evidence = observe_evidence(&tree)?;
     let mut project = runner_core::resolve::resolve_presence(&tree, evidence, policy, &REGISTRY)?;
     project.tasks = ctx.tasks.iter().filter_map(task).collect();
     project.unread = ctx
@@ -149,8 +157,12 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
         env: env_layers(overrides),
         tool_ops: tool_ops(overrides),
         trust: runner_core::TrustPolicy::Project,
-        strict: overrides.fallback == crate::resolver::FallbackPolicy::Error
-            || overrides.on_mismatch == crate::resolver::MismatchPolicy::Error,
+        strict: overrides.fallback == crate::resolver::FallbackPolicy::Error,
+        on_mismatch: if overrides.on_mismatch == crate::resolver::MismatchPolicy::Error {
+            runner_core::OnMismatch::Refuse
+        } else {
+            runner_core::OnMismatch::Proceed
+        },
     }
 }
 
@@ -216,6 +228,15 @@ impl Prepared {
     /// The package manager that dispatches `source` in the invocation scope.
     pub(crate) fn decision(&self, source: ProviderId) -> Option<super::decision::PmDecision> {
         super::decision::decide(&self.tree, &self.project, &self.policy, source)
+    }
+
+    /// The package manager that dispatches `source` in `scope`.
+    pub(crate) fn decision_in(
+        &self,
+        source: ProviderId,
+        scope: &Scope,
+    ) -> Option<super::decision::PmDecision> {
+        super::decision::decide_in(&self.project, &self.policy, source, scope)
     }
 
     pub(crate) fn selected<'a>(

@@ -30,6 +30,7 @@ pub const PROVIDER: Provider = Provider {
             program: Some("rake"),
             argv: t!["test", Args],
             discovery: Discovery::Tool,
+            file_flags: None,
         }),
         quiet: QuietSupport::NONE,
         ..Capabilities::NONE

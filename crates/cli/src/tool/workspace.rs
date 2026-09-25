@@ -529,7 +529,7 @@ mod tests {
             .collect();
         assert_eq!(by_path, vec!["apps/web"]);
 
-        assert!(workspace.resolve("nope").is_empty());
+        assert_eq!(workspace.resolve("nope").len(), 0);
     }
 
     #[test]

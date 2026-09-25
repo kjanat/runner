@@ -408,7 +408,7 @@ pub(crate) fn precheck_task(
     // active `--runner` / `[task_runner].prefer` constraint would make precheck
     // compute `found = []` and bail with a runner-constraint error, aborting a
     // whole chain (or install --parallel) over a token that single-run executes.
-    if runner_core::has_local_prefix(task) {
+    if runner_core::has_local_prefix(task) || super::core::BUILTINS.contains(&task) {
         return Ok(());
     }
 
@@ -834,6 +834,20 @@ mod tests {
             .expect("a qualified member task passes");
         precheck_task(&ctx, &ResolutionOverrides::default(), "check")
             .expect("a name only one member defines passes");
+    }
+
+    #[test]
+    fn precheck_lets_a_builtin_verb_through_even_when_members_share_its_name() {
+        let mut ctx = workspace_context();
+        let rfc = Arc::clone(&ctx.workspace.as_ref().unwrap().members[0]);
+        let web = Arc::clone(&ctx.workspace.as_ref().unwrap().members[1]);
+        ctx.tasks.push(member_task("list", &rfc));
+        ctx.tasks.push(member_task("list", &web));
+
+        precheck_task(&ctx, &ResolutionOverrides::default(), "list")
+            .expect("the builtin rung takes `list` before any task is considered");
+        precheck_task(&ctx, &ResolutionOverrides::default(), "site")
+            .expect_err("a plain task two members define is still ambiguous");
     }
 
     #[test]

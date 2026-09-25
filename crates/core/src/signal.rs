@@ -14,14 +14,16 @@ use crate::provider::ProviderId;
 pub enum Signal {
     /// A file in the scope directory.
     File(&'static str),
+    /// A file in the scope directory, matched without regard to ASCII case.
+    FileCaseless(&'static str),
     /// A file in the scope directory or an ancestor.
     FileUpwards(&'static str),
     /// A file that also pins the provider.
     Lockfile(&'static str),
     /// A manifest field that names or constrains the provider.
     ManifestField {
-        /// The manifest file.
-        file: &'static str,
+        /// The manifest file names, in the order they are tried; the first one present is read.
+        files: &'static [&'static str],
         /// Dotted path of the field.
         path: &'static str,
         /// Reads the field into a declaration, `None` when it names another provider.
@@ -41,12 +43,26 @@ impl Signal {
     pub const fn name(&self) -> Option<&'static str> {
         match self {
             Self::File(name)
+            | Self::FileCaseless(name)
             | Self::FileUpwards(name)
             | Self::Lockfile(name)
             | Self::EnvVar(name)
             | Self::Probe(name) => Some(name),
-            Self::ManifestField { file, .. } => Some(file),
+            Self::ManifestField { files, .. } => files.first().copied(),
             Self::Ask(_) => None,
+        }
+    }
+
+    /// Every file name the signal can match in a scope directory.
+    #[must_use]
+    pub fn file_names(&self) -> Vec<&'static str> {
+        match self {
+            Self::File(name)
+            | Self::FileCaseless(name)
+            | Self::FileUpwards(name)
+            | Self::Lockfile(name) => vec![name],
+            Self::ManifestField { files, .. } => files.to_vec(),
+            Self::EnvVar(_) | Self::Probe(_) | Self::Ask(_) => Vec::new(),
         }
     }
 }
@@ -83,6 +99,19 @@ impl Declared {
             Self::Version(version) => Some(version),
             Self::Constraint { version, .. } => version.as_deref(),
             Self::Variant(_) | Self::Named | Self::Alternative(_) => None,
+        }
+    }
+
+    /// How strongly the declaration selects the provider among declarations
+    /// of equal weight, strongest first: a field that names the provider,
+    /// then one that constrains it, then a variant derived from either.
+    #[must_use]
+    pub const fn rank(&self) -> u8 {
+        match self {
+            Self::Named | Self::Version(_) => 0,
+            Self::Constraint { .. } => 1,
+            Self::Variant(_) => 2,
+            Self::Alternative(_) => 3,
         }
     }
 }

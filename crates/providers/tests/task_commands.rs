@@ -14,7 +14,10 @@ fn command(
         .signals
         .iter()
         .find_map(|s| match s {
-            Signal::File(f) | Signal::FileUpwards(f) | Signal::Lockfile(f) => Some(f),
+            Signal::File(f)
+            | Signal::FileCaseless(f)
+            | Signal::FileUpwards(f)
+            | Signal::Lockfile(f) => Some(f),
             _ => None,
         })
         .unwrap();

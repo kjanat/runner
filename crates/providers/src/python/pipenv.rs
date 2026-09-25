@@ -34,6 +34,7 @@ pub const PROVIDER: Provider = Provider {
             program: None,
             argv: t!["run", Args],
             discovery: Discovery::Detect(super::test_runner),
+            file_flags: None,
         }),
         bins: Some(BinsCap {
             dirs: BinDirs::Ask(super::venv::bin_dirs),

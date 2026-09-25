@@ -28,12 +28,12 @@ pub const PROVIDER: Provider = Provider {
     signals: &[
         Signal::Lockfile("poetry.lock"),
         Signal::ManifestField {
-            file: "pyproject.toml",
+            files: &["pyproject.toml"],
             path: "tool.poetry",
             parse: tool_table,
         },
         Signal::ManifestField {
-            file: "pyproject.toml",
+            files: &["pyproject.toml"],
             path: "build-system.build-backend",
             parse: build_backend,
         },
@@ -55,6 +55,7 @@ pub const PROVIDER: Provider = Provider {
             program: None,
             argv: t!["run", Args],
             discovery: Discovery::Detect(super::test_runner),
+            file_flags: None,
         }),
         bins: Some(BinsCap {
             dirs: BinDirs::Ask(super::venv::bin_dirs),

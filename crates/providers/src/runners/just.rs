@@ -13,9 +13,8 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::TASK_SOURCE,
     program: Some("just"),
     signals: &[
-        Signal::File("justfile"),
-        Signal::File("Justfile"),
-        Signal::File(".justfile"),
+        Signal::FileCaseless("justfile"),
+        Signal::FileCaseless(".justfile"),
         Signal::Probe("just"),
     ],
     writes: &[],

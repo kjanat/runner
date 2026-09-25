@@ -154,11 +154,12 @@ bitflags! { pub struct Kind: u8 {
 
 ```rust
 pub enum Signal {
-    File(&'static str),        // present in the scope directory
-    FileUpwards(&'static str), // present in the scope directory or an ancestor
-    Lockfile(&'static str),    // a File that also pins the provider
+    File(&'static str),         // present in the scope directory
+    FileCaseless(&'static str), // present in the scope directory under any ASCII case
+    FileUpwards(&'static str),  // present in the scope directory or an ancestor
+    Lockfile(&'static str),     // a File that also pins the provider
     ManifestField {
-        file: &'static str,
+        files: &'static [&'static str], // tried in order; JSON, JSON5, YAML or TOML by extension
         path: &'static str,
         parse: fn(&Value) -> Option<Declared>,
     },
@@ -183,7 +184,17 @@ pub struct Evidence {
     pub weight: Weight,
     pub declared: Option<Declared>, // a version constraint or a named alternative
 }
+```
 
+Evidence is compared by weight, then by the declaration's own rank: a field
+that names the provider (`packageManager`) outranks one that constrains it
+(`devEngines.packageManager`), which outranks a variant derived from either.
+A signal's index in its provider's table orders nothing across providers.
+Among lockfiles of one ecosystem in one scope, one the repository tracks
+demotes the untracked others to `Configured`; the client answers the tracked
+question, since only it knows the repository.
+
+```rust
 pub enum Scope {
     Root,
     Member { name: String, dir: PathBuf },
@@ -283,7 +294,10 @@ evidence. `task_priority` orders otherwise unranked task sources. Provider
 defaults and policy preference lists rank candidates; they do not remove later
 cascade rungs. When a task source has no present package manager to run it,
 resolution takes the first supporting one on `PATH` in `probe_priority` order,
-unless policy is strict.
+unless policy is strict. A provider is shaped for the op before its
+`before_plan` hook runs, so a hook can only refuse an op the provider could
+take. A test runner whose discovery finds nothing refuses as `NoTests` and the
+cascade stops there; only a project without a test runner falls through.
 
 ```rust
 pub struct InstallCap {
@@ -411,6 +425,7 @@ pub struct Policy {
     pub tool_ops: BTreeMap<ProviderId, Vec<String>>, // `[tools.<name>].install`
     pub trust: TrustPolicy,                          // see section 6
     pub strict: bool, // `--fallback error`: no package manager from PATH for a task source
+    pub on_mismatch: OnMismatch, // Proceed | Refuse: `[resolution].on_mismatch = "error"`
 }
 
 pub struct Choice {
@@ -492,9 +507,23 @@ pub enum Refusal {
     Ambiguous {
         candidates: Vec<(ProviderId, Scope)>,
     },
+    NoTests {
+        provider: ProviderId,
+        dir: PathBuf,
+        patterns: Vec<String>,
+    },
+    Mismatch(Disagreement), // the manifest and a lockfile in one scope name different managers
     Unsafe(Unsafe),
 }
 ```
+
+`Mismatch` is raised by `plan_with` for any op that selects a package manager,
+so `run`, `--package`, `exec` and `install` refuse alike under
+`OnMismatch::Refuse`, unless a policy layer chose the manager. The plan's
+scope is the task's scope for a task, the file's scope for a file, the
+invocation scope for an exec or test, and the provider's own scope for an
+install; a runtime inherited from the root still runs a member's file with the
+member's bin dirs.
 
 A `Plan` is complete. `execute` adds nothing and decides nothing. That is
 what makes `why`, `--explain`, `doctor` and the arrow line agree, because
@@ -646,8 +675,8 @@ pnpm is pure data:
 ```rust
 Provider {
     id: Pnpm, label: "pnpm", aliases: &[], ecosystem: Node, kind: PACKAGE_MANAGER, program: "pnpm",
-    signals: &[Lockfile("pnpm-lock.yaml"), ManifestField { file: "package.json", path: "packageManager", parse: node::package_manager },
-               ManifestField { file: "package.json", path: "devEngines.packageManager", parse: node::dev_engines }, Probe("pnpm")],
+    signals: &[Lockfile("pnpm-lock.yaml"), ManifestField { files: node::MANIFESTS, path: "packageManager", parse: node::package_manager },
+               ManifestField { files: node::MANIFESTS, path: "devEngines.packageManager", parse: node::dev_engines }, Probe("pnpm")],
     writes: &["node_modules"],
     caps: Capabilities {
         install: Some(InstallCap { argv: t!["install"], frozen: Frozen::Flag("--frozen-lockfile"),
@@ -655,7 +684,8 @@ Provider {
         run_task: Some(RunTaskCap { argv: t!["run", Task, Sep("--"), Args], sources: &[PackageJson] }),
         exec: Some(ExecCap { argv: t!["exec", Name, Args], reach: Network, accepts: Bare | Versioned }),
         run_file: None,
-        test: Some(TestCap { argv: t![Lit("node"), "--test", Args], discovery: Files(&["test.{js,ts,…}", "*.test.{js,ts,…}"]) }),
+        test: Some(TestCap { program: Some("node"), argv: t![FileFlags, "--test", Args, Files], discovery: Files(&["test.{js,ts,…}", "*.test.{js,ts,…}"]),
+                             file_flags: Some(node::strip_types) }),
         bins: Some(BinsCap { dirs: Static(&["node_modules/.bin"]) }),
         clean: Some(CleanCap { dirs: &["node_modules"] }),
         workspaces: Some(WorkspaceCap { members: node::workspace_members }),

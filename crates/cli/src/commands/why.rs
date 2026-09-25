@@ -304,7 +304,10 @@ fn pm_decision_for_selected(
         ),
         _ => return None,
     };
-    Some(prepared.decision(provider).map_or_else(
+    let scope = selected
+        .and_then(crate::commands::run::core::task)
+        .map_or(runner_core::Scope::Root, |task| task.scope);
+    Some(prepared.decision_in(provider, &scope).map_or_else(
         || Err(missing.to_owned()),
         |decision| {
             let warnings = decision
@@ -1292,6 +1295,59 @@ mod tests {
             json["selected"]["task"]["source_pointer"],
             "project.scripts.greenpy"
         );
+    }
+
+    #[test]
+    fn the_pm_decision_follows_the_selected_task_into_its_member() {
+        use std::sync::Arc;
+
+        let dir = crate::tool::test_support::TempDir::new("why-member-pm");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"root","workspaces":["packages/*"],"scripts":{"root-build":"echo"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n").unwrap();
+        let member_dir = dir.path().join("packages").join("app");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("package.json"),
+            r#"{"name":"app","scripts":{"build":"echo"}}"#,
+        )
+        .unwrap();
+        std::fs::write(member_dir.join("bun.lock"), "").unwrap();
+        let member = Arc::new(crate::types::WorkspaceMember::new(
+            "app".to_string(),
+            "packages/app".to_string(),
+            member_dir,
+        ));
+        let mut ctx = context(vec![
+            task("root-build", TaskSource::PackageJson),
+            Task {
+                member: Some(Arc::clone(&member)),
+                ..task("build", TaskSource::PackageJson)
+            },
+        ]);
+        ctx.root = dir.path().to_path_buf();
+        ctx.cwd = ctx.root.clone();
+        ctx.package_managers = vec![PackageManager::Pnpm];
+        ctx.workspace = Some(crate::types::Workspace {
+            root: ctx.root.clone(),
+            kinds: vec![crate::types::WorkspaceKind::PackageJson],
+            members: vec![member],
+            current: None,
+        });
+        let overrides = ResolutionOverrides::default();
+        let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "build")
+            .expect("observation should succeed");
+        let (decision, _) = pm_decision_for_selected(&prepared, &overrides, ctx.tasks.get(1))
+            .expect("a package.json task has a decision")
+            .expect("bun is present in the member");
+        assert_eq!(decision.pm, PackageManager::Bun);
+        let (decision, _) = pm_decision_for_selected(&prepared, &overrides, ctx.tasks.first())
+            .expect("a package.json task has a decision")
+            .expect("pnpm is present at the root");
+        assert_eq!(decision.pm, PackageManager::Pnpm);
     }
 
     fn runtime_overrides(label: &str) -> ResolutionOverrides {

@@ -1831,7 +1831,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("run {name} should parse: {e}"));
 
             assert_eq!(cli.task.as_deref(), Some(name));
-            assert!(cli.args.is_empty());
+            assert_eq!(cli.args.len(), 0);
         }
     }
 
@@ -1849,7 +1849,7 @@ mod tests {
         let cli = parse_run_alias_cli(["run"]).expect("bare run should parse");
 
         assert!(cli.task.is_none());
-        assert!(cli.args.is_empty());
+        assert_eq!(cli.args.len(), 0);
     }
 
     #[test]
@@ -2073,7 +2073,7 @@ mod tests {
         match cli.command {
             Some(args::Command::Run { task, args, .. }) => {
                 assert_eq!(task.as_deref(), Some("build"));
-                assert!(args.is_empty());
+                assert_eq!(args.len(), 0);
             }
             other => panic!("expected Run, got {other:?}"),
         }

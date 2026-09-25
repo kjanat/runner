@@ -28,6 +28,7 @@ pub static PROVIDERS: &[Provider] = &[
     crate::python::runtime::PROVIDER,
     crate::node::package_json::PROVIDER,
     crate::python::pyproject::PROVIDER,
+    crate::powershell::PROVIDER,
 ];
 
 /// Lookup over [`PROVIDERS`].
@@ -364,7 +365,7 @@ mod tests {
             (
                 ProviderId::Deno,
                 &["deno", "x", "eslint", "--fix"],
-                bare_or_versioned,
+                bare_or_versioned.union(NameShape::REGISTRY),
                 Reach::Network,
             ),
             (

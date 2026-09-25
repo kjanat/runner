@@ -25,6 +25,9 @@ pub struct Capabilities {
     pub probe_priority: u8,
     /// Capability tables selected by variant evidence from observation.
     pub variants: &'static [(&'static str, Self)],
+    /// The variant the installed executable's version implies, consulted
+    /// when no project evidence names one.
+    pub variant_of_version: Option<fn(&str) -> Option<&'static str>>,
     /// Install dependencies.
     pub install: Option<InstallCap>,
     /// Invoke the task runner without naming a task.
@@ -65,6 +68,7 @@ impl Capabilities {
         task_priority: 2,
         probe_priority: 0,
         variants: &[],
+        variant_of_version: None,
         install: None,
         run_default: None,
         run_task: None,
@@ -162,6 +166,8 @@ bitflags::bitflags! {
         const PATH_LIKE = 2;
         /// A name with a version suffix.
         const VERSIONED = 4;
+        /// A registry specifier such as `jsr:@std/http` or `npm:cowsay`.
+        const REGISTRY = 8;
     }
 }
 
@@ -249,7 +255,12 @@ pub struct TestCap {
     pub argv: Template,
     /// How tests are found.
     pub discovery: Discovery,
+    /// The flags the discovered files call for, rendered at [`crate::Piece::FileFlags`].
+    pub file_flags: Option<FileFlagsFn>,
 }
+
+/// The flags a test runner needs for the files it is handed.
+pub type FileFlagsFn = fn(&[PathBuf]) -> &'static [&'static str];
 
 /// Where installed executables live.
 #[derive(Clone, Copy)]

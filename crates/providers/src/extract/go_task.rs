@@ -220,7 +220,7 @@ mod tests {
         .expect("Taskfile should be written");
 
         let tasks = extract_tasks_from_source(dir.path()).expect("include-only Taskfile is fine");
-        assert!(tasks.is_empty());
+        assert_eq!(tasks, []);
     }
 
     #[test]

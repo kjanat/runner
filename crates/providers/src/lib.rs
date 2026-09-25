@@ -7,6 +7,7 @@ pub mod deno;
 pub mod go;
 pub mod managers;
 pub mod node;
+pub mod powershell;
 pub mod python;
 pub mod registry;
 pub mod runners;

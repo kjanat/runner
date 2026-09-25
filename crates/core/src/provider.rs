@@ -53,11 +53,13 @@ pub enum ProviderId {
     PackageJson,
     /// The `pyproject.toml` scripts table.
     Pyproject,
+    /// PowerShell.
+    PowerShell,
 }
 
 impl ProviderId {
     /// Every id, in registry order.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::Npm,
         Self::Yarn,
         Self::Pnpm,
@@ -82,6 +84,7 @@ impl ProviderId {
         Self::Python,
         Self::PackageJson,
         Self::Pyproject,
+        Self::PowerShell,
     ];
 }
 

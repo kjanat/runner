@@ -385,8 +385,9 @@ fn dispatch_by_package(
         .as_ref()
         .map(|choice| choice.id)
         .or_else(|| resolved_pm.and_then(|pm| super::core::provider(pm.label())));
+    let scope = runner_core::plan::scope_at(&prepared.tree, &prepared.tree.cwd);
     let present = chosen
-        .and_then(|id| prepared.project.present.iter().find(|p| p.provider == id))
+        .and_then(|id| prepared.project.present_in(id, &scope))
         .ok_or_else(|| {
             anyhow!(
                 "{package} is not installed and no package manager was detected to fetch it; pick \
@@ -550,7 +551,7 @@ pub(super) fn complete_plan(
 ) -> Result<()> {
     let entry = chosen.entry;
     prepare_task(ctx, overrides, entry, chosen.args, plan, sink)?;
-    prepare_host(ctx, chosen.token, chosen.rung, plan)?;
+    prepare_host(chosen.token, chosen.rung, plan)?;
     crate::commands::configure_plan(plan, overrides, chosen.key);
     if entry.is_some_and(|entry| entry.source == TaskSource::GoPackage) {
         preserve_go_environment(plan, &ctx.root)?;
@@ -560,7 +561,6 @@ pub(super) fn complete_plan(
 }
 
 fn prepare_host(
-    ctx: &ProjectContext,
     task_name: &str,
     rung: runner_core::Rung,
     plan: &mut runner_core::Plan,
@@ -575,7 +575,7 @@ fn prepare_host(
         && let Some(source) =
             TaskSource::from_label(runner_providers::REGISTRY.by_id(provider).label)
     {
-        let stack = crate::commands::push_task_frame(&ctx.root, source, task_name)?;
+        let stack = crate::commands::push_task_frame(&plan.cwd, source, task_name)?;
         plan.env
             .push((crate::commands::TASK_STACK_ENV.into(), stack));
     }
@@ -753,6 +753,22 @@ fn refusal_error(
                 .collect();
             super::qualify::member_ambiguity_message(task_name, &names)
         }
+        Refusal::NoTests { dir, patterns, .. } => anyhow!(
+            "no test files found under {}: expected one of {}",
+            dir.display(),
+            patterns.join(", ")
+        ),
+        Refusal::Mismatch(disagreement) => {
+            let label = |id| runner_providers::REGISTRY.by_id(id).label;
+            anyhow!(
+                "{} declares {} but {} pins {}; pick one with `--pm <name>` or run with \
+                 `--on-mismatch warn`",
+                disagreement.manifest.display(),
+                label(disagreement.declared),
+                disagreement.lockfile.display(),
+                label(disagreement.locked),
+            )
+        }
         Refusal::Unsafe(runner_core::Unsafe::NameShape { name, provider }) => anyhow!(
             "{} cannot take {name:?}: it is not a name that primitive accepts",
             runner_providers::REGISTRY.by_id(*provider).label,
@@ -852,9 +868,9 @@ mod tests {
             ),
             ["--runtime deno"]
         );
-        assert!(
-            super::runtime_suggestions(&[ProviderId::Python], &runner_providers::REGISTRY)
-                .is_empty()
+        assert_eq!(
+            super::runtime_suggestions(&[ProviderId::Python], &runner_providers::REGISTRY).len(),
+            0
         );
         let refusal = |alternatives| runner_core::Refusal::UnsupportedFile {
             provider: ProviderId::Node,
@@ -1480,6 +1496,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_selected_package_uses_the_invoking_member_yarn_line() {
+        use std::sync::Arc;
+
+        let dir = crate::tool::test_support::TempDir::new("package-selector-member-yarn");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"root","packageManager":"npm@11.0.0","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        let members: Vec<Arc<crate::types::WorkspaceMember>> = [("a", "1.22.0"), ("b", "4.1.0")]
+            .into_iter()
+            .map(|(name, version)| {
+                let member_dir = dir.path().join("packages").join(name);
+                std::fs::create_dir_all(&member_dir).unwrap();
+                std::fs::write(
+                    member_dir.join("package.json"),
+                    format!(r#"{{"name":"{name}","packageManager":"yarn@{version}"}}"#),
+                )
+                .unwrap();
+                Arc::new(crate::types::WorkspaceMember::new(
+                    name.to_string(),
+                    format!("packages/{name}"),
+                    member_dir,
+                ))
+            })
+            .collect();
+        let mut ctx = context();
+        ctx.root = dir.path().to_path_buf();
+        ctx.cwd = members[1].dir.clone();
+        ctx.package_managers.push(PackageManager::Npm);
+        ctx.workspace = Some(crate::types::Workspace {
+            root: ctx.root.clone(),
+            kinds: vec![crate::types::WorkspaceKind::PackageJson],
+            members: members.clone(),
+            current: Some(Arc::clone(&members[1])),
+        });
+        let args = [String::from("-v")];
+        let command = package_command(&ctx, None, "typescript", "tsc", &args)
+            .expect("the member's Yarn Berry has a package-selecting exec");
+        assert_eq!(command.get_program().to_string_lossy(), "yarn");
+        assert_eq!(
+            command_args(&command),
+            ["dlx", "--package", "typescript", "tsc", "-v"]
+        );
+    }
+
     fn package_command(
         ctx: &ProjectContext,
         pm: Option<PackageManager>,
@@ -1575,7 +1638,7 @@ mod tests {
                 .expect("constraint names the invoked runner"),
         );
         assert_eq!(command.get_program().to_string_lossy(), "make");
-        assert!(command_args(&command).is_empty());
+        assert_eq!(command_args(&command).len(), 0);
     }
 
     #[test]
@@ -1596,7 +1659,7 @@ mod tests {
                 .expect("a runner choice pins task candidates only"),
         );
         assert_eq!(command.get_program().to_string_lossy(), "make");
-        assert!(command_args(&command).is_empty());
+        assert_eq!(command_args(&command).len(), 0);
     }
 
     #[test]

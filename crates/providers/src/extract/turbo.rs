@@ -250,10 +250,11 @@ mod tests {
     fn extract_tasks_returns_empty_when_turbo_json_is_missing() {
         let dir = TempDir::new("turbo-missing");
 
-        assert!(
+        assert_eq!(
             extract_tasks(dir.path())
                 .expect("missing turbo.json should be ok")
-                .is_empty()
+                .len(),
+            0
         );
     }
 
@@ -270,10 +271,11 @@ mod tests {
         let dir = TempDir::new("turbo-empty");
         fs::write(dir.path().join("turbo.json"), "{}").expect("turbo.json should be written");
 
-        assert!(
+        assert_eq!(
             extract_tasks(dir.path())
                 .expect("empty turbo config should parse")
-                .is_empty()
+                .len(),
+            0
         );
     }
 

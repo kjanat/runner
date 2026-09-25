@@ -35,6 +35,7 @@ pub const PROVIDER: Provider = Provider {
             program: None,
             argv: t!["test", Args],
             discovery: Discovery::Tool,
+            file_flags: None,
         }),
         clean: Some(CleanCap {
             dir_suffixes: &[],

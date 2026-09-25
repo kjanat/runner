@@ -11,7 +11,7 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::TASK_SOURCE,
     program: None,
     signals: &[Signal::ManifestField {
-        file: "pyproject.toml",
+        files: &["pyproject.toml"],
         path: "project.scripts",
         parse: super::table,
     }],

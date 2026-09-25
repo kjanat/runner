@@ -19,7 +19,7 @@ pub const PROVIDER: Provider = Provider {
         Signal::File(".nvmrc"),
         Signal::File(".node-version"),
         Signal::ManifestField {
-            file: "package.json",
+            files: super::MANIFESTS,
             path: "engines.node",
             parse: engines_node,
         },
@@ -69,6 +69,7 @@ pub const PROVIDER: Provider = Provider {
 fn before_plan(
     present: &runner_core::Present,
     op: &runner_core::Op<'_>,
+    _: &runner_core::Policy,
     _: &mut Vec<runner_core::Warning>,
 ) -> Result<(), runner_core::Refusal> {
     if matches!(op, runner_core::Op::Run { .. })

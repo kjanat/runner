@@ -292,7 +292,7 @@ mod tests {
 
         let tasks = extract_tasks_from_source(dir.path()).expect("bacon.toml should parse");
 
-        assert!(tasks.is_empty());
+        assert_eq!(tasks, []);
     }
 
     #[test]

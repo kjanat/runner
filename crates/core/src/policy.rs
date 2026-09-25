@@ -98,6 +98,17 @@ impl ReachPolicy {
     }
 }
 
+/// What to do when a manifest declares one package manager and a lockfile
+/// beside it pins another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum OnMismatch {
+    /// Take the manifest's word.
+    #[default]
+    Proceed,
+    /// Refuse until a policy layer settles it.
+    Refuse,
+}
+
 /// Which trust level a repository config may act at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum TrustPolicy {
@@ -139,4 +150,6 @@ pub struct Policy {
     pub trust: TrustPolicy,
     /// Refuse instead of taking a package manager from `PATH` for a task source.
     pub strict: bool,
+    /// What to do when a manifest and a lockfile disagree.
+    pub on_mismatch: OnMismatch,
 }

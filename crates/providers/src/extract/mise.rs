@@ -1440,7 +1440,7 @@ mod tests {
         let tasks = extract_tasks(dir.path())
             .expect("parse should succeed")
             .tasks;
-        assert!(tasks.is_empty());
+        assert_eq!(tasks.len(), 0);
     }
 
     #[test]
@@ -1977,13 +1977,13 @@ mod tests {
     fn a_short_only_required_flag_is_reported_when_absent() {
         let spec = two_flag_spec();
         assert_eq!(spec.missing_required_flags(&[]), ["-f"]);
-        assert!(
-            spec.missing_required_flags(&["-f".to_string(), "x".to_string()])
-                .is_empty()
+        assert_eq!(
+            spec.missing_required_flags(&["-f".to_string(), "x".to_string()]),
+            Vec::<String>::new()
         );
-        assert!(
-            spec.missing_required_flags(&["-f=x".to_string()])
-                .is_empty()
+        assert_eq!(
+            spec.missing_required_flags(&["-f=x".to_string()]),
+            Vec::<String>::new()
         );
     }
 
@@ -2014,14 +2014,14 @@ mod tests {
             spec.missing_required_flags(&["compiler/core-json".to_string()]),
             ["--fn"],
         );
-        assert!(
-            spec.missing_required_flags(&["--fn".to_string(), "foo".to_string()])
-                .is_empty()
+        assert_eq!(
+            spec.missing_required_flags(&["--fn".to_string(), "foo".to_string()]),
+            Vec::<String>::new()
         );
         // The `--flag=value` spelling counts as provided.
-        assert!(
-            spec.missing_required_flags(&["--fn=foo".to_string()])
-                .is_empty()
+        assert_eq!(
+            spec.missing_required_flags(&["--fn=foo".to_string()]),
+            Vec::<String>::new()
         );
     }
 

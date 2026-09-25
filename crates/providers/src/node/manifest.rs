@@ -1,6 +1,9 @@
 //! `package.json` fields that name a package manager, and the check they ask for.
 
-use runner_core::{Check, Declared, OnFail, Op, Present, ProviderId, Refusal, Warning, check};
+use runner_core::{
+    Check, Declared, Layer, OnFail, Op, Policy, Present, ProviderId, Refusal, Warning, check,
+    decided_by,
+};
 use runner_schemes::NodeSemver;
 use serde_json::Value;
 
@@ -91,15 +94,26 @@ pub fn engines_node(value: &Value) -> Option<Declared> {
 
 /// Check the requirement `devEngines.packageManager` declares for this provider.
 ///
+/// The check runs only when that field is what selected the provider; a
+/// `packageManager` field or a policy layer above the manifest settles the
+/// choice by itself.
+///
 /// # Errors
 /// Refuses when the manifest asks for `error` and the executable is absent or
 /// its version violates the constraint.
 pub fn before_plan(
     present: &Present,
     _: &Op<'_>,
+    policy: &Policy,
     warnings: &mut Vec<Warning>,
 ) -> Result<(), Refusal> {
-    let Some((version, on_fail)) = present.because.iter().find_map(|e| match &e.declared {
+    if decided_by(policy, present)
+        .first()
+        .is_some_and(|layer| matches!(layer, Layer::Cli | Layer::Env | Layer::ConfigFile(_)))
+    {
+        return Ok(());
+    }
+    let Some((version, on_fail)) = present.because.first().and_then(|e| match &e.declared {
         Some(Declared::Constraint { version, on_fail }) => Some((version.as_deref(), *on_fail)),
         _ => None,
     }) else {

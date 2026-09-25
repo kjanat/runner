@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn install_head_has_no_args() {
         let item = ChainItem::install(crate::commands::install::InstallFlags::default());
-        assert!(item.args.is_empty());
+        assert_eq!(item.args.len(), 0);
         assert!(matches!(
             item.kind,
             ChainItemKind::Install {

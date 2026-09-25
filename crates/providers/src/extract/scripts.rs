@@ -100,15 +100,21 @@ pub(crate) fn package(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
     Ok(manifest.scripts.unwrap_or_default().into_iter().collect())
 }
 
-fn source(present: &runner_core::Present) -> Option<&Path> {
+/// The task file behind `present`: its strongest evidence named one of `names`.
+fn source<'a>(present: &'a runner_core::Present, names: &[&str]) -> Option<&'a Path> {
     present
         .because
         .iter()
-        .find(|e| {
+        .filter(|e| {
             matches!(
                 e.weight,
                 runner_core::Weight::Declared | runner_core::Weight::Configured
             )
+        })
+        .find(|e| {
+            e.at.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| names.contains(&name))
         })
         .map(|e| e.at.as_path())
 }
@@ -121,7 +127,7 @@ pub fn package_tasks(
     present: &runner_core::Present,
     _: &runner_core::Tree,
 ) -> Result<runner_core::Extracted, runner_core::Warning> {
-    let Some(path) = source(present) else {
+    let Some(path) = source(present, crate::node::MANIFESTS) else {
         return Ok(runner_core::Extracted::default());
     };
     let entries = package(path)
@@ -145,7 +151,7 @@ pub fn python_tasks(
     present: &runner_core::Present,
     _: &runner_core::Tree,
 ) -> Result<runner_core::Extracted, runner_core::Warning> {
-    let Some(path) = source(present) else {
+    let Some(path) = source(present, &["pyproject.toml"]) else {
         return Ok(runner_core::Extracted::default());
     };
     python(path)
@@ -167,7 +173,7 @@ pub fn deno_tasks(
     present: &runner_core::Present,
     _: &runner_core::Tree,
 ) -> Result<runner_core::Extracted, runner_core::Warning> {
-    let Some(path) = source(present) else {
+    let Some(path) = source(present, &["deno.json", "deno.jsonc"]) else {
         return Ok(runner_core::Extracted::default());
     };
     deno(path)
@@ -212,7 +218,7 @@ mod tests {
         let dir = TempDir::new("pyproject-no-scripts");
         let path = dir.path().join("pyproject.toml");
         fs::write(&path, "[project]\nname = \"greenpy\"\n").unwrap();
-        assert!(python(&path).unwrap().is_empty());
+        assert_eq!(python(&path).unwrap().len(), 0);
     }
 
     #[test]

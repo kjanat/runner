@@ -205,13 +205,13 @@ pub fn resolve_presence(
     }
     present.sort_by_key(|p| {
         let provider = registry.by_id(p.provider);
-        let strongest = p.because.first();
         (
             p.scope.clone(),
             provider.ecosystem,
             chosen_by(policy, p.provider).is_none(),
-            strongest.map_or(Weight::Probed, |e| e.weight),
-            strongest.and_then(|e| e.signal).map_or(usize::MAX, |s| s.0),
+            p.because
+                .first()
+                .map_or((Weight::Probed, 0), Evidence::strength),
             provider.id,
         )
     });
@@ -294,7 +294,7 @@ fn observed_presence(
                 Some(crate::Signal::EnvVar(_))
             ) || has_program
         });
-        because.sort_by_key(|item| item.weight);
+        because.sort_by_key(Evidence::strength);
         let Some(strongest) = because.first().map(|item| item.weight) else {
             continue;
         };
@@ -308,15 +308,102 @@ fn observed_presence(
             bin_dirs: Vec::new(),
             because,
         };
-        if let Some(version) = provider.version {
+        let wants_variant = provider.caps.variant_of_version.is_some()
+            && !observed
+                .because
+                .iter()
+                .any(|item| matches!(item.declared, Some(crate::Declared::Variant(_))));
+        if let Some(version) = provider.version
+            && (provider.caps.variant_of_version.is_none() || wants_variant)
+        {
             match version(&observed) {
                 Ok(value) => observed.version = Some(value),
                 Err(warning) => warnings.push(warning),
             }
         }
+        if wants_variant
+            && let Some(derive) = provider.caps.variant_of_version
+            && let Some(name) = observed.version.as_deref().and_then(derive)
+        {
+            let program = provider.program.unwrap_or(provider.label);
+            observed.because.push(Evidence {
+                provider: Some(id),
+                signal: provider
+                    .signals
+                    .iter()
+                    .position(
+                        |signal| matches!(signal, crate::Signal::Probe(name) if *name == program),
+                    )
+                    .map(crate::SignalId),
+                at: crate::probe::probe_with(program, &[]).unwrap_or_else(|| program.into()),
+                scope: observed.scope.clone(),
+                weight: Weight::Probed,
+                declared: Some(crate::Declared::Variant(name.into())),
+            });
+        }
         present.push(observed);
     }
     present
+}
+
+/// Lower every lockfile the repository does not track to `Configured` when
+/// a tracked lockfile of another provider in the same ecosystem sits beside
+/// it in the same scope.
+///
+/// `tracked` answers `None` when the question cannot be put to the
+/// repository, in which case nothing changes.
+pub fn prefer_tracked_lockfiles(
+    evidence: &mut [Evidence],
+    registry: &Registry,
+    tracked: &dyn Fn(&std::path::Path) -> Option<bool>,
+) {
+    let mut groups: BTreeMap<(Scope, Ecosystem), Vec<usize>> = BTreeMap::new();
+    for (index, item) in evidence.iter().enumerate() {
+        let Some(provider) = item.provider else {
+            continue;
+        };
+        let provider = registry.by_id(provider);
+        let is_lockfile = matches!(
+            item.signal.and_then(|id| provider.signals.get(id.0)),
+            Some(crate::Signal::Lockfile(_))
+        );
+        if is_lockfile && item.weight == Weight::Locked {
+            groups
+                .entry((item.scope.clone(), provider.ecosystem))
+                .or_default()
+                .push(index);
+        }
+    }
+    for indices in groups.values() {
+        let mut providers: Vec<ProviderId> = indices
+            .iter()
+            .filter_map(|index| evidence[*index].provider)
+            .collect();
+        providers.sort_unstable();
+        providers.dedup();
+        if providers.len() < 2 {
+            continue;
+        }
+        let mut committed = Vec::new();
+        let mut unanswered = false;
+        for index in indices {
+            match tracked(&evidence[*index].at) {
+                Some(true) => committed.push(evidence[*index].provider),
+                Some(false) => {}
+                None => unanswered = true,
+            }
+        }
+        committed.sort_unstable();
+        committed.dedup();
+        if unanswered || committed.len() != 1 {
+            continue;
+        }
+        for index in indices {
+            if evidence[*index].provider != committed[0] {
+                evidence[*index].weight = Weight::Configured;
+            }
+        }
+    }
 }
 
 /// Give each task source no present package manager runs the first one on `PATH`.
@@ -511,6 +598,67 @@ mod tests {
     }
 
     #[test]
+    fn the_installed_version_names_the_variant_when_nothing_in_the_project_does() {
+        fn version(present: &crate::Present) -> Result<String, crate::Warning> {
+            present
+                .because
+                .first()
+                .map(|_| "4.1.0".to_owned())
+                .ok_or_else(|| crate::Warning::about(present.provider, "no evidence"))
+        }
+        fn line(version: &str) -> Option<&'static str> {
+            version.starts_with('4').then_some("berry")
+        }
+        const BERRY: Capabilities = Capabilities {
+            probe_priority: 9,
+            ..Capabilities::NONE
+        };
+        static VERSIONED: &[Provider] = &[Provider {
+            caps: Capabilities {
+                variants: &[("berry", BERRY)],
+                variant_of_version: Some(line),
+                ..Capabilities::NONE
+            },
+            version: Some(version),
+            ..fake(ProviderId::Yarn, "yarn", Ecosystem::Node)
+        }];
+        let registry = Registry(VERSIONED);
+        let mut policy = Policy::default();
+        policy.pm.0.insert(
+            Ecosystem::Node,
+            Choice {
+                id: ProviderId::Yarn,
+                from: Layer::Cli,
+            },
+        );
+        let project = resolve(
+            &tree(),
+            vec![found(ProviderId::Yarn, Weight::Probed)],
+            &policy,
+            &registry,
+        )
+        .unwrap();
+        let yarn = &project.present[0];
+        assert!(yarn.because.iter().any(|e| matches!(
+            &e.declared,
+            Some(crate::Declared::Variant(name)) if name == "berry"
+        )));
+        assert_eq!(
+            registry
+                .by_id(ProviderId::Yarn)
+                .for_present(yarn)
+                .caps
+                .probe_priority,
+            9
+        );
+
+        let mut declared = found(ProviderId::Yarn, Weight::Declared);
+        declared.declared = Some(crate::Declared::Variant("berry".into()));
+        let project = resolve(&tree(), vec![declared], &policy, &registry).unwrap();
+        assert_eq!(project.present[0].version, None);
+    }
+
+    #[test]
     fn a_policy_choice_outranks_evidence_and_admits_a_probe() {
         let registry = Registry(FAKES);
         let mut policy = Policy::default();
@@ -528,7 +676,7 @@ mod tests {
         let project = resolve(&tree(), evidence, &policy, &registry).unwrap();
         let ids: Vec<ProviderId> = project.present.iter().map(|p| p.provider).collect();
         assert_eq!(ids, [ProviderId::Npm, ProviderId::Pnpm]);
-        assert!(project.warnings.is_empty());
+        assert_eq!(project.warnings, []);
         let absent = resolve(&tree(), Vec::new(), &policy, &registry).unwrap();
         assert_eq!(absent.warnings.len(), 1);
     }

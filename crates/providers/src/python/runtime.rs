@@ -12,12 +12,12 @@ pub const PROVIDER: Provider = Provider {
     program: Some(if cfg!(windows) { "python" } else { "python3" }),
     signals: &[
         Signal::ManifestField {
-            file: "pyproject.toml",
+            files: &["pyproject.toml"],
             path: "project",
             parse: super::table,
         },
         Signal::ManifestField {
-            file: "pyproject.toml",
+            files: &["pyproject.toml"],
             path: "build-system",
             parse: super::table,
         },

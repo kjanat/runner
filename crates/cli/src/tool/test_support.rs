@@ -71,7 +71,10 @@ pub(crate) fn seed_context(ctx: &crate::types::ProjectContext) {
     for label in labels {
         let provider = runner_providers::REGISTRY.by_label(label).unwrap();
         let Some(name) = provider.signals.iter().find_map(|signal| match signal {
-            Signal::File(name) | Signal::FileUpwards(name) | Signal::Lockfile(name) => Some(name),
+            Signal::File(name)
+            | Signal::FileCaseless(name)
+            | Signal::FileUpwards(name)
+            | Signal::Lockfile(name) => Some(name),
             _ => None,
         }) else {
             continue;

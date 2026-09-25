@@ -131,7 +131,7 @@ fn quiet_hides_runner_install_text_but_runs_installer() {
         log.lines().collect::<Vec<_>>(),
         vec!["bun start", "bun end"]
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     assert!(output.stderr.is_empty(), "stderr: {stderr}");
 }
 
