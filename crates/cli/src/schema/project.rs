@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::labels::FlatSource;
-use crate::resolver::{OverrideOrigin, ResolutionOverrides, Resolver};
-use crate::tool::node::{ManifestSource, detect_pm_from_manifest};
+use crate::commands::run::decision::Observed;
+use crate::resolver::{OverrideOrigin, ResolutionOverrides};
 use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource, Workspace};
 
 /// The canonical machine-readable view of a project, used by every `--json` surface. Field order is
@@ -38,12 +38,12 @@ pub(crate) struct Project<'a> {
     pub overrides: OverridesView,
     /// Per-ecosystem detection signals: lockfile pick, manifest declaration, PATH probe results.
     pub signals: Signals,
-    /// Resolver verdict (or first-class error if the chain bailed).
+    /// The package-manager decision for `package.json` scripts, or why there is none.
     pub decisions: Decisions,
     /// Full task list. Subcommands that don't care omit this via projection.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskInfo<'a>>,
-    /// Diagnostic warnings from both detection (`ctx.warnings`) and the resolver (`ResolvedPm.warnings`), flattened.
+    /// Diagnostic warnings from detection and from the package-manager decision, flattened.
     pub warnings: Vec<WarningInfo>,
 }
 
@@ -64,18 +64,19 @@ impl<'a> Project<'a> {
         overrides: &ResolutionOverrides,
         resolve_shims: bool,
     ) -> Self {
-        let manifest_decl = detect_pm_from_manifest(&ctx.root);
-        let manifest_pm = manifest_decl.as_ref().map(|d| ManifestPm {
-            pm: d.pm.label(),
-            source: match d.source {
-                ManifestSource::PackageManager => "packageManager",
-                ManifestSource::DevEngines => "devEngines.packageManager",
-            },
-            version: d.version.clone(),
-            on_fail: d.on_fail.label(),
+        let observed = Observed::observe(ctx, overrides);
+        let manifest_pm = observed.as_ref().ok().and_then(|observed| {
+            observed
+                .manifest_declaration(runner_core::ProviderId::PackageJson)
+                .map(|d| ManifestPm {
+                    pm: d.pm.label(),
+                    source: d.field,
+                    version: d.version,
+                    on_fail: d.on_fail.label(),
+                })
         });
 
-        let (decisions, resolver_warnings) = decisions_for(ctx, overrides);
+        let (decisions, resolver_warnings) = decisions_for(&observed, overrides);
 
         let warnings = ctx
             .warnings
@@ -385,7 +386,7 @@ pub(crate) struct ManifestPm {
     pub on_fail: &'static str,
 }
 
-/// Resolver verdict surface. Mirrors the resolver's `Result` so consumers can branch on the variant before reading the inner shape.
+/// The decision surface. Consumers branch on which variant is present before reading the inner shape.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct Decisions {
     /// Node script-dispatch PM decision, or an error message when the resolver bailed.
@@ -405,9 +406,9 @@ pub(crate) enum NodePmDecision {
         /// Human-readable `via` line, the same string `--explain` prints.
         via: String,
     },
-    /// Resolver bailed; carries the rendered error message.
+    /// No package manager dispatches `package.json` scripts here, or observation failed.
     Error {
-        /// One-line error description from `ResolveError::Display`.
+        /// One-line description.
         error: String,
     },
 }
@@ -462,27 +463,34 @@ impl WarningInfo {
 }
 
 fn decisions_for(
-    ctx: &ProjectContext,
+    observed: &std::io::Result<Observed>,
     overrides: &ResolutionOverrides,
 ) -> (Decisions, Vec<DetectionWarning>) {
-    match Resolver::new(ctx, overrides).resolve_node_pm() {
-        Ok(decision) => {
-            let warnings = decision.warnings.clone();
-            (
-                Decisions {
-                    node_pm: NodePmDecision::Resolved {
-                        pm: decision.pm.label(),
-                        via: decision.describe(),
-                    },
-                },
-                warnings,
-            )
-        }
-        Err(err) => (
+    let decision = match observed {
+        Ok(observed) => observed
+            .decision(runner_core::ProviderId::PackageJson)
+            .map(|decision| (decision.warnings(&observed.project, overrides), decision))
+            .ok_or_else(|| {
+                "no node package manager detected. Checked: lockfiles, manifest (packageManager + \
+                 devEngines), PATH (host). Pin one with `--pm <name>`, set `RUNNER_PM=<name>`, add \
+                 it to runner.toml, or install a supported PM."
+                    .to_owned()
+            }),
+        Err(error) => Err(error.to_string()),
+    };
+    match decision {
+        Ok((warnings, decision)) => (
             Decisions {
-                node_pm: NodePmDecision::Error {
-                    error: format!("{err}"),
+                node_pm: NodePmDecision::Resolved {
+                    pm: decision.pm.label(),
+                    via: decision.describe(),
                 },
+            },
+            warnings,
+        ),
+        Err(error) => (
+            Decisions {
+                node_pm: NodePmDecision::Error { error },
             },
             Vec::new(),
         ),

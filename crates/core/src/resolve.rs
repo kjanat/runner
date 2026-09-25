@@ -23,6 +23,23 @@ pub struct Project {
     pub warnings: Vec<Warning>,
     /// Task sources whose tasks could not be read.
     pub unread: Vec<Unread>,
+    /// Manifests and lockfiles that name different package managers.
+    pub disagreements: Vec<Disagreement>,
+}
+
+/// A manifest and a lockfile in one scope that name different package managers.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Disagreement {
+    /// The scope both were found in.
+    pub scope: Scope,
+    /// The provider the manifest declares.
+    pub declared: ProviderId,
+    /// The manifest.
+    pub manifest: std::path::PathBuf,
+    /// The provider the lockfile pins.
+    pub locked: ProviderId,
+    /// The lockfile.
+    pub lockfile: std::path::PathBuf,
 }
 
 /// A task source whose read failed.
@@ -188,22 +205,63 @@ pub fn resolve_presence(
     }
     present.sort_by_key(|p| {
         let provider = registry.by_id(p.provider);
+        let strongest = p.because.first();
         (
             p.scope.clone(),
             provider.ecosystem,
             chosen_by(policy, p.provider).is_none(),
-            p.because.first().map_or(Weight::Probed, |e| e.weight),
+            strongest.map_or(Weight::Probed, |e| e.weight),
+            strongest.and_then(|e| e.signal).map_or(usize::MAX, |s| s.0),
             provider.id,
         )
     });
+    let disagreements = disagreements(&present, registry);
     let mut project = Project {
         present,
         warnings,
+        disagreements,
         ..Project::default()
     };
     project.refresh_bins(tree, registry);
     add_task_runners(tree, policy, registry, &mut project);
     Ok(project)
+}
+
+/// Package managers of one ecosystem and scope where a manifest declares one and a lockfile pins another.
+fn disagreements(present: &[Present], registry: &Registry) -> Vec<Disagreement> {
+    let strongest = |p: &Present| p.because.first().map(|e| (e.weight, e.at.clone()));
+    let managers = present.iter().filter(|p| {
+        registry
+            .by_id(p.provider)
+            .kind
+            .contains(Kind::PACKAGE_MANAGER)
+    });
+    let mut found = Vec::new();
+    for declared in managers.clone() {
+        let Some((Weight::Declared, manifest)) = strongest(declared) else {
+            continue;
+        };
+        let ecosystem = registry.by_id(declared.provider).ecosystem;
+        for locked in managers.clone() {
+            if locked.provider == declared.provider
+                || locked.scope != declared.scope
+                || registry.by_id(locked.provider).ecosystem != ecosystem
+            {
+                continue;
+            }
+            let Some((Weight::Locked, lockfile)) = strongest(locked) else {
+                continue;
+            };
+            found.push(Disagreement {
+                scope: declared.scope.clone(),
+                declared: declared.provider,
+                manifest: manifest.clone(),
+                locked: locked.provider,
+                lockfile,
+            });
+        }
+    }
+    found
 }
 
 /// Present providers grouped from evidence, before ordering.

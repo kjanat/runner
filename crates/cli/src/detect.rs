@@ -228,7 +228,7 @@ fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
         // governing lockfile/manifest of an enclosing workspace so a
         // member dir's `info`/`install` still target the right PM.
         field_pm
-            .or_else(|| tool::node::detect_pm_from_manifest(dir).map(|decl| decl.pm))
+            .or_else(|| tool::node::detect_pm_from_manifest(dir))
             .filter(|pm| pm.is_node())
             .or_else(|| detect_node_pm_upwards(dir))
     } else {
@@ -271,11 +271,8 @@ fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
         return None;
     }
     tool::files::find_in_ancestors(dir, |ancestor| {
-        detect_local_node_pm(ancestor).or_else(|| {
-            tool::node::detect_pm_from_manifest(ancestor)
-                .map(|decl| decl.pm)
-                .filter(|pm| pm.is_node())
-        })
+        detect_local_node_pm(ancestor)
+            .or_else(|| tool::node::detect_pm_from_manifest(ancestor).filter(|pm| pm.is_node()))
     })
 }
 

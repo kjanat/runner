@@ -1,7 +1,6 @@
-//! Resolver data types, the public structs/enums + their trivial impls.
+//! Override data types, the public structs/enums + their trivial impls.
 //!
-//! No resolution logic, no parsing, just the shapes the rest of the
-//! resolver passes around. `impl Resolver` lives in [`super::resolve`];
+//! No parsing, just the shapes the rest of the module passes around.
 //! `impl ResolutionOverrides` lives in [`super::overrides`].
 
 use std::collections::{BTreeMap, HashMap};
@@ -9,21 +8,11 @@ use std::path::PathBuf;
 
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
-use crate::tool::node::OnFail;
 use crate::tool::{
     HostDiagnostics, HostVerbosity, OutputPolicy, QuietLevel, RunnerOutput, RunnerOutputPolicy,
     Stream, TaskStream,
 };
-use crate::types::{
-    DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, TaskRunner, TaskSource,
-};
-
-/// Resolves package managers and task sources from a [`ProjectContext`]
-/// plus a bundle of [`ResolutionOverrides`].
-pub(crate) struct Resolver<'ctx> {
-    pub(super) ctx: &'ctx ProjectContext,
-    pub(super) overrides: &'ctx ResolutionOverrides,
-}
+use crate::types::{Ecosystem, JsRuntime, PackageManager, TaskRunner, TaskSource};
 
 /// User-supplied overrides assembled from CLI flags, environment variables,
 /// and (Phase 3+) a `runner.toml` file.
@@ -46,8 +35,7 @@ pub(crate) struct ResolutionOverrides {
     pub pm_by_ecosystem: HashMap<Ecosystem, PmOverride>,
     /// Task-runner override from `--runner` / `RUNNER_RUNNER`. When set,
     /// the source selector restricts candidates to that runner's
-    /// [`TaskRunner::task_source`]; an empty restriction list bails with
-    /// [`super::ResolveError::InvalidOverride`].
+    /// [`TaskRunner::task_source`].
     pub runner: Option<RunnerOverride>,
     /// JS runtime override from `--runtime` / `RUNNER_RUNTIME` /
     /// `[runtime].js`. Selects which runtime executes a task's process tree
@@ -57,8 +45,7 @@ pub(crate) struct ResolutionOverrides {
     /// Ranked preference list from the **deprecated** `[task_runner].prefer`.
     /// Empty when no config is loaded, the section is empty, or `[tasks]`
     /// supersedes it. When non-empty, the source selector restricts candidates
-    /// to runners in the list (in listed order); a miss bails with
-    /// [`super::ResolveError::InvalidOverride`].
+    /// to runners in the list (in listed order).
     pub prefer_runners: Vec<TaskRunner>,
     /// Global rank-only task-source order from `[tasks].prefer`. Empty when
     /// unset. Each entry is a [`TaskSource`] (resolved from a runner, package
@@ -640,10 +627,8 @@ pub(crate) enum OverrideOrigin {
     EnvVar,
     /// Set via a `runner.toml` at the project root.
     ConfigFile {
-        /// Absolute path the override was loaded from. Surfaced by
-        /// `ResolvedPm::describe` (which feeds `--explain` and the
-        /// `doctor` trace) so the user can attribute a decision to the
-        /// exact config file it came from.
+        /// Absolute path the override was loaded from, so `--explain` and
+        /// `doctor` can attribute a decision to the exact config file.
         path: PathBuf,
     },
 }
@@ -660,9 +645,7 @@ impl OverrideOrigin {
 
     /// Render the "via …" provenance fragment for a PM override from
     /// this origin: `via --pm (CLI override)`, `via RUNNER_PM
-    /// (environment)`, or `via runner.toml at <path>`. Shared by
-    /// [`ResolvedPm::describe`] and install's override errors so the
-    /// attribution wording stays identical everywhere.
+    /// (environment)`, or `via runner.toml at <path>`.
     pub(crate) fn describe_pm_source(&self) -> String {
         match self {
             Self::CliFlag => "via --pm (CLI override)".to_string(),
@@ -670,53 +653,6 @@ impl OverrideOrigin {
             Self::ConfigFile { path } => format!("via runner.toml at {}", path.display()),
         }
     }
-}
-
-/// A package-manager decision plus the chain step that produced it.
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedPm {
-    /// The chosen package manager.
-    pub pm: PackageManager,
-    /// Which step of the resolution chain produced [`Self::pm`].
-    /// Surfaced by [`Self::describe`] for `--explain` and the
-    /// `doctor` / `why` traces.
-    pub via: ResolutionStep,
-    /// Non-fatal warnings emitted while resolving, e.g. a manifest
-    /// declaration that disagrees with the detected lockfile.
-    pub warnings: Vec<DetectionWarning>,
-}
-
-/// Which step of the resolution chain produced a decision.
-///
-/// Listed in precedence order. Downstream `match` sites stay exhaustive so
-/// that adding a step is a compile error to handle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolutionStep {
-    /// Steps 2–4, user-supplied override won.
-    Override(OverrideOrigin),
-    /// Step 5a, `package.json` legacy `packageManager` field.
-    ManifestPackageManager,
-    /// Step 5b, `package.json` `devEngines.packageManager` field.
-    ManifestDevEngines {
-        /// Effective `onFail` value for the chosen entry. Rendered into
-        /// the `--explain` / `doctor` trace via [`ResolvedPm::describe`].
-        on_fail: OnFail,
-    },
-    /// Step 6, package manager inferred from a lockfile (or another
-    /// detector recorded in [`ProjectContext::package_managers`]).
-    Observed {
-        /// File carrying the selected provider signal.
-        path: PathBuf,
-        /// Strength of the observation.
-        weight: runner_core::Weight,
-    },
-    /// Step 7, discovered via `$PATH` probe in canonical order.
-    PathProbe {
-        /// Absolute path of the executable found on PATH. Rendered by
-        /// [`ResolvedPm::describe`] so the user can spot which directory
-        /// the resolver fell back to.
-        binary: PathBuf,
-    },
 }
 
 /// Sources contributing to a [`ResolutionOverrides`].
@@ -855,33 +791,4 @@ pub(crate) struct QuietSource<'a> {
     pub cli: u8,
     /// `RUNNER_QUIET` env-var value, if set.
     pub env: Option<&'a str>,
-}
-
-impl ResolvedPm {
-    /// Render a one-line description of the chain step that produced this
-    /// decision. Used by `--explain` to attribute the PM choice.
-    pub(crate) fn describe(&self) -> String {
-        match &self.via {
-            ResolutionStep::Override(origin) => {
-                format!("{} {}", self.pm.label(), origin.describe_pm_source())
-            }
-            ResolutionStep::ManifestPackageManager => {
-                format!("{} via package.json \"packageManager\"", self.pm.label())
-            }
-            ResolutionStep::ManifestDevEngines { on_fail } => format!(
-                "{} via package.json \"devEngines.packageManager\" (onFail={on_fail:?})",
-                self.pm.label(),
-            ),
-            ResolutionStep::Observed { path, .. } => {
-                format!(
-                    "{} via {}",
-                    self.pm.label(),
-                    path.file_name().unwrap_or_default().to_string_lossy()
-                )
-            }
-            ResolutionStep::PathProbe { binary } => {
-                format!("{} via PATH probe at {}", self.pm.label(), binary.display())
-            }
-        }
-    }
 }

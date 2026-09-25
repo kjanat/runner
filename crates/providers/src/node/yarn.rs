@@ -55,8 +55,8 @@ pub const PROVIDER: Provider = Provider {
     tasks: None,
     version: None,
     hooks: Hooks {
+        before_plan: Some(manifest::before_plan),
         after_observe: Some(after_observe),
-        ..Hooks::NONE
     },
 };
 
@@ -210,10 +210,7 @@ fn variant_of(
 
 /// `classic` for a Yarn 1 version, `berry` for 2 and later.
 fn line(declared: &Declared) -> Option<&'static str> {
-    let Declared::Version(version) = declared else {
-        return None;
-    };
-    let major = version.split('.').next()?.parse::<u32>().ok()?;
+    let major = declared.version()?.split('.').next()?.parse::<u32>().ok()?;
     Some(if major >= 2 { "berry" } else { "classic" })
 }
 

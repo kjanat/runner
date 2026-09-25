@@ -452,22 +452,6 @@ pub(crate) enum DetectionWarning {
         /// The PM the lockfile points to.
         lockfile: PackageManager,
     },
-    /// `devEngines.packageManager` declares a binary that isn't on `PATH`.
-    /// `onFail=warn`, dispatch proceeds and will fail at spawn time.
-    DevEnginesBinaryMissing {
-        /// The declared package manager.
-        pm: PackageManager,
-    },
-    /// `devEngines.packageManager` version range isn't satisfied by the
-    /// installed binary. `onFail=warn`, declaration wins.
-    DevEnginesVersionMismatch {
-        /// The declared package manager.
-        pm: PackageManager,
-        /// Declared version constraint (as written, e.g. `"^9.0.0"`).
-        declared: String,
-        /// Actual `--version` output of the installed binary.
-        actual: String,
-    },
     /// Resolver fell through to `PATH` probe because no declarations or
     /// lockfiles matched. Reports the picked binary plus any others that
     /// were also installed, so the user can spot drift between intent
@@ -486,15 +470,6 @@ pub(crate) enum DetectionWarning {
         name: &'static str,
         /// What happens instead.
         now: &'static str,
-    },
-    /// A declared package-manager version constraint that cannot be checked.
-    UnverifiableVersion {
-        /// The declared package manager.
-        pm: PackageManager,
-        /// The constraint as written.
-        declared: String,
-        /// Why it cannot be checked.
-        reason: String,
     },
     /// `package.json` declared a `packageManager` value that doesn't
     /// name a script-dispatching PM (typo, unsupported ecosystem,
@@ -560,11 +535,7 @@ impl DetectionWarning {
     /// across the flat-struct → enum refactor.
     pub(crate) fn source(&self) -> &'static str {
         match self {
-            Self::PmMismatch { .. }
-            | Self::DevEnginesBinaryMissing { .. }
-            | Self::DevEnginesVersionMismatch { .. }
-            | Self::UnparseablePackageManager { .. }
-            | Self::UnverifiableVersion { .. } => "package.json",
+            Self::PmMismatch { .. } | Self::UnparseablePackageManager { .. } => "package.json",
             Self::PathProbeFallback { .. } => "resolver",
             Self::Removed { .. } => "runner",
             Self::Pipeline(warning) => warning
@@ -598,20 +569,6 @@ impl DetectionWarning {
                 declared.label(),
                 lockfile.label(),
             ),
-            Self::DevEnginesBinaryMissing { pm } => format!(
-                "devEngines.packageManager declares {} but it was not found on PATH; dispatch \
-                 will fail at spawn time",
-                pm.label(),
-            ),
-            Self::DevEnginesVersionMismatch {
-                pm,
-                declared,
-                actual,
-            } => format!(
-                "devEngines.packageManager requires {} {declared} but the installed version is \
-                 {actual}",
-                pm.label(),
-            ),
             Self::PathProbeFallback {
                 picked,
                 ecosystem,
@@ -636,14 +593,6 @@ impl DetectionWarning {
                 }
             }
             Self::Removed { name, now } => format!("{name} is no longer read; {now}"),
-            Self::UnverifiableVersion {
-                pm,
-                declared,
-                reason,
-            } => format!(
-                "cannot evaluate {} version constraint {declared}: {reason}",
-                pm.label()
-            ),
             Self::UnparseablePackageManager { raw } => format!(
                 "packageManager value {raw:?} doesn't name a script-dispatching package manager \
                  (expected one of npm|pnpm|yarn|bun|deno, optionally followed by @<version>); \
@@ -848,31 +797,6 @@ impl PackageManager {
             Self::Bundler,
             Self::Composer,
         ]
-    }
-
-    /// Total number of [`PackageManager`] variants. Used as the array
-    /// length for static lookup tables keyed on the discriminant.
-    pub(crate) const COUNT: usize = 12;
-
-    /// Stable `0..COUNT` index used by static arrays keyed on the
-    /// discriminant. Hand-rolled (not `self as usize`) so reordering the
-    /// `enum` definition is a compile error rather than silent corruption
-    /// of any table indexed by this method.
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Npm => 0,
-            Self::Yarn => 1,
-            Self::Pnpm => 2,
-            Self::Bun => 3,
-            Self::Cargo => 4,
-            Self::Deno => 5,
-            Self::Uv => 6,
-            Self::Poetry => 7,
-            Self::Pipenv => 8,
-            Self::Go => 9,
-            Self::Bundler => 10,
-            Self::Composer => 11,
-        }
     }
 
     /// The ecosystem this package manager belongs to.
@@ -1520,14 +1444,14 @@ mod tests {
     fn detection_warning_can_be_hashed() {
         use std::collections::HashSet;
 
-        let a = DetectionWarning::DevEnginesBinaryMissing {
-            pm: PackageManager::Pnpm,
+        let a = DetectionWarning::UnparseablePackageManager {
+            raw: "pnpm@".to_owned(),
         };
-        let b = DetectionWarning::DevEnginesBinaryMissing {
-            pm: PackageManager::Pnpm,
+        let b = DetectionWarning::UnparseablePackageManager {
+            raw: "pnpm@".to_owned(),
         };
-        let c = DetectionWarning::DevEnginesBinaryMissing {
-            pm: PackageManager::Yarn,
+        let c = DetectionWarning::UnparseablePackageManager {
+            raw: "yarn@".to_owned(),
         };
 
         let mut set = HashSet::new();

@@ -14,7 +14,7 @@
 
 use std::fmt;
 
-use crate::types::{Ecosystem, PackageManager};
+use crate::types::PackageManager;
 
 /// A resolver-side failure. Distinct from `anyhow::Error` so the
 /// terminal exit-code mapping in `main` can treat resolver failures as a
@@ -26,55 +26,6 @@ pub(crate) enum ResolveError {
     Observation(std::io::Error),
     /// No provider has an observed installation capability.
     NoInstallers,
-    /// No signals matched and the active fallback policy could not pick a
-    /// package manager.
-    ///
-    /// `soft = true` is emitted by `FallbackPolicy::Probe` when `$PATH`
-    /// holds nothing usable. `commands::run` treats it as a "fall through to
-    /// a direct PATH spawn" signal so `runner run somebin` keeps
-    /// working in projects with no PM signals at all. `soft = false`
-    /// fires under `FallbackPolicy::Error` and propagates straight to
-    /// the user.
-    NoSignalsFound {
-        /// Which ecosystem the resolver was trying to satisfy.
-        ecosystem: Ecosystem,
-        /// `true` if a direct-spawn fallback is allowed; `false` if the
-        /// caller should treat the missing PM as fatal.
-        soft: bool,
-    },
-    /// `devEngines.packageManager` `onFail = error` rejected the
-    /// installed environment: either the declared binary is missing or
-    /// its version doesn't satisfy the declared range.
-    DevEnginesFailHard {
-        /// The PM the manifest declared.
-        pm: PackageManager,
-        /// Whether the binary was missing or the version mismatched.
-        reason: DevEnginesFailReason,
-    },
-    /// `--on-mismatch error` (or `[resolution].on_mismatch = "error"`)
-    /// was set and a manifest declaration disagrees with the detected
-    /// lockfile. Phase A1 will populate this; B2 introduces the variant
-    /// so the exit-code mapping is wired up before the policy lands.
-    MismatchPolicyError {
-        /// The PM the manifest declared.
-        declared: PackageManager,
-        /// Which manifest field carried the declaration (`"packageManager"`
-        /// or `"devEngines.packageManager"`).
-        field: &'static str,
-        /// The PM the lockfile points to.
-        lockfile: PackageManager,
-    },
-    /// A user-supplied override (CLI flag, env var, or config) names a
-    /// PM that can't satisfy the requested resolution, e.g. `--pm cargo`
-    /// when the call is dispatching a `package.json` script. Phase B5
-    /// will start emitting this; B2 introduces the variant.
-    InvalidOverride {
-        /// Raw value the user supplied (`"cargo"`, `"poetry"`, …).
-        value: String,
-        /// Static reason string for the diagnostic. Variant kept short
-        /// so the `Display` impl produces a clean one-line message.
-        reason: &'static str,
-    },
     /// A `--pm` / `RUNNER_PM` override names a PM that detection did not
     /// find in the project, so `runner install` cannot honor it. Erroring
     /// (rather than silently installing with the detected set) keeps the
@@ -105,63 +56,11 @@ pub(crate) enum ResolveError {
     },
 }
 
-/// Why a `devEngines.packageManager` `onFail = error` check rejected the
-/// environment. Carried by [`ResolveError::DevEnginesFailHard`] so
-/// `--explain` and `doctor` can attribute the failure precisely.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DevEnginesFailReason {
-    /// The declared PM is not on `$PATH`.
-    BinaryMissing,
-    /// The declared range doesn't include the installed version.
-    VersionMismatch {
-        /// Declared range, as written (e.g. `"^9.0.0"`).
-        declared: String,
-        /// Actual `--version` output of the installed binary.
-        actual: String,
-    },
-}
-
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Observation(error) => write!(f, "{error}"),
             Self::NoInstallers => f.write_str("no observed provider can install dependencies"),
-            Self::NoSignalsFound { ecosystem, .. } => {
-                write!(
-                    f,
-                    "no {} package manager detected. Checked: lockfiles, manifest (packageManager \
-                     + devEngines), PATH (host). Pin one with `--pm <name>`, set \
-                     `RUNNER_PM=<name>`, add it to runner.toml, or install a supported PM.",
-                    ecosystem.label(),
-                )
-            }
-            Self::DevEnginesFailHard { pm, reason } => match reason {
-                DevEnginesFailReason::BinaryMissing => write!(
-                    f,
-                    "devEngines.packageManager declares {} but it was not found on PATH \
-                     (onFail=error)",
-                    pm.label(),
-                ),
-                DevEnginesFailReason::VersionMismatch { declared, actual } => write!(
-                    f,
-                    "devEngines.packageManager requires {} {declared} but the installed version \
-                     is {actual} (onFail=error)",
-                    pm.label(),
-                ),
-            },
-            Self::MismatchPolicyError {
-                declared,
-                field,
-                lockfile,
-            } => write!(
-                f,
-                "{field} declares {} but the lockfile reflects {} (--on-mismatch=error)",
-                declared.label(),
-                lockfile.label(),
-            ),
-            Self::InvalidOverride { value, reason } => {
-                write!(f, "invalid override value {value:?}: {reason}")
-            }
             Self::PmOverrideNotDetected {
                 pm,
                 origin,

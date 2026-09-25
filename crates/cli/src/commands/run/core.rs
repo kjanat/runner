@@ -149,7 +149,8 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
         env: env_layers(overrides),
         tool_ops: tool_ops(overrides),
         trust: runner_core::TrustPolicy::Project,
-        strict: overrides.fallback == crate::resolver::FallbackPolicy::Error,
+        strict: overrides.fallback == crate::resolver::FallbackPolicy::Error
+            || overrides.on_mismatch == crate::resolver::MismatchPolicy::Error,
     }
 }
 
@@ -178,12 +179,11 @@ fn selected_in<'a>(
         .find(|entry| task(entry).as_ref() == Some(selected)))
 }
 
-/// Inputs shared by execution and explanation while the detector/resolver migrate.
+/// Inputs shared by execution and explanation while the detector migrates.
 pub(crate) struct Prepared {
     pub tree: Tree,
     pub policy: Policy,
     pub project: Project,
-    pub node: Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
     pub requested: crate::tool::HostVerbosity,
 }
 
@@ -195,7 +195,6 @@ pub(crate) fn prepare(
     let tree = tree(ctx);
     let mut policy = policy(overrides);
     let project = project_under(ctx, &policy)?;
-    let node = crate::resolver::Resolver::new(ctx, overrides).resolve_node_pm_in(&project);
     let key = if BUILTINS.contains(&token) {
         token.to_owned()
     } else {
@@ -209,12 +208,16 @@ pub(crate) fn prepare(
         tree,
         policy,
         project,
-        node,
         requested,
     })
 }
 
 impl Prepared {
+    /// The package manager that dispatches `source` in the invocation scope.
+    pub(crate) fn decision(&self, source: ProviderId) -> Option<super::decision::PmDecision> {
+        super::decision::decide(&self.tree, &self.project, &self.policy, source)
+    }
+
     pub(crate) fn selected<'a>(
         &self,
         ctx: &'a ProjectContext,
@@ -250,7 +253,6 @@ impl Prepared {
             } else {
                 None
             };
-            self.validate_task(entry, overrides)?;
             let mut warnings = std::collections::HashSet::new();
             super::dispatch::complete_plan(
                 ctx,
@@ -271,21 +273,6 @@ impl Prepared {
             })?;
         }
         Ok((rung, dispatch))
-    }
-
-    pub(crate) fn validate_task(
-        &self,
-        entry: Option<&Task>,
-        overrides: &ResolutionOverrides,
-    ) -> Result<(), runner_core::Refusal> {
-        if entry.is_some_and(|task| task.source == TaskSource::PackageJson)
-            && overrides.runtime.is_none()
-        {
-            self.node
-                .as_ref()
-                .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))?;
-        }
-        Ok(())
     }
 
     pub(crate) fn cascade<'a>(

@@ -80,5 +80,8 @@ pub const PROVIDER: Provider = Provider {
     },
     tasks: None,
     version: None,
-    hooks: Hooks::NONE,
+    hooks: Hooks {
+        before_plan: Some(manifest::before_plan),
+        ..Hooks::NONE
+    },
 };

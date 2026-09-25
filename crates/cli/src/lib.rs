@@ -1399,7 +1399,7 @@ mod tests {
     use crate::args;
     use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
-    use crate::types::{Ecosystem, ProjectContext, Task, TaskSource};
+    use crate::types::{ProjectContext, Task, TaskSource};
 
     #[test]
     fn a_legacy_npm_fallback_is_reported_as_no_longer_read() {
@@ -1427,11 +1427,7 @@ mod tests {
 
     #[test]
     fn exit_code_for_resolve_error_is_two() {
-        let err: anyhow::Error = ResolveError::NoSignalsFound {
-            ecosystem: Ecosystem::Node,
-            soft: false,
-        }
-        .into();
+        let err: anyhow::Error = ResolveError::NoInstallers.into();
 
         assert_eq!(exit_code_for_error(&err), 2);
     }

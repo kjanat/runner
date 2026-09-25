@@ -169,7 +169,7 @@ fn install_task(ctx: &ProjectContext) -> Option<&crate::types::Task> {
 fn is_no_signals(err: &anyhow::Error) -> bool {
     matches!(
         err.downcast_ref::<ResolveError>(),
-        Some(ResolveError::NoSignalsFound { .. } | ResolveError::NoInstallers)
+        Some(ResolveError::NoInstallers)
     )
 }
 
@@ -1094,15 +1094,10 @@ mod tests {
 
     #[test]
     fn no_signals_error_is_recognised_through_anyhow() {
-        let err: anyhow::Error = ResolveError::NoSignalsFound {
-            ecosystem: Ecosystem::Node,
-            soft: true,
-        }
-        .into();
+        let err: anyhow::Error = ResolveError::NoInstallers.into();
         assert!(is_no_signals(&err));
-        let other: anyhow::Error = ResolveError::InvalidOverride {
-            value: "npm".into(),
-            reason: "test refusal",
+        let other: anyhow::Error = ResolveError::ConflictingFailurePolicy {
+            source: "CLI flags",
         }
         .into();
         assert!(!is_no_signals(&other));

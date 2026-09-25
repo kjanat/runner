@@ -453,6 +453,7 @@ dependencies = [
  "glob",
  "json5",
  "runner-core",
+ "runner-schemes",
  "serde",
  "serde_json",
  "shlex",
@@ -491,7 +492,11 @@ dependencies = [
 
 [[package]]
 name = "runner-schemes"
-version = "0.0.0"
+version = "0.26.2"
+dependencies = [
+ "runner-core",
+ "semver",
+]
 
 [[package]]
 name = "rustix"

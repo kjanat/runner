@@ -26,6 +26,10 @@ yaml-rust2 = "0.13"
 path    = "../core"
 version = "0.26.2"
 
+[dependencies.runner-schemes]
+path    = "../schemes"
+version = "0.26.2"
+
 [dev-dependencies]
 tempfile = "3"
 

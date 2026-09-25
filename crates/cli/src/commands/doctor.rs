@@ -13,7 +13,7 @@ use anyhow::Result;
 #[cfg(test)]
 use serde_json::Value;
 
-use crate::resolver::{ResolutionOverrides, Resolver};
+use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
 use crate::schema::doctor::DoctorReport;
 use crate::types::ProjectContext;
@@ -22,13 +22,8 @@ use crate::types::ProjectContext;
 ///
 /// # Errors
 ///
-/// A `Resolver::resolve_node_pm` failure (e.g. `--fallback error` with
-/// nothing on `$PATH`) is embedded in the report rather than propagated:
-/// the JSON path serializes `DoctorReport::build`, which keeps the
-/// resolver's `Result` as part of the report, and the human path builds
-/// `Project` the same way. This can only return `Err` when JSON
-/// serialization itself fails, which does not happen for these types in
-/// practice.
+/// An observation failure is embedded in the report rather than propagated,
+/// so this returns `Err` only when JSON serialization itself fails.
 pub(crate) fn doctor(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -67,8 +62,8 @@ pub(crate) fn doctor(
 /// the structured report uses, so a `package.json` whose scripts resolve
 /// without a lockfile-detected package manager still counts.
 fn node_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
-    let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
-    crate::schema::doctor::has_node_context(ctx, &node_pm)
+    let observed = crate::commands::run::decision::Observed::observe(ctx, overrides);
+    crate::schema::doctor::Decisions::from_observed(&observed, overrides).has_node_context(ctx)
 }
 
 /// Legacy stub retained for the existing tests that exercise

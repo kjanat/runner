@@ -8,11 +8,12 @@ use std::process::{Child, Command, ExitStatus};
 
 use anyhow::{Result, anyhow, bail};
 
+use super::decision::PmDecision;
 use super::runtime;
 use crate::render::arrow::print_dispatch_arrow;
-use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
+use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
+use crate::types::{JsRuntime, ProjectContext, Task, TaskSource};
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::commands::print_explain(overrides, &format!("resolved: {describe}"));
@@ -155,8 +156,7 @@ pub(super) struct SpawnDispatch {
 #[derive(Debug)]
 enum SpawnDiagnostic {
     Passthrough,
-    ResolvedPackageManager(ResolvedPm),
-    ResolvedPythonPackageManager(ResolvedPythonPm),
+    PackageManager(PmDecision),
 }
 
 impl SpawnDispatch {
@@ -190,9 +190,9 @@ impl SpawnDispatch {
     }
 
     #[cfg(test)]
-    fn package_manager(command: Command, decision: ResolvedPm) -> Self {
+    fn package_manager(command: Command, decision: PmDecision) -> Self {
         Self {
-            diagnostic: SpawnDiagnostic::ResolvedPackageManager(decision),
+            diagnostic: SpawnDiagnostic::PackageManager(decision),
             ..Self::passthrough(command)
         }
     }
@@ -215,17 +215,7 @@ impl SpawnDispatch {
         let path = self.effective_env("PATH");
         let pathext = self.effective_env("PATHEXT");
         let selected_pm_present = match &self.diagnostic {
-            SpawnDiagnostic::ResolvedPackageManager(decision) => path
-                .as_deref()
-                .and_then(|path| {
-                    crate::resolver::probe_path_for_doctor(
-                        decision.pm.label(),
-                        path,
-                        pathext.as_deref(),
-                    )
-                })
-                .is_some(),
-            SpawnDiagnostic::ResolvedPythonPackageManager(decision) => path
+            SpawnDiagnostic::PackageManager(decision) => path
                 .as_deref()
                 .and_then(|path| {
                     crate::resolver::probe_path_for_doctor(
@@ -259,7 +249,7 @@ impl SpawnDispatch {
         selected_pm_present: bool,
     ) -> anyhow::Error {
         match (&self.diagnostic, error.kind()) {
-            (SpawnDiagnostic::ResolvedPackageManager(decision), io::ErrorKind::NotFound)
+            (SpawnDiagnostic::PackageManager(decision), io::ErrorKind::NotFound)
                 if !selected_pm_present =>
             {
                 anyhow::Error::new(error).context(format!(
@@ -267,24 +257,10 @@ impl SpawnDispatch {
                     decision.describe(),
                 ))
             }
-            (SpawnDiagnostic::ResolvedPackageManager(decision), io::ErrorKind::NotFound) => {
+            (SpawnDiagnostic::PackageManager(decision), io::ErrorKind::NotFound) => {
                 anyhow::Error::new(error).context(format!(
                     "{} was selected, but failed to launch",
                     decision.describe()
-                ))
-            }
-            (SpawnDiagnostic::ResolvedPythonPackageManager(decision), io::ErrorKind::NotFound)
-                if !selected_pm_present =>
-            {
-                anyhow::Error::new(error).context(format!(
-                    "{} was selected, but its executable was not found on PATH",
-                    decision.describe(),
-                ))
-            }
-            (SpawnDiagnostic::ResolvedPythonPackageManager(decision), io::ErrorKind::NotFound) => {
-                anyhow::Error::new(error).context(format!(
-                    "{} was selected, but failed to launch",
-                    decision.describe(),
                 ))
             }
             _ => error.into(),
@@ -379,27 +355,27 @@ fn dispatch_by_package(
         );
     }
 
+    let mut prepared = super::core::prepare(ctx, overrides, bin)?;
     let resolved_pm = match overrides.pm.as_ref() {
         Some(o) if !o.pm.can_dispatch_node_scripts() => {
-            let decision = ResolvedPm {
-                pm: o.pm,
-                via: crate::resolver::ResolutionStep::Override(o.origin.clone()),
-                warnings: Vec::new(),
-            };
-            print_pm_explain(overrides, &decision.describe());
+            print_pm_explain(
+                overrides,
+                &format!("{} {}", o.pm.label(), o.origin.describe_pm_source()),
+            );
             Some(o.pm)
         }
-        _ => match Resolver::new(ctx, overrides).resolve_node_pm() {
-            Ok(decision) => {
-                crate::commands::print_warning_slice(&decision.warnings, overrides, sink);
+        _ => prepared
+            .decision(runner_core::ProviderId::PackageJson)
+            .map(|decision| {
+                crate::commands::print_warning_slice(
+                    &decision.warnings(&prepared.project, overrides),
+                    overrides,
+                    sink,
+                );
                 print_pm_explain(overrides, &decision.describe());
-                Some(decision.pm)
-            }
-            Err(ResolveError::NoSignalsFound { soft: true, .. }) => None,
-            Err(e) => return Err(e.into()),
-        },
+                decision.pm
+            }),
     };
-    let mut prepared = super::core::prepare(ctx, overrides, bin)?;
     if !runtime::replaces_exec(resolved_pm) {
         prepared.policy.runtime = None;
     }
@@ -446,13 +422,18 @@ fn dispatch_plan(
     mut sink: crate::commands::WarningSink<'_>,
 ) -> Result<Dispatch> {
     let prepared = super::core::prepare(ctx, overrides, task_name)?;
-    let resolved_pm = prepared.node.as_ref().ok().map(|decision| decision.pm);
+    let decision = prepared.decision(runner_core::ProviderId::PackageJson);
+    let resolved_pm = decision.as_ref().map(|decision| decision.pm);
     let requested = prepared.requested;
     let policy = &prepared.policy;
     let project = &prepared.project;
     crate::commands::print_core_warnings(&project.warnings, overrides, sink.as_deref_mut());
-    if let Ok(decision) = &prepared.node {
-        crate::commands::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
+    if let Some(decision) = &decision {
+        crate::commands::print_warning_slice(
+            &decision.warnings(project, overrides),
+            overrides,
+            sink.as_deref_mut(),
+        );
         print_pm_explain(overrides, &decision.describe());
     }
     if let Some(rt) = runtime::overridden(overrides)
@@ -482,7 +463,6 @@ fn dispatch_plan(
     } else {
         None
     };
-    prepared.validate_task(entry, overrides)?;
     let task_key = entry.map_or_else(|| task_name.to_owned(), super::task_output_key);
     complete_plan(
         ctx,
@@ -523,19 +503,7 @@ fn dispatch_plan(
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
     crate::commands::print_output_explain(overrides, &task_key);
     crate::commands::set_task_stdio(&mut cmd, stdout, stderr);
-    let diagnostic = if entry.is_some_and(|e| e.source == TaskSource::PackageJson)
-        && overrides.runtime.is_none()
-    {
-        SpawnDiagnostic::ResolvedPackageManager(prepared.node?)
-    } else if entry.is_some_and(|e| e.source == TaskSource::PyprojectScripts) {
-        SpawnDiagnostic::ResolvedPythonPackageManager(
-            plan.provider
-                .and_then(|id| python_decision(id, &plan.decided_by))
-                .ok_or_else(|| anyhow!("planned Python task has no package-manager choice"))?,
-        )
-    } else {
-        SpawnDiagnostic::Passthrough
-    };
+    let diagnostic = spawn_diagnostic(entry, overrides, &plan)?;
     let spawn = SpawnDispatch {
         task_key,
         command: cmd,
@@ -543,6 +511,25 @@ fn dispatch_plan(
         diagnostic,
     };
     Ok(Dispatch::Spawn(Box::new(spawn)))
+}
+
+/// The launch diagnostic for a task a package manager dispatches.
+fn spawn_diagnostic(
+    entry: Option<&Task>,
+    overrides: &ResolutionOverrides,
+    plan: &runner_core::Plan,
+) -> Result<SpawnDiagnostic> {
+    let managed = match entry.map(|e| e.source) {
+        Some(TaskSource::PackageJson) => overrides.runtime.is_none(),
+        Some(TaskSource::PyprojectScripts) => true,
+        _ => false,
+    };
+    if !managed {
+        return Ok(SpawnDiagnostic::Passthrough);
+    }
+    PmDecision::from_plan(plan)
+        .map(SpawnDiagnostic::PackageManager)
+        .ok_or_else(|| anyhow!("planned task has no package-manager choice"))
 }
 
 /// What the cascade chose for a token, and the `[tasks.<key>]` it answers to.
@@ -812,95 +799,14 @@ fn project_bin(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> 
     crate::resolver::probe::probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
 }
 
-/// Python package manager decision for `[project.scripts]` dispatch.
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedPythonPm {
-    pub(crate) pm: PackageManager,
-    via: PythonPmResolution,
-}
-
-#[derive(Debug, Clone)]
-enum PythonPmResolution {
-    Override(OverrideOrigin),
-    Evidence(runner_core::Layer),
-}
-
-impl ResolvedPythonPm {
-    pub(crate) fn describe(&self) -> String {
-        match &self.via {
-            PythonPmResolution::Override(OverrideOrigin::CliFlag) => {
-                format!("{} via --pm (CLI override)", self.pm.label())
-            }
-            PythonPmResolution::Override(OverrideOrigin::EnvVar) => {
-                format!("{} via RUNNER_PM (environment)", self.pm.label())
-            }
-            PythonPmResolution::Override(OverrideOrigin::ConfigFile { path }) => {
-                format!("{} via runner.toml at {}", self.pm.label(), path.display())
-            }
-            PythonPmResolution::Evidence(layer) => {
-                let origin = match layer {
-                    runner_core::Layer::Lockfile(path) | runner_core::Layer::Manifest(path) => path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned(),
-                    runner_core::Layer::Probe => "PATH probe".into(),
-                    _ => "project configuration".into(),
-                };
-                format!("{} via {origin}", self.pm.label())
-            }
-        }
-    }
-}
-
-/// The package manager that runs `pyproject.toml` scripts here, if any.
-///
-/// # Errors
-/// Returns an observation failure.
-pub(crate) fn resolve_python_pm(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-) -> io::Result<Option<ResolvedPythonPm>> {
-    let policy = super::core::policy(overrides);
-    let project = super::core::project_under(ctx, &policy)?;
-    let tree = super::core::tree(ctx);
-    let scope = runner_core::plan::scope_at(&tree, &tree.cwd);
-    Ok(project
-        .for_source(
-            runner_core::ProviderId::Pyproject,
-            &scope,
-            &policy,
-            &runner_providers::REGISTRY,
-        )
-        .and_then(|present| {
-            python_decision(present.provider, &runner_core::decided_by(&policy, present))
-        }))
-}
-
-fn python_decision(
-    id: runner_core::ProviderId,
-    decided_by: &[runner_core::Layer],
-) -> Option<ResolvedPythonPm> {
-    let pm = PackageManager::from_label(runner_providers::REGISTRY.by_id(id).label)?;
-    let choice = decided_by.first()?;
-    let via = match choice {
-        runner_core::Layer::Cli => PythonPmResolution::Override(OverrideOrigin::CliFlag),
-        runner_core::Layer::Env => PythonPmResolution::Override(OverrideOrigin::EnvVar),
-        runner_core::Layer::ConfigFile(path) => {
-            PythonPmResolution::Override(OverrideOrigin::ConfigFile { path: path.clone() })
-        }
-        layer => PythonPmResolution::Evidence(layer.clone()),
-    };
-    Some(ResolvedPythonPm { pm, via })
-}
-
 #[cfg(test)]
 mod tests {
 
     use std::process::Command;
 
     use super::{Dispatch, SpawnDispatch, check_make_args};
-    use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolutionStep, ResolvedPm};
+    use crate::commands::run::decision::{Observed, PmDecision};
+    use crate::resolver::{OverrideOrigin, ResolutionOverrides};
     use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     #[test]
@@ -913,10 +819,27 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("uv.lock"), "version = 1\n").unwrap();
         let ctx = crate::detect::detect(dir.path());
-        let resolved = super::resolve_python_pm(&ctx, &ResolutionOverrides::default())
+        let resolved = Observed::observe(&ctx, &ResolutionOverrides::default())
             .unwrap()
+            .decision(runner_core::ProviderId::Pyproject)
             .expect("uv.lock names the manager");
         assert_eq!(resolved.pm, PackageManager::Uv);
+        let described = resolved.describe();
+        assert!(
+            described.starts_with("uv via ") && described.ends_with("uv.lock"),
+            "{described}"
+        );
+    }
+
+    fn manifest_decision() -> PmDecision {
+        PmDecision {
+            pm: PackageManager::Bun,
+            layer: runner_core::Layer::Manifest("package.json".into()),
+            at: "package.json".into(),
+            field: Some("packageManager"),
+            on_fail: None,
+            scope: runner_core::Scope::Root,
+        }
     }
 
     #[test]
@@ -998,14 +921,7 @@ mod tests {
 
     #[test]
     fn resolved_pm_not_found_includes_selection_provenance() {
-        let spawn = SpawnDispatch::package_manager(
-            Command::new("bun"),
-            ResolvedPm {
-                pm: PackageManager::Bun,
-                via: ResolutionStep::ManifestPackageManager,
-                warnings: Vec::new(),
-            },
-        );
+        let spawn = SpawnDispatch::package_manager(Command::new("bun"), manifest_decision());
         let error = spawn
             .spawn_error_with_presence(std::io::Error::from(std::io::ErrorKind::NotFound), false);
         let message = format!("{error:#}");
@@ -1025,14 +941,7 @@ mod tests {
 
     #[test]
     fn resolved_pm_present_avoids_false_path_diagnosis() {
-        let spawn = SpawnDispatch::package_manager(
-            Command::new("bun"),
-            ResolvedPm {
-                pm: PackageManager::Bun,
-                via: ResolutionStep::ManifestPackageManager,
-                warnings: Vec::new(),
-            },
-        );
+        let spawn = SpawnDispatch::package_manager(Command::new("bun"), manifest_decision());
         let error = spawn
             .spawn_error_with_presence(std::io::Error::from(std::io::ErrorKind::NotFound), true);
         let message = format!("{error:#}");
@@ -1045,14 +954,7 @@ mod tests {
 
     #[test]
     fn resolved_pm_non_not_found_preserves_io_error() {
-        let spawn = SpawnDispatch::package_manager(
-            Command::new("bun"),
-            ResolvedPm {
-                pm: PackageManager::Bun,
-                via: ResolutionStep::ManifestPackageManager,
-                warnings: Vec::new(),
-            },
-        );
+        let spawn = SpawnDispatch::package_manager(Command::new("bun"), manifest_decision());
         let error = spawn.spawn_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
         let message = format!("{error:#}");
 

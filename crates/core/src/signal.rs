@@ -7,6 +7,9 @@ use crate::evidence::Evidence;
 use crate::provider::ProviderId;
 
 /// Something to look for in a scope directory.
+///
+/// A provider lists its signals in precedence order: among equally weighted
+/// evidence, the earlier signal decides.
 #[derive(Clone, Copy)]
 pub enum Signal {
     /// A file in the scope directory.
@@ -61,6 +64,48 @@ pub enum Declared {
     Named,
     /// A version or version constraint.
     Version(String),
+    /// A requirement the manifest asks the tool to enforce.
+    Constraint {
+        /// The version constraint, when the manifest pins one.
+        version: Option<String>,
+        /// What the manifest asks for when the requirement is not met.
+        on_fail: OnFail,
+    },
     /// The manifest names a different provider for the same job.
     Alternative(ProviderId),
+}
+
+impl Declared {
+    /// The version or constraint the declaration carries.
+    #[must_use]
+    pub fn version(&self) -> Option<&str> {
+        match self {
+            Self::Version(version) => Some(version),
+            Self::Constraint { version, .. } => version.as_deref(),
+            Self::Variant(_) | Self::Named | Self::Alternative(_) => None,
+        }
+    }
+}
+
+/// What a manifest asks for when a requirement it declares is not met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OnFail {
+    /// Proceed silently.
+    Ignore,
+    /// Proceed with a warning.
+    Warn,
+    /// Refuse.
+    Error,
+}
+
+impl OnFail {
+    /// The lowercase spelling reports print.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Ignore => "ignore",
+            Self::Warn => "warn",
+            Self::Error => "error",
+        }
+    }
 }

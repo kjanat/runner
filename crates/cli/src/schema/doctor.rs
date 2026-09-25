@@ -34,12 +34,12 @@ use serde::Serialize;
 use super::labels::{StructuredSource, structured_source_label};
 use crate::chain::FailurePolicy;
 use crate::commands::install::InstallPlan;
-use crate::commands::run::{resolve_python_pm, select_task_entry, source_depth, source_priority};
+use crate::commands::run::decision::{Observed, PmDecision};
+use crate::commands::run::{select_task_entry, source_depth, source_priority};
 use crate::resolver::{
     CollisionPolicy, FallbackPolicy, LockfilePolicy, MismatchPolicy, OutputGrouping,
-    ResolutionOverrides, ResolutionStep, Resolver, ScriptPolicy,
+    ResolutionOverrides, ScriptPolicy,
 };
-use crate::tool::node::detect_pm_from_manifest;
 use crate::types::{
     DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskRunner,
     TaskSource,
@@ -427,7 +427,8 @@ impl<'a> DoctorReport<'a> {
         overrides: &ResolutionOverrides,
         resolve_shims: bool,
     ) -> Self {
-        let node_pm = Resolver::new(ctx, overrides).resolve_node_pm();
+        let observed = Observed::observe(ctx, overrides);
+        let decisions = Decisions::from_observed(&observed, overrides);
         let plan = crate::commands::install::plan_install(ctx, overrides);
 
         // A collision is the install plan's verdict, not a detection fact, so
@@ -461,7 +462,7 @@ impl<'a> DoctorReport<'a> {
         let diagnostics = ctx
             .warnings
             .iter()
-            .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
+            .chain(decisions.warnings.iter())
             .map(diagnostic)
             .chain(plan_diagnostics)
             .chain(provider_diagnostics(ctx, overrides))
@@ -487,10 +488,10 @@ impl<'a> DoctorReport<'a> {
                     .map(super::project::WorkspaceInfo::from_workspace),
             },
             overrides: overrides_report(overrides),
-            ecosystems: ecosystems(ctx, overrides, &node_pm, resolve_shims),
+            ecosystems: ecosystems(ctx, &decisions, resolve_shims),
             sources: sources(ctx),
             tasks: tasks(ctx, overrides),
-            tools: tools(ctx, overrides, &node_pm),
+            tools: tools(ctx, &decisions),
             conflicts: conflicts(ctx, overrides, plan.as_ref().ok()),
             diagnostics,
             resolution: resolution_policy(),
@@ -772,10 +773,84 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
     }
 }
 
+/// The package-manager decisions the report describes, per dispatched source.
+pub(crate) struct Decisions {
+    node: Option<PmDecision>,
+    python: Option<PmDecision>,
+    manifest: Option<crate::commands::run::decision::ManifestDeclaration>,
+    error: Option<String>,
+    warnings: Vec<DetectionWarning>,
+}
+
+impl Decisions {
+    pub(crate) fn from_observed(
+        observed: &std::io::Result<Observed>,
+        overrides: &ResolutionOverrides,
+    ) -> Self {
+        let Ok(observed) = observed else {
+            return Self {
+                node: None,
+                python: None,
+                manifest: None,
+                error: observed.as_ref().err().map(ToString::to_string),
+                warnings: Vec::new(),
+            };
+        };
+        let node = observed.decision(runner_core::ProviderId::PackageJson);
+        let python = observed.decision(runner_core::ProviderId::Pyproject);
+        let warnings = [&node, &python]
+            .into_iter()
+            .flatten()
+            .flat_map(|decision| decision.warnings(&observed.project, overrides))
+            .collect();
+        Self {
+            manifest: observed.manifest_declaration(runner_core::ProviderId::PackageJson),
+            node,
+            python,
+            error: None,
+            warnings,
+        }
+    }
+
+    /// The decision for `ecosystem`'s scripts, when the ecosystem has one.
+    const fn for_ecosystem(&self, ecosystem: Ecosystem) -> Option<&PmDecision> {
+        match ecosystem {
+            Ecosystem::Node => self.node.as_ref(),
+            Ecosystem::Python => self.python.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether the project carries Node context: a dispatching package
+    /// manager, a detected Node package manager, or a `package.json` task.
+    pub(crate) fn has_node_context(&self, ctx: &ProjectContext) -> bool {
+        self.node.is_some()
+            || ctx
+                .package_managers
+                .iter()
+                .any(|pm| pm.ecosystem() == Ecosystem::Node)
+            || ctx
+                .tasks
+                .iter()
+                .any(|t| matches!(t.source, TaskSource::PackageJson))
+    }
+
+    fn has_python_context(&self, ctx: &ProjectContext) -> bool {
+        self.python.is_some()
+            || ctx
+                .package_managers
+                .iter()
+                .any(|pm| pm.ecosystem() == Ecosystem::Python)
+            || ctx
+                .tasks
+                .iter()
+                .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
+    }
+}
+
 fn ecosystems(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
+    decisions: &Decisions,
     resolve_shims: bool,
 ) -> Vec<EcosystemEntry> {
     let mut seen = Vec::new();
@@ -785,96 +860,32 @@ fn ecosystems(
             seen.push(eco);
         }
     }
-
-    // Seeding from detected `package_managers` alone misses every Node
-    // resolution that doesn't leave a lockfile-detected PM behind
-    // (manifest `packageManager` without a lockfile, PATH-probe, npm
-    // fallback, override). In those cases `tasks` still resolves
-    // `package.json` scripts via `npm run`, so dropping Node here would
-    // emit an internally inconsistent document. Same predicate gates the
-    // node runtime entry in `tools`.
-    if has_node_context(ctx, node_pm) && !seen.contains(&Ecosystem::Node) {
+    if decisions.has_node_context(ctx) && !seen.contains(&Ecosystem::Node) {
         seen.push(Ecosystem::Node);
     }
-    // Same reasoning as the Node patch-in above: a `[project.scripts]`
-    // task can resolve via `--pm`/`[pm].python`/detected PM without a
-    // lockfile-detected PM in `package_managers`.
-    if has_python_context(ctx, overrides) && !seen.contains(&Ecosystem::Python) {
+    if decisions.has_python_context(ctx) && !seen.contains(&Ecosystem::Python) {
         seen.push(Ecosystem::Python);
     }
 
     seen.into_iter()
         .map(|eco| match eco {
-            Ecosystem::Node => node_ecosystem(ctx, node_pm, resolve_shims),
-            Ecosystem::Python => python_ecosystem(ctx, overrides),
+            Ecosystem::Node => node_ecosystem(ctx, decisions, resolve_shims),
+            Ecosystem::Python => decided_ecosystem(
+                ctx,
+                Ecosystem::Python,
+                decisions,
+                detected_pm_signals(ctx, Ecosystem::Python),
+            ),
             other => single_pm_ecosystem(ctx, other),
         })
         .collect()
 }
 
-/// Whether the project carries Node context, considering resolver and
-/// task signals, not just lockfile-detected `package_managers`. A Node
-/// PM decision (`resolve_node_pm` Ok), a detected Node-ecosystem PM, or
-/// any `package.json`-sourced task each count. Gates Node inclusion in
-/// both [`ecosystems`] and [`tools`] so the two surfaces never
-/// disagree with what `tasks` resolves.
-pub(crate) fn has_node_context(
-    ctx: &ProjectContext,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-) -> bool {
-    node_pm.is_ok()
-        || ctx
-            .package_managers
-            .iter()
-            .any(|pm| pm.ecosystem() == Ecosystem::Node)
-        || ctx
-            .tasks
-            .iter()
-            .any(|t| matches!(t.source, TaskSource::PackageJson))
-}
-
-/// Whether the project carries Python context, considering resolver and
-/// task signals, not just lockfile-detected `package_managers`. Mirrors
-/// [`has_node_context`]; gates Python inclusion in both [`ecosystems`]
-/// and [`tools`] so neither surface disagrees with what `tasks`
-/// resolves.
-fn has_python_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
-    resolve_python_pm(ctx, overrides).is_ok_and(|resolved| resolved.is_some())
-        || ctx
-            .package_managers
-            .iter()
-            .any(|pm| pm.ecosystem() == Ecosystem::Python)
-        || ctx
-            .tasks
-            .iter()
-            .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
-}
-
 fn node_ecosystem(
     ctx: &ProjectContext,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
+    decisions: &Decisions,
     resolve_shims: bool,
 ) -> EcosystemEntry {
-    let (decision, selected) = match node_pm {
-        Ok(decision) => (
-            EcosystemDecision {
-                confidence: confidence_for_step(&decision.via),
-                reason: decision.describe(),
-                selected: Some(decision.pm.label()),
-            },
-            Some(decision.pm.label()),
-        ),
-        Err(err) => (
-            EcosystemDecision {
-                confidence: Confidence::None,
-                reason: format!("{err}"),
-                selected: None,
-            },
-            None,
-        ),
-    };
-
-    let manifest_decl = detect_pm_from_manifest(&ctx.root);
     let probes = super::project::probe_signals(&ctx.root, resolve_shims);
     // Shims are keyed by tool and carry the shim *manager* as data, not
     // as the field name. Volta is merely the first manager the prober
@@ -893,31 +904,29 @@ fn node_ecosystem(
         .collect::<serde_json::Map<_, _>>();
     let signals = serde_json::json!({
         "lockfile_pm": ctx.primary_node_pm().map(PackageManager::label),
-        "manifest_pm": manifest_decl.as_ref().map(|d| d.pm.label()),
+        "manifest_pm": decisions.manifest.as_ref().map(|d| d.pm.label()),
         "path_probe": probes.path_probe,
         "shims": shims,
     });
-
-    EcosystemEntry {
-        decision,
-        name: "node",
-        root: ctx.root.display().to_string(),
-        selected_package_manager: selected,
-        signals,
-    }
+    decided_ecosystem(ctx, Ecosystem::Node, decisions, signals)
 }
 
-fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> EcosystemEntry {
-    let resolved = resolve_python_pm(ctx, overrides);
-    let (decision, selected) = resolved.as_ref().ok().and_then(Option::as_ref).map_or_else(
+/// An ecosystem whose scripts are dispatched by a chosen package manager.
+fn decided_ecosystem(
+    ctx: &ProjectContext,
+    eco: Ecosystem,
+    decisions: &Decisions,
+    signals: serde_json::Value,
+) -> EcosystemEntry {
+    let (decision, selected) = decisions.for_ecosystem(eco).map_or_else(
         || {
             (
                 EcosystemDecision {
                     confidence: Confidence::None,
-                    reason: resolved.as_ref().err().map_or_else(
-                        || "no Python package manager detected".to_string(),
-                        ToString::to_string,
-                    ),
+                    reason: decisions
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| format!("no {} package manager detected", eco.label())),
                     selected: None,
                 },
                 None,
@@ -927,7 +936,11 @@ fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Ec
             let label = decision.pm.label();
             (
                 EcosystemDecision {
-                    confidence: Confidence::High,
+                    confidence: if decision.probed() {
+                        Confidence::Medium
+                    } else {
+                        Confidence::High
+                    },
                     reason: decision.describe(),
                     selected: Some(label),
                 },
@@ -938,10 +951,10 @@ fn python_ecosystem(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Ec
 
     EcosystemEntry {
         decision,
-        name: "python",
+        name: eco.label(),
         root: ctx.root.display().to_string(),
         selected_package_manager: selected,
-        signals: detected_pm_signals(ctx, Ecosystem::Python),
+        signals,
     }
 }
 
@@ -979,16 +992,6 @@ fn detected_pm_signals(ctx: &ProjectContext, eco: Ecosystem) -> serde_json::Valu
             .map(|pm| pm.label())
             .collect::<Vec<_>>(),
     })
-}
-
-const fn confidence_for_step(step: &ResolutionStep) -> Confidence {
-    match step {
-        ResolutionStep::Override(_)
-        | ResolutionStep::ManifestPackageManager
-        | ResolutionStep::ManifestDevEngines { .. }
-        | ResolutionStep::Observed { .. } => Confidence::High,
-        ResolutionStep::PathProbe { .. } => Confidence::Medium,
-    }
 }
 
 fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
@@ -1103,18 +1106,14 @@ const fn task_container_key(source: TaskSource) -> Option<&'static str> {
     }
 }
 
-fn tools(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-) -> Vec<Tool> {
+fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
     let path = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
 
     let mut tools = Vec::new();
 
-    if has_node_context(ctx, node_pm) {
+    if decisions.has_node_context(ctx) {
         tools.push(probe_tool(
             "node",
             DependencyKind::Runtime,
@@ -1129,7 +1128,7 @@ fn tools(
     // Same reasoning as the node runtime probe above: a resolved
     // `uv run <task>` must never reference an interpreter the tools
     // surface claims absent.
-    if has_python_context(ctx, overrides) {
+    if decisions.has_python_context(ctx) {
         use crate::tool::python::PYTHON_BIN;
 
         tools.push(probe_tool(

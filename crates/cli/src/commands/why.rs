@@ -10,12 +10,13 @@ use anyhow::Result;
 use colored::Colorize;
 use serde::Serialize;
 
+use crate::commands::run::core::Prepared;
+use crate::commands::run::decision::PmDecision as Decision;
 use crate::commands::run::{
-    ResolvedPythonPm, ScopeQuery, TokenLookup, allowed_runner_sources, ambiguous_members,
-    lookup_token, qualified_miss_error, resolve_python_pm, root_runner, source_depth,
-    source_priority,
+    ScopeQuery, TokenLookup, allowed_runner_sources, ambiguous_members, lookup_token,
+    qualified_miss_error, root_runner, source_depth, source_priority,
 };
-use crate::resolver::{ResolutionOverrides, ResolveError, ResolvedPm};
+use crate::resolver::ResolutionOverrides;
 use crate::schema::labels;
 use crate::types::{JsRuntime, ProjectContext, Task, TaskSource, WorkspaceMember};
 
@@ -23,9 +24,7 @@ use crate::types::{JsRuntime, ProjectContext, Task, TaskSource, WorkspaceMember}
 ///
 /// # Errors
 ///
-/// Propagates `Resolver::resolve_node_pm` errors when a `package.json`
-/// candidate would have been selected and the fallback policy is
-/// `error`.
+/// Propagates observation failures and refusals other than a miss.
 pub(crate) fn why(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -94,7 +93,7 @@ pub(crate) fn why(
         Err(error) => return Err(error.into()),
     };
 
-    let pm_decision = pm_decision_for_selected(ctx, overrides, selected, prepared.node);
+    let pm_decision = pm_decision_for_selected(&prepared, overrides, selected);
 
     if !json && print_cascade_result(&outcome, task, root.is_some(), ambiguous.is_some()) {
         return Ok(());
@@ -148,10 +147,8 @@ fn print_root(task: &str, runner: crate::types::TaskRunner) {
     );
 }
 
-enum PmDecision {
-    Node(Result<ResolvedPm, ResolveError>),
-    Python(Result<ResolvedPythonPm, String>),
-}
+/// The package-manager decision for the selected task, or why there is none.
+type PmDecision = Result<(Decision, Vec<WhyWarning>), String>;
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(untagged)]
@@ -285,59 +282,60 @@ fn lifecycle_note(ctx: &ProjectContext, task: &str) -> Option<String> {
 }
 
 fn pm_decision_for_selected(
-    ctx: &ProjectContext,
+    prepared: &Prepared,
     overrides: &ResolutionOverrides,
     selected: Option<&Task>,
-    node: Result<ResolvedPm, ResolveError>,
 ) -> Option<PmDecision> {
-    match selected.map(|task| task.source) {
+    let source = selected.map(|task| task.source)?;
+    let (provider, missing) = match source {
         // A forced runtime that dispatches the script reads it through its own
         // runner, so `commands::run` never resolves a node PM; reporting one here
         // would describe a decision dispatch does not make.
-        Some(TaskSource::PackageJson)
-            if runtime_supersedes_pm(overrides, TaskSource::PackageJson) =>
-        {
-            None
-        }
-        Some(TaskSource::PackageJson) => Some(PmDecision::Node(node)),
-        Some(TaskSource::PyprojectScripts) => Some(PmDecision::Python(
-            resolve_python_pm(ctx, overrides)
-                .map_err(|error| error.to_string())
-                .and_then(|resolved| {
-                    resolved.ok_or_else(|| {
-                        "no Python package manager detected to run pyproject scripts; install uv, \
-                         poetry, or pipenv"
-                            .to_string()
-                    })
-                }),
-        )),
-        _ => None,
-    }
-}
-
-fn pm_resolution(decision: &PmDecision) -> PmResolution {
-    match decision {
-        PmDecision::Node(Ok(decision)) => PmResolution::Resolved {
-            pm: decision.pm.label(),
-            via: decision.describe(),
-            warnings: decision
-                .warnings
+        TaskSource::PackageJson if runtime_supersedes_pm(overrides, source) => return None,
+        TaskSource::PackageJson => (
+            runner_core::ProviderId::PackageJson,
+            "no node package manager detected to run package.json scripts; pin one with `--pm \
+             <name>`, set `RUNNER_PM=<name>`, add it to runner.toml, or install a supported PM",
+        ),
+        TaskSource::PyprojectScripts => (
+            runner_core::ProviderId::Pyproject,
+            "no Python package manager detected to run pyproject scripts; install uv, poetry, or \
+             pipenv",
+        ),
+        _ => return None,
+    };
+    Some(prepared.decision(provider).map_or_else(
+        || Err(missing.to_owned()),
+        |decision| {
+            let warnings = decision
+                .warnings(&prepared.project, overrides)
                 .iter()
                 .map(|warning| WhyWarning {
                     source: warning.source(),
                     detail: warning.detail(),
                 })
-                .collect(),
+                .collect();
+            Ok((decision, warnings))
         },
-        PmDecision::Node(Err(err)) => PmResolution::Error {
-            error: format!("{err}"),
-        },
-        PmDecision::Python(Ok(decision)) => PmResolution::Resolved {
+    ))
+}
+
+fn pm_resolution(decision: &PmDecision) -> PmResolution {
+    match decision {
+        Ok((decision, warnings)) => PmResolution::Resolved {
             pm: decision.pm.label(),
             via: decision.describe(),
-            warnings: Vec::new(),
+            warnings: warnings
+                .iter()
+                .map(|warning| WhyWarning {
+                    source: warning.source,
+                    detail: warning.detail.clone(),
+                })
+                .collect(),
         },
-        PmDecision::Python(Err(err)) => PmResolution::Error { error: err.clone() },
+        Err(error) => PmResolution::Error {
+            error: error.clone(),
+        },
     }
 }
 
@@ -929,17 +927,15 @@ fn print_human(
         println!();
         println!("{}", "PM resolution".bold());
         match res {
-            PmDecision::Node(Ok(decision)) => {
+            Ok((decision, warnings)) => {
                 println!("  {}", decision.describe());
-                for w in &decision.warnings {
-                    println!("  {} {w}", "warn:".yellow().bold());
+                for w in warnings {
+                    println!("  {} {}: {}", "warn:".yellow().bold(), w.source, w.detail);
                 }
             }
-            PmDecision::Node(Err(err)) => {
+            Err(err) => {
                 println!("  {} {err}", "error:".red().bold());
             }
-            PmDecision::Python(Ok(decision)) => println!("  {}", decision.describe()),
-            PmDecision::Python(Err(err)) => println!("  {} {err}", "error:".red().bold()),
         }
     }
 
@@ -976,7 +972,6 @@ fn print_human(
 
 #[cfg(test)]
 mod tests {
-    use crate::resolver::Resolver;
 
     use super::{PmDecision, WhyReport, build_report, decision_report, pm_decision_for_selected};
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
@@ -1097,21 +1092,17 @@ mod tests {
         )
         .expect("PM override should parse");
         let selected = ctx.tasks.first();
-        let pm_decision = pm_decision_for_selected(
-            &ctx,
-            &overrides,
-            selected,
-            Resolver::new(&ctx, &overrides).resolve_node_pm(),
-        )
-        .expect("pyproject task should resolve PM diagnostics");
+        let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "greenpy")
+            .expect("observation should succeed");
+        let pm_decision = pm_decision_for_selected(&prepared, &overrides, selected)
+            .expect("pyproject task should resolve PM diagnostics");
 
         match pm_decision {
-            PmDecision::Python(Ok(decision)) => {
+            Ok((decision, _)) => {
                 assert_eq!(decision.pm, PackageManager::Uv);
                 assert!(decision.describe().contains("--pm"));
             }
-            PmDecision::Python(Err(err)) => panic!("override should resolve: {err}"),
-            PmDecision::Node(_) => panic!("pyproject script should use Python PM resolver"),
+            Err(err) => panic!("override should resolve: {err}"),
         }
     }
 
@@ -1276,13 +1267,12 @@ mod tests {
         let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
         ctx.package_managers.push(PackageManager::Uv);
         let selected = ctx.tasks.first();
-        let pm_decision = pm_decision_for_selected(
-            &ctx,
-            &ResolutionOverrides::default(),
-            selected,
-            Resolver::new(&ctx, &ResolutionOverrides::default()).resolve_node_pm(),
-        )
-        .expect("pyproject task should resolve PM diagnostics");
+        let prepared =
+            crate::commands::run::core::prepare(&ctx, &ResolutionOverrides::default(), "greenpy")
+                .expect("observation should succeed");
+        let pm_decision =
+            pm_decision_for_selected(&prepared, &ResolutionOverrides::default(), selected)
+                .expect("pyproject task should resolve PM diagnostics");
         let candidates = vec![&ctx.tasks[0]];
 
         let report = report(
@@ -1323,12 +1313,9 @@ mod tests {
         let overrides = runtime_overrides("bun");
         let selected = ctx.tasks.first();
         // A forced runtime supersedes PM resolution, exactly as dispatch does.
-        let pm_decision = pm_decision_for_selected(
-            &ctx,
-            &overrides,
-            selected,
-            Resolver::new(&ctx, &overrides).resolve_node_pm(),
-        );
+        let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "build")
+            .expect("observation should succeed");
+        let pm_decision = pm_decision_for_selected(&prepared, &overrides, selected);
         assert!(pm_decision.is_none(), "runtime must suppress PM resolution");
 
         let report = report(

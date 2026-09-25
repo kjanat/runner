@@ -2,9 +2,22 @@
 
 [package]
 name                   = "runner-schemes"
+version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-publish                = false
+description            = "Version grammars for the runner task runner"
+readme                 = "../../README.md"
+repository.workspace   = true
+license.workspace      = true
+keywords               = ["automation", "build-tool", "cli", "task-runner"]
+categories             = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+semver = "1"
+
+[dependencies.runner-core]
+path    = "../core"
+version = "0.26.2"
 
 [lints]
 workspace = true

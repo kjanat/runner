@@ -29,6 +29,7 @@
 use anyhow::Result;
 
 pub(crate) mod core;
+pub(crate) mod decision;
 mod dispatch;
 mod local_dep;
 mod qualify;
@@ -42,8 +43,6 @@ pub(crate) use qualify::{
 pub(crate) use select::{
     ambiguous_members, narrow_scope, select_task_entry, source_depth, source_priority,
 };
-
-pub(crate) use dispatch::{ResolvedPythonPm, resolve_python_pm};
 
 pub(crate) use runtime::{
     honors as runtime_honors, lifecycle_scripts as runtime_lifecycle_scripts,

@@ -284,19 +284,51 @@ pub fn plan(
         )));
     }
     if let Op::Run { task, .. } = op {
-        for choice in policy.pm.0.values() {
-            let provider = registry.by_id(choice.id);
-            if provider
+        let dispatches = |provider: &Provider| {
+            provider
                 .caps
                 .run_task
                 .is_some_and(|cap| cap.sources.contains(&task.source))
-                && project.present_in(choice.id, &task.scope).is_none()
-            {
+        };
+        let needs_manager = registry.of_kind(Kind::PACKAGE_MANAGER).any(dispatches);
+        for choice in policy.pm.0.values() {
+            let provider = registry.by_id(choice.id);
+            if dispatches(provider) && project.present_in(choice.id, &task.scope).is_none() {
                 return Err(Refusal::Invalid(format!(
                     "no evidence for package manager {}",
                     provider.label
                 )));
             }
+            if needs_manager
+                && !dispatches(provider)
+                && matches!(choice.from, Layer::Cli | Layer::Env)
+            {
+                return Err(Refusal::NoCapability {
+                    provider: choice.id,
+                    op: op.name(),
+                });
+            }
+        }
+        let chosen = policy
+            .pm
+            .0
+            .values()
+            .any(|choice| dispatches(registry.by_id(choice.id)));
+        if policy.strict
+            && !chosen
+            && let Some(disagreement) = project.disagreements.iter().find(|d| {
+                d.scope == task.scope
+                    && [d.declared, d.locked]
+                        .iter()
+                        .any(|id| dispatches(registry.by_id(*id)))
+            })
+        {
+            return Err(Refusal::Ambiguous {
+                candidates: vec![
+                    (disagreement.declared, disagreement.scope.clone()),
+                    (disagreement.locked, disagreement.scope.clone()),
+                ],
+            });
         }
     }
     let mut last = None;

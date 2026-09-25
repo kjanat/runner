@@ -1,48 +1,8 @@
-//! `PATH` probe, step 7 of the resolution chain.
-//!
-//! When no manifest, lockfile, or override signal points the resolver at a
-//! package manager, this module walks `$PATH` (and `PATHEXT` on Windows)
-//! to discover what is actually installed. The Node ecosystem returns the
-//! first match in canonical order, `npm > bun > pnpm > yarn`: a bare
-//! `package.json` is an npm project, and an alternate manager is picked
-//! only when npm itself is missing from `$PATH`.
-//!
-//! ## Caching
-//!
-//! [`probe`] memoizes per-PM in a static `OnceLock` array, giving
-//! exactly-once probing across concurrent callers without holding a lock
-//! during the PATH walk. The pure-function variant [`probe_in`] stays
-//! cache-free so tests can exercise the search against a controlled
-//! directory without racing or polluting the shared cache.
+//! `PATH` probing shared by the doctor's signal report.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use crate::types::PackageManager;
-
-/// Process-wide cache of [`probe`] lookups, one slot per
-/// [`PackageManager`] variant. `OnceLock` initialises lazily and
-/// guarantees the initialiser runs at most once even when called
-/// concurrently, exactly the semantics we want here.
-static CACHE: [OnceLock<Option<PathBuf>>; PackageManager::COUNT] =
-    [const { OnceLock::new() }; PackageManager::COUNT];
-
-/// Probe `$PATH` for `pm`. Returns the absolute path of the first
-/// matching executable, or `None` if nothing is found.
-///
-/// On Windows, also walks `PATHEXT` so that `cmd`/`bat` shims are found,
-/// the same approach used by [`crate::tool::program::command`].
-///
-/// Result is memoized in [`CACHE`] for the lifetime of the process.
-pub(crate) fn probe(pm: PackageManager) -> Option<PathBuf> {
-    CACHE[pm.index()]
-        .get_or_init(|| {
-            std::env::var_os("PATH").and_then(|path| {
-                probe_in(pm.label(), &path, std::env::var_os("PATHEXT").as_deref())
-            })
-        })
-        .clone()
-}
 
 /// [`runner_core::probe_in`], the search every `PATH` probe shares.
 pub(crate) fn probe_in(
@@ -163,20 +123,6 @@ mod tests {
         // `nested/pnpm` is not a bare name; CreateProcess / execve handle
         // those directly, so the probe declines.
         assert!(probe_in("nested/pnpm", &OsString::from(dir.path()), None).is_none());
-    }
-
-    #[test]
-    fn probe_returns_consistent_value_across_calls() {
-        // Asserts the caller-visible property, repeated `probe(pm)`
-        // calls return the same cached value, rather than poking at
-        // cache internals, which other tests in this process may have
-        // already populated.
-        use super::probe;
-        use crate::types::PackageManager;
-
-        let first = probe(PackageManager::Composer);
-        let second = probe(PackageManager::Composer);
-        assert_eq!(first, second, "repeat probes must observe same value");
     }
 
     #[test]

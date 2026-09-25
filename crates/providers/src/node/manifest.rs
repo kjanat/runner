@@ -1,6 +1,7 @@
-//! `package.json` fields that name a package manager.
+//! `package.json` fields that name a package manager, and the check they ask for.
 
-use runner_core::{Declared, ProviderId};
+use runner_core::{Check, Declared, OnFail, Op, Present, ProviderId, Refusal, Warning, check};
+use runner_schemes::NodeSemver;
 use serde_json::Value;
 
 const NAMED: &[(&str, ProviderId)] = &[
@@ -23,14 +24,13 @@ fn declaration(name: &str, version: Option<&str>, own: ProviderId) -> Option<Dec
     if named != own {
         return Some(Declared::Alternative(named));
     }
-    Some(
-        version
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map_or(Declared::Named, |version| {
-                Declared::Version(version.to_owned())
-            }),
-    )
+    Some(trimmed(version).map_or(Declared::Named, |version| {
+        Declared::Version(version.to_owned())
+    }))
+}
+
+fn trimmed(version: Option<&str>) -> Option<&str> {
+    version.map(str::trim).filter(|v| !v.is_empty())
 }
 
 /// Read the legacy `packageManager` string, `name@version`, for `own`.
@@ -46,27 +46,135 @@ pub fn package_manager(value: &Value, own: ProviderId) -> Option<Declared> {
     declaration(name, version, own)
 }
 
-/// Read the `devEngines.packageManager` object, `{ name, version }`, for `own`.
+/// Read `devEngines.packageManager`, one object or a list of them, for `own`.
+///
+/// The last entry naming a known package manager wins. Its `onFail` defaults
+/// to `error` when it is the last such entry and `ignore` otherwise, as the
+/// `OpenJS` proposal specifies; `download` reads as `warn`.
 #[must_use]
 pub fn dev_engines(value: &Value, own: ProviderId) -> Option<Declared> {
-    let name = value.get("name")?.as_str()?;
-    let version = value.get("version").and_then(Value::as_str);
-    declaration(name, version, own)
+    let entries: Vec<&Value> = match value {
+        Value::Array(entries) => entries.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => return None,
+    };
+    let known: Vec<(&Value, ProviderId)> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            entry
+                .get("name")
+                .and_then(Value::as_str)
+                .and_then(provider_named)
+                .map(|id| (entry, id))
+        })
+        .collect();
+    let (entry, named) = *known.last()?;
+    if named != own {
+        return Some(Declared::Alternative(named));
+    }
+    let on_fail = match entry.get("onFail").and_then(Value::as_str) {
+        Some("ignore") => OnFail::Ignore,
+        Some("warn" | "download") => OnFail::Warn,
+        _ => OnFail::Error,
+    };
+    Some(Declared::Constraint {
+        version: trimmed(entry.get("version").and_then(Value::as_str)).map(str::to_owned),
+        on_fail,
+    })
 }
 
 /// Read `engines.node`.
 #[must_use]
 pub fn engines_node(value: &Value) -> Option<Declared> {
-    value
-        .as_str()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(|v| Declared::Version(v.to_owned()))
+    trimmed(value.as_str()).map(|v| Declared::Version(v.to_owned()))
+}
+
+/// Check the requirement `devEngines.packageManager` declares for this provider.
+///
+/// # Errors
+/// Refuses when the manifest asks for `error` and the executable is absent or
+/// its version violates the constraint.
+pub fn before_plan(
+    present: &Present,
+    _: &Op<'_>,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Refusal> {
+    let Some((version, on_fail)) = present.because.iter().find_map(|e| match &e.declared {
+        Some(Declared::Constraint { version, on_fail }) => Some((version.as_deref(), *on_fail)),
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    if on_fail == OnFail::Ignore {
+        return Ok(());
+    }
+    let provider = crate::REGISTRY.by_id(present.provider);
+    let program = provider.program.unwrap_or(provider.label);
+    if runner_core::probe_with(program, &present.bin_dirs).is_none() {
+        return outcome(
+            on_fail,
+            provider.id,
+            format!(
+                "devEngines.packageManager declares {} but it was not found on PATH",
+                provider.label
+            ),
+            warnings,
+        );
+    }
+    let Some(declared) = version else {
+        return Ok(());
+    };
+    let found = present.version.clone().map_or_else(
+        || crate::version::read(present).map_err(|warning| warning.message),
+        Ok,
+    );
+    let checked = found.map_or_else(
+        |reason| Check::Unknown { reason },
+        |found| check::<NodeSemver>(declared, &found),
+    );
+    match checked {
+        Check::Satisfied => Ok(()),
+        Check::Violated { declared, found } => outcome(
+            on_fail,
+            provider.id,
+            format!(
+                "devEngines.packageManager requires {} {declared} but the installed version is \
+                 {found}",
+                provider.label
+            ),
+            warnings,
+        ),
+        Check::Unknown { reason } => {
+            warnings.push(Warning::about(
+                provider.id,
+                format!(
+                    "cannot evaluate {} version constraint {declared}: {reason}",
+                    provider.label
+                ),
+            ));
+            Ok(())
+        }
+    }
+}
+
+fn outcome(
+    on_fail: OnFail,
+    provider: ProviderId,
+    message: String,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Refusal> {
+    match on_fail {
+        OnFail::Error => Err(Refusal::Invalid(format!("{message} (onFail=error)"))),
+        OnFail::Warn | OnFail::Ignore => {
+            warnings.push(Warning::about(provider, message));
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use runner_core::{Declared, ProviderId};
+    use runner_core::{Declared, OnFail, ProviderId};
     use serde_json::json;
 
     use super::{dev_engines, package_manager};
@@ -94,7 +202,10 @@ mod tests {
         let value = json!({ "name": "yarn", "version": "4", "onFail": "warn" });
         assert_eq!(
             dev_engines(&value, ProviderId::Yarn),
-            Some(Declared::Version("4".to_owned()))
+            Some(Declared::Constraint {
+                version: Some("4".to_owned()),
+                on_fail: OnFail::Warn,
+            })
         );
         assert_eq!(
             dev_engines(&value, ProviderId::Npm),
@@ -104,5 +215,59 @@ mod tests {
             dev_engines(&json!({ "version": "4" }), ProviderId::Yarn),
             None
         );
+    }
+
+    #[test]
+    fn a_single_entry_defaults_to_error_and_download_reads_as_warn() {
+        assert_eq!(
+            dev_engines(&json!({ "name": "pnpm" }), ProviderId::Pnpm),
+            Some(Declared::Constraint {
+                version: None,
+                on_fail: OnFail::Error,
+            })
+        );
+        assert_eq!(
+            dev_engines(
+                &json!({ "name": "pnpm", "onFail": "download" }),
+                ProviderId::Pnpm
+            ),
+            Some(Declared::Constraint {
+                version: None,
+                on_fail: OnFail::Warn,
+            })
+        );
+    }
+
+    #[test]
+    fn the_last_known_entry_of_a_list_wins_with_its_own_on_fail() {
+        let value = json!([
+            { "name": "pnpm", "version": ">=9" },
+            { "name": "yarn", "onFail": "warn" },
+            { "name": "cargo" }
+        ]);
+        assert_eq!(
+            dev_engines(&value, ProviderId::Yarn),
+            Some(Declared::Constraint {
+                version: None,
+                on_fail: OnFail::Warn,
+            })
+        );
+        assert_eq!(
+            dev_engines(&value, ProviderId::Pnpm),
+            Some(Declared::Alternative(ProviderId::Yarn))
+        );
+        let trailing_unknown = json!([{ "name": "pnpm" }, { "name": "cargo" }]);
+        assert_eq!(
+            dev_engines(&trailing_unknown, ProviderId::Pnpm),
+            Some(Declared::Constraint {
+                version: None,
+                on_fail: OnFail::Error,
+            })
+        );
+        assert_eq!(
+            dev_engines(&json!([{ "name": "cargo" }]), ProviderId::Npm),
+            None
+        );
+        assert_eq!(dev_engines(&json!("pnpm@9"), ProviderId::Pnpm), None);
     }
 }

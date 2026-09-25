@@ -1080,3 +1080,221 @@ fn a_chosen_runtime_replaces_a_js_shebang_and_leaves_a_shell_script_alone() {
         assert_eq!(plan.argv[0], program, "{shebang}");
     }
 }
+
+#[cfg(unix)]
+fn executable(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn dev_engines_constraints_are_enforced_by_the_manifest_hook() {
+    use runner_core::{Declared, OnFail};
+    let fixture = Fixture::new();
+    let bin = fixture.0.root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    executable(&bin.join("pnpm"));
+    let task = named_task(ProviderId::PackageJson, "build");
+    let op = Op::Run {
+        task: &task,
+        args: &[],
+    };
+    let declared = |version: &str, on_fail| {
+        let mut present = fixture.present(ProviderId::Pnpm);
+        present.version = Some("8.15.0".into());
+        present.bin_dirs = vec![bin.clone()];
+        present.because[0].weight = Weight::Declared;
+        present.because[0].declared = Some(Declared::Constraint {
+            version: Some(version.into()),
+            on_fail,
+        });
+        present
+    };
+    let plan_for = |present: &Present| {
+        let project = Project {
+            present: vec![present.clone()],
+            ..Project::default()
+        };
+        plan_with(
+            &fixture.0,
+            &project,
+            &Policy::default(),
+            present,
+            &op,
+            &REGISTRY,
+        )
+    };
+
+    let refused = plan_for(&declared(">=9.0.0", OnFail::Error)).unwrap_err();
+    let Refusal::Invalid(message) = refused else {
+        panic!("{refused:?}");
+    };
+    for needle in ["pnpm", ">=9.0.0", "8.15.0", "onFail=error"] {
+        assert!(message.contains(needle), "{message}");
+    }
+
+    let warned = plan_for(&declared(">=9.0.0", OnFail::Warn)).unwrap();
+    assert_eq!(warned.warnings.len(), 1, "{:?}", warned.warnings);
+    assert!(warned.warnings[0].message.contains("8.15.0"));
+
+    let ignored = plan_for(&declared(">=9.0.0", OnFail::Ignore)).unwrap();
+    assert!(ignored.warnings.is_empty());
+
+    let satisfied = plan_for(&declared("^8.0.0", OnFail::Error)).unwrap();
+    assert!(satisfied.warnings.is_empty());
+
+    let unknown = plan_for(&declared("not-a-valid-range", OnFail::Error)).unwrap();
+    assert_eq!(unknown.warnings.len(), 1, "{:?}", unknown.warnings);
+    let message = &unknown.warnings[0].message;
+    assert!(
+        message.contains("cannot evaluate") && message.contains("not-a-valid-range"),
+        "{message}"
+    );
+
+    let mut missing = declared(">=9.0.0", OnFail::Error);
+    missing.bin_dirs = vec![];
+    if runner_core::probe_with("pnpm", &[]).is_none() {
+        let refused = plan_for(&missing).unwrap_err();
+        assert!(
+            refused.to_string().contains("not found on PATH"),
+            "{refused}"
+        );
+    }
+}
+
+#[test]
+fn a_manifest_that_disagrees_with_the_lockfile_is_recorded_and_refused_when_strict() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("package.json"),
+        r#"{"packageManager":"yarn@4.0.0","scripts":{"build":"echo"}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.0.root.join("pnpm-lock.yaml"),
+        "lockfileVersion: 9\n",
+    )
+    .unwrap();
+    let task = named_task(ProviderId::PackageJson, "build");
+    let op = Op::Run {
+        task: &task,
+        args: &[],
+    };
+    for strict in [false, true] {
+        let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
+        let policy = Policy {
+            strict,
+            ..Policy::default()
+        };
+        let project =
+            runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY)
+                .unwrap();
+        assert_eq!(
+            project.disagreements.len(),
+            1,
+            "{:?}",
+            project.disagreements
+        );
+        let disagreement = &project.disagreements[0];
+        assert_eq!(disagreement.declared, ProviderId::Yarn);
+        assert_eq!(disagreement.locked, ProviderId::Pnpm);
+        assert!(disagreement.manifest.ends_with("package.json"));
+        assert!(disagreement.lockfile.ends_with("pnpm-lock.yaml"));
+        let chosen = project
+            .for_source(ProviderId::PackageJson, &Scope::Root, &policy, &REGISTRY)
+            .map(|present| present.provider);
+        assert_eq!(chosen, Some(ProviderId::Yarn));
+        let outcome = runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY);
+        let ambiguous = matches!(outcome, Err(Refusal::Ambiguous { .. }));
+        assert_eq!(ambiguous, strict, "strict: {strict}: {outcome:?}");
+    }
+    let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
+    let mut policy = Policy {
+        strict: true,
+        ..Policy::default()
+    };
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Node,
+        runner_core::Choice {
+            id: ProviderId::Pnpm,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let project =
+        runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY).unwrap();
+    let outcome = runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY);
+    assert!(
+        !matches!(outcome, Err(Refusal::Ambiguous { .. })),
+        "a chosen manager settles the disagreement: {outcome:?}"
+    );
+}
+
+#[test]
+fn an_invocation_package_manager_that_cannot_dispatch_the_source_is_refused() {
+    let fixture = Fixture::new();
+    let task = named_task(ProviderId::PackageJson, "build");
+    let op = Op::Run {
+        task: &task,
+        args: &[],
+    };
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Cargo),
+        ],
+        ..Project::default()
+    };
+    let refuses = |from: runner_core::Layer| {
+        let mut policy = Policy::default();
+        policy.pm.0.insert(
+            runner_core::Ecosystem::Rust,
+            runner_core::Choice {
+                id: ProviderId::Cargo,
+                from,
+            },
+        );
+        matches!(
+            runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY),
+            Err(Refusal::NoCapability {
+                provider: ProviderId::Cargo,
+                ..
+            })
+        )
+    };
+    assert!(refuses(runner_core::Layer::Cli));
+    assert!(refuses(runner_core::Layer::Env));
+    assert!(!refuses(runner_core::Layer::ConfigFile(
+        "runner.toml".into()
+    )));
+    let make = named_task(ProviderId::Make, "build");
+    let mut policy = Policy::default();
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Rust,
+        runner_core::Choice {
+            id: ProviderId::Cargo,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let outcome = runner_core::plan(
+        &fixture.0,
+        &Project {
+            present: vec![
+                fixture.present(ProviderId::Make),
+                fixture.present(ProviderId::Cargo),
+            ],
+            ..Project::default()
+        },
+        &policy,
+        &Op::Run {
+            task: &make,
+            args: &[],
+        },
+        &REGISTRY,
+    );
+    assert!(
+        !matches!(outcome, Err(Refusal::NoCapability { .. })),
+        "a source no manager dispatches ignores the choice: {outcome:?}"
+    );
+}

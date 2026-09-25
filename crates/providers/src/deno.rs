@@ -96,5 +96,8 @@ pub const PROVIDER: Provider = Provider {
     },
     tasks: Some(crate::extract::scripts::deno_tasks),
     version: None,
-    hooks: Hooks::NONE,
+    hooks: Hooks {
+        before_plan: Some(manifest::before_plan),
+        ..Hooks::NONE
+    },
 };
