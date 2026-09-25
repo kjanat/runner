@@ -694,7 +694,12 @@ impl<'a> Shaping<'_, 'a> {
                 cap.argv
             }
             Discovery::Detect(detect) => {
-                detect(&scope_dir(self.tree, &self.present.scope))?.ok_or_else(|| self.refuse())?
+                let scope = scope_dir(self.tree, &self.present.scope);
+                let mut dirs: Vec<&Path> = vec![&self.tree.cwd];
+                if scope != self.tree.cwd {
+                    dirs.push(&scope);
+                }
+                detect(&dirs)?.ok_or_else(|| self.refuse())?
             }
         };
         fill.request.args = args;
@@ -849,13 +854,17 @@ fn task_env_keys(op: &Op<'_>, provider: &Provider, registry: &Registry) -> Vec<S
 }
 
 /// Refuse a package manager whose manifest and lockfile disagree in the
-/// scope it was taken from, unless policy chose it or lets the manifest win.
+/// scope it was taken from, unless policy chose it, lets the manifest win,
+/// or chose it as the runtime for a runtime op.
 fn refuse_mismatch(
     project: &Project,
     policy: &Policy,
     present: &Present,
     registry: &Registry,
+    op: &Op<'_>,
+    chosen_as_runtime: bool,
 ) -> Result<(), Refusal> {
+    let runtime_op = matches!(op, Op::RunFile { .. } | Op::Run { .. });
     if policy.on_mismatch != crate::policy::OnMismatch::Refuse
         || !registry
             .by_id(present.provider)
@@ -866,6 +875,7 @@ fn refuse_mismatch(
             .0
             .values()
             .any(|choice| choice.id == present.provider)
+        || (chosen_as_runtime && runtime_op)
     {
         return Ok(());
     }
@@ -924,9 +934,16 @@ pub fn plan_with(
         op: *op,
     };
     let shape = shaping.shape(&mut fill)?;
-    refuse_mismatch(project, policy, present, registry)?;
+    refuse_mismatch(
+        project,
+        policy,
+        present,
+        registry,
+        op,
+        shaping.chosen_as_runtime,
+    )?;
     if let Some(hook) = provider.hooks.before_plan {
-        hook(present, op, policy, &mut warnings)?;
+        hook(tree, present, op, policy, &mut warnings)?;
     }
     let Fill { mut request, files } = fill;
     request.files = &files;
@@ -1003,6 +1020,26 @@ pub fn plan_found(
     plan_argv(tree, project, policy, found, registry, words)
 }
 
+/// A plan for a binary a rung found on a search path, which runs in the
+/// scope it was invoked from.
+///
+/// # Errors
+/// Refuses forbidden project environment variables.
+pub fn plan_bin(
+    tree: &Tree,
+    project: &Project,
+    policy: &Policy,
+    found: PathBuf,
+    registry: &Registry,
+    args: &[String],
+) -> Result<Plan, Refusal> {
+    let mut words = Vec::with_capacity(args.len() + 1);
+    words.push(OsString::from(&found));
+    words.extend(args.iter().map(OsString::from));
+    let scope = scope_at(tree, &tree.cwd);
+    plan_argv_in(tree, project, policy, found, scope, registry, words)
+}
+
 /// A plan for an argv a rung built around a file it found.
 ///
 /// # Errors
@@ -1021,6 +1058,18 @@ pub fn plan_argv(
         tree.cwd.as_path()
     };
     let scope = scope_at(tree, anchor);
+    plan_argv_in(tree, project, policy, found, scope, registry, argv)
+}
+
+fn plan_argv_in(
+    tree: &Tree,
+    project: &Project,
+    policy: &Policy,
+    found: PathBuf,
+    scope: Scope,
+    registry: &Registry,
+    argv: Vec<OsString>,
+) -> Result<Plan, Refusal> {
     let evidence = Evidence {
         provider: None,
         signal: None,
@@ -1311,7 +1360,7 @@ fn rung_dispatch(
     args: &[String],
 ) -> Result<Option<Dispatch>, Refusal> {
     let found = |path: PathBuf| {
-        plan_found(
+        plan_bin(
             cascade.tree,
             cascade.project,
             cascade.policy,
@@ -1355,7 +1404,10 @@ fn rung_dispatch(
             Some(dispatched(file_plan(cascade, &path, args)?))
         }
         Need::InstalledDep => match cascade.dep.map(|ask| ask(token)).transpose()?.flatten() {
-            Some(path) => Some(dispatched(file_plan(cascade, &path, args)?)),
+            Some(path) => Some(dispatched(in_invocation_scope(
+                cascade,
+                file_plan(cascade, &path, args)?,
+            ))),
             None => None,
         },
         Need::Cap(Cap::Test) => test_rung(cascade, token, args)?,
@@ -1375,6 +1427,17 @@ fn rung_dispatch(
             exec_plan(cascade, rung, token, args)?.map(dispatched)
         }
     })
+}
+
+/// A dependency's binary runs where it was invoked from, whatever directory
+/// hoisting installed it in.
+fn in_invocation_scope(cascade: &Cascade<'_>, mut made: Plan) -> Plan {
+    let scope = scope_at(cascade.tree, &cascade.tree.cwd);
+    if made.trust == Trust::Project {
+        made.path_prepend = bin_dirs(cascade.tree, cascade.project, &scope, cascade.registry);
+    }
+    made.scope = scope;
+    made
 }
 
 /// Refuse to look past the task rung while a visible task source is unreadable.

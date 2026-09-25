@@ -113,7 +113,13 @@ fn look(
             .into_iter()
             .collect(),
         Signal::ManifestField { files, path, parse } => manifest_field(dir, files, path)?
-            .and_then(|(at, value)| parse(&value).map(|declared| (at, declared)))
+            .and_then(|(at, manifest, value)| {
+                parse(&crate::signal::Field {
+                    value: &value,
+                    manifest: &manifest,
+                })
+                .map(|declared| (at, declared))
+            })
             .map(|(at, declared)| evidence(at, Weight::Declared, Some(declared)))
             .into_iter()
             .collect(),
@@ -174,7 +180,7 @@ fn file_in_caseless(dir: &Path, name: &str) -> io::Result<Option<PathBuf>> {
             .file_name()
             .to_str()
             .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name));
-        if matches && entry.file_type()?.is_file() {
+        if matches && entry.path().metadata()?.is_file() {
             found.push(entry.path());
         }
     }
@@ -198,7 +204,7 @@ fn manifest_field(
     dir: &Path,
     files: &[&str],
     path: &str,
-) -> io::Result<Option<(PathBuf, serde_json::Value)>> {
+) -> io::Result<Option<(PathBuf, serde_json::Value, serde_json::Value)>> {
     let mut present = None;
     for file in files {
         if let Some(at) = file_in(dir, file)? {
@@ -221,7 +227,7 @@ fn manifest_field(
         .split('.')
         .try_fold(&document, |node, key| node.get(key))
         .cloned()
-        .map(|value| (at, value)))
+        .map(|value| (at, document, value)))
 }
 
 /// Read a manifest as JSON, JSON5, YAML or TOML by its extension.
@@ -298,11 +304,13 @@ mod tests {
             "[build-system]\nbuild-backend = \"poetry.core.masonry.api\"\n",
         )
         .expect("pyproject.toml");
-        let (_, json) = manifest_field(dir.path(), &["package.json"], "devEngines.packageManager")
-            .expect("read")
-            .expect("field");
+        let (_, document, json) =
+            manifest_field(dir.path(), &["package.json"], "devEngines.packageManager")
+                .expect("read")
+                .expect("field");
         assert_eq!(json["name"], "pnpm");
-        let (_, toml) = manifest_field(
+        assert_eq!(document["devEngines"]["packageManager"]["name"], "pnpm");
+        let (_, _, toml) = manifest_field(
             dir.path(),
             &["pyproject.toml"],
             "build-system.build-backend",
@@ -332,18 +340,30 @@ mod tests {
         )
         .expect("package.yaml");
         let files = ["package.json", "package.json5", "package.yaml"];
-        let (at, value) = manifest_field(dir.path(), &files, "packageManager")
+        let (at, _, value) = manifest_field(dir.path(), &files, "packageManager")
             .expect("read")
             .expect("field");
         assert!(at.ends_with("package.json5"));
         assert_eq!(value, "pnpm@9.0.0");
-        let (at, value) =
+        let (at, _, value) =
             manifest_field(dir.path(), &["package.yaml"], "devEngines.packageManager")
                 .expect("read")
                 .expect("field");
         assert!(at.ends_with("package.yaml"));
         assert_eq!(value["name"], "yarn");
         assert_eq!(value["onFail"], "warn");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_caseless_match_follows_a_symlink() {
+        let dir = TempDir::new("observe-caseless-symlink");
+        fs::write(dir.path().join("recipes.just"), "").expect("target");
+        std::os::unix::fs::symlink("recipes.just", dir.path().join("Justfile")).expect("symlink");
+        assert_eq!(
+            super::file_in_caseless(dir.path(), "justfile").unwrap(),
+            Some(dir.path().join("Justfile"))
+        );
     }
 
     #[test]

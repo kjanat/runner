@@ -161,7 +161,7 @@ pub enum Signal {
     ManifestField {
         files: &'static [&'static str], // tried in order; JSON, JSON5, YAML or TOML by extension
         path: &'static str,
-        parse: fn(&Value) -> Option<Declared>,
+        parse: fn(&Field) -> Option<Declared>, // the value at `path` and the whole manifest
     },
     EnvVar(&'static str), // set in runner's own environment
     Probe(&'static str),  // executable on PATH, checked last
@@ -189,7 +189,10 @@ pub struct Evidence {
 Evidence is compared by weight, then by the declaration's own rank: a field
 that names the provider (`packageManager`) outranks one that constrains it
 (`devEngines.packageManager`), which outranks a variant derived from either.
-A signal's index in its provider's table orders nothing across providers.
+A `packageManager` value that names no known manager voids
+`devEngines.packageManager` in the same manifest, so the manifest declares
+nothing and the lockfile or `PATH` decides. A signal's index in its
+provider's table orders nothing across providers.
 Among lockfiles of one ecosystem in one scope, one the repository tracks
 demotes the untracked others to `Configured`; the client answers the tracked
 question, since only it knows the repository.
@@ -224,12 +227,13 @@ pub struct Provider {
     pub writes: &'static [&'static str], // install dirs this provider materialises
     pub caps: Capabilities,
     pub tasks: Option<fn(&Present, &Tree) -> Result<Extracted, Warning>>, /* tasks plus partial-read warnings */
-    pub version: Option<fn(&Present) -> Result<String>>,
+    pub version: Option<fn(&Path, &Present) -> Result<String>>, /* queried from the scope directory */
     pub hooks: Hooks,
 }
 
 pub struct Hooks {
-    pub before_plan: Option<fn(&Present, &Op, &mut Vec<Warning>) -> Result<(), Refusal>>,
+    pub before_plan:
+        Option<fn(&Tree, &Present, &Op, &Policy, &mut Vec<Warning>) -> Result<(), Refusal>>,
     pub after_observe: Option<fn(&Tree, &[Evidence]) -> Result<Vec<Evidence>, io::Error>>,
 }
 ```
@@ -241,6 +245,9 @@ and each has a narrow reason:
 - `tasks` when the task format is the tool's own (justfile parsing, `mise
   tasks --json`, `[[bin]]` in `Cargo.toml`, `cmd/<name>` in Go).
 - `version` when `<program> --version` output needs a tool-specific parse.
+  It runs in the present's scope directory, so a directory-aware shim
+  answers for that project, and it runs for a manager the `PATH` fallback
+  admitted as much as for one the project named.
 - `hooks.before_plan` for a warning or refusal the core cannot know, such as
   bun and pnpm refusing to re-enable dependency build scripts without a
   manifest allowlist, or `node --run` refusing a Node older than 22.
@@ -329,7 +336,7 @@ pub struct RunFileCap {
 pub struct TestCap {
     pub program: Option<&'static str>, // npm's test runner is `node --test`
     pub argv: Template,                // ["test", Args]
-    pub discovery: Discovery, /* Tool (the runner finds its own files) | Files { patterns } | Detect(fn) */
+    pub discovery: Discovery, /* Tool (the runner finds its own files) | Files { patterns } | Detect(fn(&[&Path])) */
 }
 
 pub struct BinsCap {
@@ -386,7 +393,8 @@ empty, and drops any parameter piece policy did not turn on.
 `Discovery::Files` is what `node --test` needs and `bun test` does not.
 `Discovery::Detect` is what Python needs, where the runner is itself a
 finding: pytest, nose2, ward, Django, tox, nox, unittest, in that order,
-each with its own evidence.
+each with its own evidence. It looks in the invocation directory, then the
+provider's scope, and settles on `unittest` only after both.
 
 ### 4.5 Ops and policy
 
@@ -528,11 +536,13 @@ A frozen install refuses as `NoLockfile` when none of the provider's
 its frozen form is dropped, and nothing is refused, when no config/lockfile
 pair exists. `Mismatch` is raised by `plan_with` for any op that selects a package manager,
 so `run`, `--package`, `exec` and `install` refuse alike under
-`OnMismatch::Refuse`, unless a policy layer chose the manager. The plan's
-scope is the task's scope for a task, the file's scope for a file, the
-invocation scope for an exec or test, and the provider's own scope for an
-install; a runtime inherited from the root still runs a member's file with the
-member's bin dirs.
+`OnMismatch::Refuse`, unless a policy layer chose the manager, or chose it as
+the runtime and the op runs a file or a task. The plan's scope is the task's
+scope for a task, the file's scope for a file, the invocation scope for an
+exec, a test, a dependency's binary or a project bin the cascade found, and
+the provider's own scope for an install; a runtime inherited from the root
+still runs a member's file with the member's bin dirs, and a binary hoisted
+to the root still runs with the invoking member's bin dirs first.
 
 A `Plan` is complete. `execute` adds nothing and decides nothing. That is
 what makes `why`, `--explain`, `doctor` and the arrow line agree, because

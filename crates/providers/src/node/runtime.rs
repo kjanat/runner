@@ -67,6 +67,7 @@ pub const PROVIDER: Provider = Provider {
 };
 
 fn before_plan(
+    _: &runner_core::Tree,
     present: &runner_core::Present,
     op: &runner_core::Op<'_>,
     _: &runner_core::Policy,

@@ -1365,7 +1365,9 @@ mod tests {
 
     #[test]
     fn forced_runtime_previews_the_runtime_command_not_the_pm_command() {
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let mut ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        ctx.package_managers = vec![PackageManager::Bun];
+        crate::tool::test_support::seed_context(&ctx);
         let overrides = runtime_overrides("bun");
         let selected = ctx.tasks.first();
         // A forced runtime supersedes PM resolution, exactly as dispatch does.

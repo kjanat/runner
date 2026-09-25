@@ -6,7 +6,7 @@ use crate::capability::BinDirs;
 use crate::evidence::{Evidence, Present, Weight};
 use crate::policy::{Choice, Policy};
 use crate::provider::{Ecosystem, Kind, ProviderId};
-use crate::registry::Registry;
+use crate::registry::{Provider, Registry};
 use crate::scope::Scope;
 use crate::task::Task;
 use crate::tree::Tree;
@@ -190,7 +190,7 @@ pub fn resolve_presence(
     registry: &Registry,
 ) -> std::io::Result<Project> {
     let mut warnings = Vec::new();
-    let mut present = observed_presence(evidence, policy, registry, &mut warnings);
+    let mut present = observed_presence(tree, evidence, policy, registry, &mut warnings);
     for choice in choices(policy) {
         if !present.iter().any(|p| p.provider == choice.id) {
             warnings.push(Warning::about(
@@ -266,6 +266,7 @@ fn disagreements(present: &[Present], registry: &Registry) -> Vec<Disagreement> 
 
 /// Present providers grouped from evidence, before ordering.
 fn observed_presence(
+    tree: &Tree,
     evidence: Vec<Evidence>,
     policy: &Policy,
     registry: &Registry,
@@ -308,42 +309,52 @@ fn observed_presence(
             bin_dirs: Vec::new(),
             because,
         };
-        let wants_variant = provider.caps.variant_of_version.is_some()
-            && !observed
-                .because
-                .iter()
-                .any(|item| matches!(item.declared, Some(crate::Declared::Variant(_))));
-        if let Some(version) = provider.version
-            && (provider.caps.variant_of_version.is_none() || wants_variant)
-        {
-            match version(&observed) {
-                Ok(value) => observed.version = Some(value),
-                Err(warning) => warnings.push(warning),
-            }
-        }
-        if wants_variant
-            && let Some(derive) = provider.caps.variant_of_version
-            && let Some(name) = observed.version.as_deref().and_then(derive)
-        {
-            let program = provider.program.unwrap_or(provider.label);
-            observed.because.push(Evidence {
-                provider: Some(id),
-                signal: provider
-                    .signals
-                    .iter()
-                    .position(
-                        |signal| matches!(signal, crate::Signal::Probe(name) if *name == program),
-                    )
-                    .map(crate::SignalId),
-                at: crate::probe::probe_with(program, &[]).unwrap_or_else(|| program.into()),
-                scope: observed.scope.clone(),
-                weight: Weight::Probed,
-                declared: Some(crate::Declared::Variant(name.into())),
-            });
-        }
+        observe_version(tree, provider, &mut observed, warnings);
         present.push(observed);
     }
     present
+}
+
+/// Ask the installed executable its version when the provider parses one,
+/// and let that version name the variant when nothing in the project did.
+fn observe_version(
+    tree: &Tree,
+    provider: &Provider,
+    observed: &mut Present,
+    warnings: &mut Vec<Warning>,
+) {
+    let wants_variant = provider.caps.variant_of_version.is_some()
+        && !observed
+            .because
+            .iter()
+            .any(|item| matches!(item.declared, Some(crate::Declared::Variant(_))));
+    if let Some(version) = provider.version
+        && (provider.caps.variant_of_version.is_none() || wants_variant)
+    {
+        match version(&crate::plan::scope_dir(tree, &observed.scope), observed) {
+            Ok(value) => observed.version = Some(value),
+            Err(warning) => warnings.push(warning),
+        }
+    }
+    if wants_variant
+        && let Some(derive) = provider.caps.variant_of_version
+        && let Some(name) = observed.version.as_deref().and_then(derive)
+    {
+        let program = provider.program.unwrap_or(provider.label);
+        observed.because.push(Evidence {
+            provider: Some(observed.provider),
+            signal: provider
+                .signals
+                .iter()
+                .position(|signal| matches!(signal, crate::Signal::Probe(name) if *name == program))
+                .map(crate::SignalId),
+            at: crate::probe::probe_with(program, &observed.bin_dirs)
+                .unwrap_or_else(|| program.into()),
+            scope: observed.scope.clone(),
+            weight: Weight::Probed,
+            declared: Some(crate::Declared::Variant(name.into())),
+        });
+    }
 }
 
 /// Lower every lockfile the repository does not track to `Configured` when
@@ -426,7 +437,7 @@ fn add_task_runners(tree: &Tree, policy: &Policy, registry: &Registry, project: 
         {
             continue;
         }
-        let supports = |provider: &crate::Provider| {
+        let supports = |provider: &Provider| {
             provider.kind.contains(Kind::PACKAGE_MANAGER)
                 && provider
                     .caps
@@ -478,6 +489,7 @@ fn add_task_runners(tree: &Tree, policy: &Policy, registry: &Registry, project: 
             Ok(dirs) => synthesised.bin_dirs = dirs,
             Err(warning) => project.warnings.push(warning),
         }
+        observe_version(tree, provider, &mut synthesised, &mut project.warnings);
         project.present.push(synthesised);
     }
 }
@@ -599,7 +611,10 @@ mod tests {
 
     #[test]
     fn the_installed_version_names_the_variant_when_nothing_in_the_project_does() {
-        fn version(present: &crate::Present) -> Result<String, crate::Warning> {
+        fn version(
+            _: &std::path::Path,
+            present: &crate::Present,
+        ) -> Result<String, crate::Warning> {
             present
                 .because
                 .first()
@@ -643,6 +658,7 @@ mod tests {
             &e.declared,
             Some(crate::Declared::Variant(name)) if name == "berry"
         )));
+
         assert_eq!(
             registry
                 .by_id(ProviderId::Yarn)
@@ -679,5 +695,80 @@ mod tests {
         assert_eq!(project.warnings, []);
         let absent = resolve(&tree(), Vec::new(), &policy, &registry).unwrap();
         assert_eq!(absent.warnings.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fallback_package_manager_gets_its_installed_version_and_variant() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        fn version(
+            dir: &std::path::Path,
+            present: &crate::Present,
+        ) -> Result<String, crate::Warning> {
+            dir.is_dir()
+                .then(|| "4.1.0".to_owned())
+                .ok_or_else(|| crate::Warning::about(present.provider, "no project directory"))
+        }
+        fn line(version: &str) -> Option<&'static str> {
+            version.starts_with('4').then_some("berry")
+        }
+        const BERRY: Capabilities = Capabilities {
+            probe_priority: 9,
+            ..Capabilities::NONE
+        };
+        static FALLBACK: &[Provider] = &[
+            Provider {
+                kind: Kind::TASK_SOURCE,
+                program: None,
+                ..fake(ProviderId::PackageJson, "package.json", Ecosystem::Node)
+            },
+            Provider {
+                signals: &[Signal::Probe("yarn")],
+                caps: Capabilities {
+                    variants: &[("berry", BERRY)],
+                    variant_of_version: Some(line),
+                    run_task: Some(crate::capability::RunTaskCap {
+                        argv: crate::t![Task, Args],
+                        sources: &[ProviderId::PackageJson],
+                    }),
+                    ..Capabilities::NONE
+                },
+                version: Some(version),
+                ..fake(ProviderId::Yarn, "yarn", Ecosystem::Node)
+            },
+        ];
+        let dir = crate::probe::tests::TempDir::new("resolve-fallback-variant");
+        let bin = dir.path().join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let yarn = bin.join("yarn");
+        std::fs::write(&yarn, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&yarn, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tree = Tree {
+            cwd: dir.path().to_path_buf(),
+            root: dir.path().to_path_buf(),
+            members: Vec::new(),
+        };
+        let manifest = Evidence {
+            at: dir.path().join("package.json"),
+            ..found(ProviderId::PackageJson, Weight::Present)
+        };
+        let project = resolve(
+            &tree,
+            vec![manifest],
+            &Policy::default(),
+            &Registry(FALLBACK),
+        )
+        .unwrap();
+        let yarn = project
+            .present
+            .iter()
+            .find(|present| present.provider == ProviderId::Yarn)
+            .expect("the bin dir supplies yarn");
+        assert_eq!(yarn.version.as_deref(), Some("4.1.0"));
+        assert!(yarn.because.iter().any(|e| matches!(
+            &e.declared,
+            Some(crate::Declared::Variant(name)) if name == "berry"
+        )));
     }
 }

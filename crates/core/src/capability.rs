@@ -242,8 +242,8 @@ pub enum Discovery {
     Tool,
     /// The core passes files matching these globs.
     Files(&'static [&'static str]),
-    /// The runner is itself a finding.
-    Detect(fn(&Path) -> std::io::Result<Option<Template>>),
+    /// The runner is itself a finding, looked for in each directory in turn.
+    Detect(fn(&[&Path]) -> std::io::Result<Option<Template>>),
 }
 
 /// Run the test runner.

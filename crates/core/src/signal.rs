@@ -27,7 +27,7 @@ pub enum Signal {
         /// Dotted path of the field.
         path: &'static str,
         /// Reads the field into a declaration, `None` when it names another provider.
-        parse: fn(&serde_json::Value) -> Option<Declared>,
+        parse: fn(&Field<'_>) -> Option<Declared>,
     },
     /// A variable set in runner's own environment.
     EnvVar(&'static str),
@@ -65,6 +65,15 @@ impl Signal {
             Self::EnvVar(_) | Self::Probe(_) | Self::Ask(_) => Vec::new(),
         }
     }
+}
+
+/// A manifest field handed to a signal's parser, with the manifest it sits in.
+#[derive(Debug, Clone, Copy)]
+pub struct Field<'a> {
+    /// The value at the signal's path.
+    pub value: &'a serde_json::Value,
+    /// The whole manifest.
+    pub manifest: &'a serde_json::Value,
 }
 
 /// Index of a signal in its provider's `signals` list.

@@ -254,9 +254,38 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `run user/repo#ref` no longer spawns from `PATH` through `npx`, and a
   bare name never reaches `go run`.
 
-- A plan for a file or binary a rung found carries the bin dirs of the
-  workspace member it sits in, and a member's `node_modules/.bin` precedes
-  the root's.
+- A plan for a file a rung found carries the bin dirs of the workspace
+  member it sits in, and a member's `node_modules/.bin` precedes the
+  root's. A dependency's binary or a project bin found from a member runs
+  with that member's bin dirs first even when hoisting installed it at the
+  root.
+
+- A package manager the `PATH` fallback admits gets the same installed
+  version and variant as one the project names, so a `package.json` with
+  scripts alone runs Yarn 4 as Berry instead of adding Classic's
+  `--silent`. A `devEngines` range such as `>=1` that admits both Yarn
+  lines no longer forces Classic; the installed version decides. The version
+  query runs in the project directory, so `--dir` sees the Yarn a
+  directory-aware shim serves there.
+
+- Python test detection looks in the invocation directory and then the
+  provider's scope, so `conftest.py` beside the tests and `pytest.ini` at
+  the root both select pytest from a subdirectory.
+
+- `--on-mismatch error` no longer refuses `--runtime bun run ./script.js`
+  over a lockfile another manager wrote; an explicit runtime choice runs a
+  file or a task, while an install through that manager still refuses.
+
+- A `Justfile` that is a symlink is observed and marks the project root, in
+  any spelling.
+
+- A run reports the package manager of the task it selected, in that task's
+  workspace member, and warns about that member's manifest disagreeing with
+  its lockfile; it read the invocation directory's manager before.
+
+- A `packageManager` value that names no known manager voids
+  `devEngines.packageManager` as well, as the warning says, instead of
+  letting `devEngines` select a manager the legacy field could not.
 
 - On Windows, a file task whose shebang names a POSIX shell (`bash`, `sh`,
   `zsh`, ..., with or without `.exe`) receives its path in the form that

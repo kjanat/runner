@@ -1,5 +1,7 @@
 //! The provider declaration and lookup over a provider table.
 
+use std::path::Path;
+
 use crate::capability::Capabilities;
 use crate::evidence::{Evidence, Present};
 use crate::op::Op;
@@ -12,12 +14,13 @@ use crate::warning::Warning;
 /// Task extraction when the format is the tool's own.
 pub type TasksFn = fn(&Present, &Tree) -> Result<Extracted, Warning>;
 
-/// Version parsing when `<program> --version` needs a tool-specific parse.
-pub type VersionFn = fn(&Present) -> Result<String, Warning>;
+/// Version parsing when `<program> --version` needs a tool-specific parse,
+/// queried from the present's scope directory.
+pub type VersionFn = fn(&Path, &Present) -> Result<String, Warning>;
 
 /// A warning the core cannot know before a plan is made.
 pub type BeforePlanFn =
-    fn(&Present, &Op<'_>, &crate::Policy, &mut Vec<Warning>) -> Result<(), crate::Refusal>;
+    fn(&Tree, &Present, &Op<'_>, &crate::Policy, &mut Vec<Warning>) -> Result<(), crate::Refusal>;
 
 /// Evidence derived from other evidence.
 pub type AfterObserveFn = fn(&Tree, &[Evidence]) -> std::io::Result<Vec<Evidence>>;
@@ -106,7 +109,7 @@ impl Registry {
     #[must_use]
     pub fn file_runtimes(
         &self,
-        file: &std::path::Path,
+        file: &Path,
         project: &crate::Project,
         scope: &crate::Scope,
     ) -> Vec<ProviderId> {

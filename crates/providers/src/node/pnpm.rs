@@ -1,20 +1,19 @@
 //! pnpm.
 
 use runner_core::{
-    Capabilities, Declared, Ecosystem, ExecCap, Frozen, Hooks, InstallCap, Kind, NameShape,
+    Capabilities, Declared, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind, NameShape,
     Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptMechanism, ScriptSupport, Signal,
     WorkspaceCap, t,
 };
-use serde_json::Value;
 
 use super::manifest;
 
-fn package_manager(value: &Value) -> Option<Declared> {
-    manifest::package_manager(value, ProviderId::Pnpm)
+fn package_manager(field: &Field<'_>) -> Option<Declared> {
+    manifest::package_manager(field, ProviderId::Pnpm)
 }
 
-fn dev_engines(value: &Value) -> Option<Declared> {
-    manifest::dev_engines(value, ProviderId::Pnpm)
+fn dev_engines(field: &Field<'_>) -> Option<Declared> {
+    manifest::dev_engines(field, ProviderId::Pnpm)
 }
 
 const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engines);

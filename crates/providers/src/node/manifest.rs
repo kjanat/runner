@@ -1,8 +1,8 @@
 //! `package.json` fields that name a package manager, and the check they ask for.
 
 use runner_core::{
-    Check, Declared, Layer, OnFail, Op, Policy, Present, ProviderId, Refusal, Warning, check,
-    decided_by,
+    Check, Declared, Field, Layer, OnFail, Op, Policy, Present, ProviderId, Refusal, Tree, Warning,
+    check, decided_by, scope_dir,
 };
 use runner_schemes::NodeSemver;
 use serde_json::Value;
@@ -38,8 +38,8 @@ fn trimmed(version: Option<&str>) -> Option<&str> {
 
 /// Read the legacy `packageManager` string, `name@version`, for `own`.
 #[must_use]
-pub fn package_manager(value: &Value, own: ProviderId) -> Option<Declared> {
-    let raw = value.as_str()?.trim();
+pub fn package_manager(field: &Field<'_>, own: ProviderId) -> Option<Declared> {
+    let raw = field.value.as_str()?.trim();
     let (name, version) = raw.split_once('@').map_or((raw, None), |(name, version)| {
         (
             name,
@@ -55,10 +55,13 @@ pub fn package_manager(value: &Value, own: ProviderId) -> Option<Declared> {
 /// to `error` when it is the last such entry and `ignore` otherwise, as the
 /// `OpenJS` proposal specifies; `download` reads as `warn`.
 #[must_use]
-pub fn dev_engines(value: &Value, own: ProviderId) -> Option<Declared> {
-    let entries: Vec<&Value> = match value {
+pub fn dev_engines(field: &Field<'_>, own: ProviderId) -> Option<Declared> {
+    if legacy_field_is_unreadable(field.manifest) {
+        return None;
+    }
+    let entries: Vec<&Value> = match field.value {
         Value::Array(entries) => entries.iter().collect(),
-        Value::Object(_) => vec![value],
+        Value::Object(_) => vec![field.value],
         _ => return None,
     };
     let known: Vec<(&Value, ProviderId)> = entries
@@ -88,8 +91,21 @@ pub fn dev_engines(value: &Value, own: ProviderId) -> Option<Declared> {
 
 /// Read `engines.node`.
 #[must_use]
-pub fn engines_node(value: &Value) -> Option<Declared> {
-    trimmed(value.as_str()).map(|v| Declared::Version(v.to_owned()))
+pub fn engines_node(field: &Field<'_>) -> Option<Declared> {
+    trimmed(field.value.as_str()).map(|v| Declared::Version(v.to_owned()))
+}
+
+/// Whether `packageManager` holds a nonempty value that names no known
+/// manager, which voids `devEngines.packageManager` as well.
+fn legacy_field_is_unreadable(manifest: &Value) -> bool {
+    manifest
+        .get("packageManager")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|raw| {
+            !raw.is_empty()
+                && provider_named(raw.split_once('@').map_or(raw, |(name, _)| name)).is_none()
+        })
 }
 
 /// Check the requirement `devEngines.packageManager` declares for this provider.
@@ -102,6 +118,7 @@ pub fn engines_node(value: &Value) -> Option<Declared> {
 /// Refuses when the manifest asks for `error` and the executable is absent or
 /// its version violates the constraint.
 pub fn before_plan(
+    tree: &Tree,
     present: &Present,
     _: &Op<'_>,
     policy: &Policy,
@@ -139,7 +156,10 @@ pub fn before_plan(
         return Ok(());
     };
     let found = present.version.clone().map_or_else(
-        || crate::version::read(present).map_err(|warning| warning.message),
+        || {
+            crate::version::read(&scope_dir(tree, &present.scope), present)
+                .map_err(|warning| warning.message)
+        },
         Ok,
     );
     let checked = found.map_or_else(
@@ -188,10 +208,58 @@ fn outcome(
 
 #[cfg(test)]
 mod tests {
-    use runner_core::{Declared, OnFail, ProviderId};
-    use serde_json::json;
+    use runner_core::{Declared, Field, OnFail, ProviderId};
+    use serde_json::{Value, json};
 
-    use super::{dev_engines, package_manager};
+    static LONE: Value = Value::Null;
+
+    fn package_manager(value: &Value, own: ProviderId) -> Option<Declared> {
+        super::package_manager(
+            &Field {
+                value,
+                manifest: &LONE,
+            },
+            own,
+        )
+    }
+
+    fn dev_engines(value: &Value, own: ProviderId) -> Option<Declared> {
+        super::dev_engines(
+            &Field {
+                value,
+                manifest: &LONE,
+            },
+            own,
+        )
+    }
+
+    #[test]
+    fn an_unreadable_legacy_field_voids_dev_engines() {
+        let manifest = json!({
+            "packageManager": "pnpmm@9",
+            "devEngines": { "packageManager": { "name": "yarn", "onFail": "ignore" } }
+        });
+        let field = Field {
+            value: &manifest["devEngines"]["packageManager"],
+            manifest: &manifest,
+        };
+        assert_eq!(super::dev_engines(&field, ProviderId::Yarn), None);
+        let empty = json!({
+            "packageManager": "  ",
+            "devEngines": { "packageManager": { "name": "yarn", "onFail": "ignore" } }
+        });
+        let field = Field {
+            value: &empty["devEngines"]["packageManager"],
+            manifest: &empty,
+        };
+        assert_eq!(
+            super::dev_engines(&field, ProviderId::Yarn),
+            Some(Declared::Constraint {
+                version: None,
+                on_fail: OnFail::Ignore,
+            })
+        );
+    }
 
     #[test]
     fn package_manager_reports_own_version_and_alternatives() {

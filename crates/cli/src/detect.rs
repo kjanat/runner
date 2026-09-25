@@ -92,10 +92,11 @@ fn holds_caseless(dir: &Path, names: &[&str]) -> bool {
     !names.is_empty()
         && std::fs::read_dir(dir).is_ok_and(|entries| {
             entries.flatten().any(|entry| {
-                entry.file_type().is_ok_and(|kind| kind.is_file())
-                    && entry.file_name().to_str().is_some_and(|found| {
-                        names.iter().any(|name| found.eq_ignore_ascii_case(name))
-                    })
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|found| names.iter().any(|name| found.eq_ignore_ascii_case(name)))
+                    && entry.path().metadata().is_ok_and(|meta| meta.is_file())
             })
         })
 }
@@ -927,6 +928,16 @@ mod tests {
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_justfile_marks_the_project_root() {
+        let dir = TempDir::new("detect-justfile-symlink");
+        fs::write(dir.path().join("recipes.just"), "build:\n  echo build\n").expect("target");
+        std::os::unix::fs::symlink("recipes.just", dir.path().join("Justfile")).expect("symlink");
+        assert!(super::holds_caseless(dir.path(), &["justfile"]));
+        assert!(!super::holds_caseless(dir.path(), &["makefile"]));
     }
 
     #[test]

@@ -1,17 +1,18 @@
 //! Poetry.
 
 use runner_core::{
-    BinDirs, BinsCap, Capabilities, Declared, Discovery, Ecosystem, Frozen, Hooks, InstallCap,
-    Kind, Provider, ProviderId, QuietSupport, RunTaskCap, ScriptSupport, Signal, TestCap, t,
+    BinDirs, BinsCap, Capabilities, Declared, Discovery, Ecosystem, Field, Frozen, Hooks,
+    InstallCap, Kind, Provider, ProviderId, QuietSupport, RunTaskCap, ScriptSupport, Signal,
+    TestCap, t,
 };
-use serde_json::Value;
 
-fn tool_table(value: &Value) -> Option<Declared> {
-    value.is_object().then_some(Declared::Named)
+fn tool_table(field: &Field<'_>) -> Option<Declared> {
+    field.value.is_object().then_some(Declared::Named)
 }
 
-fn build_backend(value: &Value) -> Option<Declared> {
-    value
+fn build_backend(field: &Field<'_>) -> Option<Declared> {
+    field
+        .value
         .as_str()
         .is_some_and(|backend| backend.contains("poetry.core.masonry.api"))
         .then_some(Declared::Named)
@@ -71,10 +72,24 @@ pub const PROVIDER: Provider = Provider {
 
 #[cfg(test)]
 mod tests {
-    use runner_core::Declared;
-    use serde_json::json;
+    use runner_core::{Declared, Field};
+    use serde_json::{Value, json};
 
-    use super::{build_backend, tool_table};
+    static LONE: Value = Value::Null;
+
+    fn tool_table(value: &Value) -> Option<Declared> {
+        super::tool_table(&Field {
+            value,
+            manifest: &LONE,
+        })
+    }
+
+    fn build_backend(value: &Value) -> Option<Declared> {
+        super::build_backend(&Field {
+            value,
+            manifest: &LONE,
+        })
+    }
 
     #[test]
     fn poetry_is_named_by_its_table_or_its_backend() {

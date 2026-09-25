@@ -1,7 +1,7 @@
 //! Yarn Classic and Berry, distinguished by observed project evidence.
 
 use runner_core::{
-    Capabilities, Declared, Ecosystem, ExecCap, Frozen, Hooks, InstallCap, Kind, NameShape,
+    Capabilities, Declared, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind, NameShape,
     Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptMechanism, ScriptSupport, Signal,
     Weight, WorkspaceCap, t,
 };
@@ -9,12 +9,12 @@ use serde_json::Value;
 
 use super::manifest;
 
-fn package_manager(value: &Value) -> Option<Declared> {
-    manifest::package_manager(value, ProviderId::Yarn)
+fn package_manager(field: &Field<'_>) -> Option<Declared> {
+    manifest::package_manager(field, ProviderId::Yarn)
 }
 
-fn dev_engines(value: &Value) -> Option<Declared> {
-    manifest::dev_engines(value, ProviderId::Yarn)
+fn dev_engines(field: &Field<'_>) -> Option<Declared> {
+    manifest::dev_engines(field, ProviderId::Yarn)
 }
 
 const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engines);
@@ -185,17 +185,24 @@ fn variant_of(
 ) -> std::io::Result<Option<Hint>> {
     let manifest = dir.join("package.json");
     let from_manifest = match read_optional(&manifest)? {
-        Some(text) => serde_json::from_str::<Value>(&text)
-            .map_err(|error| {
+        Some(text) => {
+            let document = serde_json::from_str::<Value>(&text).map_err(|error| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("{}: {error}", manifest.display()),
                 )
-            })?
-            .get("packageManager")
-            .and_then(package_manager)
-            .as_ref()
-            .and_then(line),
+            })?;
+            document
+                .get("packageManager")
+                .and_then(|value| {
+                    package_manager(&Field {
+                        value,
+                        manifest: &document,
+                    })
+                })
+                .as_ref()
+                .and_then(line)
+        }
         None => None,
     };
     let config = dir.join(".yarnrc.yml");
@@ -274,20 +281,27 @@ fn line(declared: &Declared) -> Option<&'static str> {
     line_of_version(declared.version()?)
 }
 
-/// The line a version or a lower-bounded range names. `>=4`, `^4.1.0`,
-/// `~1.22` and `4.x` all answer; a range with an upper bound alone or
-/// several alternatives does not.
+/// The line a version or a range names when the range admits one line
+/// only. `>=4`, `^4.1.0`, `~1.22` and `4.x` all answer; `>=1`, an upper
+/// bound alone or several alternatives do not.
 fn line_of_version(spec: &str) -> Option<&'static str> {
     let spec = spec.trim();
     if spec.contains("||") || spec.contains(" - ") || spec.starts_with('<') {
         return None;
     }
+    let lower_bound_only = spec.starts_with('>');
     let digits = spec
         .trim_start_matches(['^', '~', '>', '=', 'v', ' '])
         .split(['.', ' '])
         .next()?;
     let major = digits.parse::<u32>().ok()?;
-    Some(if major >= 2 { "berry" } else { "classic" })
+    if major >= 2 {
+        Some("berry")
+    } else if lower_bound_only {
+        None
+    } else {
+        Some("classic")
+    }
 }
 
 fn read_optional(path: &std::path::Path) -> std::io::Result<Option<String>> {
@@ -316,6 +330,9 @@ mod tests {
             ("4.x", Some("berry")),
             ("v2.4.3", Some("berry")),
             ("<2", None),
+            (">=1", None),
+            (">1", None),
+            (">=1.22", None),
             ("1 || 4", None),
             ("1.0.0 - 2.0.0", None),
             ("latest", None),

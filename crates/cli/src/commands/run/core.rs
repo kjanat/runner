@@ -230,6 +230,22 @@ impl Prepared {
         super::decision::decide(&self.tree, &self.project, &self.policy, source)
     }
 
+    /// The package manager that dispatches `selected` in its own scope, else
+    /// the one for `package.json` scripts in the invocation scope.
+    pub(crate) fn decision_for(
+        &self,
+        selected: Option<&Task>,
+    ) -> Option<super::decision::PmDecision> {
+        let Some(selected) = selected.and_then(task) else {
+            return self.decision(ProviderId::PackageJson);
+        };
+        let source = match selected.source {
+            ProviderId::Pyproject => ProviderId::Pyproject,
+            _ => ProviderId::PackageJson,
+        };
+        self.decision_in(source, &selected.scope)
+    }
+
     /// The package manager that dispatches `source` in `scope`.
     pub(crate) fn decision_in(
         &self,
@@ -545,6 +561,7 @@ mod tests {
             r#"{"packageManager":"yarn@4.0.0"}"#,
         )
         .unwrap();
+        std::fs::write(dir.path().join("bun.lock"), "").unwrap();
         let mut ctx = context(vec![
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
@@ -602,6 +619,7 @@ mod tests {
         let dir = crate::tool::test_support::TempDir::new("preview-error");
         let path = dir.path().join("package.json");
         std::fs::create_dir(&path).unwrap();
+        std::fs::write(dir.path().join("yarn.lock"), "").unwrap();
         let expected = std::fs::read_to_string(&path).unwrap_err().kind();
         let mut ctx = context(Vec::new());
         ctx.root = dir.path().to_owned();

@@ -1,20 +1,19 @@
 //! Deno.
 
 use runner_core::{
-    Capabilities, CleanCap, Declared, Discovery, Ecosystem, ExecCap, Frozen, Hooks, InstallCap,
-    Kind, NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap, RunTaskCap,
+    Capabilities, CleanCap, Declared, Discovery, Ecosystem, ExecCap, Field, Frozen, Hooks,
+    InstallCap, Kind, NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap, RunTaskCap,
     ScriptMechanism, ScriptSupport, Signal, TestCap, t,
 };
-use serde_json::Value;
 
 use crate::node::manifest;
 
-fn package_manager(value: &Value) -> Option<Declared> {
-    manifest::package_manager(value, ProviderId::Deno)
+fn package_manager(field: &Field<'_>) -> Option<Declared> {
+    manifest::package_manager(field, ProviderId::Deno)
 }
 
-fn dev_engines(value: &Value) -> Option<Declared> {
-    manifest::dev_engines(value, ProviderId::Deno)
+fn dev_engines(field: &Field<'_>) -> Option<Declared> {
+    manifest::dev_engines(field, ProviderId::Deno)
 }
 
 const MANIFEST: [Signal; 2] = crate::node::manifest_signals(package_manager, dev_engines);

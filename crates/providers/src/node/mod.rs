@@ -84,8 +84,8 @@ fn strip_types(files: &[PathBuf]) -> &'static [&'static str] {
 /// The two manifest fields that name a package manager.
 #[must_use]
 pub const fn manifest_signals(
-    package_manager: fn(&serde_json::Value) -> Option<runner_core::Declared>,
-    dev_engines: fn(&serde_json::Value) -> Option<runner_core::Declared>,
+    package_manager: fn(&runner_core::Field<'_>) -> Option<runner_core::Declared>,
+    dev_engines: fn(&runner_core::Field<'_>) -> Option<runner_core::Declared>,
 ) -> [Signal; 2] {
     [
         Signal::ManifestField {

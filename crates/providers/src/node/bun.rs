@@ -1,20 +1,19 @@
 //! Bun.
 
 use runner_core::{
-    Capabilities, Declared, Discovery, Ecosystem, ExecCap, Frozen, Hooks, InstallCap, Kind,
+    Capabilities, Declared, Discovery, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind,
     NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap, RunTaskCap, RuntimeCap,
     ScriptMechanism, ScriptSupport, Signal, TestCap, WorkspaceCap, t,
 };
-use serde_json::Value;
 
 use super::manifest;
 
-fn package_manager(value: &Value) -> Option<Declared> {
-    manifest::package_manager(value, ProviderId::Bun)
+fn package_manager(field: &Field<'_>) -> Option<Declared> {
+    manifest::package_manager(field, ProviderId::Bun)
 }
 
-fn dev_engines(value: &Value) -> Option<Declared> {
-    manifest::dev_engines(value, ProviderId::Bun)
+fn dev_engines(field: &Field<'_>) -> Option<Declared> {
+    manifest::dev_engines(field, ProviderId::Bun)
 }
 
 const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engines);

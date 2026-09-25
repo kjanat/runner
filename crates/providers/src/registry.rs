@@ -517,7 +517,7 @@ mod tests {
         };
         let runner = |dir: &std::path::Path| {
             words(
-                crate::python::test_runner(dir)
+                crate::python::test_runner(&[dir])
                     .unwrap()
                     .expect("unittest is the floor"),
             )

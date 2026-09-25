@@ -1601,7 +1601,9 @@ mod tests {
             None,
         )
         .expect("runtime override should parse");
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let mut ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        ctx.package_managers.push(PackageManager::Bun);
+        crate::tool::test_support::seed_context(&ctx);
         let report = DoctorReport::build(&ctx, &overrides, false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 

@@ -1967,3 +1967,167 @@ fn a_tracked_lockfile_outranks_an_untracked_one() {
     runner_core::prefer_tracked_lockfiles(&mut unanswered, &REGISTRY, &|_| None);
     assert_eq!(unanswered, untouched);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_hoisted_binary_runs_in_the_invoking_member_scope() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new();
+    let member_dir = fixture.0.root.join("packages").join("app");
+    let root_bin = fixture.0.root.join("node_modules").join(".bin");
+    let member_bin = member_dir.join("node_modules").join(".bin");
+    std::fs::create_dir_all(&root_bin).unwrap();
+    std::fs::create_dir_all(&member_bin).unwrap();
+    let tool = root_bin.join("tool");
+    std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let member = Scope::Member {
+        name: "app".into(),
+        dir: member_dir.clone(),
+    };
+    let tree = Tree {
+        cwd: member_dir,
+        root: fixture.0.root.clone(),
+        members: vec![member.clone()],
+    };
+    let mut root = fixture.present(ProviderId::Npm);
+    root.bin_dirs = vec![root_bin.clone()];
+    let mut local = fixture.present(ProviderId::Npm);
+    local.scope = member.clone();
+    local.bin_dirs = vec![member_bin.clone()];
+    let project = Project {
+        present: vec![root, local],
+        ..Project::default()
+    };
+    let policy = Policy::default();
+    let dep = |name: &str| -> Result<Option<std::path::PathBuf>, Refusal> {
+        Ok((name == "tool").then(|| tool.clone()))
+    };
+    let mut cascade = Cascade {
+        tree: &tree,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: Some(&dep),
+        confirm: None,
+    };
+    for expected_rung in ["dep", "bins"] {
+        let (rung, Dispatch::Plan(plan)) = runner_core::dispatch(&cascade, "tool", &[]).unwrap()
+        else {
+            panic!("a hoisted binary plans");
+        };
+        assert_eq!(rung.name, expected_rung);
+        assert_eq!(plan.found.as_deref(), Some(tool.as_path()));
+        assert_eq!(plan.scope, member, "{expected_rung}");
+        assert_eq!(
+            plan.path_prepend.first(),
+            Some(&member_bin),
+            "{expected_rung}"
+        );
+        assert!(plan.path_prepend.contains(&root_bin), "{expected_rung}");
+        cascade.dep = None;
+    }
+}
+
+#[test]
+fn python_test_detection_looks_in_the_invocation_directory_too() {
+    let fixture = Fixture::new();
+    let tests = fixture.0.root.join("tests");
+    std::fs::create_dir_all(&tests).unwrap();
+    std::fs::write(tests.join("conftest.py"), "").unwrap();
+    let tree = Tree {
+        cwd: tests,
+        ..fixture.0.clone()
+    };
+    let uv = fixture.present(ProviderId::Uv);
+    let plan = plan_with(
+        &tree,
+        &Project::default(),
+        &Policy::default(),
+        &uv,
+        &Op::Test { args: &[] },
+        &REGISTRY,
+    )
+    .unwrap();
+    assert_eq!(words(&plan), ["uv", "run", "pytest"]);
+}
+
+#[test]
+fn an_explicit_runtime_choice_runs_a_file_despite_an_installer_mismatch() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("package.json"),
+        r#"{"packageManager":"bun@1.3.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        fixture.0.root.join("pnpm-lock.yaml"),
+        "lockfileVersion: 9\n",
+    )
+    .unwrap();
+    let script = fixture.0.root.join("script.js");
+    std::fs::write(&script, "").unwrap();
+    let refuse = Policy {
+        on_mismatch: OnMismatch::Refuse,
+        ..Policy::default()
+    };
+    let project = resolved(&fixture, &refuse);
+    assert_eq!(project.disagreements.len(), 1);
+    let bun = project
+        .present
+        .iter()
+        .find(|present| present.provider == ProviderId::Bun)
+        .expect("the manifest declares bun");
+    let run_file = Op::RunFile {
+        file: &script,
+        args: &[],
+    };
+    assert!(matches!(
+        plan_with(&fixture.0, &project, &refuse, bun, &run_file, &REGISTRY),
+        Err(Refusal::Mismatch(_))
+    ));
+    let chosen = Policy {
+        runtime: Some(runner_core::Choice {
+            id: ProviderId::Bun,
+            from: runner_core::Layer::Cli,
+        }),
+        ..refuse
+    };
+    let plan = plan_with(&fixture.0, &project, &chosen, bun, &run_file, &REGISTRY).unwrap();
+    assert_eq!(words(&plan)[0], "bun");
+    assert!(matches!(
+        plan_with(
+            &fixture.0,
+            &project,
+            &chosen,
+            bun,
+            &Op::Install { operations: &[] },
+            &REGISTRY
+        ),
+        Err(Refusal::Mismatch(_))
+    ));
+}
+
+#[test]
+fn an_unreadable_legacy_declaration_voids_dev_engines() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("package.json"),
+        r#"{
+  "packageManager": "pnpmm@9",
+  "devEngines": { "packageManager": { "name": "yarn", "onFail": "ignore" } },
+  "scripts": { "build": "echo ok" }
+}"#,
+    )
+    .unwrap();
+    let project = resolved(&fixture, &Policy::default());
+    let declared: Vec<_> = project
+        .present
+        .iter()
+        .flat_map(|present| &present.because)
+        .filter(|evidence| evidence.weight == Weight::Declared)
+        .collect();
+    assert_eq!(declared, Vec::<&Evidence>::new());
+}

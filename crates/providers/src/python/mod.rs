@@ -28,8 +28,11 @@ pub const CLEAN: CleanCap = CleanCap {
 };
 
 /// A `pyproject.toml` table that makes the directory a Python project.
-pub(crate) fn table(value: &serde_json::Value) -> Option<runner_core::Declared> {
-    value.is_object().then_some(runner_core::Declared::Named)
+pub(crate) fn table(field: &runner_core::Field<'_>) -> Option<runner_core::Declared> {
+    field
+        .value
+        .is_object()
+        .then_some(runner_core::Declared::Named)
 }
 
 /// The interpreter that runs a `.py` file outside a managed environment.
@@ -41,14 +44,23 @@ pub const INTERPRETER: &str = if cfg!(windows) { "python" } else { "python3" };
 ///
 /// # Errors
 /// Returns a project file read failure other than absence.
-pub(crate) fn test_runner(dir: &Path) -> std::io::Result<Option<Template>> {
+pub(crate) fn test_runner(dirs: &[&Path]) -> std::io::Result<Option<Template>> {
+    const UNITTEST: Template = t!["run", "python", "-m", "unittest", Args];
+    for dir in dirs {
+        if let Some(found) = test_runner_in(dir)? {
+            return Ok(Some(found));
+        }
+    }
+    Ok(Some(UNITTEST))
+}
+
+fn test_runner_in(dir: &Path) -> std::io::Result<Option<Template>> {
     const PYTEST: Template = t!["run", "pytest", Args];
     const NOSE2: Template = t!["run", "nose2", Args];
     const WARD: Template = t!["run", "ward", Args];
     const DJANGO: Template = t!["run", "python", "manage.py", "test", Args];
     const TOX: Template = t!["run", "tox", Args];
     const NOX: Template = t!["run", "nox", Args];
-    const UNITTEST: Template = t!["run", "python", "-m", "unittest", Args];
 
     let bins = venv::bin_dirs(dir)?;
     let installed = |name: &str| {
@@ -76,7 +88,7 @@ pub(crate) fn test_runner(dir: &Path) -> std::io::Result<Option<Template>> {
     if file("noxfile.py") && available("nox") {
         return Ok(Some(NOX));
     }
-    Ok(Some(UNITTEST))
+    Ok(None)
 }
 
 pub mod runtime;

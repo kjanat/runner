@@ -423,7 +423,8 @@ fn dispatch_plan(
     mut sink: crate::commands::WarningSink<'_>,
 ) -> Result<Dispatch> {
     let prepared = super::core::prepare(ctx, overrides, task_name)?;
-    let decision = prepared.decision(runner_core::ProviderId::PackageJson);
+    let selected = prepared.selected(ctx, task_name).ok().flatten();
+    let decision = prepared.decision_for(selected);
     let resolved_pm = decision.as_ref().map(|decision| decision.pm);
     let requested = prepared.requested;
     let policy = &prepared.policy;
@@ -459,11 +460,7 @@ fn dispatch_plan(
         runner_core::Dispatch::Builtin(name) => return Ok(Dispatch::Builtin(name)),
         runner_core::Dispatch::Plan(plan) => plan,
     };
-    let entry = if rung.name == "task" {
-        prepared.selected(ctx, task_name)?
-    } else {
-        None
-    };
+    let entry = selected.filter(|_| rung.name == "task");
     let task_key = entry.map_or_else(|| task_name.to_owned(), super::task_output_key);
     complete_plan(
         ctx,
@@ -1455,6 +1452,7 @@ mod tests {
     fn a_missing_selected_package_honours_the_runtime_override() {
         let mut ctx = context();
         ctx.package_managers.push(PackageManager::Npm);
+        ctx.package_managers.push(PackageManager::Bun);
         let overrides = ResolutionOverrides {
             package: Some("typescript".to_string()),
             runtime: Some(crate::resolver::RuntimeOverride {
@@ -1504,6 +1502,83 @@ mod tests {
         assert_eq!(
             command_args(&command),
             ["--from", "ruff", "ruff", "--version"]
+        );
+    }
+
+    #[test]
+    fn a_member_task_reports_its_own_package_manager_and_its_mismatch() {
+        use std::sync::Arc;
+
+        let dir = crate::tool::test_support::TempDir::new("dispatch-member-pm");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"root","packageManager":"pnpm@9.0.0","workspaces":["packages/*"],"scripts":{"root-build":"echo"}}"#,
+        )
+        .unwrap();
+        let member_dir = dir.path().join("packages").join("web");
+        std::fs::create_dir_all(&member_dir).unwrap();
+        std::fs::write(
+            member_dir.join("package.json"),
+            r#"{"name":"web","packageManager":"bun@1.3.0","scripts":{"build":"echo"}}"#,
+        )
+        .unwrap();
+        std::fs::write(member_dir.join("package-lock.json"), "{}").unwrap();
+        let member = Arc::new(crate::types::WorkspaceMember::new(
+            "web".to_string(),
+            "packages/web".to_string(),
+            member_dir,
+        ));
+        let task = |name: &str, member: Option<Arc<crate::types::WorkspaceMember>>| Task {
+            name: name.to_string(),
+            source: TaskSource::PackageJson,
+            run_target: None,
+            description: None,
+            alias_of: None,
+            passthrough_to: None,
+            detail: crate::types::TaskDetail::default(),
+            member,
+        };
+        let mut ctx = context();
+        ctx.root = dir.path().to_path_buf();
+        ctx.cwd = ctx.root.clone();
+        ctx.package_managers.push(PackageManager::Pnpm);
+        ctx.tasks = vec![
+            task("root-build", None),
+            task("build", Some(Arc::clone(&member))),
+        ];
+        ctx.workspace = Some(crate::types::Workspace {
+            root: ctx.root.clone(),
+            kinds: vec![crate::types::WorkspaceKind::PackageJson],
+            members: vec![member],
+            current: None,
+        });
+        let mut sink = std::collections::HashSet::new();
+        let dispatch = resolve_dispatch(
+            &ctx,
+            &ResolutionOverrides::default(),
+            "web:build",
+            &[],
+            Some(&mut sink),
+            true,
+        )
+        .expect("the member task dispatches");
+        let Dispatch::Spawn(spawn) = dispatch else {
+            panic!("a package.json task spawns");
+        };
+        let super::SpawnDiagnostic::PackageManager(decision) = &spawn.diagnostic else {
+            panic!("a package.json task carries its manager");
+        };
+        assert_eq!(decision.pm, PackageManager::Bun);
+        assert!(
+            sink.iter().any(|warning| matches!(
+                warning,
+                crate::types::DetectionWarning::PmMismatch {
+                    declared: PackageManager::Bun,
+                    lockfile: PackageManager::Npm,
+                    ..
+                }
+            )),
+            "{sink:?}"
         );
     }
 
