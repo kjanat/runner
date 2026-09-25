@@ -396,9 +396,11 @@ fn task_key(
 ) -> Result<String, runner_core::Refusal> {
     match selected_in(ctx, tree, project, policy, token) {
         Ok(selected) => Ok(selected.map_or_else(|| token.to_owned(), super::task_output_key)),
-        Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => {
-            Ok(token.to_owned())
-        }
+        Err(
+            runner_core::Refusal::NotFound { .. }
+            | runner_core::Refusal::Ambiguous { .. }
+            | runner_core::Refusal::NoRunnerTask { .. },
+        ) => Ok(token.to_owned()),
         Err(error) => Err(error),
     }
 }

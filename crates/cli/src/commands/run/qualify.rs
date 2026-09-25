@@ -395,7 +395,8 @@ pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str
 ///   with `apps/web` and `tools/web`),
 /// - a bare name several members define while the root defines none,
 /// - reversed qualifier (`lint:cargo`),
-/// - runner-constraint mismatch (`--runner just` with no justfile task).
+/// - runner-constraint mismatch (`--runner just` with no justfile task) is
+///   left to selection, which refuses it as `Refusal::NoRunnerTask`.
 pub(crate) fn precheck_task(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -498,10 +499,8 @@ pub(crate) fn root_runner(
 /// runner's source is allowed. `[task_runner].prefer` is the next:
 /// every runner in the list is allowed, in listed order. Runners that
 /// don't map to a [`TaskSource`] (`nx`, `mise`) are dropped from the
-/// permission set; if that leaves the set empty under an active
-/// override, [`runner_constraint_error`] surfaces the misconfiguration
-/// to the user instead of silently dispatching through the default
-/// priority.
+/// permission set. Selection itself refuses a `--runner` whose source
+/// defines no task by the name as `Refusal::NoRunnerTask`.
 pub(crate) fn allowed_runner_sources(
     overrides: &ResolutionOverrides,
 ) -> Option<HashSet<TaskSource>> {

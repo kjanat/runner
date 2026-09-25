@@ -142,6 +142,13 @@ pub enum Refusal {
         /// The file patterns it looked for.
         patterns: Vec<String>,
     },
+    /// The runner policy chose defines no task by this name.
+    NoRunnerTask {
+        /// The chosen runner.
+        runner: ProviderId,
+        /// The task name.
+        name: String,
+    },
     /// A frozen install was asked of a provider whose lockfile is absent.
     NoLockfile {
         /// The provider.
@@ -202,6 +209,9 @@ impl std::fmt::Display for Refusal {
                 dir.display(),
                 patterns.join(", ")
             ),
+            Self::NoRunnerTask { name, .. } => {
+                write!(f, "the chosen task runner defines no task named {name}")
+            }
             Self::NoLockfile { dir, lockfiles, .. } => write!(
                 f,
                 "no lockfile under {}: a frozen install needs one of {}; install without --frozen \
@@ -824,8 +834,10 @@ fn clamps(policy: &Policy, provider: &Provider, op: &Op<'_>) -> Vec<Clamp> {
     clamps
 }
 
-/// The `[tasks.<key>]` env keys a task answers to; a runner's default
-/// invocation answers to the runner's own names.
+/// The `[tasks.<key>]` env keys a task answers to, least specific first:
+/// `name`, `source:name`, `member:name` for a member task, and the
+/// `scope:source#name` FQN. A runner's default invocation answers to the
+/// runner's own names.
 fn task_env_keys(op: &Op<'_>, provider: &Provider, registry: &Registry) -> Vec<String> {
     let spellings = |provider: &Provider| -> Vec<String> {
         provider
@@ -839,12 +851,16 @@ fn task_env_keys(op: &Op<'_>, provider: &Provider, registry: &Registry) -> Vec<S
     match op {
         Op::Run { task, .. } => {
             let labels = spellings(registry.by_id(task.source));
+            let scope = task.scope.label();
             let mut keys = vec![task.name.clone()];
-            keys.extend(labels.iter().map(|label| format!("{label}#{}", task.name)));
+            keys.extend(labels.iter().map(|label| format!("{label}:{}", task.name)));
+            if matches!(task.scope, Scope::Member { .. }) {
+                keys.push(format!("{scope}:{}", task.name));
+            }
             keys.extend(
                 labels
                     .iter()
-                    .map(|label| format!("{}:{label}#{}", task.scope.label(), task.name)),
+                    .map(|label| format!("{scope}:{label}#{}", task.name)),
             );
             keys
         }
@@ -1568,6 +1584,17 @@ pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Ta
                 && scope.is_none_or(|scope| scope_matches(&task.scope, scope))
         })
         .collect();
+    if let Some(choice) = &cascade.policy.runner
+        && !found.is_empty()
+    {
+        found.retain(|task| task.source == choice.id);
+        if found.is_empty() {
+            return Err(Refusal::NoRunnerTask {
+                runner: choice.id,
+                name: name.to_owned(),
+            });
+        }
+    }
     let Some(nearest) = found
         .iter()
         .map(|task| scope_rank(cascade.tree, &task.scope))

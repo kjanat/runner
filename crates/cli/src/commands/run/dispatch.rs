@@ -755,6 +755,13 @@ fn refusal_error(
             dir.display(),
             patterns.join(", ")
         ),
+        Refusal::NoRunnerTask { runner, name } => {
+            let label = runner_providers::REGISTRY.by_id(*runner).label;
+            anyhow!(
+                "{label} defines no task named {name:?}; drop `--runner {label}` or add the task \
+                 to its file"
+            )
+        }
         Refusal::NoLockfile {
             provider,
             dir,

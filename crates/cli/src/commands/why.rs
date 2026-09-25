@@ -89,7 +89,11 @@ pub(crate) fn why(
     let outcome = prepared.preview(ctx, overrides, task);
     let selected = match prepared.selected(ctx, task) {
         Ok(selected) => selected,
-        Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => None,
+        Err(
+            runner_core::Refusal::NotFound { .. }
+            | runner_core::Refusal::Ambiguous { .. }
+            | runner_core::Refusal::NoRunnerTask { .. },
+        ) => None,
         Err(error) => return Err(error.into()),
     };
 
@@ -718,11 +722,6 @@ fn decision_report(
         };
     }
     if selected.is_none() {
-        // A --runner/[task_runner].prefer restriction that empties the
-        // eligible set errors out in `why()` before this function is ever
-        // called (`runner_constraint_error`); the only way to reach this
-        // branch with a non-empty `candidates` is a qualifier (`deno:x`)
-        // that doesn't match any candidate's source.
         let reason = qualifier.map_or_else(
             || {
                 "every candidate was filtered out by --runner/RUNNER_RUNNER restrictions"

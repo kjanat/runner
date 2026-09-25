@@ -520,6 +520,10 @@ pub enum Refusal {
         dir: PathBuf,
         patterns: Vec<String>,
     },
+    NoRunnerTask {
+        runner: ProviderId, // the runner policy chose
+        name: String,
+    },
     NoLockfile {
         provider: ProviderId,
         dir: PathBuf,
@@ -529,6 +533,13 @@ pub enum Refusal {
     Unsafe(Unsafe),
 }
 ```
+
+`select` keeps only tasks of the runner `policy.runner` chose and refuses as
+`NoRunnerTask` when another source alone defines the name; a name no task
+carries still falls through to the later rungs. A task's `[tasks.<key>].env`
+answers to `name`, `source:name`, `member:name` for a member task and the
+`scope:source#name` FQN, least specific first, the spellings the verbosity
+and stream settings use.
 
 A frozen install refuses as `NoLockfile` when none of the provider's
 `Signal::Lockfile` names exists in its scope, before the manager is spawned.

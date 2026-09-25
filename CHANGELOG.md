@@ -51,15 +51,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   entry point when the project uses it and no task carries that name, so
   Make picks its `.DEFAULT_GOAL`, just its default recipe, and so on.
   Arguments are forwarded. A `--runner` constraint naming the same runner
-  allows it; one naming another runner refuses as before. A task named after
-  the runner still wins (#137).
+  allows it; one naming another runner refuses. A task named after the
+  runner wins (#137).
 
 - `run test` with no `test` task runs the ecosystem's own test runner:
   `bun test`, `deno test`, `cargo test`, `go test ./...`, `node --test` over
   every `test.<ext>` and `*.test.<ext>` file below the current directory, and
   for Python whichever of pytest, nose2, ward, Django's `manage.py test`,
-  tox, nox or `unittest` the project has. The bun-only special case is gone.
-  Arguments are forwarded; a Node file argument skips discovery.
+  tox, nox or `unittest` the project has. Arguments are forwarded; a Node
+  file argument skips discovery.
 
 - Mise tasks carry what `mise tasks --json` declares beyond name and
   description: `depends`, `depends_post`, `wait_for`, `dir`, `env`, `tools`,
@@ -74,14 +74,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   project has a mise config, so tools the config declares (often the package
   managers themselves) exist before they are called. `--frozen` adds
   `--locked` when the config's lockfile exists. A project with only a mise
-  config and no manifest now installs its toolchain instead of failing with no
-  signals. A missing `mise` binary warns and continues. `--no-tools` skips the
-  step; `runner doctor` lists it under Decisions.
+  config and no manifest installs its toolchain. A missing `mise` binary
+  warns and continues. `--no-tools` skips the step; `runner doctor` lists it
+  under Decisions.
 
 - Tools mise manages are on the `PATH` of every process runner spawns in a
-  mise project. `mise install` installs without activating, so a package
-  manager mise had just installed was invisible to the install that ran next
-  unless the shell had already run `mise activate`.
+  mise project, including the package manager `mise install` has just put
+  there.
 
 - `runner doctor` relays what mise says about the project: tools the config
   declares that are not installed (`mise ls --missing`), and `mise tasks
@@ -110,25 +109,22 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   its name, from the `usage` spec the task declares. `run lower:leaf <TAB>`
   offers `--fn`; `run baseline:explain <TAB>` offers that argument's
   `choices`. A flag that takes a value suppresses further flag offers in the
-  position it consumes. Sources without a spec complete nothing, as before.
+  position it consumes. Sources without a spec complete nothing.
 
 - A mise task whose spec marks a flag required fails before dispatch when the
-  flag is absent, naming the flag and the task's signature. It used to fail
-  inside the task, after mise and whatever the task builds had already
-  started, which in a parallel chain leaves siblings running.
+  flag is absent, naming the flag and the task's signature.
 
 - `runner why` prints a mise task's signature (`lower:leaf <--fn <name>>
-  [dir]`) instead of the raw `usage` block.
+  [dir]`).
 
 ### Changed
 
-- `--explain` explains and stops. It used to print its trace and then run
-  the command, so an explanation could install, clean, fetch or run a whole
-  chain. For `run`, `install`, `clean` and both chain modes it now prints the
-  plan, the argv, the working directory and the names of the environment
-  keys, asks for no network consent, and executes nothing. Builtins reached
-  through `run` (`run list`, `run info`) parse their own flags and run in the
-  current process, and `--explain` names that action instead of running it.
+- `--explain` explains and stops. For `run`, `install`, `clean` and both
+  chain modes it prints the plan, the argv, the working directory and the
+  names of the environment keys, asks for no network consent, and executes
+  nothing. Builtins reached through `run` (`run list`, `run info`) parse
+  their own flags and run in the current process, and `--explain` names
+  that action.
 
 - One resolver decides the package manager for every ecosystem. The manager
   that dispatches `package.json` or `pyproject.toml` scripts is chosen from
@@ -143,8 +139,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   (onFail=warn)` or `npm via PATH probe at /usr/bin/npm`, and `why` reports
   it for the scope of the task it selected. `[pm].node = "deno"` and `--pm
   deno` fill the Node slot, since deno dispatches `package.json` scripts.
-  `--pm cargo` on a `package.json` script is refused as a missing capability
-  instead of an invalid override.
+  `--pm cargo` on a `package.json` script is refused as a missing
+  capability.
 
 - `devEngines.packageManager` is checked when a plan is made, so an
   install or a package exec through the declared manager sees it too, and
@@ -164,16 +160,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   package manager from `PATH` for a task source and decides nothing else.
 
 - `run test` with no test script and no test files is an error naming the
-  directory and the patterns looked for. It used to fall through to the
-  host `test` binary and exit 0 with nothing run. Discovered TypeScript
-  tests get `--experimental-strip-types` again.
+  directory and the patterns looked for. Discovered TypeScript tests get
+  `--experimental-strip-types`.
 
 - A task source that cannot be read at the root or the invocation directory
-  refuses `run` with the read error instead of falling through to another
-  rung; `list` reports it. A broken mise or turbo member no longer hides
-  every other task, since extractors return the tasks they could read with
-  warnings for the rest. A Yarn manifest or lockfile that cannot be read
-  stops dispatch instead of reading as Classic.
+  refuses `run` with the read error; `list` reports it. Extractors return
+  the tasks they could read with warnings for the rest, so a broken mise or
+  turbo member leaves every other task listed. A Yarn manifest or lockfile
+  that cannot be read stops dispatch.
 
 - Yarn Classic or Berry is decided from `packageManager`, `devEngines`
   (`>=4` and `^1.22` count), `yarn.lock`, `.yarnrc.yml`, and failing all of
@@ -184,14 +178,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   under `--frozen`, and `--no-scripts` denies scripts with
   `--ignore-scripts` on Classic and `YARN_ENABLE_SCRIPTS=false` on Berry.
 
-- `--runtime bun` on a file Bun would run refuses when Bun is absent
-  instead of running Node. A file in a workspace member runs with the
-  member's `node_modules/.bin` first, whichever runtime takes it, and an
-  explicit `./packages/web/tool.sh` from the root gets `web`'s bin dirs.
+- `--runtime bun` on a file Bun would run refuses when Bun is absent. A
+  file in a workspace member runs with the member's `node_modules/.bin`
+  first, whichever runtime takes it, and an explicit
+  `./packages/web/tool.sh` from the root gets `web`'s bin dirs.
 
 - `[tasks.make.env]`, `[tasks.just.env]` and the like reach `run make` and
-  the other default invocations again, and `run bacon --ignored` keeps the
-  `--` before the job arguments.
+  the other default invocations, and `run bacon --ignored` keeps the `--`
+  before the job arguments.
 
 - `deno.json` tasks stay listed when `package.json` names deno as the
   package manager, `JUSTFILE` in any letter case is a justfile, a `deno.json`
@@ -200,14 +194,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `--pm deno run jsr:@std/http/file-server` reaches `deno x`.
 
 - `run list` and the other builtins take precedence even when two workspace
-  members define a task of that name; the ambiguity used to win.
+  members define a task of that name.
 
 - `.ps1` files run through PowerShell on every platform, with `-NoProfile
   -ExecutionPolicy Bypass -File`: `pwsh` when it is on `PATH`, else the
   `powershell` every Windows ships. A runtime that steps in for a file no
-  project runtime takes now observes the host before it plans, so
-  `--explain` shows which executable won. `--host-stream stderr` puts pnpm's
-  `--use-stderr` on pnpm's own argv once and never on `node --test`.
+  project runtime takes observes the host before it plans, so `--explain`
+  shows which executable won. `--host-stream stderr` puts pnpm's
+  `--use-stderr` on pnpm's own argv, once.
 
 - Package managers are probed on `PATH` in one declared order (npm, bun,
   pnpm, yarn, deno) wherever a task source has no manager of its own.
@@ -215,9 +209,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   adopted.
 
 - Node refuses a `.jsx` or `.tsx` file with the runtime choice that forced
-  it and the runtimes that can run it (`--runtime bun`, `--runtime deno`),
-  instead of falling through to another runtime. File extensions match
-  case-insensitively.
+  it and the runtimes that can run it (`--runtime bun`, `--runtime deno`).
+  File extensions match case-insensitively.
 
 - `--fallback npm` and `RUNNER_INSTALL_PMS` are no longer read and are
   reported as such. A task source with no package manager evidence uses the
@@ -233,7 +226,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `runner config init` writes the schema pragma and every default the schema
   declares, live, and nothing else. The commented scaffold with its prose is
   gone; the schema is the documentation, on hover through the pragma. The
-  thirteen keys that had an effective default now carry it in the published
+  thirteen keys that have an effective default carry it in the published
   schema. Unknown-key warnings read the recognised fields from the schema
   too, so a struct field cannot fall out of step with the loader.
 
@@ -243,16 +236,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Fixed
 
 - `--frozen` refuses before spawning a package manager whose lockfile is
-  absent, naming the directory and the lockfile it needs, so every manager
-  fails the same way instead of Yarn Classic installing anyway. A mise
-  config without `mise.lock` still installs unlocked, since mise lockfiles
-  are opt-in. A lifecycle-script policy the manager cannot express is
-  disclosed by `runner install` and `--explain` instead of silently
-  ignored.
+  absent, naming the directory and the lockfile it needs. A mise config
+  without `mise.lock` installs unlocked, since mise lockfiles are opt-in. A
+  lifecycle-script policy the manager cannot express is disclosed by
+  `runner install` and `--explain`.
 
-- A name never reaches an exec primitive that cannot take its shape, so
-  `run user/repo#ref` no longer spawns from `PATH` through `npx`, and a
-  bare name never reaches `go run`.
+- A name reaches an exec primitive only when the primitive takes its shape:
+  `npx` refuses `user/repo#ref` and `go run` refuses a bare name.
 
 - A plan for a file a rung found carries the bin dirs of the workspace
   member it sits in, and a member's `node_modules/.bin` precedes the
@@ -262,9 +252,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - A package manager the `PATH` fallback admits gets the same installed
   version and variant as one the project names, so a `package.json` with
-  scripts alone runs Yarn 4 as Berry instead of adding Classic's
-  `--silent`. A `devEngines` range such as `>=1` that admits both Yarn
-  lines no longer forces Classic; the installed version decides. The version
+  scripts alone runs Yarn 4 as Berry. A `devEngines` range such as `>=1`
+  admits both Yarn lines, so the installed version decides. The version
   query runs in the project directory, so `--dir` sees the Yarn a
   directory-aware shim serves there.
 
@@ -272,29 +261,33 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   provider's scope, so `conftest.py` beside the tests and `pytest.ini` at
   the root both select pytest from a subdirectory.
 
-- `--on-mismatch error` no longer refuses `--runtime bun run ./script.js`
-  over a lockfile another manager wrote; an explicit runtime choice runs a
-  file or a task, while an install through that manager still refuses.
+- An explicit `--runtime` choice runs a file or a task under
+  `--on-mismatch error` when a lockfile names another manager; an install
+  through that manager refuses.
 
 - A `Justfile` that is a symlink is observed and marks the project root, in
   any spelling.
 
 - A run reports the package manager of the task it selected, in that task's
   workspace member, and warns about that member's manifest disagreeing with
-  its lockfile; it read the invocation directory's manager before.
+  its lockfile.
+
+- `--runner just run build` fails when the justfile has no `build` recipe,
+  naming the runner and the task.
+
+- `[tasks.<key>].env` matches the same keys as the verbosity and stream
+  settings: `build`, `package.json:build`, `rfc:build` for a member task,
+  and `rfc:package.json#build`, least specific first.
 
 - A `packageManager` value that names no known manager voids
-  `devEngines.packageManager` as well, as the warning says, instead of
-  letting `devEngines` select a manager the legacy field could not.
+  `devEngines.packageManager` too; the lockfile or `PATH` decides.
 
 - On Windows, a file task whose shebang names a POSIX shell (`bash`, `sh`,
   `zsh`, ..., with or without `.exe`) receives its path in the form that
   shell reads: relative to the working directory with forward slashes (a
   `./` prefix kept for a name starting with `-`), or `/c/...` for a file
   elsewhere. A shell named by a Unix path (`#!/bin/sh`) is found on `PATH`
-  by its name, since `\bin\sh` exists on no Windows drive. Bash used to
-  consume the backslashes of the native path as escapes and report
-  `C:Users...: No such file or directory` (#121).
+  by its name, since `\bin\sh` exists on no Windows drive (#121).
 
 - `go run` for a `cmd/<name>` task or the Go exec fallback sets
   `GOFLAGS=-buildvcs=true` when the project sits in a checkout Go can read
@@ -313,52 +306,42 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   forwards only variable assignments (`NAME=value`, `NAME+=value`, `NAME:=value`
   and the other GNU make forms), which the recipe reads as `$(NAME)`. Any other
   word is refused before make runs, naming the word and the two ways to pass
-  it, instead of landing in make's own option parser or becoming a bogus goal
-  (`--help` printed make's help; `-- --help` ran the recipe and then failed on
-  a missing target). `run --help` says so (#128).
+  it. `run --help` says so (#128).
 
 - `runner install` in a project with no package manager runs the project's
   own `install` task when one exists, printing the same dispatch line as
-  `run install`, instead of failing with `No package manager detected`. This
-  is what `runner why install` already reported (#129).
+  `run install` (#129).
 
 - `runner doctor` prints the Node signals and the `node scripts` decision
-  only when the project has a Node ecosystem, so a cargo-only workspace no
-  longer shows a PATH probe for four Node package managers and a `?`
-  decision (#122). The JSON report is unchanged. The PATH probe lists one
-  manager per line, with a Volta shim's target on a continuation line, in
-  place of one unbounded line (#110).
+  only when the project has a Node ecosystem (#122). The JSON report is
+  unchanged. The PATH probe lists one manager per line, with a Volta shim's
+  target on a continuation line (#110).
 
-- `run <name>` with no matching task now looks for `<name>` in the project's
+- `run <name>` with no matching task looks for `<name>` in the project's
   own bin dirs and on `PATH` before any rung that can download, so an
-  installed `npx` or `make` is no longer wrapped in `npx <name>` (#136). The
-  fetching rungs come last: `mise exec -- <name>` when the project uses mise,
-  then the package manager's exec primitive. On a terminal, a fetching rung
-  asks `[y/N]` first; a pipe proceeds as before. The resolver's `PATH` probe
-  also searches mise's tool dirs, so a project whose only package manager is
-  mise-managed and not yet activated no longer detects nothing.
+  installed `npx` or `make` runs as itself (#136). The fetching rungs come
+  last: `mise exec -- <name>` when the project uses mise, then the package
+  manager's exec primitive. On a terminal, a fetching rung asks `[y/N]`
+  first; a pipe proceeds. The resolver's `PATH` probe also searches mise's
+  tool dirs, so a project whose only package manager is mise-managed and
+  not yet activated detects it.
 
 - Mise task discovery accepts task references in `run` arrays
-  (`run = [{ task = "check" }]`). One such task used to fail parsing of the
-  whole file, both through `mise tasks --json` and the direct TOML fallback,
-  so `runner list` reported no mise tasks at all (#138). Referenced tasks
-  render as `mise run <task>` in the description column; step shapes runner
-  does not model are skipped instead of aborting discovery.
+  (`run = [{ task = "check" }]`) (#138). Referenced tasks render as `mise
+  run <task>` in the description column; step shapes runner does not model
+  are skipped.
 
 - Mise task discovery accepts a dependency carrying arguments
   (`depends = [{ task = "gen", args = ["foo"] }]`, which mise emits as
   `["gen", "foo"]`) and a structured tool request
-  (`tools = { node = { version = "22" } }`). Either one used to fail the whole
-  `mise tasks --json` payload, silently dropping runner back to the
-  single-file TOML fallback and losing every merged and file-based task.
+  (`tools = { node = { version = "22" } }`).
 
-- A failing `mise tasks --json` is reported instead of silently downgrading to
-  the TOML fallback. Falling back is correct when mise is not installed, and
-  hid a broken config when it was.
+- A failing `mise tasks --json` is reported. The TOML fallback serves a
+  project where mise is not installed.
 
-- `--frozen` finds the lockfile for a mise config outside the project root.
-  It looked only for `<root>/mise.lock`, so `.config/mise.toml`,
-  `mise/config.toml`, and `mise.local.toml` ran an unlocked tool install.
+- `--frozen` finds the lockfile for a mise config outside the project root:
+  `.config/mise.toml`, `mise/config.toml` and `mise.local.toml` each pair
+  with their own lockfile.
 
 ### Security
 

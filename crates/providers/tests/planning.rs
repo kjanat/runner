@@ -2131,3 +2131,113 @@ fn an_unreadable_legacy_declaration_voids_dev_engines() {
         .collect();
     assert_eq!(declared, Vec::<&Evidence>::new());
 }
+
+#[test]
+fn an_explicit_runner_choice_rejects_a_task_another_source_defines() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Just),
+        ],
+        tasks: vec![
+            named_task(ProviderId::PackageJson, "build"),
+            named_task(ProviderId::PackageJson, "lint"),
+            named_task(ProviderId::Just, "lint"),
+        ],
+        ..Project::default()
+    };
+    let policy = Policy {
+        runner: Some(runner_core::Choice {
+            id: ProviderId::Just,
+            from: runner_core::Layer::Cli,
+        }),
+        ..Policy::default()
+    };
+    let cascade = cascade(&fixture, &project, &policy);
+    assert_eq!(
+        runner_core::select(&cascade, "build"),
+        Err(Refusal::NoRunnerTask {
+            runner: ProviderId::Just,
+            name: "build".into(),
+        })
+    );
+    assert_eq!(
+        runner_core::select(&cascade, "lint")
+            .unwrap()
+            .map(|task| task.source),
+        Some(ProviderId::Just)
+    );
+    assert_eq!(runner_core::select(&cascade, "tsc"), Ok(None));
+    let outcome = runner_core::dispatch(&cascade, "build", &[]);
+    assert!(
+        matches!(outcome, Err(Refusal::NoRunnerTask { .. })),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn task_environment_keys_follow_the_documented_spellings() {
+    let fixture = Fixture::new();
+    let member_dir = fixture.0.root.join("rfc");
+    std::fs::create_dir_all(&member_dir).unwrap();
+    let member = Scope::Member {
+        name: "rfc".into(),
+        dir: member_dir,
+    };
+    let tree = Tree {
+        members: vec![member.clone()],
+        ..fixture.0.clone()
+    };
+    let mut present = fixture.present(ProviderId::Npm);
+    present.scope = member.clone();
+    let project = Project {
+        present: vec![present.clone()],
+        ..Project::default()
+    };
+    let mut task = named_task(ProviderId::PackageJson, "site");
+    task.scope = member;
+    let mut policy = Policy::default();
+    for (key, value) in [
+        ("site", "bare"),
+        ("package.json:site", "source"),
+        ("rfc:site", "member"),
+        ("rfc:package.json#site", "fqn"),
+        ("package.json#site", "undocumented"),
+    ] {
+        policy.env.task.insert(
+            key.into(),
+            [(
+                key.replace([':', '#', '.'], "_").to_uppercase(),
+                value.into(),
+            )]
+            .into(),
+        );
+    }
+    let plan = plan_with(
+        &tree,
+        &project,
+        &policy,
+        &present,
+        &Op::Run {
+            task: &task,
+            args: &[],
+        },
+        &REGISTRY,
+    )
+    .unwrap();
+    let env: Vec<String> = plan
+        .env
+        .iter()
+        .map(|(key, value)| format!("{}={}", key.to_string_lossy(), value.to_string_lossy()))
+        .collect();
+    assert_eq!(
+        env,
+        [
+            "SITE=bare",
+            "PACKAGE_JSON_SITE=source",
+            "RFC_SITE=member",
+            "RFC_PACKAGE_JSON_SITE=fqn",
+        ]
+    );
+}
