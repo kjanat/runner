@@ -29,10 +29,11 @@ pub fn plan(
         because: Vec::new(),
     };
     for present in &project.present {
-        if !project
-            .present_in(present.provider, &scope)
-            .is_some_and(|chosen| std::ptr::eq(chosen, present))
-        {
+        if ![&crate::Scope::Root, &scope].into_iter().any(|scope| {
+            project
+                .present_in(present.provider, scope)
+                .is_some_and(|chosen| std::ptr::eq(chosen, present))
+        }) {
             continue;
         }
         let provider = registry.by_id(present.provider).for_present(present);

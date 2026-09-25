@@ -344,12 +344,51 @@ fn both_entrypoints_can_run_builtins_in_parallel() {
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert!(String::from_utf8_lossy(&output.stdout).contains("first"));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if grouped {
+                let block = stdout
+                    .split("runner: ")
+                    .find(|block| block.starts_with("list\n"))
+                    .unwrap_or_else(|| panic!("no list block: {stdout}"));
+                assert!(block.contains("first"), "{stdout}");
+            } else {
+                assert!(
+                    stdout
+                        .lines()
+                        .any(|line| line.starts_with("[list") && line.contains("first")),
+                    "{stdout}"
+                );
+                assert!(
+                    stdout
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .all(|line| line.starts_with('[')),
+                    "{stdout}"
+                );
+            }
             let logged = std::fs::read_to_string(fixture.0.join("executed")).unwrap();
             assert_eq!(logged.trim(), "run first");
             std::fs::remove_file(fixture.0.join("executed")).unwrap();
         }
     }
+}
+
+#[test]
+fn a_parallel_chain_refuses_the_install_builtin() {
+    let fixture = Fixture::new();
+    for alias in [false, true] {
+        let output = builtin_command(&fixture, alias, &["-p", "install", "list"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("install items cannot run in parallel chains"),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    fixture.assert_not_executed();
 }
 
 #[test]

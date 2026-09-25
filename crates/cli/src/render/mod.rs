@@ -5,3 +5,4 @@ pub(crate) mod doctor;
 pub(crate) mod explain;
 pub(crate) mod json;
 pub(crate) mod list;
+pub(crate) mod out;

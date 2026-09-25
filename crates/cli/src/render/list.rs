@@ -88,17 +88,31 @@ pub(crate) fn print_tasks_grouped(
     );
 }
 
-pub(crate) fn print_tasks_grouped_with_mode(
+fn print_tasks_grouped_with_mode(
     tasks: &[&Task],
     root: &Path,
     current: Option<&WorkspaceMember>,
     mode: RenderMode,
 ) {
-    let stdout_is_terminal = std::io::stdout().is_terminal();
     print!(
         "{}",
-        render_tasks_grouped(tasks, root, mode, stdout_is_terminal, current)
+        render_tasks_grouped(tasks, root, mode, std::io::stdout().is_terminal(), current)
     );
+}
+
+/// Write the task table to `out`, laid out for its terminal when it has one.
+///
+/// # Errors
+///
+/// When `out` fails to take the table.
+pub(crate) fn write_tasks_grouped(
+    out: &mut crate::render::out::Out<'_>,
+    tasks: &[&Task],
+    root: &Path,
+    current: Option<&WorkspaceMember>,
+) -> std::io::Result<()> {
+    let table = render_tasks_grouped(tasks, root, RenderMode::Rich, out.is_terminal(), current);
+    out.stdout().write_all(table.as_bytes())
 }
 
 fn render_tasks_grouped(

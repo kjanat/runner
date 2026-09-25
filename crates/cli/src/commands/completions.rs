@@ -22,9 +22,12 @@ use crate::complete::SHELLS;
 ///
 /// When `output` is `Some`, the scripts are written to that path (any
 /// existing file is overwritten) and a confirmation line is printed to
-/// stderr. Otherwise they go to stdout, byte-for-byte the same output the
-/// command has always produced.
-pub(crate) fn completions(shell: Option<Shell>, output: Option<&Path>) -> Result<()> {
+/// stderr. Otherwise they go to stdout.
+pub(crate) fn completions(
+    shell: Option<Shell>,
+    output: Option<&Path>,
+    out: &mut crate::render::out::Out<'_>,
+) -> Result<()> {
     let shell = shell
         .or_else(detect_shell)
         .context("could not detect shell, set $SHELL or pass explicitly: runner completions zsh")?;
@@ -50,15 +53,17 @@ pub(crate) fn completions(shell: Option<Shell>, output: Option<&Path>) -> Result
         )?;
         buf.flush()
             .with_context(|| format!("failed to flush {}", path.display()))?;
-        eprintln!("wrote completion script to {}", path.display());
+        writeln!(
+            out.stderr(),
+            "wrote completion script to {}",
+            path.display()
+        )?;
     } else {
-        let stdout = std::io::stdout();
-        let mut handle = stdout.lock();
         write_registrations(
             completer,
             &runner_completer,
             run_completer.as_deref(),
-            &mut handle,
+            out.stdout(),
         )?;
     }
 
@@ -224,8 +229,12 @@ mod tests {
         let dir = TempDir::new("runner-completions-output");
         let target = dir.path().join("runner.zsh");
 
-        completions(Some(Shell::Zsh), Some(&target))
-            .expect("completions should succeed when writing to file");
+        completions(
+            Some(Shell::Zsh),
+            Some(&target),
+            &mut crate::render::out::Out::Captured(&mut Vec::new(), &mut Vec::new()),
+        )
+        .expect("completions should succeed when writing to file");
 
         let body = fs::read_to_string(&target).expect("script file should be readable");
         assert!(
@@ -244,8 +253,12 @@ mod tests {
         let dir = TempDir::new("runner-completions-missing-parent");
         let bad = dir.path().join("does-not-exist").join("runner.zsh");
 
-        let err = completions(Some(Shell::Zsh), Some(&bad))
-            .expect_err("missing parent directory should fail");
+        let err = completions(
+            Some(Shell::Zsh),
+            Some(&bad),
+            &mut crate::render::out::Out::Captured(&mut Vec::new(), &mut Vec::new()),
+        )
+        .expect_err("missing parent directory should fail");
 
         assert!(
             err.to_string().contains("failed to create"),

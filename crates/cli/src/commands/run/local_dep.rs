@@ -116,9 +116,10 @@ fn pnp_selected_package(
     let prepared = super::core::prepare(ctx, overrides, bin)?;
     let present = prepared
         .project
-        .present
-        .iter()
-        .find(|p| p.provider == runner_core::ProviderId::Yarn)
+        .present_in(
+            runner_core::ProviderId::Yarn,
+            &runner_core::plan::scope_at(&prepared.tree, &prepared.tree.cwd),
+        )
         .ok_or_else(|| anyhow::anyhow!("Plug'n'Play requires an observed Yarn provider"))?;
     let plan = runner_core::plan_with(
         &prepared.tree,

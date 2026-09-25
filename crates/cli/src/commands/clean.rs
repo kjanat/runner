@@ -1,21 +1,24 @@
 //! `runner clean`, remove caches and build artifacts for detected tools.
 
 use std::io;
-use std::io::Write as _;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
 
+use crate::render::out::Out;
 use crate::resolver::ResolutionOverrides;
 use crate::types::ProjectContext;
 
 /// Collect ecosystem-specific directories that exist under the project root,
 /// prompt for confirmation (unless `skip_confirm`), then delete them.
+///
+/// A captured `out` declines the prompt.
 pub(crate) fn clean(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     skip_confirm: bool,
     include_framework: bool,
+    out: &mut Out<'_>,
 ) -> Result<()> {
     let tree = super::run::core::tree(ctx);
     let project = super::run::core::project_under(ctx, &super::run::core::policy(overrides))?;
@@ -45,7 +48,7 @@ pub(crate) fn clean(
 
     if targets.is_empty() {
         if overrides.shows_progress() {
-            println!("{}", "Nothing to clean.".dimmed());
+            writeln!(out.stdout(), "{}", "Nothing to clean.".dimmed())?;
         }
         return Ok(());
     }
@@ -55,19 +58,21 @@ pub(crate) fn clean(
     }
 
     if overrides.shows_progress() {
-        println!("Will remove:");
+        writeln!(out.stdout(), "Will remove:")?;
         for t in &targets {
-            println!("  {t}");
+            writeln!(out.stdout(), "  {t}")?;
         }
     }
 
     if !skip_confirm {
-        print!("\nProceed? [y/N] ");
-        io::stdout().flush()?;
+        write!(out.stdout(), "\nProceed? [y/N] ")?;
+        out.stdout().flush()?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
+        if matches!(out, Out::Stdio(..)) {
+            io::stdin().read_line(&mut input)?;
+        }
         if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Aborted.");
+            writeln!(out.stdout(), "Aborted.")?;
             return Ok(());
         }
     }
@@ -75,7 +80,7 @@ pub(crate) fn clean(
     runner_core::clean::execute(&plan)?;
     if overrides.shows_progress() {
         for target in &targets {
-            println!("  {} {target}", "removed".red());
+            writeln!(out.stdout(), "  {} {target}", "removed".red())?;
         }
     }
 

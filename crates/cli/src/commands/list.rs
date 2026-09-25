@@ -8,12 +8,13 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use colored::Colorize;
 
-use crate::render::list::{RenderMode, print_tasks_grouped_with_mode};
+use crate::render::list::write_tasks_grouped;
+use crate::render::out::Out;
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
 use crate::types::{ProjectContext, Task, TaskSource};
 
-/// Print tasks to stdout.
+/// Write tasks to `out`.
 ///
 /// In `raw` mode, prints deduplicated task names one per line (for piping
 /// into scripts or shell completions). Otherwise prints a human-readable
@@ -22,14 +23,16 @@ use crate::types::{ProjectContext, Task, TaskSource};
 /// # Errors
 ///
 /// Returns an error when `source` doesn't name a known [`TaskSource`],
-/// or when `--json` serialization fails. The human-output path never
-/// errors.
+/// when `--json` serialization fails, or when `out` fails to take the
+/// output.
 pub(crate) fn list(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     raw: bool,
     json: bool,
     source: Option<&str>,
+    out: &mut Out<'_>,
+    sink: super::WarningSink<'_>,
 ) -> Result<()> {
     let parsed_source = match source {
         None => None,
@@ -44,11 +47,11 @@ pub(crate) fn list(
 
     if json {
         let view = Project::build_with_schema(ctx, overrides, false).into_list_view(parsed_source);
-        crate::render::json::print(&view)?;
+        crate::render::json::write(out.stdout(), &view)?;
         return Ok(());
     }
 
-    super::print_warnings(ctx, overrides, None);
+    super::print_warnings(ctx, overrides, sink);
 
     let filtered: Vec<&Task> = ctx
         .tasks
@@ -61,23 +64,25 @@ pub(crate) fn list(
         for task in &filtered {
             let name = ctx.spelling(task);
             if seen.insert(name.to_string()) {
-                println!("{name}");
+                writeln!(out.stdout(), "{name}")?;
             }
         }
     } else if filtered.is_empty() {
-        println!("{}", "No tasks found.".dimmed());
+        writeln!(out.stdout(), "{}", "No tasks found.".dimmed())?;
     } else {
         // `runner list` is an explicit request for the task list,
         // always full detail, never collapse. The height-adaptive
         // compact path is reserved for the bare `runner` / `runner
         // info` glance view (see `print_tasks_grouped`).
-        print_tasks_grouped_with_mode(
+        write_tasks_grouped(
+            out,
             &filtered,
             &ctx.root,
             ctx.current_member().map(Arc::as_ref),
-            RenderMode::Rich,
-        );
-        print_conflicts(ctx, overrides);
+        )?;
+        if let Some(report) = format_conflicts(ctx, overrides, out.is_terminal()) {
+            out.stdout().write_all(report.as_bytes())?;
+        }
     }
     Ok(())
 }
@@ -213,6 +218,8 @@ mod tests {
             false,
             false,
             Some("wat"),
+            &mut crate::render::out::Out::Captured(&mut Vec::new(), &mut Vec::new()),
+            None,
         )
         .expect_err("invalid source should error");
 

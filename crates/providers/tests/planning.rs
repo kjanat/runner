@@ -911,6 +911,45 @@ fn clean_includes_generated_python_metadata_and_preserves_files() {
 }
 
 #[test]
+fn clean_from_a_member_includes_the_root_and_that_member() {
+    let fixture = Fixture::new();
+    let member_dir = fixture.0.root.join("packages").join("app");
+    let other_dir = fixture.0.root.join("packages").join("other");
+    for dir in [&fixture.0.root, &member_dir, &other_dir] {
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+    }
+    let member = Scope::Member {
+        name: "app".into(),
+        dir: member_dir.clone(),
+    };
+    let other = Scope::Member {
+        name: "other".into(),
+        dir: other_dir,
+    };
+    let tree = Tree {
+        cwd: member_dir.clone(),
+        root: fixture.0.root.clone(),
+        members: vec![member.clone(), other.clone()],
+    };
+    let mut local = fixture.present(ProviderId::Npm);
+    local.scope = member;
+    let mut elsewhere = fixture.present(ProviderId::Npm);
+    elsewhere.scope = other;
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Npm), local, elsewhere],
+        ..Project::default()
+    };
+    let plan = runner_core::clean::plan(&tree, &project, &REGISTRY, false).unwrap();
+    assert_eq!(
+        plan.targets,
+        [
+            fixture.0.root.join("node_modules"),
+            member_dir.join("node_modules"),
+        ]
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn declared_health_checks_report_findings_and_query_failures() {
     use std::os::unix::fs::PermissionsExt;
@@ -991,6 +1030,62 @@ fn an_activated_but_unconfigured_manager_takes_no_miss() {
             "{weight:?}"
         );
     }
+}
+
+#[test]
+fn an_invocation_package_manager_without_exec_refuses_the_exec_rungs() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Cargo),
+        ],
+        ..Project::default()
+    };
+    let outcome = |from: runner_core::Layer| {
+        let mut policy = Policy {
+            reach: ReachPolicy::Allow,
+            ..Policy::default()
+        };
+        policy.pm.0.insert(
+            runner_core::Ecosystem::Rust,
+            runner_core::Choice {
+                id: ProviderId::Cargo,
+                from,
+            },
+        );
+        let cascade = Cascade {
+            tree: &fixture.0,
+            project: &project,
+            policy: &policy,
+            registry: &REGISTRY,
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[])
+            .map(|(rung, dispatched)| (rung.name, dispatched))
+    };
+    for layer in [runner_core::Layer::Cli, runner_core::Layer::Env] {
+        let refused = outcome(layer.clone());
+        assert!(
+            matches!(
+                refused,
+                Err(Refusal::NoCapability {
+                    provider: ProviderId::Cargo,
+                    op: "exec",
+                })
+            ),
+            "{layer:?}: {refused:?}"
+        );
+    }
+    let (rung, Dispatch::Plan(plan)) =
+        outcome(runner_core::Layer::ConfigFile("runner.toml".into())).unwrap()
+    else {
+        panic!("a configured choice leaves exec to the other providers");
+    };
+    assert_eq!(rung, "exec");
+    assert_eq!(plan.provider, Some(ProviderId::Npm));
 }
 
 #[test]

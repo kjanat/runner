@@ -1766,7 +1766,14 @@ fn exec_plan(
         )));
     }
 
-    let ordered = if manager {
+    let forced = if manager {
+        Vec::new()
+    } else {
+        invocation_managers(cascade, &scope, &op)?
+    };
+    let ordered = if !forced.is_empty() {
+        forced
+    } else if manager {
         cascade
             .project
             .present
@@ -1828,6 +1835,45 @@ fn exec_plan(
         }
     }
     Ok(None)
+}
+
+/// The package managers the command line or environment chose for `scope`.
+///
+/// # Errors
+///
+/// `NoCapability` when none of them has an exec primitive.
+fn invocation_managers<'a>(
+    cascade: &Cascade<'a>,
+    scope: &Scope,
+    op: &Op<'_>,
+) -> Result<Vec<&'a Present>, Refusal> {
+    let forced: Vec<&Present> = cascade
+        .policy
+        .pm
+        .0
+        .values()
+        .filter(|choice| matches!(choice.from, Layer::Cli | Layer::Env))
+        .filter_map(|choice| cascade.project.present_in(choice.id, scope))
+        .collect();
+    match forced.first() {
+        Some(first)
+            if forced.iter().all(|present| {
+                cascade
+                    .registry
+                    .by_id(present.provider)
+                    .for_present(present)
+                    .caps
+                    .exec
+                    .is_none()
+            }) =>
+        {
+            Err(Refusal::NoCapability {
+                provider: first.provider,
+                op: op.name(),
+            })
+        }
+        _ => Ok(forced),
+    }
 }
 
 /// The path `token` names, relative to `base`, with a leading `~` expanded

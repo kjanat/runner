@@ -49,8 +49,8 @@ and adds a warning.
 | `config`, `schema`, `lsp`     | none        | Read the declaration tables directly.               |
 
 Directory cleanup uses `CleanPlan { targets, because }`. Its targets come from
-present providers' effective clean capabilities. The executor removes those
-directories. Health capabilities declare a list of read-only argv templates and
+the effective clean capabilities of the root's providers and the invoking
+member's providers. The executor removes those directories. Health capabilities declare a list of read-only argv templates and
 output parsers; doctor plans each check with host trust and reports query errors.
 
 Explanation is the plan rendered. No subcommand rebuilds a decision by a
@@ -562,7 +562,9 @@ parallel spawning share the evidence guard. Provider planning asserts that its t
 invoke tools directly. Explicit user shell commands preserve their argv. Configured execution
 also checks that the command's argv still equals the plan. The CLI run path requires
 a plan for subprocesses. `Dispatch::Builtin` executes in-process and explain renders
-that action. Task bodies are left
+that action. A parallel chain runs its builtins after spawning every other item,
+into buffers it replays through the same output as a task; `install` is refused
+there. Task bodies are left
 to their owning tools, including `deno task`; runner does not evaluate shell strings.
 
 `Trust` is set by the op. Toolchain installs and health checks are `Host`.

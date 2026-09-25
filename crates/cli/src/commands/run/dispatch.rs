@@ -630,13 +630,7 @@ fn explain_host(
 ) {
     if let Some(provider) = plan.provider {
         let descriptor = runner_providers::REGISTRY.by_id(provider);
-        let quiet = project
-            .present
-            .iter()
-            .find(|p| p.provider == provider)
-            .map_or(descriptor.caps.quiet, |present| {
-                descriptor.for_present(present).caps.quiet
-            });
+        let quiet = host_quiet(project, provider, &plan.scope);
         let applied = requested.diagnostics.min(if quiet.strongest() == 0 {
             tool::HostDiagnostics::Normal
         } else {
@@ -664,6 +658,17 @@ fn explain_host(
             ),
         );
     }
+}
+
+fn host_quiet(
+    project: &runner_core::Project,
+    provider: runner_core::ProviderId,
+    scope: &runner_core::Scope,
+) -> runner_core::QuietSupport {
+    runner_providers::REGISTRY
+        .effective(provider, project, scope)
+        .caps
+        .quiet
 }
 
 /// The arrow label for a plan: the program plus the literal words it puts
@@ -1860,5 +1865,41 @@ mod tests {
         );
         assert_eq!(command.get_program().to_string_lossy(), "just");
         assert_eq!(command_args(&command), ["just"]);
+    }
+
+    #[test]
+    fn the_host_explanation_reads_the_plan_scopes_variant() {
+        use runner_core::{Declared, Evidence, Present, Project, ProviderId, Scope, Weight};
+
+        let yarn = |scope: Scope, variant: &str| Present {
+            provider: ProviderId::Yarn,
+            scope: scope.clone(),
+            version: None,
+            bin_dirs: Vec::new(),
+            because: vec![Evidence {
+                provider: Some(ProviderId::Yarn),
+                signal: None,
+                at: std::path::PathBuf::from("/p/package.json"),
+                scope,
+                weight: Weight::Declared,
+                declared: Some(Declared::Variant(variant.into())),
+            }],
+        };
+        let member = Scope::Member {
+            name: "web".into(),
+            dir: std::path::PathBuf::from("/p/web"),
+        };
+        let project = Project {
+            present: vec![yarn(Scope::Root, "classic"), yarn(member.clone(), "berry")],
+            ..Project::default()
+        };
+        assert_ne!(
+            super::host_quiet(&project, ProviderId::Yarn, &Scope::Root).strongest(),
+            0
+        );
+        assert_eq!(
+            super::host_quiet(&project, ProviderId::Yarn, &member).strongest(),
+            0
+        );
     }
 }

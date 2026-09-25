@@ -343,6 +343,24 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `.config/mise.toml`, `mise/config.toml` and `mise.local.toml` each pair
   with their own lockfile.
 
+- A `--pm` or `RUNNER_PM` choice without an exec primitive refuses `run
+  <name>` once the local rungs miss, naming the chosen manager. A `--pm`
+  choice with an exec primitive is the only manager asked.
+
+- Task sources are read concurrently, so `run`, `list` and completion wait
+  for the slowest extractor.
+
+- `runner clean` from a workspace member removes the root's directories as
+  well as the member's.
+
+- `--explain` reports the quiet support of the package manager variant in
+  the plan's scope, such as a Yarn Berry member under a Classic root.
+
+- A builtin in a parallel chain (`list`, `info`, `completions`, `clean`)
+  runs once the other items have spawned, and its output goes through the
+  chain's prefixed lines or its own group. Its `clean` prompt reads as
+  declined, and `install` is refused there.
+
 ### Security
 
 - `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` in a repository

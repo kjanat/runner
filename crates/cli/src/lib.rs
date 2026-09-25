@@ -1035,6 +1035,8 @@ fn run_builtin(
     overrides: &resolver::ResolutionOverrides,
     name: &str,
     args: &[String],
+    out: &mut render::out::Out<'_>,
+    sink: commands::WarningSink<'_>,
 ) -> Result<i32> {
     let parsed = match <BuiltinArgs as clap::Parser>::try_parse_from(
         ["runner", name]
@@ -1042,9 +1044,36 @@ fn run_builtin(
             .chain(args.iter().map(String::as_str)),
     ) {
         Ok(parsed) => parsed,
-        Err(error) => return render_clap_error(&error, !overrides.shows_errors()),
+        Err(error) => return write_clap_error(&error, !overrides.shows_errors(), out),
     };
-    dispatch_builtin(ctx, overrides, parsed.command, parsed.schema_version)
+    dispatch_builtin(
+        ctx,
+        overrides,
+        parsed.command,
+        parsed.schema_version,
+        out,
+        sink,
+    )
+}
+
+fn write_clap_error(err: &clap::Error, muted: bool, out: &mut render::out::Out<'_>) -> Result<i32> {
+    if matches!(out, render::out::Out::Stdio(..)) {
+        return render_clap_error(err, muted);
+    }
+    if !muted
+        || matches!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+        )
+    {
+        let stream = if err.use_stderr() {
+            out.stderr()
+        } else {
+            out.stdout()
+        };
+        write!(stream, "{}", err.render())?;
+    }
+    Ok(err.exit_code())
 }
 
 fn dispatch_builtin(
@@ -1052,6 +1081,8 @@ fn dispatch_builtin(
     overrides: &resolver::ResolutionOverrides,
     command: args::Command,
     schema_version: Option<u32>,
+    out: &mut render::out::Out<'_>,
+    sink: commands::WarningSink<'_>,
 ) -> Result<i32> {
     let mut effective = overrides.clone();
     apply_script_policy_flags(Some(&command), &mut effective);
@@ -1086,7 +1117,7 @@ fn dispatch_builtin(
             mode,
             failure,
             ..
-        } => dispatch_install(
+        } if matches!(out, render::out::Out::Stdio(..)) => dispatch_install(
             ctx,
             overrides,
             commands::install::InstallFlags { frozen, no_tools },
@@ -1098,35 +1129,38 @@ fn dispatch_builtin(
             yes,
             include_framework,
         } => {
-            commands::clean(ctx, overrides, yes, include_framework)?;
+            commands::clean(ctx, overrides, yes, include_framework, out)?;
             Ok(0)
         }
         args::Command::List { raw, json, source } => {
             schema_version_for_json(json, schema_version)?;
-            commands::list(ctx, overrides, raw, json, source.as_deref())?;
+            commands::list(ctx, overrides, raw, json, source.as_deref(), out, sink)?;
             Ok(0)
         }
         args::Command::Info { json } => {
             if overrides.shows_warnings() {
-                eprintln!(
+                writeln!(
+                    out.stderr(),
                     "{} `runner info` is deprecated; use `runner list`",
                     "warn:".yellow().bold()
-                );
+                )?;
                 if actions_rs::env::is_github_actions() {
-                    eprintln!(
+                    writeln!(
+                        out.stderr(),
                         "::warning title=Deprecation::`runner info` is deprecated; use `runner \
                          list`"
-                    );
+                    )?;
                 }
             }
             schema_version_for_json(json, schema_version)?;
-            commands::list(ctx, overrides, false, json, None)?;
+            commands::list(ctx, overrides, false, json, None, out, sink)?;
             Ok(0)
         }
         args::Command::Completions { shell, output } => {
-            commands::completions(shell, output.as_deref())?;
+            commands::completions(shell, output.as_deref(), out)?;
             Ok(0)
         }
+        args::Command::Install { .. } => bail!("install items cannot run in parallel chains"),
         _ => bail!("expected a builtin command"),
     }
 }
@@ -1319,7 +1353,14 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
             | args::Command::Clean { .. }
             | args::Command::List { .. }
             | args::Command::Completions { .. }),
-        ) => dispatch_builtin(&ctx, &overrides, command, cli.global.schema_version),
+        ) => dispatch_builtin(
+            &ctx,
+            &overrides,
+            command,
+            cli.global.schema_version,
+            &mut render::out::Out::stdio(),
+            None,
+        ),
         Some(args::Command::Run {
             task, args, mode, ..
         }) => dispatch_run(&ctx, &overrides, task, args, mode),

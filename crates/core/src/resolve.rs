@@ -144,28 +144,46 @@ pub fn resolve(
     registry: &Registry,
 ) -> std::io::Result<Project> {
     let mut project = resolve_presence(tree, evidence, policy, registry)?;
+    let extracted: Vec<_> = std::thread::scope(|threads| {
+        let mut handles = Vec::new();
+        for present in &project.present {
+            if let Some(extract) = registry.by_id(present.provider).tasks {
+                handles.push((present, threads.spawn(move || extract(present, tree))));
+            }
+        }
+        handles
+            .into_iter()
+            .map(|(present, handle)| {
+                (
+                    present.provider,
+                    present.scope.clone(),
+                    handle
+                        .join()
+                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                )
+            })
+            .collect()
+    });
     let mut unread = Vec::new();
-    for present in &project.present {
-        if let Some(extract) = registry.by_id(present.provider).tasks {
-            match extract(present, tree) {
-                Ok(found) => {
-                    project.warnings.extend(found.warnings);
-                    for task in found.tasks {
-                        if !project.tasks.iter().any(|existing| {
-                            existing.source == task.source
-                                && existing.scope == task.scope
-                                && existing.name == task.name
-                        }) {
-                            project.tasks.push(task);
-                        }
+    for (provider, scope, outcome) in extracted {
+        match outcome {
+            Ok(found) => {
+                project.warnings.extend(found.warnings);
+                for task in found.tasks {
+                    if !project.tasks.iter().any(|existing| {
+                        existing.source == task.source
+                            && existing.scope == task.scope
+                            && existing.name == task.name
+                    }) {
+                        project.tasks.push(task);
                     }
                 }
-                Err(warning) => unread.push(Unread {
-                    provider: present.provider,
-                    scope: present.scope.clone(),
-                    message: warning.message,
-                }),
             }
+            Err(warning) => unread.push(Unread {
+                provider,
+                scope,
+                message: warning.message,
+            }),
         }
     }
     project.unread = unread;
@@ -607,6 +625,59 @@ mod tests {
             project.present[0].bin_dirs,
             [PathBuf::from("/p/node_modules/.bin")]
         );
+    }
+
+    #[test]
+    fn task_sources_are_read_concurrently_and_merged_in_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        static ARRIVED: AtomicUsize = AtomicUsize::new(0);
+        fn meet(present: &crate::Present, _: &Tree) -> Result<crate::Extracted, crate::Warning> {
+            ARRIVED.fetch_add(1, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while ARRIVED.load(Ordering::SeqCst) < 2 {
+                if Instant::now() > deadline {
+                    return Err(crate::Warning::about(present.provider, "read alone"));
+                }
+                std::thread::yield_now();
+            }
+            Ok(vec![crate::Task {
+                name: format!("{:?}", present.provider),
+                source: present.provider,
+                scope: Scope::Root,
+                target: None,
+                description: None,
+                alias_of: None,
+                forwards_to: None,
+                detail: crate::TaskDetail::default(),
+            }]
+            .into())
+        }
+        static SOURCES: &[Provider] = &[
+            Provider {
+                tasks: Some(meet),
+                ..fake(ProviderId::Npm, "npm", Ecosystem::Node)
+            },
+            Provider {
+                tasks: Some(meet),
+                ..fake(ProviderId::Uv, "uv", Ecosystem::Python)
+            },
+        ];
+        let project = resolve(
+            &tree(),
+            vec![
+                found(ProviderId::Uv, Weight::Locked),
+                found(ProviderId::Npm, Weight::Locked),
+            ],
+            &Policy::default(),
+            &Registry(SOURCES),
+        )
+        .unwrap();
+        assert_eq!(project.unread, []);
+        let order: Vec<ProviderId> = project.present.iter().map(|p| p.provider).collect();
+        let sources: Vec<ProviderId> = project.tasks.iter().map(|task| task.source).collect();
+        assert_eq!(sources, order);
     }
 
     #[test]

@@ -244,7 +244,7 @@ trait ParallelOutput {
         task: SpawnedTask,
         spool: Self::Spool,
     ) -> Self::Task;
-    fn child(task: &mut Self::Task) -> &mut Child;
+    fn job(task: &mut Self::Task) -> &mut Job;
     fn finished(
         &mut self,
         overrides: &ResolutionOverrides,
@@ -266,7 +266,73 @@ struct SpawnedTask {
     name: String,
     key: String,
     started: Instant,
-    child: Child,
+    job: Job,
+    stdout: Box<dyn std::io::Read + Send>,
+    stderr: Box<dyn std::io::Read + Send>,
+}
+
+impl SpawnedTask {
+    fn child(name: String, key: String, started: Instant, mut child: Child) -> Self {
+        Self {
+            name,
+            key,
+            started,
+            stdout: Box::new(child.stdout.take().expect("stdout piped")),
+            stderr: Box::new(child.stderr.take().expect("stderr piped")),
+            job: Job::Child(child),
+        }
+    }
+
+    fn builtin(
+        name: String,
+        key: String,
+        started: Instant,
+        code: i32,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    ) -> Self {
+        Self {
+            name,
+            key,
+            started,
+            job: Job::Done(code),
+            stdout: Box::new(std::io::Cursor::new(stdout)),
+            stderr: Box::new(std::io::Cursor::new(stderr)),
+        }
+    }
+}
+
+/// A parallel item's process, or the exit code of a builtin that already ran.
+enum Job {
+    Child(Child),
+    Done(i32),
+}
+
+impl Job {
+    fn try_wait(&mut self) -> std::io::Result<Option<i32>> {
+        match self {
+            Self::Child(child) => Ok(child.try_wait()?.map(crate::commands::exit_code)),
+            Self::Done(code) => Ok(Some(*code)),
+        }
+    }
+
+    /// Kill the process and return its exit code when it exited on its own.
+    fn kill(&mut self) -> Option<i32> {
+        match self {
+            Self::Child(child) => {
+                let _ = child.kill();
+                child.wait().ok().and_then(natural_exit_code)
+            }
+            Self::Done(code) => Some(*code),
+        }
+    }
+
+    fn abort(&mut self) {
+        if let Self::Child(child) = self {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 struct Supervisor<'a, O> {
@@ -324,6 +390,7 @@ impl<'a, O: ParallelOutput> Supervisor<'a, O> {
         warnings: &mut HashSet<DetectionWarning>,
         tasks: &mut Vec<O::Task>,
     ) -> Result<()> {
+        let mut builtins = Vec::new();
         for item in &chain.items {
             // Spawn each task with piped stdio and start reader threads. The
             // `Instant` recorded at spawn anchors the per-task wall-clock
@@ -348,30 +415,34 @@ impl<'a, O: ParallelOutput> Supervisor<'a, O> {
             )?;
             let (child, key) = match dispatch {
                 crate::commands::run::PipedDispatch::Child(child, key) => (child, key),
-                crate::commands::run::PipedDispatch::Completed(code, key) => {
-                    record_finished(
-                        &key,
-                        self.overrides,
-                        self.outcomes,
-                        item.display_name().to_owned(),
-                        started.elapsed(),
-                        code,
-                    );
-                    if code != 0 {
-                        self.first_failure.get_or_insert(code);
-                        if matches!(chain.failure, FailurePolicy::KillOnFail) {
-                            break;
-                        }
-                    }
+                crate::commands::run::PipedDispatch::Builtin(name) => {
+                    builtins.push((item, name));
                     continue;
                 }
             };
-            let task = SpawnedTask {
-                name: item.display_name().to_string(),
-                key,
+            let task = SpawnedTask::child(item.display_name().to_string(), key, started, child);
+            tasks.push(self.output.attach(self.overrides, task, spool));
+        }
+        for (item, name) in builtins {
+            let started = Instant::now();
+            let spool = self.output.spool()?;
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let code = crate::run_builtin(
+                ctx,
+                self.overrides,
+                &name,
+                &item.args,
+                &mut crate::render::out::Out::Captured(&mut stdout, &mut stderr),
+                Some(&mut *warnings),
+            )?;
+            let task = SpawnedTask::builtin(
+                item.display_name().to_string(),
+                name,
                 started,
-                child,
-            };
+                code,
+                stdout,
+                stderr,
+            );
             tasks.push(self.output.attach(self.overrides, task, spool));
         }
         Ok(())
@@ -387,9 +458,8 @@ impl<'a, O: ParallelOutput> Supervisor<'a, O> {
             let mut poll_error: Option<anyhow::Error> = None;
             let mut pending = std::mem::take(&mut remaining).into_iter();
             for mut task in pending.by_ref() {
-                match O::child(&mut task).try_wait() {
-                    Ok(Some(status)) => {
-                        let code = crate::commands::exit_code(status);
+                match O::job(&mut task).try_wait() {
+                    Ok(Some(code)) => {
                         if code != 0 {
                             self.first_failure.get_or_insert(code);
                         }
@@ -472,10 +542,8 @@ impl ParallelOutput for Streaming {
         } else {
             String::new()
         };
-        let stdout: Box<dyn std::io::Read + Send> =
-            Box::new(task.child.stdout.take().expect("stdout piped"));
-        let stderr: Box<dyn std::io::Read + Send> =
-            Box::new(task.child.stderr.take().expect("stderr piped"));
+        let stdout = std::mem::replace(&mut task.stdout, Box::new(std::io::empty()));
+        let stderr = std::mem::replace(&mut task.stderr, Box::new(std::io::empty()));
         let (stdout_policy, stderr_policy) = overrides.task_streams_for(&task.key);
         let sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
             Arc::clone(&self.base),
@@ -489,8 +557,8 @@ impl ParallelOutput for Streaming {
         task
     }
 
-    fn child(task: &mut SpawnedTask) -> &mut Child {
-        &mut task.child
+    fn job(task: &mut SpawnedTask) -> &mut Job {
+        &mut task.job
     }
 
     fn finished(
@@ -520,14 +588,15 @@ impl ParallelOutput for Streaming {
             name,
             key,
             started,
-            mut child,
+            mut job,
+            ..
         } = task;
-        let _ = child.kill();
         // Wait so stdio drains fully; a killed sibling still
         // reports timing for the work it managed before SIGKILL.
         // An exit that raced the kill stays a real result.
+        let natural = job.kill();
         let elapsed = started.elapsed();
-        match child.wait().ok().and_then(natural_exit_code) {
+        match natural {
             Some(code) => {
                 record_finished(&key, overrides, outcomes, name, elapsed, code);
             }
@@ -539,8 +608,7 @@ impl ParallelOutput for Streaming {
     /// return: `Child::drop` does not kill, so every early exit routes
     /// through here.
     fn abort(&mut self, mut task: SpawnedTask) {
-        let _ = task.child.kill();
-        let _ = task.child.wait();
+        task.job.abort();
     }
 
     /// Bounded drain, not an unbounded join: a reader only EOFs once every
@@ -595,7 +663,7 @@ struct GroupedTask {
     name: String,
     key: String,
     started: Instant,
-    child: Child,
+    job: Job,
     sink: Arc<BufferSink>,
     readers: Vec<std::thread::JoinHandle<()>>,
 }
@@ -643,13 +711,9 @@ impl ParallelOutput for Grouped {
     fn attach(
         &mut self,
         overrides: &ResolutionOverrides,
-        mut task: SpawnedTask,
+        task: SpawnedTask,
         sink: Arc<BufferSink>,
     ) -> GroupedTask {
-        let stdout: Box<dyn std::io::Read + Send> =
-            Box::new(task.child.stdout.take().expect("stdout piped"));
-        let stderr: Box<dyn std::io::Read + Send> =
-            Box::new(task.child.stderr.take().expect("stderr piped"));
         // `.clone()` resolves on the concrete `Arc<BufferSink>` then
         // unsizes to the trait object; `Arc::clone(&sink)` would instead
         // infer its generic from the annotation and fail to coerce.
@@ -664,8 +728,8 @@ impl ParallelOutput for Grouped {
         // preserves stdout/stderr identity for replay.
         let readers = crate::chain::mux::spawn_readers(
             vec![
-                (String::new(), false, stdout),
-                (String::new(), true, stderr),
+                (String::new(), false, task.stdout),
+                (String::new(), true, task.stderr),
             ],
             &dyn_sink,
         );
@@ -673,14 +737,14 @@ impl ParallelOutput for Grouped {
             name: task.name,
             key: task.key,
             started: task.started,
-            child: task.child,
+            job: task.job,
             sink,
             readers,
         }
     }
 
-    fn child(task: &mut GroupedTask) -> &mut Child {
-        &mut task.child
+    fn job(task: &mut GroupedTask) -> &mut Job {
+        &mut task.job
     }
 
     /// Flush each task's block the moment it completes, so blocks appear in
@@ -756,8 +820,7 @@ fn kill_grouped_sibling(
     in_gha: bool,
     colorize: bool,
 ) {
-    let _ = task.child.kill();
-    let footer = match task.child.wait().ok().and_then(natural_exit_code) {
+    let footer = match task.job.kill() {
         Some(code) => record_grouped(overrides, outcomes, &task, code),
         None => record_grouped_killed(overrides, outcomes, &task),
     };
@@ -1035,8 +1098,7 @@ impl ItemOutcome {
 /// Kill + reap a grouped task and drain its readers with the bounded
 /// grace, the cleanup every grouped-chain error path shares.
 fn cleanup_grouped_task(mut t: GroupedTask) {
-    let _ = t.child.kill();
-    let _ = t.child.wait();
+    t.job.abort();
     t.sink.close();
     wait_for_readers(&mut t.readers, READER_DRAIN_GRACE);
 }
