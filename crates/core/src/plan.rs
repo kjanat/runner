@@ -702,7 +702,17 @@ impl<'a> Shaping<'_, 'a> {
                     }
                 }
                 if let Some(flags) = cap.file_flags {
-                    fill.request.file_flags = flags(&fill.files);
+                    let named: Vec<PathBuf> = fill
+                        .files
+                        .iter()
+                        .cloned()
+                        .chain(
+                            args.iter()
+                                .filter(|arg| !arg.starts_with('-'))
+                                .map(PathBuf::from),
+                        )
+                        .collect();
+                    fill.request.file_flags = flags(&named);
                 }
                 cap.argv
             }
@@ -1524,6 +1534,14 @@ fn host_rung(
     let Some(present) = root else {
         return probe_with(token, &[]).map(found).transpose();
     };
+    if let Some(choice) = &cascade.policy.runner
+        && choice.id != present.provider
+    {
+        return Err(Refusal::NoRunnerTask {
+            runner: choice.id,
+            name: token.to_owned(),
+        });
+    }
     plan_with(
         cascade.tree,
         cascade.project,
@@ -1844,20 +1862,28 @@ fn exec_plan(
 ///
 /// # Errors
 ///
-/// `NoCapability` when none of them has an exec primitive.
+/// `Invalid` when one of them is absent from `scope`, `NoCapability` when
+/// none of them has an exec primitive.
 fn invocation_managers<'a>(
     cascade: &Cascade<'a>,
     scope: &Scope,
     op: &Op<'_>,
 ) -> Result<Vec<&'a Present>, Refusal> {
-    let forced: Vec<&Present> = cascade
+    let forced = cascade
         .policy
         .pm
         .0
         .values()
         .filter(|choice| matches!(choice.from, Layer::Cli | Layer::Env))
-        .filter_map(|choice| cascade.project.present_in(choice.id, scope))
-        .collect();
+        .map(|choice| {
+            cascade.project.present_in(choice.id, scope).ok_or_else(|| {
+                Refusal::Invalid(format!(
+                    "no evidence for package manager {}",
+                    cascade.registry.by_id(choice.id).label
+                ))
+            })
+        })
+        .collect::<Result<Vec<&Present>, Refusal>>()?;
     match forced.first() {
         Some(first)
             if forced.iter().all(|present| {

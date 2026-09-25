@@ -1135,6 +1135,79 @@ fn an_invocation_package_manager_without_exec_refuses_the_exec_rungs() {
 }
 
 #[test]
+fn an_absent_invocation_package_manager_refuses_the_exec_rungs() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Npm)],
+        ..Project::default()
+    };
+    let mut policy = Policy {
+        reach: ReachPolicy::Allow,
+        ..Policy::default()
+    };
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Node,
+        runner_core::Choice {
+            id: ProviderId::Yarn,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let outcome = runner_core::dispatch(
+        &cascade(&fixture, &project, &policy),
+        "runner-audit-no-such-tool",
+        &[],
+    );
+    assert!(
+        matches!(&outcome, Err(Refusal::Invalid(message)) if message == "no evidence for package manager yarn"),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_runner_choice_refuses_another_runners_default_entry() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Just),
+            fixture.present(ProviderId::Make),
+        ],
+        ..Project::default()
+    };
+    let choose = |id: ProviderId| Policy {
+        runner: Some(runner_core::Choice {
+            id,
+            from: runner_core::Layer::Cli,
+        }),
+        ..Policy::default()
+    };
+    let refused = runner_core::dispatch(
+        &cascade(&fixture, &project, &choose(ProviderId::Just)),
+        "make",
+        &[],
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(Refusal::NoRunnerTask {
+                runner: ProviderId::Just,
+                name,
+            }) if name == "make"
+        ),
+        "{refused:?}"
+    );
+    let (rung, Dispatch::Plan(plan)) = runner_core::dispatch(
+        &cascade(&fixture, &project, &choose(ProviderId::Make)),
+        "make",
+        &[],
+    )
+    .unwrap() else {
+        panic!("the chosen runner's default entry plans");
+    };
+    assert_eq!(rung.name, "host");
+    assert_eq!(plan.provider, Some(ProviderId::Make));
+}
+
+#[test]
 fn an_unreadable_task_source_stops_the_cascade_at_the_task_rung() {
     let fixture = Fixture::new();
     let project = Project {
@@ -2053,6 +2126,33 @@ fn node_test_discovery_refuses_jsx_and_tsx_files() {
             "{file}"
         );
     }
+}
+
+#[test]
+fn explicit_typescript_test_files_ask_node_to_strip_types() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Pnpm)],
+        ..Project::default()
+    };
+    let args = ["foo.test.ts".to_owned()];
+    let plan = runner_core::plan(
+        &fixture.0,
+        &project,
+        &Policy::default(),
+        &Op::Test { args: &args },
+        &REGISTRY,
+    )
+    .unwrap();
+    assert_eq!(
+        words(&plan),
+        [
+            "node",
+            "--experimental-strip-types",
+            "--test",
+            "foo.test.ts"
+        ]
+    );
 }
 
 #[test]

@@ -1740,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    fn run_make_under_a_just_runner_choice_reaches_the_host_rung() {
+    fn run_make_under_a_just_runner_choice_is_refused() {
         let mut ctx = context();
         ctx.task_runners.push(TaskRunner::Make);
         ctx.task_runners.push(TaskRunner::Just);
@@ -1752,12 +1752,13 @@ mod tests {
             ..ResolutionOverrides::default()
         };
 
-        let command = expect_command(
-            resolve_dispatch(&ctx, &overrides, "make", &[], None, true)
-                .expect("a runner choice pins task candidates only"),
+        let Err(error) = resolve_dispatch(&ctx, &overrides, "make", &[], None, true) else {
+            panic!("a just choice refuses make's default entry");
+        };
+        assert_eq!(
+            error.to_string(),
+            "just defines no task named \"make\"; drop `--runner just` or add the task to its file"
         );
-        assert_eq!(command.get_program().to_string_lossy(), "make");
-        assert_eq!(command_args(&command).len(), 0);
     }
 
     #[test]

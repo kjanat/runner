@@ -373,6 +373,24 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   that member, so `--runtime bun` from the root runs a member script when
   Bun is declared only in the member.
 
+- A `--pm` or `RUNNER_PM` choice absent from the invocation scope refuses
+  `run <name>` once the local rungs miss, with `no evidence for package
+  manager <name>`.
+
+- `run test foo.test.ts` through Node passes `--experimental-strip-types`
+  for a TypeScript file named on the command line.
+
+- `run make`, `run just` and the other default entry points refuse under a
+  `--runner` choice naming another runner.
+
+- `run --package <name> <bin>` under Yarn Plug'n'Play runs `yarn bin` in the
+  invoking workspace member and accepts a `.pnp.cjs` there or at the root.
+
+- `runner install` in a project with another ecosystem detected also
+  installs through a package manager the `PATH` fallback admits for an
+  observed task source, such as npm for a bare `package.json` beside
+  `Cargo.toml`. `doctor` reports the same install set.
+
 ### Security
 
 - `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` in a repository

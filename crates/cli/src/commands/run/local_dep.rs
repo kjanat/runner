@@ -104,10 +104,13 @@ fn pnp_selected_package(
     bin: &str,
     args: &[String],
 ) -> Result<Option<ResolvedBin>> {
-    if !crate::tool::yarn::is_pnp(&ctx.root) {
+    let tree = super::core::tree(ctx);
+    let scope = runner_core::plan::scope_at(&tree, &tree.cwd);
+    let dir = runner_core::plan::scope_dir(&tree, &scope);
+    if !crate::tool::yarn::is_pnp(&dir) && !crate::tool::yarn::is_pnp(&ctx.root) {
         return Ok(None);
     }
-    let Some(bins) = crate::tool::yarn::accessible_bins(&ctx.root)? else {
+    let Some(bins) = crate::tool::yarn::accessible_bins(&dir)? else {
         return Ok(None);
     };
     let Some(found) = pnp_bin(&bins, package, bin)? else {
@@ -116,10 +119,7 @@ fn pnp_selected_package(
     let prepared = super::core::prepare(ctx, overrides, bin)?;
     let present = prepared
         .project
-        .present_in(
-            runner_core::ProviderId::Yarn,
-            &runner_core::plan::scope_at(&prepared.tree, &prepared.tree.cwd),
-        )
+        .present_in(runner_core::ProviderId::Yarn, &scope)
         .ok_or_else(|| anyhow::anyhow!("Plug'n'Play requires an observed Yarn provider"))?;
     let plan = runner_core::plan_with(
         &prepared.tree,

@@ -964,3 +964,50 @@ fn disabled_installers_do_not_request_network_or_execute() {
     );
     fixture.assert_not_executed();
 }
+
+#[test]
+fn plug_n_play_packages_resolve_in_the_invoking_member() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "package.json",
+        r#"{"name":"root","private":true,"packageManager":"yarn@4.0.0","workspaces":["packages/*"]}"#,
+    );
+    std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
+    fixture.file("yarn.lock", "");
+    fixture.file(".pnp.cjs", "");
+    let member = fixture.0.join("packages").join("web");
+    std::fs::create_dir_all(&member).unwrap();
+    fixture.file("packages/web/package.json", r#"{"name":"web"}"#);
+    let yarn = fixture.0.join("bin").join("yarn");
+    std::fs::write(
+        &yarn,
+        "#!/bin/sh\ncase \"$1\" in\n --version) echo 4.0.0;;\n bin) printf 'bin %s\\n' \"$(pwd \
+         -P)\" >> \"$AUDIT_LOG\"; echo \
+         '{\"name\":\"tsc\",\"source\":\"typescript\",\"path\":\"/x/tsc\"}';;\n *) printf '%s\\n' \
+         \"$*\" >> \"$AUDIT_LOG\";;\nesac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&yarn, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_runner"))
+        .env_clear()
+        .env("PATH", fixture.0.join("bin"))
+        .env("HOME", &fixture.0)
+        .env("AUDIT_LOG", fixture.0.join("executed"))
+        .env("RUNNER_REACH", "local")
+        .current_dir(&member)
+        .args(["run", "--package", "typescript", "tsc"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let logged = std::fs::read_to_string(fixture.0.join("executed")).unwrap();
+    assert!(
+        logged
+            .lines()
+            .any(|line| line == format!("bin {}", member.canonicalize().unwrap().display())),
+        "{logged}"
+    );
+}

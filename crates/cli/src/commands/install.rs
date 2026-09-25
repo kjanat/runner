@@ -332,13 +332,6 @@ fn run_tool_operation(
 }
 
 /// Select installers using package-manager choices and per-tool install policy.
-fn select_install_pms(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-) -> Result<Vec<PackageManager>, ResolveError> {
-    select_installers(&ctx.package_managers, overrides)
-}
-
 fn select_installers(
     detected: &[PackageManager],
     overrides: &ResolutionOverrides,
@@ -387,13 +380,34 @@ fn plan_from_resolver(
     })
 }
 
-/// The package managers with an install capability in the root scope.
+/// The package managers with an install capability in the root scope, a
+/// probed one only when it dispatches a task source observed there.
 fn root_installers(project: &runner_core::Project) -> Vec<PackageManager> {
+    let observed = |present: &runner_core::Present| {
+        present
+            .because
+            .iter()
+            .any(|evidence| evidence.weight < runner_core::Weight::Probed)
+    };
+    let dispatches_a_source = |present: &runner_core::Present| {
+        let sources = REGISTRY
+            .by_id(present.provider)
+            .for_present(present)
+            .caps
+            .run_task
+            .map_or(&[][..], |cap| cap.sources);
+        project.present.iter().any(|source| {
+            source.scope == runner_core::Scope::Root
+                && observed(source)
+                && sources.contains(&source.provider)
+        })
+    };
     let mut installers: Vec<_> = project
         .present
         .iter()
         .filter(|present| {
             present.scope == runner_core::Scope::Root
+                && (observed(present) || dispatches_a_source(present))
                 && REGISTRY
                     .by_id(present.provider)
                     .kind
@@ -411,7 +425,7 @@ fn root_installers(project: &runner_core::Project) -> Vec<PackageManager> {
     installers
 }
 
-/// The same selection as [`select_install_pms`] with the not-detected
+/// The same selection as [`select_installers`] with the not-detected
 /// errors dropped: an override naming an absent PM narrows to nothing
 /// instead of failing. Reporting surfaces need the effective set without
 /// inheriting dispatch's fatal cases; `doctor` must survive the broken
@@ -506,13 +520,25 @@ impl InstallPlan {
 ///
 /// [`ResolveError::InstallDirCollision`] under
 /// [`CollisionPolicy::Error`], plus the not-detected errors from
-/// [`select_install_pms`].
+/// [`select_installers`].
+///
+/// The install set is the detected package managers plus the ones the core
+/// resolver finds in the root scope.
 pub(crate) fn plan_install(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
 ) -> Result<InstallPlan, ResolveError> {
+    let mut detected = ctx.package_managers.clone();
+    if let Ok(project) = super::run::core::project_under(ctx, &super::run::core::policy(overrides))
+    {
+        for pm in root_installers(&project) {
+            if !detected.contains(&pm) {
+                detected.push(pm);
+            }
+        }
+    }
     let mut plan = InstallPlan {
-        pms: select_install_pms(ctx, overrides)?,
+        pms: select_installers(&detected, overrides)?,
         shadowed: Vec::new(),
         collisions: Vec::new(),
     };
@@ -951,7 +977,7 @@ mod tests {
 
     use super::{
         CollisionDir, InstallExecution, InstallPlan, Shadowed, install_lanes, install_task,
-        is_no_signals, plan_install, script_clamps, select_install_pms, spawn_error, tools_step,
+        is_no_signals, plan_install, script_clamps, select_installers, spawn_error, tools_step,
     };
     use crate::resolver::{
         CollisionPolicy, FallbackPolicy, OverrideOrigin, PmOverride, ResolutionOverrides,
@@ -1173,7 +1199,7 @@ mod tests {
     #[test]
     fn no_override_installs_with_every_detected_pm() {
         let ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
-        let pms = select_install_pms(&ctx, &ResolutionOverrides::default())
+        let pms = select_installers(&ctx.package_managers, &ResolutionOverrides::default())
             .expect("default selection should succeed");
         assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Deno]);
     }
@@ -1184,7 +1210,8 @@ mod tests {
         // deno must not install (and must not write deno.lock).
         let ctx = context(vec![PackageManager::Bun, PackageManager::Deno]);
         let overrides = override_pm(PackageManager::Bun, OverrideOrigin::EnvVar);
-        let pms = select_install_pms(&ctx, &overrides).expect("detected override should filter");
+        let pms = select_installers(&ctx.package_managers, &overrides)
+            .expect("detected override should filter");
         assert_eq!(pms, vec![PackageManager::Bun]);
     }
 
@@ -1192,7 +1219,8 @@ mod tests {
     fn an_unobserved_install_choice_is_refused() {
         let ctx = context(Vec::new());
         let overrides = override_pm(PackageManager::Npm, OverrideOrigin::CliFlag);
-        let err = select_install_pms(&ctx, &overrides).expect_err("no observed installer");
+        let err = select_installers(&ctx.package_managers, &overrides)
+            .expect_err("no observed installer");
         assert!(format!("{err}").contains("npm"));
     }
 
@@ -1201,14 +1229,20 @@ mod tests {
         let ctx = context(vec![PackageManager::Bun, PackageManager::Pnpm]);
         let mut overrides = override_pm(PackageManager::Bun, OverrideOrigin::CliFlag);
         overrides.tool_install.insert("bun".into(), Vec::new());
-        assert_eq!(select_install_pms(&ctx, &overrides).unwrap().len(), 0);
+        assert_eq!(
+            select_installers(&ctx.package_managers, &overrides)
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]
     fn undetected_override_errors_with_origin_and_detected_list() {
         let ctx = context(vec![PackageManager::Cargo]);
         let overrides = override_pm(PackageManager::Npm, OverrideOrigin::EnvVar);
-        let err = select_install_pms(&ctx, &overrides).expect_err("undetected override must error");
+        let err = select_installers(&ctx.package_managers, &overrides)
+            .expect_err("undetected override must error");
 
         assert!(matches!(err, ResolveError::PmOverrideNotDetected { .. }));
         let msg = format!("{err}");
@@ -1220,7 +1254,8 @@ mod tests {
     fn undetected_cli_override_names_the_flag() {
         let ctx = context(vec![PackageManager::Cargo]);
         let overrides = override_pm(PackageManager::Npm, OverrideOrigin::CliFlag);
-        let err = select_install_pms(&ctx, &overrides).expect_err("undetected override must error");
+        let err = select_installers(&ctx.package_managers, &overrides)
+            .expect_err("undetected override must error");
 
         let msg = format!("{err}");
         assert!(msg.contains("--pm"), "should name the flag: {msg}");
@@ -1238,7 +1273,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            select_install_pms(&ctx, &overrides).unwrap(),
+            select_installers(&ctx.package_managers, &overrides).unwrap(),
             [PackageManager::Bun]
         );
     }
@@ -1434,7 +1469,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            select_install_pms(&ctx, &overrides).unwrap(),
+            select_installers(&ctx.package_managers, &overrides).unwrap(),
             [PackageManager::Bun, PackageManager::Uv]
         );
     }
@@ -1447,7 +1482,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            select_install_pms(&ctx, &overrides).unwrap(),
+            select_installers(&ctx.package_managers, &overrides).unwrap(),
             [PackageManager::Bun]
         );
     }
@@ -1459,7 +1494,12 @@ mod tests {
             fallback: FallbackPolicy::Npm,
             ..Default::default()
         };
-        assert_eq!(select_install_pms(&ctx, &overrides).unwrap().len(), 0);
+        assert_eq!(
+            select_installers(&ctx.package_managers, &overrides)
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]
@@ -1470,7 +1510,12 @@ mod tests {
             fallback: FallbackPolicy::Npm,
             ..Default::default()
         };
-        assert_eq!(select_install_pms(&ctx, &overrides).unwrap().len(), 0);
+        assert_eq!(
+            select_installers(&ctx.package_managers, &overrides)
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[test]
@@ -1481,7 +1526,7 @@ mod tests {
             .tool_install
             .insert("bun".into(), vec!["install".into()]);
         assert_eq!(
-            select_install_pms(&ctx, &overrides).unwrap(),
+            select_installers(&ctx.package_managers, &overrides).unwrap(),
             [PackageManager::Deno]
         );
     }
@@ -1489,7 +1534,7 @@ mod tests {
     #[test]
     fn empty_install_pms_installs_with_every_detected_pm() {
         let ctx = context(vec![PackageManager::Bun, PackageManager::Cargo]);
-        let pms = select_install_pms(&ctx, &ResolutionOverrides::default())
+        let pms = select_installers(&ctx.package_managers, &ResolutionOverrides::default())
             .expect("no allowlist installs all");
         assert_eq!(pms, vec![PackageManager::Bun, PackageManager::Cargo]);
     }
@@ -1518,11 +1563,11 @@ mod tests {
             }
         };
 
-        let pms = select_install_pms(&ctx, &choose(PackageManager::Npm))
+        let pms = select_installers(&ctx.package_managers, &choose(PackageManager::Npm))
             .expect("the ecosystem's choice is present");
         assert_eq!(pms, vec![PackageManager::Npm, PackageManager::Cargo]);
 
-        select_install_pms(&ctx, &choose(PackageManager::Pnpm))
+        select_installers(&ctx.package_managers, &choose(PackageManager::Pnpm))
             .expect_err("a choice nothing shows is refused, in install as in run");
     }
 
@@ -1776,5 +1821,48 @@ mod tests {
             ..Project::default()
         };
         assert_eq!(super::root_installers(&project), [PackageManager::Npm]);
+    }
+    #[test]
+    fn a_probed_installer_needs_a_task_source_it_dispatches() {
+        use runner_core::{Evidence, Present, Project, ProviderId, Scope, Weight};
+
+        let present = |provider: ProviderId, weight: Weight| Present {
+            provider,
+            scope: Scope::Root,
+            version: None,
+            bin_dirs: Vec::new(),
+            because: vec![Evidence {
+                provider: Some(provider),
+                signal: None,
+                at: PathBuf::from("/p"),
+                scope: Scope::Root,
+                weight,
+                declared: None,
+            }],
+        };
+        let mixed = Project {
+            present: vec![
+                present(ProviderId::Cargo, Weight::Configured),
+                present(ProviderId::PackageJson, Weight::Declared),
+                present(ProviderId::Npm, Weight::Probed),
+            ],
+            ..Project::default()
+        };
+        assert_eq!(
+            super::root_installers(&mixed),
+            [PackageManager::Cargo, PackageManager::Npm]
+        );
+        let chosen_only = Project {
+            present: vec![
+                present(ProviderId::Cargo, Weight::Configured),
+                present(ProviderId::Volta, Weight::Present),
+                present(ProviderId::Npm, Weight::Probed),
+            ],
+            ..Project::default()
+        };
+        assert_eq!(
+            super::root_installers(&chosen_only),
+            [PackageManager::Cargo]
+        );
     }
 }
