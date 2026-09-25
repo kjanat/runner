@@ -39,19 +39,15 @@ pub const TEST_FILES: &[&str] = &[
     "test.js",
     "test.mjs",
     "test.cjs",
-    "test.jsx",
     "test.ts",
     "test.mts",
     "test.cts",
-    "test.tsx",
     "*.test.js",
     "*.test.mjs",
     "*.test.cjs",
-    "*.test.jsx",
     "*.test.ts",
     "*.test.mts",
     "*.test.cts",
-    "*.test.tsx",
 ];
 
 /// Node's own test runner, which every Node package manager reaches for.
@@ -72,7 +68,7 @@ fn strip_types(files: &[PathBuf]) -> &'static [&'static str] {
     let typescript = |file: &Path| {
         file.extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| matches!(ext, "ts" | "mts" | "cts" | "tsx"))
+            .is_some_and(|ext| matches!(ext, "ts" | "mts" | "cts"))
     };
     if files.iter().any(|file| typescript(file)) {
         &["--experimental-strip-types"]

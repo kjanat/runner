@@ -376,14 +376,28 @@ fn plan_from_resolver(
     let policy = super::run::core::policy(overrides);
     let project = super::run::core::project_under(ctx, &policy)?;
     super::print_core_warnings(&project.warnings, overrides, sink);
-    let mut observed: Vec<_> = project
+    let observed = root_installers(&project);
+    if observed.is_empty() && overrides.pm.is_none() && overrides.pm_by_ecosystem.is_empty() {
+        return Err(ResolveError::NoInstallers.into());
+    }
+    Ok(InstallPlan {
+        pms: select_installers(&observed, overrides)?,
+        shadowed: Vec::new(),
+        collisions: Vec::new(),
+    })
+}
+
+/// The package managers with an install capability in the root scope.
+fn root_installers(project: &runner_core::Project) -> Vec<PackageManager> {
+    let mut installers: Vec<_> = project
         .present
         .iter()
         .filter(|present| {
-            REGISTRY
-                .by_id(present.provider)
-                .kind
-                .contains(runner_core::Kind::PACKAGE_MANAGER)
+            present.scope == runner_core::Scope::Root
+                && REGISTRY
+                    .by_id(present.provider)
+                    .kind
+                    .contains(runner_core::Kind::PACKAGE_MANAGER)
                 && REGISTRY
                     .by_id(present.provider)
                     .for_present(present)
@@ -393,15 +407,8 @@ fn plan_from_resolver(
         })
         .filter_map(|present| PackageManager::from_label(REGISTRY.by_id(present.provider).label))
         .collect();
-    observed.dedup();
-    if observed.is_empty() && overrides.pm.is_none() && overrides.pm_by_ecosystem.is_empty() {
-        return Err(ResolveError::NoInstallers.into());
-    }
-    Ok(InstallPlan {
-        pms: select_installers(&observed, overrides)?,
-        shadowed: Vec::new(),
-        collisions: Vec::new(),
-    })
+    installers.dedup();
+    installers
 }
 
 /// The same selection as [`select_install_pms`] with the not-detected
@@ -1737,5 +1744,37 @@ mod tests {
                 assert!(line.starts_with(start), "{line}");
             }
         }
+    }
+
+    #[test]
+    fn the_install_fallback_takes_only_root_package_managers() {
+        use runner_core::{Evidence, Present, Project, ProviderId, Scope, Weight};
+
+        let present = |provider: ProviderId, scope: Scope| Present {
+            provider,
+            scope: scope.clone(),
+            version: None,
+            bin_dirs: Vec::new(),
+            because: vec![Evidence {
+                provider: Some(provider),
+                signal: None,
+                at: PathBuf::from("/p/package.json"),
+                scope,
+                weight: Weight::Declared,
+                declared: None,
+            }],
+        };
+        let member = Scope::Member {
+            name: "web".into(),
+            dir: PathBuf::from("/p/web"),
+        };
+        let project = Project {
+            present: vec![
+                present(ProviderId::Npm, Scope::Root),
+                present(ProviderId::Pnpm, member),
+            ],
+            ..Project::default()
+        };
+        assert_eq!(super::root_installers(&project), [PackageManager::Npm]);
     }
 }

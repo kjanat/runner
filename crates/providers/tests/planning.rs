@@ -801,6 +801,52 @@ fn named_task(source: ProviderId, name: &str) -> runner_core::Task {
 }
 
 #[test]
+fn a_forced_runtime_is_checked_in_the_tasks_member() {
+    let fixture = Fixture::new();
+    let member_dir = fixture.0.root.join("packages").join("web");
+    std::fs::create_dir_all(&member_dir).unwrap();
+    let member = Scope::Member {
+        name: "web".into(),
+        dir: member_dir,
+    };
+    let tree = Tree {
+        cwd: fixture.0.root.clone(),
+        root: fixture.0.root.clone(),
+        members: vec![member.clone()],
+    };
+    let mut task = named_task(ProviderId::PackageJson, "build");
+    task.scope = member.clone();
+    let op = Op::Run {
+        task: &task,
+        args: &[],
+    };
+    let policy = Policy {
+        runtime: Some(runner_core::Choice {
+            id: ProviderId::Bun,
+            from: runner_core::Layer::Cli,
+        }),
+        ..Policy::default()
+    };
+    let mut bun = fixture.present(ProviderId::Bun);
+    bun.scope = member;
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Npm), bun],
+        ..Project::default()
+    };
+    let plan = runner_core::plan(&tree, &project, &policy, &op, &REGISTRY).unwrap();
+    assert_eq!(plan.provider, Some(ProviderId::Bun));
+
+    let rootless = Project {
+        present: vec![fixture.present(ProviderId::Npm)],
+        ..Project::default()
+    };
+    assert!(matches!(
+        runner_core::plan(&tree, &rootless, &policy, &op, &REGISTRY),
+        Err(Refusal::Invalid(message)) if message == "no evidence for runtime bun"
+    ));
+}
+
+#[test]
 fn node_task_version_boundary_is_checked_without_blocking_file_execution() {
     let fixture = Fixture::new();
     let task = named_task(ProviderId::PackageJson, "build");
@@ -1970,6 +2016,43 @@ fn discovered_typescript_tests_ask_node_to_strip_types() {
         words(&plan),
         ["node", "--experimental-strip-types", "--test", "test.ts"]
     );
+}
+
+#[test]
+fn node_test_discovery_refuses_jsx_and_tsx_files() {
+    for file in ["test.jsx", "test.tsx", "view.test.jsx", "view.test.tsx"] {
+        let fixture = Fixture::new();
+        std::fs::write(fixture.0.root.join(file), "const view = <div />").unwrap();
+        let project = Project {
+            present: vec![fixture.present(ProviderId::Pnpm)],
+            ..Project::default()
+        };
+        let outcome = runner_core::plan(
+            &fixture.0,
+            &project,
+            &Policy::default(),
+            &Op::Test { args: &[] },
+            &REGISTRY,
+        );
+        assert!(
+            matches!(outcome, Err(Refusal::NoTests { .. })),
+            "{file}: {outcome:?}"
+        );
+        std::fs::write(fixture.0.root.join("test.ts"), "").unwrap();
+        let plan = runner_core::plan(
+            &fixture.0,
+            &project,
+            &Policy::default(),
+            &Op::Test { args: &[] },
+            &REGISTRY,
+        )
+        .unwrap();
+        assert_eq!(
+            words(&plan),
+            ["node", "--experimental-strip-types", "--test", "test.ts"],
+            "{file}"
+        );
+    }
 }
 
 #[test]

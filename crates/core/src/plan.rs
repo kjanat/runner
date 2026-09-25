@@ -327,9 +327,7 @@ pub fn plan(
             Op::Test { .. } | Op::Exec { .. } => true,
             _ => false,
         }
-        && project
-            .present_in(choice.id, &scope_at(tree, &tree.cwd))
-            .is_none()
+        && project.present_in(choice.id, &op_scope(tree, op)).is_none()
     {
         return Err(Refusal::Invalid(format!(
             "no evidence for runtime {}",
@@ -390,6 +388,15 @@ pub fn plan(
     }))
 }
 
+/// The scope `op` runs in: a task's own, a file's, or the invocation's.
+fn op_scope(tree: &Tree, op: &Op<'_>) -> Scope {
+    match op {
+        Op::Run { task, .. } => task.scope.clone(),
+        Op::RunFile { file, .. } => scope_at(tree, file),
+        _ => scope_at(tree, &tree.cwd),
+    }
+}
+
 /// The deepest workspace scope containing the resolved path.
 #[must_use]
 pub fn scope_at(tree: &Tree, path: &Path) -> Scope {
@@ -410,11 +417,7 @@ fn candidates<'a>(
     op: &Op<'_>,
     registry: &Registry,
 ) -> Vec<&'a Present> {
-    let scope = match op {
-        Op::Run { task, .. } => task.scope.clone(),
-        Op::RunFile { file, .. } => scope_at(tree, file),
-        _ => scope_at(tree, &tree.cwd),
-    };
+    let scope = op_scope(tree, op);
     let mut ordered: Vec<&Present> = Vec::new();
     let mut push = |present: &'a Present| {
         if !ordered.iter().any(|seen| std::ptr::eq(*seen, present)) {

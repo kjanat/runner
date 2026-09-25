@@ -361,6 +361,18 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   chain's prefixed lines or its own group. Its `clean` prompt reads as
   declined, and `install` is refused there.
 
+- `run test` through Node discovers `.js`, `.mjs`, `.cjs`, `.ts`, `.mts`
+  and `.cts` test files. A project whose only tests are `.jsx` or `.tsx`
+  gets the no-test-files error.
+
+- `runner install` with no package manager signal at the root installs
+  through the managers observed in the root scope. A manager declared only
+  in a workspace member stays out of the root install.
+
+- `--runtime` on a task in another workspace member looks for the runtime in
+  that member, so `--runtime bun` from the root runs a member script when
+  Bun is declared only in the member.
+
 ### Security
 
 - `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` in a repository

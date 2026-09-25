@@ -479,7 +479,14 @@ mod tests {
             panic!("node --test is handed its files");
         };
         assert!(patterns.contains(&"test.ts"));
-        assert!(patterns.contains(&"*.test.tsx"));
+        assert!(patterns.contains(&"*.test.ts"));
+        assert!(patterns.iter().all(|pattern| {
+            std::path::Path::new(pattern)
+                .extension()
+                .is_some_and(|ext| {
+                    !ext.eq_ignore_ascii_case("jsx") && !ext.eq_ignore_ascii_case("tsx")
+                })
+        }));
         for id in [
             ProviderId::Bun,
             ProviderId::Deno,
