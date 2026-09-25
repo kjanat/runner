@@ -59,6 +59,30 @@ pub const PROVIDER: Provider = Provider {
         ..Capabilities::NONE
     },
     tasks: None,
-    version: None,
-    hooks: Hooks::NONE,
+    version: Some(crate::version::read),
+    hooks: Hooks {
+        before_plan: Some(before_plan),
+        ..Hooks::NONE
+    },
 };
+
+fn before_plan(
+    present: &runner_core::Present,
+    op: &runner_core::Op<'_>,
+    _: &mut Vec<runner_core::Warning>,
+) -> Result<(), runner_core::Refusal> {
+    if matches!(op, runner_core::Op::Run { .. })
+        && let Some(version) = present.version.as_deref()
+        && let Some(major) = version
+            .trim_start_matches('v')
+            .split('.')
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+        && major < 22
+    {
+        return Err(runner_core::Refusal::Invalid(format!(
+            "node task execution needs Node 22 or newer, but the node on PATH is {version}"
+        )));
+    }
+    Ok(())
+}

@@ -138,7 +138,12 @@ fn quiet_hides_runner_install_text_but_runs_installer() {
 #[test]
 fn naming_both_writers_runs_them_one_after_another() {
     let dir = colliding_project("consent", &[]);
-    let (output, log) = install_in(&dir, &[("RUNNER_INSTALL_PMS", "bun,deno")]);
+    std::fs::write(
+        dir.join("runner.toml"),
+        "[tools.bun]\ninstall = true\n[tools.deno]\ninstall = true\n",
+    )
+    .unwrap();
+    let (output, log) = install_in(&dir, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -159,7 +164,12 @@ fn naming_both_writers_runs_them_one_after_another() {
 #[test]
 fn managers_with_their_own_install_dirs_still_overlap() {
     let dir = colliding_project("parallel", &["cargo"]);
-    let (output, log) = install_in(&dir, &[("RUNNER_INSTALL_PMS", "bun,deno,cargo")]);
+    std::fs::write(
+        dir.join("runner.toml"),
+        "[tools.bun]\ninstall = true\n[tools.deno]\ninstall = true\n",
+    )
+    .unwrap();
+    let (output, log) = install_in(&dir, &[]);
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let _ = std::fs::remove_dir_all(&dir);
 

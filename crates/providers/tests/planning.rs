@@ -103,7 +103,15 @@ fn discovered_binary_has_evidence_and_no_unrelated_tool_environment() {
         .entry(ProviderId::Npm)
         .or_default()
         .insert("NPM_ONLY".into(), "absent".into());
-    let plan = plan_found(&fixture.0, &Project::default(), &policy, found.clone(), &[]).unwrap();
+    let plan = plan_found(
+        &fixture.0,
+        &Project::default(),
+        &policy,
+        found.clone(),
+        &REGISTRY,
+        &[],
+    )
+    .unwrap();
     assert_eq!(plan.because.len(), 1);
     assert_eq!(plan.because[0].at, found);
     assert_eq!(plan.because[0].provider, None);
@@ -113,15 +121,29 @@ fn discovered_binary_has_evidence_and_no_unrelated_tool_environment() {
         .project
         .insert("NODE_OPTIONS".into(), "--placeholder".into());
     assert!(matches!(
-        plan_found(&fixture.0, &Project::default(), &policy, found.clone(), &[]),
+        plan_found(
+            &fixture.0,
+            &Project::default(),
+            &policy,
+            found.clone(),
+            &REGISTRY,
+            &[]
+        ),
         Err(Refusal::Unsafe(Unsafe::LoaderHook { .. }))
     ));
     policy.trust = TrustPolicy::Full;
     assert_eq!(
-        plan_found(&fixture.0, &Project::default(), &policy, found, &[])
-            .unwrap()
-            .env
-            .len(),
+        plan_found(
+            &fixture.0,
+            &Project::default(),
+            &policy,
+            found,
+            &REGISTRY,
+            &[]
+        )
+        .unwrap()
+        .env
+        .len(),
         2
     );
 }
@@ -236,7 +258,7 @@ fn yarn_observation_selects_classic_or_berry_local_exec() {
             ..Policy::default()
         };
         let evidence = runner_core::observe(&fixture.0, &REGISTRY).unwrap();
-        let project = runner_core::resolve(&fixture.0, evidence, &policy, &REGISTRY);
+        let project = runner_core::resolve(&fixture.0, evidence, &policy, &REGISTRY).unwrap();
         let cascade = Cascade {
             tree: &fixture.0,
             project: &project,
@@ -695,4 +717,178 @@ fn mise_frozen_install_follows_each_declared_config_lock_pair() {
         assert_eq!(plan.trust, runner_core::Trust::Host);
         assert!(plan.path_prepend.is_empty());
     }
+}
+
+fn named_task(source: ProviderId, name: &str) -> runner_core::Task {
+    runner_core::Task {
+        name: name.into(),
+        source,
+        scope: Scope::Root,
+        target: None,
+        description: None,
+        alias_of: None,
+        forwards_to: None,
+        detail: runner_core::TaskDetail::default(),
+    }
+}
+
+#[test]
+fn node_task_version_boundary_is_checked_without_blocking_file_execution() {
+    let fixture = Fixture::new();
+    let task = named_task(ProviderId::PackageJson, "build");
+    for (version, supported) in [
+        ("v20.19.0", false),
+        ("21.7.3", false),
+        ("22.0.0", true),
+        ("24.1.0", true),
+    ] {
+        let mut present = fixture.present(ProviderId::Node);
+        present.version = Some(version.into());
+        let project = Project {
+            present: vec![present.clone()],
+            ..Project::default()
+        };
+        let result = plan_with(
+            &fixture.0,
+            &project,
+            &Policy::default(),
+            &present,
+            &Op::Run {
+                task: &task,
+                args: &[],
+            },
+            &REGISTRY,
+        );
+        assert_eq!(result.is_ok(), supported, "{version}: {result:?}");
+        let file = fixture.0.root.join("script.js");
+        std::fs::write(&file, "").unwrap();
+        assert!(
+            plan_with(
+                &fixture.0,
+                &project,
+                &Policy::default(),
+                &present,
+                &Op::RunFile {
+                    file: &file,
+                    args: &[]
+                },
+                &REGISTRY
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
+fn task_environment_uses_names_targets_and_source_aliases_consistently() {
+    let fixture = Fixture::new();
+    for (source, key, target) in [
+        (ProviderId::Cargo, "root:cargo-alias#build", "test"),
+        (ProviderId::Go, "root:go#build", "./cmd/build"),
+    ] {
+        let present = fixture.present(source);
+        let project = Project {
+            present: vec![present.clone()],
+            ..Project::default()
+        };
+        let mut task = named_task(source, "build");
+        task.target = Some(target.into());
+        let mut policy = Policy::default();
+        policy.env.task.insert(
+            "build".into(),
+            [
+                ("BARE".into(), "yes".into()),
+                ("WINNER".into(), "bare".into()),
+            ]
+            .into(),
+        );
+        policy
+            .env
+            .task
+            .insert(key.into(), [("WINNER".into(), "qualified".into())].into());
+        let plan = plan_with(
+            &fixture.0,
+            &project,
+            &policy,
+            &present,
+            &Op::Run {
+                task: &task,
+                args: &[],
+            },
+            &REGISTRY,
+        )
+        .unwrap();
+        assert!(plan.env.contains(&("BARE".into(), "yes".into())));
+        assert!(plan.env.contains(&("WINNER".into(), "qualified".into())));
+    }
+}
+
+#[test]
+fn clean_includes_generated_python_metadata_and_preserves_files() {
+    let fixture = Fixture::new();
+    for name in ["build", "dist", "demo.egg-info", "keep"] {
+        std::fs::create_dir(fixture.0.root.join(name)).unwrap();
+    }
+    std::fs::write(fixture.0.root.join("file.egg-info"), "retain").unwrap();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Python)],
+        ..Project::default()
+    };
+    let plan = runner_core::clean::plan(&fixture.0, &project, &REGISTRY, false).unwrap();
+    assert_eq!(plan.targets.len(), 3);
+    runner_core::clean::execute(&plan).unwrap();
+    assert!(!fixture.0.root.join("demo.egg-info").exists());
+    assert!(fixture.0.root.join("keep").is_dir());
+    assert!(fixture.0.root.join("file.egg-info").is_file());
+}
+
+#[test]
+#[cfg(unix)]
+fn declared_health_checks_report_findings_and_query_failures() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let program = fixture.0.root.join("health-tool");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\nif [ \"$1\" = ls ]; then printf '%s' \
+         '{\"node\":[{\"version\":\"22\",\"installed\":false}]}'; else echo broken >&2; exit 7; \
+         fi\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut providers = REGISTRY.0.to_vec();
+    providers
+        .iter_mut()
+        .find(|provider| provider.id == ProviderId::Mise)
+        .unwrap()
+        .program = Some(Box::leak(
+        program.to_str().unwrap().to_owned().into_boxed_str(),
+    ));
+    let registry = runner_core::Registry(Box::leak(providers.into_boxed_slice()));
+    let present = fixture.present(ProviderId::Mise);
+    let project = Project {
+        present: vec![present.clone()],
+        ..Project::default()
+    };
+    let policy = Policy::default();
+    let health =
+        runner_core::health::check(&fixture.0, &project, &policy, &present, 0, &registry).unwrap();
+    assert_eq!(
+        health,
+        runner_core::Health::Problems(vec!["node@22 is declared but not installed".into()])
+    );
+    let error = runner_core::health::check(&fixture.0, &project, &policy, &present, 1, &registry)
+        .unwrap_err();
+    assert!(error.to_string().contains("broken"), "{error}");
+    let plan = plan_with(
+        &fixture.0,
+        &project,
+        &policy,
+        &present,
+        &Op::Health { check: 0 },
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(plan.trust, runner_core::Trust::Host);
+    assert!(plan.path_prepend.is_empty());
 }

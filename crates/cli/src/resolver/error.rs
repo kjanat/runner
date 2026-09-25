@@ -22,6 +22,10 @@ use crate::types::{Ecosystem, PackageManager};
 /// internal error (exit 1).
 #[derive(Debug)]
 pub(crate) enum ResolveError {
+    /// A read-only provider query failed.
+    Observation(std::io::Error),
+    /// No provider has an observed installation capability.
+    NoInstallers,
     /// No signals matched and the active fallback policy could not pick a
     /// package manager.
     ///
@@ -83,16 +87,6 @@ pub(crate) enum ResolveError {
         /// What detection actually found, for the error message.
         detected: Vec<PackageManager>,
     },
-    /// `[install].pms` / `RUNNER_INSTALL_PMS` names one or more package
-    /// managers that detection did not find in the project. Like
-    /// [`Self::PmOverrideNotDetected`], the allowlist is a contract: a
-    /// listed-but-absent PM is a misconfiguration, not a silent no-op.
-    InstallPmsNotDetected {
-        /// The listed PMs that detection did not find.
-        missing: Vec<PackageManager>,
-        /// What detection actually found, for the error message.
-        detected: Vec<PackageManager>,
-    },
     /// Both `keep_going` and `kill_on_fail` were set to true at the same
     /// source (or once layered across CLI/env/config). The chain executor
     /// can't honour both, so fail loudly before dispatching anything.
@@ -130,12 +124,13 @@ pub(crate) enum DevEnginesFailReason {
 impl fmt::Display for ResolveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoSignalsFound { ecosystem, soft } => {
-                let suffix = if *soft { "" } else { " (--fallback=error)" };
+            Self::Observation(error) => write!(f, "{error}"),
+            Self::NoInstallers => f.write_str("no observed provider can install dependencies"),
+            Self::NoSignalsFound { ecosystem, .. } => {
                 write!(
                     f,
-                    "no {} package manager detected{suffix}. Checked: lockfiles, manifest \
-                     (packageManager + devEngines), PATH. Pin one with `--pm <name>`, set \
+                    "no {} package manager detected. Checked: lockfiles, manifest (packageManager \
+                     + devEngines), PATH (host). Pin one with `--pm <name>`, set \
                      `RUNNER_PM=<name>`, add it to runner.toml, or install a supported PM.",
                     ecosystem.label(),
                 )
@@ -190,26 +185,6 @@ impl fmt::Display for ResolveError {
                     pm.label(),
                 )
             }
-            Self::InstallPmsNotDetected { missing, detected } => {
-                let join = |pms: &[PackageManager]| {
-                    if pms.is_empty() {
-                        "none".to_string()
-                    } else {
-                        pms.iter()
-                            .map(|pm| pm.label())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    }
-                };
-                write!(
-                    f,
-                    "the install allowlist (`[install].pms` / `RUNNER_INSTALL_PMS`) lists {} but \
-                     detection did not find them in this project (detected: {}). Drop them from \
-                     the allowlist or install them.",
-                    join(missing),
-                    join(detected),
-                )
-            }
             Self::ConflictingFailurePolicy { source } => write!(
                 f,
                 "`keep_going` and `kill_on_fail` are mutually exclusive but both were set \
@@ -230,11 +205,10 @@ fn install_dir_collision(dir: &str, writers: &[PackageManager]) -> String {
         .map(|pm| pm.label())
         .collect::<Vec<_>>()
         .join(", ");
-    let first = writers.first().map_or("bun", |pm| pm.label());
     format!(
         "{list} all install into {dir}/ and `[install].on_collision = \"error\"` refuses to run \
-         two writers over one tree. Pick one with `[install].pms = [\"{first}\"]` (or \
-         `RUNNER_INSTALL_PMS`), or drop `on_collision` to let runner resolve it.",
+         two writers over one tree. Disable an installer with `[tools.<name>].install = false`, \
+         or drop `on_collision` to let runner resolve it.",
     )
 }
 

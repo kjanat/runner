@@ -9,7 +9,7 @@ use crate::env::project_may_set;
 use crate::evidence::{Evidence, Present, Weight};
 use crate::op::Op;
 use crate::policy::{Choice, Layer, Policy, ScriptPolicy, TrustPolicy};
-use crate::probe::{probe_in, probe_with};
+use crate::probe::probe_with;
 use crate::provider::{Ecosystem, Kind, ProviderId};
 use crate::reach::Reach;
 use crate::registry::{Provider, Registry};
@@ -64,6 +64,8 @@ pub struct Plan {
     pub reach: Reach,
     /// Requests the provider clamped.
     pub clamps: Vec<Clamp>,
+    /// Provider findings from planning.
+    pub warnings: Vec<crate::Warning>,
     /// The evidence that produced the plan.
     pub because: Vec<Evidence>,
     /// The layers that decided it.
@@ -148,7 +150,41 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid(message) | Self::Observation { message, .. } => f.write_str(message),
-            _ => write!(f, "{self:?}"),
+            Self::UnsupportedFile { file, reason, .. } => {
+                write!(f, "cannot run {}: {reason}", file.display())
+            }
+            Self::NotFound { name, tried } => write!(
+                f,
+                "{name} was not found; tried {}",
+                tried
+                    .iter()
+                    .map(|rung| rung.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Declined { name, rung } => {
+                write!(f, "reach policy refused {name} at the {} rung", rung.name)
+            }
+            Self::NoCapability { op, .. } => write!(f, "the selected provider cannot {op}"),
+            Self::Ambiguous { candidates } => write!(
+                f,
+                "ambiguous task; qualify its source and scope ({})",
+                candidates
+                    .iter()
+                    .map(|(_, scope)| scope.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Unsafe(Unsafe::LoaderHook { name }) => write!(
+                f,
+                "project configuration may not set loader variable {name}"
+            ),
+            Self::Unsafe(Unsafe::NameShape { name, .. }) => {
+                write!(f, "the selected provider cannot execute the name {name}")
+            }
+            Self::Unsafe(Unsafe::EscapesRoot { path }) => {
+                write!(f, "{} resolves outside the project root", path.display())
+            }
         }
     }
 }
@@ -228,6 +264,41 @@ pub fn plan(
     op: &Op<'_>,
     registry: &Registry,
 ) -> Result<Plan, Refusal> {
+    if let Some(choice) = &policy.runtime
+        && match op {
+            Op::Run { task, .. } => registry
+                .by_id(choice.id)
+                .caps
+                .run_task
+                .is_some_and(|cap| cap.sources.contains(&task.source)),
+            Op::Test { .. } | Op::Exec { .. } => true,
+            _ => false,
+        }
+        && project
+            .present_in(choice.id, &scope_at(tree, &tree.cwd))
+            .is_none()
+    {
+        return Err(Refusal::Invalid(format!(
+            "no evidence for runtime {}",
+            registry.by_id(choice.id).label
+        )));
+    }
+    if let Op::Run { task, .. } = op {
+        for choice in policy.pm.0.values() {
+            let provider = registry.by_id(choice.id);
+            if provider
+                .caps
+                .run_task
+                .is_some_and(|cap| cap.sources.contains(&task.source))
+                && project.present_in(choice.id, &task.scope).is_none()
+            {
+                return Err(Refusal::Invalid(format!(
+                    "no evidence for package manager {}",
+                    provider.label
+                )));
+            }
+        }
+    }
     let mut last = None;
     for present in candidates(tree, project, policy, op, registry) {
         match plan_with(tree, project, policy, present, op, registry) {
@@ -255,10 +326,13 @@ pub fn plan(
     }))
 }
 
-fn scope_at(tree: &Tree, path: &Path) -> Scope {
+/// The deepest workspace scope containing the resolved path.
+#[must_use]
+pub fn scope_at(tree: &Tree, path: &Path) -> Scope {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
     tree.members
         .iter()
-        .filter(|scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir)))
+        .filter(|scope| matches!(scope, Scope::Member { dir, .. } if path.starts_with(dir.canonicalize().unwrap_or_else(|_| dir.clone()))))
         .max_by_key(|scope| scope_dir(tree, scope).components().count())
         .cloned()
         .unwrap_or(Scope::Root)
@@ -291,6 +365,11 @@ fn candidates<'a>(
         if let Some(present) = by_choice(choice) {
             push(present);
         }
+    }
+    if let Op::Run { task, .. } = op
+        && let Some(present) = project.for_source(task.source, &scope, policy, registry)
+    {
+        push(present);
     }
     for observed in &project.present {
         let Some(present) = project.present_in(observed.provider, &scope) else {
@@ -350,13 +429,12 @@ fn assert_provider_template(program: &str, template: Template) {
 }
 
 /// One op's program, argv template and the terms the command runs under.
-struct Shape<'a> {
+struct Shape {
     program: Option<&'static str>,
     template: Template,
     reach: Reach,
     trust: Trust,
     cwd: PathBuf,
-    task: Option<&'a str>,
 }
 
 /// The values a render fills the template with, owned so the caller can
@@ -395,7 +473,7 @@ impl<'a> Shaping<'_, 'a> {
         }
     }
 
-    fn shape(&self, fill: &mut Fill<'a>) -> Result<Shape<'a>, Refusal> {
+    fn shape(&self, fill: &mut Fill<'a>) -> Result<Shape, Refusal> {
         match self.op {
             Op::Run { task, args } => self.run(fill, task, args),
             Op::RunDefault { args } => {
@@ -410,7 +488,6 @@ impl<'a> Shaping<'_, 'a> {
                     reach: Reach::Local,
                     trust: Trust::Project,
                     cwd: scope_dir(self.tree, &self.present.scope),
-                    task: Some(self.provider.label),
                 })
             }
             Op::Exec { name, args } => self.exec(fill, name, args),
@@ -436,13 +513,12 @@ impl<'a> Shaping<'_, 'a> {
                     reach: cap.reach,
                     trust: self.trust(),
                     cwd: self.tree.cwd.clone(),
-                    task: None,
                 })
             }
             Op::RunFile { file, args } => self.run_file(fill, file, args),
             Op::Test { args } => self.test(fill, args),
             Op::Install { operations } => self.install(fill, operations),
-            Op::Health => self.health(),
+            Op::Health { check } => self.health(check),
             Op::Clean => Err(self.refuse()),
         }
     }
@@ -452,7 +528,7 @@ impl<'a> Shaping<'_, 'a> {
         fill: &mut Fill<'a>,
         task: &'a Task,
         args: &'a [String],
-    ) -> Result<Shape<'a>, Refusal> {
+    ) -> Result<Shape, Refusal> {
         let template = run_task_template(self.provider, task.source, self.chosen_as_runtime)
             .ok_or_else(|| self.refuse())?;
         fill.request.task = Some(task.target.as_deref().unwrap_or(task.name.as_str()));
@@ -463,7 +539,6 @@ impl<'a> Shaping<'_, 'a> {
             reach: Reach::Local,
             trust: Trust::Project,
             cwd: scope_dir(self.tree, &task.scope),
-            task: Some(task.name.as_str()),
         })
     }
 
@@ -472,7 +547,7 @@ impl<'a> Shaping<'_, 'a> {
         fill: &mut Fill<'a>,
         name: &'a str,
         args: &'a [String],
-    ) -> Result<Shape<'a>, Refusal> {
+    ) -> Result<Shape, Refusal> {
         let cap = self.provider.caps.exec.ok_or_else(|| self.refuse())?;
         if !cap.accepts.contains(NameShape::of(name)) {
             return Err(Refusal::Unsafe(Unsafe::NameShape {
@@ -494,7 +569,6 @@ impl<'a> Shaping<'_, 'a> {
             reach: cap.reach,
             trust: self.trust(),
             cwd: self.tree.cwd.clone(),
-            task: None,
         })
     }
 
@@ -503,7 +577,7 @@ impl<'a> Shaping<'_, 'a> {
         fill: &mut Fill<'a>,
         source: &'a Path,
         args: &'a [String],
-    ) -> Result<Shape<'a>, Refusal> {
+    ) -> Result<Shape, Refusal> {
         let cap = self.provider.caps.run_file.ok_or_else(|| self.refuse())?;
         if let Some(reason) = cap.refusal(source) {
             return Err(Refusal::UnsupportedFile {
@@ -542,11 +616,10 @@ impl<'a> Shaping<'_, 'a> {
             reach: Reach::Local,
             trust: Trust::Project,
             cwd: self.tree.cwd.clone(),
-            task: None,
         })
     }
 
-    fn test(&self, fill: &mut Fill<'a>, args: &'a [String]) -> Result<Shape<'a>, Refusal> {
+    fn test(&self, fill: &mut Fill<'a>, args: &'a [String]) -> Result<Shape, Refusal> {
         let cap = self.provider.caps.test.ok_or_else(|| self.refuse())?;
         let template = match cap.discovery {
             Discovery::Tool => cap.argv,
@@ -559,7 +632,7 @@ impl<'a> Shaping<'_, 'a> {
                 }
                 cap.argv
             }
-            Discovery::Detect(detect) => detect(&self.tree.cwd).ok_or_else(|| self.refuse())?,
+            Discovery::Detect(detect) => detect(&self.tree.cwd)?.ok_or_else(|| self.refuse())?,
         };
         fill.request.args = args;
         Ok(Shape {
@@ -568,11 +641,10 @@ impl<'a> Shaping<'_, 'a> {
             reach: Reach::Local,
             trust: Trust::Project,
             cwd: self.tree.cwd.clone(),
-            task: Some("test"),
         })
     }
 
-    fn install(&self, fill: &mut Fill<'a>, operations: &'a [String]) -> Result<Shape<'a>, Refusal> {
+    fn install(&self, fill: &mut Fill<'a>, operations: &'a [String]) -> Result<Shape, Refusal> {
         let cap = self.provider.caps.install.ok_or_else(|| self.refuse())?;
         fill.request.op = operations.first().map(String::as_str);
         let dir = scope_dir(self.tree, &self.present.scope);
@@ -600,19 +672,22 @@ impl<'a> Shaping<'_, 'a> {
             reach: Reach::Network,
             trust: self.trust(),
             cwd: scope_dir(self.tree, &self.present.scope),
-            task: None,
         })
     }
 
-    fn health(&self) -> Result<Shape<'a>, Refusal> {
-        let cap = self.provider.caps.health.ok_or_else(|| self.refuse())?;
+    fn health(&self, check: usize) -> Result<Shape, Refusal> {
+        let cap = self
+            .provider
+            .caps
+            .health
+            .get(check)
+            .ok_or_else(|| self.refuse())?;
         Ok(Shape {
             program: self.provider.program,
             template: cap.argv,
             reach: Reach::Local,
             trust: Trust::Host,
             cwd: scope_dir(self.tree, &self.present.scope),
-            task: None,
         })
     }
 }
@@ -633,6 +708,10 @@ pub fn plan_with(
     registry: &Registry,
 ) -> Result<Plan, Refusal> {
     let provider = registry.by_id(present.provider).for_present(present);
+    let mut warnings = Vec::new();
+    if let Some(hook) = provider.hooks.before_plan {
+        hook(present, op, &mut warnings)?;
+    }
     let quiet = provider.caps.quiet;
     let mut clamps = Vec::new();
     if policy.verbosity != Verbosity::Normal && policy.verbosity.index() > quiet.strongest() {
@@ -701,14 +780,34 @@ pub fn plan_with(
     }
     argv.extend(rendered.args);
     let mut env = rendered.env;
-    env.extend(env_layers(policy, Some(provider.id), shape.task)?);
+    let task_keys = match op {
+        Op::Run { task, .. } => {
+            let source = registry.by_id(task.source);
+            let labels: Vec<_> = source
+                .aliases
+                .iter()
+                .copied()
+                .chain([source.label])
+                .collect();
+            let mut keys = vec![task.name.clone()];
+            keys.extend(labels.iter().map(|label| format!("{label}#{}", task.name)));
+            keys.extend(
+                labels
+                    .iter()
+                    .map(|label| format!("{}:{label}#{}", task.scope.label(), task.name)),
+            );
+            keys
+        }
+        _ => Vec::new(),
+    };
+    env.extend(env_layers(policy, Some(provider.id), &task_keys)?);
     let scope = match op {
         Op::Run { task, .. } => task.scope.clone(),
         _ => present.scope.clone(),
     };
     let path_prepend = match shape.trust {
         Trust::Host => Vec::new(),
-        Trust::Project => bin_dirs(project, &scope),
+        Trust::Project => bin_dirs(tree, project, &scope, registry),
     };
     Ok(Plan {
         provider: Some(provider.id),
@@ -721,6 +820,7 @@ pub fn plan_with(
         trust: shape.trust,
         reach: shape.reach,
         clamps,
+        warnings,
         because: present.because.clone(),
         decided_by: decided_by(policy, present),
         scope,
@@ -736,12 +836,13 @@ pub fn plan_found(
     project: &Project,
     policy: &Policy,
     found: PathBuf,
+    registry: &Registry,
     args: &[String],
 ) -> Result<Plan, Refusal> {
     let mut words = Vec::with_capacity(args.len() + 1);
     words.push(OsString::from(&found));
     words.extend(args.iter().map(OsString::from));
-    plan_argv(tree, project, policy, found, words)
+    plan_argv(tree, project, policy, found, registry, words)
 }
 
 /// A plan for an argv a rung built around a file it found.
@@ -753,6 +854,7 @@ pub fn plan_argv(
     project: &Project,
     policy: &Policy,
     found: PathBuf,
+    registry: &Registry,
     argv: Vec<OsString>,
 ) -> Result<Plan, Refusal> {
     let scope = tree
@@ -779,12 +881,13 @@ pub fn plan_argv(
         found: Some(found),
         argv,
         cwd: tree.cwd.clone(),
-        env: env_layers(policy, None, None)?,
+        env: env_layers(policy, None, &[])?,
         env_remove: Vec::new(),
-        path_prepend: bin_dirs(project, &scope),
+        path_prepend: bin_dirs(tree, project, &scope, registry),
         trust: Trust::Project,
         reach: Reach::Local,
         clamps: Vec::new(),
+        warnings: Vec::new(),
         because: vec![evidence],
         decided_by: Vec::new(),
         scope,
@@ -822,7 +925,7 @@ pub fn scope_dir(tree: &Tree, scope: &Scope) -> PathBuf {
 }
 
 /// Every present provider's bin dirs, the plan's own scope first.
-fn bin_dirs(project: &Project, scope: &Scope) -> Vec<PathBuf> {
+fn bin_dirs(tree: &Tree, project: &Project, scope: &Scope, registry: &Registry) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let ordered = project
         .present
@@ -832,8 +935,25 @@ fn bin_dirs(project: &Project, scope: &Scope) -> Vec<PathBuf> {
             project
                 .present
                 .iter()
-                .filter(|present| present.scope != *scope),
+                .filter(|present| present.scope == Scope::Root && *scope != Scope::Root),
         );
+    if *scope != Scope::Root {
+        for present in project
+            .present
+            .iter()
+            .filter(|p| p.scope == *scope || p.scope == Scope::Root)
+        {
+            let provider = registry.effective(present.provider, project, scope);
+            if let Some(crate::BinDirs::Static(bins)) = provider.caps.bins.map(|cap| cap.dirs) {
+                for bin in bins {
+                    let dir = scope_dir(tree, scope).join(bin);
+                    if !dirs.contains(&dir) {
+                        dirs.push(dir);
+                    }
+                }
+            }
+        }
+    }
     for present in ordered {
         for dir in &present.bin_dirs {
             if !dirs.contains(dir) {
@@ -848,15 +968,18 @@ fn bin_dirs(project: &Project, scope: &Scope) -> Vec<PathBuf> {
 fn env_layers(
     policy: &Policy,
     provider: Option<ProviderId>,
-    task: Option<&str>,
+    task_keys: &[String],
 ) -> Result<Vec<(OsString, OsString)>, Refusal> {
     let layers = [
         Some(&policy.env.project),
         provider.and_then(|provider| policy.env.tool.get(&provider)),
-        task.and_then(|task| policy.env.task.get(task)),
     ];
     let mut out: Vec<(OsString, OsString)> = Vec::new();
-    for table in layers.into_iter().flatten() {
+    for table in layers
+        .into_iter()
+        .flatten()
+        .chain(task_keys.iter().filter_map(|key| policy.env.task.get(key)))
+    {
         for (key, value) in table {
             if policy.trust == TrustPolicy::Project && !project_may_set(key) {
                 return Err(Refusal::Unsafe(Unsafe::LoaderHook { name: key.clone() }));
@@ -1033,7 +1156,15 @@ fn rung_dispatch(
     args: &[String],
 ) -> Result<Option<Dispatch>, Refusal> {
     let found = |path: PathBuf| {
-        plan_found(cascade.tree, cascade.project, cascade.policy, path, args).map(dispatched)
+        plan_found(
+            cascade.tree,
+            cascade.project,
+            cascade.policy,
+            path,
+            cascade.registry,
+            args,
+        )
+        .map(dispatched)
     };
 
     Ok(match rung.needs {
@@ -1087,12 +1218,28 @@ fn rung_dispatch(
                 _ => Err(refusal),
             })?
         }
-        Need::ProjectBins => probe_in_dirs(&bin_dirs(cascade.project, &Scope::Root), token)
-            .map(found)
-            .transpose()?,
+        Need::ProjectBins => probe_in_dirs(
+            &bin_dirs(
+                cascade.tree,
+                cascade.project,
+                &scope_at(cascade.tree, &cascade.tree.cwd),
+                cascade.registry,
+            ),
+            token,
+        )
+        .map(found)
+        .transpose()?,
         Need::HostPath => {
+            let scope = scope_at(cascade.tree, &cascade.tree.cwd);
             let root = cascade.project.present.iter().find(|p| {
-                let provider = cascade.registry.by_id(p.provider);
+                if !cascade
+                    .project
+                    .present_in(p.provider, &scope)
+                    .is_some_and(|chosen| std::ptr::eq(chosen, *p))
+                {
+                    return false;
+                }
+                let provider = cascade.registry.by_id(p.provider).for_present(p);
                 provider.program == Some(token) && provider.caps.run_default.is_some()
             });
             if let Some(present) = root {
@@ -1328,7 +1475,26 @@ fn exec_plan(
     let manager = rung.needs == Need::ToolManagerExec;
     let op = Op::Exec { name, args };
     let scope = scope_at(cascade.tree, &cascade.tree.cwd);
-    for present in &cascade.project.present {
+    if let Some(choice) = &cascade.policy.runtime
+        && cascade.project.present_in(choice.id, &scope).is_none()
+    {
+        return Err(Refusal::Invalid(format!(
+            "no evidence for runtime {}",
+            cascade.registry.by_id(choice.id).label
+        )));
+    }
+
+    let mut ordered = candidates(
+        cascade.tree,
+        cascade.project,
+        cascade.policy,
+        &op,
+        cascade.registry,
+    );
+    if manager {
+        ordered = cascade.project.present.iter().collect();
+    }
+    for present in ordered {
         if !cascade
             .project
             .present_in(present.provider, &scope)
@@ -1429,8 +1595,11 @@ fn probe_in_dirs(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
     if dirs.is_empty() {
         return None;
     }
-    let joined = std::env::join_paths(dirs.iter().cloned()).ok()?;
-    probe_in(name, &joined, std::env::var_os("PATHEXT").as_deref())
+    crate::probe::probe_in_dirs(
+        name,
+        dirs.iter().cloned(),
+        std::env::var_os("PATHEXT").as_deref(),
+    )
 }
 
 /// The interpreter and arguments in a file's shebang.
@@ -1657,6 +1826,7 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
             cascade.project,
             cascade.policy,
             path.to_path_buf(),
+            cascade.registry,
             args,
         );
     }
@@ -1667,6 +1837,7 @@ fn file_plan_inner(cascade: &Cascade<'_>, path: &Path, args: &[String]) -> Resul
             cascade.project,
             cascade.policy,
             path.to_path_buf(),
+            cascade.registry,
             words,
         );
     }
@@ -2107,7 +2278,7 @@ mod tests {
             present: vec![present(ProviderId::Node, Weight::Declared), member],
             ..Project::default()
         };
-        project.refresh_bins(&tree, &Registry(PROVIDERS));
+        project.refresh_bins(&tree, &Registry(PROVIDERS)).unwrap();
         assert_eq!(project.present[1].bin_dirs, [member_dir.join("member-bin")]);
         for runtime in [
             None,
@@ -2309,17 +2480,24 @@ mod tests {
 
     #[test]
     fn a_provider_can_run_a_shell_script_without_constructing_a_command_string() {
-        static PROVIDERS: &[Provider] = &[Provider {
-            program: Some("sh"),
-            caps: Capabilities {
-                run_task: Some(RunTaskCap {
-                    argv: t![Task, Args],
-                    sources: &[ProviderId::PackageJson],
-                }),
-                ..Capabilities::NONE
+        static PROVIDERS: &[Provider] = &[
+            Provider {
+                program: Some("sh"),
+                caps: Capabilities {
+                    run_task: Some(RunTaskCap {
+                        argv: t![Task, Args],
+                        sources: &[ProviderId::PackageJson],
+                    }),
+                    ..Capabilities::NONE
+                },
+                ..FAKES[0]
             },
-            ..FAKES[0]
-        }];
+            Provider {
+                id: ProviderId::PackageJson,
+                label: "package.json",
+                ..FAKES[0]
+            },
+        ];
         let plan = super::plan_with(
             &tree(),
             &Project::default(),

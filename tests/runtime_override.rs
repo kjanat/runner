@@ -178,13 +178,29 @@ fn arrow_only_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
             cmd.env_remove(&key);
         }
     }
-    cmd.env("PATH", bin_dir)
-        .envs(envs.iter().copied())
-        .arg("--dir")
-        .arg(dir)
-        .args(args)
-        .output()
-        .expect("run should execute")
+    let tools = dir.join("audit-host-tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    #[cfg(unix)]
+    for name in ["node", "bun", "deno", "npx"] {
+        use std::os::unix::fs::PermissionsExt;
+        let file = tools.join(name);
+        std::fs::write(
+            &file,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 26.0.0; else exit 127; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    cmd.env(
+        "PATH",
+        std::env::join_paths([bin_dir, tools.as_path()]).unwrap(),
+    )
+    .envs(envs.iter().copied())
+    .arg("--dir")
+    .arg(dir)
+    .args(args)
+    .output()
+    .expect("run should execute")
 }
 
 /// An npm project (npm lockfile, so the resolver picks npm) whose `which`

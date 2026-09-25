@@ -398,8 +398,13 @@ fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidat
     let Ok(dir) = completion_dir() else {
         return vec![];
     };
-    let Some(spec) = crate::tool::mise::usage_spec(&dir, task) else {
-        return vec![];
+    let spec = match crate::tool::mise::usage_spec(&dir, task) {
+        Ok(Some(spec)) => spec,
+        Ok(None) => return vec![],
+        Err(error) => {
+            eprintln!("warn: {error}");
+            return vec![];
+        }
     };
 
     // A flag that takes a value swallows the next word, so there is nothing
@@ -1825,7 +1830,7 @@ pub(crate) struct GlobalOpts {
     /// The resolver also consults `$RUNNER_PM` independently when this
     /// flag is omitted (env reads live in `crate::resolver`, not clap).
     #[arg(
-        long = "pm",
+        long = runner_core::Setting::flag_for("pm"),
         global = true,
         value_name = "NAME",
         help = PM_HELP.as_str(),
@@ -1838,7 +1843,7 @@ pub(crate) struct GlobalOpts {
     /// this flag is omitted (env reads live in `crate::resolver`, not
     /// clap).
     #[arg(
-        long = "runner",
+        long = runner_core::Setting::flag_for("tasks.prefer"),
         global = true,
         value_name = "NAME",
         help = RUNNER_HELP.as_str(),
@@ -1854,7 +1859,7 @@ pub(crate) struct GlobalOpts {
     /// also consults `$RUNNER_RUNTIME` and `[runtime].js` when this flag is
     /// omitted.
     #[arg(
-        long = "runtime",
+        long = runner_core::Setting::flag_for("runtime.js"),
         global = true,
         value_name = "NAME",
         help = RUNTIME_HELP.as_str(),
@@ -1867,7 +1872,7 @@ pub(crate) struct GlobalOpts {
     /// `allow` proceeds, `local` refuses. The resolver also consults
     /// `$RUNNER_REACH` when this flag is omitted.
     #[arg(
-        long = "fetch",
+        long = runner_core::Setting::flag_for("defaults.fetch"),
         global = true,
         value_name = "POLICY",
         display_order = help_order::RUNTIME,
@@ -2079,7 +2084,7 @@ pub(crate) enum Command {
         /// Force install lifecycle scripts on where the PM can express it
         /// (npm/yarn-berry/deno; bun/pnpm need a manifest allowlist)
         #[arg(
-            long = "scripts",
+            long = runner_core::Setting::flag_for("install.scripts"),
             conflicts_with = "no_scripts",
             display_order = help_order::COMMAND + 2
         )]

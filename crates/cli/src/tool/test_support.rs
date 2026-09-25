@@ -40,3 +40,55 @@ impl Drop for TempDir {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
+
+thread_local! {
+    static PROJECTS: std::cell::RefCell<Vec<TempDir>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A fixture retained until the test thread exits.
+pub(crate) fn project_root() -> PathBuf {
+    PROJECTS.with(|projects| {
+        let dir = TempDir::new("observed-project");
+        let path = dir.path().to_owned();
+        projects.borrow_mut().push(dir);
+        path
+    })
+}
+
+/// Materialise the source files named by a unit fixture.
+pub(crate) fn seed_context(ctx: &crate::types::ProjectContext) {
+    use runner_core::Signal;
+    assert!(
+        ctx.root.starts_with(std::env::temp_dir()),
+        "fixture must be temporary"
+    );
+    let labels = ctx
+        .package_managers
+        .iter()
+        .map(|pm| pm.label())
+        .chain(ctx.task_runners.iter().map(|runner| runner.label()))
+        .chain(ctx.tasks.iter().map(|task| task.source.label()));
+    for label in labels {
+        let provider = runner_providers::REGISTRY.by_label(label).unwrap();
+        let Some(name) = provider.signals.iter().find_map(|signal| match signal {
+            Signal::File(name) | Signal::FileUpwards(name) | Signal::Lockfile(name) => Some(name),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let path = ctx.root.join(name);
+        if path.exists() {
+            continue;
+        }
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = if path
+            .extension()
+            .is_some_and(|ext| ext == "json" || ext == "jsonc")
+        {
+            "{}"
+        } else {
+            ""
+        };
+        fs::write(path, body).unwrap();
+    }
+}

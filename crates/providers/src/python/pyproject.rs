@@ -12,8 +12,11 @@ pub const PROVIDER: Provider = Provider {
     program: None,
     signals: &[Signal::FileUpwards("pyproject.toml")],
     writes: &[],
-    caps: Capabilities::NONE,
-    tasks: None,
+    caps: Capabilities {
+        clean: Some(super::CLEAN),
+        ..Capabilities::NONE
+    },
+    tasks: Some(crate::extract::scripts::python_tasks),
     version: None,
     hooks: Hooks::NONE,
 };

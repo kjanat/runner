@@ -50,50 +50,6 @@ pub(crate) fn run_cmd(task: &str, args: &[String], _verbosity: super::HostVerbos
     c
 }
 
-/// Whether the `node` on `PATH` can run [`run_cmd`]'s `node --run`.
-pub(crate) enum NodeRunSupport {
-    /// Node 22+; `node --run` works.
-    Supported,
-    /// Node older than 22; `node --run` exits with `bad option`.
-    TooOld { version: String },
-    /// No `node` on `PATH`, or its `--version` did not parse. Not blocked:
-    /// the spawn surfaces its own error rather than a guessed one.
-    Unknown,
-}
-
-/// Classify the running `node` against the Node 22 floor where `--run` landed.
-///
-/// `--runtime node` dispatches `node --run <task>`; on an older Node that
-/// fails with a cryptic `bad option: --run`, so the caller turns
-/// [`NodeRunSupport::TooOld`] into a diagnostic naming the floor.
-pub(crate) fn node_run_support() -> NodeRunSupport {
-    probe_node_version().map_or(NodeRunSupport::Unknown, |version| {
-        classify_node_run(&version)
-    })
-}
-
-/// `node --version`'s parsed token, or `None` when node is absent or its
-/// output does not parse. Split from [`node_run_support`] so the version
-/// comparison in [`classify_node_run`] is testable without a subprocess.
-fn probe_node_version() -> Option<String> {
-    let out = program::command("node").arg("--version").output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let raw = String::from_utf8_lossy(&out.stdout);
-    parse_version_token(raw.lines().next().unwrap_or_default().trim())
-}
-
-fn classify_node_run(version: &str) -> NodeRunSupport {
-    match semver::Version::parse(&normalize_version(version)) {
-        Ok(v) if v.major >= 22 => NodeRunSupport::Supported,
-        Ok(v) => NodeRunSupport::TooOld {
-            version: v.to_string(),
-        },
-        Err(_) => NodeRunSupport::Unknown,
-    }
-}
-
 /// Resolve the first supported package manifest path.
 pub(crate) fn find_manifest(dir: &Path) -> Option<PathBuf> {
     files::find_first(dir, MANIFEST_FILENAMES).filter(|path| path.is_file())
@@ -518,30 +474,18 @@ enum ProposalOnFail {
 /// `(name, command)` pair. The command body is needed downstream to
 /// classify passthrough wrappers (e.g. `"build": "turbo run build"`).
 pub(crate) fn extract_scripts(dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    let Some((path, content)) = read_manifest(dir)? else {
-        return Ok(vec![]);
+    let Some(path) = find_manifest(dir) else {
+        return Ok(Vec::new());
     };
-
-    let package_json = parse_manifest(&path, &content)
-        .with_context(|| format!("{} is not valid {}", path.display(), manifest_format(&path)))?;
-
-    Ok(package_json
-        .scripts
-        .map_or_else(Vec::new, |scripts| scripts.into_iter().collect()))
+    runner_providers::extract::scripts::package(&path)
 }
 
 /// Parse scripts from the nearest supported package manifest while walking upward.
 pub(crate) fn extract_scripts_upwards(dir: &Path) -> anyhow::Result<Vec<(String, String)>> {
-    let Some((path, content)) = read_manifest_upwards(dir)? else {
-        return Ok(vec![]);
+    let Some(path) = find_manifest_upwards(dir) else {
+        return Ok(Vec::new());
     };
-
-    let package_json = parse_manifest(&path, &content)
-        .with_context(|| format!("{} is not valid {}", path.display(), manifest_format(&path)))?;
-
-    Ok(package_json
-        .scripts
-        .map_or_else(Vec::new, |scripts| scripts.into_iter().collect()))
+    runner_providers::extract::scripts::package(&path)
 }
 
 #[derive(Deserialize)]
@@ -1268,33 +1212,6 @@ mod tests {
         assert_eq!(parse_version_token(""), None);
         assert_eq!(parse_version_token("not a version"), None);
         assert_eq!(parse_version_token("---"), None);
-    }
-
-    #[test]
-    fn classify_node_run_gates_on_the_node_22_floor() {
-        use super::{NodeRunSupport, classify_node_run};
-
-        assert!(matches!(
-            classify_node_run("22.0.0"),
-            NodeRunSupport::Supported
-        ));
-        assert!(matches!(
-            classify_node_run("26.4.0"),
-            NodeRunSupport::Supported
-        ));
-        assert!(matches!(
-            classify_node_run("20.11.1"),
-            NodeRunSupport::TooOld { version } if version == "20.11.1"
-        ));
-        assert!(matches!(
-            classify_node_run("18.20.4"),
-            NodeRunSupport::TooOld { .. }
-        ));
-        // Unparseable version never blocks; the spawn surfaces its own error.
-        assert!(matches!(
-            classify_node_run("garbage"),
-            NodeRunSupport::Unknown
-        ));
     }
 
     #[test]

@@ -30,6 +30,8 @@ pub struct Task {
 /// Structured facts about a task beyond name and description.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskDetail {
+    /// Source configuration that declared the task.
+    pub source: Option<PathBuf>,
     /// Tasks that run before this one.
     pub depends: Vec<String>,
     /// Tasks that run after this one.

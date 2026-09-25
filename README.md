@@ -617,22 +617,16 @@ overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the or
 # [tasks."rfc:site"]
 # stdout = "discard"
 
-# Deprecated, superseded by [tasks] above. Legacy ranked allow-list of task
-# runners that also *restricts* candidates (a same-named task under an unlisted
-# runner is rejected). Still honored for existing configs, with a warning.
-# [task_runner]
-# prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
-
-# Restrict which detected package managers `runner install` runs. Empty/absent
-# installs every detected PM. Overridden by RUNNER_INSTALL_PMS
-# (comma-separated). `[pm]` above only scopes script dispatch, not the install
-# fan-out.
-# `on_collision` decides what happens when two of them write the same directory
-# (bun and a nodeModulesDir-enabled deno both writing node_modules). "resolve"
-# (the default) installs with the PM the resolver already picked for the
-# ecosystem and skips the other, saying so; naming both in `pms` runs both, one
-# after another over the shared tree. "error" refuses to pick and exits 2.
-# Overridden by RUNNER_INSTALL_ON_COLLISION.
+# `[pm]` choices govern script dispatch and installation. Per-tool install
+# settings disable an installer or enable it explicitly.
+# [tools.cargo]
+# install = false
+#
+# `on_collision` decides what happens when installers share a directory.
+# "resolve" selects the provider with the strongest evidence and reports
+# shadowed installers. Explicitly enabling every writer with
+# `[tools.<name>].install = true` runs them sequentially. "error" refuses
+# a collision. Overridden by RUNNER_INSTALL_ON_COLLISION.
 # `scripts` controls install-time lifecycle scripts (the main supply-chain
 # attack surface): "deny" skips them where the PM allows it
 # (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces them on
@@ -643,10 +637,9 @@ overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the or
 # onlyBuiltDependencies manifest allowlist runner won't write), so they warn.
 # Precedence: CLI --no-scripts/--scripts > RUNNER_INSTALL_SCRIPTS > [install].scripts.
 # The toolchain step (`mise install`, when a mise config is detected) has no
-# config key: detection decides whether it applies, and `--no-tools` turns it
-# off for one invocation.
+# separate allowlist: detection decides whether it applies.
+# `[tools.mise].install = false` disables it; `--no-tools` skips it once.
 [install]
-pms          = ["bun"]    # only install with these; each must be detected
 scripts      = "deny"     # deny | allow  (absent = each PM's own default)
 on_collision = "resolve"  # resolve (one writer per install dir) | error
 

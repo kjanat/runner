@@ -6,11 +6,14 @@ use std::process::{Child, Command, ExitStatus};
 use crate::plan::{Plan, Trust};
 
 /// The command `plan` describes.
-#[must_use]
+///
+/// # Errors
+/// Returns an error when the planned executable path cannot be represented.
+///
 /// # Panics
 ///
 /// In debug builds, when the plan carries no evidence.
-pub fn command(plan: &Plan) -> Command {
+pub fn command(plan: &Plan) -> io::Result<Command> {
     debug_assert!(!plan.because.is_empty(), "a plan without evidence is a bug");
     let mut argv = plan.argv.iter();
     let program = argv.next().cloned().unwrap_or_default();
@@ -29,10 +32,15 @@ pub fn command(plan: &Plan) -> Command {
                 .cloned()
                 .chain(std::env::split_paths(&inherited)),
         )
-        .unwrap_or(inherited);
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("cannot construct the planned PATH: {error}"),
+            )
+        })?;
         cmd.env("PATH", joined);
     }
-    cmd
+    Ok(cmd)
 }
 
 /// Spawn `plan` and wait for it.
@@ -45,7 +53,7 @@ pub fn command(plan: &Plan) -> Command {
 ///
 /// In debug builds, when the plan carries no evidence.
 pub fn execute(plan: &Plan) -> io::Result<ExitStatus> {
-    status(plan, &mut command(plan))
+    status(plan, &mut command(plan)?)
 }
 
 /// Execute a configured plan with caller-selected stdio.
@@ -106,6 +114,7 @@ mod tests {
             trust,
             reach: Reach::Local,
             clamps: Vec::new(),
+            warnings: Vec::new(),
             because: vec![crate::Evidence {
                 provider: Some(ProviderId::Npm),
                 signal: None,
@@ -125,13 +134,13 @@ mod tests {
     fn command_construction_rejects_missing_evidence() {
         let mut made = plan(&["runner-must-not-spawn"], Trust::Project);
         made.because.clear();
-        let _ = command(&made);
+        let _ = command(&made).unwrap();
     }
 
     #[test]
     fn explicit_shell_arguments_are_preserved() {
         let made = plan(&["bash", "-lc", "printf hello"], Trust::Host);
-        let command = command(&made);
+        let command = command(&made).unwrap();
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             ["-lc", "printf hello"]
@@ -143,19 +152,19 @@ mod tests {
     #[should_panic(expected = "planned argv")]
     fn configured_execution_rejects_changed_argv() {
         let made = plan(&["runner-must-not-spawn"], Trust::Project);
-        let mut cmd = command(&made);
+        let mut cmd = command(&made).unwrap();
         cmd.arg("changed");
         let _ = super::spawn(&made, &mut cmd);
     }
 
     #[test]
     fn host_trust_never_prepends_project_bin_dirs() {
-        let host = command(&plan(&["mise", "install"], Trust::Host));
+        let host = command(&plan(&["mise", "install"], Trust::Host)).unwrap();
         assert!(
             host.get_envs()
                 .all(|(key, _)| key != std::ffi::OsStr::new("PATH"))
         );
-        let project = command(&plan(&["npm", "test"], Trust::Project));
+        let project = command(&plan(&["npm", "test"], Trust::Project)).unwrap();
         let path = project
             .get_envs()
             .find(|(key, _)| *key == std::ffi::OsStr::new("PATH"))

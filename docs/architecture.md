@@ -26,7 +26,7 @@ Anything that cannot be derived from it does not belong in the core.
 
 ```text
 observe(tree)            -> Result<Vec<Evidence>, io::Error>
-resolve(evidence, policy) -> Project { present: Vec<Present>, tasks: Vec<Task>, warnings }
+resolve(evidence, policy) -> Result<Project { present, tasks, warnings }, io::Error>
 plan(project, op, policy) -> Result<Plan, Refusal>
 execute(plan)             -> ExitStatus
 explain(plan | project)   -> Report
@@ -42,6 +42,11 @@ query is an error with its provider and scope, never an empty evidence list.
 | `why`, any `--explain`        | plan        | Render the plan without executing it.               |
 | `run`, `install`, `clean`     | execute     | Render the plan's arrow, then spawn.                |
 | `config`, `schema`, `lsp`     | none        | Read the declaration tables directly.               |
+
+Directory cleanup uses `CleanPlan { targets, because }`. Its targets come from
+present providers' effective clean capabilities. The executor removes those
+directories. Health capabilities declare a list of read-only argv templates and
+output parsers; doctor plans each check with host trust and reports query errors.
 
 Explanation is the plan rendered. No subcommand rebuilds a decision by a
 second code path.
@@ -243,7 +248,7 @@ pub struct Capabilities {
     pub bins: Option<BinsCap>,
     pub clean: Option<CleanCap>,
     pub workspaces: Option<WorkspaceCap>,
-    pub health: Option<HealthCap>,
+    pub health: &'static [HealthCap],
     pub usage: Option<UsageCap>,
     pub operations: &'static [&'static str],
     pub quiet: QuietSupport,
@@ -303,9 +308,11 @@ pub struct TestCap {
 
 pub struct BinsCap {
     pub dirs: BinDirs,
-} // Static(&["node_modules/.bin"]) | Ask(fn(&Path) -> Vec<PathBuf>)
+} // Static(&["node_modules/.bin"]) | Ask(fn(&Path) -> io::Result<Vec<PathBuf>>)
 pub struct CleanCap {
     pub dirs: &'static [&'static str],
+    pub framework_dirs: &'static [&'static str],
+    pub dir_suffixes: &'static [&'static str],
 }
 pub struct WorkspaceCap {
     pub members: fn(&Tree) -> Result<Vec<Scope>>,
@@ -365,7 +372,7 @@ pub enum Op<'a> {
     RunFile { file: &'a Path, args: &'a [String] },
     Test { args: &'a [String] },
     Clean,
-    Health,
+    Health { check: usize },
 }
 
 pub enum Layer {
@@ -426,6 +433,7 @@ pub struct Plan {
     pub env: Vec<(OsString, OsString)>,
     pub env_remove: Vec<OsString>,
     pub path_prepend: Vec<PathBuf>, // empty when trust is Host
+    pub warnings: Vec<Warning>,
     pub trust: Trust,
     pub reach: Reach,
     pub clamps: Vec<Clamp>, // requested vs granted, for verbosity and scripts
@@ -653,7 +661,7 @@ Provider {
         run_task: Some(RunTaskCap { argv: t![Quiet, "run", Task, Sep("--"), Args], sources: &[Mise] }),
         exec: Some(ExecCap { argv: t!["exec", Sep("--"), Name, Args], reach: Network, accepts: Bare }),
         bins: Some(BinsCap { dirs: Ask(mise::bin_paths) }),
-        health: Some(HealthCap { argv: t!["tasks", "validate", "--json"], parse: mise::health }),
+        health: &[HealthCap { argv: t!["tasks", "validate", "--json"], parse: mise::health }],
         usage: Some(UsageCap { spec: mise::usage_spec }),
         operations: &["install", "bootstrap"],
         install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: &[("mise.toml", "mise.lock")], .. }),

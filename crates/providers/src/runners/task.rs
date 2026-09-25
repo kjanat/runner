@@ -33,7 +33,7 @@ pub const PROVIDER: Provider = Provider {
         quiet: QuietSupport::flag(t!["-s"]),
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::go_task::tasks),
     version: None,
     hooks: Hooks::NONE,
 };

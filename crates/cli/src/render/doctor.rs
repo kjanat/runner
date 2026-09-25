@@ -23,7 +23,7 @@ pub(crate) struct Human<'a> {
     /// The tool manager the toolchain step runs.
     pub tools: Option<TaskRunner>,
     /// mise's own verdict on the project.
-    pub health: &'a crate::tool::mise::Health,
+    pub health: &'a [crate::schema::doctor::Diagnostic],
 }
 
 #[allow(
@@ -121,15 +121,6 @@ pub(crate) fn print_human(human: &Human<'_>) {
                 ),
             );
         }
-        if !overrides.install_pms.is_empty() {
-            let pms = overrides
-                .install_pms
-                .iter()
-                .map(|pm| pm.label())
-                .collect::<Vec<_>>()
-                .join(", ");
-            writeln_field(out, "install.pms", &pms);
-        }
         writeln_field(
             out,
             "fallback",
@@ -193,9 +184,6 @@ pub(crate) fn print_human(human: &Human<'_>) {
         }
         if let Some(runner) = tools {
             writeln_field(out, "tools", runner.label());
-        }
-        if !health.missing_tools.is_empty() {
-            writeln_field(out, "tools missing", &health.missing_tools.join(", "));
         }
         match plan {
             Ok(plan) => {
@@ -261,10 +249,10 @@ pub(crate) fn print_human(human: &Human<'_>) {
             )
         }));
     }
-    warnings.extend(health.task_issues.iter().map(|issue| {
+    warnings.extend(health.iter().map(|issue| {
         (
-            "mise".to_string(),
-            format!("tasks validate: {} [{}]", issue.message, issue.task),
+            issue.source.unwrap_or("health").to_string(),
+            issue.message.clone(),
         )
     }));
     if !warnings.is_empty() {

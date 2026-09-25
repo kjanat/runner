@@ -12,7 +12,7 @@ use super::runtime;
 use crate::render::arrow::print_dispatch_arrow;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolveError, ResolvedPm, Resolver};
 use crate::tool;
-use crate::types::{Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
+use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::commands::print_explain(overrides, &format!("resolved: {describe}"));
@@ -99,7 +99,7 @@ fn check_mise_usage(ctx: &ProjectContext, entry: &Task, args: &[String]) -> Resu
         return Ok(());
     }
     let task = entry.name.as_str();
-    let Some(spec) = tool::mise::usage_spec(&ctx.root, task) else {
+    let Some(spec) = tool::mise::usage_spec(&ctx.root, task)? else {
         return Ok(());
     };
     let missing = spec.missing_required_flags(args);
@@ -157,6 +157,7 @@ impl SpawnDispatch {
             &runner_core::Project::default(),
             &runner_core::Policy::default(),
             command.get_program().into(),
+            &runner_providers::REGISTRY,
             argv,
         )
         .expect("test plan");
@@ -309,11 +310,11 @@ fn spawn_plan(
     token: &str,
     args: &[String],
     mut plan: runner_core::Plan,
-) -> Dispatch {
-    crate::commands::configure_plan(&mut plan, overrides, token);
+) -> Result<Dispatch> {
+    crate::commands::configure_plan(&mut plan, overrides, token)?;
     crate::render::explain::print_plan(overrides, &plan);
     print_dispatch_arrow(overrides, token, &plan_label(&plan, token), token, args);
-    let mut command = runner_core::execute::command(&plan);
+    let mut command = runner_core::execute::command(&plan)?;
     crate::commands::configure_task_streams(&mut command, overrides, token);
     let spawn = SpawnDispatch {
         task_key: token.to_owned(),
@@ -321,7 +322,7 @@ fn spawn_plan(
         plan: Box::new(plan),
         diagnostic: SpawnDiagnostic::Passthrough,
     };
-    Dispatch::Spawn(Box::new(spawn))
+    Ok(Dispatch::Spawn(Box::new(spawn)))
 }
 
 /// `--package <package> <bin>`: the binary from the package's own manifest
@@ -347,7 +348,7 @@ fn dispatch_by_package(
     };
     if let Some(dep) = super::local_dep::try_selected_package(ctx, overrides, package, bin, args)? {
         print_pm_explain(overrides, &dep.describe);
-        return Ok(Some(spawn_plan(overrides, bin, args, dep.plan)));
+        return Ok(Some(spawn_plan(overrides, bin, args, dep.plan)?));
     }
     if let Some(shadow) = project_bin(&ctx.cwd, bin) {
         bail!(
@@ -413,7 +414,7 @@ fn dispatch_by_package(
         other => refusal_error(ctx, bin, &other),
     })?;
     crate::commands::authorize_fetch(overrides, &format!("{package} ({bin})"), "exec-package")?;
-    Ok(Some(spawn_plan(overrides, bin, args, plan)))
+    Ok(Some(spawn_plan(overrides, bin, args, plan)?))
 }
 
 /// Walk the complete core cascade and configure the selected plan for execution.
@@ -429,6 +430,7 @@ fn dispatch_plan(
     let requested = prepared.requested;
     let policy = &prepared.policy;
     let project = &prepared.project;
+    crate::commands::print_core_warnings(&project.warnings, overrides, sink.as_deref_mut());
     if let Ok(decision) = &prepared.node {
         crate::commands::print_warning_slice(&decision.warnings, overrides, sink.as_deref_mut());
         print_pm_explain(overrides, &decision.describe());
@@ -440,8 +442,12 @@ fn dispatch_plan(
     }
 
     let dep = |name: &str| {
-        super::local_dep::installed_binary(ctx, name)
-            .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
+        super::local_dep::installed_binary(ctx, name).map_err(|error| {
+            match error.downcast::<io::Error>() {
+                Ok(error) => error.into(),
+                Err(error) => runner_core::Refusal::Invalid(error.to_string()),
+            }
+        })
     };
     let confirm = |name: &str, rung: &str| crate::commands::confirm_fetch(name, rung);
     let cascade = prepared.cascade(&dep, Some(&confirm));
@@ -456,13 +462,20 @@ fn dispatch_plan(
     } else {
         None
     };
+    prepared.validate_task(entry, overrides)?;
     let task_key = prepared.task_key.clone();
-    prepare_task(ctx, overrides, entry, args, &mut plan, sink)?;
-    prepare_host(ctx, task_name, rung, &mut plan)?;
-    crate::commands::configure_plan(&mut plan, overrides, &task_key);
-    if entry.is_some_and(|entry| entry.source == TaskSource::GoPackage) {
-        preserve_go_environment(&mut plan, &ctx.root);
-    }
+    complete_plan(
+        ctx,
+        overrides,
+        task_name,
+        args,
+        rung,
+        entry,
+        &task_key,
+        &mut plan,
+        sink.as_deref_mut(),
+    )?;
+    crate::commands::print_core_warnings(&plan.warnings, overrides, sink);
     explain_host(overrides, &plan, project, requested, policy.verbosity);
     crate::render::explain::print_plan(overrides, &plan);
     let label = entry.map_or_else(
@@ -484,7 +497,7 @@ fn dispatch_plan(
         task_name
     };
     print_dispatch_arrow(overrides, task_name, &label, arrow_name, args);
-    let mut cmd = runner_core::execute::command(&plan);
+    let mut cmd = runner_core::execute::command(&plan)?;
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
     crate::commands::print_output_explain(overrides, &task_key);
     crate::commands::set_task_stdio(&mut cmd, stdout, stderr);
@@ -494,8 +507,8 @@ fn dispatch_plan(
         SpawnDiagnostic::ResolvedPackageManager(prepared.node?)
     } else if entry.is_some_and(|e| e.source == TaskSource::PyprojectScripts) {
         SpawnDiagnostic::ResolvedPythonPackageManager(
-            resolve_python_pm(ctx, overrides)
-                .ok_or_else(|| anyhow!("no Python package manager can run this script"))?,
+            python_decision(&plan)
+                .ok_or_else(|| anyhow!("planned Python task has no package-manager choice"))?,
         )
     } else {
         SpawnDiagnostic::Passthrough
@@ -507,6 +520,28 @@ fn dispatch_plan(
         diagnostic,
     };
     Ok(Dispatch::Spawn(Box::new(spawn)))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn complete_plan(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+    token: &str,
+    args: &[String],
+    rung: runner_core::Rung,
+    entry: Option<&Task>,
+    key: &str,
+    plan: &mut runner_core::Plan,
+    sink: crate::commands::WarningSink<'_>,
+) -> Result<()> {
+    prepare_task(ctx, overrides, entry, args, plan, sink)?;
+    prepare_host(ctx, token, rung, plan)?;
+    crate::commands::configure_plan(plan, overrides, key)?;
+    if entry.is_some_and(|entry| entry.source == TaskSource::GoPackage) {
+        preserve_go_environment(plan, &ctx.root)?;
+    }
+    runner_core::execute::command(plan)?;
+    Ok(())
 }
 
 fn prepare_host(
@@ -548,13 +583,6 @@ fn prepare_task(
         {
             print_pm_explain(overrides, &over.describe());
             if over.runtime == JsRuntime::Node {
-                if let tool::node::NodeRunSupport::TooOld { version } =
-                    tool::node::node_run_support()
-                {
-                    bail!(
-                        "--runtime node needs Node 22 or newer, but the node on PATH is {version}"
-                    );
-                }
                 runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
             }
         }
@@ -569,16 +597,16 @@ fn prepare_task(
     Ok(())
 }
 
-// Environment layering still belongs to the CLI until migration step 5.
-// Retain Go's existing VCS opt-in in the plan so explain and execution agree.
-fn preserve_go_environment(plan: &mut runner_core::Plan, root: &std::path::Path) {
-    let mut command = runner_core::execute::command(plan);
+/// Include the Go toolchain's VCS stamping environment in the plan.
+fn preserve_go_environment(plan: &mut runner_core::Plan, root: &std::path::Path) -> Result<()> {
+    let mut command = runner_core::execute::command(plan)?;
     tool::go_pm::stamp_vcs(&mut command, root);
     if let Some((key, Some(value))) = command.get_envs().find(|(key, _)| *key == "GOFLAGS") {
         plan.env.retain(|(name, _)| name != key);
         plan.env_remove.retain(|name| name != key);
         plan.env.push((key.to_owned(), value.to_owned()));
     }
+    Ok(())
 }
 
 fn explain_host(
@@ -766,7 +794,7 @@ pub(crate) struct ResolvedPythonPm {
 #[derive(Debug, Clone)]
 enum PythonPmResolution {
     Override(OverrideOrigin),
-    DetectedProject,
+    Evidence(runner_core::Layer),
 }
 
 impl ResolvedPythonPm {
@@ -781,8 +809,17 @@ impl ResolvedPythonPm {
             PythonPmResolution::Override(OverrideOrigin::ConfigFile { path }) => {
                 format!("{} via runner.toml at {}", self.pm.label(), path.display())
             }
-            PythonPmResolution::DetectedProject => {
-                format!("{} via detected Python project", self.pm.label())
+            PythonPmResolution::Evidence(layer) => {
+                let origin = match layer {
+                    runner_core::Layer::Lockfile(path) | runner_core::Layer::Manifest(path) => path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    runner_core::Layer::Probe => "PATH probe".into(),
+                    _ => "project configuration".into(),
+                };
+                format!("{} via {origin}", self.pm.label())
             }
         }
     }
@@ -793,37 +830,48 @@ pub(crate) fn resolve_python_pm(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
 ) -> Option<ResolvedPythonPm> {
-    if let Some(o) = overrides.pm.as_ref()
-        && o.pm.ecosystem() == Ecosystem::Python
-    {
-        return Some(ResolvedPythonPm {
-            pm: o.pm,
-            via: PythonPmResolution::Override(o.origin.clone()),
-        });
-    }
-    if let Some(o) = overrides.pm_by_ecosystem.get(&Ecosystem::Python) {
-        return Some(ResolvedPythonPm {
-            pm: o.pm,
-            via: PythonPmResolution::Override(o.origin.clone()),
-        });
-    }
-    ctx.package_managers
+    let policy = super::core::policy(overrides);
+    let project = super::core::project_under(ctx, &policy).ok()?;
+    let task = ctx
+        .tasks
         .iter()
-        .copied()
-        .find(|pm| pm.ecosystem() == Ecosystem::Python)
-        .map(|pm| ResolvedPythonPm {
-            pm,
-            via: PythonPmResolution::DetectedProject,
-        })
+        .find(|task| task.source == TaskSource::PyprojectScripts)?;
+    let task = super::core::task(task)?;
+    let plan = runner_core::plan(
+        &super::core::tree(ctx),
+        &project,
+        &policy,
+        &runner_core::Op::Run {
+            task: &task,
+            args: &[],
+        },
+        &runner_providers::REGISTRY,
+    )
+    .ok()?;
+    python_decision(&plan)
+}
+
+fn python_decision(plan: &runner_core::Plan) -> Option<ResolvedPythonPm> {
+    let id = plan.provider?;
+    let pm = PackageManager::from_label(runner_providers::REGISTRY.by_id(id).label)?;
+    let choice = plan.decided_by.first()?;
+    let via = match choice {
+        runner_core::Layer::Cli => PythonPmResolution::Override(OverrideOrigin::CliFlag),
+        runner_core::Layer::Env => PythonPmResolution::Override(OverrideOrigin::EnvVar),
+        runner_core::Layer::ConfigFile(path) => {
+            PythonPmResolution::Override(OverrideOrigin::ConfigFile { path: path.clone() })
+        }
+        layer => PythonPmResolution::Evidence(layer.clone()),
+    };
+    Some(ResolvedPythonPm { pm, via })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use std::process::Command;
 
-    use super::{Dispatch, SpawnDispatch, check_make_args, resolve_dispatch};
+    use super::{Dispatch, SpawnDispatch, check_make_args};
     use crate::resolver::{OverrideOrigin, ResolutionOverrides, ResolutionStep, ResolvedPm};
     use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
@@ -860,9 +908,10 @@ mod tests {
     }
 
     fn context() -> ProjectContext {
+        let root = crate::tool::test_support::project_root();
         ProjectContext {
-            cwd: PathBuf::from("."),
-            root: PathBuf::from("."),
+            cwd: root.clone(),
+            root,
             package_managers: Vec::new(),
             task_runners: Vec::new(),
             tasks: Vec::new(),
@@ -873,6 +922,18 @@ mod tests {
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    fn resolve_dispatch(
+        ctx: &ProjectContext,
+        overrides: &ResolutionOverrides,
+        task: &str,
+        args: &[String],
+        sink: crate::commands::WarningSink<'_>,
+        allow: bool,
+    ) -> anyhow::Result<Dispatch> {
+        crate::tool::test_support::seed_context(ctx);
+        super::resolve_dispatch(ctx, overrides, task, args, sink, allow)
     }
 
     fn expect_command(dispatch: Dispatch) -> Command {
@@ -1595,8 +1656,8 @@ mod tests {
     #[test]
     fn run_make_from_a_member_runs_at_the_workspace_root() {
         let mut ctx = context();
-        ctx.root = PathBuf::from("/tmp/ws");
-        ctx.cwd = PathBuf::from("/tmp/ws/apps/web");
+        ctx.cwd = ctx.root.join("apps/web");
+        std::fs::create_dir_all(&ctx.cwd).unwrap();
         ctx.task_runners.push(TaskRunner::Make);
 
         let command = expect_command(
@@ -1611,10 +1672,7 @@ mod tests {
             .expect("runner root invocation dispatches"),
         );
 
-        assert_eq!(
-            command.get_current_dir(),
-            Some(std::path::Path::new("/tmp/ws"))
-        );
+        assert_eq!(command.get_current_dir(), Some(ctx.root.as_path()));
     }
 
     #[test]

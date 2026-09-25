@@ -47,7 +47,6 @@ pub(crate) use dispatch::{ResolvedPythonPm, resolve_python_pm};
 
 pub(crate) use runtime::{
     honors as runtime_honors, lifecycle_scripts as runtime_lifecycle_scripts,
-    script_preview as runtime_script_preview,
 };
 
 use crate::resolver::ResolutionOverrides;

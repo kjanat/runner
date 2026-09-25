@@ -13,13 +13,21 @@ keywords               = ["automation", "build-tool", "cli", "task-runner"]
 categories             = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+anyhow     = "1"
 glob       = "0.3"
+json5      = "1"
+serde      = { workspace = true }
 serde_json = "1"
+shlex      = "2"
+toml       = { workspace = true, features = ["parse", "serde"] }
 yaml-rust2 = "0.13"
 
 [dependencies.runner-core]
 path    = "../core"
 version = "0.26.2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

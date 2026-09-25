@@ -16,7 +16,7 @@ pub type TasksFn = fn(&Present, &Tree) -> Result<Vec<Task>, Warning>;
 pub type VersionFn = fn(&Present) -> Result<String, Warning>;
 
 /// A warning the core cannot know before a plan is made.
-pub type BeforePlanFn = fn(&Present, &Op<'_>, &mut Vec<Warning>);
+pub type BeforePlanFn = fn(&Present, &Op<'_>, &mut Vec<Warning>) -> Result<(), crate::Refusal>;
 
 /// Evidence derived from other evidence.
 pub type AfterObserveFn = fn(&Tree, &[Evidence]) -> std::io::Result<Vec<Evidence>>;

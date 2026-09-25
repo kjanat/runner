@@ -737,3 +737,202 @@ fn install_refuses_broken_yarn_observations_before_spawning() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("yarn.lock"));
     fixture.assert_not_executed();
 }
+
+#[test]
+fn observed_runtime_keeps_precedence_for_package_exec() {
+    let fixture = Fixture::new();
+    fixture.file("bun.lock", "");
+    fixture.program("bun");
+    let output = fixture.run(
+        &["--runtime", "bun", "--explain", "run", "audit-missing"],
+        "allow",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("[\"bun\", \"x\", \"--bun\", \"audit-missing\"]"),
+        "{stderr}"
+    );
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn member_bin_precedes_root_bin() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "package.json",
+        r#"{"name":"root","packageManager":"npm@11.0.0","workspaces":["packages/*"]}"#,
+    );
+    let member = fixture.0.join("packages/web");
+    std::fs::create_dir_all(&member).unwrap();
+    std::fs::write(member.join("package.json"), r#"{"name":"web"}"#).unwrap();
+    for (root, value) in [(&fixture.0, "root"), (&member, "member")] {
+        let bin = root.join("node_modules/.bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let path = bin.join("audit-local");
+        std::fs::write(&path, format!("#!/bin/sh\necho {value}\n")).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let output = fixture.run(
+        &["--dir", member.to_str().unwrap(), "run", "audit-local"],
+        "local",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "member");
+}
+
+#[test]
+fn qualified_task_environment_overrides_the_bare_task() {
+    let fixture = Fixture::new();
+    fixture.file(
+        "runner.toml",
+        "[tasks.first.env]\nAUDIT_VALUE = \
+         'bare'\n[tasks.\"root:package.json#first\".env]\nAUDIT_VALUE = 'qualified'\n",
+    );
+    fixture.file(
+        "bin/npm",
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 11.0.0; else printf '%s' \
+         \"$AUDIT_VALUE\"; fi\n",
+    );
+    let output = fixture.run(&["run", "root:package.json#first"], "local");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"qualified");
+}
+
+#[test]
+fn why_and_run_both_refuse_an_old_node_task_runtime() {
+    let fixture = Fixture::new();
+    fixture.program("node");
+    fixture.file("bin/node", "#!/bin/sh\necho v20.0.0\n");
+    for verb in ["why", "run"] {
+        let output = fixture.run(&["--runtime", "node", verb, "first"], "local");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(text.contains("needs Node 22 or newer"), "{verb}: {text}");
+        assert!(!text.contains("Invalid("), "{text}");
+    }
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn path_search_skips_a_nonexecutable_file() {
+    let fixture = Fixture::new();
+    fixture.file("bin/audit-host", "not executable");
+    let later = fixture.0.join("later");
+    std::fs::create_dir_all(&later).unwrap();
+    let path = later.join("audit-host");
+    std::fs::write(&path, "#!/bin/sh\necho executable\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_runner"))
+        .env_clear()
+        .env("HOME", &fixture.0)
+        .env(
+            "PATH",
+            std::env::join_paths([fixture.0.join("bin"), later]).unwrap(),
+        )
+        .env("RUNNER_REACH", "local")
+        .current_dir(&fixture.0)
+        .args(["run", "audit-host"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "executable");
+}
+
+#[test]
+fn unreadable_installed_package_never_becomes_a_fetch_plan() {
+    let fixture = Fixture::new();
+    let dir = fixture.0.join("node_modules/audit-dep");
+    std::fs::create_dir_all(&dir).unwrap();
+    let manifest = dir.join("package.json");
+    std::fs::write(&manifest, r#"{"name":"audit-dep","bin":"main.js"}"#).unwrap();
+    std::fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&manifest).is_ok() {
+        return;
+    }
+    let output = fixture.run(
+        &["--explain", "run", "--package", "audit-dep", "audit-dep"],
+        "allow",
+    );
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Network"));
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn unrepresentable_project_path_never_hides_a_local_binary() {
+    let fixture = Fixture::new();
+    let moved = fixture.0.with_file_name(format!(
+        "{}:colon",
+        fixture.0.file_name().unwrap().to_string_lossy()
+    ));
+    std::fs::rename(&fixture.0, &moved).unwrap();
+    let fixture = Fixture(moved);
+    let bin = fixture.0.join("node_modules/.bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let program = bin.join("audit-local");
+    std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = fixture.run(&["--explain", "run", "audit-local"], "allow");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("cannot construct the planned PATH"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("npx"), "{stderr}");
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn a_forced_install_without_files_or_executables_has_no_plan() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.0.join("package.json")).unwrap();
+    std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
+    std::fs::remove_file(fixture.0.join("bin/npm")).unwrap();
+    let output = fixture.run(
+        &["--pm", "npm", "--explain", "install", "--no-tools"],
+        "allow",
+    );
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("argv:"));
+    fixture.assert_not_executed();
+}
+
+#[test]
+fn disabled_installers_do_not_request_network_or_execute() {
+    let fixture = Fixture::new();
+    fixture.file("mise.toml", "");
+    fixture.file(
+        "runner.toml",
+        "[tools.npm]\ninstall = false\n[tools.mise]\ninstall = false\n",
+    );
+    fixture.program("mise");
+    fixture.file(
+        "bin/mise",
+        "#!/bin/sh\ncase \"$1\" in tasks) echo '{}';; bin-paths) :;; *) echo ran >> \
+         \"$AUDIT_LOG\";; esac\n",
+    );
+    let output = fixture.run(&["install"], "local");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    fixture.assert_not_executed();
+}

@@ -19,7 +19,7 @@ pub fn members(tree: &Tree) -> Result<Vec<Scope>, Warning> {
     globs.extend(package_json_globs(root)?);
     globs.extend(lerna_globs(root)?);
     let mut scopes = Vec::new();
-    for dir in expand(root, &globs) {
+    for dir in expand(root, &globs)? {
         if !dir.join("package.json").is_file()
             || scopes
                 .iter()
@@ -27,7 +27,7 @@ pub fn members(tree: &Tree) -> Result<Vec<Scope>, Warning> {
         {
             continue;
         }
-        let name = manifest_name(&dir).unwrap_or_else(|| relative(root, &dir));
+        let name = manifest_name(&dir)?.unwrap_or_else(|| relative(root, &dir));
         scopes.push(Scope::Member { name, dir });
     }
     Ok(scopes)
@@ -35,12 +35,11 @@ pub fn members(tree: &Tree) -> Result<Vec<Scope>, Warning> {
 
 fn read(root: &Path, file: &str) -> Result<Option<String>, Warning> {
     let path = root.join(file);
-    if !path.is_file() {
-        return Ok(None);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Warning::general(format!("{}: {error}", path.display()))),
     }
-    std::fs::read_to_string(&path)
-        .map(Some)
-        .map_err(|err| Warning::general(format!("{}: {err}", path.display())))
 }
 
 fn pnpm_globs(root: &Path) -> Result<Vec<String>, Warning> {
@@ -103,13 +102,17 @@ fn lerna_globs(root: &Path) -> Result<Vec<String>, Warning> {
     ))
 }
 
-fn manifest_name(dir: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(dir.join("package.json")).ok()?;
-    let manifest: Value = serde_json::from_str(&text).ok()?;
-    manifest["name"]
+fn manifest_name(dir: &Path) -> Result<Option<String>, Warning> {
+    let Some(text) = read(dir, "package.json")? else {
+        return Ok(None);
+    };
+    let manifest: Value = serde_json::from_str(&text).map_err(|error| {
+        Warning::general(format!("{}: {error}", dir.join("package.json").display()))
+    })?;
+    Ok(manifest["name"]
         .as_str()
         .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned)
+        .map(ToOwned::to_owned))
 }
 
 fn relative(root: &Path, dir: &Path) -> String {
@@ -130,15 +133,18 @@ const MATCH_OPTIONS: glob::MatchOptions = glob::MatchOptions {
     require_literal_leading_dot: true,
 };
 
-fn expand(root: &Path, globs: &[String]) -> Vec<PathBuf> {
+fn expand(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, Warning> {
     let (negatives, positives): (Vec<&str>, Vec<&str>) = globs
         .iter()
         .map(String::as_str)
         .partition(|g| g.starts_with('!'));
     let negatives: Vec<glob::Pattern> = negatives
         .iter()
-        .filter_map(|g| glob::Pattern::new(&normalize(&g[1..])).ok())
-        .collect();
+        .map(|g| {
+            glob::Pattern::new(&normalize(&g[1..]))
+                .map_err(|error| Warning::general(format!("workspace glob {g}: {error}")))
+        })
+        .collect::<Result<_, _>>()?;
     let escaped_root = glob::Pattern::escape(&root.to_string_lossy());
     let mut dirs: Vec<PathBuf> = Vec::new();
     for positive in positives {
@@ -146,10 +152,10 @@ fn expand(root: &Path, globs: &[String]) -> Vec<PathBuf> {
         if pattern.is_empty() {
             continue;
         }
-        let Ok(paths) = glob::glob_with(&format!("{escaped_root}/{pattern}"), MATCH_OPTIONS) else {
-            continue;
-        };
-        for path in paths.filter_map(Result::ok) {
+        let paths = glob::glob_with(&format!("{escaped_root}/{pattern}"), MATCH_OPTIONS)
+            .map_err(|error| Warning::general(format!("workspace glob {pattern}: {error}")))?;
+        for path in paths {
+            let path = path.map_err(|error| Warning::general(error.to_string()))?;
             let Ok(rel) = path.strip_prefix(root) else {
                 continue;
             };
@@ -163,7 +169,7 @@ fn expand(root: &Path, globs: &[String]) -> Vec<PathBuf> {
         }
     }
     dirs.sort();
-    dirs
+    Ok(dirs)
 }
 
 fn normalize(glob: &str) -> String {

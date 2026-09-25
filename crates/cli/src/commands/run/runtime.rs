@@ -64,37 +64,6 @@ pub(crate) fn honors(source: TaskSource, runtime: JsRuntime) -> bool {
     honored_sources(runtime).contains(&source)
 }
 
-/// Effective script-command preview from the declared runtime template
-/// under a forced runtime, for `why` / `doctor`. `Some` only when `runtime`
-/// actually dispatches `source`; the runtime then reads the script through its
-/// own runner and the resolved package manager is not consulted.
-pub(crate) fn script_preview(runtime: JsRuntime, source: TaskSource, task: &str) -> Option<String> {
-    if !honors(source, runtime) {
-        return None;
-    }
-    let provider = runner_providers::REGISTRY.by_label(runtime.label())?;
-    let template = provider
-        .caps
-        .as_runtime
-        .and_then(|cap| cap.run_task)
-        .or_else(|| provider.caps.run_task.map(|cap| cap.argv))?;
-    let rendered = template.render(&runner_core::Request {
-        task: Some(task),
-        ..runner_core::Request::default()
-    });
-    Some(
-        std::iter::once(provider.program?.to_owned())
-            .chain(
-                rendered
-                    .args
-                    .iter()
-                    .map(|arg| arg.to_string_lossy().into_owned()),
-            )
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
-}
-
 /// Report a runtime override the selected task cannot honour.
 ///
 /// Called once, at the single point where a matched task's source is known

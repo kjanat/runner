@@ -92,19 +92,23 @@ fn look(
         declared,
     };
     Ok(match signal {
-        Signal::File(name) => file_in(dir, name)
+        Signal::File(name) => file_in(dir, name)?
             .map(|at| evidence(at, Weight::Configured, None))
             .into_iter()
             .collect(),
-        Signal::Lockfile(name) => file_in(dir, name)
+        Signal::Lockfile(name) => file_in(dir, name)?
             .map(|at| evidence(at, Weight::Locked, None))
             .into_iter()
             .collect(),
-        Signal::FileUpwards(name) => file_upwards(dir, &tree.root, name)
-            .map(|at| evidence(at, Weight::Configured, None))
+        Signal::FileUpwards(name) => file_upwards(dir, &tree.root, name)?
+            .map(|at| {
+                let mut item = evidence(at.clone(), Weight::Configured, None);
+                item.scope = crate::plan::scope_at(tree, &at);
+                item
+            })
             .into_iter()
             .collect(),
-        Signal::ManifestField { file, path, parse } => manifest_field(dir, file, path)
+        Signal::ManifestField { file, path, parse } => manifest_field(dir, file, path)?
             .and_then(|(at, value)| parse(&value).map(|declared| (at, declared)))
             .map(|(at, declared)| evidence(at, Weight::Declared, Some(declared)))
             .into_iter()
@@ -132,33 +136,61 @@ fn look(
     })
 }
 
-fn file_in(dir: &Path, name: &str) -> Option<PathBuf> {
+fn file_in(dir: &Path, name: &str) -> io::Result<Option<PathBuf>> {
     let path = dir.join(name);
-    path.is_file().then_some(path)
+    match path.metadata() {
+        Ok(metadata) => Ok(metadata.is_file().then_some(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("{}: {error}", path.display()),
+        )),
+    }
 }
 
-fn file_upwards(dir: &Path, root: &Path, name: &str) -> Option<PathBuf> {
-    dir.ancestors()
+fn file_upwards(dir: &Path, root: &Path, name: &str) -> io::Result<Option<PathBuf>> {
+    for ancestor in dir
+        .ancestors()
         .take_while(|ancestor| ancestor.starts_with(root))
-        .find_map(|ancestor| file_in(ancestor, name))
+    {
+        if let Some(path) = file_in(ancestor, name)? {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
-fn manifest_field(dir: &Path, file: &str, path: &str) -> Option<(PathBuf, serde_json::Value)> {
-    let at = file_in(dir, file)?;
-    let text = std::fs::read_to_string(&at).ok()?;
-    let is_toml = Path::new(file)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
-    let document: serde_json::Value = if is_toml {
-        serde_json::to_value(toml::from_str::<toml::Value>(&text).ok()?).ok()?
-    } else {
-        serde_json::from_str(&text).ok()?
+fn manifest_field(
+    dir: &Path,
+    file: &str,
+    path: &str,
+) -> io::Result<Option<(PathBuf, serde_json::Value)>> {
+    let Some(at) = file_in(dir, file)? else {
+        return Ok(None);
     };
-    let value = path
+    let text = std::fs::read_to_string(&at)
+        .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", at.display())))?;
+    let invalid = |error: String| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {error}", at.display()),
+        )
+    };
+    let document: serde_json::Value = if Path::new(file)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"))
+    {
+        let value =
+            toml::from_str::<toml::Value>(&text).map_err(|error| invalid(error.to_string()))?;
+        serde_json::to_value(value).map_err(|error| invalid(error.to_string()))?
+    } else {
+        serde_json::from_str(&text).map_err(|error| invalid(error.to_string()))?
+    };
+    Ok(path
         .split('.')
-        .try_fold(&document, |node, key| node.get(key))?
-        .clone();
-    Some((at, value))
+        .try_fold(&document, |node, key| node.get(key))
+        .cloned()
+        .map(|value| (at, value)))
 }
 
 #[cfg(test)]
@@ -181,13 +213,19 @@ mod tests {
             "[build-system]\nbuild-backend = \"poetry.core.masonry.api\"\n",
         )
         .expect("pyproject.toml");
-        let (_, json) =
-            manifest_field(dir.path(), "package.json", "devEngines.packageManager").expect("field");
+        let (_, json) = manifest_field(dir.path(), "package.json", "devEngines.packageManager")
+            .expect("read")
+            .expect("field");
         assert_eq!(json["name"], "pnpm");
         let (_, toml) = manifest_field(dir.path(), "pyproject.toml", "build-system.build-backend")
+            .expect("read")
             .expect("field");
         assert_eq!(toml, "poetry.core.masonry.api");
-        assert!(manifest_field(dir.path(), "package.json", "engines.node").is_none());
+        assert!(
+            manifest_field(dir.path(), "package.json", "engines.node")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -197,10 +235,10 @@ mod tests {
         let leaf = root.join("a").join("b");
         fs::create_dir_all(&leaf).expect("dirs");
         fs::write(dir.path().join("mise.toml"), "").expect("outside");
-        assert!(file_upwards(&leaf, &root, "mise.toml").is_none());
+        assert!(file_upwards(&leaf, &root, "mise.toml").unwrap().is_none());
         fs::write(root.join("mise.toml"), "").expect("inside");
         assert_eq!(
-            file_upwards(&leaf, &root, "mise.toml"),
+            file_upwards(&leaf, &root, "mise.toml").unwrap(),
             Some(root.join("mise.toml"))
         );
     }

@@ -15,7 +15,11 @@ pub const PROVIDER: Provider = Provider {
     signals: &[Signal::File("nx.json"), Signal::Probe("nx")],
     writes: &[],
     caps: Capabilities {
-        clean: Some(CleanCap { dirs: &[".nx"] }),
+        clean: Some(CleanCap {
+            dir_suffixes: &[],
+            framework_dirs: &[],
+            dirs: &[".nx"],
+        }),
         quiet: QuietSupport::NONE,
         ..Capabilities::NONE
     },

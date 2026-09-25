@@ -87,7 +87,7 @@ pub(crate) fn why(
         .then(|| ambiguous_members(&restricted))
         .flatten();
     let prepared = crate::commands::run::core::prepare(ctx, overrides, task)?;
-    let outcome = prepared.preview(ctx, task);
+    let outcome = prepared.preview(ctx, overrides, task);
     let selected = match prepared.selected(ctx, task) {
         Ok(selected) => selected,
         Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => None,
@@ -228,7 +228,7 @@ fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bo
             return true;
         }
         Err(refusal) => {
-            println!("Refused {task:?}: {refusal:?}");
+            println!("Refused {task:?}: {refusal}");
             return true;
         }
         Ok(_) => {}
@@ -545,24 +545,17 @@ fn build_report<'a>(
         }
         Err(refusal) => {
             decision.strategy = "refused";
-            decision.reason = format!("{refusal:?}");
+            decision.reason = format!("{refusal}");
             selected = None;
         }
     }
-    let runtime = overrides.js_runtime();
     let candidate_report = |task: &'a Task| WhyCandidate {
         task: {
-            let mut report = task_report(task, ctx, runtime, pm_decision, selected);
+            let mut report = task_report(task, ctx);
             if selected.is_some_and(|selected| std::ptr::eq(selected, task))
                 && let Ok((_, runner_core::Dispatch::Plan(plan))) = outcome
             {
-                report.resolved = Some(
-                    plan.argv
-                        .iter()
-                        .map(|arg| arg.to_string_lossy())
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                );
+                report.resolved = Some(labels::planned_command(plan));
                 report.cwd = plan.cwd.display().to_string();
             }
             report
@@ -641,15 +634,8 @@ fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> Wh
     }
 }
 
-fn task_report<'a>(
-    task: &'a Task,
-    ctx: &'a ProjectContext,
-    runtime: Option<JsRuntime>,
-    pm_decision: Option<&PmDecision>,
-    selected: Option<&Task>,
-) -> WhyTask<'a> {
+fn task_report<'a>(task: &'a Task, ctx: &'a ProjectContext) -> WhyTask<'a> {
     let kind = labels::structured_source_label(task.source);
-    let is_selected = selected.is_some_and(|sel| std::ptr::eq(sel, task));
     WhyTask {
         name: &task.name,
         fqn: labels::fqn(task),
@@ -668,7 +654,7 @@ fn task_report<'a>(
             .map(|other| other.name.as_str())
             .collect(),
         definition: task.alias_of.as_deref().or(task.run_target.as_deref()),
-        resolved: resolved_command(task, runtime, pm_decision.filter(|_| is_selected)),
+        resolved: None,
         cwd: task.run_dir(&ctx.root).display().to_string(),
         dependencies: task.detail.depends.clone(),
         depends_post: task.detail.depends_post.clone(),
@@ -807,26 +793,6 @@ pub(super) const fn provider_label(source: TaskSource) -> &'static str {
     }
 }
 
-/// Effective command preview for the candidate. `why` only resolves the
-/// PM for the selected task; other candidates report null. Delegates the
-/// per-source dispatch to [`labels::resolved_command`], shared with
-/// `doctor`.
-fn resolved_command(
-    task: &Task,
-    runtime: Option<JsRuntime>,
-    pm_decision: Option<&PmDecision>,
-) -> Option<String> {
-    let node_pm = match pm_decision {
-        Some(PmDecision::Node(Ok(decision))) => Some(decision.pm.label()),
-        _ => None,
-    };
-    let python_pm = match pm_decision {
-        Some(PmDecision::Python(Ok(decision))) => Some(decision.pm.label()),
-        _ => None,
-    };
-    labels::resolved_command(task, runtime, node_pm, python_pm)
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "linear human report renderer mirrors the structured report sections"
@@ -878,7 +844,15 @@ fn print_detail(task: &Task, ctx: &ProjectContext) {
         // Prefer the signature the source itself renders; fall back to the
         // raw spec when the source cannot be asked for a parsed one.
         let rendered = (task.source == TaskSource::MiseToml)
-            .then(|| crate::tool::mise::usage_spec(&ctx.root, &task.name))
+            .then(
+                || match crate::tool::mise::usage_spec(&ctx.root, &task.name) {
+                    Ok(spec) => spec,
+                    Err(error) => {
+                        eprintln!("warn: {error}");
+                        None
+                    }
+                },
+            )
             .flatten()
             .filter(|spec| !spec.signature.trim().is_empty())
             .map(|spec| format!("{} {}", task.name, spec.signature));
@@ -1047,18 +1021,16 @@ fn print_human(
 #[cfg(test)]
 mod tests {
     use crate::resolver::Resolver;
-    use std::path::PathBuf;
 
-    use super::{
-        PmDecision, WhyReport, build_report, decision_report, pm_decision_for_selected, why,
-    };
+    use super::{PmDecision, WhyReport, build_report, decision_report, pm_decision_for_selected};
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
+        let root = crate::tool::test_support::project_root();
         ProjectContext {
-            cwd: PathBuf::from("/tmp/test"),
-            root: PathBuf::from("/tmp/test"),
+            cwd: root.clone(),
+            root,
             package_managers: Vec::new(),
             task_runners: Vec::new(),
             tasks,
@@ -1069,6 +1041,16 @@ mod tests {
             install_dirs: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    fn why(
+        ctx: &ProjectContext,
+        overrides: &ResolutionOverrides,
+        task: &str,
+        json: bool,
+    ) -> anyhow::Result<()> {
+        crate::tool::test_support::seed_context(ctx);
+        super::why(ctx, overrides, task, json)
     }
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -1093,6 +1075,7 @@ mod tests {
         ctx: &'a ProjectContext,
         qualifier: Option<TaskSource>,
     ) -> WhyReport<'a> {
+        crate::tool::test_support::seed_context(ctx);
         let decision = decision_report(candidates, selected, qualifier, None, None);
         build_report(
             query,
@@ -1104,7 +1087,7 @@ mod tests {
             super::Explanation {
                 decision,
                 outcome: &crate::commands::run::core::prepare(ctx, overrides, query)
-                    .and_then(|p| p.preview(ctx, query)),
+                    .and_then(|p| p.preview(ctx, overrides, query)),
             },
         )
     }
@@ -1329,7 +1312,7 @@ mod tests {
         assert_eq!(json["decision"]["strategy"], "ranked");
         assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
         assert_eq!(json["candidates"][0]["task"]["resolved"], "npm run build");
-        assert_eq!(json["candidates"][1]["task"]["resolved"], "just build");
+        assert!(json["candidates"][1]["task"]["resolved"].is_null());
     }
 
     #[test]

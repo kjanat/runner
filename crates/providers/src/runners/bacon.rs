@@ -23,7 +23,7 @@ pub const PROVIDER: Provider = Provider {
         quiet: QuietSupport::NONE,
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::bacon::tasks),
     version: None,
     hooks: Hooks::NONE,
 };

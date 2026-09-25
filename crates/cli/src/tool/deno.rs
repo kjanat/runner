@@ -1,11 +1,9 @@
 //! Deno, secure JavaScript/TypeScript runtime.
 
-use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 
-use anyhow::Context as _;
 use serde::Deserialize;
 
 use crate::tool::files;
@@ -43,11 +41,7 @@ pub(crate) fn find_config_upwards(dir: &Path) -> Option<PathBuf> {
             continue;
         };
 
-        if ancestor == dir || workspace_includes_dir(&path, dir) {
-            return Some(path);
-        }
-
-        return None;
+        return Some(path);
     }
 
     None
@@ -190,30 +184,7 @@ pub(crate) fn config_name(dir: &Path) -> Option<String> {
     json5::from_str::<Partial>(&content).ok()?.name
 }
 
-fn extract_tasks_from(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)>> {
-    #[derive(Deserialize)]
-    struct Partial {
-        tasks: Option<HashMap<String, serde_json::Value>>,
-    }
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let d = json5::from_str::<Partial>(&content)
-        .with_context(|| format!("{} is not valid JSON/JSONC", path.display()))?;
-    let mut tasks: Vec<(String, Option<String>)> = d.tasks.map_or_else(Vec::new, |t| {
-        t.into_iter()
-            .map(|(name, value)| {
-                // String form carries no description; object form may.
-                let description = value
-                    .get("description")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-                (name, description)
-            })
-            .collect()
-    });
-    tasks.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(tasks)
-}
+use runner_providers::extract::scripts::deno as extract_tasks_from;
 
 /// `deno task <task> [args...]`
 #[cfg(test)]
@@ -482,7 +453,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     fn find_config_upwards_reaches_the_root_config_from_any_directory_beneath_it() {
         let dir = TempDir::new("deno-config-workspace-excluded");
         let nested = dir.path().join("apps").join("site").join("src");

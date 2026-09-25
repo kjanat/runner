@@ -12,6 +12,19 @@ pub fn probe_in(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<Pat
     if name.is_empty() || Path::new(name).components().count() > 1 {
         return None;
     }
+    probe_in_dirs(name, std::env::split_paths(path), pathext)
+}
+
+/// Search directories without encoding them as a PATH string.
+#[must_use]
+pub fn probe_in_dirs(
+    name: &str,
+    dirs: impl IntoIterator<Item = PathBuf>,
+    pathext: Option<&OsStr>,
+) -> Option<PathBuf> {
+    if name.is_empty() || Path::new(name).components().count() > 1 {
+        return None;
+    }
     let exts: Vec<String> = pathext
         .map(|pe| {
             pe.to_string_lossy()
@@ -22,9 +35,9 @@ pub fn probe_in(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<Pat
         })
         .unwrap_or_default();
     let has_explicit_extension = Path::new(name).extension().is_some();
-    for dir in std::env::split_paths(path) {
+    for dir in dirs {
         let bare = dir.join(name);
-        if bare.is_file() {
+        if executable(&bare) {
             return Some(bare);
         }
         if has_explicit_extension {
@@ -32,7 +45,7 @@ pub fn probe_in(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<Pat
         }
         for ext in &exts {
             let candidate = dir.join(format!("{name}{ext}"));
-            if candidate.is_file() {
+            if executable(&candidate) {
                 return Some(candidate);
             }
         }
@@ -40,17 +53,33 @@ pub fn probe_in(name: &str, path: &OsStr, pathext: Option<&OsStr>) -> Option<Pat
     None
 }
 
+fn executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 /// `name` in `extra` first, then the process `PATH`.
 #[must_use]
 pub fn probe_with(name: &str, extra: &[PathBuf]) -> Option<PathBuf> {
     let path = std::env::var_os("PATH").unwrap_or_default();
-    let search = if extra.is_empty() {
-        path
-    } else {
-        std::env::join_paths(extra.iter().cloned().chain(std::env::split_paths(&path)))
-            .unwrap_or(path)
-    };
-    probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
+    probe_in_dirs(
+        name,
+        extra.iter().cloned().chain(std::env::split_paths(&path)),
+        std::env::var_os("PATHEXT").as_deref(),
+    )
 }
 
 /// A memoising prober over the process `PATH`.
@@ -115,6 +144,12 @@ pub(crate) mod tests {
     fn bare_names_resolve_and_directories_are_skipped() {
         let dir = TempDir::new("probe");
         fs::write(dir.path().join("pnpm"), "#!/bin/sh\n").expect("shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.path().join("pnpm"), fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
         fs::create_dir(dir.path().join("yarn")).expect("dir");
         let path = OsString::from(dir.path());
         assert!(probe_in("pnpm", &path, None).is_some_and(|p| p.ends_with("pnpm")));
@@ -127,6 +162,15 @@ pub(crate) mod tests {
     fn pathext_suffixes_are_tried_after_the_bare_name() {
         let dir = TempDir::new("pathext");
         fs::write(dir.path().join("npm.CMD"), "@echo off\n").expect("shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                dir.path().join("npm.CMD"),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
         let found = probe_in(
             "npm",
             &OsString::from(dir.path()),

@@ -172,7 +172,6 @@ fn project_local_pm_uses_effective_child_path_for_diagnostics() {
 }
 
 #[test]
-#[ignore = "docs/architecture.md section 10 step 5: one resolver"]
 fn pyproject_script_missing_pm_reports_the_layer_that_chose_it() {
     let project = uv_project("python");
     let output = run_in(&project, &["run", "hello"]);

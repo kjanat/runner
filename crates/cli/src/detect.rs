@@ -3,14 +3,13 @@
 
 use std::path::Path;
 use std::process;
-use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::tool;
 use crate::types::{
-    DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskDetail,
-    TaskRunner, TaskSource, WorkspaceMember,
+    DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner,
+    TaskSource,
 };
 
 /// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
@@ -23,10 +22,24 @@ use crate::types::{
 /// 5. Task extraction (conditional on detected tools)
 pub(crate) fn detect(dir: &Path) -> ProjectContext {
     let workspace = tool::workspace::anchor(dir);
-    let root = workspace
-        .as_ref()
-        .map_or(dir, |workspace| workspace.root.as_path())
-        .to_path_buf();
+    let root = workspace.as_ref().map_or_else(
+        || {
+            tool::files::find_in_ancestors(dir, |ancestor| {
+                runner_providers::REGISTRY
+                    .iter()
+                    .flat_map(|p| p.signals)
+                    .any(|signal| match signal {
+                        runner_core::Signal::File(name)
+                        | runner_core::Signal::Lockfile(name)
+                        | runner_core::Signal::FileUpwards(name) => ancestor.join(name).is_file(),
+                        _ => false,
+                    })
+                    .then(|| ancestor.to_owned())
+            })
+            .unwrap_or_else(|| dir.to_owned())
+        },
+        |workspace| workspace.root.clone(),
+    );
     let mut ctx = ProjectContext {
         cwd: dir.to_path_buf(),
         root: root.clone(),
@@ -407,492 +420,48 @@ fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
 
 // Task extraction
 
-/// Extract tasks only from tools that were actually detected, avoiding
-/// unnecessary filesystem reads.
-///
-/// Each enabled extractor runs in its own scoped thread: the slow path
-/// is a subprocess wait (`just --summary`, `mise tasks ls`, `cargo
-/// metadata`, …) that dominates cold-run wall-clock, so parallelism cuts
-/// total latency to roughly the slowest single extractor.
-///
-/// Results are applied in declaration order so the task list keeps the
-/// source ordering the resolver and snapshot tests rely on. Extractor
-/// panics propagate through `join` rather than being swallowed.
-fn extract_tasks(dir: &Path, ctx: &mut ProjectContext) {
-    use std::thread;
-
-    let with_deno = ctx.package_managers.contains(&PackageManager::Deno);
-    // Script discovery is decoupled from package-manager detection: a
-    // `package.json` *is* the Node signal; *which* PM dispatches its
-    // scripts is the resolver's runtime job, not the task finder's. A
-    // manifest-less subdir still lists scripts when it provably sits
-    // inside a JS monorepo, so a workspace member is never met with
-    // "No project detected".
-    let has_local_manifest = tool::node::has_package_json(dir);
-    let workspace_member = !has_local_manifest && tool::node::within_workspace_upwards(dir);
-    let want_pkg_json = has_local_manifest || workspace_member || with_deno;
-    let want_turbo = ctx.task_runners.contains(&TaskRunner::Turbo);
-    let want_make = ctx.task_runners.contains(&TaskRunner::Make);
-    let want_just = ctx.task_runners.contains(&TaskRunner::Just);
-    let want_go_task = ctx.task_runners.contains(&TaskRunner::GoTask);
-    let want_deno_tasks = with_deno;
-    let want_cargo = ctx.package_managers.contains(&PackageManager::Cargo);
-    let want_go_packages = ctx.package_managers.contains(&PackageManager::Go);
-    let want_bacon = ctx.task_runners.contains(&TaskRunner::Bacon);
-    let want_mise = ctx.task_runners.contains(&TaskRunner::Mise);
-    // `[project.scripts]` is shared PEP 621 metadata. Task discovery only
-    // needs the manifest; PM choice is resolved later, so `--pm uv` or
-    // `[pm].python` can dispatch even without a lockfile.
-    let want_pyproject_scripts = tool::python::find_pyproject_upwards(dir).is_some();
-    let members = workspace_members(ctx);
-
-    thread::scope(|s| {
-        let pkg_json_h = want_pkg_json.then(|| {
-            s.spawn(move || {
-                if has_local_manifest && !with_deno {
-                    tool::node::extract_scripts(dir)
-                } else {
-                    tool::node::extract_scripts_upwards(dir)
-                }
-            })
-        });
-        let members_h =
-            (!members.is_empty()).then(|| s.spawn(move || extract_member_tasks(&members)));
-        let turbo_h = want_turbo.then(|| s.spawn(move || tool::turbo::extract_tasks(dir)));
-        let make_h = want_make.then(|| s.spawn(move || tool::make::extract_tasks(dir)));
-        let just_h = want_just.then(|| s.spawn(move || tool::just::extract_tasks(dir)));
-        let go_task_h = want_go_task.then(|| s.spawn(move || tool::go_task::extract_tasks(dir)));
-        let deno_h = want_deno_tasks.then(|| s.spawn(move || tool::deno::extract_tasks(dir)));
-        let cargo_h = want_cargo.then(|| s.spawn(move || tool::cargo_aliases::extract_tasks(dir)));
-        let go_h = want_go_packages.then(|| s.spawn(move || tool::go_pm::extract_tasks(dir)));
-        let bacon_h = want_bacon.then(|| s.spawn(move || tool::bacon::extract_tasks(dir)));
-        let mise_h = want_mise.then(|| s.spawn(move || tool::mise::extract_tasks(dir)));
-        let pyproject_h = want_pyproject_scripts
-            .then(|| s.spawn(move || tool::python::extract_pyproject_scripts(dir)));
-
-        if let Some(h) = pkg_json_h {
-            push_package_json_tasks(ctx, h.join().expect("extractor thread panicked"));
-        }
-        if let Some(h) = turbo_h {
-            push_named_tasks(
-                ctx,
-                TaskSource::TurboJson,
-                h.join().expect("extractor thread panicked"),
-            );
-        }
-        if let Some(h) = make_h {
-            push_described_tasks(
-                ctx,
-                TaskSource::Makefile,
-                h.join().expect("extractor thread panicked"),
-            );
-        }
-        if let Some(h) = just_h {
-            push_just_tasks(ctx, h.join().expect("extractor thread panicked"));
-        }
-        if let Some(h) = go_task_h {
-            push_described_tasks(
-                ctx,
-                TaskSource::Taskfile,
-                h.join().expect("extractor thread panicked"),
-            );
-        }
-        if let Some(h) = deno_h {
-            push_described_tasks(
-                ctx,
-                TaskSource::DenoJson,
-                h.join().expect("extractor thread panicked"),
-            );
-        }
-        if let Some(h) = cargo_h {
-            push_cargo_aliases(ctx, h.join().expect("extractor thread panicked"));
-        }
-        if let Some(h) = go_h {
-            push_go_tasks(ctx, h.join().expect("extractor thread panicked"));
-        }
-        if let Some(h) = bacon_h {
-            push_described_tasks(
-                ctx,
-                TaskSource::BaconToml,
-                h.join().expect("extractor thread panicked"),
-            );
-        }
-        if let Some(h) = mise_h {
-            push_mise_tasks(ctx, h.join().expect("extractor thread panicked"));
-        }
-        if let Some(h) = pyproject_h {
-            push_described_tasks(
-                ctx,
-                TaskSource::PyprojectScripts,
-                h.join().expect("extractor thread panicked"),
-            );
-        }
-        if let Some(h) = members_h {
-            push_member_extractions(ctx, h.join().expect("extractor thread panicked"));
-        }
-    });
-}
-
-fn workspace_members(ctx: &ProjectContext) -> Vec<Arc<WorkspaceMember>> {
-    ctx.workspace
-        .as_ref()
-        .map(|workspace| workspace.members.clone())
-        .unwrap_or_default()
-}
-
-fn push_member_extractions(ctx: &mut ProjectContext, extractions: Vec<MemberExtraction>) {
-    for extraction in extractions {
-        push_member_tasks(ctx, extraction);
-    }
-}
-
-/// Manifest scripts and deno tasks read from one workspace member's own
-/// directory.
-struct MemberExtraction {
-    member: Arc<WorkspaceMember>,
-    scripts: anyhow::Result<Vec<(String, String)>>,
-    deno_tasks: Described,
-    make: Option<Described>,
-    just: Option<anyhow::Result<Vec<tool::just::ExtractedTask>>>,
-    go_task: Option<Described>,
-    mise: Option<anyhow::Result<tool::mise::MiseTasks>>,
-    bacon: Option<Described>,
-}
-
-type Described = anyhow::Result<Vec<(String, Option<String>)>>;
-
-fn extract_member_tasks(members: &[Arc<WorkspaceMember>]) -> Vec<MemberExtraction> {
-    members
-        .iter()
-        .map(|member| {
-            let dir = member.dir.as_path();
-            MemberExtraction {
-                member: Arc::clone(member),
-                scripts: tool::node::extract_scripts(dir),
-                deno_tasks: tool::deno::extract_tasks_in(dir),
-                make: tool::make::detect(dir).then(|| tool::make::extract_tasks(dir)),
-                just: tool::just::detect(dir).then(|| tool::just::extract_tasks(dir)),
-                go_task: tool::go_task::detect(dir).then(|| tool::go_task::extract_tasks(dir)),
-                mise: tool::mise::detect(dir).then(|| tool::mise::extract_tasks(dir)),
-                bacon: tool::bacon::detect(dir).then(|| tool::bacon::extract_tasks(dir)),
-            }
-        })
-        .collect()
-}
-
-fn push_member_tasks(ctx: &mut ProjectContext, extraction: MemberExtraction) {
-    let MemberExtraction {
-        member,
-        scripts,
-        deno_tasks,
-        make,
-        just,
-        go_task,
-        mise,
-        bacon,
-    } = extraction;
-    if let Some(result) = make {
-        push_described_tasks_in(ctx, TaskSource::Makefile, result, Some(&member));
-    }
-    if let Some(result) = just {
-        push_recipe_alias_tasks_in(
-            ctx,
-            TaskSource::Justfile,
-            result.map(|entries| entries.into_iter().map(just_entry_triple).collect()),
-            Some(&member),
-        );
-    }
-    if let Some(result) = go_task {
-        push_described_tasks_in(ctx, TaskSource::Taskfile, result, Some(&member));
-    }
-    if let Some(result) = mise {
-        let result = result.map(|extracted| mise_entries(ctx, extracted, Some(&member)));
-        push_recipe_alias_tasks_in(ctx, TaskSource::MiseToml, result, Some(&member));
-    }
-    if let Some(result) = bacon {
-        push_described_tasks_in(ctx, TaskSource::BaconToml, result, Some(&member));
-    }
-    match scripts {
-        Ok(entries) => {
-            for (name, command) in entries {
-                let passthrough_to = tool::passthrough::detect_target(&name, &command);
+/// Collect tasks from the registry's provider callbacks.
+fn extract_tasks(_dir: &Path, ctx: &mut ProjectContext) {
+    let tree = crate::commands::run::core::tree(ctx);
+    let registry = &runner_providers::REGISTRY;
+    match runner_core::observe::observe(&tree, registry).and_then(|evidence| {
+        runner_core::resolve(&tree, evidence, &runner_core::Policy::default(), registry)
+    }) {
+        Ok(project) => {
+            ctx.warnings
+                .extend(project.warnings.into_iter().map(DetectionWarning::Pipeline));
+            for task in project.tasks {
+                let source = TaskSource::from_label(registry.by_id(task.source).label)
+                    .expect("registered task source");
+                let member = match &task.scope {
+                    runner_core::Scope::Root => None,
+                    runner_core::Scope::Member { dir, .. } => ctx
+                        .workspace
+                        .as_ref()
+                        .and_then(|workspace| {
+                            workspace.members.iter().find(|member| member.dir == *dir)
+                        })
+                        .cloned(),
+                };
                 ctx.tasks.push(Task {
-                    name,
-                    source: TaskSource::PackageJson,
-                    run_target: None,
-                    description: None,
-                    alias_of: None,
-                    passthrough_to,
-                    detail: TaskDetail::default(),
-                    member: Some(Arc::clone(&member)),
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::PackageJson.label(),
-            error: format!("{}: {err:#}", member.path),
-        }),
-    }
-    match deno_tasks {
-        Ok(entries) => {
-            for (name, description) in entries {
-                ctx.tasks.push(Task {
-                    name,
-                    source: TaskSource::DenoJson,
-                    run_target: None,
-                    description,
-                    alias_of: None,
-                    passthrough_to: None,
-                    detail: TaskDetail::default(),
-                    member: Some(Arc::clone(&member)),
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::DenoJson.label(),
-            error: format!("{}: {err:#}", member.path),
-        }),
-    }
-}
-
-fn push_go_tasks(
-    ctx: &mut ProjectContext,
-    result: anyhow::Result<Vec<tool::go_pm::ExtractedTask>>,
-) {
-    match result {
-        Ok(entries) => {
-            for entry in entries {
-                ctx.tasks.push(Task {
-                    name: entry.name,
-                    source: TaskSource::GoPackage,
-                    run_target: Some(entry.run_target),
-                    description: None,
-                    alias_of: None,
-                    passthrough_to: None,
-                    detail: TaskDetail::default(),
-                    member: None,
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::GoPackage.label(),
-            error: format!("{err:#}"),
-        }),
-    }
-}
-
-/// Append tasks from the mise source, preserving alias→target metadata.
-fn push_mise_tasks(ctx: &mut ProjectContext, result: anyhow::Result<tool::mise::MiseTasks>) {
-    let result = result.map(|extracted| mise_entries(ctx, extracted, None));
-    push_recipe_alias_tasks(ctx, TaskSource::MiseToml, result);
-}
-
-/// Reduce a mise extraction to the entry list `push_recipe_alias_tasks`
-/// consumes, recording the degraded-view warning when `mise tasks --json`
-/// was tried and could not be read. Falling back to the single-file TOML
-/// parser with mise installed means runner is showing less than
-/// `mise tasks` would, which is worth saying out loud.
-fn mise_entries(
-    ctx: &mut ProjectContext,
-    extracted: tool::mise::MiseTasks,
-    member: Option<&Arc<WorkspaceMember>>,
-) -> Vec<RecipeOrAlias> {
-    if let Some(reason) = extracted.degraded {
-        ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::MiseToml.label(),
-            error: member.map_or_else(|| reason.clone(), |m| format!("{}: {reason}", m.path)),
-        });
-    }
-    extracted.tasks.into_iter().map(mise_entry_triple).collect()
-}
-
-fn mise_entry_triple(entry: tool::mise::ExtractedTask) -> RecipeOrAlias {
-    match entry {
-        tool::mise::ExtractedTask::Recipe {
-            name,
-            description,
-            detail,
-        } => (name, description, None, *detail),
-        tool::mise::ExtractedTask::Alias { name, target } => {
-            (name, None, Some(target), TaskDetail::default())
-        }
-    }
-}
-
-/// Append cargo aliases as tasks. Each alias's fully recursion-expanded
-/// command becomes the alias target text shown by list/why/completion.
-fn push_cargo_aliases(
-    ctx: &mut ProjectContext,
-    result: anyhow::Result<Vec<tool::cargo_aliases::ExtractedAlias>>,
-) {
-    match result {
-        Ok(entries) => {
-            for entry in entries {
-                // A self-expanding entry (`test → test`) is the canonical
-                // subcommand, not an alias; only a differing expansion
-                // makes it a rename worth recording as `alias_of`.
-                let display = entry.display_command();
-                let alias_of = (display != entry.name).then_some(display);
-                ctx.tasks.push(Task {
-                    name: entry.name,
-                    source: TaskSource::CargoAliases,
-                    run_target: None,
-                    description: None,
-                    alias_of,
-                    passthrough_to: None,
-                    detail: TaskDetail::default(),
-                    member: None,
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::CargoAliases.label(),
-            error: format!("{err:#}"),
-        }),
-    }
-}
-
-/// Append tasks from sources that only provide names (no descriptions).
-fn push_named_tasks(
-    ctx: &mut ProjectContext,
-    source: TaskSource,
-    result: anyhow::Result<Vec<String>>,
-) {
-    push_described_tasks(
-        ctx,
-        source,
-        result.map(|names| names.into_iter().map(|name| (name, None)).collect()),
-    );
-}
-
-/// Append tasks from sources that provide names with optional descriptions.
-fn push_described_tasks(
-    ctx: &mut ProjectContext,
-    source: TaskSource,
-    result: anyhow::Result<Vec<(String, Option<String>)>>,
-) {
-    push_described_tasks_in(ctx, source, result, None);
-}
-
-fn push_described_tasks_in(
-    ctx: &mut ProjectContext,
-    source: TaskSource,
-    result: anyhow::Result<Vec<(String, Option<String>)>>,
-    member: Option<&Arc<WorkspaceMember>>,
-) {
-    push_recipe_alias_tasks_in(
-        ctx,
-        source,
-        result.map(|entries| {
-            entries
-                .into_iter()
-                .map(|(name, description)| (name, description, None, TaskDetail::default()))
-                .collect()
-        }),
-        member,
-    );
-}
-
-/// Append `package.json` scripts, classifying each entry as a
-/// passthrough wrapper iff its command body literally invokes a known
-/// task runner against a same-named target (turbo, just, make, task,
-/// nx, bacon, mise). Detection is purely textual; the surrounding
-/// project state is not consulted, so a real script like
-/// `"build": "vite build"` is never flagged regardless of what other
-/// sources exist.
-fn push_package_json_tasks(
-    ctx: &mut ProjectContext,
-    result: anyhow::Result<Vec<(String, String)>>,
-) {
-    match result {
-        Ok(entries) => {
-            for (name, command) in entries {
-                let passthrough_to = tool::passthrough::detect_target(&name, &command);
-                ctx.tasks.push(Task {
-                    name,
-                    source: TaskSource::PackageJson,
-                    run_target: None,
-                    description: None,
-                    alias_of: None,
-                    passthrough_to,
-                    detail: TaskDetail::default(),
-                    member: None,
-                });
-            }
-        }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: TaskSource::PackageJson.label(),
-            error: format!("{err:#}"),
-        }),
-    }
-}
-
-/// Append tasks from the justfile source, preserving alias→target metadata.
-fn push_just_tasks(
-    ctx: &mut ProjectContext,
-    result: anyhow::Result<Vec<tool::just::ExtractedTask>>,
-) {
-    push_recipe_alias_tasks(
-        ctx,
-        TaskSource::Justfile,
-        result.map(|entries| entries.into_iter().map(just_entry_triple).collect()),
-    );
-}
-
-fn just_entry_triple(entry: tool::just::ExtractedTask) -> RecipeOrAlias {
-    match entry {
-        tool::just::ExtractedTask::Recipe { name, doc } => (name, doc, None, TaskDetail::default()),
-        tool::just::ExtractedTask::Alias { name, target } => {
-            (name, None, Some(target), TaskDetail::default())
-        }
-    }
-}
-
-/// Flattened `(name, description, alias_of, detail)` shape both
-/// `tool::mise::ExtractedTask` and `tool::just::ExtractedTask` collapse
-/// to before they hit [`push_recipe_alias_tasks`].
-type RecipeOrAlias = (String, Option<String>, Option<String>, TaskDetail);
-
-/// Push `(name, description, alias_of)` triples into `ctx.tasks` under
-/// `source`, or record a `TaskListUnreadable` warning on error. Shared
-/// by [`push_mise_tasks`] and [`push_just_tasks`], both runners emit
-/// recipe-or-alias variants that flatten to the same triple shape.
-fn push_recipe_alias_tasks(
-    ctx: &mut ProjectContext,
-    source: TaskSource,
-    result: anyhow::Result<Vec<RecipeOrAlias>>,
-) {
-    push_recipe_alias_tasks_in(ctx, source, result, None);
-}
-
-fn push_recipe_alias_tasks_in(
-    ctx: &mut ProjectContext,
-    source: TaskSource,
-    result: anyhow::Result<Vec<RecipeOrAlias>>,
-    member: Option<&Arc<WorkspaceMember>>,
-) {
-    match result {
-        Ok(entries) => {
-            for (name, description, alias_of, detail) in entries {
-                ctx.tasks.push(Task {
-                    name,
+                    name: task.name,
                     source,
-                    run_target: None,
-                    description,
-                    alias_of,
-                    passthrough_to: None,
-                    detail,
-                    member: member.map(Arc::clone),
+                    member,
+                    description: task.description,
+                    alias_of: task.alias_of,
+                    run_target: task.target,
+                    passthrough_to: task
+                        .forwards_to
+                        .and_then(|id| TaskRunner::from_label(registry.by_id(id).label)),
+                    detail: task.detail,
                 });
             }
         }
-        Err(err) => ctx.warnings.push(DetectionWarning::TaskListUnreadable {
-            source: source.label(),
-            error: member.map_or_else(
-                || format!("{err:#}"),
-                |member| format!("{}: {err:#}", member.path),
-            ),
-        }),
+        Err(error) => ctx
+            .warnings
+            .push(DetectionWarning::Pipeline(runner_core::Warning::general(
+                error.to_string(),
+            ))),
     }
 }
 
@@ -1346,7 +915,7 @@ mod tests {
         fs::write(dir.path().join("deno.lock"), "{}").expect("deno.lock should be written");
         fs::write(
             dir.path().join("deno.jsonc"),
-            r#"{ tasks: { root: "deno task root" } }"#,
+            r#"{ workspace: ["apps/site"], tasks: { root: "deno task root" } }"#,
         )
         .expect("root deno.jsonc should be written");
         fs::write(
@@ -1420,7 +989,6 @@ mod tests {
         );
     }
 
-    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     #[test]
     fn detect_lists_an_ancestor_manifest_inside_the_tree_in_root_scope() {
         let dir = TempDir::new("detect-no-workspace-no-adopt");

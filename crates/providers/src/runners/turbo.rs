@@ -25,11 +25,15 @@ pub const PROVIDER: Provider = Provider {
             argv: t!["run", Task, Sep("--"), Args],
             sources: &[ProviderId::Turbo],
         }),
-        clean: Some(CleanCap { dirs: &[".turbo"] }),
+        clean: Some(CleanCap {
+            dir_suffixes: &[],
+            framework_dirs: &[],
+            dirs: &[".turbo"],
+        }),
         quiet: QuietSupport::unsupported("--output-logs suppresses task logs"),
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::turbo::tasks),
     version: None,
     hooks: Hooks::NONE,
 };

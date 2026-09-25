@@ -42,27 +42,49 @@ pub(crate) fn is_pnp(dir: &Path) -> bool {
 
 /// `yarn bin --json` in `dir`: every binary the workspace can run and its
 /// providing package. Yarn 2+ only; `None` when yarn is missing or refuses.
-pub(crate) fn accessible_bins(dir: &Path) -> Option<Vec<AccessibleBin>> {
+pub(crate) fn accessible_bins(dir: &Path) -> std::io::Result<Option<Vec<AccessibleBin>>> {
     let output = super::program::command("yarn")
         .arg("bin")
         .arg("--json")
         .current_dir(dir)
-        .output()
-        .ok()?;
+        .output()?;
     if !output.status.success() {
-        return None;
+        return Err(std::io::Error::other(format!(
+            "yarn bin --json in {} failed ({}): {}",
+            dir.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    Some(parse_accessible_bins(&String::from_utf8_lossy(
+    Ok(Some(parse_accessible_bins(&String::from_utf8_lossy(
         &output.stdout,
-    )))
+    ))?))
 }
 
 /// Parse the NDJSON stream of `yarn bin --json`, skipping lines that are
 /// not binaries (yarn's own info and warning records).
-fn parse_accessible_bins(stdout: &str) -> Vec<AccessibleBin> {
+fn parse_accessible_bins(stdout: &str) -> std::io::Result<Vec<AccessibleBin>> {
     stdout
         .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("yarn bin --json: {error}"),
+                )
+            })
+        })
+        .filter_map(|value| match value {
+            Ok(value) if value.get("type").is_some() && value.get("source").is_none() => None,
+            Ok(value) => Some(serde_json::from_value(value).map_err(|error| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("yarn bin --json: {error}"),
+                )
+            })),
+            Err(error) => Some(Err(error)),
+        })
         .collect()
 }
 
@@ -95,7 +117,7 @@ mod verbosity_tests {
             "\n",
         );
         assert_eq!(
-            parse_accessible_bins(stdout),
+            parse_accessible_bins(stdout).unwrap(),
             [
                 AccessibleBin {
                     name: "tsc".to_string(),

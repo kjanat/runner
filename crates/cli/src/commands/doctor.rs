@@ -56,8 +56,8 @@ pub(crate) fn doctor(
         overrides,
         plan: plan.as_ref(),
         node_context: node_context(ctx, overrides),
-        tools: super::install::tools_step(ctx, super::install::InstallFlags::default()),
-        health: &mise_health(ctx),
+        tools: super::install::tools_step(ctx, overrides, super::install::InstallFlags::default()),
+        health: &crate::schema::doctor::provider_diagnostics(ctx, overrides),
     });
 
     Ok(())
@@ -78,15 +78,6 @@ fn node_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
 fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value {
     serde_json::to_value(Project::build(ctx, overrides))
         .expect("Project must serialize for build_report")
-}
-
-/// Mise's own verdict on the project. Empty for a project mise does not
-/// manage, so non-mise projects spawn nothing.
-fn mise_health(ctx: &ProjectContext) -> crate::tool::mise::Health {
-    if !ctx.task_runners.contains(&crate::types::TaskRunner::Mise) {
-        return crate::tool::mise::Health::default();
-    }
-    crate::tool::mise::health(&ctx.root)
 }
 
 #[cfg(test)]

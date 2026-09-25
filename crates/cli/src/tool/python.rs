@@ -1,10 +1,6 @@
 //! Shared Python tooling helpers.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-
-use anyhow::Context as _;
-use serde::Deserialize;
 
 /// Bare interpreter name for running a `.py` file directly when no uv
 /// project is detected. Windows ships `python`; most other hosts expose
@@ -95,33 +91,9 @@ pub(crate) fn extract_pyproject_scripts(
     dir: &Path,
 ) -> anyhow::Result<Vec<(String, Option<String>)>> {
     let Some(path) = find_pyproject_upwards(dir) else {
-        return Ok(vec![]);
+        return Ok(Vec::new());
     };
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let doc: PyprojectDoc =
-        toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
-
-    // `BTreeMap` iterates in sorted key order, so the returned list is
-    // already alphabetized, matching the post-extraction sort that
-    // `detect::detect` applies to the full task list.
-    Ok(doc
-        .project
-        .and_then(|project| project.scripts)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(name, target)| (name, Some(target)))
-        .collect())
-}
-
-#[derive(Deserialize)]
-struct PyprojectDoc {
-    project: Option<PyprojectProject>,
-}
-
-#[derive(Deserialize)]
-struct PyprojectProject {
-    scripts: Option<BTreeMap<String, String>>,
+    runner_providers::extract::scripts::python(&path)
 }
 
 fn has_python_pyproject(dir: &Path) -> bool {

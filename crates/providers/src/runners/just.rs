@@ -28,7 +28,7 @@ pub const PROVIDER: Provider = Provider {
         quiet: QuietSupport::unsupported("--quiet suppresses task output"),
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::just::tasks),
     version: None,
     hooks: Hooks::NONE,
 };

@@ -1,16 +1,13 @@
 //! `runner clean`, remove caches and build artifacts for detected tools.
 
-use std::collections::HashSet;
+use std::io;
 use std::io::Write as _;
-use std::path::Path;
-use std::{fs, io};
 
 use anyhow::{Result, bail};
 use colored::Colorize;
 
 use crate::resolver::ResolutionOverrides;
-use crate::tool;
-use crate::types::{PackageManager, ProjectContext, TaskRunner};
+use crate::types::ProjectContext;
 
 /// Collect ecosystem-specific directories that exist under the project root,
 /// prompt for confirmation (unless `skip_confirm`), then delete them.
@@ -20,7 +17,24 @@ pub(crate) fn clean(
     skip_confirm: bool,
     include_framework: bool,
 ) -> Result<()> {
-    let targets = collect_targets(ctx, include_framework);
+    let tree = super::run::core::tree(ctx);
+    let project = super::run::core::project_under(ctx, &super::run::core::policy(overrides))?;
+    let plan = runner_core::clean::plan(
+        &tree,
+        &project,
+        &runner_providers::REGISTRY,
+        include_framework,
+    )?;
+    let targets: Vec<String> = plan
+        .targets
+        .iter()
+        .map(|path| {
+            path.strip_prefix(&ctx.root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
+        .collect();
     if overrides.explain {
         super::print_explain(
             overrides,
@@ -58,114 +72,32 @@ pub(crate) fn clean(
         }
     }
 
-    for t in &targets {
-        let path = ctx.root.join(t);
-        if path.is_dir() {
-            match fs::remove_dir_all(&path) {
-                Ok(()) if overrides.shows_progress() => println!("  {} {}", "removed".red(), t),
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-        } else if path.exists() && overrides.shows_warnings() {
-            eprintln!("  {} {} (not a dir)", "skipped".yellow(), t);
+    runner_core::clean::execute(&plan)?;
+    if overrides.shows_progress() {
+        for target in &targets {
+            println!("  {} {target}", "removed".red());
         }
     }
 
     Ok(())
 }
 
+#[cfg(test)]
 fn collect_targets(ctx: &ProjectContext, include_framework: bool) -> Vec<String> {
-    let mut targets: Vec<String> = Vec::new();
-    let mut seen = HashSet::new();
-
-    for pm in &ctx.package_managers {
-        match pm {
-            PackageManager::Npm
-            | PackageManager::Yarn
-            | PackageManager::Pnpm
-            | PackageManager::Bun => {
-                push_dirs_if_exist(
-                    &mut targets,
-                    &mut seen,
-                    tool::node::DEFAULT_CLEAN_DIRS,
-                    &ctx.root,
-                );
-                if include_framework {
-                    push_dirs_if_exist(
-                        &mut targets,
-                        &mut seen,
-                        tool::node::FRAMEWORK_CLEAN_DIRS,
-                        &ctx.root,
-                    );
-                }
-            }
-            PackageManager::Cargo => {
-                push_dirs_if_exist(
-                    &mut targets,
-                    &mut seen,
-                    tool::cargo_pm::CLEAN_DIRS,
-                    &ctx.root,
-                );
-            }
-            PackageManager::Deno => {
-                push_dirs_if_exist(&mut targets, &mut seen, tool::deno::CLEAN_DIRS, &ctx.root);
-            }
-            PackageManager::Go => {
-                push_dirs_if_exist(&mut targets, &mut seen, tool::go_pm::CLEAN_DIRS, &ctx.root);
-            }
-            PackageManager::Uv
-            | PackageManager::Poetry
-            | PackageManager::Pipenv
-            | PackageManager::Bundler
-            | PackageManager::Composer => {}
-        }
-    }
-
-    if tool::python::detect(&ctx.root) {
-        push_dirs(&mut targets, &mut seen, tool::python::clean_dirs(&ctx.root));
-    }
-
-    for tr in &ctx.task_runners {
-        let dirs: &[&str] = match tr {
-            TaskRunner::Turbo => tool::turbo::CLEAN_DIRS,
-            TaskRunner::Nx => tool::nx::CLEAN_DIRS,
-            _ => &[],
-        };
-        push_dirs_if_exist(&mut targets, &mut seen, dirs, &ctx.root);
-    }
-
-    targets.sort_unstable();
-    targets
-}
-
-fn push_dirs_if_exist(
-    targets: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-    dirs: &[&str],
-    root: &Path,
-) {
-    for dir in dirs {
-        push_if_exists(targets, seen, dir, root);
-    }
-}
-
-fn push_dirs(targets: &mut Vec<String>, seen: &mut HashSet<String>, dirs: Vec<String>) {
-    for dir in dirs {
-        if seen.insert(dir.clone()) {
-            targets.push(dir);
-        }
-    }
-}
-
-/// Append `name` to `targets` if `root/name` exists on disk.
-fn push_if_exists(targets: &mut Vec<String>, seen: &mut HashSet<String>, name: &str, root: &Path) {
-    if root.join(name).is_dir() {
-        let name = name.to_string();
-        if seen.insert(name.clone()) {
-            targets.push(name);
-        }
-    }
+    crate::tool::test_support::seed_context(ctx);
+    let tree = super::run::core::tree(ctx);
+    let project = super::run::core::project_under(ctx, &runner_core::Policy::default()).unwrap();
+    runner_core::clean::plan(
+        &tree,
+        &project,
+        &runner_providers::REGISTRY,
+        include_framework,
+    )
+    .unwrap()
+    .targets
+    .iter()
+    .map(|path| path.strip_prefix(&ctx.root).unwrap().display().to_string())
+    .collect()
 }
 
 #[cfg(test)]
@@ -241,8 +173,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
-    fn collect_targets_cleans_nothing_without_a_present_provider() {
+    fn collect_targets_uses_python_file_evidence_without_a_package_manager() {
         let dir = TempDir::new("clean-python-generic");
         fs::write(dir.path().join("requirements.txt"), "pytest\n")
             .expect("requirements.txt should be written");
@@ -254,6 +185,15 @@ mod tests {
 
         let targets = collect_targets(&ctx, false);
 
-        assert!(targets.is_empty(), "{targets:?}");
+        assert_eq!(targets, ["dist", "pkg.egg-info"]);
+    }
+
+    #[test]
+    fn collect_targets_cleans_nothing_without_provider_evidence() {
+        let dir = TempDir::new("clean-unobserved");
+        fs::create_dir(dir.path().join("dist")).unwrap();
+        let mut ctx = context(dir.path());
+        ctx.package_managers.clear();
+        assert!(collect_targets(&ctx, false).is_empty());
     }
 }

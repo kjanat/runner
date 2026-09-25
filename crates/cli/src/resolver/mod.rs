@@ -84,9 +84,10 @@ mod tests {
     use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext, TaskRunner};
 
     fn context(package_managers: Vec<PackageManager>) -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from("."),
-            root: PathBuf::from("."),
+        let root = crate::tool::test_support::project_root();
+        let ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
             package_managers,
             task_runners: Vec::new(),
             tasks: Vec::new(),
@@ -96,7 +97,9 @@ mod tests {
             workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+        };
+        crate::tool::test_support::seed_context(&ctx);
+        ctx
     }
 
     /// Like [`context`], but rooted in a fresh temp dir instead of `"."`.
@@ -112,6 +115,8 @@ mod tests {
         let dir = TempDir::new("resolver-isolated");
         let mut ctx = context(package_managers);
         ctx.root = dir.path().to_path_buf();
+        ctx.cwd = ctx.root.clone();
+        crate::tool::test_support::seed_context(&ctx);
         (dir, ctx)
     }
 
@@ -155,11 +160,10 @@ mod tests {
             .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Pnpm);
-        assert_eq!(decision.via, ResolutionStep::Lockfile);
+        assert!(matches!(decision.via, ResolutionStep::Observed { .. }));
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 5: one resolver"]
     fn no_evidence_is_a_not_found_refusal_whatever_the_fallback_says() {
         let (_dir, ctx) = isolated_context(vec![]);
         let overrides = ResolutionOverrides {
@@ -192,7 +196,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 5: one resolver"]
     fn a_miss_lists_the_rungs_tried_under_every_fallback_policy() {
         let (_dir, ctx) = isolated_context(vec![]);
         let mut messages = Vec::new();
@@ -278,7 +281,7 @@ mod tests {
             .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Bun);
-        assert_eq!(decision.via, ResolutionStep::Lockfile);
+        assert!(matches!(decision.via, ResolutionStep::Observed { .. }));
     }
 
     #[test]
@@ -290,7 +293,7 @@ mod tests {
             .expect("resolution should succeed");
 
         assert_eq!(decision.pm, PackageManager::Deno);
-        assert_eq!(decision.via, ResolutionStep::Lockfile);
+        assert!(matches!(decision.via, ResolutionStep::Observed { .. }));
     }
 
     #[test]
@@ -1109,7 +1112,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn a_task_runner_section_feeds_no_runner_policy() {
         let dir = TempDir::new("resolver-task-runner-section");
         let loaded = loaded_from_toml(&dir, "[task_runner]\nprefer = [\"just\", \"zoot\"]\n");
@@ -1210,7 +1212,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn tasks_prefer_applies_beside_a_task_runner_section() {
         use crate::types::TaskSource;
 
@@ -1480,7 +1481,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     fn manifest_on_fail_unverifiable_version_continues_with_a_cannot_evaluate_warning() {
         use crate::tool::node::{ManifestPmDecl, ManifestSource, OnFail, VersionCheck};
 
@@ -1603,7 +1603,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn host_stream_garbage_env_fails_like_every_other_setting() {
         let sources = || OverrideSources {
             host_stream: SourceValue {
@@ -1903,11 +1902,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 7: observe replaces detect.rs"]
     fn describe_names_the_lockfile_a_decision_came_from() {
         let decision = super::ResolvedPm {
             pm: PackageManager::Pnpm,
-            via: ResolutionStep::Lockfile,
+            via: ResolutionStep::Observed {
+                path: "pnpm-lock.yaml".into(),
+                weight: runner_core::Weight::Locked,
+            },
             warnings: vec![],
         };
         assert_eq!(decision.describe(), "pnpm via pnpm-lock.yaml");
@@ -1980,7 +1981,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn deno_config_value_fills_the_node_slot_and_resolves_for_node_scripts() {
         let loaded = loaded_config_with_node("deno");
         let overrides = ResolutionOverrides::from_sources(OverrideSources {

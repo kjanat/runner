@@ -44,7 +44,7 @@ pub struct Capabilities {
     /// Workspace member discovery.
     pub workspaces: Option<WorkspaceCap>,
     /// A read-only self check.
-    pub health: Option<HealthCap>,
+    pub health: &'static [HealthCap],
     /// Per-task argument specs.
     pub usage: Option<UsageCap>,
     /// Templates that differ when this provider is the chosen runtime.
@@ -72,7 +72,7 @@ impl Capabilities {
         bins: None,
         clean: None,
         workspaces: None,
-        health: None,
+        health: &[],
         usage: None,
         as_runtime: None,
         operations: &[],
@@ -232,7 +232,7 @@ pub enum Discovery {
     /// The core passes files matching these globs.
     Files(&'static [&'static str]),
     /// The runner is itself a finding.
-    Detect(fn(&Path) -> Option<Template>),
+    Detect(fn(&Path) -> std::io::Result<Option<Template>>),
 }
 
 /// Run the test runner.
@@ -252,7 +252,7 @@ pub enum BinDirs {
     /// Fixed directories relative to the scope.
     Static(&'static [&'static str]),
     /// The tool reports them.
-    Ask(fn(&Path) -> Vec<PathBuf>),
+    Ask(fn(&Path) -> std::io::Result<Vec<PathBuf>>),
 }
 
 /// Where installed executables live.
@@ -265,6 +265,10 @@ pub struct BinsCap {
 /// What `clean` removes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CleanCap {
+    /// Suffixes of generated directory names in the scope root.
+    pub dir_suffixes: &'static [&'static str],
+    /// Framework directories removed on explicit opt-in.
+    pub framework_dirs: &'static [&'static str],
     /// Directories relative to the scope.
     pub dirs: &'static [&'static str],
 }

@@ -20,7 +20,7 @@ pub const PROVIDER: Provider = Provider {
         task_priority: 1,
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::scripts::package_tasks),
     version: None,
     hooks: Hooks::NONE,
 };

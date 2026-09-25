@@ -11,7 +11,7 @@
 //! node   = "pnpm"      # one of npm|pnpm|yarn|bun|deno
 //! python = "uv"        # one of uv|poetry|pipenv
 //!
-//! [task_runner]
+//! [tasks]
 //! prefer = ["just", "turbo"]
 //!
 //! [resolution]
@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{DetectionWarning, Ecosystem, PackageManager};
+use crate::types::{DetectionWarning, PackageManager};
 
 /// Canonical config filename, written by `runner config init`. Its dotfile form
 /// (`.` + this) is the hidden variant; both are accepted during discovery.
@@ -79,14 +79,6 @@ pub(crate) struct RunnerConfig {
     /// `[tasks]`, persistent task-source preference (global order + per-task pins).
     #[serde(default)]
     pub tasks: TasksSection,
-    /// `[task_runner]`, task-runner preferences. Deprecated; superseded
-    /// by [`Self::tasks`].
-    #[schemars(
-        description = "`[task_runner]`, task-runner preferences. Deprecated; superseded by \
-                       `[tasks]`."
-    )]
-    #[serde(default, rename = "task_runner")]
-    pub task_runner: TaskRunnerSection,
     /// `[install]`, restrict which detected PMs `runner install` runs.
     #[serde(default)]
     pub install: InstallSection,
@@ -223,22 +215,10 @@ pub(crate) struct RuntimeSection {
     pub js: Option<String>,
 }
 
-/// `[install]` section, restrict which detected package managers
-/// `runner install` runs with. Absent or empty installs every detected
-/// PM (the default). Overridden by `RUNNER_INSTALL_PMS`.
-///
-/// Unlike `[pm]` (which scopes *script dispatch* per ecosystem), this
-/// scopes the *install fan-out*: in a polyglot repo where both `bun` and
-/// `deno` would write `node_modules`, `pms = ["bun"]` keeps install to bun.
+/// Lifecycle-script and shared-directory policy for installation.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct InstallSection {
-    /// Allowlist of package-manager labels to install with, e.g.
-    /// `["bun"]`. Each must be a detected PM or `runner install` errors.
-    /// Empty = install with every detected PM.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pms: Vec<String>,
-
     /// Lifecycle-script policy for the install. `"deny"` skips lifecycle
     /// scripts wherever the package manager exposes a skip mechanism
     /// (npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,
@@ -260,8 +240,8 @@ pub(crate) struct InstallSection {
     /// the same directory (a node PM plus a `nodeModulesDir`-enabled Deno both
     /// materializing `node_modules/`). `"resolve"` (the default) installs with
     /// one writer per directory and shadows the rest, the way a duplicate task
-    /// name resolves to one source; listing several writers in `pms` is consent
-    /// and runs them all, serialized over the shared tree. `"error"` refuses to
+    /// name resolves to one source. Explicit per-tool install operations retain
+    /// multiple writers and serialize their execution. `"error"` refuses to
     /// pick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("enum" = ["resolve", "error", null]))]
@@ -393,28 +373,6 @@ pub(crate) struct PmSection {
     pub python: Option<String>,
 }
 
-/// `[task_runner]` section, **deprecated**. Use `[tasks]` instead.
-///
-/// Kept for backward compatibility: existing `[task_runner].prefer` files
-/// keep working (and emit a deprecation warning), but `[tasks].prefer` is the
-/// supported successor, rank-only and able to name package managers, not just
-/// task runners.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields, extend("deprecated" = true))]
-pub(crate) struct TaskRunnerSection {
-    /// **Deprecated, use `[tasks].prefer` instead** (rank-only, and accepts
-    /// package managers like `bun`, not just task runners). Migration:
-    /// `[task_runner].prefer = ["turbo"]` → `[tasks].prefer = ["turbo"]`.
-    ///
-    /// Legacy behavior, still honored: a ranked preference list that
-    /// *restricts* candidates to runners in the list (in listed order); a
-    /// same-named task under a runner not in the list is hard-rejected.
-    /// Valid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[schemars(extend("deprecated" = true))]
-    pub prefer: Vec<String>,
-}
-
 /// `[tasks]` section, per-task configuration keyed by task name, plus the two
 /// reserved cross-task knobs `prefer` and `overrides`.
 ///
@@ -467,32 +425,6 @@ pub(crate) struct TasksSection {
     /// every other key under `[tasks]` is a task entry.
     #[serde(flatten)]
     pub tasks: BTreeMap<String, TaskSpec>,
-}
-
-impl TasksSection {
-    /// True when this `[tasks]` section carries a signal that supersedes the
-    /// deprecated, *restrictive* `[task_runner].prefer` list: a global `prefer`
-    /// rank, a legacy `overrides` pin, or a task entry that contributes a
-    /// **source pin** (a bare-string [`TaskSpec::Pin`] or a table with a
-    /// `runner` field).
-    ///
-    /// A verbosity-only task entry (`[tasks.build] verbosity = "quiet"`) names
-    /// no source, so it deliberately does *not* count — otherwise adding a
-    /// per-task verbosity knob would silently drop a user's legacy runner
-    /// restriction (they resolve on entirely separate axes). Judged on the raw
-    /// fields, not the parsed result: a recognized-but-source-less label like
-    /// `"nx"` still counts as a pin here, matching `parse_tasks_overrides`.
-    pub(crate) fn supersedes_legacy_prefer(&self) -> bool {
-        !self.prefer.is_empty()
-            || !self.overrides.is_empty()
-            || self.tasks.values().any(|spec| match spec {
-                TaskSpec::Pin(label) => !label.trim().is_empty(),
-                TaskSpec::Settings(settings) => settings
-                    .runner
-                    .as_deref()
-                    .is_some_and(|runner| !runner.trim().is_empty()),
-            })
-    }
 }
 
 /// A single `[tasks]` entry, addressed by task name the way a crate is addressed
@@ -601,8 +533,58 @@ pub(crate) struct ResolutionSection {
 pub(crate) fn schema() -> &'static serde_json::Value {
     static SCHEMA: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| {
-        serde_json::to_value(schemars::schema_for!(RunnerConfig))
-            .expect("RunnerConfig schema serializes")
+        let mut schema = serde_json::to_value(schemars::schema_for!(RunnerConfig))
+            .expect("RunnerConfig schema serializes");
+        for setting in runner_core::SETTINGS {
+            let mut path = Vec::new();
+            let mut node = &schema;
+            let mut found = true;
+            for key in setting.key.split('.') {
+                if let Some(reference) = node
+                    .get("$ref")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|value| value.strip_prefix("#/"))
+                {
+                    path = reference.split('/').map(str::to_owned).collect();
+                    node = schema
+                        .pointer(&format!("/{reference}"))
+                        .expect("local schema reference");
+                }
+                let parts = if key.starts_with('<') {
+                    vec!["additionalProperties"]
+                } else {
+                    vec!["properties", key]
+                };
+                for part in parts {
+                    let Some(child) = node.get(part) else {
+                        found = false;
+                        break;
+                    };
+                    path.push(part.to_owned());
+                    node = child;
+                }
+                if !found {
+                    break;
+                }
+            }
+            if found {
+                let mut node = &mut schema;
+                for part in &path {
+                    node = &mut node[part];
+                }
+                node["description"] = setting.doc.into();
+                if let runner_core::SettingKind::Choice(choices) = setting.kind {
+                    let mut values: Vec<_> = choices
+                        .iter()
+                        .map(|value| serde_json::Value::from(*value))
+                        .collect();
+                    values.push(serde_json::Value::Null);
+                    node["enum"] = values.into();
+                }
+            }
+        }
+        crate::commands::schema::patch_tasks_label_vocab(&mut schema);
+        schema
     })
 }
 
@@ -786,7 +768,6 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
     let config: RunnerConfig = value
         .try_into()
         .with_context(|| format!("failed to parse {}", path.display()))?;
-    warnings.extend(deprecation_warnings(&config));
 
     Ok(Some(LoadedConfig {
         path,
@@ -827,36 +808,6 @@ fn read_first_candidate(dir: &Path) -> Result<Option<(PathBuf, String)>> {
     Ok(None)
 }
 
-/// Migration warnings for config keys that still work but have a supported
-/// successor. Shared by [`load`] and the editor language server so both surface
-/// the same nudge.
-///
-/// `[task_runner].prefer` is superseded by `[tasks]`: the warning flags whether
-/// `[tasks]` overrides it this run so the message tells the truth either way.
-pub(crate) fn deprecation_warnings(config: &RunnerConfig) -> Vec<DetectionWarning> {
-    let mut out = Vec::new();
-    if !config.task_runner.prefer.is_empty() {
-        let prefer_set = !config.tasks.prefer.is_empty();
-        let overrides_set = !config.tasks.overrides.is_empty();
-        // Name whichever `[tasks]` knob actually superseded this run, so the
-        // message never claims `tasks.prefer` is set when only `overrides` is.
-        let replacement = if overrides_set && !prefer_set {
-            "tasks.overrides"
-        } else {
-            "tasks.prefer"
-        };
-        out.push(DetectionWarning::DeprecatedConfigKey {
-            path: "task_runner.prefer".to_string(),
-            replacement,
-            // Share the resolver's exact supersession predicate so the warning
-            // can never disagree with what actually happened: a task entry with
-            // a source pin supersedes too, while a verbosity-only entry does not.
-            superseded: config.tasks.supersedes_legacy_prefer(),
-        });
-    }
-    out
-}
-
 /// Validate `[pm].node` against the set of script-dispatching PMs.
 ///
 /// # Errors
@@ -867,7 +818,11 @@ pub(crate) fn parse_node_pm(raw: &str) -> Result<PackageManager> {
     let pm = PackageManager::from_label(raw)
         .ok_or_else(|| anyhow!("[pm].node: unknown package manager {raw:?}"))?;
     let eco = pm.ecosystem();
-    if !matches!(eco, Ecosystem::Node | Ecosystem::Deno) {
+    if !runner_providers::REGISTRY
+        .by_label(pm.label())
+        .and_then(|p| p.caps.run_task)
+        .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::PackageJson))
+    {
         return Err(anyhow!(
             "[pm].node: {} cannot dispatch package.json scripts (it belongs to ecosystem {:?})",
             pm.label(),
@@ -886,7 +841,11 @@ pub(crate) fn parse_node_pm(raw: &str) -> Result<PackageManager> {
 pub(crate) fn parse_python_pm(raw: &str) -> Result<PackageManager> {
     let pm = PackageManager::from_label(raw)
         .ok_or_else(|| anyhow!("[pm].python: unknown package manager {raw:?}"))?;
-    if pm.ecosystem() != Ecosystem::Python {
+    if !runner_providers::REGISTRY
+        .by_label(pm.label())
+        .and_then(|p| p.caps.run_task)
+        .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::Pyproject))
+    {
         return Err(anyhow!(
             "[pm].python: {} is not a Python package manager",
             pm.label(),
@@ -992,7 +951,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn a_task_runner_section_is_an_unknown_key_whatever_tasks_says() {
         for body in [
             "[task_runner]\nprefer = [\"turbo\"]\n",
@@ -1253,7 +1211,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn install_has_no_allowlist_only_per_tool_vetoes() {
         let dir = TempDir::new("config-install");
         fs::write(

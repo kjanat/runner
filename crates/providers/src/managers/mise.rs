@@ -1,8 +1,8 @@
 //! mise.
 
 use runner_core::{
-    BinDirs, BinsCap, Capabilities, Ecosystem, ExecCap, Frozen, Hooks, InstallCap, Kind, NameShape,
-    Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptSupport, Signal, t,
+    BinDirs, BinsCap, Capabilities, Ecosystem, ExecCap, Frozen, HealthCap, Hooks, InstallCap, Kind,
+    NameShape, Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptSupport, Signal, t,
 };
 
 /// The default operation when `[tools.mise].install` says nothing.
@@ -58,31 +58,44 @@ pub const PROVIDER: Provider = Provider {
         bins: Some(BinsCap {
             dirs: BinDirs::Ask(bin_paths),
         }),
+        health: &[
+            HealthCap {
+                argv: t!["ls", "--missing", "--json"],
+                parse: crate::extract::mise::parse_missing_health,
+            },
+            HealthCap {
+                argv: t!["tasks", "validate", "--json"],
+                parse: crate::extract::mise::parse_task_health,
+            },
+        ],
         operations: &[INSTALL, "bootstrap"],
         quiet: QuietSupport::flag(t!["--quiet"]),
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::mise::tasks),
     version: None,
     hooks: Hooks::NONE,
 };
 
-fn bin_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let program = runner_core::probe_with("mise", &[]).unwrap_or_else(|| "mise".into());
-    let Ok(output) = std::process::Command::new(program)
+fn bin_paths(root: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    let Some(program) = runner_core::probe_with("mise", &[]) else {
+        return Ok(Vec::new());
+    };
+    let output = std::process::Command::new(program)
         .arg("bin-paths")
         .current_dir(root)
-        .output()
-    else {
-        return Vec::new();
-    };
+        .output()?;
     if !output.status.success() {
-        return Vec::new();
+        return Err(std::io::Error::other(format!(
+            "mise bin-paths failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    String::from_utf8_lossy(&output.stdout)
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(std::path::PathBuf::from)
-        .collect()
+        .collect())
 }

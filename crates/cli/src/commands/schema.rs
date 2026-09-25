@@ -32,13 +32,12 @@ pub(crate) fn write_schema(all: bool, output: Option<&Path>) -> Result<()> {
 /// committed file self-identifies (matching the `#:schema` directive the
 /// scaffold writes).
 pub(crate) fn config_schema() -> Result<Value> {
-    let mut schema = schema_value(schemars::schema_for!(crate::config::RunnerConfig))?;
+    let mut schema = crate::config::schema().clone();
     set_object_field(
         &mut schema,
         "$id",
         json!(crate::schema::config_schema_url()),
     );
-    patch_tasks_label_vocab(&mut schema);
     Ok(schema)
 }
 
@@ -48,7 +47,7 @@ pub(crate) fn config_schema() -> Result<Value> {
 /// instead of leaving them as unconstrained strings. Derived from
 /// [`crate::types::task_source_labels`] so the schema can't drift from the
 /// resolver's own vocabulary.
-fn patch_tasks_label_vocab(schema: &mut Value) {
+pub(crate) fn patch_tasks_label_vocab(schema: &mut Value) {
     let Some(defs) = schema.get_mut("$defs").and_then(Value::as_object_mut) else {
         return;
     };

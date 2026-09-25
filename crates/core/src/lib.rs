@@ -59,3 +59,5 @@ pub use verbosity::Verbosity;
 pub use warning::Warning;
 
 mod script;
+
+pub mod clean;

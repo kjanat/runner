@@ -9,9 +9,9 @@ use anyhow::{Result, anyhow};
 use super::join_labels;
 use super::policies::{
     is_env_truthy, parse_collision_label, parse_fallback_label, parse_host_stream_label,
-    parse_mismatch_label, parse_prefer_runners, parse_quiet_env, parse_reach_label,
-    parse_runtime_label, parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity,
-    resolve_failure_policy, resolve_fallback_policy, resolve_mismatch_policy,
+    parse_mismatch_label, parse_quiet_env, parse_reach_label, parse_runtime_label,
+    parse_tasks_overrides, parse_tasks_prefer, parse_tasks_verbosity, resolve_failure_policy,
+    resolve_fallback_policy, resolve_mismatch_policy,
 };
 use super::types::{
     CliOverrides, CollisionPolicy, DiagnosticFlags, ExplainSource, OverrideOrigin, OverrideSources,
@@ -127,17 +127,6 @@ impl ResolutionOverrides {
             |raw| parse_mismatch_label(raw).map(drop),
         );
         lenient_env_field(
-            &mut sources.install_pms,
-            "RUNNER_INSTALL_PMS",
-            &mut warnings,
-            |raw| {
-                raw.split([',', ' ', '\t', '\n'])
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .try_for_each(|label| parse_pm_label(label).map(drop))
-            },
-        );
-        lenient_env_field(
             &mut sources.install_scripts,
             "RUNNER_INSTALL_SCRIPTS",
             &mut warnings,
@@ -245,32 +234,10 @@ impl ResolutionOverrides {
             sources.on_mismatch.env,
             sources.config,
         )?;
-        // `[tasks]` (rank-only, PM-aware) supersedes the deprecated
-        // `[task_runner].prefer` (restrictive, runners-only). When the new
-        // section carries anything, the legacy list is ignored entirely; the
-        // config loader has already emitted the deprecation warning.
-        //
-        // "Carries anything" is judged on the *raw* config fields, not the
-        // parsed result: a `[tasks].prefer` entry like `"nx"` is recognized
-        // but resolves to no `TaskSource` (see `resolve_source_label`), so
-        // checking `prefer_sources.is_empty()` would wrongly treat an
-        // explicit-but-source-less `prefer` list as absent and fall through
-        // to the legacy, more restrictive list. Only signals that affect
-        // *source selection* count — a global `prefer` rank, an `overrides`
-        // pin, or a task entry with a source pin; a verbosity-only
-        // `[tasks.<name>]` entry names no source and must not supersede (see
-        // `TasksSection::supersedes_legacy_prefer`).
-        let tasks_section_set = sources
-            .config
-            .is_some_and(|c| c.config.tasks.supersedes_legacy_prefer());
         let prefer_sources = parse_tasks_prefer(sources.config)?;
         let task_source_overrides = parse_tasks_overrides(sources.config)?;
         let task_verbosity = parse_tasks_verbosity(sources.config)?;
-        let prefer_runners = if tasks_section_set {
-            Vec::new()
-        } else {
-            parse_prefer_runners(sources.config)?
-        };
+        let prefer_runners = Vec::new();
         let no_warnings =
             sources.no_warnings.cli || sources.no_warnings.env.is_some_and(is_env_truthy);
         let (quiet_level, host_stream, host_stream_invocation_explicit) =
@@ -334,7 +301,6 @@ impl ResolutionOverrides {
             .config
             .is_none_or(|c| c.config.github.group_parallel);
         let parallel_grouped = sources.config.is_some_and(|c| c.config.parallel.grouped);
-        let install_pms = parse_install_pms(&sources)?;
         let script_policy = parse_install_scripts(&sources)?;
         let on_collision = parse_install_on_collision(&sources)?;
 
@@ -343,7 +309,7 @@ impl ResolutionOverrides {
             if let Some(raw) = loaded.config.pm.node.as_deref() {
                 let pm_value = parse_node_pm(raw)?;
                 pm_by_ecosystem.insert(
-                    pm_value.ecosystem(),
+                    Ecosystem::Node,
                     PmOverride {
                         pm: pm_value,
                         origin: OverrideOrigin::ConfigFile {
@@ -391,7 +357,6 @@ impl ResolutionOverrides {
             group_output,
             github_group_parallel,
             parallel_grouped,
-            install_pms,
             script_policy,
             on_collision,
             env: env_layers(&sources),
@@ -444,40 +409,6 @@ fn resolve_config_runtime(config: Option<&LoadedConfig>) -> Result<Option<Runtim
             path: loaded.path.clone(),
         },
     }))
-}
-
-/// Resolve the `runner install` PM allowlist: `RUNNER_INSTALL_PMS` (env,
-/// comma/whitespace-separated) wins over `[install].pms` (config). Each
-/// entry must name a known package manager; detection (whether the PM is
-/// present in *this* project) is checked later in `commands::install`.
-///
-/// # Errors
-///
-/// Returns an error if any entry is not a recognized package manager.
-fn parse_install_pms(sources: &OverrideSources<'_>) -> Result<Vec<PackageManager>> {
-    if let Some(raw) = sources
-        .install_pms
-        .env
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return raw
-            .split([',', ' ', '\t', '\n'])
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|label| parse_pm_label(label).map_err(|err| anyhow!("RUNNER_INSTALL_PMS: {err}")))
-            .collect();
-    }
-    let Some(loaded) = sources.config else {
-        return Ok(Vec::new());
-    };
-    loaded
-        .config
-        .install
-        .pms
-        .iter()
-        .map(|label| parse_pm_label(label).map_err(|err| anyhow!("[install].pms: {err}")))
-        .collect()
 }
 
 /// Resolve the `runner install` lifecycle-script policy: `RUNNER_INSTALL_SCRIPTS`
@@ -696,18 +627,8 @@ mod tests {
     use crate::config::{InstallSection, RunnerConfig};
 
     #[test]
-    #[ignore = "docs/architecture.md section 10 step 6: config from the registry"]
     fn install_pms_env_has_no_declared_row() {
-        let sources = OverrideSources {
-            install_pms: SourceValue {
-                cli: None,
-                env: Some("bun, notapm"),
-            },
-            ..OverrideSources::default()
-        };
-        let overrides = ResolutionOverrides::from_sources(sources)
-            .expect("a variable with no row in the declaration table is never parsed");
-        assert!(overrides.install_pms.is_empty());
+        assert!(runner_core::Setting::by_env("RUNNER_INSTALL_PMS").is_none());
     }
 
     #[test]
@@ -926,20 +847,19 @@ macro_rules! env_snapshot {
 }
 
 env_snapshot! {
-    pm => "RUNNER_PM",
-    runner => "RUNNER_RUNNER",
-    runtime => "RUNNER_RUNTIME",
-    reach => "RUNNER_REACH",
+    pm => runner_core::Setting::env_for("pm"),
+    runner => runner_core::Setting::env_for("tasks.prefer"),
+    runtime => runner_core::Setting::env_for("runtime.js"),
+    reach => runner_core::Setting::env_for("defaults.fetch"),
     fallback => "RUNNER_FALLBACK",
     on_mismatch => "RUNNER_ON_MISMATCH",
     no_warnings => "RUNNER_NO_WARNINGS",
-    quiet => "RUNNER_QUIET",
+    quiet => runner_core::Setting::env_for("defaults.verbosity"),
     host_stream => "RUNNER_HOST_STREAM",
     explain => "RUNNER_EXPLAIN",
     keep_going => "RUNNER_KEEP_GOING",
     kill_on_fail => "RUNNER_KILL_ON_FAIL",
-    install_pms => "RUNNER_INSTALL_PMS",
-    install_scripts => "RUNNER_INSTALL_SCRIPTS",
+    install_scripts => runner_core::Setting::env_for("install.scripts"),
     install_on_collision => "RUNNER_INSTALL_ON_COLLISION",
     group_active => crate::commands::GROUP_ACTIVE_ENV,
 }
@@ -1001,10 +921,6 @@ impl EnvSnapshot {
                 cli: cli.failure.kill_on_fail,
                 env: self.kill_on_fail.as_deref(),
             },
-            install_pms: SourceValue {
-                cli: None,
-                env: self.install_pms.as_deref(),
-            },
             install_scripts: SourceValue {
                 cli: None,
                 env: self.install_scripts.as_deref(),
@@ -1061,9 +977,14 @@ fn resolve_verbosity(sources: &OverrideSources<'_>) -> Result<(QuietLevel, Strea
         // A typo'd `RUNNER_HOST_STREAM` env value is lenient here, mirroring the
         // quiet axis (`parse_quiet_env(...).unwrap_or(Off)`): it falls back to
         // the default instead of aborting every `run`. The doctor path warns.
-        None => env_host_stream
-            .and_then(|raw| parse_host_stream_label(raw).ok())
-            .map_or((Stream::Inherit, false), |stream| (stream, true)),
+        None => match env_host_stream {
+            Some(raw) => (
+                parse_host_stream_label(raw)
+                    .map_err(|error| anyhow!("RUNNER_HOST_STREAM={raw}: {error}"))?,
+                true,
+            ),
+            None => (Stream::Inherit, false),
+        },
     };
     Ok((quiet_level, host_stream, host_stream_invocation_explicit))
 }

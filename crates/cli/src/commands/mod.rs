@@ -1,12 +1,10 @@
 //! Subcommand implementations: info, run, install, clean, list, completions.
 
-use std::collections::HashMap;
 #[cfg(windows)]
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::sync::{Mutex, OnceLock, PoisonError};
 
 use colored::Colorize;
 
@@ -103,7 +101,11 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
 }
 
 /// Complete the invocation metadata before a core plan is rendered or executed.
-fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides, task: &str) {
+fn configure_plan(
+    plan: &mut runner_core::Plan,
+    overrides: &ResolutionOverrides,
+    task: &str,
+) -> anyhow::Result<()> {
     let mut metadata = Command::new("runner");
     configure_spawn(&mut metadata, &plan.cwd, overrides);
     if emits_group(overrides) && !overrides.emits_groups_for(task) {
@@ -119,7 +121,7 @@ fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides,
     }
     #[cfg(windows)]
     if let Some(name) = plan.argv.first().and_then(|program| program.to_str()) {
-        let command = runner_core::execute::command(plan);
+        let command = runner_core::execute::command(plan)?;
         let path = command
             .get_envs()
             .find(|(key, _)| *key == "PATH")
@@ -131,6 +133,7 @@ fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides,
             plan.argv[0] = resolved.into_os_string();
         }
     }
+    Ok(())
 }
 
 fn set_task_stdio(
@@ -183,37 +186,6 @@ fn node_bin_dirs(dir: &Path) -> Vec<PathBuf> {
         .map(|ancestor| ancestor.join("node_modules").join(".bin"))
         .filter(|bin| bin.is_dir())
         .collect()
-}
-
-/// Memo for [`mise_bin_dirs`].
-fn mise_bin_cache() -> &'static Mutex<HashMap<PathBuf, Vec<PathBuf>>> {
-    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
-    CACHE.get_or_init(Mutex::default)
-}
-
-/// The mise tool bin dirs for `dir`, resolved once per process.
-///
-/// The answer is memoized per directory for package-manager resolution.
-pub(crate) fn mise_bin_dirs(dir: &Path) -> Vec<PathBuf> {
-    let mut cache = mise_bin_cache()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    cache
-        .entry(dir.to_path_buf())
-        .or_insert_with(|| crate::tool::mise::bin_paths(dir))
-        .clone()
-}
-
-/// Drop the memoized mise bin dirs.
-///
-/// `mise bin-paths` omits a tool that is not installed yet, so an answer
-/// cached before `mise install` would miss everything that install just
-/// put on disk.
-pub(crate) fn forget_mise_bin_dirs() {
-    mise_bin_cache()
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clear();
 }
 
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {
@@ -454,6 +426,19 @@ const fn silenced(overrides: &ResolutionOverrides) -> bool {
 }
 
 pub(crate) use crate::render::explain::{print_explain, print_output_explain};
+
+pub(crate) fn print_core_warnings(
+    warnings: &[runner_core::Warning],
+    overrides: &ResolutionOverrides,
+    sink: WarningSink<'_>,
+) {
+    let warnings: Vec<_> = warnings
+        .iter()
+        .cloned()
+        .map(DetectionWarning::Pipeline)
+        .collect();
+    print_warning_slice(&warnings, overrides, sink);
+}
 
 pub(crate) fn print_warning_slice(
     warnings: &[DetectionWarning],
@@ -814,12 +799,13 @@ mod tests {
             &project,
             &runner_core::Policy::default(),
             bin.join("runner-test-shim"),
+            &runner_providers::REGISTRY,
             std::iter::once(OsString::from("runner-test-shim"))
                 .chain(args.iter().map(OsString::from))
                 .collect(),
         )
         .unwrap();
-        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test");
+        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test").unwrap();
         plan
     }
 
@@ -844,7 +830,7 @@ mod tests {
             .expect("shim should be marked executable");
 
         let plan = shim_plan(dir.path(), &[]);
-        let mut command = runner_core::execute::command(&plan);
+        let mut command = runner_core::execute::command(&plan).unwrap();
         let status = runner_core::execute::status(&plan, &mut command)
             .expect("shim should spawn via the child PATH");
         assert_eq!(status.code(), Some(42));
@@ -867,7 +853,7 @@ mod tests {
 
         let mut plan = shim_plan(dir.path(), &["run".into()]);
         plan.env.push(("RUNNER_TEST_MARKER".into(), "1".into()));
-        let command = runner_core::execute::command(&plan);
+        let command = runner_core::execute::command(&plan).unwrap();
 
         assert_eq!(PathBuf::from(command.get_program()), shim);
         let args: Vec<_> = command.get_args().collect();

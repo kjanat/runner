@@ -4,11 +4,11 @@
 //! [`super::policies`]; data types live in [`super::types`].
 
 use super::probe;
-use super::types::{FallbackPolicy, MismatchPolicy, ResolutionStep, ResolvedPm, Resolver};
+use super::types::{MismatchPolicy, ResolutionStep, ResolvedPm, Resolver};
 use super::{DevEnginesFailReason, ResolveError};
 use crate::tool::node::{
     ManifestPmDecl, ManifestSource, OnFail, VersionCheck, check_version_constraint,
-    detect_pm_from_manifest, find_manifest_upwards,
+    detect_pm_from_manifest,
 };
 use crate::types::{DetectionWarning, Ecosystem, PackageManager, ProjectContext};
 
@@ -21,162 +21,105 @@ impl<'ctx> Resolver<'ctx> {
         Self { ctx, overrides }
     }
 
-    /// Directories holding tools a tool manager provides for this project.
-    ///
-    /// Searched ahead of `$PATH` by the probe, because a tool manager
-    /// installs without activating: mise's npm is real and runnable, and
-    /// invisible to `$PATH` until the shell runs the activation hook.
-    fn tool_bin_dirs(&self) -> Vec<std::path::PathBuf> {
-        if self
-            .ctx
-            .task_runners
-            .contains(&crate::types::TaskRunner::Mise)
-        {
-            crate::commands::mise_bin_dirs(&self.ctx.root)
-        } else {
-            Vec::new()
-        }
+    /// Resolve the package manager accepting package scripts.
+    pub(crate) fn resolve_node_pm(&self) -> Result<ResolvedPm, ResolveError> {
+        let policy = crate::commands::run::core::policy(self.overrides);
+        let project = crate::commands::run::core::project_under(self.ctx, &policy)
+            .map_err(ResolveError::Observation)?;
+        self.resolve_node_pm_in(&project)
     }
 
-    /// Resolve the package manager used to dispatch `package.json` scripts.
-    ///
-    /// Walks the precedence chain in order:
-    /// - Step 2–3, CLI/env PM override (when compatible with Node scripts).
-    /// - Step 4, `runner.toml` `[pm].node` override.
-    /// - Step 5a, `package.json` legacy `packageManager` field.
-    /// - Step 5b, `package.json` `devEngines.packageManager` field
-    ///   (honoring `onFail` when the declared PM is missing from PATH).
-    /// - Step 6, lockfile (via [`ProjectContext::primary_node_pm`]).
-    /// - Step 7, `$PATH` probe in canonical Node order
-    ///   (`npm > bun > pnpm > yarn`). Active by default; replaced by
-    ///   step 8 when `--fallback npm` is set.
-    /// - Step 8, error or legacy `npm` (depending on
-    ///   [`FallbackPolicy`]).
-    ///
-    /// When a manifest declaration (step 5) disagrees with a detected
-    /// lockfile (step 6), the manifest wins (Corepack semantics) and a
-    /// `package.json` warning is emitted.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no signal matches and
-    /// `FallbackPolicy::Error` or `FallbackPolicy::Probe` is in effect
-    /// with nothing on `$PATH`, or when a manifest `onFail = Error`
-    /// declaration cannot be satisfied.
-    pub(crate) fn resolve_node_pm(&self) -> Result<ResolvedPm, ResolveError> {
-        let mut warnings = Vec::new();
-
-        if let Some(o) = self.overrides.pm.as_ref() {
-            if !o.pm.can_dispatch_node_scripts() {
-                // The user explicitly pinned a PM that can't dispatch
-                // package.json scripts. Falling through to step 4-7
-                // would silently disregard their intent. Surface the
-                // mismatch as a hard error instead.
+    /// Describe the selection from the invocation's resolved provider snapshot.
+    pub(crate) fn resolve_node_pm_in(
+        &self,
+        project: &runner_core::Project,
+    ) -> Result<ResolvedPm, ResolveError> {
+        let registry = &runner_providers::REGISTRY;
+        let tree = crate::commands::run::core::tree(self.ctx);
+        let scope = runner_core::plan::scope_at(&tree, &tree.cwd);
+        let chosen = self
+            .overrides
+            .pm
+            .as_ref()
+            .or_else(|| self.overrides.pm_by_ecosystem.get(&Ecosystem::Node));
+        if let Some(chosen) = chosen {
+            let descriptor = registry
+                .by_label(chosen.pm.label())
+                .expect("package manager registry entry");
+            if !descriptor
+                .caps
+                .run_task
+                .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::PackageJson))
+            {
                 return Err(ResolveError::InvalidOverride {
-                    value: o.pm.label().to_string(),
-                    reason: "cannot dispatch package.json scripts (use a Node-ecosystem PM, or \
-                             `--runtime deno` for Deno tasks)",
+                    value: chosen.pm.label().into(),
+                    reason: "cannot dispatch package.json scripts",
                 });
             }
-            return Ok(ResolvedPm {
-                pm: o.pm,
-                via: ResolutionStep::Override(o.origin.clone()),
-                warnings,
-            });
+            if project.present_in(descriptor.id, &scope).is_none() {
+                return Err(ResolveError::InvalidOverride {
+                    value: chosen.pm.label().into(),
+                    reason: "no file or executable was observed for this provider",
+                });
+            }
         }
-        if let Some(o) = self
-            .overrides
-            .pm_by_ecosystem
-            .get(&Ecosystem::Node)
-            .or_else(|| self.overrides.pm_by_ecosystem.get(&Ecosystem::Deno))
-        {
-            return Ok(ResolvedPm {
-                pm: o.pm,
-                via: ResolutionStep::Override(o.origin.clone()),
-                warnings,
-            });
-        }
-
-        if let Some(decl) = detect_pm_from_manifest(&self.ctx.root) {
+        let mut warnings = Vec::new();
+        let declaration = chosen
+            .is_none()
+            .then(|| detect_pm_from_manifest(&self.ctx.root))
+            .flatten();
+        if let Some(decl) = &declaration {
             cross_check_against_lockfile(
-                &decl,
+                decl,
                 self.ctx,
                 self.overrides.on_mismatch,
                 &mut warnings,
             )?;
             apply_manifest_on_fail(
-                &decl,
+                decl,
                 &mut warnings,
                 real_binary_check,
                 check_version_constraint,
             )?;
-            let via = match decl.source {
+        }
+        let present = project
+            .for_source(
+                runner_core::ProviderId::PackageJson,
+                &scope,
+                &crate::commands::run::core::policy(self.overrides),
+                registry,
+            )
+            .ok_or_else(no_pm_found_soft)?;
+        let pm = PackageManager::from_label(registry.by_id(present.provider).label)
+            .expect("package manager label");
+        let via = if let Some(chosen) = chosen {
+            ResolutionStep::Override(chosen.origin.clone())
+        } else if let Some(decl) = declaration.filter(|decl| decl.pm == pm) {
+            match decl.source {
                 ManifestSource::PackageManager => ResolutionStep::ManifestPackageManager,
                 ManifestSource::DevEngines => ResolutionStep::ManifestDevEngines {
                     on_fail: decl.on_fail,
                 },
-            };
-            return Ok(ResolvedPm {
-                pm: decl.pm,
-                via,
-                warnings,
-            });
-        }
-
-        // Filter `primary_pm` through `can_dispatch_node_scripts` so a
-        // non-script PM (Cargo/Poetry/Bundler/…) doesn't satisfy the
-        // Node lockfile step. Otherwise a mixed-language repo whose
-        // top-priority signal is `Cargo.lock` would pick Cargo and bail
-        // later, instead of continuing to the PATH probe / fallback.
-        if let Some(pm) = self.ctx.primary_node_pm().or_else(|| {
-            self.ctx
-                .primary_pm()
-                .filter(|pm| pm.can_dispatch_node_scripts())
-        }) {
-            return Ok(ResolvedPm {
-                pm,
-                via: ResolutionStep::Lockfile,
-                warnings,
-            });
-        }
-
-        match self.overrides.fallback {
-            FallbackPolicy::Probe => {
-                // Don't probe Node PMs without Node-ecosystem evidence.
-                // No `package.json` upward means this isn't a Node
-                // project, so picking `bun`/`pnpm`/`yarn`/`npm` off
-                // `$PATH` would dispatch through the wrong ecosystem.
-                if find_manifest_upwards(&self.ctx.root).is_none() {
-                    return Err(no_pm_found_soft());
-                }
-                let mut found = probe::probe_all(probe::NODE_PROBE_ORDER, &self.tool_bin_dirs());
-                if found.is_empty() {
-                    return Err(no_pm_found_soft());
-                }
-                let (picked, binary) = found.remove(0);
+            }
+        } else {
+            let evidence = present.because.first().expect("resolved provider evidence");
+            if evidence.weight == runner_core::Weight::Probed {
                 warnings.push(DetectionWarning::PathProbeFallback {
-                    picked,
+                    picked: pm,
                     ecosystem: Ecosystem::Node,
-                    others_available: found.into_iter().map(|(pm, _)| pm).collect(),
+                    others_available: Vec::new(),
                 });
-                Ok(ResolvedPm {
-                    pm: picked,
-                    via: ResolutionStep::PathProbe { binary },
-                    warnings,
-                })
+                ResolutionStep::PathProbe {
+                    binary: evidence.at.clone(),
+                }
+            } else {
+                ResolutionStep::Observed {
+                    path: evidence.at.clone(),
+                    weight: evidence.weight,
+                }
             }
-            FallbackPolicy::Npm => {
-                warnings.push(DetectionWarning::LegacyNpmFallbackUsed {
-                    ecosystem: Ecosystem::Node,
-                });
-                Ok(ResolvedPm {
-                    pm: PackageManager::Npm,
-                    via: ResolutionStep::LegacyNpmFallback,
-                    warnings,
-                })
-            }
-            FallbackPolicy::Error => Err(no_pm_found_hard()),
-        }
+        };
+        Ok(ResolvedPm { pm, via, warnings })
     }
 }
 
@@ -190,10 +133,7 @@ impl<'ctx> Resolver<'ctx> {
 /// - `Error`, bail on a missing PM or a version mismatch.
 ///
 /// Version checks that can't run (unparseable range, missing
-/// `--version` output, etc.) are skipped silently: the proposal says
-/// `onFail` enforces user intent, but blocking dispatch on an
-/// unverifiable constraint would be worse than continuing; the binary
-/// will surface the real problem at spawn time.
+/// `--version` output, etc.) produce a warning.
 ///
 /// Binary-presence and version-check side effects are injected so the
 /// `Error` branches stay exercisable in unit tests: `Error + missing`
@@ -219,10 +159,22 @@ where
         return on_fail_missing_binary(decl, warnings);
     }
 
-    if let Some(range) = decl.version.as_deref()
-        && let VersionCheck::Mismatch { declared, actual } = check_version(decl.pm, range)
-    {
-        return on_fail_version_mismatch(decl, &declared, &actual, warnings);
+    if let Some(range) = decl.version.as_deref() {
+        match check_version(decl.pm, range) {
+            VersionCheck::Mismatch { declared, actual } => {
+                return on_fail_version_mismatch(decl, &declared, &actual, warnings);
+            }
+            VersionCheck::Unverifiable { reason } => {
+                warnings.push(DetectionWarning::TaskListUnreadable {
+                    source: "package.json",
+                    error: format!(
+                        "cannot evaluate {} version constraint {range}: {reason}",
+                        decl.pm.label()
+                    ),
+                })
+            }
+            VersionCheck::Satisfied => {}
+        }
     }
 
     Ok(())
@@ -287,16 +239,6 @@ const fn no_pm_found_soft() -> ResolveError {
     ResolveError::NoSignalsFound {
         ecosystem: Ecosystem::Node,
         soft: true,
-    }
-}
-
-/// Hard "no PM found", emitted from `FallbackPolicy::Error`. Carries
-/// the same payload but with `soft = false`, so `commands::run::run`
-/// propagates it instead of falling through.
-const fn no_pm_found_hard() -> ResolveError {
-    ResolveError::NoSignalsFound {
-        ecosystem: Ecosystem::Node,
-        soft: false,
     }
 }
 

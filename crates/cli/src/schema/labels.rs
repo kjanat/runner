@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::types::{JsRuntime, Task, TaskSource};
+use crate::types::{Task, TaskSource};
 
 /// Source label for the flat `list`/`info` shape ([`super::project`]).
 pub(crate) const fn flat_source_label(source: TaskSource) -> &'static str {
@@ -86,43 +86,11 @@ pub(crate) fn source_anchor(source: TaskSource, root: &Path) -> Option<PathBuf> 
     }
 }
 
-/// Effective command preview shared by `why` and `doctor` v3. Sources with
-/// a fixed executing binary resolve deterministically; `package.json` and
-/// `pyproject.toml` scripts depend on package-manager resolution, which the
-/// two callers perform differently (why: only for the selected candidate;
-/// doctor: project-wide). `node_pm`/`python_pm` take that result already
-/// resolved to a label. A forced `runtime` that dispatches the task reads
-/// its script through its own runner, so its preview outranks the resolved
-/// package manager, matching `commands::run`'s dispatch.
-pub(crate) fn resolved_command(
-    task: &Task,
-    runtime: Option<JsRuntime>,
-    node_pm: Option<&str>,
-    python_pm: Option<&str>,
-) -> Option<String> {
-    let name = &task.name;
-    if let Some(rt) = runtime
-        && let Some(preview) = crate::commands::run::runtime_script_preview(rt, task.source, name)
-    {
-        return Some(preview);
-    }
-    match task.source {
-        TaskSource::CargoAliases => Some(task.alias_of.as_deref().map_or_else(
-            || format!("cargo {name}"),
-            |expansion| format!("cargo {expansion}"),
-        )),
-        TaskSource::DenoJson => Some(format!("deno task {name}")),
-        TaskSource::TurboJson => Some(format!("turbo run {name}")),
-        TaskSource::Makefile => Some(format!("make {name}")),
-        TaskSource::Justfile => Some(format!("just {name}")),
-        TaskSource::Taskfile => Some(format!("task {name}")),
-        TaskSource::BaconToml => Some(format!("bacon {name}")),
-        TaskSource::MiseToml => Some(format!("mise run {name}")),
-        TaskSource::GoPackage => Some(format!(
-            "go run {target}",
-            target = task.run_target.as_deref().unwrap_or(name)
-        )),
-        TaskSource::PackageJson => node_pm.map(|pm| format!("{pm} run {name}")),
-        TaskSource::PyprojectScripts => python_pm.map(|pm| format!("{pm} run {name}")),
-    }
+/// Display argv from the completed execution plan.
+pub(crate) fn planned_command(plan: &runner_core::Plan) -> String {
+    plan.argv
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ")
 }

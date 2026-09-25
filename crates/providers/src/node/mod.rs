@@ -24,6 +24,8 @@ pub const BINS: BinsCap = BinsCap {
 
 /// What `clean` removes for any Node project.
 pub const CLEAN: CleanCap = CleanCap {
+    dir_suffixes: &[],
+    framework_dirs: FRAMEWORK_CLEAN,
     dirs: &["node_modules", ".cache", "dist"],
 };
 

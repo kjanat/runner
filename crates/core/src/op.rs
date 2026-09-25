@@ -55,7 +55,10 @@ pub enum Op<'a> {
     /// Remove install directories.
     Clean,
     /// Ask the provider about its own state.
-    Health,
+    Health {
+        /// Index in the provider's declared health checks.
+        check: usize,
+    },
 }
 
 impl Op<'_> {
@@ -71,7 +74,7 @@ impl Op<'_> {
             Self::RunFile { .. } => "run-file",
             Self::Test { .. } => "test",
             Self::Clean => "clean",
-            Self::Health => "health",
+            Self::Health { .. } => "health",
         }
     }
 }

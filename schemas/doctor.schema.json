@@ -6,7 +6,7 @@
       "description": "How `runner install` reacts when two or more package managers in the\ninstall set write the same directory (a node PM plus a\n`nodeModulesDir`-enabled Deno both materializing `node_modules/`).\n\nSet via `[install].on_collision` / `RUNNER_INSTALL_ON_COLLISION`.",
       "oneOf": [
         {
-          "description": "Install with one writer per directory and shadow the rest, the same\nway a duplicate task name resolves to one source. An explicit\n`[install].pms` naming several writers is consent: they all run,\nserialized over the shared tree.",
+          "description": "Select one writer per directory. Explicit per-tool install operations\nretain every enabled writer and serialize their execution.",
           "type": "string",
           "const": "resolve"
         },
@@ -583,7 +583,6 @@
         "failure_policy",
         "fallback",
         "fetch",
-        "install_pms",
         "no_warnings",
         "on_collision",
         "on_mismatch",
@@ -621,12 +620,6 @@
             "allow",
             "local"
           ]
-        },
-        "install_pms": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/PackageManager"
-          }
         },
         "no_warnings": {
           "type": "boolean"

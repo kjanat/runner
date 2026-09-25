@@ -131,11 +131,6 @@ pub(crate) struct ResolutionOverrides {
     /// match if desired. Only the delimiter style (`::group::` vs a plain
     /// header) further depends on the environment.
     pub parallel_grouped: bool,
-    /// Allowlist of package managers `runner install` may run, resolved
-    /// from `RUNNER_INSTALL_PMS` (env) → `[install].pms` (config). Empty
-    /// means "no install filter": install fans out to every detected PM.
-    /// Unlike [`Self::pm`], this never affects script dispatch.
-    pub install_pms: Vec<PackageManager>,
     /// Install-time lifecycle-script policy, resolved from
     /// `RUNNER_INSTALL_SCRIPTS` (env) → `[install].scripts` (config). The CLI
     /// `--no-scripts` ([`ScriptPolicy::Deny`]) / `--scripts`
@@ -520,10 +515,8 @@ impl MismatchPolicy {
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum CollisionPolicy {
-    /// Install with one writer per directory and shadow the rest, the same
-    /// way a duplicate task name resolves to one source. An explicit
-    /// `[install].pms` naming several writers is consent: they all run,
-    /// serialized over the shared tree.
+    /// Select one writer per directory. Explicit per-tool install operations
+    /// retain every enabled writer and serialize their execution.
     #[default]
     Resolve,
     /// Refuse to install and exit non-zero rather than pick. For CI
@@ -683,7 +676,12 @@ pub(crate) enum ResolutionStep {
     },
     /// Step 6, package manager inferred from a lockfile (or another
     /// detector recorded in [`ProjectContext::package_managers`]).
-    Lockfile,
+    Observed {
+        /// File carrying the selected provider signal.
+        path: PathBuf,
+        /// Strength of the observation.
+        weight: runner_core::Weight,
+    },
     /// Step 7, discovered via `$PATH` probe in canonical order.
     PathProbe {
         /// Absolute path of the executable found on PATH. Rendered by
@@ -744,9 +742,6 @@ pub(crate) struct OverrideSources<'a> {
     pub keep_going: ExplainSource<'a>,
     /// `--kill-on-fail` flag presence plus `RUNNER_KILL_ON_FAIL` env.
     pub kill_on_fail: ExplainSource<'a>,
-    /// `RUNNER_INSTALL_PMS` env (comma/space-separated). No CLI flag; the
-    /// config side comes from the loaded `runner.toml` `[install].pms`.
-    pub install_pms: SourceValue<'a>,
     /// `RUNNER_INSTALL_SCRIPTS` env (`deny`|`allow`). The `cli` side stays
     /// unused here; the `--no-scripts`/`--scripts` flags are layered on at the
     /// dispatch boundary; the config side comes from `[install].scripts`.
@@ -854,8 +849,12 @@ impl ResolvedPm {
                 "{} via package.json \"devEngines.packageManager\" (onFail={on_fail:?})",
                 self.pm.label(),
             ),
-            ResolutionStep::Lockfile => {
-                format!("{} via detected lockfile", self.pm.label())
+            ResolutionStep::Observed { path, .. } => {
+                format!(
+                    "{} via {}",
+                    self.pm.label(),
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )
             }
             ResolutionStep::PathProbe { binary } => {
                 format!("{} via PATH probe at {}", self.pm.label(), binary.display())

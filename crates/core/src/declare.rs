@@ -35,7 +35,7 @@ pub struct Setting {
 /// The policy fields of section 4.5, one row each.
 pub static SETTINGS: &[Setting] = &[
     Setting {
-        key: "tools.pm",
+        key: "pm",
         env: Some("RUNNER_PM"),
         flag: Some("pm"),
         kind: SettingKind::ProviderPerEcosystem,
@@ -49,7 +49,7 @@ pub static SETTINGS: &[Setting] = &[
         doc: "The task source that wins a same-named task.",
     },
     Setting {
-        key: "defaults.runtime",
+        key: "runtime.js",
         env: Some("RUNNER_RUNTIME"),
         flag: Some("runtime"),
         kind: SettingKind::Provider,
@@ -57,13 +57,13 @@ pub static SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "defaults.frozen",
-        env: Some("RUNNER_FROZEN"),
+        env: None,
         flag: Some("frozen"),
         kind: SettingKind::Bool,
         doc: "Install without touching the lockfile.",
     },
     Setting {
-        key: "defaults.scripts",
+        key: "install.scripts",
         env: Some("RUNNER_INSTALL_SCRIPTS"),
         flag: Some("scripts"),
         kind: SettingKind::Choice(&["default", "deny", "allow"]),
@@ -127,6 +127,28 @@ impl Setting {
         SETTINGS.iter().find(|setting| setting.key == key)
     }
 
+    /// The CLI flag declared for a policy key.
+    ///
+    /// # Panics
+    /// Panics for keys without a declared flag.
+    #[must_use]
+    pub fn flag_for(key: &str) -> &'static str {
+        Self::by_key(key)
+            .and_then(|setting| setting.flag)
+            .expect("declared CLI policy flag")
+    }
+
+    /// The environment variable declared for a policy key.
+    ///
+    /// # Panics
+    /// Panics for keys without a declared environment variable.
+    #[must_use]
+    pub fn env_for(key: &str) -> &'static str {
+        Self::by_key(key)
+            .and_then(|setting| setting.env)
+            .expect("declared policy environment variable")
+    }
+
     /// The row for the `RUNNER_*` variable `env`.
     #[must_use]
     pub fn by_env(env: &str) -> Option<&'static Self> {
@@ -163,10 +185,7 @@ mod tests {
                 setting.key
             );
         }
-        assert_eq!(
-            Setting::by_env("RUNNER_PM").map(|s| s.key),
-            Some("tools.pm")
-        );
+        assert_eq!(Setting::by_env("RUNNER_PM").map(|s| s.key), Some("pm"));
         assert!(Setting::by_key("nothing").is_none());
     }
 }

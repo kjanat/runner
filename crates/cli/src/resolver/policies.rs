@@ -80,38 +80,6 @@ pub(super) fn resolve_fallback_policy(
     Ok(FallbackPolicy::default())
 }
 
-/// Parse the `[task_runner].prefer` list, validating each entry against
-/// the known [`TaskRunner`] variants. Empty/missing → empty `Vec`.
-///
-/// Per the resolved design decision, an unknown runner name in the
-/// prefer-list is a parse error (not a silent skip) so misconfigured
-/// entries surface immediately at startup rather than producing
-/// surprising selection results at run time.
-pub(super) fn parse_prefer_runners(config: Option<&LoadedConfig>) -> Result<Vec<TaskRunner>> {
-    let Some(loaded) = config else {
-        return Ok(Vec::new());
-    };
-    let raw = &loaded.config.task_runner.prefer;
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::with_capacity(raw.len());
-    for entry in raw {
-        let trimmed = entry.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let runner = TaskRunner::from_label(trimmed).ok_or_else(|| {
-            anyhow!(
-                "[task_runner].prefer: unknown runner {trimmed:?}; expected one of {}",
-                join_labels(TaskRunner::all().iter().map(|r| r.label())),
-            )
-        })?;
-        out.push(runner);
-    }
-    Ok(out)
-}
-
 /// Resolve a `[tasks]` label to the [`TaskSource`]s it names, most-native
 /// first. The label vocabulary is unified across the three kinds a user might
 /// reach for, tried in order of richest mapping:

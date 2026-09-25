@@ -152,7 +152,6 @@ struct Overrides {
     explain: bool,
     fallback: FallbackPolicy,
     failure_policy: FailurePolicy,
-    install_pms: Vec<PackageManager>,
     no_warnings: bool,
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
@@ -419,12 +418,12 @@ enum Severity {
 /// streams.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
-struct Diagnostic {
+pub(crate) struct Diagnostic {
     #[schemars(description = "Stable warning category (the warning's source subsystem).")]
     code: &'static str,
-    message: String,
+    pub(crate) message: String,
     severity: Severity,
-    source: Option<&'static str>,
+    pub(crate) source: Option<&'static str>,
     task: Option<String>,
 }
 
@@ -483,7 +482,7 @@ impl<'a> DoctorReport<'a> {
             .chain(node_pm.as_ref().map_or(&[][..], |d| &d.warnings))
             .map(diagnostic)
             .chain(plan_diagnostics)
-            .chain(mise_diagnostics(ctx))
+            .chain(provider_diagnostics(ctx, overrides))
             .collect();
 
         Self {
@@ -508,7 +507,7 @@ impl<'a> DoctorReport<'a> {
             overrides: overrides_report(overrides),
             ecosystems: ecosystems(ctx, overrides, &node_pm, resolve_shims),
             sources: sources(ctx),
-            tasks: tasks(ctx, &node_pm, overrides),
+            tasks: tasks(ctx, overrides),
             tools: tools(ctx, overrides, &node_pm),
             conflicts: conflicts(ctx, overrides, plan.as_ref().ok()),
             diagnostics,
@@ -583,7 +582,6 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         explain: overrides.explain,
         fallback: overrides.fallback,
         failure_policy: overrides.failure_policy,
-        install_pms: overrides.install_pms.clone(),
         no_warnings: overrides.no_warnings,
         on_collision: overrides.on_collision,
         output_grouping: OutputGrouping {
@@ -859,7 +857,7 @@ const fn confidence_for_step(step: &ResolutionStep) -> Confidence {
         ResolutionStep::Override(_)
         | ResolutionStep::ManifestPackageManager
         | ResolutionStep::ManifestDevEngines { .. }
-        | ResolutionStep::Lockfile => Confidence::High,
+        | ResolutionStep::Observed { .. } => Confidence::High,
         ResolutionStep::PathProbe { .. } => Confidence::Medium,
         ResolutionStep::LegacyNpmFallback => Confidence::Low,
     }
@@ -904,14 +902,8 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
         .collect()
 }
 
-fn tasks<'a>(
-    ctx: &'a ProjectContext,
-    node_pm: &Result<crate::resolver::ResolvedPm, crate::resolver::ResolveError>,
-    overrides: &ResolutionOverrides,
-) -> Vec<DoctorTask<'a>> {
-    let node_pm_label = node_pm.as_ref().ok().map(|d| d.pm.label());
-    let python_pm_label = resolve_python_pm(ctx, overrides).map(|d| d.pm.label());
-    let runtime = overrides.js_runtime();
+fn tasks<'a>(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Vec<DoctorTask<'a>> {
+    let prepared = crate::commands::run::core::prepare(ctx, overrides, "");
 
     // `anchor_file` walks the filesystem; resolve each distinct
     // (scope, source) pair once instead of once per task.
@@ -946,12 +938,20 @@ fn tasks<'a>(
             fqn: super::labels::fqn(task),
             is_alias: task.alias_of.is_some(),
             name: &task.name,
-            resolved: super::labels::resolved_command(
-                task,
-                runtime,
-                node_pm_label,
-                python_pm_label,
-            ),
+            resolved: prepared
+                .as_ref()
+                .ok()
+                .and_then(|prepared| {
+                    prepared
+                        .preview(ctx, overrides, &super::labels::fqn(task))
+                        .ok()
+                })
+                .and_then(|(_, dispatch)| match dispatch {
+                    runner_core::Dispatch::Plan(plan) => {
+                        Some(super::labels::planned_command(&plan))
+                    }
+                    runner_core::Dispatch::Builtin(_) => None,
+                }),
             scope: task.scope(),
             self_executable: false,
             source: anchors.get(&(task.scope(), task.source)).cloned().flatten(),
@@ -1159,8 +1159,8 @@ fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
         .map(|shadow| Conflict::InstallDirCollision {
             reason: format!(
                 "{} and {} both install into {}/; the package manager resolved for the ecosystem \
-                 installs it and the other is skipped. List both in `[install].pms` to run them \
-                 anyway.",
+                 installs it and the other is skipped. Enable both with `[tools.<name>].install = \
+                 true` to run them sequentially.",
                 shadow.winner.label(),
                 shadow.loser.label(),
                 shadow.dir,
@@ -1181,33 +1181,54 @@ fn display_depth(depth: usize) -> String {
     }
 }
 
-/// What mise itself reports about the project: declared tools that are not
-/// installed, and `mise tasks validate` findings. Runner relays these
-/// rather than re-implementing them.
-fn mise_diagnostics(ctx: &ProjectContext) -> Vec<Diagnostic> {
-    if !ctx.task_runners.contains(&TaskRunner::Mise) {
-        return Vec::new();
+/// Run the health checks declared by present providers.
+pub(crate) fn provider_diagnostics(
+    ctx: &ProjectContext,
+    overrides: &ResolutionOverrides,
+) -> Vec<Diagnostic> {
+    let tree = crate::commands::run::core::tree(ctx);
+    let policy = crate::commands::run::core::policy(overrides);
+    let project = match crate::commands::run::core::project_under(ctx, &policy) {
+        Ok(project) => project,
+        Err(error) => {
+            return vec![Diagnostic {
+                code: "observation",
+                message: error.to_string(),
+                severity: Severity::Warning,
+                source: None,
+                task: None,
+            }];
+        }
+    };
+    let mut diagnostics = Vec::new();
+    for present in &project.present {
+        let provider = runner_providers::REGISTRY
+            .by_id(present.provider)
+            .for_present(present);
+        for index in 0..provider.caps.health.len() {
+            let messages = match runner_core::health::check(
+                &tree,
+                &project,
+                &policy,
+                present,
+                index,
+                &runner_providers::REGISTRY,
+            ) {
+                Ok(runner_core::Health::Ok) => Vec::new(),
+                Ok(runner_core::Health::Problems(messages)) => messages,
+                Ok(runner_core::Health::Unreadable(message)) => vec![message],
+                Err(error) => vec![error.to_string()],
+            };
+            diagnostics.extend(messages.into_iter().map(|message| Diagnostic {
+                code: "health",
+                message,
+                severity: Severity::Warning,
+                source: Some(provider.label),
+                task: None,
+            }));
+        }
     }
-    let health = crate::tool::mise::health(&ctx.root);
-    let missing = health.missing_tools.iter().map(|tool| Diagnostic {
-        code: "mise",
-        message: format!("{tool} is declared but not installed; `runner install` installs it"),
-        severity: Severity::Warning,
-        source: Some("mise"),
-        task: None,
-    });
-    let issues = health.task_issues.into_iter().map(|issue| Diagnostic {
-        code: "mise",
-        message: format!("mise tasks validate: {}", issue.message),
-        severity: if issue.severity == "error" {
-            Severity::Warning
-        } else {
-            Severity::Info
-        },
-        source: Some("mise"),
-        task: Some(issue.task),
-    });
-    missing.chain(issues).collect()
+    diagnostics
 }
 
 fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
@@ -1259,16 +1280,16 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
 
     use super::{DoctorReport, rfc3339_utc};
     use crate::resolver::ResolutionOverrides;
     use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from("/tmp/test"),
-            root: PathBuf::from("/tmp/test"),
+        let root = crate::tool::test_support::project_root();
+        let ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
             package_managers: vec![PackageManager::Cargo],
             task_runners: Vec::new(),
             tasks,
@@ -1278,7 +1299,9 @@ mod tests {
             workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+        };
+        crate::tool::test_support::seed_context(&ctx);
+        ctx
     }
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -1373,7 +1396,7 @@ mod tests {
         assert_eq!(task["fqn"], "root:cargo-alias#t");
         assert_eq!(task["is_alias"], true);
         assert_eq!(task["definition"], "test");
-        assert_eq!(task["resolved"], "cargo test");
+        assert_eq!(task["resolved"], "cargo t");
         assert_eq!(task["source_pointer"], "alias.t");
         assert_eq!(task["dependencies"], serde_json::json!([]));
     }
@@ -1485,14 +1508,17 @@ mod tests {
 
         use crate::chain::FailurePolicy;
         use crate::resolver::ScriptPolicy;
-        use crate::types::PackageManager;
 
         let overrides = ResolutionOverrides {
             failure_policy: FailurePolicy::KeepGoing,
             group_output: false,
             github_group_parallel: false,
             parallel_grouped: true,
-            install_pms: vec![PackageManager::Npm, PackageManager::Pnpm],
+            tool_install: [
+                ("npm".into(), vec!["install".into()]),
+                ("pnpm".into(), Vec::new()),
+            ]
+            .into(),
             script_policy: ScriptPolicy::Deny,
             prefer_sources: vec![TaskSource::Justfile, TaskSource::CargoAliases],
             task_source_overrides: BTreeMap::from([(
@@ -1511,7 +1537,10 @@ mod tests {
         assert_eq!(ov["output_grouping"]["group_output"], false);
         assert_eq!(ov["output_grouping"]["github_group_parallel"], false);
         assert_eq!(ov["output_grouping"]["parallel_grouped"], true);
-        assert_eq!(ov["install_pms"], serde_json::json!(["npm", "pnpm"]));
+        assert_eq!(
+            ov["tool_install"],
+            serde_json::json!({"npm": ["install"], "pnpm": []})
+        );
         assert_eq!(ov["script_policy"], "deny");
         assert_eq!(
             ov["prefer_sources"],
@@ -1595,7 +1624,6 @@ mod tests {
             group_output,
             github_group_parallel,
             parallel_grouped,
-            install_pms,
             script_policy,
             on_collision,
             parent_group_open,

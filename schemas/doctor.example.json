@@ -40,7 +40,6 @@
     "explain": false,
     "failure_policy": "fail-fast",
     "fallback": "probe",
-    "install_pms": [],
     "no_warnings": false,
     "on_collision": "resolve",
     "on_mismatch": "warn",

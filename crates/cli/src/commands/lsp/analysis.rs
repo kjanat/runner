@@ -15,7 +15,6 @@ use lsp_types::{
 
 use super::schema_index::{FieldDoc, FieldType, SchemaIndex};
 use super::text::LineIndex;
-use crate::types::{PackageManager, TaskRunner, TaskSource};
 
 /// What the cursor is sitting on within its line.
 enum LineShape {
@@ -546,37 +545,21 @@ fn value_items(
 
 /// Code-driven value sets for fields the JSON Schema leaves open.
 fn code_values(section: &str, key: &str) -> Vec<(String, &'static str)> {
-    let label_vocab = || -> Vec<(String, &'static str)> {
-        let mut out: Vec<(String, &'static str)> = Vec::new();
-        let mut push = |value: String, detail: &'static str| {
-            if !out.iter().any(|(v, _)| *v == value) {
-                out.push((value, detail));
-            }
-        };
-        for runner in TaskRunner::all() {
-            push(runner.label().to_string(), "task runner");
-        }
-        for pm in PackageManager::all() {
-            push(pm.label().to_string(), "package manager");
-        }
-        for source in TaskSource::all() {
-            push(source.label().to_string(), "source");
-        }
-        out
+    let label_vocab = || {
+        runner_providers::REGISTRY
+            .iter()
+            .filter(|provider| {
+                provider.kind.intersects(runner_core::Kind::TASK_SOURCE)
+                    || provider.caps.run_task.is_some()
+            })
+            .map(|provider| (provider.label.to_owned(), "task provider"))
+            .collect()
     };
 
     match (section, key) {
         ("tasks", "prefer") | ("tasks.overrides", _) => label_vocab(),
         // `overrides.<task> = ...` as a dotted key inside `[tasks]`.
         ("tasks", key) if key.starts_with("overrides.") => label_vocab(),
-        ("task_runner", "prefer") => TaskRunner::all()
-            .iter()
-            .map(|r| (r.label().to_string(), "task runner"))
-            .collect(),
-        ("install", "pms") => PackageManager::all()
-            .iter()
-            .map(|pm| (pm.label().to_string(), "package manager"))
-            .collect(),
         ("chain", "keep_going" | "kill_on_fail")
         | ("github", "group_output" | "group_parallel")
         | ("parallel", "grouped") => {
@@ -737,12 +720,12 @@ mod tests {
     #[test]
     fn array_field_value_completion_wraps_the_first_element() {
         let schema = SchemaIndex::build();
-        let text = "[install]\npms = \n";
+        let text = "[tasks]\nprefer = \n";
         let items = completion(
             &LineIndex::new(text),
             &schema,
             text,
-            Position::new(1, 6),
+            Position::new(1, 9),
             None,
             false,
         );
@@ -753,12 +736,12 @@ mod tests {
     #[test]
     fn array_field_value_completion_inside_brackets_stays_bare() {
         let schema = SchemaIndex::build();
-        let text = "[install]\npms = [\n";
+        let text = "[tasks]\nprefer = [\n";
         let items = completion(
             &LineIndex::new(text),
             &schema,
             text,
-            Position::new(1, 7),
+            Position::new(1, 10),
             None,
             false,
         );
@@ -798,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_section_completion_is_tagged() {
+    fn removed_section_is_not_offered() {
         let schema = SchemaIndex::build();
         let text = "[\n";
         let items = completion(
@@ -809,15 +792,7 @@ mod tests {
             None,
             false,
         );
-        let item = items
-            .iter()
-            .find(|i| i.label == "task_runner")
-            .expect("task_runner item");
-        assert_eq!(
-            item.tags.as_deref(),
-            Some(&[lsp_types::CompletionItemTag::DEPRECATED][..]),
-            "{item:?}"
-        );
+        assert!(!items.iter().any(|item| item.label == "task_runner"));
     }
 
     #[test]
@@ -945,7 +920,7 @@ mod tests {
     #[test]
     fn array_field_key_completion_scaffolds_an_array_snippet() {
         let schema = SchemaIndex::build();
-        let text = "[install]\npm\n";
+        let text = "[tasks]\npr\n";
         let items = completion(
             &LineIndex::new(text),
             &schema,
@@ -954,10 +929,13 @@ mod tests {
             None,
             true,
         );
-        let pms = items.iter().find(|i| i.label == "pms").expect("pms item");
-        assert_eq!(pms.insert_text.as_deref(), Some("pms = [\"$0\"]"));
+        let prefer = items
+            .iter()
+            .find(|i| i.label == "prefer")
+            .expect("prefer item");
+        assert_eq!(prefer.insert_text.as_deref(), Some("prefer = [\"$0\"]"));
         assert_eq!(
-            pms.insert_text_format,
+            prefer.insert_text_format,
             Some(lsp_types::InsertTextFormat::SNIPPET)
         );
     }
@@ -1020,7 +998,7 @@ mod tests {
     #[test]
     fn without_snippet_support_key_completion_stays_plain() {
         let schema = SchemaIndex::build();
-        let text = "[install]\npm\n";
+        let text = "[tasks]\npr\n";
         let items = completion(
             &LineIndex::new(text),
             &schema,
@@ -1029,9 +1007,12 @@ mod tests {
             None,
             false,
         );
-        let pms = items.iter().find(|i| i.label == "pms").expect("pms item");
-        assert_eq!(pms.insert_text.as_deref(), Some("pms = "));
-        assert_eq!(pms.insert_text_format, None);
+        let prefer = items
+            .iter()
+            .find(|i| i.label == "prefer")
+            .expect("prefer item");
+        assert_eq!(prefer.insert_text.as_deref(), Some("prefer = "));
+        assert_eq!(prefer.insert_text_format, None);
     }
 
     #[test]

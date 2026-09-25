@@ -71,10 +71,8 @@ pub(super) fn try_selected_package(
     let Some(dir) = installed_dir(&ctx.cwd, package) else {
         return pnp_selected_package(ctx, overrides, package, bin, args);
     };
-    let manifest: Manifest = match std::fs::read_to_string(dir.join("package.json")) {
-        Ok(raw) => serde_json::from_str(&raw)?,
-        Err(_) => return Ok(None),
-    };
+    let manifest: Manifest =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("package.json"))?)?;
     let bin_path = declared_bin(package, bin, &manifest)?;
     let path = dir.join(&bin_path);
     if !path.is_file() {
@@ -109,7 +107,7 @@ fn pnp_selected_package(
     if !crate::tool::yarn::is_pnp(&ctx.root) {
         return Ok(None);
     }
-    let Some(bins) = crate::tool::yarn::accessible_bins(&ctx.root) else {
+    let Some(bins) = crate::tool::yarn::accessible_bins(&ctx.root)? else {
         return Ok(None);
     };
     let Some(found) = pnp_bin(&bins, package, bin)? else {

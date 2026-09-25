@@ -36,11 +36,15 @@ pub const PROVIDER: Provider = Provider {
             argv: t!["test", Args],
             discovery: Discovery::Tool,
         }),
-        clean: Some(CleanCap { dirs: &["target"] }),
+        clean: Some(CleanCap {
+            dir_suffixes: &[],
+            framework_dirs: &[],
+            dirs: &["target"],
+        }),
         quiet: QuietSupport::flag(t!["-q"]),
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::cargo_aliases::tasks),
     version: None,
     hooks: Hooks::NONE,
 };

@@ -90,11 +90,11 @@
       "additionalProperties": false
     },
     "InstallSection": {
-      "description": "`[install]` section, restrict which detected package managers\n`runner install` runs with. Absent or empty installs every detected\nPM (the default). Overridden by `RUNNER_INSTALL_PMS`.\n\nUnlike `[pm]` (which scopes *script dispatch* per ecosystem), this\nscopes the *install fan-out*: in a polyglot repo where both `bun` and\n`deno` would write `node_modules`, `pms = [\"bun\"]` keeps install to bun.",
+      "description": "Lifecycle-script and shared-directory policy for installation.",
       "type": "object",
       "properties": {
         "on_collision": {
-          "description": "What to do when two or more package managers in the install set write\nthe same directory (a node PM plus a `nodeModulesDir`-enabled Deno both\nmaterializing `node_modules/`). `\"resolve\"` (the default) installs with\none writer per directory and shadows the rest, the way a duplicate task\nname resolves to one source; listing several writers in `pms` is consent\nand runs them all, serialized over the shared tree. `\"error\"` refuses to\npick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.",
+          "description": "What to do when two or more package managers in the install set write\nthe same directory (a node PM plus a `nodeModulesDir`-enabled Deno both\nmaterializing `node_modules/`). `\"resolve\"` (the default) installs with\none writer per directory and shadows the rest, the way a duplicate task\nname resolves to one source. Explicit per-tool install operations retain\nmultiple writers and serialize their execution. `\"error\"` refuses to\npick and fails instead. Overridden by `RUNNER_INSTALL_ON_COLLISION`.",
           "default": "resolve",
           "type": [
             "null",
@@ -106,20 +106,14 @@
             null
           ]
         },
-        "pms": {
-          "description": "Allowlist of package-manager labels to install with, e.g.\n`[\"bun\"]`. Each must be a detected PM or `runner install` errors.\nEmpty = install with every detected PM.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
         "scripts": {
-          "description": "Lifecycle-script policy for the install. `\"deny\"` skips lifecycle\nscripts wherever the package manager exposes a skip mechanism\n(npm/yarn/pnpm/bun `--ignore-scripts`, composer `--no-scripts`,\nyarn-berry `YARN_ENABLE_SCRIPTS=false`; deno already denies by\ndefault), warning for the managers that cannot. `\"allow\"` forces\nscripts on wherever a manager can express it (npm `--no-ignore-scripts`,\nyarn-berry `YARN_ENABLE_SCRIPTS=true`, deno `--allow-scripts`); managers\nthat already run scripts by default are satisfied without a flag, while\nbun and pnpm (>=10) warn because re-enabling their dependency build\nscripts needs a manifest allowlist (`trustedDependencies` /\n`onlyBuiltDependencies`) runner won't write. Absent leaves every manager\nat its default. Overridden by `RUNNER_INSTALL_SCRIPTS`, then the\n`--no-scripts` / `--scripts` flags.",
+          "description": "What an install does with lifecycle scripts.",
           "type": [
             "null",
             "string"
           ],
           "enum": [
+            "default",
             "deny",
             "allow",
             null
@@ -271,7 +265,7 @@
       "type": "object",
       "properties": {
         "js": {
-          "description": "JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the\nruntime to the detected package manager, the behaviour before this\nkey existed.",
+          "description": "The JavaScript runtime scripts and files run on.",
           "type": [
             "null",
             "string"
@@ -282,22 +276,6 @@
             "deno",
             null
           ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "TaskRunnerSection": {
-      "description": "`[task_runner]` section, **deprecated**. Use `[tasks]` instead.\n\nKept for backward compatibility: existing `[task_runner].prefer` files\nkeep working (and emit a deprecation warning), but `[tasks].prefer` is the\nsupported successor, rank-only and able to name package managers, not just\ntask runners.",
-      "deprecated": true,
-      "type": "object",
-      "properties": {
-        "prefer": {
-          "description": "**Deprecated, use `[tasks].prefer` instead** (rank-only, and accepts\npackage managers like `bun`, not just task runners). Migration:\n`[task_runner].prefer = [\"turbo\"]` → `[tasks].prefer = [\"turbo\"]`.\n\nLegacy behavior, still honored: a ranked preference list that\n*restricts* candidates to runners in the list (in listed order); a\nsame-named task under a runner not in the list is hard-rejected.\nValid values: `turbo`, `nx`, `make`, `just`, `task`, `mise`, `bacon`.",
-          "deprecated": true,
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         }
       },
       "additionalProperties": false
@@ -474,7 +452,7 @@
           }
         },
         "prefer": {
-          "description": "Global tie-break order for ambiguous task names, highest priority\nfirst. Listed sources win over unlisted ones (which still run as\nlower-priority fallbacks). E.g. `prefer = [\"turbo\", \"bun\"]` makes a\n`turbo` task win, then a `package.json` script, then everything else.",
+          "description": "The task source that wins a same-named task.",
           "type": "array",
           "items": {
             "type": "string",
@@ -533,14 +511,14 @@
       "type": "object",
       "properties": {
         "env": {
-          "description": "Variables set on every invocation of this tool.",
+          "description": "Variables one tool's commands get.",
           "type": "object",
           "additionalProperties": {
             "type": "string"
           }
         },
         "install": {
-          "description": "Which of the tool's operations `runner install` runs, in order.\n\n`true` is `[\"install\"]`, `false` is `[]`, and a bare string is a\none-element list. Only mise defines more than one operation today\n(`install` and `bootstrap`).",
+          "description": "The operations a tool manager runs on install.",
           "anyOf": [
             {
               "$ref": "#/$defs/ToolInstall"
@@ -617,7 +595,7 @@
       "default": {}
     },
     "env": {
-      "description": "`[env]`, variables set on every process runner spawns in this project.",
+      "description": "Variables every command gets.",
       "type": "object",
       "additionalProperties": {
         "type": "string"
@@ -650,7 +628,7 @@
     },
     "pm": {
       "$ref": "#/$defs/PmSection",
-      "description": "`[pm]`, per-ecosystem package-manager overrides.",
+      "description": "The package manager that installs and runs scripts, per ecosystem.",
       "default": {}
     },
     "resolution": {
@@ -666,11 +644,6 @@
     "runtime": {
       "$ref": "#/$defs/RuntimeSection",
       "description": "`[runtime]`, which JS runtime executes tasks and local files.",
-      "default": {}
-    },
-    "task_runner": {
-      "$ref": "#/$defs/TaskRunnerSection",
-      "description": "`[task_runner]`, task-runner preferences. Deprecated; superseded by `[tasks]`.",
       "default": {}
     },
     "tasks": {

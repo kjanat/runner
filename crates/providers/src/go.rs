@@ -48,11 +48,15 @@ pub const PROVIDER: Provider = Provider {
             argv: t!["test", "./...", Args],
             discovery: Discovery::Tool,
         }),
-        clean: Some(CleanCap { dirs: &["vendor"] }),
+        clean: Some(CleanCap {
+            dir_suffixes: &[],
+            framework_dirs: &[],
+            dirs: &["vendor"],
+        }),
         quiet: QuietSupport::unsupported("go run has no host-only quiet mode"),
         ..Capabilities::NONE
     },
-    tasks: None,
+    tasks: Some(crate::extract::go_pm::tasks),
     version: None,
     hooks: Hooks::NONE,
 };

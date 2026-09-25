@@ -515,7 +515,11 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let runner = |dir: &std::path::Path| {
-            words(crate::python::test_runner(dir).expect("unittest is the floor"))
+            words(
+                crate::python::test_runner(dir)
+                    .unwrap()
+                    .expect("unittest is the floor"),
+            )
         };
 
         assert_eq!(runner(&dir), ["run", "python", "-m", "unittest"]);

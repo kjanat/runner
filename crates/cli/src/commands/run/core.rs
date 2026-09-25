@@ -1,13 +1,8 @@
-//! The current detector's answers as the core's types.
-//!
-//! Detection does not record where it found each signal yet, so a provider
-//! it reports carries one `Weight::Present` at the project root: the fact
-//! that the detector concluded the provider is part of this tree. Step 7
-//! replaces this module with `observe`.
+//! CLI invocation inputs for observation, resolution and planning.
 
 use runner_core::{
-    Choice, Ecosystem as CoreEcosystem, Evidence, Layer, PerEcosystem, Policy, Present, Project,
-    ProviderId, Scope, SignalId, Task as CoreTask, Tree, Verbosity, Weight,
+    Choice, Ecosystem as CoreEcosystem, Layer, PerEcosystem, Policy, Project, ProviderId, Scope,
+    Task as CoreTask, Tree, Verbosity,
 };
 use runner_providers::REGISTRY;
 
@@ -48,105 +43,13 @@ pub(crate) fn tree(ctx: &ProjectContext) -> Tree {
     }
 }
 
-/// The core's view of what the detector found, plus every provider policy
-/// named. A provider the user named is part of the project whether or not
-/// detection saw it; a missing binary fails at the spawn, naming itself.
+/// Observe provider facts in every scope before resolving policy.
 pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::Result<Project> {
-    let mut found = project(ctx);
-    let chosen: Vec<&Choice> = policy
-        .runtime
-        .iter()
-        .chain(policy.pm.0.values())
-        .chain(policy.runner.iter())
-        .collect();
-    for choice in chosen {
-        if found.present.iter().any(|seen| seen.provider == choice.id) {
-            continue;
-        }
-        if REGISTRY.by_id(choice.id).program.is_none() {
-            continue;
-        }
-        found.present.insert(
-            0,
-            Present {
-                provider: choice.id,
-                scope: Scope::Root,
-                version: None,
-                bin_dirs: Vec::new(),
-                because: vec![Evidence {
-                    provider: Some(choice.id),
-                    signal: Some(SignalId(0)),
-                    at: ctx.root.clone(),
-                    scope: Scope::Root,
-                    weight: Weight::Declared,
-                    declared: None,
-                }],
-            },
-        );
-    }
     let tree = tree(ctx);
-    let mut evidence: Vec<_> = found
-        .present
-        .iter()
-        .flat_map(|p| p.because.iter().cloned())
-        .collect();
-    let observed = evidence.len();
-    runner_core::observe::derive(&tree, &REGISTRY, &mut evidence)?;
-    for evidence in evidence.into_iter().skip(observed) {
-        if let Some(present) = found
-            .present
-            .iter_mut()
-            .find(|p| Some(p.provider) == evidence.provider && p.scope == evidence.scope)
-        {
-            present.because.push(evidence);
-        }
-    }
-    found.refresh_bins(&tree, &REGISTRY);
-    Ok(found)
-}
-
-/// The core's view of what the detector found.
-fn project(ctx: &ProjectContext) -> Project {
-    let mut present: Vec<Present> = Vec::new();
-    let mut add = |id: ProviderId| {
-        if present.iter().any(|seen| seen.provider == id) {
-            return;
-        }
-        present.push(Present {
-            provider: id,
-            scope: Scope::Root,
-            version: None,
-            bin_dirs: Vec::new(),
-            because: vec![Evidence {
-                provider: Some(id),
-                signal: Some(SignalId(0)),
-                at: ctx.root.clone(),
-                scope: Scope::Root,
-                weight: Weight::Present,
-                declared: None,
-            }],
-        });
-    };
-    for pm in &ctx.package_managers {
-        if let Some(id) = provider(pm.label()) {
-            add(id);
-        }
-    }
-    for runner in &ctx.task_runners {
-        if let Some(id) = provider(runner.label()) {
-            add(id);
-        }
-    }
-    for task in &ctx.tasks {
-        if let Some(id) = source_provider(task.source) {
-            add(id);
-        }
-    }
-    Project {
-        present,
-        tasks: ctx.tasks.iter().filter_map(task).collect(),
-        warnings: Vec::new(),
-    }
+    let evidence = runner_core::observe::observe(&tree, &REGISTRY)?;
+    let mut project = runner_core::resolve::resolve_presence(&tree, evidence, policy, &REGISTRY)?;
+    project.tasks = ctx.tasks.iter().filter_map(task).collect();
+    Ok(project)
 }
 
 /// The core's view of one task.
@@ -165,7 +68,7 @@ pub(crate) fn task(task: &Task) -> Option<CoreTask> {
         description: task.description.clone(),
         alias_of: task.alias_of.clone(),
         forwards_to: task.passthrough_to.and_then(|to| provider(to.label())),
-        detail: runner_core::TaskDetail::default(),
+        detail: task.detail.clone(),
     })
 }
 
@@ -283,20 +186,8 @@ pub(crate) fn prepare(
 ) -> Result<Prepared, runner_core::Refusal> {
     let tree = tree(ctx);
     let mut policy = policy(overrides);
-    let node = crate::resolver::Resolver::new(ctx, overrides).resolve_node_pm();
-    if let Ok(decision) = &node
-        && let Some(id) = provider(decision.pm.label())
-    {
-        policy
-            .pm
-            .0
-            .entry(ecosystem_of(decision.pm.ecosystem()))
-            .or_insert(Choice {
-                id,
-                from: Layer::Probe,
-            });
-    }
     let project = project_under(ctx, &policy)?;
+    let node = crate::resolver::Resolver::new(ctx, overrides).resolve_node_pm_in(&project);
     let key = if BUILTINS.contains(&token) {
         token.to_owned()
     } else {
@@ -340,17 +231,76 @@ impl Prepared {
     pub(crate) fn preview(
         &self,
         ctx: &ProjectContext,
+        overrides: &ResolutionOverrides,
         token: &str,
     ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
         let mut policy = self.policy.clone();
         policy.reach = runner_core::ReachPolicy::Allow;
+        let key = match self.selected(ctx, token) {
+            Ok(selected) => selected.map_or_else(|| token.to_owned(), super::task_output_key),
+            Err(runner_core::Refusal::NotFound { .. } | runner_core::Refusal::Ambiguous { .. }) => {
+                token.to_owned()
+            }
+            Err(error) => return Err(error),
+        };
+        let requested = overrides.host_verbosity_for(&key);
+        policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
+        policy.verbosity = match requested.diagnostics {
+            crate::tool::HostDiagnostics::Normal => Verbosity::Normal,
+            crate::tool::HostDiagnostics::Quiet => Verbosity::Quiet,
+            crate::tool::HostDiagnostics::Reduced => Verbosity::VeryQuiet,
+        };
         let dep = |name: &str| {
-            super::local_dep::installed_binary(ctx, name)
-                .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))
+            super::local_dep::installed_binary(ctx, name).map_err(|error| {
+                match error.downcast::<std::io::Error>() {
+                    Ok(error) => error.into(),
+                    Err(error) => runner_core::Refusal::Invalid(error.to_string()),
+                }
+            })
         };
         let mut cascade = self.cascade(&dep, None);
         cascade.policy = &policy;
-        runner_core::dispatch(&cascade, token, &[])
+        let (rung, mut dispatch) = runner_core::dispatch(&cascade, token, &[])?;
+        if let runner_core::Dispatch::Plan(plan) = &mut dispatch {
+            let entry = if rung.name == "task" {
+                self.selected(ctx, token)?
+            } else {
+                None
+            };
+            self.validate_task(entry, overrides)?;
+            let mut warnings = std::collections::HashSet::new();
+            super::dispatch::complete_plan(
+                ctx,
+                overrides,
+                token,
+                &[],
+                rung,
+                entry,
+                &key,
+                plan,
+                Some(&mut warnings),
+            )
+            .map_err(|error| match error.downcast::<std::io::Error>() {
+                Ok(error) => error.into(),
+                Err(error) => runner_core::Refusal::Invalid(error.to_string()),
+            })?;
+        }
+        Ok((rung, dispatch))
+    }
+
+    pub(crate) fn validate_task(
+        &self,
+        entry: Option<&Task>,
+        overrides: &ResolutionOverrides,
+    ) -> Result<(), runner_core::Refusal> {
+        if entry.is_some_and(|task| task.source == TaskSource::PackageJson)
+            && overrides.runtime.is_none()
+        {
+            self.node
+                .as_ref()
+                .map_err(|error| runner_core::Refusal::Invalid(error.to_string()))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn cascade<'a>(
@@ -448,9 +398,10 @@ mod tests {
     use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from("/p"),
-            root: PathBuf::from("/p"),
+        let root = crate::tool::test_support::project_root();
+        let ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
             package_managers: vec![PackageManager::Pnpm],
             task_runners: vec![TaskRunner::Just],
             tasks,
@@ -460,7 +411,9 @@ mod tests {
             workspace: None,
             install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+        };
+        crate::tool::test_support::seed_context(&ctx);
+        ctx
     }
 
     fn task(name: &str, source: TaskSource) -> Task {
@@ -520,7 +473,7 @@ mod tests {
                 .iter()
                 .find(|p| p.provider == ProviderId::Pnpm)
                 .map(|p| p.bin_dirs.clone()),
-            Some(vec![PathBuf::from("/p/node_modules/.bin")])
+            Some(vec![ctx.root.join("node_modules/.bin")])
         );
     }
 
@@ -534,7 +487,7 @@ mod tests {
             dir: PathBuf::from("/p/apps/web"),
         };
         ctx.workspace = Some(crate::types::Workspace {
-            root: PathBuf::from("/p"),
+            root: ctx.root.clone(),
             kinds: Vec::new(),
             members: vec![std::sync::Arc::new(member)],
             current: None,
@@ -595,7 +548,7 @@ mod tests {
         let selected = runner_core::select(&cascade, "build").unwrap().unwrap();
         std::fs::write(ctx.root.join("package.json"), "{ invalid").unwrap();
         let metadata = prepared.selected(&ctx, "build").unwrap().unwrap();
-        assert!(prepared.preview(&ctx, "build").is_ok());
+        assert!(prepared.preview(&ctx, &overrides, "build").is_ok());
         assert!(super::prepare(&ctx, &overrides, "build").is_err());
         assert_eq!(super::task(metadata).as_ref(), Some(selected));
         assert_eq!(prepared.task_key, super::super::task_output_key(metadata));
@@ -621,7 +574,7 @@ mod tests {
         let overrides = ResolutionOverrides::default();
         for error in [
             super::prepare(&ctx, &overrides, "build")
-                .and_then(|p| p.preview(&ctx, "build"))
+                .and_then(|p| p.preview(&ctx, &overrides, "build"))
                 .unwrap_err(),
             super::prepare(&ctx, &overrides, "build")
                 .and_then(|p| p.selected(&ctx, "build"))

@@ -42,10 +42,6 @@ pub(super) fn compute(text: &str, index: &LineIndex) -> Vec<Diagnostic> {
         }
     };
 
-    for warning in config::deprecation_warnings(&config) {
-        out.push(warning_diagnostic(text, index, &warning));
-    }
-
     let loaded = LoadedConfig {
         path: PathBuf::from("runner.toml"),
         config,
@@ -185,18 +181,23 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_key_is_tagged() {
+    fn removed_section_is_an_unknown_key() {
         let found = diagnostics("[task_runner]\nprefer = [\"turbo\"]\n");
-        assert!(found.iter().any(|d| {
+        assert!(
+            found
+                .iter()
+                .any(|d| d.message.contains("unknown") && d.message.contains("task_runner"))
+        );
+        assert!(found.iter().all(|d| {
             d.tags
                 .as_ref()
-                .is_some_and(|tags| tags.contains(&DiagnosticTag::DEPRECATED))
+                .is_none_or(|tags| !tags.contains(&DiagnosticTag::DEPRECATED))
         }));
     }
 
     #[test]
     fn type_error_anchors_to_the_offending_value() {
-        let found = diagnostics("[install]\npms = \"bun\"\n");
+        let found = diagnostics("[tasks]\nprefer = \"bun\"\n");
         let diag = found
             .iter()
             .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))

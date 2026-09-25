@@ -1,7 +1,7 @@
 //! Shared types used across detection, commands, and tool modules.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -219,34 +219,7 @@ pub(crate) struct Task {
     pub detail: TaskDetail,
 }
 
-/// Structured facts about a task beyond name and description: its
-/// dependency edges, working directory, environment, and argument spec.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct TaskDetail {
-    /// Tasks that run before this one.
-    pub depends: Vec<String>,
-    /// Tasks that run after this one.
-    pub depends_post: Vec<String>,
-    /// Tasks this one waits for when they are already scheduled.
-    pub wait_for: Vec<String>,
-    /// Directory the tool runs the task in, when it differs from the
-    /// scope directory.
-    pub dir: Option<PathBuf>,
-    /// `KEY=VALUE` pairs the task sets.
-    pub env: Vec<String>,
-    /// Tool versions the task pins, keyed by tool.
-    pub tools: BTreeMap<String, String>,
-    /// Argument and flag spec in the tool's own language (mise: usage KDL).
-    pub usage: Option<String>,
-    /// Script file backing the task.
-    pub file: Option<String>,
-    /// Input globs for up-to-date checks.
-    pub sources: Vec<String>,
-    /// Output globs for up-to-date checks.
-    pub outputs: Vec<String>,
-    /// Timeout in the tool's own duration syntax.
-    pub timeout: Option<String>,
-}
+pub(crate) type TaskDetail = runner_core::TaskDetail;
 
 impl Task {
     /// Directory the task's config lives in: the member's directory, or
@@ -462,6 +435,8 @@ pub(crate) struct NodeVersion {
 /// churn output sites.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum DetectionWarning {
+    /// A finding from provider observation or planning.
+    Pipeline(runner_core::Warning),
     /// Manifest declaration (`packageManager` / `devEngines.packageManager`)
     /// disagrees with the detected lockfile. Declaration wins; the lockfile
     /// is likely stale.
@@ -593,7 +568,7 @@ impl DetectionWarning {
     /// (`{ "source": "...", "detail": "..." }`). Kept as `&'static str`
     /// so the JSON contract emitted by `doctor --json` stays byte-stable
     /// across the flat-struct → enum refactor.
-    pub(crate) const fn source(&self) -> &'static str {
+    pub(crate) fn source(&self) -> &'static str {
         match self {
             Self::PmMismatch { .. }
             | Self::DevEnginesBinaryMissing { .. }
@@ -601,6 +576,10 @@ impl DetectionWarning {
             | Self::UnparseablePackageManager { .. } => "package.json",
             Self::PathProbeFallback { .. } | Self::LegacyNpmFallbackUsed { .. } => "resolver",
             Self::TaskListUnreadable { source, .. } => source,
+            Self::Pipeline(warning) => match warning.provider {
+                Some(id) => runner_providers::REGISTRY.by_id(id).label,
+                None => "project",
+            },
             Self::InvalidEnvOverride { .. } => "env",
             Self::RuntimeNotApplied { .. } | Self::NodeRunSkipsLifecycle { .. } => "runtime",
             Self::UnknownConfigKey { .. } | Self::DeprecatedConfigKey { .. } => "runner.toml",
@@ -612,6 +591,7 @@ impl DetectionWarning {
     /// [`Display`]) to produce the full warning line.
     pub(crate) fn detail(&self) -> String {
         match self {
+            Self::Pipeline(warning) => warning.message.clone(),
             Self::PmMismatch {
                 declared,
                 field,

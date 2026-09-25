@@ -10,13 +10,14 @@ pub const PROVIDER: Provider = Provider {
     ecosystem: Ecosystem::Python,
     kind: Kind::RUNTIME,
     program: Some(if cfg!(windows) { "python" } else { "python3" }),
-    signals: &[Signal::Probe(if cfg!(windows) {
-        "python"
-    } else {
-        "python3"
-    })],
+    signals: &[
+        Signal::File("setup.py"),
+        Signal::File("requirements.txt"),
+        Signal::Probe(if cfg!(windows) { "python" } else { "python3" }),
+    ],
     writes: &[],
     caps: Capabilities {
+        clean: Some(super::CLEAN),
         file_fallback: true,
         run_file: Some(RunFileCap {
             unsupported: &[],
