@@ -141,16 +141,13 @@ static FETCH_HELP: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Long-form `--runtime` help. Names each runtime's script runner and exec
-/// primitive, and the one behavioural difference between them a user cannot
-/// discover from the flag name.
+/// Long-form `--runtime` help: each runtime's script runner, file runner and
+/// exec primitive.
 static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
     [
         RUNTIME_HELP.as_str(),
         "",
-        "Selects the runtime a task's process tree executes on, separately from --pm. Each \
-         runtime brings its own script runner, file runner and package-exec primitive; no package \
-         manager is consulted:",
+        "Runs tasks, files and package execs on the named runtime instead of the package manager:",
         "",
         &format!(
             "  {}  node --run <task>     node <file>       npx",
@@ -165,18 +162,18 @@ static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
             cyan_str("deno")
         ),
         "",
-        "An explicit runtime also outranks a local file's #! line, so `--runtime bun ./cli.js` \
-         runs a node-shebanged file on bun.",
-        "",
-        "`node --run` does not execute pre/post lifecycle scripts, which npm run, bun run and \
-         deno task all do; runner warns when the dispatched task has one. Anything after `--` \
-         goes to the script and is never read as a node option.",
-        "",
-        "A task from a source that cannot select a runtime (make, just, Taskfile, turbo, cargo, \
-         …) warns instead of dropping the request silently.",
+        "It also outranks a local file's #! line.",
     ]
     .join("\n")
 });
+
+/// Help for the arguments after the task token.
+const ARGS_HELP: &str = concat!(
+    "Arguments forwarded to the task, or extra task names in chain mode. A make target accepts \
+     only ",
+    cyan!("NAME=value"),
+    " assignments"
+);
 
 /// Sort aliases after all real recipes in completion candidates by offsetting
 /// their display order beyond any realistic [`ProviderId::display_order`] value.
@@ -1594,6 +1591,29 @@ mod tests {
     }
 
     #[test]
+    fn no_help_text_prints_markdown() {
+        fn walk(command: &mut clap::Command, path: &str, leaks: &mut Vec<String>) {
+            for help in [command.render_help(), command.render_long_help()] {
+                leaks.extend(
+                    help.to_string()
+                        .lines()
+                        .filter(|line| line.contains('`') || line.contains("**"))
+                        .map(|line| format!("{path}: {line}")),
+                );
+            }
+            for sub in command.get_subcommands_mut() {
+                let path = format!("{path} {}", sub.get_name());
+                walk(sub, &path, leaks);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        let mut leaks = Vec::new();
+        walk(&mut command, "runner", &mut leaks);
+        assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+    }
+
+    #[test]
     fn schema_version_rejects_out_of_range_values() {
         let err = Cli::try_parse_from(["runner", "--schema-version", "99", "info"])
             .expect_err("schema version should be bounded by clap");
@@ -1812,7 +1832,8 @@ pub(crate) struct DetailedVersion {
     #[arg(
         long = "build-options",
         group = "version-selector",
-        group = "detailed-version"
+        group = "detailed-version",
+        help = concat!("Print detailed build information (alias for ", cyan!("--version"), ")"),
     )]
     pub build_options: bool,
 }
@@ -2002,6 +2023,14 @@ pub(crate) struct GlobalOpts {
             "Output policy, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq"),
             " [env: ", cyan!("RUNNER_QUIET"), "]"
         ),
+        long_help = concat!(
+            "Output policy, repeatable [env: ", cyan!("RUNNER_QUIET"), "=", cyan!("0"), "-", cyan!("4"), "]\n",
+            "\n",
+            "  ", cyan!("-q"), "     ", cyan!("1"), "  hide runner progress, groups, task timing and summary\n",
+            "  ", cyan!("-qq"), "    ", cyan!("2"), "  also hide warnings and ask the host to be quiet\n",
+            "  ", cyan!("-qqq"), "   ", cyan!("3"), "  also hide recoverable error decoration\n",
+            "  ", cyan!("-qqqq"), "  ", cyan!("4"), "  no runner-authored text"
+        ),
     )]
     pub quiet: u8,
 
@@ -2057,6 +2086,7 @@ pub(crate) enum Command {
             trailing_var_arg = true,
             allow_hyphen_values = true,
             add = ArgValueCandidates::new(chain_args_candidates),
+            help = ARGS_HELP,
         )]
         args: Vec<String>,
         /// Chain mode flags: `-s` / `-p`.
@@ -2078,7 +2108,14 @@ pub(crate) enum Command {
         json: bool,
         /// Restrict output to a single source (e.g. `package.json`,
         /// `Makefile`, `justfile`).
-        #[arg(long, value_name = "SOURCE")]
+        #[arg(
+            long,
+            value_name = "SOURCE",
+            help = concat!(
+                "Restrict output to a single source (e.g. ",
+                cyan!("package.json"), ", ", cyan!("Makefile"), ", ", cyan!("justfile"), ")"
+            ),
+        )]
         source: Option<String>,
     },
 
@@ -2105,14 +2142,27 @@ pub(crate) enum Command {
         scripts: bool,
         /// Skip the toolchain step (`mise install`) that otherwise runs first
         /// when a mise config is detected
-        #[arg(long = "no-tools", display_order = help_order::COMMAND + 3)]
+        #[arg(
+            long = "no-tools",
+            display_order = help_order::COMMAND + 3,
+            help = concat!(
+                "Skip the toolchain step (", cyan!("mise install"),
+                ") that otherwise runs first when a mise config is detected"
+            ),
+        )]
         no_tools: bool,
         /// Optional task names to run after install completes. Sequential by
         /// default; `-p` runs them concurrently once install finishes (install
         /// itself always runs first, never as a parallel sibling). Plain
         /// positional (no `trailing_var_arg`) so chain flags placed after the
         /// task list still parse as flags, not task names.
-        #[arg(add = ArgValueCandidates::new(task_candidates))]
+        #[arg(
+            add = ArgValueCandidates::new(task_candidates),
+            help = concat!(
+                "Tasks to run after install, in sequence; ", cyan!("-p"),
+                " runs them concurrently once install finishes"
+            ),
+        )]
         tasks: Vec<String>,
         /// Chain mode flags `-s`/`-p`, govern the post-install tasks only.
         #[command(flatten)]
@@ -2129,14 +2179,20 @@ pub(crate) enum Command {
         #[arg(short, long)]
         yes: bool,
         /// Include framework-specific Node build dirs like `.next`
-        #[arg(long)]
+        #[arg(
+            long,
+            help = concat!("Include framework-specific Node build dirs like ", cyan!(".next")),
+        )]
         include_framework: bool,
     },
 
     /// Deprecated alias for `list`, hidden, prints a warning, then
     /// renders the task list. Bare `runner` still shows the project
     /// dashboard; only the explicit `info` verb is deprecated.
-    #[command(hide = true)]
+    #[command(
+        hide = true,
+        about = concat!("Deprecated alias for ", cyan!("list"))
+    )]
     Info {
         /// Emit JSON instead of human-readable output.
         #[arg(long)]
@@ -2160,6 +2216,7 @@ pub(crate) enum Command {
     },
 
     /// Manage the project `runner.toml`
+    #[command(about = concat!("Manage the project ", cyan!("runner.toml")))]
     Config {
         /// Config action: `init`, `show`, `validate`, `path`.
         #[command(subcommand)]
@@ -2170,7 +2227,13 @@ pub(crate) enum Command {
     Completions {
         /// Target shell, bare name (`zsh`) or full path (`/usr/bin/zsh`).
         /// Defaults to `$SHELL`.
-        #[arg(value_parser = crate::commands::parse_shell_arg)]
+        #[arg(
+            value_parser = crate::commands::parse_shell_arg,
+            help = concat!(
+                "Target shell, bare name (", cyan!("zsh"), ") or full path (",
+                cyan!("/usr/bin/zsh"), "); defaults to ", cyan!("$SHELL")
+            ),
+        )]
         shell: Option<Shell>,
 
         /// Write the completion script to <PATH> instead of stdout. Any
@@ -2296,6 +2359,7 @@ pub(crate) struct RunAliasCli {
         trailing_var_arg = true,
         allow_hyphen_values = true,
         add = ArgValueCandidates::new(chain_args_candidates),
+        help = ARGS_HELP,
     )]
     pub args: Vec<String>,
 

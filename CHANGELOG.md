@@ -297,6 +297,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Fixed
 
+- `run test` with no `test` task tries the next present test runner when one
+  finds no test files. A Go module with a `package.json` runs `go test ./...`
+  instead of refusing for want of `*.test.js` files.
+
 - `--frozen` refuses before spawning a package manager whose lockfile is
   absent, naming the directory and the lockfiles it accepts: npm takes
   `npm-shrinkwrap.json` as well, and Deno the file its config names with

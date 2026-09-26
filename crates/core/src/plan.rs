@@ -390,7 +390,12 @@ pub fn plan(
             {
                 return Err(refusal);
             }
-            Err(refusal @ Refusal::NoCapability { .. }) => last = Some(refusal),
+            Err(refusal @ (Refusal::NoTests { .. } | Refusal::NoCapability { .. }))
+                if !matches!(last, Some(Refusal::NoTests { .. })) =>
+            {
+                last = Some(refusal);
+            }
+            Err(Refusal::NoTests { .. } | Refusal::NoCapability { .. }) => {}
             Err(refusal) => return Err(refusal),
         }
     }
@@ -1523,9 +1528,8 @@ fn unread_source(cascade: &Cascade<'_>) -> Result<(), Refusal> {
     )))
 }
 
-/// The built-in test runner, when `test` names no task. A runner that finds
-/// no tests stops the cascade; only a project without a runner falls
-/// through.
+/// The built-in test runner, when `test` names no task. When no runner finds
+/// tests the cascade stops; only a project without a runner falls through.
 fn test_rung(
     cascade: &Cascade<'_>,
     token: &str,
@@ -2564,6 +2568,12 @@ mod tests {
                     reach: Reach::Network,
                     accepts: NameShape::PATH_LIKE.union(NameShape::VERSIONED),
                 }),
+                test: Some(TestCap {
+                    program: None,
+                    argv: t!["test", "./...", Args],
+                    discovery: Discovery::Tool,
+                    file_flags: None,
+                }),
                 ..Capabilities::NONE
             },
             tasks: None,
@@ -3282,6 +3292,43 @@ mod tests {
             matches!(outcome, Err(Refusal::NoTests { .. })),
             "an empty discovery stops the cascade: {outcome:?}"
         );
+    }
+
+    #[test]
+    fn a_runner_without_tests_yields_to_the_next_ecosystem() {
+        let dir = TempDir::new("polyglot-test");
+        let registry = Registry(FAKES);
+        let project = Project {
+            present: vec![
+                present(ProviderId::Npm, Weight::Locked),
+                present(ProviderId::Go, Weight::Locked),
+            ],
+            ..Project::default()
+        };
+        let tree = Tree {
+            cwd: dir.path().to_path_buf(),
+            root: dir.path().to_path_buf(),
+            members: Vec::new(),
+        };
+        let made = plan(
+            &tree,
+            &project,
+            &Policy::default(),
+            &Op::Test { args: &[] },
+            &registry,
+        )
+        .expect("go test runs when node finds no test files");
+        assert_eq!(words(&made), ["go", "test", "./..."]);
+        fs::write(dir.path().join("test.js"), "").expect("file");
+        let made = plan(
+            &tree,
+            &project,
+            &Policy::default(),
+            &Op::Test { args: &[] },
+            &registry,
+        )
+        .expect("node --test over the file");
+        assert_eq!(words(&made), ["node", "--test", "test.js"]);
     }
 
     #[test]

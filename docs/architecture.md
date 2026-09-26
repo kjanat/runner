@@ -322,8 +322,10 @@ cascade rungs. When a task source has no present package manager to run it,
 resolution takes the first supporting one on `PATH` in `probe_priority` order,
 unless policy is strict. A provider is shaped for the op before its
 `before_plan` hook runs, so a hook can only refuse an op the provider could
-take. A test runner whose discovery finds nothing refuses as `NoTests` and the
-cascade stops there; only a project without a test runner falls through.
+take. A test runner whose discovery finds nothing refuses as `NoTests`, and
+the next present runner in candidate order is planned instead. When no runner
+finds tests the first `NoTests` stops the cascade; only a project without a
+test runner falls through.
 
 ```rust
 pub struct InstallCap {
@@ -1010,18 +1012,14 @@ Steps, each a pull request with the suite green at the end:
 8. Delete every `tool::*` free function the registry no longer calls. At
    this point `cli` contains no tool name.
 
-## 11. Open questions
+## 11. Settled questions
 
-- `ProviderId` as one enum, or keep three enums and index all into the
-  registry. One enum is simpler and matches the kinds-as-set model.
-- Provider data as Rust statics, or TOML embedded at build time. Statics
-  type-check the templates. TOML would let a user add a provider without a
-  build.
-- Polyglot `run test`: first present ecosystem by weight, every ecosystem in
-  sequence, or refuse as `Ambiguous` and ask for `test:cargo`.
-- Whether `Scope` needs a third variant for a nested workspace, a member
-  that is itself a workspace root.
-- Which schemes ship on day one. Ruby and Composer can start as `Unknown`.
-- Whether `providers` is one crate or one crate per ecosystem. One crate
-  keeps the registry a single array. Per ecosystem lets a build drop Ruby
-  and PHP for a smaller binary.
+- `ProviderId` is one enum. Kinds are a set on each provider.
+- Provider data is Rust statics, so the templates type-check.
+- Polyglot `run test` plans the present runners in candidate order: policy
+  choices first, then by scope and ecosystem. A runner that finds no tests
+  yields to the next.
+- `Scope` has two variants. A directory that declares a workspace is the root
+  when invoked inside it and a member when invoked from an outer workspace.
+- The Node scheme ships. Other ecosystems check no versions.
+- `providers` is one crate, and the registry is a single array.
