@@ -631,10 +631,10 @@ fn explain_host(
     if let Some(provider) = plan.provider {
         let descriptor = runner_providers::REGISTRY.by_id(provider);
         let quiet = host_quiet(project, provider, &plan.scope);
-        let applied = requested.diagnostics.min(if quiet.strongest() == 0 {
-            tool::HostDiagnostics::Normal
-        } else {
-            tool::HostDiagnostics::Reduced
+        let applied = requested.diagnostics.min(match quiet.strongest() {
+            0 => tool::HostDiagnostics::Normal,
+            1 => tool::HostDiagnostics::Quiet,
+            _ => tool::HostDiagnostics::Reduced,
         });
         let quiet_args = quiet
             .at(verbosity.index())
@@ -672,7 +672,8 @@ fn host_quiet(
 }
 
 /// The arrow label for a plan: the program plus the literal words it puts
-/// before the name, which is how every exec primitive reads out loud.
+/// before the name or the file it found, which is how every exec primitive
+/// reads out loud.
 fn plan_label(plan: &runner_core::Plan, name: &str) -> String {
     let mut words: Vec<String> = Vec::new();
     let mut argv = plan.argv.iter().map(|word| word.to_string_lossy());
@@ -691,7 +692,13 @@ fn plan_label(plan: &runner_core::Plan, name: &str) -> String {
         return String::from("exec");
     }
     for word in argv {
-        if word == name || word.starts_with('-') {
+        if word == name
+            || word.starts_with('-')
+            || plan
+                .found
+                .as_deref()
+                .is_some_and(|found| found == std::path::Path::new(word.as_ref()))
+        {
             break;
         }
         words.push(word.into_owned());
@@ -865,6 +872,28 @@ mod tests {
             described.starts_with("uv via ") && described.ends_with("uv.lock"),
             "{described}"
         );
+    }
+
+    #[test]
+    fn a_plan_label_stops_at_the_file_it_found() {
+        let found = std::path::PathBuf::from("/project/main.ts");
+        let plan = runner_core::Plan {
+            provider: Some(runner_core::ProviderId::Deno),
+            found: Some(found.clone()),
+            argv: vec!["deno".into(), "run".into(), found.into(), "secret".into()],
+            cwd: "/project".into(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            path_prepend: Vec::new(),
+            trust: runner_core::Trust::Project,
+            reach: runner_core::Reach::Local,
+            clamps: Vec::new(),
+            warnings: Vec::new(),
+            because: Vec::new(),
+            decided_by: Vec::new(),
+            scope: runner_core::Scope::Root,
+        };
+        assert_eq!(super::plan_label(&plan, "main.ts"), "deno run");
     }
 
     fn manifest_decision() -> PmDecision {

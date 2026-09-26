@@ -41,6 +41,23 @@ impl Observed {
         decide(&self.tree, &self.project, &self.policy, source)
     }
 
+    /// The task of `group` that `runner run` selects under this invocation's
+    /// policy, `None` when it selects none of them.
+    pub(crate) fn winner<'a>(
+        &self,
+        ctx: &'a crate::types::ProjectContext,
+        group: &[&'a crate::types::Task],
+    ) -> Option<&'a crate::types::Task> {
+        let token = ctx.spelling(group.first()?);
+        let selected =
+            super::core::selected_in(ctx, &self.tree, &self.project, &self.policy, &token)
+                .ok()??;
+        group
+            .iter()
+            .copied()
+            .find(|task| std::ptr::eq(*task, selected))
+    }
+
     /// What the manifest in the invocation scope declares for `source`'s package manager.
     pub(crate) fn manifest_declaration(&self, source: ProviderId) -> Option<ManifestDeclaration> {
         let scope = runner_core::plan::scope_at(&self.tree, &self.tree.cwd);

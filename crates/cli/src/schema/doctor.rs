@@ -492,7 +492,7 @@ impl<'a> DoctorReport<'a> {
             sources: sources(ctx),
             tasks: tasks(ctx, overrides),
             tools: tools(ctx, &decisions),
-            conflicts: conflicts(ctx, overrides, plan.as_ref().ok()),
+            conflicts: conflicts(ctx, overrides, observed.as_ref().ok(), plan.as_ref().ok()),
             diagnostics,
             resolution: resolution_policy(),
         }
@@ -1231,6 +1231,7 @@ fn probe_tool_version(binary: &Path) -> Option<String> {
 fn conflicts(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
+    observed: Option<&Observed>,
     plan: Option<&InstallPlan>,
 ) -> Vec<Conflict> {
     // Grouped per scope: root and member tasks sharing a name are not in
@@ -1247,17 +1248,30 @@ fn conflicts(
         .into_iter()
         .filter(|(_, group)| group.len() > 1)
         .map(|((_, name), group)| {
-            let selected = select_task_entry(ctx, overrides, &group);
+            let ranked = select_task_entry(ctx, overrides, &group);
+            let selected = observed
+                .and_then(|observed| observed.winner(ctx, &group))
+                .unwrap_or(ranked);
             let fqn_of = |task: &Task| super::labels::fqn(task);
-            Conflict::DuplicateTaskName {
-                reason: format!(
+            let reason = if std::ptr::eq(selected, ranked) {
+                format!(
                     "{count} sources define `{name}`; lowest (source_priority={priority}, \
                      source_depth={depth}, display_order={order}, alias-last) key wins",
                     count = group.len(),
                     priority = source_priority(overrides, selected.source),
                     depth = display_depth(source_depth(ctx, selected.source)),
                     order = selected.source.display_order(),
-                ),
+                )
+            } else {
+                format!(
+                    "{count} sources define `{name}`; the runner or package-manager choice \
+                     selects {source}",
+                    count = group.len(),
+                    source = selected.source.label(),
+                )
+            };
+            Conflict::DuplicateTaskName {
+                reason,
                 selected: fqn_of(selected),
                 selector: selected.display_name().into_owned(),
                 severity: Severity::Info,

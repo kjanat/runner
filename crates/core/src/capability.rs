@@ -368,21 +368,22 @@ impl QuietSupport {
         }
     }
 
-    /// One flag for every quiet level.
+    /// One flag at the quiet level, which [`Self::at`] also answers stronger
+    /// requests with.
     #[must_use]
     pub const fn flag(template: Template) -> Self {
         Self {
-            levels: [None, Some(template), Some(template), Some(template)],
+            levels: [None, Some(template), None, None],
             stream: None,
             limitation: "no stronger task-output-preserving reduction",
         }
     }
 
-    /// One flag for every quiet level plus a stream switch.
+    /// [`Self::flag`] plus a stream switch.
     #[must_use]
     pub const fn flag_with_stream(template: Template, stream: Template) -> Self {
         Self {
-            levels: [None, Some(template), Some(template), Some(template)],
+            levels: [None, Some(template), None, None],
             stream: Some(stream),
             limitation: "no stronger task-output-preserving reduction",
         }

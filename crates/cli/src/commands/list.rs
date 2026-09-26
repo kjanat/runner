@@ -120,6 +120,7 @@ fn format_conflicts(
     // Grouped per bare-name scope: the tasks a bare name reaches from here
     // (the root's and the current member's) share one group, every other
     // member is its own group, since those stay reachable as `member:name`.
+    let observed = crate::commands::run::decision::Observed::observe(ctx, overrides).ok();
     let mut by_name: BTreeMap<(&str, &str), Vec<&Task>> = BTreeMap::new();
     for task in &ctx.tasks {
         let scope = if ctx.is_local(task) { "" } else { task.scope() };
@@ -138,7 +139,10 @@ fn format_conflicts(
             if group.iter().map(|t| t.source).collect::<HashSet<_>>().len() < 2 {
                 return None;
             }
-            let winner = crate::commands::run::select_task_entry(ctx, overrides, &group);
+            let winner = observed
+                .as_ref()
+                .and_then(|observed| observed.winner(ctx, &group))
+                .unwrap_or_else(|| crate::commands::run::select_task_entry(ctx, overrides, &group));
             let mut shadowed: Vec<&'static str> = group
                 .iter()
                 .filter(|t| t.source != winner.source)
@@ -274,6 +278,31 @@ mod tests {
         assert!(
             !report.contains("build:"),
             "single-source task is not a conflict"
+        );
+    }
+
+    #[test]
+    fn format_conflicts_names_the_winner_a_runner_choice_selects() {
+        let dir = crate::tool::test_support::TempDir::new("list-runner-conflict");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"build":"echo pkg"}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("justfile"), "build:\n\techo just\n").unwrap();
+        let ctx = crate::detect::detect(dir.path());
+        let overrides = ResolutionOverrides {
+            runner: Some(crate::resolver::RunnerOverride {
+                runner: crate::types::TaskRunner::Just,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
+            ..ResolutionOverrides::default()
+        };
+        let report = format_conflicts(&ctx, &overrides, false).expect("build is defined twice");
+        assert!(
+            report.contains("build: runs just, shadows package.json"),
+            "{report}"
         );
     }
 

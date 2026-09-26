@@ -1721,8 +1721,8 @@ fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
 }
 
 /// The order same-named tasks are tried: the runner policy chose, then the
-/// sources its package manager or runtime dispatches in that provider's
-/// order, then registry order, with aliases last. A per-task pin wins unless
+/// sources the chosen runtime dispatches, then those a chosen package manager
+/// dispatches, each in that provider's order, then registry order, with aliases last. A per-task pin wins unless
 /// a runner is chosen or the command line or environment chose a package
 /// manager.
 fn task_rank(
@@ -1730,7 +1730,7 @@ fn task_rank(
     project: &Project,
     registry: &Registry,
     task: &Task,
-) -> (usize, usize, usize, u8, ProviderId, bool) {
+) -> (usize, usize, (bool, usize), u8, ProviderId, bool) {
     let pinned = if policy.runner.is_none()
         && policy
             .pm
@@ -1750,22 +1750,32 @@ fn task_rank(
         .runner
         .as_ref()
         .is_some_and(|choice| choice.id == task.source);
+    let position = |choice: &Choice| {
+        registry
+            .effective(choice.id, project, &task.scope)
+            .caps
+            .run_task?
+            .sources
+            .iter()
+            .position(|source| *source == task.source)
+    };
+    let explicit = |choice: &&Choice| choice.from != Layer::Probe;
     let dispatched = policy
-        .pm
-        .0
-        .values()
-        .chain(policy.runtime.iter())
-        .filter(|choice| choice.from != Layer::Probe)
-        .filter_map(|choice| {
-            registry
-                .effective(choice.id, project, &task.scope)
-                .caps
-                .run_task?
-                .sources
-                .iter()
-                .position(|source| *source == task.source)
-        })
-        .min();
+        .runtime
+        .iter()
+        .filter(explicit)
+        .find_map(position)
+        .map(|at| (false, at))
+        .or_else(|| {
+            policy
+                .pm
+                .0
+                .values()
+                .filter(explicit)
+                .filter_map(position)
+                .min()
+                .map(|at| (true, at))
+        });
     let tier = if chosen {
         0
     } else if let Some(rank) = policy.prefer.iter().position(|id| *id == task.source) {
@@ -1776,7 +1786,7 @@ fn task_rank(
     (
         pinned,
         tier,
-        dispatched.unwrap_or(usize::MAX),
+        dispatched.unwrap_or((true, usize::MAX)),
         registry
             .effective(task.source, project, &task.scope)
             .caps

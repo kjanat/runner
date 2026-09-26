@@ -425,10 +425,21 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - `--pm deno` or `--runtime deno` runs the `deno.json` task over a
   `package.json` script of the same name, in the order the chosen provider
-  lists its sources.
+  lists its sources. A `--runtime` choice ranks its sources before a `--pm`
+  choice does, so `--pm bun --runtime deno check` runs the Deno task.
 
 - A `[tasks].overrides` pin still applies when `runner.toml` sets `[pm]`;
   only a `--pm` or `RUNNER_PM` choice sets it aside.
+
+- The dispatch arrow for a file a runtime runs names the runtime's words
+  and stops at the file, so positional arguments stay `[args]`.
+
+- `--explain` reports a package manager with one quiet flag as applying the
+  quiet level, and a `-qqq` request against it records the clamp to quiet.
+
+- The name-conflict footer of `runner list` and the `doctor` conflicts name
+  the task `runner run` selects under a `--runner`, `--pm` or `--runtime`
+  choice.
 
 ### Security
 

@@ -724,7 +724,7 @@ Provider {
         bins: Some(BinsCap { dirs: Static(&["node_modules/.bin"]) }),
         clean: Some(CleanCap { dirs: &["node_modules"] }),
         workspaces: Some(WorkspaceCap { members: node::workspace_members }),
-        quiet: QuietSupport { levels: [None, Some(t!["--silent"]), Some(t!["--silent"]), Some(t!["--silent"])], stream: None },
+        quiet: QuietSupport { levels: [None, Some(t!["--silent"]), None, None], stream: None },
         ..Capabilities::NONE
     },
     tasks: None, version: None, hooks: Hooks::NONE,
@@ -747,7 +747,7 @@ Provider {
         usage: Some(UsageCap { spec: mise::usage_spec }),
         operations: &["install", "bootstrap"],
         install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: &[("mise.toml", "mise.lock")], .. }),
-        quiet: QuietSupport { levels: [None, Some(t!["--quiet"]), Some(t!["--quiet"]), Some(t!["--quiet"])], stream: None },
+        quiet: QuietSupport { levels: [None, Some(t!["--quiet"]), None, None], stream: None },
         ..Capabilities::NONE
     },
     tasks: Some(mise::tasks), version: None, hooks: Hooks::NONE,

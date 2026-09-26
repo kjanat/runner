@@ -896,10 +896,48 @@ fn named_task(source: ProviderId, name: &str) -> runner_core::Task {
 }
 
 #[test]
+fn a_single_quiet_flag_clamps_stronger_requests_to_quiet() {
+    let fixture = Fixture::new();
+    let task = named_task(ProviderId::PackageJson, "build");
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Npm)],
+        tasks: vec![task.clone()],
+        ..Project::default()
+    };
+    let policy = Policy {
+        verbosity: runner_core::Verbosity::VeryQuiet,
+        ..Policy::default()
+    };
+    let plan = plan_with(
+        &fixture.0,
+        &project,
+        &policy,
+        &project.present[0],
+        &Op::Run {
+            task: &task,
+            args: &[],
+        },
+        &REGISTRY,
+    )
+    .unwrap();
+    assert!(plan.argv.contains(&"--silent".into()), "{:?}", plan.argv);
+    assert_eq!(
+        plan.clamps
+            .iter()
+            .map(|clamp| (clamp.requested.as_str(), clamp.granted.as_str()))
+            .collect::<Vec<_>>(),
+        [("very-quiet", "quiet")]
+    );
+}
+
+#[test]
 fn a_chosen_provider_selects_its_own_sources_in_its_order() {
     let fixture = Fixture::new();
     let project = Project {
-        present: vec![fixture.present(ProviderId::Deno)],
+        present: vec![
+            fixture.present(ProviderId::Deno),
+            fixture.present(ProviderId::Bun),
+        ],
         tasks: vec![
             named_task(ProviderId::PackageJson, "check"),
             named_task(ProviderId::Deno, "check"),
@@ -919,7 +957,15 @@ fn a_chosen_provider_selects_its_own_sources_in_its_order() {
         runtime: Some(choice),
         ..Policy::default()
     };
-    for policy in [&by_pm, &by_runtime] {
+    let mut runtime_over_pm = by_runtime.clone();
+    runtime_over_pm.pm.0.insert(
+        runner_core::Ecosystem::Node,
+        runner_core::Choice {
+            id: ProviderId::Bun,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    for policy in [&by_pm, &by_runtime, &runtime_over_pm] {
         let cascade = Cascade {
             tree: &fixture.0,
             project: &project,

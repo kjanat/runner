@@ -166,7 +166,7 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
     }
 }
 
-fn selected_in<'a>(
+pub(super) fn selected_in<'a>(
     ctx: &'a ProjectContext,
     tree: &Tree,
     project: &Project,
