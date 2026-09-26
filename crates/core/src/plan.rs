@@ -153,10 +153,10 @@ pub enum Refusal {
         /// The file patterns it looked for.
         patterns: Vec<String>,
     },
-    /// The runner policy chose defines no task by this name.
-    NoRunnerTask {
-        /// The chosen runner.
-        runner: ProviderId,
+    /// The chosen source defines no task by this name.
+    NoSourceTask {
+        /// The chosen source.
+        source: ProviderId,
         /// The task name.
         name: String,
     },
@@ -169,9 +169,6 @@ pub enum Refusal {
         /// The lockfile names the provider recognises.
         lockfiles: Vec<String>,
     },
-    /// A manifest and a lockfile name different package managers and policy
-    /// refuses to pick one.
-    Mismatch(crate::resolve::Disagreement),
     /// The request would cross a trust boundary.
     Unsafe(Unsafe),
 }
@@ -206,7 +203,11 @@ impl std::fmt::Display for Refusal {
                 None => write!(f, "task {name} not found in the named source"),
             },
             Self::Declined { name, rung } => {
-                write!(f, "reach policy refused {name} at the {} rung", rung.name)
+                write!(
+                    f,
+                    "download policy refused {name} at the {} rung",
+                    rung.name
+                )
             }
             Self::NoCapability { op, .. } => write!(f, "the selected provider cannot {op}"),
             Self::Ambiguous { name, candidates } => write!(
@@ -224,8 +225,8 @@ impl std::fmt::Display for Refusal {
                 dir.display(),
                 patterns.join(", ")
             ),
-            Self::NoRunnerTask { name, .. } => {
-                write!(f, "the chosen task runner defines no task named {name}")
+            Self::NoSourceTask { name, .. } => {
+                write!(f, "the chosen source defines no task named {name}")
             }
             Self::NoLockfile { dir, lockfiles, .. } => write!(
                 f,
@@ -233,12 +234,6 @@ impl std::fmt::Display for Refusal {
                  to create it",
                 dir.display(),
                 lockfiles.join(", ")
-            ),
-            Self::Mismatch(disagreement) => write!(
-                f,
-                "{} declares one package manager and {} pins another",
-                disagreement.manifest.display(),
-                disagreement.lockfile.display()
             ),
             Self::Unsafe(Unsafe::LoaderHook { name }) => write!(
                 f,
@@ -332,22 +327,25 @@ pub fn plan(
     op: &Op<'_>,
     registry: &Registry,
 ) -> Result<Plan, Refusal> {
+    let runtime_takes = |choice: &Choice| match op {
+        Op::Run { task, .. } => registry
+            .by_id(choice.id)
+            .caps
+            .run_task
+            .is_some_and(|cap| cap.sources.contains(&task.source)),
+        Op::Test { .. } | Op::Exec { .. } => true,
+        _ => false,
+    };
     if let Some(choice) = &policy.runtime
-        && match op {
-            Op::Run { task, .. } => registry
-                .by_id(choice.id)
-                .caps
-                .run_task
-                .is_some_and(|cap| cap.sources.contains(&task.source)),
-            Op::Test { .. } | Op::Exec { .. } => true,
-            _ => false,
-        }
-        && project.present_in(choice.id, &op_scope(tree, op)).is_none()
+        && runtime_takes(choice)
     {
-        return Err(Refusal::Invalid(format!(
-            "no evidence for runtime {}",
-            registry.by_id(choice.id).label
-        )));
+        if project.present_in(choice.id, &op_scope(tree, op)).is_none() {
+            return Err(Refusal::Invalid(format!(
+                "no evidence for runtime {}",
+                registry.by_id(choice.id).label
+            )));
+        }
+        refuse_both_chosen(policy, choice, op, registry)?;
     }
     if let Op::Run { task, .. } = op {
         let dispatches = |provider: &Provider| {
@@ -408,6 +406,47 @@ pub fn plan(
     }))
 }
 
+/// The chosen package managers that run on the chosen runtime.
+fn on_runtime<'p>(policy: &'p Policy, registry: &Registry) -> impl Iterator<Item = &'p Choice> {
+    let registry = *registry;
+    policy.pm.0.values().filter(move |pm| {
+        policy
+            .runtime
+            .as_ref()
+            .is_some_and(|runtime| registry.by_id(pm.id).caps.runs_on == Some(runtime.id))
+    })
+}
+
+/// Refuse a JavaScript package-manager choice beside a runtime choice that
+/// takes `op` itself and the package manager does not run on.
+fn refuse_both_chosen(
+    policy: &Policy,
+    runtime: &Choice,
+    op: &Op<'_>,
+    registry: &Registry,
+) -> Result<(), Refusal> {
+    let Some(pm) = policy.pm.0.values().find(|pm| {
+        pm.id != runtime.id
+            && registry.by_id(pm.id).caps.runs_on != Some(runtime.id)
+            && matches!(
+                registry.by_id(pm.id).ecosystem,
+                Ecosystem::Node | Ecosystem::Deno
+            )
+    }) else {
+        return Ok(());
+    };
+    let runtime = registry.by_id(runtime.id).label;
+    Err(Refusal::Invalid(format!(
+        "package manager {} and runtime {runtime} cannot both apply: {runtime} {} itself",
+        registry.by_id(pm.id).label,
+        match op {
+            Op::Run { .. } => "runs the task",
+            Op::Test { .. } => "runs the tests",
+            _ => "runs the command",
+        },
+    )))
+}
+
 /// The scope `op` runs in: a task's own, a file's, or the invocation's.
 fn op_scope(tree: &Tree, op: &Op<'_>) -> Scope {
     match op {
@@ -445,6 +484,9 @@ fn candidates<'a>(
         }
     };
     let by_choice = |choice: &Choice| project.present_in(choice.id, &scope);
+    for present in on_runtime(policy, registry).filter_map(by_choice) {
+        push(present);
+    }
     if let Some(present) = policy.runtime.as_ref().and_then(by_choice) {
         push(present);
     }
@@ -909,51 +951,12 @@ fn task_env_keys(op: &Op<'_>, provider: &Provider, registry: &Registry) -> Vec<S
     }
 }
 
-/// Refuse a package manager whose manifest and lockfile disagree in the
-/// scope it was taken from, unless policy chose it, lets the manifest win,
-/// or chose it as the runtime for a runtime op.
-fn refuse_mismatch(
-    project: &Project,
-    policy: &Policy,
-    present: &Present,
-    registry: &Registry,
-    op: &Op<'_>,
-    chosen_as_runtime: bool,
-) -> Result<(), Refusal> {
-    let runtime_op = matches!(op, Op::RunFile { .. } | Op::Run { .. });
-    if policy.on_mismatch != crate::policy::OnMismatch::Refuse
-        || !registry
-            .by_id(present.provider)
-            .kind
-            .contains(Kind::PACKAGE_MANAGER)
-        || policy
-            .pm
-            .0
-            .values()
-            .any(|choice| choice.id == present.provider)
-        || (chosen_as_runtime && runtime_op)
-    {
-        return Ok(());
-    }
-    project
-        .disagreements
-        .iter()
-        .find(|d| {
-            d.scope == present.scope
-                && (d.declared == present.provider || d.locked == present.provider)
-        })
-        .map_or(Ok(()), |disagreement| {
-            Err(Refusal::Mismatch(disagreement.clone()))
-        })
-}
-
 /// Turn one request into one command through `present`.
 ///
 /// # Errors
 ///
 /// `NoCapability` when the provider lacks the capability, `NoTests` when a
-/// test runner finds nothing to run, `Mismatch` when policy refuses a
-/// package manager whose manifest and lockfile disagree, `Unsafe` when the
+/// test runner finds nothing to run, `Unsafe` when the
 /// name has a shape the exec primitive does not take or an env layer sets a
 /// loader hook.
 pub fn plan_with(
@@ -971,7 +974,6 @@ pub fn plan_with(
     let mut fill = Fill {
         request: Request {
             quiet: quiet.at(policy.verbosity.index()),
-            stream: policy.host_stderr.then_some(quiet.stream).flatten(),
             ..Request::default()
         },
         files: Vec::new(),
@@ -990,14 +992,6 @@ pub fn plan_with(
         op: *op,
     };
     let shape = shaping.shape(&mut fill)?;
-    refuse_mismatch(
-        project,
-        policy,
-        present,
-        registry,
-        op,
-        shaping.chosen_as_runtime,
-    )?;
     if let Some(hook) = provider.hooks.before_plan {
         hook(tree, present, op, policy, &mut warnings)?;
     }
@@ -1015,19 +1009,6 @@ pub fn plan_with(
     let rendered = shape.template.render(&request);
     let mut argv = Vec::with_capacity(rendered.args.len() + 1);
     argv.push(OsString::from(program));
-    let own_program = Some(program) == provider.program;
-    let has_quiet_piece = shape
-        .template
-        .0
-        .iter()
-        .any(|piece| matches!(piece, crate::Piece::Quiet));
-    if policy.host_stderr
-        && own_program
-        && !has_quiet_piece
-        && let Some(stream) = quiet.stream
-    {
-        argv.extend(stream.render(&Request::default()).args);
-    }
     argv.extend(rendered.args);
     let mut env = rendered.env;
     env.extend(env_layers(
@@ -1256,8 +1237,6 @@ fn env_layers(
     Ok(out)
 }
 
-/// The layer that chose the provider, else the layer its strongest evidence
-/// stands for.
 /// The layers that chose `present`: a policy choice, else its strongest evidence.
 #[must_use]
 pub fn decided_by(policy: &Policy, present: &Present) -> Vec<Layer> {
@@ -1265,7 +1244,7 @@ pub fn decided_by(policy: &Policy, present: &Present) -> Vec<Layer> {
         .runtime
         .iter()
         .chain(policy.pm.0.values())
-        .chain(policy.runner.iter())
+        .chain(policy.source.iter())
         .find(|choice| choice.id == present.provider)
         .map(|choice| choice.from.clone());
     if let Some(layer) = choice {
@@ -1573,11 +1552,11 @@ fn host_rung(
     let Some(present) = root else {
         return probe_with(token, &[]).map(found).transpose();
     };
-    if let Some(choice) = &cascade.policy.runner
+    if let Some(choice) = &cascade.policy.source
         && choice.id != present.provider
     {
-        return Err(Refusal::NoRunnerTask {
-            runner: choice.id,
+        return Err(Refusal::NoSourceTask {
+            source: choice.id,
             name: token.to_owned(),
         });
     }
@@ -1604,7 +1583,7 @@ fn builtin(cascade: &Cascade<'_>, token: &str) -> Option<String> {
 
 /// Refuse a fetching plan the policy or the user does not want.
 fn gate(cascade: &Cascade<'_>, rung: Rung, name: &str, made: &Plan) -> Result<(), Refusal> {
-    if crate::reach::permitted(made.reach, cascade.policy.reach, || {
+    if crate::reach::permitted(made.reach, cascade.policy.download, || {
         cascade.confirm.is_none_or(|ask| ask(name, rung.name))
     }) {
         return Ok(());
@@ -1647,7 +1626,8 @@ pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Ta
 /// # Errors
 ///
 /// `NoTask` when the token names a source or scope that defines no such
-/// task, and `NoRunnerTask` when the chosen runner defines none of them.
+/// task, `NoSourceTask` when the chosen source defines none of them, and
+/// `Invalid` when the token names a source other than the chosen one.
 pub fn ranked_tasks<'a>(
     cascade: &'a Cascade<'_>,
     token: &str,
@@ -1663,6 +1643,15 @@ pub fn ranked_tasks<'a>(
         source = None;
         name = token;
     }
+    if let (Some(named), Some(choice)) = (source, &cascade.policy.source)
+        && named != choice.id
+    {
+        return Err(Refusal::Invalid(format!(
+            "{token} names source {}, but the chosen source is {}",
+            cascade.registry.by_id(named).label,
+            cascade.registry.by_id(choice.id).label
+        )));
+    }
 
     let mut found: Vec<&Task> = cascade
         .project
@@ -1674,13 +1663,13 @@ pub fn ranked_tasks<'a>(
                 && scope.is_none_or(|scope| scope_matches(cascade.tree, &task.scope, scope))
         })
         .collect();
-    if let Some(choice) = &cascade.policy.runner
+    if let Some(choice) = &cascade.policy.source
         && !found.is_empty()
     {
         found.retain(|task| task.source == choice.id);
         if found.is_empty() {
-            return Err(Refusal::NoRunnerTask {
-                runner: choice.id,
+            return Err(Refusal::NoSourceTask {
+                source: choice.id,
                 name: name.to_owned(),
             });
         }
@@ -1717,10 +1706,7 @@ pub fn ranked_tasks<'a>(
 /// The key same-named tasks in one scope are ordered by, lowest first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskRank {
-    /// The task's position in its per-task pin, `usize::MAX` when unpinned.
-    pub pinned: usize,
-    /// 0 for the chosen runner's source, then the prefer list in order, then
-    /// sources a chosen package manager or runtime dispatches, then the rest.
+    /// 0 for sources a chosen package manager or runtime dispatches, 1 for the rest.
     pub tier: usize,
     /// Whether a package manager (rather than a runtime) dispatches it.
     pub by_package_manager: bool,
@@ -1810,31 +1796,10 @@ fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
     }
 }
 
-/// The order same-named tasks are tried: the runner policy chose, then the
-/// sources the chosen runtime dispatches, then those a chosen package manager
-/// dispatches, each in that provider's order, then registry order, with aliases last. A per-task pin wins unless
-/// a runner is chosen or the command line or environment chose a package
-/// manager.
+/// The order same-named tasks are tried: the sources the chosen runtime
+/// dispatches, then those a chosen package manager dispatches, each in that
+/// provider's order, then registry order, with aliases last.
 fn task_rank(policy: &Policy, project: &Project, registry: &Registry, task: &Task) -> TaskRank {
-    let pinned = if policy.runner.is_none()
-        && policy
-            .pm
-            .0
-            .values()
-            .all(|choice| !matches!(choice.from, Layer::Cli | Layer::Env))
-    {
-        policy
-            .task_sources
-            .get(&task.name)
-            .and_then(|sources| sources.iter().position(|id| *id == task.source))
-            .unwrap_or(usize::MAX)
-    } else {
-        usize::MAX
-    };
-    let chosen = policy
-        .runner
-        .as_ref()
-        .is_some_and(|choice| choice.id == task.source);
     let position = |choice: &Choice| {
         registry
             .effective(choice.id, project, &task.scope)
@@ -1861,16 +1826,9 @@ fn task_rank(policy: &Policy, project: &Project, registry: &Registry, task: &Tas
                 .min()
                 .map(|at| (true, at))
         });
-    let tier = if chosen {
-        0
-    } else if let Some(rank) = policy.prefer.iter().position(|id| *id == task.source) {
-        rank + 1
-    } else {
-        policy.prefer.len() + 1 + usize::from(dispatched.is_none())
-    };
+    let tier = usize::from(dispatched.is_none());
     let (by_package_manager, dispatch_order) = dispatched.unwrap_or((true, usize::MAX));
     TaskRank {
-        pinned,
         tier,
         by_package_manager,
         dispatch_order,
@@ -1894,13 +1852,16 @@ fn exec_plan(
     let manager = rung.needs == Need::ToolManagerExec;
     let op = Op::Exec { name, args };
     let scope = scope_at(cascade.tree, &cascade.tree.cwd);
-    if let Some(choice) = &cascade.policy.runtime
-        && cascade.project.present_in(choice.id, &scope).is_none()
-    {
-        return Err(Refusal::Invalid(format!(
-            "no evidence for runtime {}",
-            cascade.registry.by_id(choice.id).label
-        )));
+    if let Some(choice) = &cascade.policy.runtime {
+        if cascade.project.present_in(choice.id, &scope).is_none() {
+            return Err(Refusal::Invalid(format!(
+                "no evidence for runtime {}",
+                cascade.registry.by_id(choice.id).label
+            )));
+        }
+        if !manager {
+            refuse_both_chosen(cascade.policy, choice, &op, cascade.registry)?;
+        }
     }
 
     let forced = if manager {
@@ -1913,6 +1874,11 @@ fn exec_plan(
             .policy
             .runtime
             .as_ref()
+            .filter(|_| {
+                on_runtime(cascade.policy, cascade.registry)
+                    .next()
+                    .is_none()
+            })
             .and_then(|choice| cascade.project.present_in(choice.id, &scope))
             .into_iter()
             .chain(forced)
@@ -2467,7 +2433,7 @@ mod tests {
     use crate::cascade::{CASCADE, Rung};
     use crate::evidence::{Evidence, Present, Weight};
     use crate::op::Op;
-    use crate::policy::{Choice, Layer, Policy, ReachPolicy};
+    use crate::policy::{Choice, Download, Layer, Policy};
     use crate::probe::tests::TempDir;
     use crate::provider::{Ecosystem, Hooks, Kind, ProviderId};
     use crate::reach::Reach;
@@ -3502,7 +3468,7 @@ mod tests {
             ..Project::default()
         };
         let local = Policy {
-            reach: ReachPolicy::Local,
+            download: Download::Refuse,
             ..Policy::default()
         };
         let refusal = dispatch(
@@ -3517,7 +3483,7 @@ mod tests {
         ));
 
         let allow = Policy {
-            reach: ReachPolicy::Allow,
+            download: Download::Allow,
             ..Policy::default()
         };
         let found = dispatch(

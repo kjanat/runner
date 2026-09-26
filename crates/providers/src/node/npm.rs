@@ -22,7 +22,7 @@ const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engin
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Npm,
     label: "npm",
-    aliases: &[],
+    aliases: &["npx"],
     ecosystem: Ecosystem::Node,
     kind: Kind::PACKAGE_MANAGER,
     program: Some("npm"),
@@ -67,6 +67,7 @@ pub const PROVIDER: Provider = Provider {
         }),
         clean: Some(super::CLEAN),
         quiet: QuietSupport::flag(t!["--silent"]),
+        runs_on: Some(ProviderId::Node),
         ..Capabilities::NONE
     },
     tasks: None,

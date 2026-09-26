@@ -38,7 +38,7 @@ pub(crate) fn clean(
                 .to_string()
         })
         .collect();
-    if overrides.explain {
+    if overrides.dry_run {
         super::print_explain(
             overrides,
             &format!("clean at {}: {:?}", ctx.root.display(), targets),

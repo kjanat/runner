@@ -39,22 +39,6 @@ pub(crate) enum ResolveError {
         /// What detection actually found, for the error message.
         detected: Vec<ProviderId>,
     },
-    /// Both `keep_going` and `kill_on_fail` were set to true at the same
-    /// source (or once layered across CLI/env/config). The chain executor
-    /// can't honour both, so fail loudly before dispatching anything.
-    ConflictingFailurePolicy {
-        /// Where the conflict was detected: `"CLI flags"`, `"env vars"`,
-        /// `"[chain] config"`, or `"cross-source"`.
-        source: &'static str,
-    },
-    /// `[install].on_collision = "error"` and the install set holds two or
-    /// more package managers that write the same directory.
-    InstallDirCollision {
-        /// The shared directory, e.g. `"node_modules"`.
-        dir: &'static str,
-        /// The colliding writers, in detection order.
-        writers: Vec<ProviderId>,
-    },
 }
 
 impl fmt::Display for ResolveError {
@@ -85,31 +69,8 @@ impl fmt::Display for ResolveError {
                     pm.label(),
                 )
             }
-            Self::ConflictingFailurePolicy { source } => write!(
-                f,
-                "`keep_going` and `kill_on_fail` are mutually exclusive but both were set \
-                 ({source}). Unset one of `--keep-going` / `RUNNER_KEEP_GOING` / \
-                 `[chain].keep_going` or `--kill-on-fail` / `RUNNER_KILL_ON_FAIL` / \
-                 `[chain].kill_on_fail` to pick a policy.",
-            ),
-            Self::InstallDirCollision { dir, writers } => {
-                write!(f, "{}", install_dir_collision(dir, writers))
-            }
         }
     }
-}
-
-fn install_dir_collision(dir: &str, writers: &[ProviderId]) -> String {
-    let list = writers
-        .iter()
-        .map(|pm| pm.label())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "{list} all install into {dir}/ and `[install].on_collision = \"error\"` refuses to run \
-         two writers over one tree. Disable an installer with `[tools.<name>].install = false`, \
-         or drop `on_collision` to let runner resolve it.",
-    )
 }
 
 impl std::error::Error for ResolveError {}
@@ -141,14 +102,5 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("detected: none"), "msg: {msg}");
         assert!(msg.contains("--pm"), "msg: {msg}");
-    }
-
-    #[test]
-    fn conflicting_failure_policy_display_includes_source() {
-        let err = ResolveError::ConflictingFailurePolicy { source: "env vars" };
-        let msg = format!("{err}");
-        assert!(msg.contains("keep_going"), "msg: {msg}");
-        assert!(msg.contains("kill_on_fail"), "msg: {msg}");
-        assert!(msg.contains("env vars"), "msg: {msg}");
     }
 }

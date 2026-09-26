@@ -71,6 +71,8 @@ pub struct Capabilities {
     pub usage: Option<UsageCap>,
     /// Templates that differ when this provider is the chosen runtime.
     pub as_runtime: Option<RuntimeCap>,
+    /// The runtime this package manager runs tasks on.
+    pub runs_on: Option<ProviderId>,
     /// Operations a tool manager accepts on install.
     pub operations: &'static [&'static str],
     /// The quiet ladder.
@@ -103,6 +105,7 @@ impl Capabilities {
         health: &[],
         usage: None,
         as_runtime: None,
+        runs_on: None,
         operations: &[],
         quiet: QuietSupport::NONE,
     };
@@ -413,13 +416,11 @@ pub struct UsageCap {
     pub spec: fn(&crate::Tree, &Present, &Task) -> Result<Option<crate::UsageSpec>, Warning>,
 }
 
-/// The quiet ladder and the stream switch.
+/// The quiet ladder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuietSupport {
     /// The flags for each [`crate::verbosity::Verbosity`], by index.
     pub levels: [Option<Template>; 4],
-    /// The flag that moves the host's own output to stderr.
-    pub stream: Option<Template>,
     /// Why the ladder stops where it does.
     pub limitation: &'static str,
 }
@@ -433,7 +434,6 @@ impl QuietSupport {
     pub const fn unsupported(limitation: &'static str) -> Self {
         Self {
             levels: [None; 4],
-            stream: None,
             limitation,
         }
     }
@@ -444,17 +444,6 @@ impl QuietSupport {
     pub const fn flag(template: Template) -> Self {
         Self {
             levels: [None, Some(template), None, None],
-            stream: None,
-            limitation: "no stronger task-output-preserving reduction",
-        }
-    }
-
-    /// [`Self::flag`] plus a stream switch.
-    #[must_use]
-    pub const fn flag_with_stream(template: Template, stream: Template) -> Self {
-        Self {
-            levels: [None, Some(template), None, None],
-            stream: Some(stream),
             limitation: "no stronger task-output-preserving reduction",
         }
     }

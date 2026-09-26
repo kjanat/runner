@@ -2,7 +2,7 @@
 //!
 //! Surface for users (and bug reports) to inspect what runner sees in the current project:
 //! detected package managers and task runners, the manifest declaration if any, lockfile presence,
-//! override sources in effect, and the resolved decision. Pairs with `--explain` (one-line trace at run time)
+//! override sources in effect, and the resolved decision. Pairs with `--dry-run` (one-line trace at run time)
 //! and `runner why <task>` (per-task source pick).
 //!
 //! Two output formats:
@@ -42,15 +42,15 @@ pub(crate) fn doctor(
     // `Value` keeps that ergonomics while the JSON contract itself stays
     // typed via `Project`.
     let report = serde_json::to_value(&project)?;
-    // A plan that refuses to resolve (`on_collision = "error"`, an override
-    // naming an undetected PM) is the diagnosis, so it is rendered rather than
-    // propagated, same contract as the resolver error above.
+    // A plan that refuses to resolve (an override naming an undetected PM) is
+    // the diagnosis, so it is rendered rather than propagated, same contract
+    // as the resolver error above.
     let plan = super::install::plan_install(ctx, overrides);
     crate::render::doctor::print_human(&crate::render::doctor::Human {
         report: &report,
         overrides,
         plan: plan.as_ref(),
-        tools: super::install::tools_step(ctx, overrides, super::install::InstallFlags::default()),
+        tools: super::install::tools_step(ctx, overrides),
         health: &crate::schema::doctor::provider_diagnostics(ctx, overrides),
     });
 

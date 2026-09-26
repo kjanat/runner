@@ -127,14 +127,67 @@ pub(crate) fn js_runtime(spelling: &str) -> Option<ProviderId> {
     parse(spelling, is_js_runtime)
 }
 
+/// `ids`' labels, comma-joined.
+fn listed(ids: Vec<ProviderId>) -> String {
+    ids.into_iter()
+        .map(Named::label)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Parse a package manager name, as `--pm` and `[tasks.<name>].pm` take it.
+///
+/// # Errors
+/// Names the valid package managers, and the right setting for a task source
+/// or runtime name.
+pub(crate) fn parse_package_manager(raw: &str) -> Result<ProviderId, String> {
+    if let Some(pm) = package_manager(raw) {
+        return Ok(pm);
+    }
+    if task_source(raw).is_some() {
+        return Err(format!("{raw:?} is a task source; select it with --source"));
+    }
+    Err(format!(
+        "unknown package manager {raw:?}; expected one of {}",
+        listed(package_managers())
+    ))
+}
+
+/// Parse a JavaScript runtime name, as `--runtime` and `[runtime].javascript`
+/// take it.
+///
+/// # Errors
+/// Names the valid runtimes.
+pub(crate) fn parse_js_runtime(raw: &str) -> Result<ProviderId, String> {
+    js_runtime(raw).ok_or_else(|| {
+        format!(
+            "unknown JavaScript runtime {raw:?}; expected one of {}",
+            listed(js_runtimes())
+        )
+    })
+}
+
+/// Parse a task source name, as `--source`, `list --only` and
+/// `[tasks.<name>].source` take it.
+///
+/// # Errors
+/// Names the valid sources, and `--pm` for a package manager name.
+pub(crate) fn parse_task_source(raw: &str) -> Result<ProviderId, String> {
+    if let Some(source) = task_source(raw) {
+        return Ok(source);
+    }
+    if package_manager(raw).is_some() {
+        return Err(format!("{raw:?} is a package manager; select it with --pm"));
+    }
+    Err(format!(
+        "unknown task source {raw:?}; expected one of {}",
+        listed(task_sources())
+    ))
+}
+
 /// Every package manager, in registry order.
 pub(crate) fn package_managers() -> Vec<ProviderId> {
     every(is_package_manager)
-}
-
-/// Every task runner, in registry order.
-pub(crate) fn runners() -> Vec<ProviderId> {
-    every(is_runner)
 }
 
 /// Every task source, in task priority order.
@@ -152,6 +205,33 @@ pub(crate) fn js_runtimes() -> Vec<ProviderId> {
 #[cfg(test)]
 mod tests {
     use runner_core::ProviderId;
+
+    #[test]
+    fn package_managers_answer_to_their_exec_binaries() {
+        for (alias, pm) in [
+            ("npx", ProviderId::Npm),
+            ("pnpx", ProviderId::Pnpm),
+            ("bunx", ProviderId::Bun),
+            ("yarnpkg", ProviderId::Yarn),
+        ] {
+            assert_eq!(super::parse_package_manager(alias), Ok(pm));
+        }
+    }
+
+    #[test]
+    fn a_name_of_the_wrong_kind_points_at_the_right_flag() {
+        assert!(
+            super::parse_package_manager("just")
+                .unwrap_err()
+                .contains("--source")
+        );
+        assert!(
+            super::parse_task_source("pnpm")
+                .unwrap_err()
+                .contains("--pm")
+        );
+        assert_eq!(super::parse_task_source("justfile"), Ok(ProviderId::Just));
+    }
 
     #[test]
     fn package_json_dispatchers_are_in_probe_order() {

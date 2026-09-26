@@ -19,7 +19,7 @@ use crate::types::ProjectContext;
 /// An installed dependency and the binary it was resolved to.
 pub(super) struct ResolvedBin {
     pub(super) plan: runner_core::Plan,
-    /// `--explain` trace body naming the package and binary.
+    /// `--dry-run` trace body naming the package and binary.
     pub(super) describe: String,
 }
 

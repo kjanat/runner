@@ -18,7 +18,7 @@ Anything that cannot be derived from it does not belong in the core.
 | Present    | A provider with enough evidence to count as part of the project, plus its resolved version and bin dirs.     |
 | Capability | Something a present provider can do, with the parameters the core needs to drive it.                         |
 | Op         | What the user asked for: install, run a task, exec a name, run a file, test, clean, health.                  |
-| Policy     | The override chain, resolved once per invocation: CLI, env, `runner.toml`, manifest, lockfile, probe.        |
+| Policy     | The override chain, resolved per task: CLI, env, `[tasks.<name>]`, `runner.toml`, manifest, lockfile, probe. |
 | Plan       | One command, the provider that owns it, its trust and reach, and the evidence and policy that produced it.   |
 | Scheme     | An ecosystem's version grammar and comparison rules.                                                         |
 
@@ -44,9 +44,9 @@ and adds a warning.
 | ----------------------------- | ----------- | --------------------------------------------------- |
 | `info`, `list`, `completions` | resolve     | Render the project.                                 |
 | `doctor`                      | resolve     | Render the project plus every provider's health op. |
-| `why`, any `--explain`        | plan        | Render the plan without executing it.               |
+| `why`, any `--dry-run`        | plan        | Render the plan without executing it.               |
 | `run`, `install`, `clean`     | execute     | Render the plan's arrow, then spawn.                |
-| `config`, `schema`, `lsp`     | none        | Read the declaration tables directly.               |
+| `config`, `schema`, `lsp`     | none        | Read the config types directly.                     |
 
 Directory cleanup uses `CleanPlan { targets, because }`. Its targets come from
 the effective clean capabilities of the root's providers and the invoking
@@ -75,10 +75,12 @@ it.
 4. **Local before network.** Rungs of the run cascade are sorted by `Reach`.
    A rung that can fetch never precedes a rung that cannot. Enforced by a
    test that asserts the cascade table is sorted.
-5. **Every setting declared once.** A config field, its env var, its CLI
-   flag, its schema entry, its completion and its doc line come from one row
-   of one table. Enforced by the existing drift guards, extended to provider
-   labels and capability names.
+5. **Every setting declared once.** A CLI flag and its `RUNNER_*` variable
+   come from one clap argument; the variable's name is derived from the
+   command tree. A config key, its schema entry, its completion and its hover
+   text come from one field of the config types. Enforced by the variable-name
+   test over the clap tree, the schema drift guard, and the test that every
+   schema key parses.
 6. **Observation is read only.** Reading a file and asking a tool a read-only
    question are both observation. Asking a tool to change anything is
    execution and only a plan does that. Enforced by review, and by
@@ -317,10 +319,9 @@ The core derives alternatives from effective capabilities in the file's scope.
 Clients offer the alternatives their own interfaces support. Observation hooks
 preserve read and parse errors. A missing optional file contributes no
 evidence. `task_priority` orders otherwise unranked task sources. Provider
-defaults and policy preference lists rank candidates; they do not remove later
-cascade rungs. When a task source has no present package manager to run it,
-resolution takes the first supporting one on `PATH` in `probe_priority` order,
-unless policy is strict. A provider is shaped for the op before its
+defaults rank candidates; they do not remove later cascade rungs. When a task
+source has no present package manager to run it, resolution takes the first
+supporting one on `PATH` in `probe_priority` order. A provider is shaped for the op before its
 `before_plan` hook runs, so a hook can only refuse an op the provider could
 take. A test runner whose discovery finds nothing refuses as `NoTests`, and
 the next present runner in candidate order is planned instead. When no runner
@@ -389,7 +390,6 @@ pub struct ShimsCap {
 
 pub struct QuietSupport {
     pub levels: [Option<Template>; 4],
-    pub stream: Option<Template>,
     pub limitation: &'static str, // why the ladder stops where it does, for the Clamp
 }
 ```
@@ -448,21 +448,15 @@ pub enum Layer {
 }
 
 pub struct Policy {
-    pub pm: PerEcosystem<Choice>, // `--pm`, `RUNNER_PM`, `[pm].<eco>`
-    pub runner: Option<Choice>,   // `--runner`, `RUNNER_RUNNER`, `[tasks].prefer`
-    pub prefer: Vec<ProviderId>,  // rank-only source preference
-    pub task_sources: BTreeMap<String, Vec<ProviderId>>, // per-task source order
-    pub runtime: Option<Choice>,  // `--runtime`, `RUNNER_RUNTIME`, `[runtime].js`
-    pub frozen: bool,
-    pub scripts: ScriptPolicy,
-    pub reach: ReachPolicy, // Ask | Allow | Local
-    pub verbosity: Verbosity,
-    pub host_stderr: bool,
-    pub env: EnvLayers,                              // project, per tool, per task
-    pub tool_ops: BTreeMap<ProviderId, Vec<String>>, // `[tools.<name>].install`
-    pub trust: TrustPolicy,                          // see section 6
-    pub strict: bool, // `--fallback error`: no package manager from PATH for a task source
-    pub on_mismatch: OnMismatch, // Proceed | Refuse: `[resolution].on_mismatch = "error"`
+    pub pm: PerEcosystem<Choice>, // `--pm`, `RUNNER_PM`, `[tasks.<name>].pm`
+    pub source: Option<Choice>,   // `--source`, `RUNNER_SOURCE`, `[tasks.<name>].source`
+    pub runtime: Option<Choice>,  // `--runtime`, `RUNNER_RUNTIME`, `[runtime].javascript`
+    pub frozen: bool,             // `[install].frozen`
+    pub scripts: ScriptPolicy,    // `[install].scripts`
+    pub download: Download,       // Ask | Allow | Refuse: `--download`, top-level `download`
+    pub verbosity: Verbosity,     // `[output.tool].quiet` and the quiet preset
+    pub env: EnvLayers,           // project, per tool, per task
+    pub trust: TrustPolicy,       // see section 6
 }
 
 pub struct Choice {
@@ -471,21 +465,19 @@ pub struct Choice {
 }
 ```
 
-Policy is built once from the declaration table and handed to `resolve` and
-`plan`. `observe` never sees it.
+Policy is built per task from the resolved settings and handed to `resolve`
+and `plan`. `observe` never sees it.
 
-The file that feeds it is specified by issue 123 (`runner.toml` v2): config
-holds only what observation cannot conclude, every key reads as a sentence a
-user would say, and a line detection would have concluded anyway is a lint
-error. Three tables: `[tools]` for vetoes and tie-breaks, `[tasks]` for
-decoration and composition, `[defaults]` for taste. Four additions the core
-needs that the issue leaves out:
-
-- `fetch = "ask" | "allow" | "local"`, a trust decision.
-- `env` at project, tool and task scope.
-- `[tools.<name>].install`, the operations a tool manager runs.
-- `quiet = true` on a task, translated by the provider table, in place of
-  `args = ["-q"]`.
+Settings come from two places. The clap tree defines every flag, and each flag
+reads a variable derived from its position: `RUNNER_<FLAG>` for a global flag,
+`RUNNER_<COMMAND>_<FLAG>` for a command's own, with a `--no-` form or an alias
+sharing its setting's variable. The `runner.toml` types define every config
+key: top-level `download`, `[runtime]`, `[chain]`, `[install]`, `[output]`,
+`[env]`, `[tools.<name>].env` and `[tasks.<name>]`. A setting resolves from the
+first layer that sets it: CLI, env, the task's table, the project table,
+evidence, default. An explicit `false` is a value. The `-q` preset expands
+into ordinary output settings at its own layer, and an individual output flag
+on that layer overrides it.
 
 ### 4.6 Plan
 
@@ -541,7 +533,13 @@ pub enum Refusal {
         provider: ProviderId,
         op: &'static str,
     },
+    NoTask {
+        name: String,
+        source: Option<ProviderId>, // the source the address named
+        scope: Option<String>,      // the scope the address named
+    },
     Ambiguous {
+        name: String,
         candidates: Vec<(ProviderId, Scope)>,
     },
     NoTests {
@@ -549,8 +547,8 @@ pub enum Refusal {
         dir: PathBuf,
         patterns: Vec<String>,
     },
-    NoRunnerTask {
-        runner: ProviderId, // the runner policy chose
+    NoSourceTask {
+        source: ProviderId, // the source policy chose
         name: String,
     },
     NoLockfile {
@@ -558,13 +556,12 @@ pub enum Refusal {
         dir: PathBuf,
         lockfiles: Vec<String>, // the `Signal::Lockfile` names, then `InstallCap::lockfiles`
     },
-    Mismatch(Disagreement), // the manifest and a lockfile in one scope name different managers
     Unsafe(Unsafe),
 }
 ```
 
-`select` keeps only tasks of the runner `policy.runner` chose and refuses as
-`NoRunnerTask` when another source alone defines the name; a name no task
+`select` keeps only tasks of the source `policy.source` chose and refuses as
+`NoSourceTask` when another source alone defines the name; a name no task
 carries still falls through to the later rungs. A task's `[tasks.<key>].env`
 answers to `name`, `source:name`, `member:name` for a member task and the
 `scope:source#name` FQN, least specific first, the spellings the verbosity
@@ -576,10 +573,9 @@ A frozen install refuses as `NoLockfile` when none of the provider's
 names with `"lock"`), before the manager is spawned.
 `locked_only_with` is the exception for a provider whose lockfile is opt-in:
 its frozen form is dropped, and nothing is refused, when no config/lockfile
-pair exists. `Mismatch` is raised by `plan_with` for any op that selects a package manager,
-so `run`, `--package`, `exec` and `install` refuse alike under
-`OnMismatch::Refuse`, unless a policy layer chose the manager, or chose it as
-the runtime and the op runs a file or a task. The plan's scope is the task's
+pair exists. When the manifest and a lockfile in one scope name different
+managers, the manifest's declaration wins and `Project.disagreements` records
+both, which the package-manager decision reports as a warning. The plan's scope is the task's
 scope for a task, the file's scope for a file, the invocation scope for an
 exec, a test, a dependency's binary or a project bin the cascade found, and
 the provider's own scope for an install; a runtime inherited from the root
@@ -587,7 +583,7 @@ still runs a member's file with the member's bin dirs, and a binary hoisted
 to the root still runs with the invoking member's bin dirs first.
 
 A `Plan` is complete. `execute` adds nothing and decides nothing. That is
-what makes `why`, `--explain`, `doctor` and the arrow line agree, because
+what makes `why`, `--dry-run`, `doctor` and the arrow line agree, because
 they all print the same struct. Command construction, synchronous execution and
 parallel spawning share the evidence guard. Provider planning asserts that its templates
 invoke tools directly. Explicit user shell commands preserve their argv. Configured execution
@@ -674,11 +670,12 @@ activated shell or a binary on `PATH` is evidence of the tool, not of the
 project asking for it.
 
 The table is data so article 4 can be a test. The prompt lives in
-`plan`, keyed on `reach` and `policy.reach`, and it is the same prompt for
+`plan`, keyed on `reach` and `policy.download`, and it is the same prompt for
 every network rung. Exec capabilities are tried only in the rung matching
 their declared reach; a local exec capability precedes fetching tool managers.
-Installs use the same reach policy before spawning. Explanation stops before
-authorization and execution, so it can show a network plan under `local`.
+Installs use the same download policy before spawning. Explanation stops
+before authorization and execution, so it can show a network plan under
+`download = false`.
 
 ### 4.8 Versions
 
@@ -814,8 +811,10 @@ Rules that follow:
    the denylist. A user-trust config may set anything.
 3. **Network is a flag, and the flag has a policy.** Every rung and every
    capability declares `Reach`. `Reach::Network` plans consult
-   `policy.reach`: `Ask` prompts on a terminal, `Allow` proceeds, `Local`
-   refuses. `RUNNER_REACH=local` makes CI deterministic.
+   `policy.download`: `Ask` prompts on a terminal and refuses without one,
+   `Allow` proceeds, `Refuse` refuses. Unset, it is `Ask` on an interactive
+   terminal outside CI and `Allow` elsewhere. `RUNNER_DOWNLOAD=0` makes CI
+   deterministic.
 4. **Lifecycle scripts are a declared parameter.** `ScriptPolicy` maps to
    each provider's `ScriptSupport`. When a provider cannot honour the
    request the plan records a `Clamp` and the arrow says so.
@@ -878,10 +877,10 @@ never reimplements any of these.
 - **Env layering.** Project, tool, task, in that order, filtered by trust.
 - **Verbosity clamping.** Requested level to the strongest template the
   provider declares, recorded as a `Clamp`.
-- **Reach gate.** The prompt and the `RUNNER_REACH` policy.
-- **Labels, completion, schema, config validation.** All from the registry
-  and the declaration table.
-- **Rendering.** The arrow line, `why`, `doctor`, `--explain`, JSON, all
+- **Reach gate.** The prompt and the download policy.
+- **Labels, completion, schema, config validation.** All from the registry,
+  the clap tree and the config types.
+- **Rendering.** The arrow line, `why`, `doctor`, `--dry-run`, JSON, all
   from `Plan` and `Project`.
 - **Warnings.** One sink, one ordering, one place that decides what a quiet
   preset hides.
@@ -897,7 +896,7 @@ fn run(args) -> ExitStatus {
     let evidence = observe(&tree)?;
     let project = resolve(&tree, evidence, &policy);
     let plan = plan(&project, &Op::from(&args), &policy)?;
-    if args.explain { return render::explain(&plan); }
+    if args.dry_run { return render::explain(&plan); }
     render::arrow(&plan);
     execute(plan)
 }
@@ -917,7 +916,7 @@ the crate boundary is the boundary.
 ```text
 Cargo.toml                    workspace
 crates/
-  core/                       runner-run-core      types, pipeline, services, declaration table
+  core/                       runner-run-core      types, pipeline, services
   schemes/                    runner-run-schemes   version grammars, one module per ecosystem
   providers/                  runner-run-providers one file per provider, the registry
   cli/                        runner-run           the `runner` and `run` binaries, rendering, lsp, schema output
@@ -952,7 +951,7 @@ crates/core/src/
   lib.rs
   tree.rs        scope.rs       signal.rs      evidence.rs
   provider.rs    capability.rs  template.rs    registry.rs
-  op.rs          policy.rs      declare.rs     plan.rs
+  op.rs          policy.rs      plan.rs
   observe.rs     resolve.rs     cascade.rs     execute.rs
   probe.rs       env.rs         verbosity.rs   reach.rs
   task.rs        health.rs      warning.rs     scheme.rs
@@ -970,7 +969,8 @@ crates/cli/src/
   main.rs        bin/run.rs     args.rs
   commands/      run.rs install.rs clean.rs list.rs info.rs why.rs doctor.rs config.rs schema.rs completions.rs man.rs lsp/
   render/        arrow.rs explain.rs json.rs doctor.rs list.rs
-  config/        load.rs  (declaration table lives in core, clap glue here)
+  invocation.rs  the RUNNER_* variables derived from the clap tree
+  config/        load.rs values.rs
 ```
 
 `registry.rs` in `core` holds the `Provider` type and lookup by id, label

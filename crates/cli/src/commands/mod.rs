@@ -57,36 +57,14 @@ fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOver
     // everything detection found for `dir` by the time it spawns anything, so a
     // nested runner over the same root stays quiet instead of repeating it.
     command.env(WARNED_ROOT_ENV, dir);
-    // Propagate the *global* resolved verbosity across the process boundary so
-    // a task that shells out to `runner` again inherits it, the way
-    // `RUNNER_QUIET` already did by env inheritance but the `-q` flag did not.
-    // Exported as the numeric level and the stream label, both re-parsed by the
-    // child's env layer. Only set when non-default so we never force
-    // quiet/stderr onto a child whose own config or flags meant to leave them
-    // alone.
-    //
-    // Deliberately the global level, not a per-task
-    // `[tasks.<name>].verbosity`: per-task verbosity is scoped to *this*
-    // process's immediate host tool (it only shapes the spawned tool's flags,
-    // not this runner's own output), so crossing it into a nested runner —
-    // where it would become that runner's global level and mute *its* warnings
-    // at `very-quiet`+ — would be a surprising, asymmetric blast radius. A
-    // caller who wants nested runners quiet uses `-q`/`RUNNER_QUIET`, which is
-    // global by construction.
+    // A nested runner inherits the invocation's `-q` count, never a task's
+    // own output settings.
     if overrides.quiet_level != crate::tool::QuietLevel::Off {
         command.env("RUNNER_QUIET", overrides.quiet_level.as_count().to_string());
     }
-    if let Some(stream) = overrides
-        .host_stream
-        .filter(|stream| *stream != crate::tool::Stream::Inherit)
-    {
-        command.env("RUNNER_HOST_STREAM", stream.label());
-    }
-    // Same reasoning for the runtime axis, but only for a CLI flag or ambient
-    // env value: those are invocation-scoped and a nested `runner`/`run` should
-    // keep them. A `[runtime].js` value is repo-scoped; an env layer outranks a
-    // nested project's own config, so re-exporting it would force this repo's
-    // runtime onto another one that never asked for it.
+    // A runtime from a flag or a variable belongs to the invocation; one from
+    // runner.toml belongs to this repo, and exporting it would outrank a nested
+    // project's own config.
     if let Some(over) = overrides.runtime.as_ref()
         && over.origin.propagates_to_nested()
     {
@@ -162,11 +140,12 @@ fn set_task_stdio(
     });
 }
 
-/// Ask for network consent independently of output verbosity.
+/// Ask the user to allow a download. Without a terminal to ask on, the
+/// answer is no.
 fn confirm_fetch(name: &str, rung: &str) -> bool {
     use std::io::{self, IsTerminal, Write};
     if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
-        return true;
+        return false;
     }
     eprint!("{} may fetch via {rung}; continue? [y/N] ", name.bold());
     if io::stderr().flush().is_err() {
@@ -177,12 +156,17 @@ fn confirm_fetch(name: &str, rung: &str) -> bool {
 }
 
 fn authorize_fetch(overrides: &ResolutionOverrides, name: &str, rung: &str) -> anyhow::Result<()> {
-    if !overrides.explain
-        && !runner_core::reach::permitted(runner_core::Reach::Network, overrides.reach, || {
-            confirm_fetch(name, rung)
-        })
+    if !overrides.dry_run
+        && !runner_core::reach::permitted(
+            runner_core::Reach::Network,
+            run::core::download(overrides),
+            || confirm_fetch(name, rung),
+        )
     {
-        anyhow::bail!("{name}: fetching via {rung} refused by reach policy or user");
+        anyhow::bail!(
+            "{name}: downloading via {rung} was refused; allow it with --download or \
+             RUNNER_DOWNLOAD=1"
+        );
     }
     Ok(())
 }
@@ -327,52 +311,16 @@ fn same_root(marked: &Path, root: &Path) -> bool {
     }
 }
 
-/// Whether to wrap a run in a GitHub Actions log group: only when the user
-/// hasn't opted out (`[github].group_output`) *and* we're under GitHub
-/// Actions, so `::group::` markers never leak into a normal terminal.
-const fn should_group(group_output: bool, under_github_actions: bool) -> bool {
-    group_output && under_github_actions
-}
-
-/// Why a runner stays silent instead of opening its own Actions group,
-/// even where [`should_group`] says yes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GroupSuppression {
-    /// Nothing in the way; open the group.
-    None,
-    /// A parent runner already opened one, and Actions groups don't nest:
-    /// a nested `::endgroup::` closes the parent's fold early.
-    ParentGroupOpen,
-    /// `--quiet`, so stdout carries only what the child wrote.
-    Quiet,
-}
-
-const fn suppression(parent_group_open: bool, quiet: bool) -> GroupSuppression {
-    if quiet {
-        GroupSuppression::Quiet
-    } else if parent_group_open {
-        GroupSuppression::ParentGroupOpen
-    } else {
-        GroupSuppression::None
-    }
-}
-
-/// Pure core of [`emits_group`]: grouping on, under Actions, and nothing
-/// suppressing it. Split out from the env read so the gates are
-/// unit-testable without a live `GITHUB_ACTIONS` environment.
-const fn group_emission(
-    group_output: bool,
-    under_github_actions: bool,
-    suppression: GroupSuppression,
-) -> bool {
-    should_group(group_output, under_github_actions)
-        && matches!(suppression, GroupSuppression::None)
+/// Whether a runner opens a GitHub Actions group: groups are on, it runs
+/// under GitHub Actions, and no parent runner already opened one, since
+/// GitHub Actions groups do not nest.
+const fn group_emission(groups: bool, under_github_actions: bool, parent_group_open: bool) -> bool {
+    groups && under_github_actions && !parent_group_open
 }
 
 /// Whether *this* runner emits a GitHub Actions group around its children:
-/// grouping is on, we're under Actions, a parent runner hasn't already
-/// opened one ([`ResolutionOverrides::parent`]), and `--quiet`
-/// is off. When true, the group-opening sites fire AND children are marked
+/// groups are on, we're under Actions, and a parent runner hasn't already
+/// opened one ([`ResolutionOverrides::parent`]). When true, the group-opening sites fire AND children are marked
 /// with [`GROUP_ACTIVE_ENV`] so a nested runner suppresses its own groups.
 /// When false, no group is opened (nested output flows into the parent's
 /// group, or grouping is off).
@@ -385,14 +333,14 @@ const fn group_emission(
 /// would close around the wrong lines.
 pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
     group_emission(
-        overrides.grouping.group_output,
+        overrides.emits_groups(),
         actions_rs::env::is_github_actions(),
-        suppression(overrides.parent.group_open, !overrides.emits_groups()),
+        overrides.parent.group_open,
     )
 }
 
 /// Open a collapsible GitHub Actions log group titled `runner: {name}` when
-/// grouping is enabled (see [`should_group`]).
+/// grouping is enabled (see [`emits_group`]).
 ///
 /// The returned [`actions_rs::log::GroupGuard`] emits `::endgroup::` when it
 /// is dropped, including on the `?` error path and on panic, so callers
@@ -420,7 +368,7 @@ fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides, sink: W
 /// Whether detection warnings stay unsaid: the user asked for silence
 /// (`--no-warnings`, or `-qq`+ which folds it in), or a parent runner already
 /// said them for this root.
-const fn silenced(overrides: &ResolutionOverrides) -> bool {
+fn silenced(overrides: &ResolutionOverrides) -> bool {
     overrides.silences_warnings() || overrides.parent.warned
 }
 
@@ -525,17 +473,14 @@ pub(crate) fn task_killed_summary(elapsed: std::time::Duration) -> String {
     format!("killed after {} (sibling failed)", format_duration(elapsed))
 }
 
-/// Whether per-task chain timing is shown. Timing is diagnostic meta-output,
-/// so it follows the same mute switches as the dispatch arrow and warnings:
-/// `--quiet` / `RUNNER_QUIET` and `--no-warnings` / `RUNNER_NO_WARNINGS` each
-/// suppress it.
+/// Whether `task`'s chain timing line is shown.
 pub(crate) fn timing_enabled_for(overrides: &ResolutionOverrides, task: &str) -> bool {
-    overrides.shows_task_timing_for(task)
+    overrides.shows_timing_for(task)
 }
 
 /// Print a per-task timing line to stderr for the sequential and live
 /// (streaming) parallel paths, e.g. `· build finished in 1.2s (exit 0)`.
-/// Mirrors the dimmed `·` meta-line style used by the `--explain` trace and
+/// Mirrors the dimmed `·` meta-line style used by the `--dry-run` trace and
 /// is suppressed by [`timing_enabled_for`]. Grouped parallel output instead folds
 /// the summary into each task's block footer (see the chain executor).
 pub(crate) fn emit_task_timing(
@@ -582,52 +527,16 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::{GroupSuppression, configure_spawn, group_emission};
+    use super::{configure_spawn, group_emission};
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
 
     #[test]
-    fn group_emission_gates_on_nesting() {
-        // Exercise the pure core directly (no live GITHUB_ACTIONS needed): the
-        // nested flag is the load-bearing gate. Holding grouping on + under
-        // Actions, flipping parent.group_open flips the decision, proving the
-        // nesting suppression actually fires (a tautological test that only
-        // checked the env-false path would pass even without the gate).
-        assert!(
-            group_emission(true, true, GroupSuppression::None),
-            "grouping on + under Actions + not nested → emit"
-        );
-        assert!(
-            !group_emission(true, true, GroupSuppression::ParentGroupOpen),
-            "...but a parent's open group suppresses it (GHA groups don't nest)"
-        );
-        // The other factors still gate independently.
-        assert!(
-            !group_emission(false, true, GroupSuppression::None),
-            "grouping opted out"
-        );
-        assert!(
-            !group_emission(true, false, GroupSuppression::None),
-            "not under Actions"
-        );
-        assert!(
-            !group_emission(true, true, GroupSuppression::Quiet),
-            "--quiet keeps ::group:: off a stdout the caller is parsing",
-        );
-    }
-
-    #[test]
-    fn quiet_outranks_a_parents_open_group() {
-        use super::suppression;
-
-        // Both suppress, but they are not interchangeable: quiet means
-        // "write nothing", while a parent's group means "your output is
-        // already inside one". Reporting quiet first keeps the reason
-        // honest when a nested runner is also quiet.
-        assert_eq!(suppression(false, false), GroupSuppression::None);
-        assert_eq!(suppression(true, false), GroupSuppression::ParentGroupOpen);
-        assert_eq!(suppression(false, true), GroupSuppression::Quiet);
-        assert_eq!(suppression(true, true), GroupSuppression::Quiet);
+    fn group_emission_needs_groups_actions_and_no_open_parent_group() {
+        assert!(group_emission(true, true, false));
+        assert!(!group_emission(true, true, true));
+        assert!(!group_emission(false, true, false));
+        assert!(!group_emission(true, false, false));
     }
 
     #[test]
@@ -849,7 +758,11 @@ mod tests {
             lockfile: ProviderId::Yarn,
         }];
         let overrides = ResolutionOverrides {
-            no_warnings: true,
+            output: crate::resolver::Output {
+                invocation: crate::tool::OutputChoice::default()
+                    .with(crate::tool::RunnerOutput::Warnings, false),
+                ..crate::resolver::Output::default()
+            },
             ..ResolutionOverrides::default()
         };
         print_warning_slice(&warnings, &overrides, None);
@@ -973,31 +886,22 @@ mod tests {
         let timing_enabled =
             |overrides: &ResolutionOverrides| timing_enabled_for(overrides, "greet");
         assert!(timing_enabled(&ResolutionOverrides::default()));
-        assert!(!timing_enabled(&ResolutionOverrides {
-            output_policy: crate::tool::OutputPolicy::from_quiet(crate::tool::QuietLevel::Quiet),
-            ..ResolutionOverrides::default()
-        }));
-        assert!(!timing_enabled(&ResolutionOverrides {
-            output_policy: crate::tool::OutputPolicy {
-                runner: crate::tool::OutputPolicy::default()
-                    .runner
-                    .with(crate::tool::RunnerOutput::TaskTiming, false),
-                ..crate::tool::OutputPolicy::default()
+        let with = |invocation, project| ResolutionOverrides {
+            output: crate::resolver::Output {
+                invocation,
+                project,
+                buffer: None,
             },
             ..ResolutionOverrides::default()
-        }));
-    }
-
-    #[test]
-    fn should_group_requires_both_opt_in_and_github_actions() {
-        use super::should_group;
-
-        assert!(should_group(true, true));
-        assert!(!should_group(false, true), "config opt-out wins");
-        assert!(
-            !should_group(true, false),
-            "no grouping outside GitHub Actions"
-        );
-        assert!(!should_group(false, false));
+        };
+        let none = crate::tool::OutputChoice::default();
+        assert!(!timing_enabled(&with(
+            crate::tool::OutputChoice::preset(crate::tool::QuietLevel::Quiet),
+            none
+        )));
+        assert!(!timing_enabled(&with(
+            none,
+            none.with(crate::tool::RunnerOutput::Timing, false)
+        )));
     }
 }

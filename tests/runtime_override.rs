@@ -291,12 +291,12 @@ fn explain_names_the_runtime_and_where_it_came_from() {
         return;
     }
     let proj = probe_project("explain");
-    let output = run_in(proj.path(), &["--explain", "--runtime", "bun", "which"]);
+    let output = run_in(proj.path(), &["--dry-run", "--runtime", "bun", "which"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         stderr.contains("bun via --runtime"),
-        "--explain must attribute the runtime to its source. stderr: {stderr}",
+        "--dry-run must attribute the runtime to its source. stderr: {stderr}",
     );
 }
 
@@ -410,12 +410,12 @@ fn runtime_selects_the_exec_fallback_primitive_once_reach_is_allowed() {
     let refused = arrow_only_with(
         proj.path(),
         &["--runtime", "node", "definitely-not-a-real-tool-xyz"],
-        &[("RUNNER_REACH", "local")],
+        &[("RUNNER_DOWNLOAD", "false")],
     );
     assert!(
         !refused.status.success()
             && !String::from_utf8_lossy(&refused.stderr).contains("\u{2192} npx"),
-        "the exec rung is Reach::Network and RUNNER_REACH=local refuses it. stderr: {}",
+        "the exec rung is Reach::Network and RUNNER_DOWNLOAD=false refuses it. stderr: {}",
         String::from_utf8_lossy(&refused.stderr),
     );
 
@@ -423,7 +423,7 @@ fn runtime_selects_the_exec_fallback_primitive_once_reach_is_allowed() {
         let output = arrow_only_with(
             proj.path(),
             &["--runtime", runtime, "definitely-not-a-real-tool-xyz"],
-            &[("RUNNER_REACH", "allow")],
+            &[("RUNNER_DOWNLOAD", "true")],
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -484,12 +484,16 @@ fn a_source_that_cannot_honour_the_runtime_says_so() {
     // The invariant: get the runtime, or be told it did not apply.
     let proj = TempProject::new("unhonored").file("justfile", "build:\n\t@echo JUST-RAN\n");
 
-    let output = arrow_only(proj.path(), &["--explain", "--runtime", "bun", "build"]);
+    let output = arrow_only(proj.path(), &["--dry-run", "--runtime", "bun", "build"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        stderr.contains("warn:") && stderr.contains("--runtime bun was not applied"),
+        stderr.contains("warn:") && stderr.contains("runtime bun was not applied"),
         "an unhonourable runtime must warn. stderr: {stderr}",
+    );
+    assert!(
+        !stderr.contains("via --pm"),
+        "a runtime choice is not a package-manager choice. stderr: {stderr}",
     );
     assert!(
         stderr.contains("just"),
@@ -497,7 +501,7 @@ fn a_source_that_cannot_honour_the_runtime_says_so() {
     );
     assert!(
         stderr.contains("\u{b7} runner runtime bun not applied"),
-        "--explain must carry the same fact. stderr: {stderr}",
+        "--dry-run must carry the same fact. stderr: {stderr}",
     );
 }
 

@@ -278,17 +278,17 @@ fn explain_names_the_local_package_and_the_binary_it_picked() {
 
     let output = run_in(
         proj.path(),
-        &["--explain", "@typescript/native", "--noEmit"],
+        &["--dry-run", "@typescript/native", "--noEmit"],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         stderr.contains("tsc from") && stderr.contains("local dependency"),
-        "--explain must show which binary of which package ran. stderr: {stderr}",
+        "--dry-run must show which binary of which package ran. stderr: {stderr}",
     );
     assert!(
         stderr.contains("@typescript/native"),
-        "--explain must name the package directory. stderr: {stderr}",
+        "--dry-run must name the package directory. stderr: {stderr}",
     );
 }
 

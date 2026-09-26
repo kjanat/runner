@@ -13,9 +13,8 @@
 //!   fail, and a source anchor file can be undiscoverable.
 //! - `sources[].kind` is the source's registry label (`cargo`, `just`, …),
 //!   the same label `why` and `list` print.
-//! - `overrides.pm`/`overrides.runner` are bare labels; the provenance
-//!   (`cli`/`env`/`config:…`) remains available on the flat `list`/`info`
-//!   surface.
+//! - `overrides` reports each setting's effective value; `pm`, `runtime` and
+//!   `source` also name the layer that set them.
 //! - `project.workspace` lists the root's workspace declarations and
 //!   members; `project.root_source` is the root itself until root-anchor
 //!   detection is modeled.
@@ -31,15 +30,12 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::labels::{EcosystemLabel, PmLabel, RunnerLabel, RuntimeLabel, SourceLabel};
+use super::labels::{PmLabel, RuntimeLabel, SourceLabel};
 use crate::chain::FailurePolicy;
 use crate::commands::install::InstallPlan;
 use crate::commands::run::decision::{Observed, PmDecision};
 use crate::provider::Named;
-use crate::resolver::{
-    CollisionPolicy, FallbackPolicy, LockfilePolicy, MismatchPolicy, OutputGrouping,
-    ResolutionOverrides, ScriptPolicy,
-};
+use crate::resolver::{LockfilePolicy, OverrideOrigin, ResolutionOverrides, ScriptPolicy};
 use crate::types::{DetectionWarning, ProjectContext, Task};
 use runner_core::{Ecosystem, ProviderId};
 
@@ -145,61 +141,80 @@ struct ProjectInfo<'a> {
     workspace: Option<super::project::WorkspaceInfo<'a>>,
 }
 
-/// The overrides in effect for this run: `--pm`, `--fallback`, the
-/// `RUNNER_*` env vars, and the `runner.toml` policy sections, reported by
-/// their labels. Where each came from (CLI, env, or config) is on the
-/// `list`/`info` surface instead.
-// Covers every field on `ResolutionOverrides` except `parent`, internal
-// runner-to-runner env markers with nothing to report.
-// `every_resolution_overrides_field_is_reported_or_excluded` (bottom of
-// this file) fails the build if a new field misses both this struct and that
-// exclusion list.
+/// The settings in effect for this run, each at its effective value.
+// Covers every field on `ResolutionOverrides` except the excluded ones listed
+// in `every_resolution_overrides_field_is_reported_or_excluded`.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
 struct Overrides {
-    explain: bool,
-    fallback: FallbackPolicy,
+    dry_run: bool,
+    download: DownloadReport,
     failure_policy: FailurePolicy,
-    no_warnings: bool,
-    on_collision: CollisionPolicy,
-    output_grouping: OutputGrouping,
-    quiet: bool,
-    output: OutputPolicyReport,
-    on_mismatch: MismatchPolicy,
-    pm: Option<PmLabel>,
-    pm_by_ecosystem: BTreeMap<EcosystemLabel, PmLabel>,
-    prefer_runners: Vec<RunnerLabel>,
-    prefer_sources: Vec<SourceLabel>,
-    runner: Option<RunnerLabel>,
-    runtime: Option<RuntimeLabel>,
-    script_policy: ScriptPolicy,
-    #[schemars(extend("enum" = ["ask", "allow", "local"]))]
-    fetch: &'static str,
+    install_tools: bool,
     lockfile: LockfilePolicy,
+    script_policy: ScriptPolicy,
+    output: OutputReport,
+    pm: Option<Chosen<PmLabel>>,
+    runtime: Option<Chosen<RuntimeLabel>>,
+    source: Option<Chosen<SourceLabel>>,
     #[schemars(
         description = "Variable names each `env` layer sets, narrowest last. Values are withheld: \
                        this payload is meant to be pasted into a bug report."
     )]
     env: EnvNames,
-    #[schemars(
-        description = "`[tools.<name>].install`, the operations `runner install` runs for each \
-                       tool, in order."
-    )]
-    tool_install: BTreeMap<String, Vec<String>>,
-    task_source_pins: BTreeMap<String, Vec<SourceLabel>>,
+    #[schemars(description = "The provider choices each `[tasks.<name>]` table makes.")]
+    tasks: BTreeMap<String, TaskReport>,
+}
+
+/// A chosen provider and the layer that chose it.
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
+struct Chosen<T> {
+    value: T,
+    #[schemars(extend("enum" = ["cli", "env", "task-config", "config"]))]
+    origin: &'static str,
+}
+
+impl<T> Chosen<T> {
+    const fn new(value: T, origin: &OverrideOrigin) -> Self {
+        Self {
+            value,
+            origin: match origin {
+                OverrideOrigin::CliFlag => "cli",
+                OverrideOrigin::EnvVar => "env",
+                OverrideOrigin::TaskConfig { .. } => "task-config",
+                OverrideOrigin::ConfigFile { .. } => "config",
+            },
+        }
+    }
 }
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
-struct OutputPolicyReport {
+struct DownloadReport {
+    value: crate::config::Download,
+    #[schemars(description = "Whether a layer set it; otherwise the interactive default applies.")]
+    explicit: bool,
+}
+
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
+struct OutputReport {
     #[schemars(extend("enum" = ["off", "quiet", "very-quiet", "silent", "mute"]))]
-    level: &'static str,
+    quiet: &'static str,
     #[serde(flatten)]
     runner: crate::tool::RunnerOutputPolicy,
     #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
-    host_diagnostics: &'static str,
-    #[schemars(extend("enum" = ["inherit", "stderr"]))]
-    host_stream: &'static str,
+    tool: &'static str,
+    parallel_buffer: Option<bool>,
+}
+
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
+struct TaskReport {
+    source: Option<SourceLabel>,
+    pm: Option<PmLabel>,
+    runtime: Option<RuntimeLabel>,
 }
 
 /// One detected ecosystem and the PM decision made for it.
@@ -419,29 +434,13 @@ impl<'a> DoctorReport<'a> {
         resolve_shims: bool,
     ) -> Self {
         let observed = Observed::observe(ctx, overrides);
-        let decisions = Decisions::from_observed(ctx, &observed, overrides);
+        let decisions = Decisions::from_observed(ctx, &observed);
         let plan = crate::commands::install::plan_install(ctx, overrides);
 
-        // A collision is the install plan's verdict, not a detection fact, so
-        // it joins the diagnostics here rather than riding in `ctx.warnings`
-        // where every command would flush it. A plan that refuses to resolve
-        // reports as a diagnostic too: `doctor` has to survive the
-        // configuration it exists to explain.
+        // A plan that refuses to resolve reports as a diagnostic: `doctor`
+        // has to survive the configuration it exists to explain.
         let plan_diagnostics: Vec<Diagnostic> = match &plan {
-            Ok(plan) => plan
-                .collisions
-                .iter()
-                .map(|collision| Diagnostic {
-                    code: "install",
-                    message: crate::commands::install::collision_warning(
-                        collision.dir,
-                        &collision.writers,
-                    ),
-                    severity: Severity::Warning,
-                    source: Some("install"),
-                    task: None,
-                })
-                .collect(),
+            Ok(_) => Vec::new(),
             Err(err) => vec![Diagnostic {
                 code: "install",
                 message: err.to_string(),
@@ -526,10 +525,7 @@ impl DoctorReport<'static> {
                 root_source: EXAMPLE_ROOT.to_string(),
                 workspace: None,
             },
-            overrides: overrides_report(
-                &ResolutionOverrides::from_sources(&crate::resolver::OverrideSources::default())
-                    .expect("overrides without sources build"),
-            ),
+            overrides: overrides_report(&ResolutionOverrides::default()),
             ecosystems: vec![example_node_ecosystem()],
             sources: vec![
                 example_source(ProviderId::PackageJson, "package.json", Some("scripts")),
@@ -659,10 +655,10 @@ fn resolution_policy() -> ResolutionPolicy {
         fqn_policy: "exact-only",
         precedence: vec![
             "nearest-scope",
-            "task-pin",
-            "chosen-runner",
-            "prefer-list",
+            "qualified-source",
+            "chosen-source",
             "chosen-dispatcher",
+            "package-manager",
             "dispatch-order",
             "task-priority",
             "provider",
@@ -725,57 +721,51 @@ fn env_names(layers: &BTreeMap<String, BTreeMap<String, String>>) -> BTreeMap<St
 }
 
 fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
+    let output = overrides.output_for(None);
     Overrides {
-        explain: overrides.explain,
-        fallback: overrides.fallback,
-        failure_policy: overrides.failure_policy,
-        no_warnings: overrides.no_warnings,
-        on_collision: overrides.on_collision,
-        output_grouping: overrides.grouping,
-        quiet: overrides.quiet_level != crate::tool::QuietLevel::Off,
-        output: OutputPolicyReport {
-            level: overrides.quiet_level.label(),
-            runner: overrides.runner_output_for(None),
-            host_diagnostics: overrides.output_policy.host_diagnostics.label(),
-            host_stream: overrides.global_host_stream().label(),
+        dry_run: overrides.dry_run,
+        download: DownloadReport {
+            value: overrides.download.value,
+            explicit: overrides.download.explicit,
         },
-        on_mismatch: overrides.on_mismatch,
-        pm: overrides.pm.as_ref().map(|o| PmLabel(o.pm)),
-        pm_by_ecosystem: overrides
-            .pm_by_ecosystem
-            .iter()
-            .map(|(&eco, o)| (EcosystemLabel(eco), PmLabel(o.pm)))
-            .collect(),
-        prefer_runners: overrides
-            .prefer_runners
-            .iter()
-            .copied()
-            .map(RunnerLabel)
-            .collect(),
-        prefer_sources: overrides
-            .prefer_sources
-            .iter()
-            .copied()
-            .map(SourceLabel)
-            .collect(),
-        runner: overrides.runner.as_ref().map(|o| RunnerLabel(o.runner)),
-        runtime: overrides.runtime.as_ref().map(|o| RuntimeLabel(o.runtime)),
-        script_policy: overrides.script_policy,
-        fetch: overrides.reach.label(),
+        failure_policy: overrides.failure_policy,
+        install_tools: overrides.install_tools,
         lockfile: overrides.lockfile,
+        script_policy: overrides.script_policy,
+        output: OutputReport {
+            quiet: overrides.quiet_level.label(),
+            runner: output.runner,
+            tool: output.tool.label(),
+            parallel_buffer: overrides.output.buffer,
+        },
+        pm: overrides
+            .pm
+            .as_ref()
+            .map(|chosen| Chosen::new(PmLabel(chosen.pm), &chosen.origin)),
+        runtime: overrides
+            .runtime
+            .as_ref()
+            .map(|chosen| Chosen::new(RuntimeLabel(chosen.runtime), &chosen.origin)),
+        source: overrides
+            .source
+            .as_ref()
+            .map(|chosen| Chosen::new(SourceLabel(chosen.source), &chosen.origin)),
         env: EnvNames {
             project: overrides.env.project.keys().cloned().collect(),
             tool: env_names(&overrides.env.tool),
             task: env_names(&overrides.env.task),
         },
-        tool_install: overrides.tool_install.clone(),
-        task_source_pins: overrides
-            .task_source_overrides
+        tasks: overrides
+            .tasks
             .iter()
-            .map(|(name, sources)| {
+            .map(|(name, task)| {
                 (
                     name.clone(),
-                    sources.iter().copied().map(SourceLabel).collect(),
+                    TaskReport {
+                        source: task.source.map(SourceLabel),
+                        pm: task.pm.map(PmLabel),
+                        runtime: task.runtime.map(RuntimeLabel),
+                    },
                 )
             })
             .collect(),
@@ -793,7 +783,6 @@ impl Decisions {
     pub(crate) fn from_observed(
         ctx: &ProjectContext,
         observed: &std::io::Result<Observed>,
-        overrides: &ResolutionOverrides,
     ) -> Self {
         let sources = super::project::dispatched_sources(ctx, observed.as_ref().ok());
         let Ok(observed) = observed else {
@@ -810,7 +799,7 @@ impl Decisions {
         let warnings = sources
             .iter()
             .filter_map(|(_, decision)| decision.as_ref())
-            .flat_map(|decision| decision.warnings(&observed.project, overrides))
+            .flat_map(|decision| decision.warnings(&observed.project))
             .collect();
         Self {
             sources,
@@ -1165,7 +1154,7 @@ fn conflicts(
                 "{count} sources define `{name}`; {source} runs because {why}",
                 count = group.len(),
                 source = selected.source.label(),
-                why = crate::commands::run::core::rank_reason(&observed.policy, &ranked),
+                why = crate::commands::run::core::rank_reason(&ranked),
             );
             Some(Conflict::DuplicateTaskName {
                 reason,
@@ -1217,7 +1206,7 @@ pub(crate) fn provider_diagnostics(
     overrides: &ResolutionOverrides,
 ) -> Vec<Diagnostic> {
     let tree = crate::commands::run::core::tree(ctx);
-    let policy = crate::commands::run::core::policy(overrides);
+    let policy = crate::commands::run::core::policy(overrides, None);
     let project = match crate::commands::run::core::project(ctx) {
         Ok(project) => project,
         Err(error) => {
@@ -1363,9 +1352,8 @@ mod tests {
 
         assert_eq!(json["kind"], "runner.doctor");
         assert_eq!(json["schema_version"], 1);
-        assert_eq!(json["overrides"]["output"]["level"], "off");
+        assert_eq!(json["overrides"]["output"]["quiet"], "off");
         assert_eq!(json["overrides"]["output"]["fatal_errors"], true);
-        assert_eq!(json["overrides"]["quiet"], false);
         assert!(
             json["$schema"]
                 .as_str()
@@ -1486,18 +1474,14 @@ mod tests {
 
     #[test]
     fn forced_runtime_previews_package_json_scripts_through_the_runtime() {
-        // A forced runtime dispatches package.json scripts through its own
-        // runner; `resolved` must match that, not the resolved PM's command.
-        let overrides = ResolutionOverrides::from_cli_and_env(
-            crate::resolver::CliOverrides {
-                runtime: Some("bun"),
-                ..crate::resolver::CliOverrides::default()
+        let overrides = ResolutionOverrides::resolve(
+            &crate::resolver::Invocation {
+                runtime: Some((ProviderId::Bun, crate::invocation::Origin::Cli)),
+                ..crate::resolver::Invocation::default()
             },
-            crate::resolver::DiagnosticFlags::default(),
-            crate::args::ChainFailureFlags::default(),
             None,
         )
-        .expect("runtime override should parse");
+        .expect("runtime override resolves");
         let mut ctx = context(vec![task("build", ProviderId::PackageJson)]);
         crate::tool::test_support::declare(&mut ctx, ProviderId::Bun);
         crate::tool::test_support::seed_context(&mut ctx);
@@ -1511,7 +1495,8 @@ mod tests {
             .find(|t| t["name"] == "build")
             .expect("build task present");
         assert_eq!(build["resolved"], "bun --bun run build");
-        assert_eq!(json["overrides"]["runtime"], "bun");
+        assert_eq!(json["overrides"]["runtime"]["value"], "bun");
+        assert_eq!(json["overrides"]["runtime"]["origin"], "cli");
     }
 
     #[test]
@@ -1529,27 +1514,22 @@ mod tests {
     }
 
     #[test]
-    fn report_surfaces_previously_missing_override_fields() {
-        use std::collections::BTreeMap;
-
+    fn report_surfaces_every_setting() {
         use crate::chain::FailurePolicy;
         use crate::resolver::ScriptPolicy;
 
         let overrides = ResolutionOverrides {
-            failure_policy: FailurePolicy::KeepGoing,
-            grouping: crate::resolver::OutputGrouping {
-                group_output: false,
-                github_group_parallel: false,
-                parallel_grouped: true,
-            },
-            tool_install: [
-                ("npm".into(), vec!["install".into()]),
-                ("pnpm".into(), Vec::new()),
-            ]
-            .into(),
+            failure_policy: FailurePolicy::Continue,
             script_policy: ScriptPolicy::Deny,
-            prefer_sources: vec![ProviderId::Just, ProviderId::Cargo],
-            task_source_overrides: BTreeMap::from([("build".to_string(), vec![ProviderId::Just])]),
+            install_tools: false,
+            tasks: [(
+                "build".to_string(),
+                crate::resolver::TaskChoice {
+                    source: Some(ProviderId::Just),
+                    ..crate::resolver::TaskChoice::default()
+                },
+            )]
+            .into(),
             ..ResolutionOverrides::default()
         };
 
@@ -1558,17 +1538,11 @@ mod tests {
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let ov = &json["overrides"];
-        assert_eq!(ov["failure_policy"], "keep-going");
-        assert_eq!(ov["output_grouping"]["group_output"], false);
-        assert_eq!(ov["output_grouping"]["github_group_parallel"], false);
-        assert_eq!(ov["output_grouping"]["parallel_grouped"], true);
-        assert_eq!(
-            ov["tool_install"],
-            serde_json::json!({"npm": ["install"], "pnpm": []})
-        );
+        assert_eq!(ov["failure_policy"], "continue");
         assert_eq!(ov["script_policy"], "deny");
-        assert_eq!(ov["prefer_sources"], serde_json::json!(["just", "cargo"]));
-        assert_eq!(ov["task_source_pins"]["build"], serde_json::json!(["just"]));
+        assert_eq!(ov["install_tools"], false);
+        assert_eq!(ov["tasks"]["build"]["source"], "just");
+        assert_eq!(ov["output"]["timing"], true);
     }
 
     /// Drift guard: every field on [`ResolutionOverrides`] must appear
@@ -1581,29 +1555,11 @@ mod tests {
     /// Fields reported under another name are listed in `RENAMED`.
     #[test]
     fn every_resolution_overrides_field_is_reported_or_excluded() {
-        // Internal runner-to-runner plumbing (inherited env markers),
-        // never user overrides, nothing meaningful to report.
-        // `parent_*` are internal runner-to-runner plumbing. `host_stream` and
-        // `task_verbosity` are the host-tool verbosity knobs, which affect the
-        // spawned tool's flags rather than runner's own resolution, so they're
-        // not part of the doctor resolution report (the runner-facing quiet
-        // level still is, as `quiet`).
-        const EXCLUDED: &[&str] = &[
-            "package",
-            "parent",
-            "host_stream",
-            "task_verbosity",
-            "host_diagnostics_explicit",
-        ];
+        // `package` names one invocation's binary, `parent` is runner-to-runner
+        // plumbing and `config` is the file path the report already carries.
+        const EXCLUDED: &[&str] = &["package", "parent", "config"];
         // Resolver field name -> name it's actually reported under.
-        const RENAMED: &[(&str, &str)] = &[
-            ("reach", "fetch"),
-            ("grouping", "output_grouping"),
-            ("task_source_overrides", "task_source_pins"),
-            ("quiet_level", "quiet"),
-            ("output_policy", "output"),
-            ("host_stream_config", "output"),
-        ];
+        const RENAMED: &[(&str, &str)] = &[("quiet_level", "output")];
 
         // One list, two jobs: exhaustively destructure ResolutionOverrides
         // (a new field fails to compile until added here) and name the
@@ -1617,31 +1573,20 @@ mod tests {
         let resolution_overrides_fields = resolution_overrides_fields![
             pm,
             package,
-            pm_by_ecosystem,
-            runner,
+            source,
             runtime,
-            prefer_runners,
-            prefer_sources,
-            task_source_overrides,
-            fallback,
-            on_mismatch,
-            no_warnings,
             quiet_level,
-            host_diagnostics_explicit,
-            output_policy,
-            host_stream,
-            host_stream_config,
-            task_verbosity,
-            explain,
+            output,
+            dry_run,
             failure_policy,
-            grouping,
             script_policy,
-            on_collision,
-            parent,
-            env,
-            tool_install,
-            reach,
             lockfile,
+            install_tools,
+            download,
+            env,
+            tasks,
+            config,
+            parent,
         ];
 
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
@@ -1670,31 +1615,5 @@ mod tests {
                  {reported_name:?}) nor on the EXCLUDED allowlist, add it to one"
             );
         }
-    }
-
-    #[test]
-    fn pm_by_ecosystem_schema_keys_stay_closed() {
-        let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
-            .expect("Overrides schema should serialize");
-        let map_schema = &schema["properties"]["pm_by_ecosystem"];
-
-        assert_eq!(
-            map_schema["additionalProperties"],
-            serde_json::json!(false),
-            "pm_by_ecosystem must reject unknown keys"
-        );
-        let keys: Vec<&str> = map_schema["properties"]
-            .as_object()
-            .expect("pm_by_ecosystem must enumerate its keys")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        let mut expected: Vec<&str> = crate::provider::package_managers()
-            .into_iter()
-            .map(|pm| pm.ecosystem().label())
-            .collect();
-        expected.sort_unstable();
-        expected.dedup();
-        assert_eq!(keys, expected);
     }
 }

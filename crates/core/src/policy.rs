@@ -63,49 +63,15 @@ pub enum ScriptPolicy {
     Allow,
 }
 
-/// What to do with a plan that can fetch.
+/// Whether a plan that downloads may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum ReachPolicy {
-    /// Prompt on a terminal.
+pub enum Download {
+    /// Run it after the user confirms.
     #[default]
     Ask,
-    /// Proceed.
+    /// Run it.
     Allow,
-    /// Refuse.
-    Local,
-}
-
-impl ReachPolicy {
-    /// Every value, in the order the declaration table lists them.
-    pub const ALL: [Self; 3] = [Self::Ask, Self::Allow, Self::Local];
-
-    /// The `RUNNER_REACH` spelling.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Ask => "ask",
-            Self::Allow => "allow",
-            Self::Local => "local",
-        }
-    }
-
-    /// The value `label` spells.
-    #[must_use]
-    pub fn from_label(label: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|value| value.label() == label.trim())
-    }
-}
-
-/// What to do when a manifest declares one package manager and a lockfile
-/// beside it pins another.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum OnMismatch {
-    /// Take the manifest's word.
-    #[default]
-    Proceed,
-    /// Refuse until a policy layer settles it.
+    /// Refuse it.
     Refuse,
 }
 
@@ -124,32 +90,23 @@ pub enum TrustPolicy {
 pub struct Policy {
     /// The package manager per ecosystem.
     pub pm: PerEcosystem<Choice>,
-    /// The task runner.
-    pub runner: Option<Choice>,
-    /// Preferred task sources, in order; other sources remain candidates.
-    pub prefer: Vec<ProviderId>,
-    /// Per-task source rankings from configuration.
-    pub task_sources: BTreeMap<String, Vec<ProviderId>>,
+    /// The task source that must supply the task.
+    pub source: Option<Choice>,
     /// The runtime.
     pub runtime: Option<Choice>,
+    /// Providers a task's own settings choose, present when only `PATH`
+    /// shows them.
+    pub named: Vec<ProviderId>,
     /// Whether installs must not touch the lockfile.
     pub frozen: bool,
     /// What to do with lifecycle scripts.
     pub scripts: ScriptPolicy,
-    /// What to do with a plan that can fetch.
-    pub reach: ReachPolicy,
+    /// Whether a plan that downloads may run.
+    pub download: Download,
     /// The host diagnostic level.
     pub verbosity: Verbosity,
-    /// Divert host diagnostics to stderr where the provider supports it.
-    pub host_stderr: bool,
     /// Environment layers.
     pub env: EnvLayers,
-    /// The operations each tool manager runs on install.
-    pub tool_ops: BTreeMap<ProviderId, Vec<String>>,
     /// Which trust repository config acts at.
     pub trust: TrustPolicy,
-    /// Refuse instead of taking a package manager from `PATH` for a task source.
-    pub strict: bool,
-    /// What to do when a manifest and a lockfile disagree.
-    pub on_mismatch: OnMismatch,
 }

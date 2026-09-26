@@ -27,7 +27,8 @@ pub const PROVIDER: Provider = Provider {
     hooks: Hooks::NONE,
 };
 
-/// The directory holding the `volta` on `PATH`, plus `$VOLTA_HOME/bin`.
+/// The directory holding the `volta` executable the one on `PATH` resolves
+/// to, plus `$VOLTA_HOME/bin`.
 fn shim_dirs() -> Vec<PathBuf> {
     dirs_from(
         runner_core::probe_with("volta", &[]).as_deref(),
@@ -37,8 +38,9 @@ fn shim_dirs() -> Vec<PathBuf> {
 
 fn dirs_from(volta: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = volta
-        .and_then(Path::parent)
-        .map(Path::to_path_buf)
+        .map(|volta| volta.canonicalize().unwrap_or_else(|_| volta.to_path_buf()))
+        .filter(|volta| volta.file_stem().is_some_and(|stem| stem == "volta"))
+        .and_then(|volta| volta.parent().map(Path::to_path_buf))
         .into_iter()
         .chain(home.map(|home| home.join("bin")))
         .map(|dir| dir.canonicalize().unwrap_or(dir))
@@ -103,6 +105,18 @@ mod tests {
             ]
         );
         assert_eq!(dirs_from(None, None), Vec::<PathBuf>::new());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_volta_that_links_to_another_program_is_not_a_shim_dir() {
+        let shims = TempDir::new("volta-foreign-shims");
+        let mise = shims.path().join("mise");
+        std::fs::write(&mise, "").expect("mise stub");
+        let volta = shims.path().join("volta");
+        std::os::unix::fs::symlink(&mise, &volta).expect("volta link");
+
+        assert_eq!(dirs_from(Some(&volta), None), Vec::<PathBuf>::new());
     }
 
     #[test]

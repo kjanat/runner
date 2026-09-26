@@ -68,6 +68,7 @@ mod commands;
 mod complete;
 mod config;
 mod detect;
+mod invocation;
 mod provider;
 mod render;
 mod resolver;
@@ -80,7 +81,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
-use clap::{CommandFactory, FromArgMatches};
+use clap::CommandFactory;
 use colored::Colorize;
 
 use resolver::ResolveError;
@@ -141,7 +142,7 @@ pub fn runner_error_is_muted() -> bool {
             quiet_level_from_args(args, args::TaskPosition::AfterRunSubcommand)
                 == tool::QuietLevel::Mute
         },
-        |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
+        |parsed| quiet_level_for_error(parsed.cli.global.quiet) == tool::QuietLevel::Mute,
     )
 }
 
@@ -157,7 +158,7 @@ pub fn run_alias_error_is_muted() -> bool {
     let args: Vec<OsString> = std::env::args_os().collect();
     parse_run_alias_cli(args.clone()).map_or_else(
         |_| quiet_level_from_args(args, args::TaskPosition::First) == tool::QuietLevel::Mute,
-        |cli| quiet_level_for_error(cli.global.quiet) == tool::QuietLevel::Mute,
+        |parsed| quiet_level_for_error(parsed.cli.global.quiet) == tool::QuietLevel::Mute,
     )
 }
 
@@ -167,8 +168,8 @@ fn quiet_level_for_error(cli_count: u8) -> tool::QuietLevel {
     }
     std::env::var("RUNNER_QUIET")
         .ok()
-        .as_deref()
-        .and_then(resolver::parse_quiet_env)
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(|count| tool::QuietLevel::from_count(u8::try_from(count).unwrap_or(u8::MAX)))
         .unwrap_or_default()
 }
 
@@ -271,11 +272,11 @@ where
         original_args.clone(),
         args::TaskPosition::AfterRunSubcommand,
     );
-    let cli = match parse_cli(original_args.clone()) {
-        Ok(cli) => cli,
+    let parsed = match parse_cli(original_args.clone()) {
+        Ok(parsed) => parsed,
         Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
     };
-    if let Some(request) = version_request(&cli.version, cli.global.quiet) {
+    if let Some(request) = version_request(&parsed.cli.version, parsed.cli.global.quiet) {
         println!(
             "{}",
             version_output(&original_args, request, std::io::stdout().is_terminal())
@@ -285,21 +286,48 @@ where
     // The language server parses each editor buffer itself and needs neither a
     // resolved project dir nor detection; handle it before either can bail.
     #[cfg(feature = "lsp")]
-    if matches!(cli.command.as_ref(), Some(args::Command::Lsp)) {
+    if matches!(parsed.cli.command.as_ref(), Some(args::Command::Lsp)) {
         return commands::lsp::run();
     }
-    let project_dir = resolve_project_dir(
-        configured_project_dir(
-            cli.global.project_dir.as_deref(),
-            std::env::var_os("RUNNER_DIR").as_deref(),
-        )
-        .as_deref(),
-        dir,
-    )?;
-    dispatch(cli, &project_dir)
+    let doctor = matches!(parsed.cli.command, Some(args::Command::Doctor { .. }));
+    let env_warnings = env_issues(&parsed, doctor)?;
+    let project_dir = resolve_project_dir(parsed.cli.global.project_dir.as_deref(), dir)?;
+    dispatch(parsed.cli, &parsed.origins, env_warnings, &project_dir)
 }
 
-fn parse_cli<I, T>(args: I) -> Result<args::Cli, clap::Error>
+/// Every variable whose value its flag rejects, as warnings for `doctor`.
+///
+/// # Errors
+/// For any other command, the first such variable this invocation reads and
+/// no command-line value overrides.
+fn env_issues<P>(
+    parsed: &invocation::Parsed<P>,
+    doctor: bool,
+) -> Result<Vec<types::DetectionWarning>> {
+    if !doctor && let Some(issue) = parsed.blocking_issues().next() {
+        bail!(
+            "{}={}: {}",
+            issue.var,
+            invocation::sanitize(&issue.raw),
+            invocation::sanitize_message(&issue.raw, &issue.message)
+        );
+    }
+    Ok(if doctor {
+        parsed
+            .env_issues
+            .iter()
+            .map(|issue| types::DetectionWarning::InvalidEnvOverride {
+                var: issue.var.clone(),
+                raw: invocation::sanitize(&issue.raw),
+                message: invocation::sanitize_message(&issue.raw, &issue.message),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    })
+}
+
+fn parse_cli<I, T>(args: I) -> Result<invocation::Parsed<args::Cli>, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -308,16 +336,20 @@ where
     let args = args::forward_args_after_task(&args, args::TaskPosition::AfterRunSubcommand)
         .unwrap_or(args);
 
-    let mut command = configure_cli_command(args::Cli::command(), std::io::stdout().is_terminal());
+    let mut command = configure_cli_command(
+        invocation::bind(args::Cli::command(), invocation::PREFIX),
+        std::io::stdout().is_terminal(),
+    );
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
         command = command.name(bin_name.clone()).bin_name(bin_name);
     }
     let args = prioritize_top_level_help(args, &command);
     command = shorten_help_subcommand(command);
 
-    let matches = command.try_get_matches_from_mut(args)?;
-    let parsed = args::Cli::from_arg_matches(&matches)?;
-    if version_request(&parsed.version, parsed.global.quiet).is_some() && parsed.command.is_some() {
+    let parsed = invocation::parse::<args::Cli>(command.clone(), args)?;
+    if version_request(&parsed.cli.version, parsed.cli.global.quiet).is_some()
+        && parsed.cli.command.is_some()
+    {
         return Err(command.error(
             clap::error::ErrorKind::ArgumentConflict,
             "a version selector cannot be used with a command",
@@ -457,30 +489,23 @@ where
     let original_args: Vec<OsString> = args.into_iter().map(Into::into).collect();
 
     let quiet_level = quiet_level_from_args(original_args.clone(), args::TaskPosition::First);
-    let cli = match parse_run_alias_cli(original_args.clone()) {
-        Ok(cli) => cli,
+    let parsed = match parse_run_alias_cli(original_args.clone()) {
+        Ok(parsed) => parsed,
         Err(err) => return render_clap_error(&err, quiet_level == tool::QuietLevel::Mute),
     };
-    if let Some(request) = version_request(&cli.version, cli.global.quiet) {
+    if let Some(request) = version_request(&parsed.cli.version, parsed.cli.global.quiet) {
         println!(
             "{}",
             version_output(&original_args, request, std::io::stdout().is_terminal())
         );
         return Ok(0);
     }
-
-    let project_dir = resolve_project_dir(
-        configured_project_dir(
-            cli.global.project_dir.as_deref(),
-            std::env::var_os("RUNNER_DIR").as_deref(),
-        )
-        .as_deref(),
-        dir,
-    )?;
-    dispatch_run_alias(cli, &project_dir)
+    let env_warnings = env_issues(&parsed, false)?;
+    let project_dir = resolve_project_dir(parsed.cli.global.project_dir.as_deref(), dir)?;
+    dispatch_run_alias(parsed.cli, &parsed.origins, env_warnings, &project_dir)
 }
 
-fn parse_run_alias_cli<I, T>(args: I) -> Result<args::RunAliasCli, clap::Error>
+fn parse_run_alias_cli<I, T>(args: I) -> Result<invocation::Parsed<args::RunAliasCli>, clap::Error>
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -489,7 +514,7 @@ where
     let args = args::forward_args_after_task(&args, args::TaskPosition::First).unwrap_or(args);
 
     let mut command = configure_cli_command(
-        args::RunAliasCli::command(),
+        invocation::bind(args::RunAliasCli::command(), "RUNNER_RUN"),
         std::io::stdout().is_terminal(),
     );
     if let Some(bin_name) = args.first().and_then(bin_name_from_arg0) {
@@ -497,15 +522,15 @@ where
     }
     let args = prioritize_top_level_help(args, &command);
 
-    let matches = command.try_get_matches_from_mut(args)?;
-    let parsed = args::RunAliasCli::from_arg_matches(&matches)?;
-    let has_task_action = parsed.task.is_some()
-        || !parsed.args.is_empty()
-        || parsed.mode.sequential
-        || parsed.mode.parallel
-        || parsed.failure.keep_going
-        || parsed.failure.kill_on_fail;
-    if version_request(&parsed.version, parsed.global.quiet).is_some() && has_task_action {
+    let parsed = invocation::parse::<args::RunAliasCli>(command.clone(), args)?;
+    let cli = &parsed.cli;
+    let has_task_action = cli.task.is_some()
+        || !cli.args.is_empty()
+        || cli.mode.sequential
+        || cli.mode.parallel
+        || cli.global.failure.keep_going
+        || cli.global.failure.kill_on_fail;
+    if version_request(&cli.version, cli.global.quiet).is_some() && has_task_action {
         return Err(command.error(
             clap::error::ErrorKind::ArgumentConflict,
             "a version selector cannot be used with a task or chain option",
@@ -536,8 +561,13 @@ where
 /// total and compiler-checked and, crucially, leaves the alias's task-argument
 /// forwarding untouched. Re-parsing through [`args::Command::Run`] would lose
 /// the delimiter placement already established by the alias parse layer.
-fn dispatch_run_alias(cli: args::RunAliasCli, dir: &Path) -> Result<i32> {
-    let bare = cli.task.is_none() && !cli.mode.sequential && !cli.mode.parallel;
+fn dispatch_run_alias(
+    cli: args::RunAliasCli,
+    origins: &invocation::Origins,
+    env_warnings: Vec<types::DetectionWarning>,
+    dir: &Path,
+) -> Result<i32> {
+    let bare = cli.task.is_none() && cli.mode.mode().is_none();
     let command = if bare {
         None
     } else {
@@ -545,7 +575,6 @@ fn dispatch_run_alias(cli: args::RunAliasCli, dir: &Path) -> Result<i32> {
             task: cli.task,
             args: cli.args,
             mode: cli.mode,
-            failure: cli.failure,
         })
     };
     dispatch(
@@ -554,6 +583,8 @@ fn dispatch_run_alias(cli: args::RunAliasCli, dir: &Path) -> Result<i32> {
             version: cli.version,
             command,
         },
+        origins,
+        env_warnings,
         dir,
     )
 }
@@ -681,7 +712,7 @@ pub fn help_byline(stdout_is_terminal: bool) -> String {
 #[must_use]
 pub fn requests_version(args: &[OsString]) -> bool {
     parse_cli(args.iter().cloned())
-        .is_ok_and(|parsed| version_request(&parsed.version, parsed.global.quiet).is_some())
+        .is_ok_and(|parsed| version_request(&parsed.cli.version, parsed.cli.global.quiet).is_some())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -825,15 +856,6 @@ fn osc8_link(label: &str, url: &str) -> String {
     format!("\u{1b}]8;;{url}\u{1b}\\{label}\u{1b}]8;;\u{1b}\\")
 }
 
-fn configured_project_dir(
-    project_dir: Option<&Path>,
-    env_dir: Option<&std::ffi::OsStr>,
-) -> Option<PathBuf> {
-    project_dir
-        .map(Path::to_path_buf)
-        .or_else(|| env_dir.map(PathBuf::from))
-}
-
 /// Expand a leading `~` (or `~/`) in a path to the user's home directory.
 ///
 /// Shells only expand an unquoted tilde when it is the first character of a
@@ -901,41 +923,34 @@ fn render_clap_error(err: &clap::Error, muted: bool) -> Result<i32> {
 fn dispatch_install(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
-    flags: commands::install::InstallFlags,
     mode: args::ChainModeFlags,
-    failure: args::ChainFailureFlags,
     tasks: &[String],
 ) -> Result<i32> {
     if !tasks.is_empty() {
-        return dispatch_install_chain(ctx, overrides, flags, mode, tasks);
+        return dispatch_install_chain(ctx, overrides, mode, tasks);
     }
-    // The chain flags govern nothing without task names; say so rather than
-    // silently swallowing a `-p`/`-k` the user expected to matter.
-    if overrides.shows_progress()
-        && (mode.sequential || mode.parallel || failure.keep_going || failure.kill_on_fail)
-    {
+    if overrides.shows_progress() && mode.mode().is_some() {
         eprintln!(
-            "{} chain flags (-s/-p/-k/-K) have no effect without post-install task names",
+            "{} chain flags (-s/-p) have no effect without post-install task names",
             "note:".dimmed(),
         );
     }
-    commands::install(ctx, overrides, flags)
+    commands::install(ctx, overrides)
 }
 
 fn dispatch_install_chain(
     ctx: &types::ProjectContext,
     overrides: &resolver::ResolutionOverrides,
-    flags: commands::install::InstallFlags,
     mode: args::ChainModeFlags,
     tasks: &[String],
 ) -> Result<i32> {
     let items = chain::parse::parse_task_list(tasks)?;
 
-    if !mode.parallel {
+    if mode.mode() != Some(chain::ChainMode::Parallel) {
         // Sequential (default): install is the chain head, then tasks run in
         // order. `run_chain` pre-flights the task tokens *before* install, so
         // a typo'd task name aborts ahead of the slow install step.
-        let mut all = vec![chain::ChainItem::install(flags)];
+        let mut all = vec![chain::ChainItem::install()];
         all.extend(items);
         return chain::exec::run_chain(
             ctx,
@@ -948,25 +963,13 @@ fn dispatch_install_chain(
         );
     }
 
-    // Parallel post-install: install must finish first (it's the prerequisite,
-    // and the parallel executor refuses an install item as a sibling). So run
-    // install as the sequential head, then fan the tasks out in parallel.
-    // Pre-flight the task tokens up front to preserve the "typo aborts before
-    // install" guarantee the sequential path gets for free. `run_chain` below
-    // re-prechecks (it can't assume a caller did), but that pass runs after
-    // install; this loop is what gates the slow install. precheck_task is
-    // side-effect-free, so the redundant second pass is harmless.
+    // Install is the prerequisite of every parallel task, so it runs first;
+    // pre-flight the task tokens so a typo aborts before the slow install.
     for task in tasks {
         commands::run::precheck_task(ctx, overrides, task)?;
     }
-    // Time the install step the same way the sequential path's synthetic
-    // install head is (run_chain -> emit_task_timing). Without this the
-    // imperative parallel pre-install bypasses the timing path, so
-    // `runner install -p ...` would print per-task timing but none for install
-    // while `-s` does. "install" matches ChainItem::install(..).display_name();
-    // emit_task_timing self-gates via the task-timing output category.
     let started = std::time::Instant::now();
-    let install_code = commands::install(ctx, overrides, flags)?;
+    let install_code = commands::install(ctx, overrides)?;
     let install_elapsed = started.elapsed();
     commands::emit_task_timing(
         overrides,
@@ -996,12 +999,7 @@ fn dispatch_run(
     args: Vec<String>,
     mode: args::ChainModeFlags,
 ) -> Result<i32> {
-    if mode.sequential || mode.parallel {
-        let chain_mode = if mode.parallel {
-            chain::ChainMode::Parallel
-        } else {
-            chain::ChainMode::Sequential
-        };
+    if let Some(chain_mode) = mode.mode() {
         let mut positionals: Vec<String> = Vec::new();
         if let Some(t) = task {
             positionals.push(t);
@@ -1039,22 +1037,69 @@ fn run_builtin(
     out: &mut render::out::Out<'_>,
     sink: commands::WarningSink<'_>,
 ) -> Result<i32> {
-    let parsed = match <BuiltinArgs as clap::Parser>::try_parse_from(
-        ["runner", name]
-            .into_iter()
-            .chain(args.iter().map(String::as_str)),
+    let words = ["runner", name]
+        .into_iter()
+        .chain(args.iter().map(String::as_str))
+        .map(OsString::from)
+        .collect();
+    let parsed = match invocation::parse::<BuiltinArgs>(
+        invocation::bind(BuiltinArgs::command(), invocation::PREFIX),
+        words,
     ) {
         Ok(parsed) => parsed,
         Err(error) => return write_clap_error(&error, !overrides.shows_errors(), out),
     };
+    if let Some(issue) = parsed.blocking_issues().next() {
+        bail!(
+            "{}={}: {}",
+            issue.var,
+            invocation::sanitize(&issue.raw),
+            invocation::sanitize_message(&issue.raw, &issue.message)
+        );
+    }
+    let mut effective = overrides.clone();
+    apply_install_switches(&mut effective, &parsed.cli.command, &parsed.origins);
     dispatch_builtin(
         ctx,
-        overrides,
-        parsed.command,
-        parsed.schema_version,
+        &effective,
+        parsed.cli.command,
+        parsed.cli.schema_version,
         out,
         sink,
     )
+}
+
+/// Apply a chained `install`'s own switches over the invocation's settings.
+fn apply_install_switches(
+    overrides: &mut resolver::ResolutionOverrides,
+    command: &args::Command,
+    origins: &invocation::Origins,
+) {
+    let args::Command::Install {
+        frozen,
+        no_frozen,
+        scripts,
+        no_scripts,
+        tools,
+        no_tools,
+        ..
+    } = command
+    else {
+        return;
+    };
+    if let Some((frozen, _)) = origins.switch("frozen", *frozen, *no_frozen) {
+        overrides.lockfile = if frozen {
+            resolver::LockfilePolicy::Frozen
+        } else {
+            resolver::LockfilePolicy::Update
+        };
+    }
+    if let Some((scripts, _)) = origins.switch("scripts", *scripts, *no_scripts) {
+        overrides.script_policy = resolver::ScriptPolicy::from_setting(scripts);
+    }
+    if let Some((tools, _)) = origins.switch("tools", *tools, *no_tools) {
+        overrides.install_tools = tools;
+    }
 }
 
 fn write_clap_error(err: &clap::Error, muted: bool, out: &mut render::out::Out<'_>) -> Result<i32> {
@@ -1085,17 +1130,7 @@ fn dispatch_builtin(
     out: &mut render::out::Out<'_>,
     sink: commands::WarningSink<'_>,
 ) -> Result<i32> {
-    let mut effective = overrides.clone();
-    apply_script_policy_flags(Some(&command), &mut effective);
-    if let args::Command::Install { failure, .. } = &command {
-        if failure.kill_on_fail {
-            effective.failure_policy = chain::FailurePolicy::KillOnFail;
-        } else if failure.keep_going {
-            effective.failure_policy = chain::FailurePolicy::KeepGoing;
-        }
-    }
-    let overrides = &effective;
-    if overrides.explain {
+    if overrides.dry_run {
         render::explain::print_explain(
             overrides,
             &format!(
@@ -1111,21 +1146,11 @@ fn dispatch_builtin(
         }
     }
     match command {
-        args::Command::Install {
-            frozen,
-            no_tools,
-            tasks,
-            mode,
-            failure,
-            ..
-        } if matches!(out, render::out::Out::Stdio(..)) => dispatch_install(
-            ctx,
-            overrides,
-            commands::install::InstallFlags { frozen, no_tools },
-            mode,
-            failure,
-            &tasks,
-        ),
+        args::Command::Install { tasks, mode, .. }
+            if matches!(out, render::out::Out::Stdio(..)) =>
+        {
+            dispatch_install(ctx, overrides, mode, &tasks)
+        }
         args::Command::Clean {
             yes,
             include_framework,
@@ -1133,9 +1158,9 @@ fn dispatch_builtin(
             commands::clean(ctx, overrides, yes, include_framework, out)?;
             Ok(0)
         }
-        args::Command::List { raw, json, source } => {
+        args::Command::List { raw, json, only } => {
             schema_version_for_json(json, schema_version)?;
-            commands::list(ctx, overrides, raw, json, source.as_deref(), out, sink)?;
+            commands::list(ctx, overrides, raw, json, &only, out, sink)?;
             Ok(0)
         }
         args::Command::Info { json } => {
@@ -1154,7 +1179,7 @@ fn dispatch_builtin(
                 }
             }
             schema_version_for_json(json, schema_version)?;
-            commands::list(ctx, overrides, false, json, None, out, sink)?;
+            commands::list(ctx, overrides, false, json, &[], out, sink)?;
             Ok(0)
         }
         args::Command::Completions { shell, output } => {
@@ -1167,9 +1192,6 @@ fn dispatch_builtin(
 }
 
 /// Validate `--schema-version=N` for schema-aware (`--json`) output.
-/// `clap` already bounds the flag to [`schema::SCHEMA_VERSION`]; this is a
-/// defensive second check so a future non-CLI caller can't slip an
-/// unsupported version past the JSON-producing commands.
 fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
     if json {
         schema::validate_schema_version(requested.unwrap_or(schema::SCHEMA_VERSION))
@@ -1178,149 +1200,55 @@ fn schema_version_for_json(json: bool, requested: Option<u32>) -> Result<u32> {
     }
 }
 
-/// Build [`resolver::ResolutionOverrides`] from a parsed CLI + loaded config.
-/// Lifted out of [`dispatch`] so the latter stays under clippy's
-/// `too_many_lines` budget; the chain-failure inputs come from whichever
-/// subcommand carries them (`Run` / `Install`), with `false` defaults for
-/// subcommands that don't.
-fn build_overrides(
-    cli: &args::Cli,
-    loaded_config: Option<&config::LoadedConfig>,
-) -> Result<resolver::ResolutionOverrides> {
-    let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
-        Some(args::Command::Run { failure, .. } | args::Command::Install { failure, .. }) => {
-            (failure.keep_going, failure.kill_on_fail)
-        }
-        _ => (false, false),
-    };
-    let mut overrides = resolver::ResolutionOverrides::from_cli_and_env(
-        resolver::CliOverrides {
-            pm: cli.global.pm_override.as_deref(),
-            runner: cli.global.runner_override.as_deref(),
-            runtime: cli.global.runtime_override.as_deref(),
-            reach: cli.global.fetch_policy.as_deref(),
-            fallback: cli.global.fallback.as_deref(),
-            on_mismatch: cli.global.on_mismatch.as_deref(),
-            package: cli.global.package_selection.as_deref(),
-        },
-        resolver::DiagnosticFlags {
-            no_warnings: cli.global.no_warnings,
-            quiet: cli.global.quiet,
-            explain: cli.global.explain,
-            host_stream: cli.global.host_stream.as_deref(),
-        },
-        args::ChainFailureFlags {
-            keep_going: cli_keep_going,
-            kill_on_fail: cli_kill_on_fail,
-        },
-        loaded_config,
-    )?;
-    apply_script_policy_flags(cli.command.as_ref(), &mut overrides);
-    Ok(overrides)
-}
-
-/// Layer the install-only `--no-scripts` / `--scripts` CLI flags onto the
-/// resolved [`resolver::ScriptPolicy`]. These flags are the top precedence
-/// level (CLI > env > config): `--no-scripts` forces
-/// [`resolver::ScriptPolicy::Deny`] and `--scripts` forces
-/// [`resolver::ScriptPolicy::Allow`], while neither leaves the env/config
-/// resolution untouched. clap marks the two mutually exclusive, so at most one
-/// is set. Threading them here (rather than as more `from_cli_and_env`
-/// arguments) keeps that constructor's signature stable.
-const fn apply_script_policy_flags(
+/// The project config, or for `config` and `doctor` a warning in its place
+/// when it fails to load.
+fn load_config(
+    dir: &Path,
     command: Option<&args::Command>,
-    overrides: &mut resolver::ResolutionOverrides,
-) {
-    if let Some(args::Command::Install {
-        no_scripts,
-        scripts,
-        ..
-    }) = command
-    {
-        if *no_scripts {
-            overrides.script_policy = resolver::ScriptPolicy::Deny;
-        } else if *scripts {
-            overrides.script_policy = resolver::ScriptPolicy::Allow;
-        }
+) -> Result<(Option<config::LoadedConfig>, Vec<types::DetectionWarning>)> {
+    match config::load(dir) {
+        Ok(loaded) => Ok((loaded, Vec::new())),
+        Err(_) if matches!(command, Some(args::Command::Config { .. })) => Ok((None, Vec::new())),
+        Err(error) if matches!(command, Some(args::Command::Doctor { .. })) => Ok((
+            None,
+            vec![types::DetectionWarning::InvalidConfigValue {
+                key: config::CONFIG_FILENAME.to_owned(),
+                raw: String::new(),
+                message: format!("{error:#}"),
+            }],
+        )),
+        Err(error) => Err(error),
     }
 }
 
-/// Lenient sibling of [`build_overrides`] used when strict parsing
-/// failed and the command is `doctor`: invalid env-sourced override
-/// values degrade to [`types::DetectionWarning`]s instead of killing
-/// the one command whose job is to report a broken environment.
-fn build_overrides_lenient(
-    cli: &args::Cli,
-    loaded_config: Option<&config::LoadedConfig>,
-) -> Result<(resolver::ResolutionOverrides, Vec<types::DetectionWarning>)> {
-    let (cli_keep_going, cli_kill_on_fail) = match cli.command.as_ref() {
-        Some(args::Command::Run { failure, .. } | args::Command::Install { failure, .. }) => {
-            (failure.keep_going, failure.kill_on_fail)
+fn dispatch(
+    cli: args::Cli,
+    origins: &invocation::Origins,
+    env_warnings: Vec<types::DetectionWarning>,
+    dir: &Path,
+) -> Result<i32> {
+    let (loaded_config, load_warnings) = load_config(dir, cli.command.as_ref())?;
+    let settings = invocation::settings(&cli.global, cli.command.as_ref(), origins);
+    let (mut overrides, config_warnings) = match cli.command {
+        Some(args::Command::Doctor { .. }) => {
+            resolver::ResolutionOverrides::resolve_lenient(&settings, loaded_config.as_ref())
         }
-        _ => (false, false),
+        Some(args::Command::Config { .. }) => (
+            resolver::ResolutionOverrides::resolve_lenient(&settings, loaded_config.as_ref()).0,
+            Vec::new(),
+        ),
+        _ => (
+            resolver::ResolutionOverrides::resolve(&settings, loaded_config.as_ref())?,
+            Vec::new(),
+        ),
     };
-    resolver::ResolutionOverrides::from_cli_and_env_lenient(
-        resolver::CliOverrides {
-            pm: cli.global.pm_override.as_deref(),
-            runner: cli.global.runner_override.as_deref(),
-            runtime: cli.global.runtime_override.as_deref(),
-            reach: cli.global.fetch_policy.as_deref(),
-            fallback: cli.global.fallback.as_deref(),
-            on_mismatch: cli.global.on_mismatch.as_deref(),
-            package: cli.global.package_selection.as_deref(),
-        },
-        resolver::DiagnosticFlags {
-            no_warnings: cli.global.no_warnings,
-            quiet: cli.global.quiet,
-            explain: cli.global.explain,
-            host_stream: cli.global.host_stream.as_deref(),
-        },
-        args::ChainFailureFlags {
-            keep_going: cli_keep_going,
-            kill_on_fail: cli_kill_on_fail,
-        },
-        loaded_config,
-    )
-}
-
-/// Resolve overrides for [`dispatch`]. Strict for every command;
-/// `doctor` retries leniently on failure because it must survive the
-/// misconfigured environment it exists to diagnose; env garbage
-/// degrades to warnings appended to `ctx`, while CLI flag garbage
-/// re-raises from the lenient pass and stays fatal.
-fn dispatch_overrides(
-    cli: &args::Cli,
-    loaded_config: Option<&config::LoadedConfig>,
-) -> Result<(resolver::ResolutionOverrides, Vec<types::DetectionWarning>)> {
-    match build_overrides(cli, loaded_config) {
-        Ok(overrides) => Ok((overrides, Vec::new())),
-        Err(_) if matches!(cli.command, Some(args::Command::Doctor { .. })) => {
-            build_overrides_lenient(cli, loaded_config)
-        }
-        Err(e) => Err(e),
-    }
-}
-
-fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
-    // A malformed `runner.toml` must not abort the `config` subcommand;
-    // `config validate`/`show` exist to inspect and repair exactly that
-    // file, and they re-load it with their own error handling. Unknown
-    // sections/fields are tolerated everywhere (forward compat) and surface
-    // as warnings; only an unreadable/syntactically-broken file or a
-    // wrong-typed known field still fails the parse here.
-    let loaded_config = match config::load(dir) {
-        Ok(loaded) => loaded,
-        Err(_) if matches!(cli.command, Some(args::Command::Config { .. })) => None,
-        Err(e) => return Err(e),
-    };
-    let (mut overrides, env_warnings) = dispatch_overrides(&cli, loaded_config.as_ref())?;
     let mut ctx = detect::detect(dir, &overrides);
     if let Some(loaded) = &loaded_config {
         ctx.warnings.extend(loaded.warnings.iter().cloned());
     }
+    ctx.warnings.extend(load_warnings);
+    ctx.warnings.extend(config_warnings);
     ctx.warnings.extend(env_warnings);
-    // The first point where a resolved root and the inherited marker are both
-    // in hand, so it is where the nesting question gets answered.
     overrides.parent.warned = commands::parent_warned_about(&ctx.root);
 
     let result = match cli.command {
@@ -1354,7 +1282,7 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
         Some(args::Command::Man { output }) => dispatch_man(output.as_deref()),
         Some(args::Command::Schema { all, output }) => dispatch_schema(all, output.as_deref()),
         #[cfg(feature = "lsp")]
-        Some(args::Command::Lsp) => commands::lsp::run(), // intercepted pre-detection
+        Some(args::Command::Lsp) => commands::lsp::run(),
         Some(args::Command::Doctor { json }) => {
             schema_version_for_json(json, cli.global.schema_version)?;
             commands::doctor(&ctx, &overrides, json)?;
@@ -1410,11 +1338,27 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        BUILD_CHANNEL, BUILD_DIRTY, VERSION, bin_name_from_arg0, configured_project_dir,
-        exit_code_for_error, expand_tilde_with, has_task, parse_cli, parse_run_alias_cli,
-        release_url, requests_version, resolve_project_dir, revision_version, run_alias_in_dir,
-        run_in_dir, version_line, version_output, version_request,
+        BUILD_CHANNEL, BUILD_DIRTY, VERSION, bin_name_from_arg0, exit_code_for_error,
+        expand_tilde_with, has_task, release_url, requests_version, resolve_project_dir,
+        revision_version, run_alias_in_dir, run_in_dir, version_line, version_output,
+        version_request,
     };
+
+    fn parse_cli<I, T>(args: I) -> Result<args::Cli, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        super::parse_cli(args).map(|parsed| parsed.cli)
+    }
+
+    fn parse_run_alias_cli<I, T>(args: I) -> Result<args::RunAliasCli, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        super::parse_run_alias_cli(args).map(|parsed| parsed.cli)
+    }
     use crate::args;
     use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
@@ -1713,25 +1657,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_project_dir_prefers_flag_over_env() {
-        let dir = configured_project_dir(
-            Some(Path::new("flag-dir")),
-            Some(std::ffi::OsStr::new("env-dir")),
-        )
-        .expect("dir should be selected");
-
-        assert_eq!(dir, PathBuf::from("flag-dir"));
-    }
-
-    #[test]
-    fn configured_project_dir_falls_back_to_env() {
-        let dir = configured_project_dir(None, Some(std::ffi::OsStr::new("env-dir")))
-            .expect("env dir should be selected");
-
-        assert_eq!(dir, PathBuf::from("env-dir"));
-    }
-
-    #[test]
     fn bin_name_from_arg0_uses_path_file_name() {
         let name = bin_name_from_arg0(&OsString::from("/tmp/run"));
 
@@ -1869,17 +1794,10 @@ mod tests {
 
     #[test]
     fn run_alias_dispatch_shares_override_building_with_runner() {
-        // The alias now funnels through the same `dispatch` path as the
-        // `runner` binary, so an invalid `--pm` surfaces the resolver's
-        // "unknown package manager" error from the single shared override
-        // builder instead of a second copy that could drift.
         let dir = TempDir::new("runner-run-alias-bad-pm");
-        let err = run_alias_in_dir(["run", "--pm", "zoot", "build"], dir.path())
-            .expect_err("unknown --pm should error through the shared dispatch path");
-        assert!(
-            format!("{err}").contains("unknown package manager"),
-            "alias must reuse the runner override builder: {err}",
-        );
+        let code = run_alias_in_dir(["run", "--pm", "zoot", "build"], dir.path())
+            .expect("a usage error is an exit code");
+        assert_eq!(code, 2);
     }
 
     #[test]
@@ -2022,18 +1940,12 @@ mod tests {
         // `--kill-on-fail` as a chain-failure flag, not as a task name.
         // Regression for the `trailing_var_arg` consumption bug.
         let cli = parse_cli(["runner", "install", "build", "test", "-K"]).expect("parses");
+        assert!(cli.global.failure.kill_on_fail);
         match cli.command {
-            Some(args::Command::Install {
-                tasks,
-                failure:
-                    args::ChainFailureFlags {
-                        kill_on_fail: true, ..
-                    },
-                ..
-            }) => assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]),
-            other => {
-                panic!("expected Install with kill_on_fail=true and clean task list, got {other:?}")
+            Some(args::Command::Install { tasks, .. }) => {
+                assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
             }
+            other => panic!("expected Install with a clean task list, got {other:?}"),
         }
     }
 
@@ -2060,12 +1972,12 @@ mod tests {
     }
 
     #[test]
-    fn runner_cli_parses_pm_and_runner_overrides_globally() {
-        let cli = parse_cli(["runner", "--pm", "pnpm", "--runner", "just", "run", "build"])
-            .expect("global --pm/--runner should parse on the run subcommand");
+    fn runner_cli_parses_pm_and_source_overrides_globally() {
+        let cli = parse_cli(["runner", "--pm", "pnpm", "--source", "just", "run", "build"])
+            .expect("global --pm/--source should parse on the run subcommand");
 
-        assert_eq!(cli.global.pm_override.as_deref(), Some("pnpm"));
-        assert_eq!(cli.global.runner_override.as_deref(), Some("just"));
+        assert_eq!(cli.global.pm, Some(ProviderId::Pnpm));
+        assert_eq!(cli.global.source, Some(ProviderId::Just));
         match cli.command {
             Some(args::Command::Run { task, args, .. }) => {
                 assert_eq!(task.as_deref(), Some("build"));
@@ -2080,19 +1992,16 @@ mod tests {
         let cli =
             parse_run_alias_cli(["run", "--pm=bun", "test"]).expect("--pm=bun test should parse");
 
-        assert_eq!(cli.global.pm_override.as_deref(), Some("bun"));
+        assert_eq!(cli.global.pm, Some(ProviderId::Bun));
         assert_eq!(cli.task.as_deref(), Some("test"));
     }
 
     #[test]
     fn invalid_pm_override_value_returns_error() {
-        // Bad PM name should not crash the binary; it should surface as an
-        // error exit code so the user sees the message from `from_cli_and_env`.
         let dir = TempDir::new("runner-bad-pm");
-        let result = run_in_dir(["runner", "--pm", "zoot", "info"], dir.path());
-
-        let err = result.expect_err("unknown --pm should error");
-        assert!(format!("{err}").contains("unknown package manager"));
+        let code = run_in_dir(["runner", "--pm", "zoot", "info"], dir.path())
+            .expect("a usage error is an exit code");
+        assert_eq!(code, 2);
     }
 
     #[test]

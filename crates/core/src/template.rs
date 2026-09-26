@@ -95,8 +95,6 @@ pub struct Request<'a> {
     pub file_flags: &'static [&'static str],
     /// The quiet template for the requested level, when the provider has one.
     pub quiet: Option<Template>,
-    /// The stream switch, rendered after `quiet` at the same position.
-    pub stream: Option<Template>,
     /// The provider's frozen mechanism, when frozen was requested.
     pub frozen: Option<Frozen>,
     /// The provider's script mechanisms and the policy requested.
@@ -160,7 +158,7 @@ impl Piece {
                 }
             }
             Self::Quiet => {
-                for flags in [request.quiet, request.stream].into_iter().flatten() {
+                if let Some(flags) = request.quiet {
                     out.args
                         .extend(flags.0.iter().filter_map(|piece| match piece {
                             Self::Lit(word) => Some(OsString::from(word)),
@@ -241,27 +239,6 @@ mod tests {
             ..Request::default()
         });
         assert_eq!(words(&rendered), ["run", "--silent", "build"]);
-    }
-
-    #[test]
-    fn stream_follows_quiet_at_the_same_position() {
-        let template = t![Quiet, "run", Task];
-        let rendered = template.render(&Request {
-            task: Some("build"),
-            quiet: Some(t!["--silent"]),
-            stream: Some(t!["--use-stderr"]),
-            ..Request::default()
-        });
-        assert_eq!(
-            words(&rendered),
-            ["--silent", "--use-stderr", "run", "build"]
-        );
-        let only_stream = template.render(&Request {
-            task: Some("build"),
-            stream: Some(t!["--use-stderr"]),
-            ..Request::default()
-        });
-        assert_eq!(words(&only_stream), ["--use-stderr", "run", "build"]);
     }
 
     #[test]

@@ -87,7 +87,7 @@ pub(crate) fn run_with_key(
             }
             dispatch::Dispatch::Spawn(spawn) => spawn,
         };
-    if overrides.explain {
+    if overrides.dry_run {
         crate::render::explain::print_command(overrides, spawn.command_mut());
         return Ok((0, spawn.task_key.clone()));
     }
@@ -134,12 +134,11 @@ pub(crate) enum PipedDispatch {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::precheck_task;
     use super::qualify::detect_reversed_qualifier;
     use crate::resolver::{
-        OverrideOrigin, PmOverride, ResolutionOverrides, RunnerOverride, RuntimeOverride,
+        OverrideOrigin, PmOverride, ResolutionOverrides, RuntimeOverride, SourceOverride,
+        TaskChoice,
     };
     use crate::types::{ProjectContext, Task};
     use runner_core::ProviderId;
@@ -174,7 +173,7 @@ mod tests {
         let mut ctx = context(sources.iter().map(|source| task(name, *source)).collect());
         crate::tool::test_support::seed_context_with(&mut ctx, overrides);
         let tree = super::core::tree(&ctx);
-        let policy = super::core::policy(overrides);
+        let policy = super::core::policy(overrides, Some(name));
         let project = super::core::project(&ctx).expect("observed");
         super::core::selected_in(&ctx, &tree, &project, &policy, name)
             .expect("selection")
@@ -199,9 +198,27 @@ mod tests {
         }
     }
 
-    fn pinned(name: &str, sources: Vec<ProviderId>) -> ResolutionOverrides {
+    fn sourced(name: &str, source: ProviderId) -> ResolutionOverrides {
         ResolutionOverrides {
-            task_source_overrides: BTreeMap::from([(name.to_string(), sources)]),
+            tasks: [(
+                name.to_string(),
+                TaskChoice {
+                    source: Some(source),
+                    ..TaskChoice::default()
+                },
+            )]
+            .into(),
+            config: Some(std::path::PathBuf::from("/p/runner.toml")),
+            ..ResolutionOverrides::default()
+        }
+    }
+
+    fn chosen_source(source: ProviderId) -> ResolutionOverrides {
+        ResolutionOverrides {
+            source: Some(SourceOverride {
+                source,
+                origin: OverrideOrigin::CliFlag,
+            }),
             ..ResolutionOverrides::default()
         }
     }
@@ -227,12 +244,9 @@ mod tests {
     }
 
     #[test]
-    fn precheck_reversed_qualifier_beats_runner_constraint() {
+    fn precheck_reversed_qualifier_beats_a_source_choice() {
         let mut ctx = context(vec![]);
-        let overrides = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
-            ..ResolutionOverrides::default()
-        };
+        let overrides = chosen_source(ProviderId::Just);
         crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
 
         let err = precheck_task(&ctx, &overrides, "lint:cargo")
@@ -328,55 +342,8 @@ mod tests {
     }
 
     #[test]
-    fn the_prefer_list_ranks_and_never_restricts() {
-        let turbo_and_json = [ProviderId::Turbo, ProviderId::PackageJson];
-        let prefer = |sources: Vec<ProviderId>| ResolutionOverrides {
-            prefer_sources: sources,
-            ..ResolutionOverrides::default()
-        };
-        assert_eq!(
-            winner(
-                &turbo_and_json,
-                "build",
-                &prefer(vec![ProviderId::PackageJson, ProviderId::Turbo])
-            ),
-            ProviderId::PackageJson
-        );
-        assert_eq!(
-            winner(
-                &turbo_and_json,
-                "build",
-                &prefer(vec![ProviderId::Turbo, ProviderId::PackageJson])
-            ),
-            ProviderId::Turbo
-        );
-        assert_eq!(
-            winner(
-                &[ProviderId::Make],
-                "build",
-                &prefer(vec![ProviderId::Turbo])
-            ),
-            ProviderId::Make
-        );
-        let runners = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
-            ..ResolutionOverrides::default()
-        };
-        assert_eq!(
-            winner(&[ProviderId::Turbo, ProviderId::Just], "build", &runners),
-            ProviderId::Just
-        );
-    }
-
-    #[test]
-    fn a_chosen_runner_selects_its_own_task() {
-        let overrides = ResolutionOverrides {
-            runner: Some(RunnerOverride {
-                runner: ProviderId::Just,
-                origin: OverrideOrigin::CliFlag,
-            }),
-            ..ResolutionOverrides::default()
-        };
+    fn a_chosen_source_selects_its_own_task() {
+        let overrides = chosen_source(ProviderId::Just);
         assert_eq!(
             winner(&[ProviderId::Turbo, ProviderId::Just], "build", &overrides),
             ProviderId::Just
@@ -384,13 +351,13 @@ mod tests {
     }
 
     #[test]
-    fn a_per_task_pin_decides_its_own_name_below_a_forced_package_manager() {
+    fn a_task_table_selects_the_source_for_its_own_name_only() {
         let turbo_and_json = [ProviderId::Turbo, ProviderId::PackageJson];
         assert_eq!(
             winner(
                 &turbo_and_json,
                 "build",
-                &pinned("build", vec![ProviderId::PackageJson])
+                &sourced("build", ProviderId::PackageJson)
             ),
             ProviderId::PackageJson
         );
@@ -398,7 +365,7 @@ mod tests {
             winner(
                 &turbo_and_json,
                 "build",
-                &pinned("dev", vec![ProviderId::PackageJson])
+                &sourced("dev", ProviderId::PackageJson)
             ),
             ProviderId::Turbo
         );
@@ -407,11 +374,20 @@ mod tests {
                 pm: ProviderId::Bun,
                 origin: OverrideOrigin::CliFlag,
             }),
-            ..pinned("build", vec![ProviderId::Turbo])
+            ..sourced("build", ProviderId::Turbo)
         };
-        assert_eq!(
-            winner(&turbo_and_json, "build", &forced),
-            ProviderId::PackageJson
+        assert_eq!(winner(&turbo_and_json, "build", &forced), ProviderId::Turbo);
+    }
+
+    #[test]
+    fn a_source_that_lacks_the_task_is_refused() {
+        let mut ctx = context(vec![task("build", ProviderId::PackageJson)]);
+        let overrides = sourced("build", ProviderId::Just);
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
+        let error = precheck_task(&ctx, &overrides, "build").expect_err("just defines no build");
+        assert!(
+            format!("{error:#}").contains("just defines no task named"),
+            "{error:#}"
         );
     }
 }

@@ -5,8 +5,9 @@ use std::fmt::Write as _;
 use std::io::IsTerminal;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use colored::Colorize;
+use runner_core::ProviderId;
 
 use crate::provider::Named;
 use crate::render::list::write_tasks_grouped;
@@ -23,31 +24,19 @@ use crate::types::{ProjectContext, Task};
 ///
 /// # Errors
 ///
-/// Returns an error when `source` doesn't name a known [`ProviderId`],
-/// when `--json` serialization fails, or when `out` fails to take the
-/// output.
+/// Returns an error when `--json` serialization fails, or when `out` fails
+/// to take the output.
 pub(crate) fn list(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     raw: bool,
     json: bool,
-    source: Option<&str>,
+    only: &[ProviderId],
     out: &mut Out<'_>,
     sink: super::WarningSink<'_>,
 ) -> Result<()> {
-    let parsed_source = match source {
-        None => None,
-        Some(label) => Some(crate::provider::task_source(label).ok_or_else(|| {
-            let expected = expected_source_labels();
-            anyhow!(
-                "--source {label:?}: unknown source label (expected one of: {expected}, legacy \
-                 filename forms like justfile/bacon.toml/Makefile are also accepted)",
-            )
-        })?),
-    };
-
     if json {
-        let view = Project::build_with_schema(ctx, overrides, false).into_list_view(parsed_source);
+        let view = Project::build_with_schema(ctx, overrides, false).into_list_view(only);
         crate::render::json::write(out.stdout(), &view)?;
         return Ok(());
     }
@@ -57,7 +46,7 @@ pub(crate) fn list(
     let filtered: Vec<&Task> = ctx
         .tasks
         .iter()
-        .filter(|t| parsed_source.is_none_or(|s| t.source == s))
+        .filter(|t| only.is_empty() || only.contains(&t.source))
         .collect();
 
     if raw {
@@ -81,15 +70,6 @@ pub(crate) fn list(
         }
     }
     Ok(())
-}
-
-fn expected_source_labels() -> String {
-    crate::provider::task_sources()
-        .iter()
-        .copied()
-        .map(Named::label)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// Print duplicate-name conflicts beneath the task list so a shadowed
@@ -189,38 +169,30 @@ fn format_conflicts(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::{expected_source_labels, format_conflicts};
+    use super::format_conflicts;
     use crate::resolver::ResolutionOverrides;
     use crate::types::{ProjectContext, Task};
     use runner_core::ProviderId;
 
     #[test]
-    fn invalid_source_error_mentions_pyproject() {
-        let ctx = ProjectContext {
-            cwd: PathBuf::from("."),
-            root: PathBuf::from("."),
-            tasks: Vec::new(),
-            workspace: None,
-            warnings: Vec::new(),
-            project: Ok(runner_core::Project::default()),
-        };
-
-        let err = super::list(
+    fn only_keeps_the_named_sources() {
+        let ctx = ctx_with_tasks(vec![
+            task("build", ProviderId::Just),
+            task("lint", ProviderId::Make),
+            task("test", ProviderId::Cargo),
+        ]);
+        let mut stdout = Vec::new();
+        super::list(
             &ctx,
             &ResolutionOverrides::default(),
+            true,
             false,
-            false,
-            Some("wat"),
-            &mut crate::render::out::Out::Captured(&mut Vec::new(), &mut Vec::new()),
+            &[ProviderId::Just, ProviderId::Cargo],
+            &mut crate::render::out::Out::Captured(&mut stdout, &mut Vec::new()),
             None,
         )
-        .expect_err("invalid source should error");
-
-        let message = format!("{err:#}");
-        assert!(message.contains("pyproject.toml"));
-        assert!(expected_source_labels().contains("pyproject.toml"));
+        .expect("lists");
+        assert_eq!(String::from_utf8(stdout).unwrap(), "build\ntest\n");
     }
 
     fn task(name: &str, source: ProviderId) -> Task {
@@ -271,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn format_conflicts_names_the_winner_a_runner_choice_selects() {
+    fn format_conflicts_names_the_winner_a_source_choice_selects() {
         let dir = crate::tool::test_support::TempDir::new("list-runner-conflict");
         std::fs::write(
             dir.path().join("package.json"),
@@ -282,8 +254,8 @@ mod tests {
         std::fs::write(dir.path().join("justfile"), "build:\n\techo just\n").unwrap();
         let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         let overrides = ResolutionOverrides {
-            runner: Some(crate::resolver::RunnerOverride {
-                runner: ProviderId::Just,
+            source: Some(crate::resolver::SourceOverride {
+                source: ProviderId::Just,
                 origin: crate::resolver::OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()

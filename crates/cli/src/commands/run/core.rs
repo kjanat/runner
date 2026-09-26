@@ -94,81 +94,78 @@ pub(crate) fn task(task: &Task) -> Option<CoreTask> {
     })
 }
 
-/// The core's view of the override chain.
-pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
+/// The core's view of the settings for the task `key` names, or for the
+/// invocation as a whole with `None`.
+pub(crate) fn policy(overrides: &ResolutionOverrides, key: Option<&str>) -> Policy {
+    let task = key.map(|key| overrides.task(key)).unwrap_or_default();
+    let config = |task_key: &str| {
+        overrides
+            .config
+            .as_ref()
+            .map(|path| crate::resolver::OverrideOrigin::TaskConfig {
+                path: path.clone(),
+                task: task_key.to_owned(),
+            })
+    };
     let mut pm = PerEcosystem::default();
-    for (ecosystem, chosen) in &overrides.pm_by_ecosystem {
-        if let Some(id) = provider(chosen.pm.label()) {
-            pm.0.insert(
-                ecosystem_of(*ecosystem),
-                Choice {
-                    id,
-                    from: layer(&chosen.origin),
-                },
-            );
-        }
-    }
-    if let Some(chosen) = overrides.pm.as_ref()
-        && let Some(id) = provider(chosen.pm.label())
+    let chosen_pm = overrides
+        .pm
+        .as_ref()
+        .map(|chosen| (chosen.pm, chosen.origin.clone()))
+        .or_else(|| Some((task.pm?, config(key?)?)));
+    if let Some((chosen, origin)) = chosen_pm
+        && let Some(id) = provider(chosen.label())
     {
         pm.0.insert(
-            ecosystem_of(chosen.pm.ecosystem()),
+            ecosystem_of(chosen.ecosystem()),
             Choice {
                 id,
-                from: layer(&chosen.origin),
+                from: layer(&origin),
             },
         );
     }
-    Policy {
-        prefer: overrides
-            .prefer_sources
-            .iter()
-            .copied()
-            .chain(
-                overrides
-                    .prefer_runners
-                    .iter()
-                    .filter_map(|runner| runner.as_task_source()),
-            )
-            .filter_map(source_provider)
-            .collect(),
-        task_sources: overrides
-            .task_source_overrides
-            .iter()
-            .map(|(name, sources)| {
-                (
-                    name.clone(),
-                    sources
-                        .iter()
-                        .copied()
-                        .filter_map(source_provider)
-                        .collect(),
-                )
+    let source = overrides
+        .source
+        .as_ref()
+        .map(|chosen| (chosen.source, chosen.origin.clone()))
+        .or_else(|| Some((task.source?, config(key?)?)))
+        .and_then(|(source, origin)| {
+            Some(Choice {
+                id: source_provider(source)?,
+                from: layer(&origin),
             })
-            .collect(),
+        });
+    Policy {
         pm,
-        runner: overrides
-            .runner
-            .as_ref()
-            .and_then(|chosen| runner_choice(chosen.runner, &chosen.origin)),
-        runtime: overrides
-            .runtime
-            .as_ref()
+        source,
+        runtime: key
+            .map_or_else(
+                || overrides.runtime.clone(),
+                |key| overrides.runtime_for(key),
+            )
             .and_then(|chosen| runtime_choice(chosen.runtime, &chosen.origin)),
+        named: overrides
+            .tasks
+            .values()
+            .flat_map(|task| [task.pm, task.runtime])
+            .flatten()
+            .filter_map(|id| provider(id.label()))
+            .collect(),
         frozen: false,
         scripts: runner_core::ScriptPolicy::Default,
-        reach: overrides.reach,
-        verbosity: verbosity(overrides),
-        host_stderr: false,
+        download: download(overrides),
+        verbosity: verbosity_of(overrides.output_for(key).tool),
         env: env_layers(overrides),
-        tool_ops: tool_ops(overrides),
         trust: runner_core::TrustPolicy::Project,
-        strict: overrides.fallback == crate::resolver::FallbackPolicy::Error,
-        on_mismatch: if overrides.on_mismatch == crate::resolver::MismatchPolicy::Error {
-            runner_core::OnMismatch::Refuse
-        } else {
-            runner_core::OnMismatch::Proceed
-        },
+    }
+}
+
+/// The core's download policy.
+pub(crate) const fn download(overrides: &ResolutionOverrides) -> runner_core::Download {
+    match overrides.download.value {
+        crate::config::Download::Allow => runner_core::Download::Allow,
+        crate::config::Download::Refuse => runner_core::Download::Refuse,
+        crate::config::Download::Ask => runner_core::Download::Ask,
     }
 }
 
@@ -232,20 +229,12 @@ pub(crate) fn ranked_in<'a>(
 
 /// Why the first of `ranked` outranks the second, from the first rank field
 /// that separates them.
-pub(crate) fn rank_reason(policy: &Policy, ranked: &[(&Task, TaskRank)]) -> &'static str {
+pub(crate) fn rank_reason(ranked: &[(&Task, TaskRank)]) -> &'static str {
     let [(_, first), (_, second), ..] = ranked else {
         return "it is the only candidate";
     };
-    if first.pinned != second.pinned {
-        "its `[tasks.overrides]` pin lists it first"
-    } else if first.tier != second.tier {
-        if first.tier == 0 && policy.runner.is_some() {
-            "the chosen runner defines it"
-        } else if first.tier <= policy.prefer.len() {
-            "the prefer list ranks its source first"
-        } else {
-            "the chosen package manager or runtime dispatches it"
-        }
+    if first.tier != second.tier {
+        "the chosen package manager or runtime dispatches it"
     } else if first.by_package_manager != second.by_package_manager {
         "the chosen runtime dispatches it"
     } else if first.dispatch_order != second.dispatch_order {
@@ -273,16 +262,16 @@ pub(crate) fn prepare(
     token: &str,
 ) -> Result<Prepared, runner_core::Refusal> {
     let tree = tree(ctx);
-    let mut policy = policy(overrides);
     let project = project(ctx)?;
     let key = if BUILTINS.contains(&token) {
         token.to_owned()
     } else {
-        task_key(ctx, &tree, &project, &policy, token)?
+        task_key(ctx, &tree, &project, &policy(overrides, Some(token)), token)?
     };
-    let requested = apply_host_verbosity(&mut policy, overrides, &key);
-    if overrides.explain {
-        policy.reach = runner_core::ReachPolicy::Allow;
+    let mut policy = policy(overrides, Some(&key));
+    let requested = overrides.host_verbosity_for(&key);
+    if overrides.dry_run {
+        policy.download = runner_core::Download::Allow;
     }
     Ok(Prepared {
         tree,
@@ -343,10 +332,9 @@ impl Prepared {
         overrides: &ResolutionOverrides,
         token: &str,
     ) -> Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal> {
-        let mut policy = self.policy.clone();
-        policy.reach = runner_core::ReachPolicy::Allow;
         let key = task_key(ctx, &self.tree, &self.project, &self.policy, token)?;
-        apply_host_verbosity(&mut policy, overrides, &key);
+        let mut policy = policy(overrides, Some(&key));
+        policy.download = runner_core::Download::Allow;
         let dep = |name: &str| {
             super::local_dep::installed_binary(ctx, name).map_err(|error| {
                 match error.downcast::<std::io::Error>() {
@@ -407,16 +395,11 @@ fn layer(origin: &crate::resolver::OverrideOrigin) -> Layer {
     match origin {
         crate::resolver::OverrideOrigin::CliFlag => Layer::Cli,
         crate::resolver::OverrideOrigin::EnvVar => Layer::Env,
-        crate::resolver::OverrideOrigin::ConfigFile { path } => Layer::ConfigFile(path.clone()),
+        crate::resolver::OverrideOrigin::ConfigFile { path }
+        | crate::resolver::OverrideOrigin::TaskConfig { path, .. } => {
+            Layer::ConfigFile(path.clone())
+        }
     }
-}
-
-fn runner_choice(runner: ProviderId, origin: &crate::resolver::OverrideOrigin) -> Option<Choice> {
-    let source = runner.as_task_source()?;
-    Some(Choice {
-        id: source_provider(source)?,
-        from: layer(origin),
-    })
 }
 
 fn runtime_choice(runtime: ProviderId, origin: &crate::resolver::OverrideOrigin) -> Option<Choice> {
@@ -434,29 +417,12 @@ fn ecosystem_of(ecosystem: Ecosystem) -> CoreEcosystem {
         .unwrap_or(CoreEcosystem::Any)
 }
 
-/// The host diagnostic level the invocation asked for.
-const fn verbosity(overrides: &ResolutionOverrides) -> Verbosity {
-    verbosity_of(overrides.output_policy.host_diagnostics)
-}
-
 const fn verbosity_of(diagnostics: crate::tool::HostDiagnostics) -> Verbosity {
     match diagnostics {
         crate::tool::HostDiagnostics::Normal => Verbosity::Normal,
         crate::tool::HostDiagnostics::Quiet => Verbosity::Quiet,
         crate::tool::HostDiagnostics::Reduced => Verbosity::VeryQuiet,
     }
-}
-
-/// Apply the host verbosity and stream `[tasks.<key>]` asks for.
-pub(crate) fn apply_host_verbosity(
-    policy: &mut Policy,
-    overrides: &ResolutionOverrides,
-    key: &str,
-) -> crate::tool::HostVerbosity {
-    let requested = overrides.host_verbosity_for(key);
-    policy.host_stderr = requested.stream == crate::tool::Stream::Stderr;
-    policy.verbosity = verbosity_of(requested.diagnostics);
-    requested
 }
 
 /// The `[tasks.<key>]` identity `token` selects, or the token itself.
@@ -472,7 +438,7 @@ fn task_key(
         Err(
             runner_core::Refusal::NotFound { .. }
             | runner_core::Refusal::Ambiguous { .. }
-            | runner_core::Refusal::NoRunnerTask { .. },
+            | runner_core::Refusal::NoSourceTask { .. },
         ) => Ok(token.to_owned()),
         Err(error) => Err(error),
     }
@@ -491,17 +457,6 @@ fn env_layers(overrides: &ResolutionOverrides) -> runner_core::EnvLayers {
     }
     layers.task = overrides.env.task.clone();
     layers
-}
-
-/// The operations each tool manager runs on install.
-fn tool_ops(
-    overrides: &ResolutionOverrides,
-) -> std::collections::BTreeMap<ProviderId, Vec<String>> {
-    overrides
-        .tool_install
-        .iter()
-        .filter_map(|(label, operations)| Some((provider(label)?, operations.clone())))
-        .collect()
 }
 
 #[cfg(test)]
@@ -617,12 +572,44 @@ mod tests {
     }
 
     #[test]
-    fn the_fetch_policy_reaches_the_core_policy() {
+    fn the_download_policy_reaches_the_core_policy() {
         let overrides = ResolutionOverrides {
-            reach: runner_core::ReachPolicy::Local,
+            download: crate::resolver::DownloadPolicy {
+                value: crate::config::Download::Refuse,
+                explicit: true,
+            },
             ..ResolutionOverrides::default()
         };
-        assert_eq!(policy(&overrides).reach, runner_core::ReachPolicy::Local);
+        assert_eq!(
+            policy(&overrides, Some("build")).download,
+            runner_core::Download::Refuse
+        );
+    }
+
+    #[test]
+    fn a_task_table_chooses_its_package_manager_source_and_runtime() {
+        let overrides = ResolutionOverrides::resolve(
+            &crate::resolver::Invocation::default(),
+            Some(&crate::config::LoadedConfig {
+                path: PathBuf::from("/p/runner.toml"),
+                config: toml::from_str(
+                    "[tasks.build]\npm = \"pnpm\"\nsource = \
+                     \"just\"\n[tasks.build.runtime]\njavascript = \"bun\"\n",
+                )
+                .unwrap(),
+                warnings: Vec::new(),
+            }),
+        )
+        .unwrap();
+        let build = policy(&overrides, Some("build"));
+        assert_eq!(
+            build.pm.0.values().map(|c| c.id).collect::<Vec<_>>(),
+            [ProviderId::Pnpm]
+        );
+        assert_eq!(build.source.map(|c| c.id), Some(ProviderId::Just));
+        assert_eq!(build.runtime.map(|c| c.id), Some(ProviderId::Bun));
+        let lint = policy(&overrides, Some("lint"));
+        assert!(lint.pm.0.is_empty() && lint.source.is_none() && lint.runtime.is_none());
     }
 
     #[test]

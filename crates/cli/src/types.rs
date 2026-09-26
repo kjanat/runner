@@ -151,7 +151,7 @@ pub(crate) struct ExpectedVersion {
 /// package manager.
 ///
 /// Carried as a typed variant so the diagnostic surface (`doctor --json`,
-/// `--explain`) can attribute each warning to a chain step or detector,
+/// `--dry-run`) can attribute each warning to a chain step or detector,
 /// and so future filtering (e.g. suppress just `PathProbeFallback`) is
 /// trivial. The [`Display`] impl renders the same `"<source>: <detail>"`
 /// shape every printer expects, so introducing a new variant doesn't
@@ -187,18 +187,25 @@ pub(crate) enum DetectionWarning {
         /// Other PMs found on `PATH` that the resolver did not pick.
         others_available: Vec<ProviderId>,
     },
-    /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
-    /// that doesn't parse, and the command chose to report it instead
-    /// of dying; `runner doctor` must be able to diagnose the broken
-    /// environment it exists to diagnose. Strict commands still treat
-    /// the same condition as a fatal error.
+    /// A `RUNNER_*` variable held a value its flag rejects. `doctor` reports
+    /// it; other commands refuse to run.
     InvalidEnvOverride {
-        /// The variable that carried the value (`"RUNNER_PM"`).
-        var: &'static str,
+        /// The variable.
+        var: String,
         /// The offending value, pre-sanitized for display (control
         /// chars escaped, truncated).
         raw: String,
         /// Rendered parse error, already source-prefixed.
+        message: String,
+    },
+    /// A `runner.toml` value names no provider of its kind. `doctor` reports
+    /// it and ignores the value; other commands refuse to run.
+    InvalidConfigValue {
+        /// The dotted key.
+        key: String,
+        /// The value.
+        raw: String,
+        /// Why it is invalid.
         message: String,
     },
     /// `runner.toml` carries a key this build doesn't recognize, a typo, or
@@ -212,7 +219,7 @@ pub(crate) enum DetectionWarning {
         /// section, `"chain.fast"` for an unknown field within a known one.
         path: String,
     },
-    /// A `--runtime` / `RUNNER_RUNTIME` / `[runtime].js` override was set but
+    /// A runtime was chosen but
     /// the task that won selection dispatches through a tool with no JS
     /// runtime to choose. Surfaced so an explicit runtime is never a silent
     /// no-op.
@@ -243,7 +250,7 @@ impl DetectionWarning {
             Self::Unread(unread) => runner_providers::REGISTRY.by_id(unread.provider).label,
             Self::InvalidEnvOverride { .. } => "env",
             Self::RuntimeNotApplied { .. } => "runtime",
-            Self::UnknownConfigKey { .. } => "runner.toml",
+            Self::UnknownConfigKey { .. } | Self::InvalidConfigValue { .. } => "runner.toml",
         }
     }
 
@@ -295,10 +302,13 @@ impl DetectionWarning {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
             }
             Self::RuntimeNotApplied { runtime, source } => format!(
-                "--runtime {} was not applied: this dispatches through {source}, which selects no \
+                "runtime {} was not applied: this dispatches through {source}, which selects no \
                  JS runtime",
                 runtime.label(),
             ),
+            Self::InvalidConfigValue { key, message, .. } => {
+                format!("{key} is invalid and was ignored for this report: {message}")
+            }
             Self::UnknownConfigKey { path } => format!(
                 "unknown key `{path}` ignored: it may be a typo or written by a newer runner. \
                  This build doesn't recognize it; the rest of the config still applies.",
@@ -484,30 +494,6 @@ fn expected_version(present: &runner_core::Present) -> Option<ExpectedVersion> {
     })
 }
 
-/// The unified label vocabulary `[tasks].prefer` and `[tasks.overrides]`
-/// accept: task runner labels, then package manager labels, then source
-/// names, deduped. Single source of truth for both the resolver
-/// (`resolver::policies::resolve_source_label`) and anything that needs to
-/// advertise the same closed set (editor completion, the JSON Schema).
-pub(crate) fn task_source_labels() -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    let mut push = |label: &'static str| {
-        if !out.contains(&label) {
-            out.push(label);
-        }
-    };
-    for runner in crate::provider::runners() {
-        push(runner.label());
-    }
-    for pm in crate::provider::package_managers() {
-        push(pm.label());
-    }
-    for source in crate::provider::task_sources() {
-        push(source.label());
-    }
-    out
-}
-
 /// Does `current` satisfy the `expected` version constraint?
 ///
 /// `expected` accepts the node-semver range grammar found in `.nvmrc`,
@@ -680,29 +666,15 @@ mod tests {
     use super::{DetectionWarning, TaskDetail, range_matches, version_matches};
 
     #[test]
-    fn serialized_labels_match_label_methods() {
-        use crate::resolver::{FallbackPolicy, MismatchPolicy, ScriptPolicy};
-
-        fn json_str<T: serde::Serialize>(value: T) -> String {
-            serde_json::to_value(value)
-                .expect("enum should serialize")
-                .as_str()
-                .expect("enum should serialize as a string")
-                .to_string()
+    fn script_policies_serialize_in_kebab_case() {
+        use crate::resolver::ScriptPolicy;
+        for (policy, label) in [
+            (ScriptPolicy::Default, "default"),
+            (ScriptPolicy::Deny, "deny"),
+            (ScriptPolicy::Allow, "allow"),
+        ] {
+            assert_eq!(serde_json::to_value(policy).unwrap(), label);
         }
-
-        for fallback in FallbackPolicy::ALL {
-            assert_eq!(json_str(fallback), fallback.label());
-        }
-        for mismatch in MismatchPolicy::ALL {
-            assert_eq!(json_str(mismatch), mismatch.label());
-        }
-        for script in ScriptPolicy::SETTABLE {
-            assert_eq!(Some(json_str(script).as_str()), script.label());
-        }
-        // Default has no user-settable label; the report surface still
-        // needs a stable spelling.
-        assert_eq!(json_str(ScriptPolicy::Default), "default");
     }
 
     /// Every printed spelling must resolve to the member it names.

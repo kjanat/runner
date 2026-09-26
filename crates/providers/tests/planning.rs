@@ -3,9 +3,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use runner_core::{
-    Cascade, Dispatch, Evidence, OnMismatch, Op, Policy, Present, Project, ProviderId, ReachPolicy,
-    Refusal, Scope, ScriptPolicy, SignalId, Tree, TrustPolicy, Unsafe, Weight, dispatch_from,
-    plan_found, plan_with,
+    Cascade, Dispatch, Download, Evidence, Op, Policy, Present, Project, ProviderId, Refusal,
+    Scope, ScriptPolicy, SignalId, Tree, TrustPolicy, Unsafe, Weight, dispatch_from, plan_found,
+    plan_with,
 };
 use runner_providers::REGISTRY;
 
@@ -62,7 +62,7 @@ fn local_exec_precedes_a_fetching_manager() {
         ..Project::default()
     };
     let policy = Policy {
-        reach: ReachPolicy::Local,
+        download: Download::Refuse,
         ..Policy::default()
     };
     let cascade = Cascade {
@@ -95,7 +95,7 @@ fn pnpm_exec_runs_under_a_local_fetch_policy() {
         ..Project::default()
     };
     let policy = Policy {
-        reach: ReachPolicy::Local,
+        download: Download::Refuse,
         ..Policy::default()
     };
     let cascade = Cascade {
@@ -358,7 +358,7 @@ fn loader_refusals_cannot_fall_through_to_another_exec_provider() {
         ..Project::default()
     };
     let mut policy = Policy {
-        reach: ReachPolicy::Allow,
+        download: Download::Allow,
         ..Policy::default()
     };
     policy
@@ -411,7 +411,7 @@ fn yarn_observation_selects_classic_or_berry_local_exec() {
         let fixture = Fixture::new();
         std::fs::write(fixture.0.root.join("yarn.lock"), lock).unwrap();
         let policy = Policy {
-            reach: ReachPolicy::Local,
+            download: Download::Refuse,
             ..Policy::default()
         };
         let evidence = runner_core::observe(&fixture.0, &REGISTRY).unwrap();
@@ -565,7 +565,7 @@ fn directories_and_remote_specs_reach_the_provider_exec_rung() {
         ..Project::default()
     };
     let policy = Policy {
-        reach: ReachPolicy::Allow,
+        download: Download::Allow,
         ..Policy::default()
     };
     let cascade = Cascade {
@@ -981,51 +981,6 @@ fn a_chosen_provider_selects_its_own_sources_in_its_order() {
 }
 
 #[test]
-fn a_configured_package_manager_keeps_per_task_pins() {
-    let fixture = Fixture::new();
-    let project = Project {
-        present: vec![fixture.present(ProviderId::Npm)],
-        tasks: vec![
-            named_task(ProviderId::PackageJson, "build"),
-            named_task(ProviderId::Just, "build"),
-        ],
-        ..Project::default()
-    };
-    let selected = |from: runner_core::Layer| {
-        let mut policy = Policy::default();
-        policy
-            .task_sources
-            .insert("build".into(), vec![ProviderId::Just]);
-        policy.pm.0.insert(
-            runner_core::Ecosystem::Node,
-            runner_core::Choice {
-                id: ProviderId::Npm,
-                from,
-            },
-        );
-        let cascade = Cascade {
-            tree: &fixture.0,
-            project: &project,
-            policy: &policy,
-            registry: &REGISTRY,
-            builtins: &[],
-            dep: None,
-            confirm: None,
-        };
-        runner_core::select(&cascade, "build")
-            .unwrap()
-            .unwrap()
-            .source
-    };
-    assert_eq!(
-        selected(runner_core::Layer::ConfigFile("runner.toml".into())),
-        ProviderId::Just
-    );
-    assert_eq!(selected(runner_core::Layer::Cli), ProviderId::PackageJson);
-    assert_eq!(selected(runner_core::Layer::Env), ProviderId::PackageJson);
-}
-
-#[test]
 fn a_forced_runtime_is_checked_in_the_tasks_member() {
     let fixture = Fixture::new();
     let member_dir = fixture.0.root.join("packages").join("web");
@@ -1282,7 +1237,7 @@ fn an_activated_but_unconfigured_manager_takes_no_miss() {
             ..Project::default()
         };
         let policy = Policy {
-            reach: ReachPolicy::Allow,
+            download: Download::Allow,
             ..Policy::default()
         };
         let cascade = Cascade {
@@ -1315,7 +1270,7 @@ fn an_invocation_package_manager_without_exec_refuses_the_exec_rungs() {
     };
     let outcome = |from: runner_core::Layer| {
         let mut policy = Policy {
-            reach: ReachPolicy::Allow,
+            download: Download::Allow,
             ..Policy::default()
         };
         policy.pm.0.insert(
@@ -1367,7 +1322,7 @@ fn an_absent_invocation_package_manager_refuses_the_exec_rungs() {
         ..Project::default()
     };
     let mut policy = Policy {
-        reach: ReachPolicy::Allow,
+        download: Download::Allow,
         ..Policy::default()
     };
     policy.pm.0.insert(
@@ -1389,7 +1344,7 @@ fn an_absent_invocation_package_manager_refuses_the_exec_rungs() {
 }
 
 #[test]
-fn a_runner_choice_refuses_another_runners_default_entry() {
+fn a_source_choice_refuses_another_runners_default_entry() {
     let fixture = Fixture::new();
     let project = Project {
         present: vec![
@@ -1399,7 +1354,7 @@ fn a_runner_choice_refuses_another_runners_default_entry() {
         ..Project::default()
     };
     let choose = |id: ProviderId| Policy {
-        runner: Some(runner_core::Choice {
+        source: Some(runner_core::Choice {
             id,
             from: runner_core::Layer::Cli,
         }),
@@ -1413,8 +1368,8 @@ fn a_runner_choice_refuses_another_runners_default_entry() {
     assert!(
         matches!(
             &refused,
-            Err(Refusal::NoRunnerTask {
-                runner: ProviderId::Just,
+            Err(Refusal::NoSourceTask {
+                source: ProviderId::Just,
                 name,
             }) if name == "make"
         ),
@@ -1433,7 +1388,7 @@ fn a_runner_choice_refuses_another_runners_default_entry() {
 }
 
 #[test]
-fn an_invocation_package_manager_keeps_the_chosen_runtime_first() {
+fn a_package_manager_beside_a_runtime_that_takes_the_op_is_refused() {
     let fixture = Fixture::new();
     let project = Project {
         present: vec![
@@ -1443,7 +1398,7 @@ fn an_invocation_package_manager_keeps_the_chosen_runtime_first() {
         ..Project::default()
     };
     let mut policy = Policy {
-        reach: ReachPolicy::Allow,
+        download: Download::Allow,
         runtime: Some(runner_core::Choice {
             id: ProviderId::Bun,
             from: runner_core::Layer::Cli,
@@ -1466,13 +1421,73 @@ fn an_invocation_package_manager_keeps_the_chosen_runtime_first() {
         dep: None,
         confirm: None,
     };
-    let (rung, Dispatch::Plan(plan)) =
-        runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[]).unwrap()
+    let Err(Refusal::Invalid(message)) =
+        runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[])
     else {
-        panic!("the runtime executes the tool");
+        panic!("npm and bun cannot both run the command");
     };
-    assert_eq!(rung.name, "exec");
+    assert_eq!(
+        message,
+        "package manager npm and runtime bun cannot both apply: bun runs the command itself"
+    );
+
+    let task = named_task(ProviderId::PackageJson, "build");
+    let op = Op::Run {
+        task: &task,
+        args: &[],
+    };
+    let Err(Refusal::Invalid(message)) =
+        runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY)
+    else {
+        panic!("npm and bun cannot both run the task");
+    };
+    assert!(message.contains("bun runs the task itself"), "{message}");
+
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Node,
+        runner_core::Choice {
+            id: ProviderId::Bun,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let plan = runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY)
+        .expect("one provider for both choices plans");
     assert_eq!(plan.provider, Some(ProviderId::Bun));
+}
+
+#[test]
+fn a_package_manager_that_runs_on_the_chosen_runtime_dispatches() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Pnpm),
+            fixture.present(ProviderId::Node),
+        ],
+        ..Project::default()
+    };
+    let mut policy = Policy {
+        download: Download::Allow,
+        runtime: Some(runner_core::Choice {
+            id: ProviderId::Node,
+            from: runner_core::Layer::ConfigFile(fixture.0.root.join("runner.toml")),
+        }),
+        ..Policy::default()
+    };
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Node,
+        runner_core::Choice {
+            id: ProviderId::Pnpm,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let task = named_task(ProviderId::PackageJson, "build");
+    let op = Op::Run {
+        task: &task,
+        args: &[],
+    };
+    let plan = runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY)
+        .expect("pnpm runs on node");
+    assert_eq!(plan.provider, Some(ProviderId::Pnpm));
 }
 
 #[test]
@@ -1487,7 +1502,7 @@ fn an_unreadable_task_source_stops_the_cascade_at_the_task_rung() {
         ..Project::default()
     };
     let policy = Policy {
-        reach: ReachPolicy::Allow,
+        download: Download::Allow,
         ..Policy::default()
     };
     let cascade = Cascade {
@@ -1564,34 +1579,6 @@ fn a_tool_only_pyproject_cleans_no_python_directories() {
             .unwrap();
     let plan = runner_core::clean::plan(&fixture.0, &project, &REGISTRY, false).unwrap();
     assert_eq!(plan.targets.len(), 1, "{:?}", plan.targets);
-}
-
-#[test]
-fn strict_policy_takes_no_package_manager_from_path() {
-    let fixture = Fixture::new();
-    std::fs::write(
-        fixture.0.root.join("package.json"),
-        r#"{"scripts":{"build":"echo"}}"#,
-    )
-    .unwrap();
-    for (strict, synthesised) in [(false, true), (true, false)] {
-        let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
-        let policy = Policy {
-            strict,
-            ..Policy::default()
-        };
-        let project =
-            runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY)
-                .unwrap();
-        let has_manager = project
-            .for_source(ProviderId::PackageJson, &Scope::Root, &policy, &REGISTRY)
-            .is_some();
-        if runner_core::probe_with("npm", &[]).is_some() {
-            assert_eq!(has_manager, synthesised, "strict: {strict}");
-        } else {
-            assert!(!has_manager || !strict, "strict: {strict}");
-        }
-    }
 }
 
 #[test]
@@ -1709,7 +1696,7 @@ fn dev_engines_constraints_are_enforced_by_the_manifest_hook() {
 }
 
 #[test]
-fn a_manifest_that_disagrees_with_the_lockfile_is_recorded_and_refused_when_strict() {
+fn a_manifest_that_disagrees_with_the_lockfile_is_recorded_and_wins() {
     let fixture = Fixture::new();
     std::fs::write(
         fixture.0.root.join("package.json"),
@@ -1721,95 +1708,31 @@ fn a_manifest_that_disagrees_with_the_lockfile_is_recorded_and_refused_when_stri
         "lockfileVersion: 9\n",
     )
     .unwrap();
+    let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
+    let policy = Policy::default();
+    let project =
+        runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY).unwrap();
+    assert_eq!(
+        project.disagreements.len(),
+        1,
+        "{:?}",
+        project.disagreements
+    );
+    let disagreement = &project.disagreements[0];
+    assert_eq!(disagreement.declared, ProviderId::Yarn);
+    assert_eq!(disagreement.locked, ProviderId::Pnpm);
+    assert!(disagreement.manifest.ends_with("package.json"));
+    assert!(disagreement.lockfile.ends_with("pnpm-lock.yaml"));
+    let chosen = project
+        .for_source(ProviderId::PackageJson, &Scope::Root, &policy, &REGISTRY)
+        .map(|present| present.provider);
+    assert_eq!(chosen, Some(ProviderId::Yarn));
     let task = named_task(ProviderId::PackageJson, "build");
     let op = Op::Run {
         task: &task,
         args: &[],
     };
-    for on_mismatch in [OnMismatch::Proceed, OnMismatch::Refuse] {
-        let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
-        let policy = Policy {
-            on_mismatch,
-            ..Policy::default()
-        };
-        let project =
-            runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY)
-                .unwrap();
-        assert_eq!(
-            project.disagreements.len(),
-            1,
-            "{:?}",
-            project.disagreements
-        );
-        let disagreement = &project.disagreements[0];
-        assert_eq!(disagreement.declared, ProviderId::Yarn);
-        assert_eq!(disagreement.locked, ProviderId::Pnpm);
-        assert!(disagreement.manifest.ends_with("package.json"));
-        assert!(disagreement.lockfile.ends_with("pnpm-lock.yaml"));
-        let chosen = project
-            .for_source(ProviderId::PackageJson, &Scope::Root, &policy, &REGISTRY)
-            .map(|present| present.provider);
-        assert_eq!(chosen, Some(ProviderId::Yarn));
-        let refuses = |op: &Op<'_>| {
-            matches!(
-                runner_core::plan(&fixture.0, &project, &policy, op, &REGISTRY),
-                Err(Refusal::Mismatch(_))
-            )
-        };
-        let expected = on_mismatch == OnMismatch::Refuse;
-        assert_eq!(refuses(&op), expected, "{on_mismatch:?}: run");
-        assert_eq!(
-            refuses(&Op::ExecPackage {
-                package: "typescript",
-                bin: "tsc",
-                args: &[],
-            }),
-            expected,
-            "{on_mismatch:?}: exec-package"
-        );
-        assert_eq!(
-            refuses(&Op::Exec {
-                name: "tsc",
-                args: &[],
-            }),
-            expected,
-            "{on_mismatch:?}: exec"
-        );
-        let strict = Policy {
-            strict: true,
-            ..Policy::default()
-        };
-        let strict_project = runner_core::resolve::resolve_presence(
-            &fixture.0,
-            runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap(),
-            &strict,
-            &REGISTRY,
-        )
-        .unwrap();
-        assert!(
-            runner_core::plan(&fixture.0, &strict_project, &strict, &op, &REGISTRY).is_ok(),
-            "a strict fallback policy alone lets the manifest win"
-        );
-    }
-    let evidence = runner_core::observe::observe(&fixture.0, &REGISTRY).unwrap();
-    let mut policy = Policy {
-        on_mismatch: OnMismatch::Refuse,
-        ..Policy::default()
-    };
-    policy.pm.0.insert(
-        runner_core::Ecosystem::Node,
-        runner_core::Choice {
-            id: ProviderId::Pnpm,
-            from: runner_core::Layer::Cli,
-        },
-    );
-    let project =
-        runner_core::resolve::resolve_presence(&fixture.0, evidence, &policy, &REGISTRY).unwrap();
-    let outcome = runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY);
-    assert!(
-        !matches!(outcome, Err(Refusal::Mismatch(_))),
-        "a chosen manager settles the disagreement: {outcome:?}"
-    );
+    assert!(runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY).is_ok());
 }
 
 #[test]
@@ -2345,10 +2268,7 @@ fn discovered_typescript_tests_ask_node_to_strip_types() {
     let plan = runner_core::plan(
         &fixture.0,
         &project,
-        &Policy {
-            host_stderr: true,
-            ..Policy::default()
-        },
+        &Policy::default(),
         &Op::Test { args: &[] },
         &REGISTRY,
     )
@@ -2421,44 +2341,6 @@ fn explicit_typescript_test_files_ask_node_to_strip_types() {
             "foo.test.ts"
         ]
     );
-}
-
-#[test]
-fn the_stream_switch_reaches_only_the_owning_executable_once() {
-    let fixture = Fixture::new();
-    let pnpm = fixture.present(ProviderId::Pnpm);
-    let project = Project {
-        present: vec![pnpm.clone()],
-        ..Project::default()
-    };
-    let policy = Policy {
-        host_stderr: true,
-        ..Policy::default()
-    };
-    let task = named_task(ProviderId::PackageJson, "build");
-    let run = plan_with(
-        &fixture.0,
-        &project,
-        &policy,
-        &pnpm,
-        &Op::Run {
-            task: &task,
-            args: &[],
-        },
-        &REGISTRY,
-    )
-    .unwrap();
-    assert_eq!(words(&run), ["pnpm", "--use-stderr", "run", "build"]);
-    let install = plan_with(
-        &fixture.0,
-        &project,
-        &policy,
-        &pnpm,
-        &Op::Install { operations: &[] },
-        &REGISTRY,
-    )
-    .unwrap();
-    assert_eq!(words(&install), ["pnpm", "--use-stderr", "install"]);
 }
 
 #[test]
@@ -2604,62 +2486,6 @@ fn python_test_detection_looks_in_the_invocation_directory_too() {
 }
 
 #[test]
-fn an_explicit_runtime_choice_runs_a_file_despite_an_installer_mismatch() {
-    let fixture = Fixture::new();
-    std::fs::write(
-        fixture.0.root.join("package.json"),
-        r#"{"packageManager":"bun@1.3.0"}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        fixture.0.root.join("pnpm-lock.yaml"),
-        "lockfileVersion: 9\n",
-    )
-    .unwrap();
-    let script = fixture.0.root.join("script.js");
-    std::fs::write(&script, "").unwrap();
-    let refuse = Policy {
-        on_mismatch: OnMismatch::Refuse,
-        ..Policy::default()
-    };
-    let project = resolved(&fixture, &refuse);
-    assert_eq!(project.disagreements.len(), 1);
-    let bun = project
-        .present
-        .iter()
-        .find(|present| present.provider == ProviderId::Bun)
-        .expect("the manifest declares bun");
-    let run_file = Op::RunFile {
-        file: &script,
-        args: &[],
-    };
-    assert!(matches!(
-        plan_with(&fixture.0, &project, &refuse, bun, &run_file, &REGISTRY),
-        Err(Refusal::Mismatch(_))
-    ));
-    let chosen = Policy {
-        runtime: Some(runner_core::Choice {
-            id: ProviderId::Bun,
-            from: runner_core::Layer::Cli,
-        }),
-        ..refuse
-    };
-    let plan = plan_with(&fixture.0, &project, &chosen, bun, &run_file, &REGISTRY).unwrap();
-    assert_eq!(words(&plan)[0], "bun");
-    assert!(matches!(
-        plan_with(
-            &fixture.0,
-            &project,
-            &chosen,
-            bun,
-            &Op::Install { operations: &[] },
-            &REGISTRY
-        ),
-        Err(Refusal::Mismatch(_))
-    ));
-}
-
-#[test]
 fn an_unreadable_legacy_declaration_voids_dev_engines() {
     let fixture = Fixture::new();
     std::fs::write(
@@ -2682,7 +2508,7 @@ fn an_unreadable_legacy_declaration_voids_dev_engines() {
 }
 
 #[test]
-fn an_explicit_runner_choice_rejects_a_task_another_source_defines() {
+fn an_explicit_source_choice_rejects_a_task_another_source_defines() {
     let fixture = Fixture::new();
     let project = Project {
         present: vec![
@@ -2697,7 +2523,7 @@ fn an_explicit_runner_choice_rejects_a_task_another_source_defines() {
         ..Project::default()
     };
     let policy = Policy {
-        runner: Some(runner_core::Choice {
+        source: Some(runner_core::Choice {
             id: ProviderId::Just,
             from: runner_core::Layer::Cli,
         }),
@@ -2706,8 +2532,8 @@ fn an_explicit_runner_choice_rejects_a_task_another_source_defines() {
     let cascade = cascade(&fixture, &project, &policy);
     assert_eq!(
         runner_core::select(&cascade, "build"),
-        Err(Refusal::NoRunnerTask {
-            runner: ProviderId::Just,
+        Err(Refusal::NoSourceTask {
+            source: ProviderId::Just,
             name: "build".into(),
         })
     );
@@ -2720,8 +2546,20 @@ fn an_explicit_runner_choice_rejects_a_task_another_source_defines() {
     assert_eq!(runner_core::select(&cascade, "tsc"), Ok(None));
     let outcome = runner_core::dispatch(&cascade, "build", &[]);
     assert!(
-        matches!(outcome, Err(Refusal::NoRunnerTask { .. })),
+        matches!(outcome, Err(Refusal::NoSourceTask { .. })),
         "{outcome:?}"
+    );
+    assert_eq!(
+        runner_core::select(&cascade, "package.json:lint"),
+        Err(Refusal::Invalid(
+            "package.json:lint names source package.json, but the chosen source is just".into()
+        ))
+    );
+    assert_eq!(
+        runner_core::select(&cascade, "just:lint")
+            .unwrap()
+            .map(|task| task.source),
+        Some(ProviderId::Just)
     );
 }
 

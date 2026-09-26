@@ -21,19 +21,25 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
-- `--fetch <ask|allow|local>`, `RUNNER_REACH` and `[defaults].fetch` decide
-  whether a command that can download may run. Every rung of the run cascade
-  and every exec capability declares whether it can fetch; `run <name>`
-  through `npx`, `bun x`, `uvx`, `deno x` or `mise exec`, `runner install`
-  and a `--package` fetch consult the policy before spawning. `ask` prompts
-  once on a terminal, `allow` proceeds, `local` refuses, which makes CI
-  deterministic. Local rungs never ask: the project's own bin dirs, `PATH`
-  and a local exec form such as `yarn run` or `pnpm exec` come before any
-  fetching rung.
+- `--download[=true|false|ask]`, `--no-download`, `RUNNER_DOWNLOAD` and a
+  top-level `download` key in `runner.toml` decide whether a command that
+  downloads may run. Every rung of the run cascade and every exec capability
+  declares whether it can fetch; `run <name>` through `npx`, `bun x`, `uvx`,
+  `deno x` or `mise exec`, `runner install` and a `--package` fetch consult
+  the policy before spawning. Unset, runner asks on an interactive terminal
+  outside CI and allows elsewhere; `ask` without a terminal refuses, and
+  `false` refuses, which makes CI deterministic. Local rungs never ask: the
+  project's own bin dirs, `PATH` and a local exec form such as `yarn run` or
+  `pnpm exec` come before any fetching rung.
 
-- `runner.toml` may set `[defaults].fetch`, and `[defaults].frozen` makes
-  every install keep its lockfile. The schema describes each key from the
-  one declaration table the CLI flags and `RUNNER_*` variables come from.
+- `[install]` takes `frozen`, `scripts` and `tools` as booleans, the config
+  forms of `--frozen`, `--scripts` and `--tools` and their `--no-` forms.
+
+- `list --only <source>` lists one source's tasks, repeatable and
+  comma-separated, and reads `RUNNER_LIST_ONLY`.
+
+- `npx`, `pnpx`, `bunx` and `yarnpkg` are accepted wherever a package manager
+  is named, as `npm`, `pnpm`, `bun` and `yarn`.
 
 - `--package <name>` selects an npm package, and the task token names one of
   the binaries its manifest declares: `run --package typescript tsc`. An
@@ -52,8 +58,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run make`, `run just`, `run task` and `run bacon` invoke the runner's own
   entry point when the project uses it and no task carries that name, so
   Make picks its `.DEFAULT_GOAL`, just its default recipe, and so on.
-  Arguments are forwarded. A `--runner` constraint naming the same runner
-  allows it; one naming another runner refuses. A task named after the
+  Arguments are forwarded. A `--source` choice naming the same runner allows
+  it; one naming another source refuses. A task named after the
   runner wins (#137).
 
 - `run test` with no `test` task runs the ecosystem's own test runner:
@@ -95,17 +101,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   project-wide one, which beats the inherited environment. Every layer still
   contributes the names the narrower ones do not set.
 
-- `[tools.<name>].install` says which of a tool's operations `runner install`
-  runs, in order. `install = true` is `["install"]`, `install = false` runs none,
-  and a bare string is a one-element list. mise is the only tool with more
-  than one operation today: `bootstrap` also does machine setup (system
-  packages, dotfiles, services, firewall), so it never runs unless the
-  project names it. An unrecognized operation is refused before anything
-  spawns.
-
-- `runner doctor --json` reports `overrides.tool_install`, and `overrides.env`
-  carrying the variable *names* each layer sets. Values are withheld, since
-  that payload is meant to be pasted into a bug report.
+- `runner doctor --json` reports `overrides.env` carrying the variable
+  *names* each layer sets. Values are withheld, since that payload is meant
+  to be pasted into a bug report.
 
 - Shell completion offers a mise task's own flags and argument choices after
   its name, from the `usage` spec the task declares. `run lower:leaf <TAB>`
@@ -121,26 +119,67 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Changed
 
-- `--explain` explains and stops. For `run`, `install`, `clean` and both
+- Settings are one model across flags, variables and `runner.toml`. A setting
+  resolves from the first layer that sets it: CLI, `RUNNER_*` variable,
+  `[tasks.<name>]`, the rest of `runner.toml`, project evidence, default. An
+  explicit `false` counts as a value. Every flag reads a variable derived from
+  its name, `RUNNER_<FLAG>` for a global flag and `RUNNER_<COMMAND>_<FLAG>`
+  for a command's own; a `--no-` form or an alias sets the same variable as
+  its flag, and the `run` binary's own flags read `RUNNER_RUN_*`. `runner
+  doctor` reports an invalid variable or config value and keeps going; other
+  commands refuse. Renamed and removed settings:
+  - `--explain` and `RUNNER_EXPLAIN` are `--dry-run` and `RUNNER_DRY_RUN`.
+  - `--runner`, `RUNNER_RUNNER`, `[tasks].prefer`, `[tasks].overrides` and
+    string task entries are `--source`, `RUNNER_SOURCE` and
+    `[tasks.<name>].source`. A chosen source is a hard selection.
+  - `[pm].<ecosystem>` is `[tasks.<name>].pm`, or `--pm` for the invocation.
+  - `[runtime].js` is `[runtime].javascript`, also settable per task.
+  - `-k`, `-K`, `[chain].keep_going` and `[chain].kill_on_fail` are
+    `--on-fail continue|wait|kill`, `RUNNER_ON_FAIL` and `[chain].on_fail`;
+    `-k` and `-K` stay as aliases, and giving two of them is a usage error.
+  - `--no-warnings` and `RUNNER_NO_WARNINGS` are `--warnings`,
+    `--no-warnings` and `RUNNER_WARNINGS`.
+  - `[runner]` is `[output]`, with `task_timing` renamed `timing` and
+    `fatal_errors` folded into `errors`. `[host].diagnostics` is
+    `[output.tool].quiet`. A task's `verbosity`, `stdout` and `stderr` are
+    `[tasks.<name>.output]`, `[tasks.<name>.output.tool].quiet` and the
+    `[tasks.<name>.output.task]` booleans `stdout` and `stderr`.
+  - `[github].group_output`, `[github].group_parallel` and
+    `[parallel].grouped` are `[output].groups` and
+    `[output.parallel].buffer`.
+  - `[install].scripts` takes `true` or `false`.
+  - `--fallback` and `[resolution].fallback` are removed; a task source with
+    no package manager takes one from `PATH`.
+  - `--on-mismatch` and `[resolution].on_mismatch` are removed; a manifest
+    that disagrees with its lockfile wins with a warning.
+  - `[install].on_collision` and `RUNNER_INSTALL_ON_COLLISION` are removed;
+    one package manager installs each shared directory.
+  - `--host-stream` and `[host].stream` are removed.
+
+- `--dry-run` explains and stops. For `run`, `install`, `clean` and both
   chain modes it prints the plan, the argv, the working directory and the
   names of the environment keys, asks for no network consent, and executes
   nothing. Builtins reached through `run` (`run list`, `run info`) parse
-  their own flags and run in the current process, and `--explain` names
+  their own flags and run in the current process, and `--dry-run` names
   that action.
+
+- `-q` expands into the individual output settings at its own layer and sets
+  only what its level names. `-qq --warnings` shows warnings, and `-q` leaves
+  a task's `[output.tool].quiet` alone. GitHub Actions error annotations
+  follow `[output].errors`.
 
 - One resolver decides the package manager for every ecosystem. The manager
   that dispatches `package.json` or `pyproject.toml` scripts is chosen from
   the evidence in the task's scope: a `--pm` or `RUNNER_PM` choice, then a
-  `runner.toml` choice keyed by the config key's ecosystem, then the
-  manifest's `packageManager`, then its `devEngines.packageManager`, then
+  `[tasks.<name>].pm` choice, then the manifest's `packageManager`, then its `devEngines.packageManager`, then
   the lockfile, then an executable on `PATH`. A lockfile the repository
   tracks outranks an untracked one beside it. `package.json5` and
   `package.yaml` declare a manager the same way `package.json` does. `run`,
   `why`, `doctor` and `list --json` report the same choice, as `pnpm via
   pnpm-lock.yaml`, `bun via package.json "devEngines.packageManager"
   (onFail=warn)` or `npm via PATH probe at /usr/bin/npm`, and `why` reports
-  it for the scope of the task it selected. `[pm].node = "deno"` and `--pm
-  deno` fill the Node slot, since deno dispatches `package.json` scripts.
+  it for the scope of the task it selected. `--pm deno` fills the Node slot,
+  since deno dispatches `package.json` scripts.
   `--pm cargo` on a `package.json` script is refused as a missing
   capability.
 
@@ -155,11 +194,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   be read proceeds with a cannot-evaluate warning.
 
 - A manifest and a lockfile that name different package managers are
-  reported as a disagreement; the manifest still wins. Under
-  `[resolution].on_mismatch = "error"` the disagreement refuses `run`,
-  `--package`, exec and install alike, naming both files and both managers,
-  unless a `--pm` choice settles it. `--fallback error` refuses to take a
-  package manager from `PATH` for a task source and decides nothing else.
+  reported as a disagreement, naming both files and both managers; the
+  manifest still wins.
 
 - `run test` with no test script and no test files is an error naming the
   directory and the patterns looked for. Discovered TypeScript tests get
@@ -201,9 +237,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `.ps1` files run through PowerShell on every platform, with `-NoProfile
   -ExecutionPolicy Bypass -File`: `pwsh` when it is on `PATH`, else the
   `powershell` every Windows ships. A runtime that steps in for a file no
-  project runtime takes observes the host before it plans, so `--explain`
-  shows which executable won. `--host-stream stderr` puts pnpm's
-  `--use-stderr` on pnpm's own argv, once.
+  project runtime takes observes the host before it plans, so `--dry-run`
+  shows which executable won.
 
 - Package managers are probed on `PATH` in one declared order (npm, bun,
   pnpm, yarn, deno) wherever a task source has no manager of its own.
@@ -214,15 +249,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   it and the runtimes that can run it (`--runtime bun`, `--runtime deno`).
   File extensions match case-insensitively.
 
-- `--fallback` takes `probe` or `error`; `npm` is refused as an unknown
-  policy. `RUNNER_INSTALL_PMS` is not read: `runner install` uses every
-  detected package manager, and `[tools.<name>].install = false` leaves one
-  out. `[task_runner]` is an unknown section; `[tasks].prefer` is the runner
-  preference.
+- `RUNNER_INSTALL_PMS` is not read: `runner install` uses every detected
+  package manager. `[task_runner]` is an unknown section.
 
 - `schemas/doctor.example.json` is generated from a typed example, and
-  `doctor --json` names the lockfile policy (`update` or `frozen`) and the
-  output grouping switches under `overrides`.
+  `doctor --json` names the lockfile policy (`update` or `frozen`), the
+  download policy, the chain failure policy and the output settings under
+  `overrides`, with the origin of each `pm`, `runtime` and `source` choice.
 
 - `runner config init` writes the schema pragma and every default the schema
   declares, live, and nothing else. The commented scaffold with its prose is
@@ -240,9 +273,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `cargo schema` needs no flag.
 
 - `runner why`, `doctor`, `list` and completion rank same-named tasks with
-  the key `runner run` selects by: a `[tasks.overrides]` pin, then the tier a
-  chosen runner, the prefer list or a chosen package manager or runtime puts
-  the source in, then the source's position among the sources that
+  the key `runner run` selects by: the tier a chosen source, package manager
+  or runtime puts the source in, then the source's position among the sources that
   dispatcher runs, then the source's task priority. The default priority is
   turbo, `package.json`, Makefile, justfile, Taskfile, `deno.json`, Cargo
   aliases, Go, bacon, mise, `pyproject.toml`. `why --json` reports the key
@@ -279,11 +311,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   installed version falls outside the declared one. An empty `.nvmrc`
   declares nothing.
 
-- `[pm]` takes one key per ecosystem whose task source package managers
-  dispatch, `node` and `python`, each accepting a manager that dispatches
-  that source. The schema lists both from the registry, and `[runtime].js`
-  lists every JavaScript runtime.
-
 - Task FQNs use the source's label, so a Cargo alias is `root:cargo#t`.
   `list` groups sources in task-priority order. `monorepo` is true when the
   root declares a workspace. `doctor --json` drops `overrides.install_pms`
@@ -307,7 +334,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `"lock"`. A mise config
   without `mise.lock` installs unlocked, since mise lockfiles are opt-in. A
   lifecycle-script policy the manager cannot express is disclosed by
-  `runner install` and `--explain`.
+  `runner install` and `--dry-run`.
 
 - A name reaches an exec primitive only when the primitive takes its shape:
   `npx` refuses `user/repo#ref` and `go run` refuses a bare name.
@@ -331,10 +358,6 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   provider's scope, so `conftest.py` beside the tests and `pytest.ini` at
   the root both select pytest from a subdirectory.
 
-- An explicit `--runtime` choice runs a file or a task under
-  `--on-mismatch error` when a lockfile names another manager; an install
-  through that manager refuses.
-
 - A `Justfile` that is a symlink is observed and marks the project root, in
   any spelling.
 
@@ -342,11 +365,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   workspace member, and warns about that member's manifest disagreeing with
   its lockfile.
 
-- `--runner just run build` fails when the justfile has no `build` recipe,
-  naming the runner and the task.
+- `--source just run build` fails when the justfile has no `build` recipe,
+  naming the source and the task.
 
-- `[tasks.<key>].env` matches the same keys as the verbosity and stream
-  settings: `build`, `package.json:build`, `rfc:build` for a member task,
+- `[tasks.<key>].env` matches the same keys as `[tasks.<key>.output]`:
+  `build`, `package.json:build`, `rfc:build` for a member task,
   and `rfc:package.json#build`, least specific first.
 
 - A `packageManager` value that names no known manager, or ends in an `@`
@@ -422,7 +445,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `runner clean` from a workspace member removes the root's directories as
   well as the member's.
 
-- `--explain` reports the quiet support of the package manager variant in
+- `--dry-run` reports the quiet support of the package manager variant in
   the plan's scope, such as a Yarn Berry member under a Classic root.
 
 - A builtin in a parallel chain (`list`, `info`, `completions`, `clean`)
@@ -450,7 +473,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   for a TypeScript file named on the command line.
 
 - `run make`, `run just` and the other default entry points refuse under a
-  `--runner` choice naming another runner.
+  `--source` choice naming another source.
 
 - `run --package <name> <bin>` under Yarn Plug'n'Play runs `yarn bin` in the
   invoking workspace member and accepts a `.pnp.cjs` there or at the root.
@@ -462,12 +485,30 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - `runner install` with two lockfiles that write one install directory,
   such as `bun.lock` beside `package-lock.json`, runs one installer and
-  reports the other as shadowed, as `[install].on_collision` directs. The
-  install directories come from each package manager's declaration, so uv,
+  reports the other as shadowed. The install directories come from each package manager's declaration, so uv,
   Poetry and Pipenv sharing `.venv` collide too.
 
-- `--pm npm --runtime bun run <name>` executes through Bun, as `--runtime
-  bun` alone does.
+- A JavaScript package-manager choice beside a runtime choice it does not
+  run on is refused, naming both: `--pm npm --runtime bun run <name>` says
+  `package manager npm and runtime bun cannot both apply`. The same holds for
+  `[tasks.<name>].pm` beside a runtime from any layer. npm, pnpm and Yarn
+  run on Node, so `--pm pnpm` beside `--runtime node` runs `pnpm run`.
+
+- A runtime or package manager that only `[tasks.<name>]` chooses counts as
+  present when it is on `PATH`, so `[tasks.build.runtime] javascript = "bun"`
+  runs `build` on Bun without a Bun lockfile.
+
+- A valid command-line value overrides an invalid `RUNNER_*` value for the
+  same setting: `RUNNER_PM=bogus runner --pm npm` runs with npm.
+
+- `--on-fail continue -k` and `-K --on-fail kill` are accepted. Flags that
+  give `on_fail` different values are still a usage error.
+
+- The `runner.toml` schema accepts provider aliases (`npx`, `pnpx`, `bunx`,
+  `yarnpkg`) wherever it accepts a provider name.
+
+- A mise shim for Volta no longer marks every mise shim as a Volta shim in
+  `doctor`, `info` and their JSON.
 
 - A `packageManager` naming Deno dispatches `package.json` scripts through
   `deno task` when an npm lockfile or a `devEngines.packageManager` naming
@@ -485,17 +526,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   lists its sources. A `--runtime` choice ranks its sources before a `--pm`
   choice does, so `--pm bun --runtime deno check` runs the Deno task.
 
-- A `[tasks].overrides` pin still applies when `runner.toml` sets `[pm]`;
-  only a `--pm` or `RUNNER_PM` choice sets it aside.
-
 - The dispatch arrow for a file a runtime runs names the runtime's words
   and stops at the file, so positional arguments stay `[args]`.
 
-- `--explain` reports a package manager with one quiet flag as applying the
+- `--dry-run` reports a package manager with one quiet flag as applying the
   quiet level, and a `-qqq` request against it records the clamp to quiet.
 
 - The name-conflict footer of `runner list` and the `doctor` conflicts name
-  the task `runner run` selects under a `--runner`, `--pm` or `--runtime`
+  the task `runner run` selects under a `--source`, `--pm` or `--runtime`
   choice.
 
 ### Security

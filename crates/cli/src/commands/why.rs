@@ -4,7 +4,7 @@
 //! Walks the same source-selection chain used by `runner run`, plus the PM
 //! resolution chain when a `package.json` script is in the candidate set,
 //! and reports what would happen step by step. Pairs with `runner doctor`
-//! (project-wide diagnostic) and `--explain` (one-line trace at run time).
+//! (project-wide diagnostic) and `--dry-run` (one-line trace at run time).
 
 use anyhow::Result;
 use colored::Colorize;
@@ -45,7 +45,7 @@ pub(crate) fn why(
         task,
     ) {
         Ok(ranked) => ranked,
-        Err(Refusal::NoRunnerTask { .. }) => Vec::new(),
+        Err(Refusal::NoSourceTask { .. }) => Vec::new(),
         Err(refusal) => return Err(refusal_error(ctx, task, &refusal)),
     };
     let outcome = prepared.preview(ctx, overrides, task);
@@ -54,7 +54,7 @@ pub(crate) fn why(
         Err(
             refusal @ (Refusal::NotFound { .. }
             | Refusal::Ambiguous { .. }
-            | Refusal::NoRunnerTask { .. }),
+            | Refusal::NoSourceTask { .. }),
         ) => (None, Some(refusal)),
         Err(refusal) => return Err(refusal_error(ctx, task, &refusal)),
     };
@@ -71,7 +71,7 @@ pub(crate) fn why(
         }
         _ => None,
     };
-    let filtered = matches!(refused, Some(Refusal::NoRunnerTask { .. }));
+    let filtered = matches!(refused, Some(Refusal::NoSourceTask { .. }));
     let root = ranked
         .is_empty()
         .then(|| root_runner(ctx, overrides, task))
@@ -81,7 +81,7 @@ pub(crate) fn why(
         ambiguous: ambiguous.as_deref(),
         filtered,
         root,
-        reason: crate::commands::run::core::rank_reason(&prepared.policy, &ranked),
+        reason: crate::commands::run::core::rank_reason(&ranked),
         outcome: &outcome,
     };
     let pm_decision = pm_decision_for_selected(&prepared, overrides, selected);
@@ -299,7 +299,7 @@ fn pm_decision_for_selected(
         || Err(crate::provider::no_dispatcher(source)),
         |decision| {
             let warnings = decision
-                .warnings(&prepared.project, overrides)
+                .warnings(&prepared.project)
                 .iter()
                 .map(|warning| WhyWarning {
                     source: warning.source(),
@@ -372,11 +372,11 @@ struct WhyOutput {
     #[serde(flatten)]
     runner: crate::tool::RunnerOutputPolicy,
     #[schemars(extend("enum" = ["normal", "quiet", "reduced"]))]
-    host_diagnostics: &'static str,
-    #[schemars(extend("enum" = ["inherit", "stderr"]))]
-    host_stream: &'static str,
-    task_stdout: &'static str,
-    task_stderr: &'static str,
+    tool: &'static str,
+    #[schemars(extend("enum" = ["inherit", "discard"]))]
+    stdout: &'static str,
+    #[schemars(extend("enum" = ["inherit", "discard"]))]
+    stderr: &'static str,
 }
 
 /// One candidate: the task's identity plus how it matched the query.
@@ -475,11 +475,9 @@ struct WhyMatch<'a> {
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
 struct WhyRank {
-    #[schemars(description = "Position in the task's `[tasks.overrides]` pin.")]
-    pinned: Option<usize>,
     #[schemars(
-        description = "0 for the chosen runner, then the prefer list, then sources a chosen \
-                       package manager or runtime dispatches, then the rest."
+        description = "0 for sources a chosen package manager or runtime dispatches, 1 for the \
+                       rest."
     )]
     tier: usize,
     #[schemars(
@@ -595,39 +593,13 @@ fn build_report<'a>(
 
 fn output_report(overrides: &ResolutionOverrides, selected: Option<&Task>) -> WhyOutput {
     let task_key = selected.map(super::run::task_output_key);
-    let global_host_stream = overrides.global_host_stream();
-    let (stdout, stderr) = selected.map_or(
-        (
-            crate::tool::TaskStream::Inherit,
-            crate::tool::TaskStream::Inherit,
-        ),
-        |_| {
-            task_key.as_deref().map_or(
-                (
-                    crate::tool::TaskStream::Inherit,
-                    crate::tool::TaskStream::Inherit,
-                ),
-                |key| overrides.task_streams_for(key),
-            )
-        },
-    );
-    let diagnostics = task_key
-        .as_deref()
-        .map_or(overrides.output_policy.host_diagnostics, |key| {
-            overrides.host_verbosity_for(key).diagnostics
-        });
+    let output = overrides.output_for(task_key.as_deref());
     WhyOutput {
         level: overrides.quiet_level.label(),
-        runner: overrides.runner_output_for(task_key.as_deref()),
-        host_diagnostics: diagnostics.label(),
-        host_stream: task_key
-            .as_deref()
-            .map_or(global_host_stream, |key| {
-                overrides.host_verbosity_for(key).stream
-            })
-            .label(),
-        task_stdout: stdout.label(),
-        task_stderr: stderr.label(),
+        runner: output.runner,
+        tool: output.tool.label(),
+        stdout: output.stdout.label(),
+        stderr: output.stderr.label(),
     }
 }
 
@@ -685,7 +657,6 @@ fn match_report<'a>(selector: &'a str, task: &Task, rank: Option<&TaskRank>) -> 
         selector,
         matched_by: "name",
         rank: rank.map(|rank| WhyRank {
-            pinned: (rank.pinned != usize::MAX).then_some(rank.pinned),
             tier: rank.tier,
             dispatcher: (rank.dispatch_order != usize::MAX).then_some(if rank.by_package_manager {
                 "package-manager"
@@ -857,11 +828,10 @@ fn print_candidates(ranked: &Ranked<'_>) {
             .as_ref()
             .map_or(String::new(), |member| format!(" ({})", member.name));
         println!(
-            "  {} {}{} [pin={}, tier={}, dispatch={}, priority={}]{}{}",
+            "  {} {}{} [tier={}, dispatch={}, priority={}]{}{}",
             "·".dimmed(),
             c.source.label().bold(),
             scope_tag,
-            shown(rank.pinned),
             rank.tier,
             shown(rank.dispatch_order),
             rank.priority,
@@ -974,13 +944,8 @@ fn print_human(
     println!();
     println!("{}", "Output policy".bold());
     println!(
-        "  level={} {} host={} host_stream={} stdout={} stderr={}",
-        output.level,
-        output.runner,
-        output.host_diagnostics,
-        output.host_stream,
-        output.task_stdout,
-        output.task_stderr,
+        "  level={} {} tool={} stdout={} stderr={}",
+        output.level, output.runner, output.tool, output.stdout, output.stderr,
     );
 }
 
@@ -988,7 +953,8 @@ fn print_human(
 mod tests {
 
     use super::{PmDecision, Verdict, build_report, decision_report, pm_decision_for_selected};
-    use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
+    use crate::invocation::Origin;
+    use crate::resolver::{Invocation, ResolutionOverrides};
     use crate::types::{ProjectContext, Task};
     use runner_core::ProviderId;
 
@@ -1051,7 +1017,7 @@ mod tests {
             ambiguous: None,
             filtered: false,
             root: None,
-            reason: crate::commands::run::core::rank_reason(&prepared.policy, &ranked),
+            reason: crate::commands::run::core::rank_reason(&ranked),
             outcome: &outcome,
         };
         let decision = decision_report(&ranked, selected, verdict);
@@ -1088,18 +1054,16 @@ mod tests {
     }
 
     #[test]
-    fn why_renders_the_runner_constraint_refusal() {
+    fn why_renders_the_source_choice_refusal() {
         let ctx = context(vec![task("build", ProviderId::PackageJson)]);
-        let overrides = ResolutionOverrides::from_cli_and_env(
-            crate::resolver::CliOverrides {
-                runner: Some("just"),
-                ..crate::resolver::CliOverrides::default()
+        let overrides = ResolutionOverrides::resolve(
+            &Invocation {
+                source: Some((ProviderId::Just, Origin::Cli)),
+                ..Invocation::default()
             },
-            DiagnosticFlags::default(),
-            crate::args::ChainFailureFlags::default(),
             None,
         )
-        .expect("runner override should parse");
+        .expect("source resolves");
 
         why(&ctx, &overrides, "build", true)
             .expect("why stops after plan and renders the refusal like any other outcome");
@@ -1108,16 +1072,14 @@ mod tests {
     #[test]
     fn why_pyproject_script_reports_python_pm_override() {
         let mut ctx = context(vec![task("greenpy", ProviderId::Pyproject)]);
-        let overrides = ResolutionOverrides::from_cli_and_env(
-            crate::resolver::CliOverrides {
-                pm: Some("uv"),
-                ..crate::resolver::CliOverrides::default()
+        let overrides = ResolutionOverrides::resolve(
+            &Invocation {
+                pm: Some((ProviderId::Uv, Origin::Cli)),
+                ..Invocation::default()
             },
-            DiagnosticFlags::default(),
-            crate::args::ChainFailureFlags::default(),
             None,
         )
-        .expect("PM override should parse");
+        .expect("PM override resolves");
         crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         let selected = ctx.tasks.first();
         let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "greenpy")
@@ -1322,16 +1284,17 @@ mod tests {
     }
 
     fn runtime_overrides(label: &str) -> ResolutionOverrides {
-        ResolutionOverrides::from_cli_and_env(
-            crate::resolver::CliOverrides {
-                runtime: Some(label),
-                ..crate::resolver::CliOverrides::default()
+        ResolutionOverrides::resolve(
+            &Invocation {
+                runtime: Some((
+                    crate::provider::parse_js_runtime(label).expect("a runtime"),
+                    Origin::Cli,
+                )),
+                ..Invocation::default()
             },
-            DiagnosticFlags::default(),
-            crate::args::ChainFailureFlags::default(),
             None,
         )
-        .expect("runtime override should parse")
+        .expect("runtime override resolves")
     }
 
     #[test]

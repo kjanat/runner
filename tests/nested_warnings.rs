@@ -61,7 +61,7 @@ fn a_nested_runner_does_not_repeat_the_warnings_its_parent_printed() {
         .current_dir(&dir)
         .env("PATH", path)
         .env_remove("RUNNER_WARNED_ROOT")
-        .env_remove("RUNNER_NO_WARNINGS")
+        .env_remove("RUNNER_WARNINGS")
         .output()
         .expect("run runner");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -95,7 +95,7 @@ fn a_nested_runner_over_a_different_root_still_warns() {
         .arg("list")
         .current_dir(&elsewhere)
         .env("RUNNER_WARNED_ROOT", &dir)
-        .env_remove("RUNNER_NO_WARNINGS")
+        .env_remove("RUNNER_WARNINGS")
         .output()
         .expect("run runner");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();

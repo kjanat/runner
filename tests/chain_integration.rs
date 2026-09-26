@@ -152,9 +152,8 @@ fn streaming_parallel_chain_emits_per_task_timing_on_stderr() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // `chain-parallel-fail`'s runner.toml forces the live (streaming) muxer on
-    // both the CI and non-CI paths, so this deterministically exercises the
-    // streaming timing emission. fail-mid exits 7; the default FailFast policy
+    // `chain-parallel-fail` sets `[output.parallel] buffer = false`, so this
+    // deterministically exercises the streaming timing emission. fail-mid exits 7; the default FailFast policy
     // lets the already-spawned siblings finish, so all three report timing.
     let output = runner_command()
         .arg("--dir")
@@ -309,8 +308,7 @@ fn grouped_parallel_chain_folds_timing_into_block_footer() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // `parallel-grouped`'s runner.toml opts into grouped output outside GitHub
-    // Actions, so each task's duration is folded into its block footer on
+    // `parallel-grouped` sets `[output.parallel] buffer = true`, so each task's duration is folded into its block footer on
     // stdout (not a stderr meta-line).
     let output = runner_command()
         .arg("--dir")
@@ -461,10 +459,8 @@ fn parallel_chain_exit_code_reflects_first_failure() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The fixture's runner.toml disables parallel grouping on both the CI
-    // (`[github].group_parallel`) and non-CI (`[parallel].grouped`) paths, so
-    // this deterministically exercises the live line-prefixed muxer
-    // regardless of environment. Output is line-prefixed.
+    // The fixture sets `[output.parallel] buffer = false`, so this exercises
+    // the live line-prefixed muxer regardless of environment.
     assert!(
         stdout.contains("[ok-one"),
         "expected `[ok-one ]` prefix on ok-one's output. stdout: {stdout}",
@@ -768,9 +764,8 @@ fn config_opt_out_disables_grouping_under_github_actions() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // The `github-no-group` fixture ships a runner.toml with
-    // `[github] group_output = false`, so even under GitHub Actions no
-    // groups are emitted.
+    // The `github-no-group` fixture sets `[output] groups = false`, so even
+    // under GitHub Actions no groups are emitted.
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
@@ -791,7 +786,7 @@ fn config_opt_out_disables_grouping_under_github_actions() {
 }
 
 #[test]
-fn github_group_output_false_restores_live_parallel_muxer() {
+fn groups_false_under_github_actions_streams_parallel_output() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
@@ -810,12 +805,12 @@ fn github_group_output_false_restores_live_parallel_muxer() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        stdout.contains("[build") && stdout.contains("[test"),
-        "GHA group_output=false should restore live prefixes. stdout: {stdout}",
+        stdout.contains("build-ran") && stdout.contains("test-ran"),
+        "both tasks stream their output. stdout: {stdout}",
     );
     assert!(
         !stdout.contains("::group::") && !stdout.contains("runner: build"),
-        "GHA group_output=false should not emit grouped blocks. stdout: {stdout}",
+        "groups = false emits no grouped blocks. stdout: {stdout}",
     );
 }
 
@@ -825,7 +820,7 @@ fn parallel_chain_grouped_under_github_actions() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // Default `[github].group_parallel` buffers each task and emits it as its
+    // Default `[output.parallel] buffer` buffers each task and emits it as its
     // own ::group:: block under GitHub Actions, no live `[task]` prefixes.
     let output = runner_command()
         .arg("--dir")
@@ -1233,14 +1228,11 @@ fn quiet_keeps_github_actions_error_annotations() {
 }
 
 #[test]
-fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
+fn groups_opt_out_keeps_annotations_and_the_summary() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    // `[github].group_output` owns runner's Actions output, so it takes the
-    // annotations with it. The roll-up is plain stderr meta-output and is not
-    // Actions-specific, so it stays.
     let output = runner_command()
         .arg("--dir")
         .arg(fixture("github-no-group"))
@@ -1252,12 +1244,16 @@ fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stdout.contains("::error"),
-        "group_output = false opts out of annotations. stdout: {stdout}",
+        !stdout.contains("::group::"),
+        "groups = false emits no groups. stdout: {stdout}",
+    );
+    assert!(
+        stdout.contains("::error") && stdout.contains("fail-mid"),
+        "annotations follow errors. stdout: {stdout}",
     );
     assert!(
         stderr.contains("summary: 2 tasks, 1 ok, 1 failed"),
-        "the roll-up does not follow group_output. stderr: {stderr}",
+        "the roll-up does not follow groups. stderr: {stderr}",
     );
 }
 

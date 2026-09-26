@@ -23,7 +23,7 @@ const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engin
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Yarn,
     label: "yarn",
-    aliases: &[],
+    aliases: &["yarnpkg"],
     ecosystem: Ecosystem::Node,
     kind: Kind::PACKAGE_MANAGER,
     program: Some("yarn"),
@@ -103,6 +103,7 @@ const CLASSIC: Capabilities = Capabilities {
     }),
     clean: Some(super::CLEAN),
     quiet: QuietSupport::flag(t!["--silent"]),
+    runs_on: Some(ProviderId::Node),
     ..Capabilities::NONE
 };
 
@@ -142,6 +143,7 @@ const BERRY: Capabilities = Capabilities {
         declarations: super::workspace::declarations,
     }),
     clean: Some(super::CLEAN),
+    runs_on: Some(ProviderId::Node),
     ..Capabilities::NONE
 };
 

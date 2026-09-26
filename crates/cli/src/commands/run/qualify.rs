@@ -37,11 +37,11 @@ pub(super) fn selection_error(ctx: &ProjectContext, refusal: &Refusal) -> anyhow
             }
             member_ambiguity_message(name, &names)
         }
-        Refusal::NoRunnerTask { runner, name } => {
-            let label = runner_providers::REGISTRY.by_id(*runner).label;
+        Refusal::NoSourceTask { source, name } => {
+            let label = runner_providers::REGISTRY.by_id(*source).label;
             anyhow!(
-                "{label} defines no task named {name:?}; drop `--runner {label}` or add the task \
-                 to its file"
+                "{label} defines no task named {name:?}, and --source, RUNNER_SOURCE or \
+                 [tasks.{name}].source requires it to"
             )
         }
         other => anyhow!("{other}"),
@@ -141,7 +141,7 @@ pub(crate) fn precheck_task(
         return Ok(());
     }
     let tree = super::core::tree(ctx);
-    let policy = super::core::policy(overrides);
+    let policy = super::core::policy(overrides, Some(task));
     let project = super::core::project(ctx)?;
     match super::core::selected_in(ctx, &tree, &project, &policy, task) {
         Ok(Some(_)) => Ok(()),
@@ -155,8 +155,7 @@ pub(crate) fn precheck_task(
 
 /// The task runner whose own entry point `run <token>` invokes when no
 /// task carries the token's name: a detected runner with a default
-/// invocation, spelled by its label, permitted by any `--runner` or
-/// `[tasks].prefer` constraint.
+/// invocation, spelled by its label, permitted by any `--source`.
 pub(crate) fn root_runner(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
@@ -167,13 +166,10 @@ pub(crate) fn root_runner(
         return None;
     }
     if overrides
-        .runner
+        .source
         .as_ref()
-        .is_some_and(|ovr| ovr.runner != runner)
+        .is_some_and(|chosen| chosen.source != runner)
     {
-        return None;
-    }
-    if !overrides.prefer_runners.is_empty() && !overrides.prefer_runners.contains(&runner) {
         return None;
     }
     Some(runner)
@@ -266,7 +262,7 @@ mod tests {
         crate::tool::test_support::seed_context(ctx);
         let overrides = ResolutionOverrides::default();
         let tree = crate::commands::run::core::tree(ctx);
-        let policy = crate::commands::run::core::policy(&overrides);
+        let policy = crate::commands::run::core::policy(&overrides, Some(token));
         let project = crate::commands::run::core::project(ctx).expect("observed");
         crate::commands::run::core::selected_in(ctx, &tree, &project, &policy, token)
             .map(Option::<&Task>::cloned)
@@ -562,17 +558,19 @@ mod tests {
         assert!(msg.contains("package.json failed to read"));
     }
 
-    #[test]
-    fn precheck_passes_explicit_local_path_under_runner_constraint() {
-        // An explicit-prefix local path is dispatched as a file by
-        // `try_path_token` *before* the runner-constraint check, so precheck
-        // must wave it through too, otherwise a chain / install --parallel
-        // under an active `[task_runner].prefer` aborts on a token that a
-        // single `run ./gen.sh` executes fine.
-        let overrides = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
+    fn chosen_source(source: ProviderId) -> ResolutionOverrides {
+        ResolutionOverrides {
+            source: Some(crate::resolver::SourceOverride {
+                source,
+                origin: crate::resolver::OverrideOrigin::CliFlag,
+            }),
             ..ResolutionOverrides::default()
-        };
+        }
+    }
+
+    #[test]
+    fn precheck_passes_explicit_local_path_under_a_source_choice() {
+        let overrides = chosen_source(ProviderId::Just);
         for token in ["./gen.sh", "../gen.sh", "/abs/gen.sh", "~/gen.sh"] {
             precheck_task(&context(), &overrides, token).unwrap_or_else(|e| {
                 panic!("explicit local path {token} should precheck Ok: {e:#}")
@@ -581,53 +579,16 @@ mod tests {
     }
 
     #[test]
-    fn precheck_passes_root_invocation_under_matching_runner_constraint() {
+    fn precheck_passes_root_invocation_under_matching_source_choice() {
         let mut ctx = context();
         crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
-        let overrides = ResolutionOverrides {
-            runner: Some(crate::resolver::RunnerOverride {
-                runner: ProviderId::Make,
-                origin: crate::resolver::OverrideOrigin::CliFlag,
-            }),
-            ..ResolutionOverrides::default()
-        };
-
-        precheck(&mut ctx, &overrides, "make").expect("`make` invokes make's own entry point");
+        precheck(&mut ctx, &chosen_source(ProviderId::Make), "make")
+            .expect("`make` invokes make's own entry point");
     }
 
     #[test]
-    fn precheck_passes_root_invocation_under_a_prefer_list_without_make() {
-        let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
-        let preferred = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
-            ..ResolutionOverrides::default()
-        };
-
-        precheck(&mut ctx, &preferred, "make")
-            .expect("a prefer list ranks and never restricts the host rung");
-    }
-
-    #[test]
-    fn precheck_passes_a_bare_miss_under_a_runner_choice_to_the_cascade() {
-        let overrides = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
-            ..ResolutionOverrides::default()
-        };
-        precheck_task(&context(), &overrides, "gen")
-            .expect("a runner choice ranks task candidates and refuses nothing");
-    }
-
-    #[test]
-    fn precheck_does_not_restrict_under_tasks_prefer() {
-        // `[tasks].prefer` is rank-only: unlike the deprecated restrictive
-        // `[task_runner].prefer`, a prefix-less miss under it must NOT fail
-        // precheck; nothing is hard-rejected. It only reorders.
-        let overrides = ResolutionOverrides {
-            prefer_sources: vec![ProviderId::Turbo],
-            ..ResolutionOverrides::default()
-        };
-        precheck_task(&context(), &overrides, "gen")
-            .expect("[tasks].prefer must not restrict candidates");
+    fn precheck_passes_a_bare_miss_under_a_source_choice_to_the_cascade() {
+        precheck_task(&context(), &chosen_source(ProviderId::Just), "gen")
+            .expect("a name no task carries falls through to the exec rungs");
     }
 }

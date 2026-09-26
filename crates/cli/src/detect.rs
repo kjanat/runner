@@ -154,7 +154,7 @@ pub(crate) fn observe(
     runner_core::resolve(
         &tree,
         evidence,
-        &crate::commands::run::core::policy(overrides),
+        &crate::commands::run::core::policy(overrides, None),
         &runner_providers::REGISTRY,
     )
 }

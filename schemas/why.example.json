@@ -4,20 +4,18 @@
   "root": "/path/to/project",
   "query": "t",
   "pm_resolution": null,
-  "runtime": null,
   "output": {
     "level": "off",
     "progress": true,
     "warnings": true,
     "errors": true,
     "groups": true,
-    "task_timing": true,
+    "timing": true,
     "summary": true,
     "fatal_errors": true,
-    "host_diagnostics": "normal",
-    "host_stream": "inherit",
-    "task_stdout": "inherit",
-    "task_stderr": "inherit"
+    "tool": "normal",
+    "stdout": "inherit",
+    "stderr": "inherit"
   },
   "selected": {
     "task": {
@@ -38,8 +36,7 @@
       "selector": "t",
       "matched_by": "name",
       "rank": {
-        "pinned": null,
-        "tier": 2,
+        "tier": 1,
         "dispatcher": null,
         "dispatch_order": null,
         "priority": 6
@@ -68,8 +65,7 @@
         "selector": "t",
         "matched_by": "name",
         "rank": {
-          "pinned": null,
-          "tier": 2,
+          "tier": 1,
           "dispatcher": null,
           "dispatch_order": null,
           "priority": 6
@@ -81,6 +77,11 @@
   ],
   "decision": {
     "strategy": "single-candidate",
-    "reason": "exact task name matched one candidate"
+    "reason": "exact task name matched one candidate",
+    "tried": [
+      "builtin",
+      "path",
+      "task"
+    ]
   }
 }

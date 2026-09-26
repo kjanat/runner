@@ -71,7 +71,7 @@ fn run_chain_with_head(
     let mut outcomes: Vec<ItemOutcome> = head.into_iter().collect();
 
     if let Some(code) = head_code
-        && !matches!(chain.failure, FailurePolicy::KeepGoing)
+        && !matches!(chain.failure, FailurePolicy::Continue)
     {
         outcomes.extend(chain.items.iter().map(|item| ItemOutcome {
             name: item.display_name().to_string(),
@@ -100,7 +100,7 @@ fn run_chain_with_head(
     // Emit warnings on both success and error paths: a chain that
     // crashes halfway through should still surface the resolver
     // warnings it accumulated, not swallow them with the error.
-    let mode = if overrides.explain {
+    let mode = if overrides.dry_run {
         ChainMode::Sequential
     } else {
         chain.mode
@@ -146,7 +146,7 @@ fn run_sequential(
     warnings: &mut HashSet<DetectionWarning>,
     outcomes: &mut Vec<ItemOutcome>,
 ) -> Result<i32> {
-    let keep_going = matches!(chain.failure, FailurePolicy::KeepGoing);
+    let keep_going = matches!(chain.failure, FailurePolicy::Continue);
     let mut first_failure: Option<i32> = None;
 
     for (index, item) in chain.items.iter().enumerate() {
@@ -179,22 +179,10 @@ fn run_parallel(
     warnings: &mut HashSet<DetectionWarning>,
     outcomes: &mut Vec<ItemOutcome>,
 ) -> Result<i32> {
-    // Whether to buffer each task and print it as one block on completion
-    // (first done, first shown) instead of interleaving lines live. Under
-    // GitHub Actions, `[github].group_output = false` is the broad opt-out
-    // that restores the live muxer; `[github].group_parallel` only controls
-    // the parallel grouping feature while grouping is enabled.
+    // A parent runner's open group cannot hold nested groups, so a nested
+    // parallel chain falls back to the live prefix muxer.
     let in_gha = actions_rs::env::is_github_actions();
-    let grouped = if in_gha {
-        // Suppress per-task groups when a parent runner already opened one:
-        // GHA groups don't nest, so fall back to the live prefix muxer (which
-        // also renders any child group markers inert via the line prefix).
-        overrides.grouping.group_output
-            && overrides.grouping.github_group_parallel
-            && !overrides.parent.group_open
-    } else {
-        overrides.grouping.parallel_grouped
-    };
+    let grouped = overrides.buffers_parallel(in_gha) && !(in_gha && overrides.parent.group_open);
     if grouped {
         // `::group::` workflow-command syntax is GitHub-only; elsewhere
         // grouped blocks get plain headers. Both land on stdout, so
@@ -378,7 +366,7 @@ impl<'a, O: ParallelOutput> Supervisor<'a, O> {
 
         // Poll children. On first failure with KillOnFail, kill remaining
         // siblings; otherwise let them finish naturally.
-        let kill_on_fail = matches!(chain.failure, FailurePolicy::KillOnFail);
+        let kill_on_fail = matches!(chain.failure, FailurePolicy::Kill);
         self.poll(tasks, kill_on_fail)?;
         self.output.drain();
 
@@ -400,7 +388,7 @@ impl<'a, O: ParallelOutput> Supervisor<'a, O> {
             let started = Instant::now();
             let name = match &item.kind {
                 ChainItemKind::Task(name) => name,
-                ChainItemKind::Install { .. } => {
+                ChainItemKind::Install => {
                     // Parallel install is supported with the install head run
                     // first. This executor only handles the parallel tasks
                     // that follow, so an Install item here is invalid.
@@ -1068,12 +1056,8 @@ fn emit_chain_summary(overrides: &ResolutionOverrides, outcomes: &[ItemOutcome],
     }
 
     // Failure attribution in the Annotations panel, where a reader lands
-    // before they ever open the log. Suppressed with the broad
-    // `[github].group_output` opt-out, which owns runner's Actions output.
-    if overrides.shows_errors()
-        && overrides.grouping.group_output
-        && actions_rs::env::is_github_actions()
-    {
+    // before they ever open the log.
+    if overrides.shows_errors() && actions_rs::env::is_github_actions() {
         for outcome in failed {
             let ItemStatus::Ran { code, .. } = outcome.status else {
                 continue;
@@ -1197,8 +1181,8 @@ fn dispatch_item(
             // v1 ChainItem.args is always empty; v2 will populate it.
             crate::commands::run::run_with_key(ctx, overrides, name, &item.args, Some(warnings))
         }
-        ChainItemKind::Install { flags } => {
-            crate::commands::install::install_pms(ctx, overrides, *flags, Some(warnings))
+        ChainItemKind::Install => {
+            crate::commands::install::install_pms(ctx, overrides, Some(warnings))
                 .map(|code| (code, "install".into()))
         }
     }

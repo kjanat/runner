@@ -198,13 +198,12 @@ mod tests {
                 task,
                 args: &args,
                 quiet: quiet.then(|| provider.caps.quiet.at(1)).flatten(),
-                stream: quiet.then_some(provider.caps.quiet.stream).flatten(),
                 ..Request::default()
             }))
         };
         assert_eq!(
             render(ProviderId::Pnpm, Some("build"), true),
-            ["--silent", "--use-stderr", "run", "build", "--", "--flag"]
+            ["--silent", "run", "build", "--", "--flag"]
         );
         let classic = REGISTRY
             .by_id(ProviderId::Yarn)
@@ -316,15 +315,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn pnpm_diverts_its_own_output_to_stderr() {
-        let pnpm = REGISTRY.by_id(ProviderId::Pnpm);
-        assert_eq!(
-            pnpm.caps.quiet.stream,
-            Some(runner_core::t!["--use-stderr"])
-        );
     }
 
     /// Render a capability's template the way a plan does, program first.

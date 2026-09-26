@@ -2,7 +2,6 @@
 
 mod capability;
 pub mod cascade;
-pub mod declare;
 pub mod env;
 pub mod evidence;
 pub mod execute;
@@ -34,7 +33,6 @@ pub use capability::{
     ShimsCap, TaskTable, TestCap, UsageCap, WorkspaceCap,
 };
 pub use cascade::{CASCADE, Cap, Need, Rung};
-pub use declare::{SETTINGS, Setting, SettingKind};
 pub use env::{EnvLayers, EnvTable, LOADER_HOOKS, project_may_set};
 pub use evidence::{Evidence, Present, Weight};
 pub use execute::execute;
@@ -47,9 +45,7 @@ pub use plan::{
     has_local_prefix, is_directly_executable, plan, plan_argv, plan_bin, plan_found, plan_with,
     ranked_tasks, read_shebang, resolve_path, scope_dir, select,
 };
-pub use policy::{
-    Choice, Layer, OnMismatch, PerEcosystem, Policy, ReachPolicy, ScriptPolicy, TrustPolicy,
-};
+pub use policy::{Choice, Download, Layer, PerEcosystem, Policy, ScriptPolicy, TrustPolicy};
 pub use probe::{Prober, probe_in, probe_in_dirs, probe_with};
 pub use provider::{Ecosystem, Hooks, Kind, ProviderId};
 pub use reach::Reach;

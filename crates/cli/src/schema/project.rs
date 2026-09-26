@@ -68,7 +68,7 @@ impl<'a> Project<'a> {
     ) -> Self {
         let observed = Observed::observe(ctx, overrides);
         let sources = dispatched_sources(ctx, observed.as_ref().ok());
-        let (decisions, resolver_warnings) = decisions_for(&observed, &sources, overrides);
+        let (decisions, resolver_warnings) = decisions_for(&observed, &sources);
 
         let warnings = ctx
             .warnings
@@ -128,11 +128,13 @@ impl<'a> Project<'a> {
 
     /// Project the full report to a `list`-shaped view: just the tasks (filtered by `source` when set)
     /// plus the schema version and root. Drops resolver state because `list` is purely a directory listing for tasks.
-    pub(crate) fn into_list_view(self, source: Option<ProviderId>) -> TaskListView<'a> {
+    pub(crate) fn into_list_view(self, only: &[ProviderId]) -> TaskListView<'a> {
         let tasks = self
             .tasks
             .into_iter()
-            .filter(|t| source.is_none_or(|expected| SourceLabel(expected) == t.source))
+            .filter(|t| {
+                only.is_empty() || only.iter().any(|source| SourceLabel(*source) == t.source)
+            })
             .collect();
         TaskListView {
             schema: String::new(),
@@ -278,74 +280,53 @@ pub(crate) struct ExpectedVersionInfo {
     pub source: String,
 }
 
-/// Materialised override stack, the inputs that fed into resolver
-/// decisions.
+/// The provider choices the command line, the environment and `runner.toml`
+/// made, each with its origin.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 pub(crate) struct OverridesView {
-    /// Cross-ecosystem PM override from `--pm` / `RUNNER_PM`.
-    pub pm: Option<PmOverrideInfo>,
-    /// Per-ecosystem PM overrides from `runner.toml [pm].<eco>`.
-    pub pm_by_ecosystem: BTreeMap<String, PmOverrideInfo>,
-    /// `--runner` / `RUNNER_RUNNER` override.
-    pub runner: Option<RunnerOverrideInfo>,
-    /// Ranked preference list from `[task_runner].prefer`.
-    pub prefer_runners: Vec<&'static str>,
-    /// Active `FallbackPolicy` label.
-    pub fallback: &'static str,
-    /// Active `MismatchPolicy` label.
-    pub on_mismatch: &'static str,
-    /// Whether the explain trace is on.
-    pub explain: bool,
-    /// Whether warnings are suppressed.
-    pub no_warnings: bool,
+    /// `--pm` / `RUNNER_PM`.
+    pub pm: Option<ChoiceInfo>,
+    /// `--source` / `RUNNER_SOURCE`.
+    pub source: Option<ChoiceInfo>,
+    /// `--runtime` / `RUNNER_RUNTIME` / `[runtime].javascript`.
+    pub runtime: Option<ChoiceInfo>,
+    /// Whether `--dry-run` is on.
+    pub dry_run: bool,
+    /// Whether warnings print.
+    pub warnings: bool,
 }
 
 impl OverridesView {
     fn from_resolution_overrides(overrides: &ResolutionOverrides) -> Self {
-        let mut pm_by_eco = BTreeMap::new();
-        for (eco, pm_override) in &overrides.pm_by_ecosystem {
-            pm_by_eco.insert(
-                eco.label().to_string(),
-                PmOverrideInfo {
-                    pm: pm_override.pm.label(),
-                    origin: origin_label(&pm_override.origin),
-                },
-            );
-        }
+        let choice = |label: &'static str, origin: &OverrideOrigin| ChoiceInfo {
+            value: label,
+            origin: origin_label(origin),
+        };
         Self {
-            pm: overrides.pm.as_ref().map(|o| PmOverrideInfo {
-                pm: o.pm.label(),
-                origin: origin_label(&o.origin),
-            }),
-            pm_by_ecosystem: pm_by_eco,
-            runner: overrides.runner.as_ref().map(|o| RunnerOverrideInfo {
-                runner: o.runner.label(),
-                origin: origin_label(&o.origin),
-            }),
-            prefer_runners: overrides.prefer_runners.iter().map(|r| r.label()).collect(),
-            fallback: overrides.fallback.label(),
-            on_mismatch: overrides.on_mismatch.label(),
-            explain: overrides.explain,
-            no_warnings: overrides.no_warnings,
+            pm: overrides
+                .pm
+                .as_ref()
+                .map(|o| choice(o.pm.label(), &o.origin)),
+            source: overrides
+                .source
+                .as_ref()
+                .map(|o| choice(o.source.label(), &o.origin)),
+            runtime: overrides
+                .runtime
+                .as_ref()
+                .map(|o| choice(o.runtime.label(), &o.origin)),
+            dry_run: overrides.dry_run,
+            warnings: overrides.shows_warnings(),
         }
     }
 }
 
-/// PM override + provenance.
+/// A chosen provider and where the choice came from.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct PmOverrideInfo {
-    /// The chosen PM label.
-    pub pm: &'static str,
-    /// `"cli"`, `"env"`, or `"config:/abs/path"`.
-    pub origin: String,
-}
-
-/// Task-runner override + provenance.
-#[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct RunnerOverrideInfo {
-    /// The chosen runner label.
-    pub runner: &'static str,
-    /// `"cli"`, `"env"`, or `"config:/abs/path"`.
+pub(crate) struct ChoiceInfo {
+    /// The provider's label.
+    pub value: &'static str,
+    /// `"cli"`, `"env"`, `"config:/abs/path"` or `"config:/abs/path#tasks.<name>"`.
     pub origin: String,
 }
 
@@ -397,7 +378,7 @@ pub(crate) enum Decision {
     Resolved {
         /// The chosen PM label.
         pm: &'static str,
-        /// Human-readable `via` line, the same string `--explain` prints.
+        /// Human-readable `via` line, the same string `--dry-run` prints.
         via: String,
     },
     /// No package manager dispatches the source here, or observation failed.
@@ -501,7 +482,6 @@ pub(crate) fn source_signals(
 fn decisions_for(
     observed: &std::io::Result<Observed>,
     sources: &[ProviderId],
-    overrides: &ResolutionOverrides,
 ) -> (BTreeMap<&'static str, Decision>, Vec<DetectionWarning>) {
     let mut decisions = BTreeMap::new();
     let mut warnings = Vec::new();
@@ -509,7 +489,7 @@ fn decisions_for(
         let decision = match observed {
             Ok(observed) => match observed.decision(source) {
                 Some(decision) => {
-                    warnings.extend(decision.warnings(&observed.project, overrides));
+                    warnings.extend(decision.warnings(&observed.project));
                     Decision::Resolved {
                         pm: decision.pm.label(),
                         via: decision.describe(),
@@ -533,6 +513,9 @@ fn origin_label(origin: &OverrideOrigin) -> String {
         OverrideOrigin::CliFlag => "cli".to_string(),
         OverrideOrigin::EnvVar => "env".to_string(),
         OverrideOrigin::ConfigFile { path } => format!("config:{}", path.display()),
+        OverrideOrigin::TaskConfig { path, task } => {
+            format!("config:{}#tasks.{task}", path.display())
+        }
     }
 }
 
@@ -693,7 +676,7 @@ mod tests {
             member: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default());
-        let view = project.into_list_view(Some(ProviderId::Just));
+        let view = project.into_list_view(&[ProviderId::Just]);
 
         assert_eq!(view.tasks.len(), 1);
         assert_eq!(view.tasks[0].name, "fmt");

@@ -9,7 +9,7 @@ use runner_core::{
 use runner_providers::REGISTRY;
 
 use crate::provider::Named;
-use crate::resolver::{MismatchPolicy, ResolutionOverrides};
+use crate::resolver::ResolutionOverrides;
 use crate::types::DetectionWarning;
 
 /// Observation and resolution for one invocation.
@@ -28,7 +28,7 @@ impl Observed {
         ctx: &crate::types::ProjectContext,
         overrides: &ResolutionOverrides,
     ) -> std::io::Result<Self> {
-        let policy = super::core::policy(overrides);
+        let policy = super::core::policy(overrides, None);
         let project = super::core::project(ctx)?;
         Ok(Self {
             tree: super::core::tree(ctx),
@@ -158,9 +158,24 @@ pub(crate) fn decide_in(
     PmDecision::new(
         present.provider,
         &decided_by(policy, present),
+        flag(policy, present.provider),
         &present.because,
         scope,
     )
+}
+
+/// The flag whose setting chose `provider`: `runtime` when the runtime choice
+/// names it, else `pm`.
+fn flag(policy: &Policy, provider: ProviderId) -> &'static str {
+    if policy
+        .runtime
+        .as_ref()
+        .is_some_and(|choice| choice.id == provider)
+    {
+        "runtime"
+    } else {
+        "pm"
+    }
 }
 
 /// A package-manager decision, from the layer that made it and the evidence behind it.
@@ -168,6 +183,7 @@ pub(crate) fn decide_in(
 pub(crate) struct PmDecision {
     pub pm: ProviderId,
     pub layer: Layer,
+    pub flag: &'static str,
     pub at: PathBuf,
     pub field: Option<&'static str>,
     pub on_fail: Option<OnFail>,
@@ -178,6 +194,7 @@ impl PmDecision {
     fn new(
         provider: ProviderId,
         decided_by: &[Layer],
+        flag: &'static str,
         because: &[Evidence],
         scope: &Scope,
     ) -> Option<Self> {
@@ -194,6 +211,7 @@ impl PmDecision {
         Some(Self {
             pm,
             layer,
+            flag,
             at: strongest.map(|e| e.at.clone()).unwrap_or_default(),
             field: declared.map(|(field, _)| field),
             on_fail: declared.and_then(|(_, declared)| match declared {
@@ -205,16 +223,27 @@ impl PmDecision {
     }
 
     /// The decision a plan carries.
-    pub(crate) fn from_plan(plan: &Plan) -> Option<Self> {
-        Self::new(plan.provider?, &plan.decided_by, &plan.because, &plan.scope)
+    pub(crate) fn from_plan(plan: &Plan, policy: &Policy) -> Option<Self> {
+        let provider = plan.provider?;
+        Self::new(
+            provider,
+            &plan.decided_by,
+            flag(policy, provider),
+            &plan.because,
+            &plan.scope,
+        )
     }
 
     /// One line naming the package manager and the layer that chose it.
     pub(crate) fn describe(&self) -> String {
         let pm = self.pm.label();
         match &self.layer {
-            Layer::Cli => format!("{pm} via --pm (CLI override)"),
-            Layer::Env => format!("{pm} via RUNNER_PM (environment)"),
+            Layer::Cli => format!("{pm} via --{} (CLI override)", self.flag),
+            Layer::Env => format!(
+                "{pm} via {}_{} (environment)",
+                crate::invocation::PREFIX,
+                self.flag.to_uppercase()
+            ),
             Layer::ConfigFile(path) => format!("{pm} via runner.toml at {}", path.display()),
             Layer::Manifest(path) => {
                 let field = self
@@ -238,12 +267,8 @@ impl PmDecision {
     }
 
     /// The findings the decision carries: a `PATH` fallback, and a manifest
-    /// that disagrees with the lockfile unless the invocation ignores it.
-    pub(crate) fn warnings(
-        &self,
-        project: &Project,
-        overrides: &ResolutionOverrides,
-    ) -> Vec<DetectionWarning> {
+    /// that disagrees with the lockfile.
+    pub(crate) fn warnings(&self, project: &Project) -> Vec<DetectionWarning> {
         let mut warnings = Vec::new();
         let provider = REGISTRY
             .by_label(self.pm.label())
@@ -261,9 +286,6 @@ impl PmDecision {
                     })
                     .unwrap_or_default(),
             });
-        }
-        if overrides.on_mismatch == MismatchPolicy::Ignore {
-            return warnings;
         }
         for disagreement in &project.disagreements {
             if Some(disagreement.declared) != provider || disagreement.scope != self.scope {
@@ -334,16 +356,14 @@ fn manifest_field(present: &Present) -> Option<(&Evidence, &'static str)> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use runner_core::{Layer, OnFail, ProviderId, Scope};
 
     use super::{Observed, PmDecision};
-    use crate::resolver::{MismatchPolicy, OverrideOrigin, PmOverride, ResolutionOverrides};
+    use crate::resolver::{OverrideOrigin, PmOverride, ResolutionOverrides};
     use crate::tool::test_support::TempDir;
     use crate::types::DetectionWarning;
-    use runner_core::Ecosystem;
 
     fn project(name: &str, files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new(name);
@@ -365,30 +385,13 @@ mod tests {
         let observed = Observed::observe(&ctx, overrides).expect("observation");
         observed
             .decision(ProviderId::PackageJson)
-            .map(|decision| decision.warnings(&observed.project, overrides))
+            .map(|decision| decision.warnings(&observed.project))
             .unwrap_or_default()
     }
 
     fn with_pm_override(pm: ProviderId, origin: OverrideOrigin) -> ResolutionOverrides {
         ResolutionOverrides {
             pm: Some(PmOverride { pm, origin }),
-            ..ResolutionOverrides::default()
-        }
-    }
-
-    fn with_config_pm(pm: ProviderId, eco: Ecosystem) -> ResolutionOverrides {
-        let mut map = HashMap::new();
-        map.insert(
-            eco,
-            PmOverride {
-                pm,
-                origin: OverrideOrigin::ConfigFile {
-                    path: PathBuf::from("/test/runner.toml"),
-                },
-            },
-        );
-        ResolutionOverrides {
-            pm_by_ecosystem: map,
             ..ResolutionOverrides::default()
         }
     }
@@ -603,72 +606,20 @@ mod tests {
     }
 
     #[test]
-    fn on_mismatch_ignore_drops_the_disagreement_warning() {
+    fn a_disagreement_keeps_the_declaration_and_warns() {
         let dir = project(
-            "decision-mismatch-ignore",
+            "decision-mismatch",
             &[
                 ("package.json", r#"{ "packageManager": "yarn@4" }"#),
                 ("pnpm-lock.yaml", LOCK),
             ],
         );
-        let ignore = ResolutionOverrides {
-            on_mismatch: MismatchPolicy::Ignore,
-            ..ResolutionOverrides::default()
-        };
+        let overrides = ResolutionOverrides::default();
         assert_eq!(
-            node_decision(&dir, &ignore).map(|d| d.pm),
+            node_decision(&dir, &overrides).map(|d| d.pm),
             Some(ProviderId::Yarn)
         );
-        assert_eq!(node_warnings(&dir, &ignore).len(), 0);
-        let warn = ResolutionOverrides {
-            on_mismatch: MismatchPolicy::Warn,
-            ..ResolutionOverrides::default()
-        };
-        assert_eq!(node_warnings(&dir, &warn).len(), 1);
-    }
-
-    #[test]
-    fn config_pm_node_field_overrides_detection() {
-        let dir = project(
-            "decision-config-node",
-            &[
-                ("package.json", "{}"),
-                ("pnpm-lock.yaml", LOCK),
-                ("yarn.lock", ""),
-            ],
-        );
-        let decision =
-            node_decision(&dir, &with_config_pm(ProviderId::Yarn, Ecosystem::Node)).expect("yarn");
-        assert_eq!(decision.pm, ProviderId::Yarn);
-        assert_eq!(
-            decision.describe(),
-            "yarn via runner.toml at /test/runner.toml"
-        );
-        let mut both = with_config_pm(ProviderId::Yarn, Ecosystem::Node);
-        both.pm = Some(PmOverride {
-            pm: ProviderId::Pnpm,
-            origin: OverrideOrigin::CliFlag,
-        });
-        assert_eq!(
-            node_decision(&dir, &both).map(|d| d.pm),
-            Some(ProviderId::Pnpm)
-        );
-    }
-
-    #[test]
-    fn deno_config_value_fills_the_node_slot_and_resolves_for_node_scripts() {
-        let dir = project(
-            "decision-config-deno",
-            &[
-                ("package.json", "{}"),
-                ("pnpm-lock.yaml", LOCK),
-                ("deno.json", "{}"),
-                ("deno.lock", "{}"),
-            ],
-        );
-        let decision =
-            node_decision(&dir, &with_config_pm(ProviderId::Deno, Ecosystem::Node)).expect("deno");
-        assert_eq!(decision.pm, ProviderId::Deno);
+        assert_eq!(node_warnings(&dir, &overrides).len(), 1);
     }
 
     #[test]
@@ -728,6 +679,7 @@ mod tests {
         let decision = |pm, layer, field, on_fail| PmDecision {
             pm,
             layer,
+            flag: "pm",
             at: PathBuf::from("/usr/bin/npm"),
             field,
             on_fail,

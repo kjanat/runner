@@ -231,7 +231,8 @@ fn extract_all(
 /// Turn evidence into present providers.
 ///
 /// A provider is present in a scope when a signal stronger than a `PATH`
-/// probe was found there, or when policy names it and it is on `PATH`.
+/// probe was found there, or when policy chooses or names it and it is on
+/// `PATH`.
 /// Within an ecosystem the order is the policy's choice first, then by the
 /// strongest evidence, then `probe_priority`, the same rule for every
 /// ecosystem. Unless policy is strict, a task source no present package
@@ -365,7 +366,10 @@ fn observed_presence(
         let Some(strongest) = because.first().map(|item| item.weight) else {
             continue;
         };
-        if strongest == Weight::Probed && chosen_by(policy, id).is_none() {
+        if strongest == Weight::Probed
+            && chosen_by(policy, id).is_none()
+            && !policy.named.contains(&id)
+        {
             continue;
         }
         present.push(Present {
@@ -523,12 +527,11 @@ fn add_task_runners(tree: &Tree, policy: &Policy, registry: &Registry, project: 
                     .run_task
                     .is_some_and(|cap| cap.sources.contains(&source))
         };
-        if policy.strict
-            || policy
-                .pm
-                .0
-                .values()
-                .any(|choice| supports(registry.by_id(choice.id)))
+        if policy
+            .pm
+            .0
+            .values()
+            .any(|choice| supports(registry.by_id(choice.id)))
         {
             continue;
         }
@@ -605,7 +608,7 @@ fn choices(policy: &Policy) -> impl Iterator<Item = &Choice> {
         .pm
         .0
         .values()
-        .chain(policy.runner.iter())
+        .chain(policy.source.iter())
         .chain(policy.runtime.iter())
 }
 
@@ -886,6 +889,23 @@ mod tests {
         assert_eq!(project.warnings, []);
         let absent = resolve(&tree(), Vec::new(), &policy, &registry).unwrap();
         assert_eq!(absent.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_provider_a_task_names_is_admitted_from_a_probe_without_ranking_first() {
+        let registry = Registry(FAKES);
+        let policy = Policy {
+            named: vec![ProviderId::Npm],
+            ..Policy::default()
+        };
+        let evidence = vec![
+            found(ProviderId::Npm, Weight::Probed),
+            found(ProviderId::Pnpm, Weight::Locked),
+        ];
+        let project = resolve(&tree(), evidence, &policy, &registry).unwrap();
+        let ids: Vec<ProviderId> = project.present.iter().map(|p| p.provider).collect();
+        assert_eq!(ids, [ProviderId::Pnpm, ProviderId::Npm]);
+        assert_eq!(project.warnings, []);
     }
 
     #[test]

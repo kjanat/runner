@@ -1,8 +1,8 @@
 # Host quiet support
 
-`host.diagnostics` may suppress only host-owned diagnostics. It never suppresses
-task stdout or stderr. Unsupported requests clamp to the strongest safe mode and
-appear in `--explain` with the matrix ID below.
+`[output.tool] quiet` and the `-qq` preset may suppress only host-owned
+diagnostics. They never suppress task stdout or stderr. Unsupported requests clamp to the strongest safe mode and
+appear in `--dry-run` with the matrix ID below.
 
 ## Safe Reductions
 
@@ -21,12 +21,6 @@ appear in `--explain` with the matrix ID below.
 | `poetry`       | `poetry run`  | `--quiet`                                            | Poetry diagnostics                       | preserved    | `quiet`      | Poetry global option                                                                                        |
 | `pipenv`       | `pipenv run`  | `--quiet`; `PIPENV_QUIET`                            | Pipenv diagnostics such as dotenv notice | preserved    | `quiet`      | Pipenv global option                                                                                        |
 
-## Stream Routing
-
-| ID     | Control                     | Effect                                                        | Policy axis                               |
-| ------ | --------------------------- | ------------------------------------------------------------- | ----------------------------------------- |
-| `pnpm` | `--use-stderr`; `useStderr` | routes all pnpm output to stderr; does not reduce diagnostics | `--host-stream`, never `host.diagnostics` |
-
 ## Unsupported Or Excluded
 
 | ID           | Existing control          | Why excluded                                    | Fallback |
@@ -43,7 +37,7 @@ appear in `--explain` with the matrix ID below.
 
 `runner ./script.ts` and its siblings run the file through a runtime
 (`bun`, `deno run`, `node`, `uv run`, `python3`, `go run`). That path applies no
-host quiet flags on any runtime and `--explain` prints no `host:` line for it.
+host quiet flags on any runtime and `--dry-run` prints no `host:` line for it.
 Per-task stdout/stderr discard still applies and is reported on the `output:`
 line.
 

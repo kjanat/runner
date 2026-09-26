@@ -37,46 +37,36 @@
     "workspace": null
   },
   "overrides": {
-    "explain": false,
-    "fallback": "probe",
-    "failure_policy": "fail-fast",
-    "no_warnings": false,
-    "on_collision": "resolve",
-    "output_grouping": {
-      "group_output": true,
-      "github_group_parallel": true,
-      "parallel_grouped": false
+    "dry_run": false,
+    "download": {
+      "value": true,
+      "explicit": false
     },
-    "quiet": false,
+    "failure_policy": "wait",
+    "install_tools": true,
+    "lockfile": "update",
+    "script_policy": "default",
     "output": {
-      "level": "off",
+      "quiet": "off",
       "progress": true,
       "warnings": true,
       "errors": true,
       "groups": true,
-      "task_timing": true,
+      "timing": true,
       "summary": true,
       "fatal_errors": true,
-      "host_diagnostics": "normal",
-      "host_stream": "inherit"
+      "tool": "normal",
+      "parallel_buffer": null
     },
-    "on_mismatch": "warn",
     "pm": null,
-    "pm_by_ecosystem": {},
-    "prefer_runners": [],
-    "prefer_sources": [],
-    "runner": null,
     "runtime": null,
-    "script_policy": "default",
-    "fetch": "ask",
-    "lockfile": "update",
+    "source": null,
     "env": {
       "project": [],
       "tool": {},
       "task": {}
     },
-    "tool_install": {},
-    "task_source_pins": {}
+    "tasks": {}
   },
   "ecosystems": [
     {
@@ -221,10 +211,10 @@
     "fqn_policy": "exact-only",
     "precedence": [
       "nearest-scope",
-      "task-pin",
-      "chosen-runner",
-      "prefer-list",
+      "qualified-source",
+      "chosen-source",
       "chosen-dispatcher",
+      "package-manager",
       "dispatch-order",
       "task-priority",
       "provider",

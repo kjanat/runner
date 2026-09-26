@@ -161,7 +161,11 @@ mod tests {
     #[test]
     fn init_refuses_existing_without_force() {
         let dir = TempDir::new("config-init-existing");
-        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n").expect("seed config");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[tasks.build]\npm = \"npm\"\n",
+        )
+        .expect("seed config");
 
         let code = config(dir.path(), ConfigAction::Init { force: false })
             .expect("init returns a code, not an error");
@@ -169,13 +173,17 @@ mod tests {
 
         // Original content is untouched.
         let kept = fs::read_to_string(dir.path().join(CONFIG_FILENAME)).expect("read back");
-        assert!(kept.contains("node = \"npm\""), "existing file preserved");
+        assert!(kept.contains("pm = \"npm\""), "existing file preserved");
     }
 
     #[test]
     fn init_force_overwrites() {
         let dir = TempDir::new("config-init-force");
-        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"npm\"\n").expect("seed config");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[tasks.build]\npm = \"npm\"\n",
+        )
+        .expect("seed config");
 
         let code =
             config(dir.path(), ConfigAction::Init { force: true }).expect("forced init succeeds");
@@ -183,45 +191,43 @@ mod tests {
 
         let written = fs::read_to_string(dir.path().join(CONFIG_FILENAME)).expect("read back");
         assert!(written.starts_with("#:schema "), "init replaced the file");
-        assert!(!written.contains("node = \"npm\""), "seed content gone");
+        assert!(!written.contains("pm = \"npm\""), "seed content gone");
     }
 
     #[test]
     fn validate_rejects_malformed_toml() {
         let dir = TempDir::new("config-validate-bad");
-        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \n").expect("seed broken config");
+        fs::write(dir.path().join(CONFIG_FILENAME), "[tasks.build]\npm = \n")
+            .expect("seed broken config");
 
         let code = config(dir.path(), ConfigAction::Validate).expect("returns a code");
         assert_eq!(code, 2, "malformed TOML must fail validation");
     }
 
     #[test]
-    fn validate_rejects_cross_ecosystem_pm() {
+    fn validate_rejects_a_task_source_named_as_package_manager() {
         let dir = TempDir::new("config-validate-pm");
-        fs::write(dir.path().join(CONFIG_FILENAME), "[pm]\nnode = \"cargo\"\n")
-            .expect("seed config");
-
-        let code = config(dir.path(), ConfigAction::Validate).expect("returns a code");
-        assert_eq!(code, 2, "cargo is not a node PM");
-    }
-
-    #[test]
-    fn validate_rejects_both_chain_toggles() {
-        // The combination the type still represents but the resolver
-        // rejects: with no env var to neutralize a side, both-true is a
-        // conflict.
-        let dir = TempDir::new("config-validate-chain");
         fs::write(
             dir.path().join(CONFIG_FILENAME),
-            "[chain]\nkeep_going = true\nkill_on_fail = true\n",
+            "[tasks.build]\npm = \"just\"\n",
         )
         .expect("seed config");
 
         let code = config(dir.path(), ConfigAction::Validate).expect("returns a code");
-        assert_eq!(
-            code, 2,
-            "keep_going + kill_on_fail both true must fail validation"
-        );
+        assert_eq!(code, 2, "just is not a package manager");
+    }
+
+    #[test]
+    fn validate_rejects_an_unknown_failure_action() {
+        let dir = TempDir::new("config-validate-chain");
+        fs::write(
+            dir.path().join(CONFIG_FILENAME),
+            "[chain]\non_fail = \"sometimes\"\n",
+        )
+        .expect("seed config");
+
+        let code = config(dir.path(), ConfigAction::Validate).expect("returns a code");
+        assert_eq!(code, 2, "on_fail takes continue, wait or kill");
     }
 
     #[test]
@@ -229,7 +235,7 @@ mod tests {
         let dir = TempDir::new("config-validate-ok");
         fs::write(
             dir.path().join(CONFIG_FILENAME),
-            "[pm]\nnode = \"pnpm\"\n[chain]\nkeep_going = true\n",
+            "[tasks.build]\npm = \"pnpm\"\n[chain]\non_fail = \"continue\"\n",
         )
         .expect("seed config");
 

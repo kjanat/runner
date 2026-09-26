@@ -166,14 +166,13 @@
         "errors",
         "fatal_errors",
         "groups",
-        "host_diagnostics",
-        "host_stream",
         "level",
         "progress",
+        "stderr",
+        "stdout",
         "summary",
-        "task_stderr",
-        "task_stdout",
-        "task_timing",
+        "timing",
+        "tool",
         "warnings"
       ],
       "properties": {
@@ -185,21 +184,6 @@
         },
         "groups": {
           "type": "boolean"
-        },
-        "host_diagnostics": {
-          "type": "string",
-          "enum": [
-            "normal",
-            "quiet",
-            "reduced"
-          ]
-        },
-        "host_stream": {
-          "type": "string",
-          "enum": [
-            "inherit",
-            "stderr"
-          ]
         },
         "level": {
           "type": "string",
@@ -214,17 +198,33 @@
         "progress": {
           "type": "boolean"
         },
+        "stderr": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "discard"
+          ]
+        },
+        "stdout": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "discard"
+          ]
+        },
         "summary": {
           "type": "boolean"
         },
-        "task_stderr": {
-          "type": "string"
-        },
-        "task_stdout": {
-          "type": "string"
-        },
-        "task_timing": {
+        "timing": {
           "type": "boolean"
+        },
+        "tool": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
         },
         "warnings": {
           "type": "boolean"
@@ -237,7 +237,6 @@
       "required": [
         "dispatch_order",
         "dispatcher",
-        "pinned",
         "priority",
         "tier"
       ],
@@ -263,15 +262,6 @@
             null
           ]
         },
-        "pinned": {
-          "description": "Position in the task's `[tasks.overrides]` pin.",
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "format": "uint"
-        },
         "priority": {
           "description": "The source's own task priority.",
           "type": "integer",
@@ -280,7 +270,7 @@
           "format": "uint8"
         },
         "tier": {
-          "description": "0 for the chosen runner, then the prefer list, then sources a chosen package manager or runtime dispatches, then the rest.",
+          "description": "0 for sources a chosen package manager or runtime dispatches, 1 for the rest.",
           "type": "integer",
           "minimum": 0,
           "format": "uint"

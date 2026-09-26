@@ -1,5 +1,5 @@
-//! A flattened view of the generated `runner.toml` JSON Schema, used as the
-//! single source of truth for hover text and completion documentation.
+//! The generated `runner.toml` JSON Schema, walked by table path, as the
+//! single source of truth for hover text and completion.
 //!
 //! The schema is produced from the `RunnerConfig` doc comments (the same ones
 //! the committed `schemas/runner.toml.schema.json` is built from), so editor
@@ -9,145 +9,178 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-/// Documentation for one `[section]` and its fields.
-pub(super) struct SectionDoc {
-    /// The section's own description (from the field that holds it).
+/// One table: its description and its declared fields.
+pub(super) struct TableDoc {
     pub description: Option<String>,
-    /// Whether the schema flags the section as deprecated.
-    pub deprecated: bool,
-    /// Per-field documentation, keyed by field name.
     pub fields: BTreeMap<String, FieldDoc>,
 }
 
-/// Documentation for one field within a section.
+/// Documentation for one field.
 pub(super) struct FieldDoc {
-    /// The field's description, if the schema carries one.
     pub description: Option<String>,
-    /// Closed value set (`enum`) the schema declares, if any.
-    pub enum_values: Vec<String>,
-    /// Whether the schema flags the field as deprecated.
-    pub deprecated: bool,
-    /// The value shape the schema declares.
+    /// The values the schema lists, each with whether TOML quotes it.
+    pub values: Vec<(String, bool)>,
     pub field_type: FieldType,
 }
 
-/// The (single) JSON type shape a field schema declares.
+/// The value shape a field's schema declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FieldType {
-    /// An object, a nested table writable as its own `[section.field]`
-    /// header, e.g. `[tasks.overrides]`.
+    /// A table, writable as its own `[section.field]` header.
     Table,
-    /// An array (a TOML sequence, e.g. `prefer = [...]`).
-    Array,
     /// A string, including closed string enums.
     String,
-    /// Anything else (booleans, numbers).
+    /// A boolean.
+    Bool,
+    /// Anything else.
     Other,
 }
 
-/// Section docs keyed by TOML section name (`pm`, `tasks`, …).
+/// The schema, indexed by table path.
 pub(super) struct SchemaIndex {
-    sections: BTreeMap<String, SectionDoc>,
+    root: &'static Value,
 }
 
 impl SchemaIndex {
-    /// Build the index from the crate's generated config schema. A schema that
-    /// fails to generate (should not happen) yields an empty index, degrading
-    /// hover/completion to no-ops rather than failing the server.
     pub(super) fn build() -> Self {
-        let schema = crate::commands::schema::config_schema();
-        let defs = schema.get("$defs");
-        let mut sections = BTreeMap::new();
-
-        if let Some(props) = schema.get("properties").and_then(Value::as_object) {
-            for (name, section) in props {
-                let description = string_field(section, "description");
-                let def = section
-                    .get("$ref")
-                    .and_then(Value::as_str)
-                    .and_then(|r| r.strip_prefix("#/$defs/"))
-                    .and_then(|def_name| defs.and_then(|d| d.get(def_name)));
-                let fields = def.map(field_docs).unwrap_or_default();
-                // `deprecated` may sit on the property or (via `extend`) on
-                // the referenced `$defs` entry.
-                let deprecated = [Some(section), def]
-                    .into_iter()
-                    .flatten()
-                    .any(is_deprecated);
-                sections.insert(
-                    name.clone(),
-                    SectionDoc {
-                        description,
-                        deprecated,
-                        fields,
-                    },
-                );
-            }
+        Self {
+            root: crate::config::schema(),
         }
-        Self { sections }
     }
 
-    /// Look up a section by its TOML name.
-    pub(super) fn section(&self, name: &str) -> Option<&SectionDoc> {
-        self.sections.get(name)
+    /// The table a dotted header path names: `output.task`, `tasks.build`,
+    /// `tasks.build.runtime`. User-named segments go through a map's entry
+    /// schema.
+    pub(super) fn table(&self, path: &str) -> Option<TableDoc> {
+        let mut node = self.resolve(self.root);
+        let mut description = None;
+        for segment in path.split('.').filter(|segment| !segment.is_empty()) {
+            let segment = segment.trim().trim_matches('"');
+            let field = node
+                .get("properties")
+                .and_then(|properties| properties.get(segment))
+                .or_else(|| node.get("additionalProperties").filter(|v| v.is_object()))?;
+            description = string_field(field, "description");
+            node = self.resolve(field);
+        }
+        let fields = node
+            .get("properties")
+            .and_then(Value::as_object)
+            .map(|properties| {
+                properties
+                    .iter()
+                    .map(|(name, field)| (name.clone(), self.field(field)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(TableDoc {
+            description: description.or_else(|| string_field(node, "description")),
+            fields,
+        })
     }
 
-    /// Every header path a `[...]` line can name: top-level section names plus
-    /// `section.field` for each object-typed field (a nested table, e.g.
-    /// `tasks.overrides`), sorted.
+    /// Every header path whose tables the schema declares, sorted: each table
+    /// field of the root and of its nested tables. Map entries are the user's
+    /// names and cannot be listed.
     pub(super) fn header_paths(&self) -> Vec<String> {
-        let mut paths: Vec<String> = Vec::new();
-        for (name, doc) in &self.sections {
-            paths.push(name.clone());
-            for (field, field_doc) in &doc.fields {
-                if field_doc.field_type == FieldType::Table {
-                    paths.push(format!("{name}.{field}"));
-                }
-            }
-        }
+        let mut paths = Vec::new();
+        self.collect_paths("", &mut paths);
         paths.sort();
         paths
     }
+
+    fn collect_paths(&self, prefix: &str, paths: &mut Vec<String>) {
+        let Some(table) = self.table(prefix) else {
+            return;
+        };
+        for (name, field) in &table.fields {
+            if field.field_type == FieldType::Table {
+                let path = if prefix.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{prefix}.{name}")
+                };
+                paths.push(path.clone());
+                self.collect_paths(&path, paths);
+            }
+        }
+    }
+
+    fn field(&self, schema: &'static Value) -> FieldDoc {
+        let resolved = self.resolve(schema);
+        let mut values = Vec::new();
+        collect_values(self, schema, &mut values);
+        let field_type = if has_type(resolved, "object") || resolved.get("properties").is_some() {
+            FieldType::Table
+        } else if has_type(resolved, "boolean") {
+            FieldType::Bool
+        } else if has_type(resolved, "string") || values.iter().any(|(_, quoted)| *quoted) {
+            FieldType::String
+        } else {
+            FieldType::Other
+        };
+        if field_type == FieldType::Bool && values.is_empty() {
+            values = vec![("true".to_owned(), false), ("false".to_owned(), false)];
+        }
+        FieldDoc {
+            description: string_field(schema, "description"),
+            values,
+            field_type,
+        }
+    }
+
+    /// `node` with its `$ref` followed, and a nullable `anyOf` narrowed to its
+    /// non-null branch.
+    fn resolve(&self, node: &'static Value) -> &'static Value {
+        if let Some(target) = node
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|reference| reference.strip_prefix('#'))
+            .and_then(|pointer| self.root.pointer(pointer))
+        {
+            return self.resolve(target);
+        }
+        if let Some([branch]) = node
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .map(|branches| {
+                branches
+                    .iter()
+                    .filter(|branch| branch.get("type").and_then(Value::as_str) != Some("null"))
+                    .collect::<Vec<_>>()
+            })
+            .as_deref()
+        {
+            return self.resolve(branch);
+        }
+        node
+    }
 }
 
-/// Extract the `properties` of a `$defs` struct schema into per-field docs.
-fn field_docs(def: &Value) -> BTreeMap<String, FieldDoc> {
-    let Some(props) = def.get("properties").and_then(Value::as_object) else {
-        return BTreeMap::new();
+/// The values `schema` lists in `enum`, `const` and `oneOf`/`anyOf` branches.
+fn collect_values(index: &SchemaIndex, schema: &'static Value, out: &mut Vec<(String, bool)>) {
+    let schema = index.resolve(schema);
+    let mut push = |value: &Value| match value {
+        Value::String(s) => out.push((s.clone(), true)),
+        Value::Bool(b) => out.push((b.to_string(), false)),
+        _ => {}
     };
-    props
-        .iter()
-        .map(|(field, schema)| {
-            let enum_values: Vec<String> = schema
-                .get("enum")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let field_type = if has_type(schema, "object") {
-                FieldType::Table
-            } else if has_type(schema, "array") {
-                FieldType::Array
-            } else if has_type(schema, "string") || !enum_values.is_empty() {
-                FieldType::String
-            } else {
-                FieldType::Other
-            };
-            (
-                field.clone(),
-                FieldDoc {
-                    description: string_field(schema, "description"),
-                    enum_values,
-                    deprecated: is_deprecated(schema),
-                    field_type,
-                },
-            )
-        })
-        .collect()
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        values.iter().for_each(&mut push);
+    }
+    if let Some(value) = schema.get("const") {
+        push(value);
+    }
+    for key in ["oneOf", "anyOf"] {
+        for branch in schema
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            collect_values(index, branch, out);
+        }
+    }
 }
 
 /// Whether a field schema declares (possibly among other types, for an
@@ -160,12 +193,63 @@ fn has_type(schema: &Value, wanted: &str) -> bool {
     }
 }
 
-/// Whether a schema node carries `"deprecated": true`.
-fn is_deprecated(schema: &Value) -> bool {
-    schema.get("deprecated").and_then(Value::as_bool) == Some(true)
-}
-
-/// Read a string field from a JSON object, if present.
 fn string_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FieldType, SchemaIndex};
+
+    #[test]
+    fn nested_and_map_tables_resolve() {
+        let schema = SchemaIndex::build();
+        let task = schema.table("output.task").expect("output.task");
+        assert!(task.fields.contains_key("stderr"));
+        let build = schema.table("tasks.build").expect("a task entry");
+        assert!(build.fields.contains_key("pm"));
+        let runtime = schema.table("tasks.build.runtime").expect("its runtime");
+        assert_eq!(runtime.fields["javascript"].field_type, FieldType::String);
+        assert!(schema.table("zoot").is_none());
+    }
+
+    #[test]
+    fn values_come_from_enums_consts_and_booleans() {
+        let schema = SchemaIndex::build();
+        let root = schema.table("").expect("root");
+        let download: Vec<&str> = root.fields["download"]
+            .values
+            .iter()
+            .map(|(value, _)| value.as_str())
+            .collect();
+        assert_eq!(download, ["true", "false", "ask"]);
+        let chain = schema.table("chain").expect("chain");
+        let actions: Vec<&str> = chain.fields["on_fail"]
+            .values
+            .iter()
+            .map(|(value, _)| value.as_str())
+            .collect();
+        assert_eq!(actions, ["continue", "wait", "kill"]);
+        assert_eq!(
+            schema.table("install").unwrap().fields["frozen"].field_type,
+            FieldType::Bool
+        );
+    }
+
+    #[test]
+    fn header_paths_reach_nested_tables() {
+        let paths = SchemaIndex::build().header_paths();
+        for expected in [
+            "output",
+            "output.parallel",
+            "output.task",
+            "output.tool",
+            "tasks",
+        ] {
+            assert!(
+                paths.iter().any(|path| path == expected),
+                "{expected}: {paths:?}"
+            );
+        }
+    }
 }

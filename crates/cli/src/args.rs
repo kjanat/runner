@@ -8,7 +8,9 @@ use clap::{Args, Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
 
+use crate::chain::FailurePolicy;
 use crate::provider::Named;
+use runner_core::ProviderId;
 
 /// Color palette for help output. clap auto-disables when stdout isn't a
 /// TTY or `NO_COLOR` is set, so the same constant works for piped output
@@ -68,76 +70,32 @@ fn cyan_str(s: &str) -> String {
     format!("\x1b[36m{s}\x1b[0m")
 }
 
-/// Compact env-var suffix matching clap's `[env: VAR=]` help style.
-fn env_suffix(var: &str) -> String {
-    format!("[env: {}]", cyan_str(var))
+/// Comma-joined, cyan-styled labels of `ids`.
+fn joined(ids: Vec<ProviderId>) -> String {
+    ids.into_iter()
+        .map(|id| cyan_str(id.label()))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// Cyan-styled env-var suffix for `--dir`. Kept alongside [`PM_HELP`] /
-/// [`RUNNER_HELP`] rather than as a plain `format!` inline in the doc
-/// comment so the `--dir` flag renders identically to every other flag's
-/// `[env: VAR]` suffix; clap's own `env = "..."` attribute would style
-/// it differently and also print the variable's *current* value (e.g.
-/// `[env: RUNNER_DIR=]` when set-but-empty), which the other flags never
-/// do since their env fallback lives at the call site, not in clap.
-static DIR_HELP: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "Project directory (default: cwd) {}",
-        env_suffix("RUNNER_DIR")
-    )
-});
-
-/// Comma-joined, cyan-styled list of every [`ProviderId`] label.
-/// Built once at first help-text access via [`LazyLock`]; rebuilding the
-/// list on every `--help` invocation would waste work for a value that is
-/// fully determined by the [`ProviderId::all`] enumeration.
 static PM_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = crate::provider::package_managers()
-        .iter()
-        .map(|pm| pm.label())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("Force PM ({joined}) {}", env_suffix("RUNNER_PM"))
-});
-
-/// Comma-joined, cyan-styled list of every [`ProviderId`] label.
-/// Lazy-built for the same reason as [`PM_HELP`].
-static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = crate::provider::runners()
-        .iter()
-        .map(|r| r.label())
-        .collect::<Vec<_>>()
-        .join(", ");
     format!(
-        "Force task runner ({joined}) {}",
-        env_suffix("RUNNER_RUNNER")
+        "The package manager to use ({})",
+        joined(crate::provider::package_managers())
     )
 });
 
-/// Comma-joined, cyan-styled list of every [`ProviderId`] label.
-/// Lazy-built for the same reason as [`PM_HELP`].
+static SOURCE_HELP: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "The task source that must supply the task ({})",
+        joined(crate::provider::task_sources())
+    )
+});
+
 static RUNTIME_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = crate::provider::js_runtimes()
-        .iter()
-        .map(|r| r.label())
-        .collect::<Vec<_>>()
-        .join(", ");
     format!(
-        "Force JS runtime ({joined}) {}",
-        env_suffix("RUNNER_RUNTIME")
-    )
-});
-
-/// Comma-joined list of every fetch policy the declaration table declares.
-static FETCH_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = runner_core::ReachPolicy::ALL
-        .iter()
-        .map(|policy| policy.label())
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "A command that can download ({joined}) {}",
-        env_suffix("RUNNER_REACH")
+        "The JavaScript runtime to use ({})",
+        joined(crate::provider::js_runtimes())
     )
 });
 
@@ -167,6 +125,13 @@ static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
     .join("\n")
 });
 
+static LIST_ONLY_HELP: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "List only tasks from this source, repeatable ({})",
+        joined(crate::provider::task_sources())
+    )
+});
+
 /// Help for the arguments after the task token.
 const ARGS_HELP: &str = concat!(
     "Arguments forwarded to the task, or extra task names in chain mode. A make target accepts \
@@ -183,25 +148,24 @@ const ROOT_DISPLAY_ORDER_OFFSET: usize = 20;
 /// Other members' `member:name` candidates sort behind every local task.
 const MEMBER_DISPLAY_ORDER_OFFSET: usize = 40;
 
-/// Help-text ordering bands. Flattened [`GlobalOpts`] and per-command flag
-/// structs register args in interleaved parse order; without explicit bands
-/// `-k`/`--pm`/`-K`/`--runner` shuffle together in `--help`.
+/// Help-text ordering bands, so flattened global and per-command flags list
+/// in a stable order.
 mod help_order {
     pub(super) const DIR: usize = 10;
     pub(super) const COMMAND: usize = 20;
     pub(super) const CHAIN_MODE: usize = 30;
     pub(super) const CHAIN_FAILURE: usize = 40;
     pub(super) const PM: usize = 100;
-    pub(super) const RUNNER: usize = 101;
-    pub(super) const RUNTIME: usize = 102;
-    pub(super) const FALLBACK: usize = 103;
-    pub(super) const ON_MISMATCH: usize = 104;
-    pub(super) const PACKAGE: usize = 105;
-    pub(super) const EXPLAIN: usize = 200;
-    pub(super) const NO_WARNINGS: usize = 201;
-    pub(super) const QUIET: usize = 202;
-    pub(super) const SCHEMA_VERSION: usize = 203;
+    pub(super) const RUNTIME: usize = 101;
+    pub(super) const SOURCE: usize = 102;
+    pub(super) const PACKAGE: usize = 103;
+    pub(super) const DOWNLOAD: usize = 104;
+    pub(super) const DRY_RUN: usize = 200;
+    pub(super) const WARNINGS: usize = 201;
+    pub(super) const QUIET: usize = 203;
+    pub(super) const SCHEMA_VERSION: usize = 204;
 }
+
 /// Produce [`CompletionCandidate`]s for every detected task in the current
 /// directory. Called lazily by clap's runtime completion engine, only runs
 /// when the shell is actually requesting completions, never during normal
@@ -296,7 +260,9 @@ fn global_value_flags() -> Vec<String> {
     use clap::CommandFactory as _;
     Cli::command()
         .get_arguments()
-        .filter(|arg| !arg.is_positional() && arg.get_action().takes_values())
+        .filter(|arg| {
+            !arg.is_positional() && !arg.is_require_equals_set() && arg.get_action().takes_values()
+        })
         .flat_map(|arg| {
             arg.get_long()
                 .map(|long| format!("--{long}"))
@@ -575,8 +541,7 @@ fn member_task_candidates(
 
     let root_names: HashSet<&str> = root_tasks.iter().map(|task| task.name.as_str()).collect();
     let mut members_for_name: HashMap<&str, HashSet<&str>> = HashMap::new();
-    let mut sources_for_scoped_name: HashMap<(&str, &str), HashSet<runner_core::ProviderId>> =
-        HashMap::new();
+    let mut sources_for_scoped_name: HashMap<(&str, &str), HashSet<ProviderId>> = HashMap::new();
     for task in member_tasks {
         members_for_name
             .entry(task.name.as_str())
@@ -821,9 +786,17 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::{
-        ChainFailureFlags, Cli, Command, RunAliasCli, TaskPosition, cli_dir_from_argv,
-        forward_args_after_task, resolve_completion_dir, scan_run_argv, task_candidates_from,
+        Cli, Command, RunAliasCli, TaskPosition, cli_dir_from_argv, forward_args_after_task,
+        resolve_completion_dir, scan_run_argv, task_candidates_from,
     };
+
+    /// Parse the way the binary does: variables bound, exclusive groups checked.
+    fn parse(words: &[&str]) -> Result<crate::invocation::Parsed<Cli>, clap::Error> {
+        crate::invocation::parse(
+            crate::invocation::bind(Cli::command(), crate::invocation::PREFIX),
+            osv(words),
+        )
+    }
 
     fn osv(words: &[&str]) -> Vec<OsString> {
         words.iter().map(OsString::from).collect()
@@ -864,6 +837,14 @@ mod tests {
             [
                 "run", "--dir", "/repo", "--quiet", "build", "--", "-p", "3000"
             ],
+        );
+        assert_eq!(
+            forwarded(
+                &["run", "--download", "build", "-p", "3000"],
+                TaskPosition::First,
+            )
+            .expect("delimiter inserted"),
+            ["run", "--download", "build", "--", "-p", "3000"],
         );
     }
 
@@ -949,7 +930,7 @@ mod tests {
         // known members so a regression in the derivation itself (e.g. a
         // filter change dropping everything) is caught.
         let flags = super::global_value_flags();
-        for expected in ["--dir", "--pm", "--runner", "--fallback", "--on-mismatch"] {
+        for expected in ["--dir", "--pm", "--runtime", "--source", "--on-fail"] {
             assert!(
                 flags.iter().any(|f| f == expected),
                 "expected {expected} in derived value flags: {flags:?}",
@@ -958,6 +939,10 @@ mod tests {
         assert!(
             !flags.iter().any(|f| f == "--quiet"),
             "boolean flags take no value and must not be skipped-with-value: {flags:?}",
+        );
+        assert!(
+            !flags.iter().any(|f| f == "--download"),
+            "--download takes its value only after `=`: {flags:?}",
         );
     }
 
@@ -1536,42 +1521,122 @@ mod tests {
     }
 
     #[test]
-    fn run_rejects_sequential_and_parallel_together() {
-        let err =
-            Cli::try_parse_from(["runner", "run", "-s", "-p", "build"]).expect_err("conflict");
-        let msg = format!("{err}");
-        assert!(msg.contains("--parallel") || msg.contains("--sequential"));
-    }
-
-    #[test]
-    fn run_rejects_keep_going_and_kill_on_fail_together() {
-        let err = Cli::try_parse_from(["runner", "run", "-s", "-k", "-K", "build", "test"])
-            .expect_err("conflict");
-        let msg = format!("{err}");
-        assert!(msg.contains("--keep-going") || msg.contains("--kill-on-fail"));
-    }
-
-    #[test]
-    fn run_parses_kill_on_fail_short_flag() {
-        let cli =
-            Cli::try_parse_from(["runner", "run", "-p", "-K", "build", "test"]).expect("parses");
-        match cli.command {
-            Some(Command::Run {
-                failure:
-                    ChainFailureFlags {
-                        kill_on_fail: true, ..
-                    },
-                ..
-            }) => {}
-            other => panic!("expected Run with kill_on_fail=true, got {other:?}"),
+    fn contradictory_command_line_choices_are_usage_errors() {
+        for argv in [
+            &["runner", "run", "-s", "-p", "build"][..],
+            &["runner", "run", "-k", "-K", "-s", "build"],
+            &["runner", "--on-fail", "wait", "-k", "run", "build"],
+            &["runner", "install", "-s", "-p", "build"],
+            &["runner", "list", "--raw", "--json"],
+        ] {
+            let error = parse(argv).expect_err("conflict");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{argv:?}"
+            );
         }
     }
 
     #[test]
-    fn list_rejects_conflicting_output_modes() {
-        let err = Cli::try_parse_from(["runner", "list", "--raw", "--json"])
-            .expect_err("list output modes must conflict");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    fn an_alias_that_repeats_the_on_fail_value_is_accepted() {
+        for argv in [
+            &["runner", "--on-fail", "continue", "-k", "run", "build"][..],
+            &["runner", "run", "-K", "--on-fail", "kill", "build"],
+        ] {
+            parse(argv).unwrap_or_else(|error| panic!("{argv:?}: {error}"));
+        }
+    }
+
+    #[test]
+    fn failure_aliases_set_the_on_fail_setting() {
+        let parsed = parse(&["runner", "-K", "run", "-p", "build", "test"]).expect("parses");
+        let settings = crate::invocation::settings(
+            &parsed.cli.global,
+            parsed.cli.command.as_ref(),
+            &parsed.origins,
+        );
+        assert_eq!(
+            settings.on_fail,
+            Some((
+                crate::chain::FailurePolicy::Kill,
+                crate::invocation::Origin::Cli
+            ))
+        );
+    }
+
+    #[test]
+    fn a_negated_switch_sets_its_setting_false() {
+        let parsed =
+            parse(&["runner", "install", "--no-scripts", "--no-tools", "-f"]).expect("parses");
+        let settings = crate::invocation::settings(
+            &parsed.cli.global,
+            parsed.cli.command.as_ref(),
+            &parsed.origins,
+        );
+        let cli = crate::invocation::Origin::Cli;
+        assert_eq!(settings.scripts, Some((false, cli)));
+        assert_eq!(settings.tools, Some((false, cli)));
+        assert_eq!(settings.frozen, Some((true, cli)));
+        let later = parse(&["runner", "install", "--no-scripts", "--scripts"]).expect("parses");
+        let settings = crate::invocation::settings(
+            &later.cli.global,
+            later.cli.command.as_ref(),
+            &later.origins,
+        );
+        assert_eq!(settings.scripts, Some((true, cli)));
+    }
+
+    #[test]
+    fn download_takes_an_optional_value() {
+        let origin = crate::invocation::Origin::Cli;
+        for (argv, expected) in [
+            (
+                &["runner", "--download", "list"][..],
+                crate::config::Download::Allow,
+            ),
+            (
+                &["runner", "--download=ask", "list"],
+                crate::config::Download::Ask,
+            ),
+            (
+                &["runner", "--no-download", "list"],
+                crate::config::Download::Refuse,
+            ),
+            (
+                &["runner", "--download", "--no-download", "list"],
+                crate::config::Download::Refuse,
+            ),
+            (
+                &["runner", "--no-download", "list", "--download=ask"],
+                crate::config::Download::Ask,
+            ),
+        ] {
+            let parsed = parse(argv).expect("parses");
+            let settings = crate::invocation::settings(&parsed.cli.global, None, &parsed.origins);
+            assert_eq!(settings.download, Some((expected, origin)), "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn list_only_takes_several_sources() {
+        let parsed = parse(&[
+            "runner",
+            "list",
+            "--only",
+            "just,package.json",
+            "--only",
+            "make",
+        ])
+        .expect("parses");
+        let Some(Command::List { only, .. }) = parsed.cli.command else {
+            panic!("expected list");
+        };
+        assert_eq!(
+            only,
+            [ProviderId::Just, ProviderId::PackageJson, ProviderId::Make]
+        );
+        assert!(parse(&["runner", "list", "--only", "pnpm"]).is_err());
     }
 
     #[test]
@@ -1633,17 +1698,10 @@ mod tests {
     #[test]
     fn install_accepts_task_list() {
         let cli = Cli::try_parse_from(["runner", "install", "build", "test"]).expect("parses");
-        let Some(Command::Install {
-            tasks,
-            frozen,
-            failure,
-            ..
-        }) = cli.command
-        else {
+        let Some(Command::Install { tasks, frozen, .. }) = cli.command else {
             panic!("expected Install subcommand");
         };
         assert!(!frozen);
-        assert!(!failure.keep_going);
         assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
     }
 
@@ -1695,13 +1753,6 @@ mod tests {
     }
 
     #[test]
-    fn install_scripts_and_no_scripts_are_mutually_exclusive() {
-        let err = Cli::try_parse_from(["runner", "install", "--scripts", "--no-scripts"])
-            .expect_err("--scripts and --no-scripts must conflict");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
     fn install_defaults_both_script_flags_to_false() {
         let cli = Cli::try_parse_from(["runner", "install"]).expect("parses");
         let Some(Command::Install {
@@ -1717,16 +1768,6 @@ mod tests {
     }
 
     #[test]
-    fn install_accepts_keep_going_flag() {
-        let cli = Cli::try_parse_from(["runner", "install", "-k", "build"]).expect("parses");
-        let Some(Command::Install { tasks, failure, .. }) = cli.command else {
-            panic!("expected Install subcommand");
-        };
-        assert!(failure.keep_going);
-        assert_eq!(tasks, vec!["build".to_string()]);
-    }
-
-    #[test]
     fn install_accepts_parallel_flag() {
         // `-p` after the task list still parses as a flag (plain positional,
         // not trailing_var_arg) and selects parallel post-install execution.
@@ -1738,14 +1779,6 @@ mod tests {
         assert!(mode.parallel, "-p should set parallel");
         assert!(!mode.sequential);
         assert_eq!(tasks, vec!["build".to_string(), "test".to_string()]);
-    }
-
-    #[test]
-    fn install_rejects_sequential_and_parallel_together() {
-        let err =
-            Cli::try_parse_from(["runner", "install", "-s", "-p", "build"]).expect_err("conflict");
-        let msg = format!("{err}");
-        assert!(msg.contains("--parallel") || msg.contains("--sequential"));
     }
 }
 
@@ -1844,84 +1877,51 @@ impl DetailedVersion {
     }
 }
 
-/// Flags shared by both `runner` and `run`. Carried inline via
-/// `#[command(flatten)]` so each binary's `--help` lists them at the
-/// same level as subcommand-specific arguments; clap unrolls them as
-/// if they were defined on the parent struct.
+/// Flags shared by both `runner` and `run`, global to every subcommand.
 #[derive(Debug, Args)]
 pub(crate) struct GlobalOpts {
-    /// Project directory (default: cwd). `$RUNNER_DIR` is also consulted
-    /// independently when this flag is omitted (env reads live at the
-    /// dispatch call site via `configured_project_dir`, not clap).
     #[arg(
         long = "dir",
         global = true,
         value_name = "PATH",
         value_hint = clap::ValueHint::DirPath,
         value_parser = clap::value_parser!(PathBuf),
-        help = DIR_HELP.as_str(),
+        help = "Project directory, the current one when unset",
         display_order = help_order::DIR,
     )]
     pub project_dir: Option<PathBuf>,
 
-    /// Override the detected package manager (e.g. `pnpm`, `bun`, `yarn`).
-    /// The resolver also consults `$RUNNER_PM` independently when this
-    /// flag is omitted (env reads live in `crate::resolver`, not clap).
     #[arg(
-        long = runner_core::Setting::flag_for("pm"),
+        long = "pm",
         global = true,
         value_name = "NAME",
+        value_parser = crate::provider::parse_package_manager,
         help = PM_HELP.as_str(),
         display_order = help_order::PM,
     )]
-    pub pm_override: Option<String>,
+    pub pm: Option<ProviderId>,
 
-    /// Override the detected task runner (e.g. `just`, `turbo`, `make`).
-    /// The resolver also consults `$RUNNER_RUNNER` independently when
-    /// this flag is omitted (env reads live in `crate::resolver`, not
-    /// clap).
     #[arg(
-        long = runner_core::Setting::flag_for("tasks.prefer"),
+        long = "runtime",
         global = true,
         value_name = "NAME",
-        help = RUNNER_HELP.as_str(),
-        display_order = help_order::RUNNER,
-    )]
-    pub runner_override: Option<String>,
-
-    /// Force the JavaScript runtime a task's process tree runs on, an axis
-    /// distinct from `--pm`. Each runtime brings its own script runner
-    /// (`node --run` / `bun --bun run` / `deno task`), file runner and
-    /// package-exec primitive (`npx` / `bun x --bun` / `deno x`), and outranks
-    /// a local file's `#!` line. No package manager is consulted. The resolver
-    /// also consults `$RUNNER_RUNTIME` and `[runtime].js` when this flag is
-    /// omitted.
-    #[arg(
-        long = runner_core::Setting::flag_for("runtime.js"),
-        global = true,
-        value_name = "NAME",
+        value_parser = crate::provider::parse_js_runtime,
         help = RUNTIME_HELP.as_str(),
         long_help = RUNTIME_LONG_HELP.as_str(),
         display_order = help_order::RUNTIME,
     )]
-    pub runtime_override: Option<String>,
+    pub runtime: Option<ProviderId>,
 
-    /// What a command that can download may do: `ask` prompts on a terminal,
-    /// `allow` proceeds, `local` refuses. The resolver also consults
-    /// `$RUNNER_REACH` when this flag is omitted.
     #[arg(
-        long = runner_core::Setting::flag_for("defaults.fetch"),
+        long = "source",
         global = true,
-        value_name = "POLICY",
-        display_order = help_order::RUNTIME,
-        help = FETCH_HELP.as_str(),
+        value_name = "SOURCE",
+        value_parser = crate::provider::parse_task_source,
+        help = SOURCE_HELP.as_str(),
+        display_order = help_order::SOURCE,
     )]
-    pub fetch_policy: Option<String>,
+    pub source: Option<ProviderId>,
 
-    /// Run the task token as the binary this npm package declares, from the
-    /// package's own manifest, never from a same-named `.bin` link another
-    /// package won. A package that is not installed is fetched through the
-    /// package manager's own package-selection form.
     #[arg(
         long = "package",
         global = true,
@@ -1929,132 +1929,43 @@ pub(crate) struct GlobalOpts {
         help = "Run <TASK> as the binary npm package <NAME> declares",
         display_order = help_order::PACKAGE,
     )]
-    pub package_selection: Option<String>,
+    pub package: Option<String>,
 
-    /// What to do when a task source has no package manager evidence:
-    /// `probe` (default, take one from PATH) or `error` (refuse). Also reads
-    /// `$RUNNER_FALLBACK` when omitted.
+    #[command(flatten)]
+    pub network: DownloadFlags,
+
+    #[command(flatten)]
+    pub failure: FailureFlags,
+
     #[arg(
-        long = "fallback",
+        long = "dry-run",
         global = true,
-        value_name = "POLICY",
-        display_order = help_order::FALLBACK,
-        help = concat!(
-            "No detection match: ",
-            cyan!("probe"), " (default), ",
-            cyan!("error"), " ",
-            "[env: ", cyan!("RUNNER_FALLBACK"), "]"
-        ),
+        help = "Print what would run and why, without running it",
+        display_order = help_order::DRY_RUN,
     )]
-    pub fallback: Option<String>,
+    pub dry_run: bool,
 
-    /// What to do when the manifest declaration (packageManager / devEngines)
-    /// disagrees with the detected lockfile: `warn` (default), `error`
-    /// (refuse, exit 2), `ignore` (silent). The resolver also consults
-    /// `$RUNNER_ON_MISMATCH` independently when this flag is omitted.
-    #[arg(
-        long = "on-mismatch",
-        global = true,
-        value_name = "POLICY",
-        display_order = help_order::ON_MISMATCH,
-        help = concat!(
-            "Manifest vs lockfile: ",
-            cyan!("warn"), " (default), ",
-            cyan!("error"), " (exit 2), ",
-            cyan!("ignore"), " ",
-            "[env: ", cyan!("RUNNER_ON_MISMATCH"), "]"
-        ),
-    )]
-    pub on_mismatch: Option<String>,
+    #[command(flatten)]
+    pub diagnostics: WarningFlags,
 
-    /// Explain the planned command without executing it. The resolver
-    /// also enables this when `$RUNNER_EXPLAIN`
-    /// is set to a truthy value (env reads live in `crate::resolver`,
-    /// not clap).
-    #[arg(
-        long = "explain",
-        global = true,
-        display_order = help_order::EXPLAIN,
-        help = concat!(
-            "Explain the command without executing it ",
-            "[env: ", cyan!("RUNNER_EXPLAIN"), "]"
-        ),
-    )]
-    pub explain: bool,
-
-    /// Suppress all non-fatal warnings on stderr. Errors still surface;
-    /// only `DetectionWarning` output is silenced. Also enabled when
-    /// `$RUNNER_NO_WARNINGS` is set to a truthy value.
-    #[arg(
-        long = "no-warnings",
-        global = true,
-        display_order = help_order::NO_WARNINGS,
-        help = concat!(
-            "Hide non-fatal warnings ",
-            "[env: ", cyan!("RUNNER_NO_WARNINGS"), "]"
-        ),
-    )]
-    pub no_warnings: bool,
-
-    /// Graduated output policy, repeatable pytest-style.
-    ///
-    /// - `-q`: hide runner progress, groups, task timing, and summary; host
-    ///   unchanged.
-    /// - `-qq`: also hide warnings and request the host's safe quiet mode.
-    /// - `-qqq`: also hide recoverable runner error decoration and request a
-    ///   stronger safe host reduction.
-    /// - `-qqqq`: no runner-authored text. Larger counts clamp to this `mute`
-    ///   level.
-    ///
-    /// Task stdout/stderr survive every level unless explicitly configured as
-    /// `discard`. Fatal errors surface through `-qqq`; `mute` preserves only
-    /// their exit status. Explicit `--explain` overrides presentation silence.
-    /// `RUNNER_QUIET` accepts a number (`0..4`, larger clamps) or a truthy word
-    /// (→ `-q`); a passed `-q` count wins over it
-    /// (CLI > env). The resolved level is inherited by a nested `runner` a task
-    /// spawns. Orthogonal to `--host-stream`.
     #[arg(
         short = 'q',
         long = "quiet",
         global = true,
         action = clap::ArgAction::Count,
         display_order = help_order::QUIET,
-        help = concat!(
-            "Output policy, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq"),
-            " [env: ", cyan!("RUNNER_QUIET"), "]"
-        ),
+        help = concat!("Print less, repeatable: ", cyan!("-q"), " through ", cyan!("-qqqq")),
         long_help = concat!(
-            "Output policy, repeatable [env: ", cyan!("RUNNER_QUIET"), "=", cyan!("0"), "-", cyan!("4"), "]\n",
+            "Print less, repeatable. The variable takes the count.\n",
             "\n",
-            "  ", cyan!("-q"), "     ", cyan!("1"), "  hide runner progress, groups, task timing and summary\n",
-            "  ", cyan!("-qq"), "    ", cyan!("2"), "  also hide warnings and ask the host to be quiet\n",
-            "  ", cyan!("-qqq"), "   ", cyan!("3"), "  also hide recoverable error decoration\n",
-            "  ", cyan!("-qqqq"), "  ", cyan!("4"), "  no runner-authored text"
+            "  ", cyan!("-q"), "     ", cyan!("1"), "  hide progress, groups, timing and the summary\n",
+            "  ", cyan!("-qq"), "    ", cyan!("2"), "  also hide warnings and quiet the tool\n",
+            "  ", cyan!("-qqq"), "   ", cyan!("3"), "  also hide runner's error messages\n",
+            "  ", cyan!("-qqqq"), "  ", cyan!("4"), "  print nothing of runner's own"
         ),
     )]
     pub quiet: u8,
 
-    /// Keep the spawned host tool's **stdout** clean by diverting its own
-    /// diagnostics to stderr, so a pipeline parsing stdout stays uncorrupted.
-    /// Orthogonal to `--quiet`: silence and stream routing compose. Only pnpm
-    /// exposes the primitive (`--use-stderr`); every other host no-ops the
-    /// request silently. `inherit` (default) leaves routing untouched.
-    /// `[env: RUNNER_HOST_STREAM]`.
-    #[arg(
-        long = "host-stream",
-        global = true,
-        value_name = "WHERE",
-        value_parser = ["inherit", "stderr"],
-        display_order = help_order::QUIET,
-        help = concat!(
-            "Divert the host tool's diagnostics (", cyan!("inherit"), "|", cyan!("stderr"),
-            ") [env: ", cyan!("RUNNER_HOST_STREAM"), "]"
-        ),
-    )]
-    pub host_stream: Option<String>,
-
-    /// Pin the `--json` output schema version. Currently always `1`; any other
-    /// value is rejected.
     #[arg(
         long = "schema-version",
         global = true,
@@ -2066,10 +1977,89 @@ pub(crate) struct GlobalOpts {
     pub schema_version: Option<u32>,
 }
 
+/// `--download` and its negation.
+#[derive(Debug, Args)]
+pub(crate) struct DownloadFlags {
+    #[arg(
+        long = "download",
+        global = true,
+        value_name = "WHEN",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = crate::config::Download::parse,
+        help = concat!(
+            "Download packages a command needs: ", cyan!("true"), ", ", cyan!("false"), " or ",
+            cyan!("ask")
+        ),
+        display_order = help_order::DOWNLOAD,
+    )]
+    pub download: Option<crate::config::Download>,
+
+    #[arg(
+        long = "no-download",
+        global = true,
+        help = "Refuse a command that needs a download",
+        display_order = help_order::DOWNLOAD + 1,
+    )]
+    pub no_download: bool,
+}
+
+/// `--on-fail` and its aliases.
+#[derive(Debug, Args)]
+pub(crate) struct FailureFlags {
+    #[arg(
+        long = "on-fail",
+        global = true,
+        value_name = "ACTION",
+        value_enum,
+        help = "What a chain does after a task fails",
+        display_order = help_order::CHAIN_FAILURE,
+    )]
+    pub on_fail: Option<FailurePolicy>,
+
+    #[arg(
+        short = 'k',
+        long = "keep-going",
+        global = true,
+        help = concat!("Alias for ", cyan!("--on-fail continue")),
+        display_order = help_order::CHAIN_FAILURE + 1,
+    )]
+    pub keep_going: bool,
+
+    #[arg(
+        short = 'K',
+        long = "kill-on-fail",
+        global = true,
+        help = concat!("Alias for ", cyan!("--on-fail kill")),
+        display_order = help_order::CHAIN_FAILURE + 2,
+    )]
+    pub kill_on_fail: bool,
+}
+
+/// `--warnings` and its negation.
+#[derive(Debug, Args)]
+pub(crate) struct WarningFlags {
+    #[arg(
+        long = "warnings",
+        global = true,
+        help = "Print warnings",
+        display_order = help_order::WARNINGS,
+    )]
+    pub warnings: bool,
+
+    #[arg(
+        long = "no-warnings",
+        global = true,
+        help = "Hide warnings",
+        display_order = help_order::WARNINGS + 1,
+    )]
+    pub no_warnings: bool,
+}
+
 /// Available subcommands.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    /// Run or exec a task; `-s`/`-p` chain multiple
     #[command(
         alias = "r",
         about = concat!("Run or exec a task; ", cyan!("-s"), "/", cyan!("-p"), " chain multiple"),
@@ -2078,10 +2068,6 @@ pub(crate) enum Command {
         /// Task name or command to execute. In chain mode, the first task in the chain.
         #[arg(add = ArgValueCandidates::new(task_candidates))]
         task: Option<String>,
-        /// Arguments forwarded to the task, or extra task names in chain mode.
-        /// A make target accepts only `NAME=value` assignments.
-        // In chain mode, chain-failure flags (`-k`) must precede task names;
-        // `trailing_var_arg` consumes everything after the first positional.
         #[arg(
             trailing_var_arg = true,
             allow_hyphen_values = true,
@@ -2089,73 +2075,59 @@ pub(crate) enum Command {
             help = ARGS_HELP,
         )]
         args: Vec<String>,
-        /// Chain mode flags: `-s` / `-p`.
         #[command(flatten)]
         mode: ChainModeFlags,
-        /// Chain failure-policy flags: `-k` / `-K`.
-        #[command(flatten)]
-        failure: ChainFailureFlags,
     },
 
     /// List tasks from detected sources
     #[command(alias = "ls")]
     List {
-        /// Print bare task names, one per line (for scripting / completions)
-        #[arg(long, conflicts_with_all = ["json"])]
+        /// Print bare task names, one per line
+        #[arg(long)]
         raw: bool,
-        /// Emit JSON instead of human-readable output.
-        #[arg(long, conflicts_with_all = ["raw"])]
+        /// Emit JSON instead of human-readable output
+        #[arg(long)]
         json: bool,
-        /// Restrict output to a single source (e.g. `package.json`,
-        /// `Makefile`, `justfile`).
         #[arg(
-            long,
+            long = "only",
             value_name = "SOURCE",
-            help = concat!(
-                "Restrict output to a single source (e.g. ",
-                cyan!("package.json"), ", ", cyan!("Makefile"), ", ", cyan!("justfile"), ")"
-            ),
+            value_delimiter = ',',
+            value_parser = crate::provider::parse_task_source,
+            help = LIST_ONLY_HELP.as_str(),
         )]
-        source: Option<String>,
+        only: Vec<ProviderId>,
     },
 
-    /// Install deps; may chain tasks after; `-s`/`-p` pick the post-install mode
     #[command(
         alias = "i",
         about = concat!("Install deps; may chain tasks after; ", cyan!("-s"), "/", cyan!("-p"), " pick the post-install mode"),
     )]
     Install {
-        /// Reproducible install from lockfile (npm ci, --frozen-lockfile, etc.)
-        #[arg(short = 'f', long, display_order = help_order::COMMAND)]
+        /// Install exactly what the lockfile pins, without changing it
+        #[arg(
+            short = 'f',
+            long = "frozen",
+            display_order = help_order::COMMAND
+        )]
         frozen: bool,
-        /// Skip install lifecycle scripts where the PM supports it
-        /// (npm/yarn/pnpm/bun/composer; deno already denies)
-        #[arg(long = "no-scripts", display_order = help_order::COMMAND + 1)]
-        no_scripts: bool,
-        /// Force install lifecycle scripts on where the PM can express it
-        /// (npm/yarn-berry/deno; bun/pnpm need a manifest allowlist)
-        #[arg(
-            long = runner_core::Setting::flag_for("install.scripts"),
-            conflicts_with = "no_scripts",
-            display_order = help_order::COMMAND + 2
-        )]
+        /// Let the install update the lockfile
+        #[arg(long = "no-frozen", display_order = help_order::COMMAND + 1)]
+        no_frozen: bool,
+        /// Run dependencies' lifecycle scripts
+        #[arg(long = "scripts", display_order = help_order::COMMAND + 2)]
         scripts: bool,
-        /// Skip the toolchain step (`mise install`) that otherwise runs first
-        /// when a mise config is detected
+        /// Skip dependencies' lifecycle scripts
+        #[arg(long = "no-scripts", display_order = help_order::COMMAND + 3)]
+        no_scripts: bool,
         #[arg(
-            long = "no-tools",
-            display_order = help_order::COMMAND + 3,
-            help = concat!(
-                "Skip the toolchain step (", cyan!("mise install"),
-                ") that otherwise runs first when a mise config is detected"
-            ),
+            long = "tools",
+            display_order = help_order::COMMAND + 4,
+            help = concat!("Install detected toolchains first (", cyan!("mise install"), ")"),
         )]
+        tools: bool,
+        /// Skip the toolchain step
+        #[arg(long = "no-tools", display_order = help_order::COMMAND + 5)]
         no_tools: bool,
-        /// Optional task names to run after install completes. Sequential by
-        /// default; `-p` runs them concurrently once install finishes (install
-        /// itself always runs first, never as a parallel sibling). Plain
-        /// positional (no `trailing_var_arg`) so chain flags placed after the
-        /// task list still parse as flags, not task names.
         #[arg(
             add = ArgValueCandidates::new(task_candidates),
             help = concat!(
@@ -2164,13 +2136,8 @@ pub(crate) enum Command {
             ),
         )]
         tasks: Vec<String>,
-        /// Chain mode flags `-s`/`-p`, govern the post-install tasks only.
         #[command(flatten)]
         mode: ChainModeFlags,
-        /// Chain failure-policy flags `-k`/`-K`. `-K` (kill siblings) only
-        /// bites with `-p`; under `-s` it degrades to fail-fast.
-        #[command(flatten)]
-        failure: ChainFailureFlags,
     },
 
     /// Remove caches and build artifacts
@@ -2178,7 +2145,6 @@ pub(crate) enum Command {
         /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
-        /// Include framework-specific Node build dirs like `.next`
         #[arg(
             long,
             help = concat!("Include framework-specific Node build dirs like ", cyan!(".next")),
@@ -2186,47 +2152,37 @@ pub(crate) enum Command {
         include_framework: bool,
     },
 
-    /// Deprecated alias for `list`, hidden, prints a warning, then
-    /// renders the task list. Bare `runner` still shows the project
-    /// dashboard; only the explicit `info` verb is deprecated.
-    #[command(
-        hide = true,
-        about = concat!("Deprecated alias for ", cyan!("list"))
-    )]
+    #[command(hide = true, about = concat!("Deprecated alias for ", cyan!("list")))]
     Info {
-        /// Emit JSON instead of human-readable output.
+        /// Emit JSON instead of human-readable output
         #[arg(long)]
         json: bool,
     },
 
     /// How a task would dispatch
     Why {
-        /// Task name to analyze.
+        /// Task name to analyze
         task: String,
-        /// Emit JSON instead of human-readable output.
+        /// Emit JSON instead of human-readable output
         #[arg(long)]
         json: bool,
     },
 
     /// Resolver signals for this directory
     Doctor {
-        /// Emit JSON instead of human-readable output.
+        /// Emit JSON instead of human-readable output
         #[arg(long)]
         json: bool,
     },
 
-    /// Manage the project `runner.toml`
     #[command(about = concat!("Manage the project ", cyan!("runner.toml")))]
     Config {
-        /// Config action: `init`, `show`, `validate`, `path`.
         #[command(subcommand)]
         action: ConfigAction,
     },
 
     /// Generate shell completions
     Completions {
-        /// Target shell, bare name (`zsh`) or full path (`/usr/bin/zsh`).
-        /// Defaults to `$SHELL`.
         #[arg(
             value_parser = crate::commands::parse_shell_arg,
             help = concat!(
@@ -2236,8 +2192,7 @@ pub(crate) enum Command {
         )]
         shell: Option<Shell>,
 
-        /// Write the completion script to <PATH> instead of stdout. Any
-        /// existing file is overwritten.
+        /// Write the completion script to <PATH> instead of stdout
         #[arg(
             short = 'o',
             long = "output",
@@ -2252,7 +2207,7 @@ pub(crate) enum Command {
     #[cfg(feature = "man")]
     #[command(hide = true)]
     Man {
-        /// Write every page into this dir instead of the `runner` page to stdout.
+        /// Write every page into this dir instead of the runner page to stdout
         #[arg(
             short = 'o',
             long = "output",
@@ -2263,13 +2218,12 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Emit JSON Schemas. Only compiled in with the `schema` cargo feature.
     #[command(about = "Emit JSON Schemas")]
     Schema {
-        /// Emit every committed schema into the output directory.
+        /// Emit every committed schema into the output directory
         #[arg(long)]
         all: bool,
-        /// Write the schema to this file, or all schemas to this directory with --all.
+        /// Write the schema to this file, or all schemas to this directory with --all
         #[arg(
             short = 'o',
             long = "output",
@@ -2280,31 +2234,26 @@ pub(crate) enum Command {
         output: Option<PathBuf>,
     },
 
-    /// Run the editor language server for runner.toml over stdio.
-    /// Only compiled in with the `lsp` cargo feature.
     #[cfg(feature = "lsp")]
     #[command(about = "Run the runner.toml language server (LSP) over stdio")]
     Lsp,
 
-    /// Catch-all: treat unknown subcommands as task names.
     #[command(external_subcommand)]
     External(Vec<String>),
 }
 
-/// Actions under `runner config`. All are `Copy` so [`crate::lib`] can peek
-/// the variant before the resolver setup (which `config` deliberately
-/// bypasses) without moving out of the parsed [`Cli`].
+/// Actions under `runner config`.
 #[derive(Debug, Clone, Copy, Subcommand)]
 pub(crate) enum ConfigAction {
     /// Write a starter runner.toml to the project root
     Init {
-        /// Overwrite an existing runner.toml instead of refusing.
+        /// Overwrite an existing runner.toml
         #[arg(short, long)]
         force: bool,
     },
     /// Print the effective config and where it loaded from
     Show {
-        /// Emit JSON instead of TOML.
+        /// Emit JSON instead of TOML
         #[arg(long)]
         json: bool,
     },
@@ -2314,11 +2263,7 @@ pub(crate) enum ConfigAction {
     Path,
 }
 
-/// CLI used by the `run` alias binary. Behaves as a shortcut for
-/// `runner run <task>`: the first positional is the task or command,
-/// any remaining positionals are forwarded as its arguments, and
-/// built-in subcommand names are never parsed specially (so
-/// `run foo bar` runs `foo` with `bar`, not two separate targets).
+/// CLI used by the `run` alias binary, a shortcut for `runner run <task>`.
 #[derive(Debug, Parser)]
 #[command(
     name = "run",
@@ -2331,17 +2276,12 @@ pub(crate) enum ConfigAction {
     ),
     styles = HELP_STYLES,
     arg_required_else_help = false,
-    // Version output is implemented by [`VersionOpts`], not clap's immediate
-    // built-in version action. Help remains clap-owned. The forwarding
-    // delimiter inserted before parsing protects both after a task.
     disable_version_flag = true,
 )]
 pub(crate) struct RunAliasCli {
-    /// Global options shared with [`Cli`].
     #[command(flatten)]
     pub global: GlobalOpts,
 
-    /// Build and version output selectors.
     #[command(flatten, next_help_heading = "Version output")]
     pub version: VersionOpts,
 
@@ -2349,12 +2289,6 @@ pub(crate) struct RunAliasCli {
     #[arg(add = ArgValueCandidates::new(task_candidates))]
     pub task: Option<String>,
 
-    /// Arguments forwarded to the task, or extra task names in chain mode.
-    /// A make target accepts only `NAME=value` assignments.
-    // In chain mode, chain-failure flags (`-k`) must precede task names;
-    // `trailing_var_arg` consumes everything after the first positional.
-    // That same rule forwards a *trailing* `--help`/`--version` to the task
-    // rather than treating it as this binary's own.
     #[arg(
         trailing_var_arg = true,
         allow_hyphen_values = true,
@@ -2363,64 +2297,30 @@ pub(crate) struct RunAliasCli {
     )]
     pub args: Vec<String>,
 
-    /// Chain mode flags: `-s` / `-p`.
     #[command(flatten)]
     pub mode: ChainModeFlags,
-
-    /// Chain failure-policy flags: `-k` / `-K`.
-    #[command(flatten)]
-    pub failure: ChainFailureFlags,
 }
 
-/// Chain-mode flags shared across `Cli::Run` and `RunAliasCli`. Grouped
-/// so neither subcommand exceeds clippy's `struct_excessive_bools` cap
-/// of three.
+/// `-s` and `-p`.
 #[derive(Debug, Args, Default, Clone, Copy)]
 pub(crate) struct ChainModeFlags {
     /// Chain tasks in order
-    #[arg(
-        short = 's',
-        long,
-        conflicts_with = "parallel",
-        display_order = help_order::CHAIN_MODE,
-    )]
+    #[arg(short = 's', long, display_order = help_order::CHAIN_MODE)]
     pub sequential: bool,
     /// Chain tasks concurrently
     #[arg(short = 'p', long, display_order = help_order::CHAIN_MODE + 1)]
     pub parallel: bool,
 }
 
-/// Chain failure-policy flags shared across `Cli::Run`, `Cli::Install`,
-/// and `RunAliasCli`. Mutually exclusive (`-k` vs `-K`) enforced at the
-/// clap layer.
-#[derive(Debug, Args, Default, Clone, Copy)]
-pub(crate) struct ChainFailureFlags {
-    /// Finish chain despite failures. The resolver also consults
-    /// `$RUNNER_KEEP_GOING` independently when this flag is omitted (env
-    /// reads live in `crate::resolver`, not clap).
-    #[arg(
-        short = 'k',
-        long,
-        conflicts_with = "kill_on_fail",
-        display_order = help_order::CHAIN_FAILURE,
-        help = concat!(
-            "Finish chain despite failures ",
-            "[env: ", cyan!("RUNNER_KEEP_GOING"), "]"
-        ),
-    )]
-    pub keep_going: bool,
-    /// Parallel: kill siblings on first failure. The resolver also
-    /// consults `$RUNNER_KILL_ON_FAIL` independently when this flag is
-    /// omitted (env reads live in `crate::resolver`, not clap).
-    #[arg(
-        short = 'K',
-        long,
-        conflicts_with = "keep_going",
-        display_order = help_order::CHAIN_FAILURE + 1,
-        help = concat!(
-            "Parallel: kill siblings on first failure ",
-            "[env: ", cyan!("RUNNER_KILL_ON_FAIL"), "]"
-        ),
-    )]
-    pub kill_on_fail: bool,
+impl ChainModeFlags {
+    /// The chain mode the flags select, if any.
+    pub(crate) const fn mode(self) -> Option<crate::chain::ChainMode> {
+        if self.parallel {
+            Some(crate::chain::ChainMode::Parallel)
+        } else if self.sequential {
+            Some(crate::chain::ChainMode::Sequential)
+        } else {
+            None
+        }
+    }
 }

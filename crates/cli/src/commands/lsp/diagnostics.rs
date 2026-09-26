@@ -95,52 +95,25 @@ fn error_diagnostic(range: Range, message: String) -> Diagnostic {
     }
 }
 
-/// Resolve a dotted `section[.field]` path to a buffer range.
+/// Resolve a dotted key path to its buffer range: the key under its table's
+/// header, else the header itself.
 fn range_for_path(text: &str, index: &LineIndex, path: &str) -> Option<Range> {
-    match path.split_once('.') {
-        Some((section, field)) => find_key_range(index, text, Some(section), field),
-        None => find_header_range(index, text, path),
+    match path.rsplit_once('.') {
+        Some((section, field)) => find_key_range(index, text, Some(section), field)
+            .or_else(|| find_header_range(index, text, path))
+            .or_else(|| find_header_range(index, text, section)),
+        None => {
+            find_header_range(index, text, path).or_else(|| find_key_range(index, text, None, path))
+        }
     }
 }
 
-/// Best-effort anchor for a resolver error: most messages begin with a
-/// `[section].field` or `[section]` reference, e.g. `[tasks].prefer: …` or
-/// `[pm].node: …`. `[tasks.overrides]` entries instead read `[tasks.overrides]
-/// "task": …` (the entry key is user-chosen, not a schema field), so that form
-/// is checked first. Parse whichever leading reference is present and map it
-/// to a range.
+/// Anchor for a resolver error, whose message starts with the dotted key it
+/// rejects: `runner.toml tasks.build.pm: …`.
 fn anchor_from_message(text: &str, index: &LineIndex, message: &str) -> Option<Range> {
-    let rest = message.strip_prefix('[')?;
-    let (section, rest) = rest.split_once(']')?;
-    let section = section.trim();
-
-    if let Some(key) = rest
-        .trim_start()
-        .strip_prefix('"')
-        .and_then(|tail| tail.split_once('"'))
-        .map(|(key, _)| key)
-        && let Some(range) = find_key_range(index, text, Some(section), key)
-    {
-        return Some(range);
-    }
-
-    let field = rest
-        .strip_prefix('.')
-        .map(|tail| {
-            tail.trim_start()
-                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                .next()
-                .unwrap_or("")
-        })
-        .filter(|f| !f.is_empty());
-
-    field.map_or_else(
-        || find_header_range(index, text, section),
-        |field| {
-            find_key_range(index, text, Some(section), field)
-                .or_else(|| find_header_range(index, text, section))
-        },
-    )
+    let rest = message.strip_prefix("runner.toml ").unwrap_or(message);
+    let (path, _) = rest.split_once(':')?;
+    range_for_path(text, index, path.trim())
 }
 
 #[cfg(test)]
@@ -155,7 +128,7 @@ mod tests {
 
     #[test]
     fn clean_config_is_silent() {
-        let text = "[tasks]\nprefer = [\"turbo\", \"bun\"]\n";
+        let text = "download = \"ask\"\n[tasks.build]\npm = \"pnpm\"\n";
         assert!(diagnostics(text).is_empty(), "{:?}", diagnostics(text));
     }
 
@@ -168,53 +141,45 @@ mod tests {
     }
 
     #[test]
-    fn unknown_label_errors() {
-        let found = diagnostics("[tasks]\nprefer = [\"zoot\"]\n");
-        assert!(found.iter().any(|d| {
-            d.severity == Some(DiagnosticSeverity::ERROR) && d.message.contains("unknown source")
-        }));
+    fn a_nested_unknown_key_anchors_to_its_line() {
+        let text = "[output.task]\nstdrr = true\n";
+        let found = diagnostics(text);
+        let diag = found
+            .iter()
+            .find(|d| d.severity == Some(DiagnosticSeverity::WARNING))
+            .expect("a warning");
+        assert_eq!(diag.range.start.line, 1, "{diag:?}");
     }
 
     #[test]
-    fn removed_section_is_an_unknown_key() {
-        let found = diagnostics("[task_runner]\nprefer = [\"turbo\"]\n");
-        assert!(
-            found
-                .iter()
-                .any(|d| d.message.contains("unknown") && d.message.contains("task_runner"))
-        );
-        assert!(found.iter().all(|d| d.tags.is_none()));
+    fn an_unknown_provider_errors_at_its_key() {
+        let text = "[tasks.build]\npm = \"zoot\"\n";
+        let found = diagnostics(text);
+        let diag = found
+            .iter()
+            .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .expect("an error diagnostic");
+        assert!(diag.message.contains("unknown package manager"), "{diag:?}");
+        assert_eq!(diag.range.start.line, 1, "{diag:?}");
     }
 
     #[test]
     fn type_error_anchors_to_the_offending_value() {
-        let found = diagnostics("[tasks]\nprefer = \"bun\"\n");
+        let found = diagnostics("[install]\nfrozen = \"yes\"\n");
         let diag = found
             .iter()
             .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
             .expect("expected an error diagnostic");
         assert_eq!(diag.range.start.line, 1, "{diag:?}");
-        assert!(diag.message.contains("expected a sequence"), "{diag:?}");
     }
 
     #[test]
     fn syntax_error_is_reported() {
-        let found = diagnostics("[pm]\nnode = \n");
+        let found = diagnostics("[install]\nfrozen = \n");
         assert!(
             found
                 .iter()
                 .any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         );
-    }
-
-    #[test]
-    fn tasks_overrides_error_anchors_to_the_offending_entry() {
-        let text = "[tasks.overrides]\nbuild = \"zoot\"\n";
-        let found = diagnostics(text);
-        let diag = found
-            .iter()
-            .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
-            .expect("expected an error diagnostic");
-        assert_eq!(diag.range.start.line, 1, "{diag:?}");
     }
 }

@@ -22,7 +22,7 @@ const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engin
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Pnpm,
     label: "pnpm",
-    aliases: &[],
+    aliases: &["pnpx"],
     ecosystem: Ecosystem::Node,
     kind: Kind::PACKAGE_MANAGER,
     program: Some("pnpm"),
@@ -75,7 +75,8 @@ pub const PROVIDER: Provider = Provider {
             declarations: super::workspace::declarations,
         }),
         clean: Some(super::CLEAN),
-        quiet: QuietSupport::flag_with_stream(t!["--silent"], t!["--use-stderr"]),
+        quiet: QuietSupport::flag(t!["--silent"]),
+        runs_on: Some(ProviderId::Node),
         ..Capabilities::NONE
     },
     tasks: None,

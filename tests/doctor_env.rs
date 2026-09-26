@@ -20,8 +20,8 @@ fn runner_binary() -> PathBuf {
 
 /// Command for the runner binary with every inherited `RUNNER_*`
 /// variable scrubbed, so only what a test sets explicitly reaches the
-/// child. A dev box exporting e.g. `RUNNER_NO_WARNINGS` or
-/// `RUNNER_FALLBACK` would otherwise flip these assertions. Matched
+/// child. A dev box exporting e.g. `RUNNER_WARNINGS` or `RUNNER_PM` would
+/// otherwise flip these assertions. Matched
 /// case-insensitively because Windows env lookups ignore case.
 fn runner_command() -> Command {
     let mut cmd = Command::new(runner_binary());
@@ -104,6 +104,38 @@ fn doctor_survives_env_pm_garbage_and_reports_it() {
         combined.contains("ignored"),
         "the report must say the value was ignored. output: {combined}",
     );
+    assert_eq!(
+        combined.matches("RUNNER_PM is set but invalid").count(),
+        1,
+        "each invalid variable is reported once. output: {combined}",
+    );
+}
+
+#[test]
+fn a_valid_cli_value_overrides_an_invalid_env_value() {
+    let project = TempProject::new("cli-over-env");
+    let dir = project.path().to_str().unwrap();
+    for (var, flag) in [
+        ("RUNNER_PM", &["--pm", "cargo"][..]),
+        ("RUNNER_RUNTIME", &["--runtime", "node"]),
+        ("RUNNER_DOWNLOAD", &["--download"]),
+        ("RUNNER_DOWNLOAD", &["--no-download"]),
+        ("RUNNER_ON_FAIL", &["--on-fail", "kill"]),
+        ("RUNNER_ON_FAIL", &["-k"]),
+    ] {
+        let output = runner_command()
+            .args(["--dir", dir])
+            .args(flag)
+            .arg("list")
+            .env(var, "bogus")
+            .output()
+            .expect("runner binary spawns");
+        assert!(
+            output.status.success(),
+            "{var}=bogus {flag:?}. stderr: {}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
 }
 
 #[test]
@@ -149,4 +181,44 @@ fn doctor_with_cli_pm_garbage_still_errors() {
         stderr.contains("unknown package manager"),
         "stderr: {stderr}",
     );
+}
+
+#[test]
+fn doctor_and_config_survive_an_invalid_config_value() {
+    let project = TempProject::new("config-value");
+    std::fs::write(
+        project.path().join("runner.toml"),
+        "[tasks.build]\npm = \"just\"\n",
+    )
+    .expect("write runner.toml");
+    let dir = project.path().to_str().unwrap();
+
+    let doctor = runner_command()
+        .args(["--dir", dir, "doctor"])
+        .output()
+        .expect("runner binary spawns");
+    let doctor_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr),
+    );
+    assert!(doctor.status.success(), "output: {doctor_output}");
+    assert!(
+        doctor_output.contains("tasks.build.pm"),
+        "output: {doctor_output}"
+    );
+
+    let validate = runner_command()
+        .args(["--dir", dir, "config", "validate"])
+        .output()
+        .expect("runner binary spawns");
+    let stderr = String::from_utf8_lossy(&validate.stderr);
+    assert_eq!(validate.status.code(), Some(2), "stderr: {stderr}");
+    assert!(stderr.contains("tasks.build.pm"), "stderr: {stderr}");
+
+    let list = runner_command()
+        .args(["--dir", dir, "list"])
+        .output()
+        .expect("runner binary spawns");
+    assert!(!list.status.success(), "other commands stay strict");
 }

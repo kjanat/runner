@@ -25,7 +25,7 @@ use crate::resolver::ResolutionOverrides;
 use crate::types::{DetectionWarning, Task};
 use runner_core::{Ecosystem, ProviderId};
 
-/// The runtime an explicit `--runtime` / `RUNNER_RUNTIME` / `[runtime].js`
+/// The runtime `--runtime`, `RUNNER_RUNTIME` or `[runtime] javascript`
 /// selected, if any.
 pub(super) fn overridden(overrides: &ResolutionOverrides) -> Option<ProviderId> {
     overrides.js_runtime()
@@ -60,27 +60,18 @@ pub(crate) fn honors(source: ProviderId, runtime: ProviderId) -> bool {
     honored_sources(runtime).contains(&source)
 }
 
-/// Report a runtime override the selected task cannot honour.
+/// Report a runtime the selected task, addressed by `key`, cannot honour.
 ///
 /// Called once, at the single point where a matched task's source is known
 /// and before anything is built for it.
 pub(super) fn report_unhonored(
     overrides: &ResolutionOverrides,
     entry: &Task,
+    key: &str,
     sink: crate::commands::WarningSink<'_>,
 ) {
-    report_unhonored_source(overrides, &entry.name, entry.source, sink);
-}
-
-/// [`report_unhonored`] for a dispatch that has a source but no task entry,
-/// such as a task runner's own entry point.
-pub(super) fn report_unhonored_source(
-    overrides: &ResolutionOverrides,
-    name: &str,
-    source: ProviderId,
-    sink: crate::commands::WarningSink<'_>,
-) {
-    let Some(runtime) = overridden(overrides) else {
+    let (name, source) = (&entry.name, entry.source);
+    let Some(runtime) = overrides.runtime_for(key).map(|over| over.runtime) else {
         return;
     };
     if honors(source, runtime) {

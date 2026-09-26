@@ -1,4 +1,4 @@
-//! `--explain` trace lines.
+//! `--dry-run` trace lines.
 
 use colored::Colorize;
 
@@ -6,7 +6,7 @@ use crate::resolver::ResolutionOverrides;
 
 /// Render the command that will execute, without environment values.
 pub(crate) fn print_command(overrides: &ResolutionOverrides, command: &std::process::Command) {
-    if !overrides.explain {
+    if !overrides.dry_run {
         return;
     }
     print_explain(
@@ -29,7 +29,7 @@ pub(crate) fn print_command(overrides: &ResolutionOverrides, command: &std::proc
 }
 
 pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Plan) {
-    if !overrides.explain {
+    if !overrides.dry_run {
         return;
     }
     print_explain(
@@ -54,11 +54,11 @@ pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Pl
     }
 }
 
-/// Emit one `--explain` trace line (`· runner <body>`), or nothing when
-/// explain is off. An explicit `--explain` overrides quiet presentation so the
+/// Emit one `--dry-run` trace line (`· runner <body>`), or nothing when
+/// dry-run is off. An explicit `--dry-run` overrides quiet presentation so the
 /// selected policy and any host limitation remain inspectable.
 pub(crate) fn print_explain(overrides: &ResolutionOverrides, body: &str) {
-    if !overrides.explain {
+    if !overrides.dry_run {
         return;
     }
     eprintln!("{} {} {body}", "·".dimmed(), "runner".dimmed());
@@ -69,14 +69,14 @@ pub(crate) fn print_output_explain(overrides: &ResolutionOverrides, task: &str) 
     print_explain(
         overrides,
         &format!(
-            "output: level={} progress={} warnings={} errors={} groups={} task_timing={} \
-             summary={} fatal_errors={} task.stdout={} task.stderr={}",
+            "output: level={} progress={} warnings={} errors={} groups={} timing={} summary={} \
+             fatal_errors={} task.stdout={} task.stderr={}",
             overrides.quiet_level.label(),
             show_hide(overrides.shows_progress_for(task)),
             show_hide(overrides.shows_warnings()),
             show_hide(overrides.shows_errors()),
             show_hide(overrides.emits_groups_for(task)),
-            show_hide(overrides.shows_task_timing_for(task)),
+            show_hide(overrides.shows_timing_for(task)),
             show_hide(overrides.shows_summary()),
             show_hide(overrides.shows_fatal_errors()),
             stdout.label(),

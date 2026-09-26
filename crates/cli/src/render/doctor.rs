@@ -91,50 +91,21 @@ fn print_overrides(human: &Human<'_>) {
         report, overrides, ..
     } = *human;
     print_section("Overrides", |out| {
-        if let Some(pm) = report["overrides"]["pm"].as_object() {
-            writeln_field(
-                out,
-                "pm",
-                &format!(
-                    "{} ({})",
-                    pm["pm"].as_str().unwrap_or("?"),
-                    pm["origin"].as_str().unwrap_or("?")
-                ),
-            );
+        for setting in ["pm", "source", "runtime"] {
+            if let Some(choice) = report["overrides"][setting].as_object() {
+                writeln_field(
+                    out,
+                    setting,
+                    &format!(
+                        "{} ({})",
+                        choice["value"].as_str().unwrap_or("?"),
+                        choice["origin"].as_str().unwrap_or("?")
+                    ),
+                );
+            }
         }
-        let empty = Map::new();
-        for (eco, pm) in report["overrides"]["pm_by_ecosystem"]
-            .as_object()
-            .unwrap_or(&empty)
-        {
-            writeln_field(
-                out,
-                &format!("pm.{eco}"),
-                &format!(
-                    "{} ({})",
-                    pm["pm"].as_str().unwrap_or("?"),
-                    pm["origin"].as_str().unwrap_or("?")
-                ),
-            );
-        }
-        if let Some(r) = report["overrides"]["runner"].as_object() {
-            writeln_field(
-                out,
-                "runner",
-                &format!(
-                    "{} ({})",
-                    r["runner"].as_str().unwrap_or("?"),
-                    r["origin"].as_str().unwrap_or("?")
-                ),
-            );
-        }
-        writeln_field(
-            out,
-            "fallback",
-            report["overrides"]["fallback"].as_str().unwrap_or("?"),
-        );
-        if overrides.explain {
-            writeln_field(out, "explain", "on");
+        if overrides.dry_run {
+            writeln_field(out, "dry-run", "on");
         }
     });
 }
@@ -226,28 +197,10 @@ fn write_install_plan(out: &mut String, plan: &InstallPlan) {
             ),
         );
     }
-    for collision in &plan.collisions {
-        let names = collision
-            .writers
-            .iter()
-            .map(|pm| pm.label())
-            .collect::<Vec<_>>()
-            .join(" then ");
-        writeln_field(out, "shared tree", &format!("{names} (serialized)"));
-    }
 }
 
 fn print_warnings(human: &Human<'_>) {
-    let Human {
-        report,
-        plan,
-        health,
-        ..
-    } = *human;
-    // Detection warnings, plus the collisions the install plan kept. The
-    // collision is the plan's verdict on the effective install set, not a fact
-    // about the tree, so it lives here and nowhere else; commands that never
-    // install have nothing to say about it.
+    let Human { report, health, .. } = *human;
     let mut warnings: Vec<(String, String)> = report["warnings"]
         .as_array()
         .map(|ws| {
@@ -261,14 +214,6 @@ fn print_warnings(human: &Human<'_>) {
                 .collect()
         })
         .unwrap_or_default();
-    if let Ok(plan) = plan {
-        warnings.extend(plan.collisions.iter().map(|collision| {
-            (
-                "install".to_string(),
-                crate::commands::install::collision_warning(collision.dir, &collision.writers),
-            )
-        }));
-    }
     warnings.extend(health.iter().map(|issue| {
         (
             issue.source.unwrap_or("health").to_string(),

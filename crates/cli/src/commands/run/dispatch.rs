@@ -21,7 +21,7 @@ fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::commands::print_explain(overrides, &format!("resolved: {describe}"));
 }
 
-/// `--explain` line for the workspace scope a task was picked from: which
+/// `--dry-run` line for the workspace scope a task was picked from: which
 /// scope won, why it outranked the others, and the directory it runs in.
 fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, entry: &Task) {
     let Some(workspace) = ctx.workspace.as_ref() else {
@@ -295,7 +295,7 @@ fn dispatch_by_package(
             .find_map(|source| prepared.decision(*source))
             .map(|decision| {
                 crate::commands::print_warning_slice(
-                    &decision.warnings(&prepared.project, overrides),
+                    &decision.warnings(&prepared.project),
                     overrides,
                     sink,
                 );
@@ -358,7 +358,7 @@ fn dispatch_plan(
     let project = &prepared.project;
     if let Some(decision) = &decision {
         crate::commands::print_warning_slice(
-            &decision.warnings(project, overrides),
+            &decision.warnings(project),
             overrides,
             sink.as_deref_mut(),
         );
@@ -426,7 +426,7 @@ fn dispatch_plan(
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
     crate::commands::print_output_explain(overrides, &task_key);
     crate::commands::set_task_stdio(&mut cmd, stdout, stderr);
-    let diagnostic = spawn_diagnostic(entry, overrides, &plan)?;
+    let diagnostic = spawn_diagnostic(entry, overrides, &plan, policy)?;
     let spawn = SpawnDispatch {
         task_key,
         command: cmd,
@@ -441,6 +441,7 @@ fn spawn_diagnostic(
     entry: Option<&Task>,
     overrides: &ResolutionOverrides,
     plan: &runner_core::Plan,
+    policy: &runner_core::Policy,
 ) -> Result<SpawnDiagnostic> {
     let managed = entry.is_some_and(|entry| {
         entry.source.is_managed()
@@ -451,7 +452,7 @@ fn spawn_diagnostic(
     if !managed {
         return Ok(SpawnDiagnostic::Passthrough);
     }
-    PmDecision::from_plan(plan)
+    PmDecision::from_plan(plan, policy)
         .map(SpawnDiagnostic::PackageManager)
         .ok_or_else(|| anyhow!("planned task has no package-manager choice"))
 }
@@ -472,7 +473,7 @@ pub(super) fn complete_plan(
     sink: crate::commands::WarningSink<'_>,
 ) -> Result<()> {
     let entry = chosen.entry;
-    prepare_task(ctx, overrides, entry, plan, sink)?;
+    prepare_task(ctx, overrides, entry, chosen.key, plan, sink)?;
     prepare_host(chosen.token, chosen.rung, plan)?;
     crate::commands::configure_plan(plan, overrides, chosen.key);
     runner_core::execute::command(plan)?;
@@ -505,13 +506,14 @@ fn prepare_task(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     entry: Option<&Task>,
+    key: &str,
     plan: &mut runner_core::Plan,
     sink: crate::commands::WarningSink<'_>,
 ) -> Result<()> {
     if let Some(entry) = entry {
         print_scope_explain(ctx, overrides, entry);
-        runtime::report_unhonored(overrides, entry, sink);
-        if let Some(over) = &overrides.runtime
+        runtime::report_unhonored(overrides, entry, key, sink);
+        if let Some(over) = overrides.runtime_for(key)
             && runtime::honors(entry.source, over.runtime)
         {
             print_pm_explain(overrides, &over.describe());
@@ -547,7 +549,7 @@ fn explain_host(
         crate::commands::print_explain(
             overrides,
             &format!(
-                "host: {} diagnostics={} applied={} args=[{}] stream={} matrix={} limitation={:?}",
+                "host: {} diagnostics={} applied={} args=[{}] matrix={} limitation={:?}",
                 descriptor.label,
                 requested.diagnostics.label(),
                 applied.label(),
@@ -556,7 +558,6 @@ fn explain_host(
                     .map(|s| s.to_string_lossy())
                     .collect::<Vec<_>>()
                     .join(" "),
-                requested.stream.label(),
                 descriptor.label,
                 quiet.limitation
             ),
@@ -642,7 +643,7 @@ pub(crate) fn refusal_error(
                 file.display()
             )
         }
-        Refusal::NoTask { .. } | Refusal::Ambiguous { .. } | Refusal::NoRunnerTask { .. } => {
+        Refusal::NoTask { .. } | Refusal::Ambiguous { .. } | Refusal::NoSourceTask { .. } => {
             super::qualify::selection_error(ctx, refusal)
         }
         Refusal::NotFound { name, tried } => {
@@ -663,7 +664,7 @@ pub(crate) fn refusal_error(
         }
         Refusal::Declined { name, rung } => {
             anyhow!(
-                "task {name:?} not found; fetch via the {} rung declined",
+                "task {name:?} not found; downloading it via the {} rung was declined",
                 rung.name
             )
         }
@@ -687,17 +688,6 @@ pub(crate) fn refusal_error(
             dir.display(),
             lockfiles.join(", ")
         ),
-        Refusal::Mismatch(disagreement) => {
-            let label = |id| runner_providers::REGISTRY.by_id(id).label;
-            anyhow!(
-                "{} declares {} but {} pins {}; pick one with `--pm <name>` or run with \
-                 `--on-mismatch warn`",
-                disagreement.manifest.display(),
-                label(disagreement.declared),
-                disagreement.lockfile.display(),
-                label(disagreement.locked),
-            )
-        }
         Refusal::Unsafe(runner_core::Unsafe::NameShape { name, provider }) => anyhow!(
             "{} cannot take {name:?}: it is not a name that primitive accepts",
             runner_providers::REGISTRY.by_id(*provider).label,
@@ -811,6 +801,7 @@ mod tests {
         PmDecision {
             pm: ProviderId::Bun,
             layer: runner_core::Layer::Manifest("package.json".into()),
+            flag: "pm",
             at: "package.json".into(),
             field: Some("packageManager"),
             on_fail: None,
@@ -1079,9 +1070,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_dispatch_reversed_qualifier_beats_runner_constraint() {
+    fn resolve_dispatch_reversed_qualifier_beats_a_source_choice() {
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
+            source: Some(crate::resolver::SourceOverride {
+                source: ProviderId::Just,
+                origin: OverrideOrigin::CliFlag,
+            }),
             ..ResolutionOverrides::default()
         };
 
@@ -1611,7 +1605,10 @@ mod tests {
                 pm,
                 origin: OverrideOrigin::CliFlag,
             }),
-            reach: runner_core::ReachPolicy::Allow,
+            download: crate::resolver::DownloadPolicy {
+                value: crate::config::Download::Allow,
+                explicit: true,
+            },
             ..ResolutionOverrides::default()
         };
         resolve_dispatch(ctx, &overrides, bin, args, None, true).map(expect_command)
@@ -1677,12 +1674,12 @@ mod tests {
     }
 
     #[test]
-    fn run_make_under_runner_make_constraint_still_invokes_make() {
+    fn run_make_under_a_make_source_choice_still_invokes_make() {
         let mut ctx = context();
         crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         let overrides = ResolutionOverrides {
-            runner: Some(crate::resolver::RunnerOverride {
-                runner: ProviderId::Make,
+            source: Some(crate::resolver::SourceOverride {
+                source: ProviderId::Make,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -1697,13 +1694,13 @@ mod tests {
     }
 
     #[test]
-    fn run_make_under_a_just_runner_choice_is_refused() {
+    fn run_make_under_a_just_source_choice_is_refused() {
         let mut ctx = context();
         crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
         let overrides = ResolutionOverrides {
-            runner: Some(crate::resolver::RunnerOverride {
-                runner: ProviderId::Just,
+            source: Some(crate::resolver::SourceOverride {
+                source: ProviderId::Just,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -1714,7 +1711,8 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "just defines no task named \"make\"; drop `--runner just` or add the task to its file"
+            "just defines no task named \"make\", and --source, RUNNER_SOURCE or \
+             [tasks.make].source requires it to"
         );
     }
 
@@ -1738,39 +1736,6 @@ mod tests {
         );
 
         assert_eq!(command.get_current_dir(), Some(ctx.root.as_path()));
-    }
-
-    #[test]
-    fn run_make_under_a_prefer_list_without_make_reaches_the_host_rung() {
-        let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
-        crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
-        let overrides = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just],
-            ..ResolutionOverrides::default()
-        };
-
-        let command = expect_command(
-            resolve_dispatch(&mut ctx, &overrides, "make", &[], None, true)
-                .expect("a prefer list ranks and never restricts"),
-        );
-        assert_eq!(command.get_program().to_string_lossy(), "make");
-    }
-
-    #[test]
-    fn run_make_under_a_prefer_list_naming_make_invokes_make() {
-        let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
-        crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
-        let listed = ResolutionOverrides {
-            prefer_runners: vec![ProviderId::Just, ProviderId::Make],
-            ..ResolutionOverrides::default()
-        };
-        let command = expect_command(
-            resolve_dispatch(&mut ctx, &listed, "make", &[], None, true)
-                .expect("a prefer list naming make admits it"),
-        );
-        assert_eq!(command.get_program().to_string_lossy(), "make");
     }
 
     #[test]

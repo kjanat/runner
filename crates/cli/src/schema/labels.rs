@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use runner_core::{Ecosystem, ProviderId, TaskTable};
+use runner_core::{ProviderId, TaskTable};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Serialize, Serializer};
 
@@ -67,13 +67,6 @@ provider_label!(
     Named::label
 );
 provider_label!(
-    /// A task runner, as its label.
-    RunnerLabel,
-    "TaskRunnerLabel",
-    crate::provider::runners,
-    Named::label
-);
-provider_label!(
     /// A JavaScript runtime, as its label.
     RuntimeLabel,
     "JsRuntimeLabel",
@@ -87,42 +80,6 @@ provider_label!(
     crate::provider::task_sources,
     family
 );
-
-/// An ecosystem with package managers, as its label, ordered by label.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct EcosystemLabel(pub(crate) Ecosystem);
-
-impl Ord for EcosystemLabel {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.label().cmp(other.0.label())
-    }
-}
-
-impl PartialOrd for EcosystemLabel {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Serialize for EcosystemLabel {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.0.label())
-    }
-}
-
-impl JsonSchema for EcosystemLabel {
-    fn schema_name() -> Cow<'static, str> {
-        "EcosystemLabel".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        enum_schema(
-            crate::provider::package_managers()
-                .into_iter()
-                .map(|pm| pm.ecosystem().label()),
-        )
-    }
-}
 
 /// Build a task's fully-qualified name: `<scope>:<source>#<name>`, where
 /// `scope` is `root` or the workspace member's label.

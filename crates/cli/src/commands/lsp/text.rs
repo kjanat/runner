@@ -165,32 +165,32 @@ mod tests {
 
     #[test]
     fn position_and_offset_round_trip() {
-        let text = "[pm]\nnode = \"bun\"\n";
+        let text = "[env]\nCI = \"1\"\n";
         let index = LineIndex::new(text);
-        // Byte 5 is the start of line 1 (`node`).
-        let pos = index.position(text, 5);
+        // Byte 6 is the start of line 1 (`CI`).
+        let pos = index.position(text, 6);
         assert_eq!((pos.line, pos.character), (1, 0));
-        assert_eq!(index.offset(text, pos), 5);
+        assert_eq!(index.offset(text, pos), 6);
     }
 
     #[test]
     fn finds_header_and_key_ranges() {
-        let text = "[pm]\nnode = \"bun\"\n";
+        let text = "[env]\nCI = \"1\"\n";
         let index = LineIndex::new(text);
-        assert!(find_header_range(&index, text, "pm").is_some());
-        assert!(find_key_range(&index, text, Some("pm"), "node").is_some());
+        assert!(find_header_range(&index, text, "env").is_some());
+        assert!(find_key_range(&index, text, Some("env"), "CI").is_some());
         // Same key, wrong section → no match.
-        assert!(find_key_range(&index, text, Some("tasks"), "node").is_none());
+        assert!(find_key_range(&index, text, Some("tasks"), "CI").is_none());
     }
 
     #[test]
     fn line_range_excludes_trailing_carriage_return() {
-        let text = "[pm]\r\nnode = \"bun\"\r\n";
+        let text = "[env]\r\nCI = \"1\"\r\n";
         let index = LineIndex::new(text);
         let range = index.line_range(text, 0);
         assert_eq!(
             (range.start.character, range.end.character),
-            (0, 4),
+            (0, 5),
             "{range:?}"
         );
     }

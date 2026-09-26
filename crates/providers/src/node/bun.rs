@@ -25,7 +25,7 @@ pub const SCRIPT_EXTENSIONS: &[&str] = &["js", "mjs", "cjs", "ts", "mts", "cts",
 pub const PROVIDER: Provider = Provider {
     id: ProviderId::Bun,
     label: "bun",
-    aliases: &[],
+    aliases: &["bunx"],
     ecosystem: Ecosystem::Node,
     kind: Kind::PACKAGE_MANAGER.union(Kind::RUNTIME),
     program: Some("bun"),
