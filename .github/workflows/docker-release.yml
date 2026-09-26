@@ -24,7 +24,8 @@ jobs:
   publish:
     name: publish image
     runs-on: ubuntu-latest
-    if: inputs.readme-only != true && startsWith(inputs.tag, 'v')
+    timeout-minutes: 30
+    if: github.repository == 'kjanat/runner' && inputs.readme-only != true && startsWith(inputs.tag, 'v')
     # Serialize so dispatch and the release pipeline can't race the same tag.
     concurrency: { group: "docker-publish-${{ inputs.tag }}", cancel-in-progress: false }
     permissions: { contents: read, packages: write, actions: read, id-token: write, attestations: write }
@@ -94,8 +95,9 @@ jobs:
   readme:
     name: publish readme
     needs: [publish]
-    if: always() && startsWith(inputs.tag, 'v') && (inputs.readme-only == true || needs.publish.result == 'success')
+    if: always() && github.repository == 'kjanat/runner' && startsWith(inputs.tag, 'v') && (inputs.readme-only == true || needs.publish.result == 'success')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     concurrency: { group: docker-readme, cancel-in-progress: false }
     environment: { name: docker }
     steps:

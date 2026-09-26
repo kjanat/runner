@@ -1,16 +1,19 @@
 #:tombi toml-version = "v1.0.0"
 
 [package]
-name                   = "runner-providers"
+name                   = "runner-run-providers"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-description            = "Provider declarations for the runner task runner"
+description            = "Provider declarations of runner-run; internal, no stable API"
 readme                 = "../../README.md"
 repository.workspace   = true
 license.workspace      = true
 keywords               = ["automation", "build-tool", "cli", "task-runner"]
 categories             = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "runner_providers"
 
 [dependencies]
 anyhow     = "1"
@@ -22,11 +25,11 @@ shlex      = "2"
 toml       = { workspace = true, features = ["parse", "serde"] }
 yaml-rust2 = "0.13"
 
-[dependencies.runner-core]
+[dependencies.runner-run-core]
 path    = "../core"
 version = "0.26.2"
 
-[dependencies.runner-schemes]
+[dependencies.runner-run-schemes]
 path    = "../schemes"
 version = "0.26.2"
 

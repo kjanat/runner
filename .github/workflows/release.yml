@@ -27,6 +27,7 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       MISE: '{"tools": {"node": "lts", "bun": "latest", "deno": "latest", "go": "latest", "poetry": "latest", "pipenv": "latest", "task": "latest", "pnpm": "latest", "yarn": "latest", "npm:turbo": "latest", "npm:nx": "latest"}}'
     steps:
@@ -69,7 +70,8 @@ jobs:
     name: create draft release
     needs: verify
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 5
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: write }
     steps:
       - uses: actions/checkout@v7
@@ -100,7 +102,8 @@ jobs:
     name: man pages
     needs: [verify, create-release]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: write, id-token: write, attestations: write }
     env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
@@ -126,7 +129,8 @@ jobs:
     name: build matrix
     needs: verify
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 5
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: read }
     outputs: { include: "${{ steps.gen.outputs.include }}" }
     steps:
@@ -150,6 +154,7 @@ jobs:
     name: build+upload ${{ matrix.target }}
     needs: [matrix, create-release]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     permissions: { contents: write, id-token: write, attestations: write }
     strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.matrix.outputs.include) }}" } }
     continue-on-error: ${{ matrix.experimental }}
@@ -258,7 +263,8 @@ jobs:
     name: build dist
     needs: [upload-assets, man]
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: write } # contents: write, drafts are invisible to read-only tokens.
     env: { RELEASE_TAG: "${{ github.ref_name }}" }
     steps:
@@ -301,8 +307,9 @@ jobs:
   publish-release:
     name: publish github release
     needs: [build-dist]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: { contents: write }
     env: { GH_TOKEN: "${{ github.token }}", RELEASE_TAG: "${{ github.ref_name }}" }
     steps: [run: 'gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false']
@@ -310,7 +317,7 @@ jobs:
   call-npm-release:
     name: npm publish
     needs: [publish-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: read, id-token: write, actions: read, attestations: write }
     uses: ./.github/workflows/npm-release.yml
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }
@@ -318,7 +325,7 @@ jobs:
   call-aur-release:
     name: aur publish
     needs: [publish-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.AUR_BLOCKED == 'false'
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && vars.AUR_BLOCKED == 'false'
     permissions: { contents: read }
     uses: ./.github/workflows/aur-release.yml
     secrets: inherit
@@ -327,7 +334,7 @@ jobs:
   call-docker-release:
     name: docker publish
     needs: [publish-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: read, packages: write, actions: read, id-token: write, attestations: write }
     uses: ./.github/workflows/docker-release.yml
     secrets: inherit
@@ -336,7 +343,7 @@ jobs:
   call-crates-release:
     name: crates publish
     needs: [publish-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.repository == 'kjanat/runner' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions: { contents: read, id-token: write, actions: read }
     uses: ./.github/workflows/crates-release.yml
     with: { tag: "${{ github.ref_name }}", run-id: "${{ github.run_id }}" }

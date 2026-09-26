@@ -130,11 +130,11 @@ optional = true
 version  = "0.97"
 optional = true
 
-[dependencies.runner-core]
+[dependencies.runner-run-core]
 path    = "../core"
 version = "0.26.2"
 
-[dependencies.runner-providers]
+[dependencies.runner-run-providers]
 path    = "../providers"
 version = "0.26.2"
 

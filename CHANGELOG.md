@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Move `Unreleased` entries into the new version section and rotate links.
 - [ ] Create and push a signed `vX.Y.Z` tag from `master`.
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
+- [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
 ### Added
 
@@ -229,6 +230,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   thirteen keys that have an effective default carry it in the published
   schema. Unknown-key warnings read the recognised fields from the schema
   too, so a struct field cannot fall out of step with the loader.
+
+- The workspace library crates publish to crates.io as `runner-run-core`,
+  `runner-run-schemes` and `runner-run-providers`, internal to `runner-run`
+  with no stable API. Their Rust library names stay `runner_core`,
+  `runner_schemes` and `runner_providers`.
 
 - The `schema` cargo feature is removed. Every build carries schemars, and
   `cargo schema` needs no flag.

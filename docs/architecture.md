@@ -885,10 +885,10 @@ the crate boundary is the boundary.
 ```text
 Cargo.toml                    workspace
 crates/
-  core/                       runner-core     types, pipeline, services, declaration table
-  schemes/                    runner-schemes  version grammars, one module per ecosystem
-  providers/                  runner-providers one file per provider, the registry
-  cli/                        runner-run      the `runner` and `run` binaries, rendering, lsp, schema output
+  core/                       runner-run-core      types, pipeline, services, declaration table
+  schemes/                    runner-run-schemes   version grammars, one module per ecosystem
+  providers/                  runner-run-providers one file per provider, the registry
+  cli/                        runner-run           the `runner` and `run` binaries, rendering, lsp, schema output
 tests/                        integration tests over the binaries
 fixtures/                     test projects, one directory per scenario
 schemas/                      generated JSON schemas, committed
@@ -995,5 +995,3 @@ Steps, each a pull request with the suite green at the end:
 - Whether `providers` is one crate or one crate per ecosystem. One crate
   keeps the registry a single array. Per ecosystem lets a build drop Ruby
   and PHP for a smaller binary.
-- Publishing: `runner-run` stays the crates.io name for the binary crate.
-  Whether `runner-core` is published at all, or stays a path dependency.

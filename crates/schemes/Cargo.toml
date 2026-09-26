@@ -1,21 +1,24 @@
 #:tombi toml-version = "v1.0.0"
 
 [package]
-name                   = "runner-schemes"
+name                   = "runner-run-schemes"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-description            = "Version grammars for the runner task runner"
+description            = "Version grammars of runner-run; internal, no stable API"
 readme                 = "../../README.md"
 repository.workspace   = true
 license.workspace      = true
 keywords               = ["automation", "build-tool", "cli", "task-runner"]
 categories             = ["command-line-utilities", "development-tools"]
 
+[lib]
+name = "runner_schemes"
+
 [dependencies]
 semver = "1"
 
-[dependencies.runner-core]
+[dependencies.runner-run-core]
 path    = "../core"
 version = "0.26.2"
 

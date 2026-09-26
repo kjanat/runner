@@ -15,12 +15,17 @@ env:
   INPUT_DRY_RUN: ${{ inputs.dry-run || 'false' }}
   CARGO_TERM_COLOR: always
 
+permissions: {}
+
 jobs:
   publish:
     name: publish to crates.io
+    if: github.repository == 'kjanat/runner'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions: { contents: read, id-token: write, actions: read }
     environment: { name: crates-io, url: "${{ steps.verify.outputs.url }}" }
+    env: { HAS_CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN != '' }}" }
     steps:
       - uses: actions/checkout@v7
         with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }
@@ -31,33 +36,37 @@ jobs:
         run: |
           set -euo pipefail
           tag_version="${RELEASE_TAG#v}"
-          manifest_version=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[] | select(.name == "runner-run") | .version')
+          metadata=$(cargo metadata --no-deps --format-version 1)
+          fields=$(jq -er '.workspace_default_members[0] as $id | .packages[] | select(.id == $id) | "\(.name) \(.version) \(.manifest_path)"' <<<"${metadata}")
+          read -r name manifest_version manifest_path <<<"${fields}"
+          manifest_path="${manifest_path#"${GITHUB_WORKSPACE}/"}"
           if [[ "${tag_version}" != "${manifest_version}" ]]; then
-            echo "::error file=crates/cli/Cargo.toml::version does not match release tag"
-            echo "error: tag ${RELEASE_TAG} (${tag_version}) does not match Cargo.toml version ${manifest_version}" >&2
+            echo "::error file=${manifest_path}::version does not match release tag"
+            echo "error: tag ${RELEASE_TAG} (${tag_version}) does not match ${manifest_path} version ${manifest_version}" >&2
             exit 1
           fi
-          echo "ok: tag ${RELEASE_TAG} matches Cargo.toml version ${manifest_version}"
-          echo "url=https://crates.io/crates/runner-run/${manifest_version}" >> "${GITHUB_OUTPUT}"
+          echo "ok: tag ${RELEASE_TAG} matches ${manifest_path} version ${manifest_version}"
+          echo "url=https://crates.io/crates/${name}/${manifest_version}" >> "${GITHUB_OUTPUT}"
+          echo "MAN_DIR=$(dirname "${manifest_path}")/man" >> "${GITHUB_ENV}"
 
       - name: download man pages
         if: inputs.run-id != ''
         uses: actions/download-artifact@v8
-        with: { name: man-pages, path: crates/cli/man, run-id: "${{ inputs.run-id }}", github-token: "${{ github.token }}" }
+        with: { name: man-pages, path: "${{ env.MAN_DIR }}", run-id: "${{ inputs.run-id }}", github-token: "${{ github.token }}" }
 
       - name: build man pages
         if: inputs.run-id == ''
-        run: cargo man --output crates/cli/man
+        run: cargo man --output "${MAN_DIR}"
 
       - run: cargo dirtypub --dry-run
 
       - name: mint crates.io token (trusted publishing)
         uses: rust-lang/crates-io-auth-action@v1
         if: env.INPUT_DRY_RUN != 'true'
+        continue-on-error: ${{ env.HAS_CARGO_REGISTRY_TOKEN == 'true' }}
         id: auth
 
       - name: cargo publish
         if: env.INPUT_DRY_RUN != 'true'
-        env: { CARGO_REGISTRY_TOKEN: "${{ steps.auth.outputs.token }}" }
+        env: { CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}" }
         run: cargo dirtypub

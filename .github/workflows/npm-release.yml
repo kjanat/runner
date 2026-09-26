@@ -37,7 +37,8 @@ jobs:
   setup:
     name: verify dist
     runs-on: ubuntu-latest
-    if: startsWith(inputs.tag, 'v') || (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v'))
+    timeout-minutes: 10
+    if: github.repository == 'kjanat/runner' && (startsWith(inputs.tag, 'v') || (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'v')))
     permissions: { contents: read, actions: read }
     outputs:
       run-id: ${{ steps.resolve.outputs.run-id }}
@@ -113,6 +114,7 @@ jobs:
     name: publish ${{ matrix.pkg }}
     needs: setup
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: { contents: read, id-token: write, actions: read, attestations: write }
     environment: { name: npm, url: "${{ steps.publish.outputs.package-url }}" }
     strategy: { fail-fast: false, matrix: { include: "${{ fromJSON(needs.setup.outputs.platforms) }}" } }
@@ -151,6 +153,7 @@ jobs:
     name: publish ${{ needs.setup.outputs.facade }}
     needs: [setup, publish]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: { contents: read, id-token: write, actions: read, attestations: write }
     environment: { name: npm-facade, url: "${{ steps.publish.outputs.package-url }}" }
     steps:

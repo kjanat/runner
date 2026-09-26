@@ -437,34 +437,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "323c417e1d9665a65b263ec744ba09030cfb277e9daa0b018a4ab62e57bc8189"
 
 [[package]]
-name = "runner-core"
-version = "0.26.2"
-dependencies = [
- "bitflags 2.13.2",
- "json5",
- "serde_json",
- "toml",
- "yaml-rust2",
-]
-
-[[package]]
-name = "runner-providers"
-version = "0.26.2"
-dependencies = [
- "anyhow",
- "glob",
- "json5",
- "runner-core",
- "runner-schemes",
- "serde",
- "serde_json",
- "shlex",
- "tempfile",
- "toml",
- "yaml-rust2",
-]
-
-[[package]]
 name = "runner-run"
 version = "0.26.2"
 dependencies = [
@@ -479,8 +451,8 @@ dependencies = [
  "json5",
  "lsp-server",
  "lsp-types",
- "runner-core",
- "runner-providers",
+ "runner-run-core",
+ "runner-run-providers",
  "schemars",
  "semver",
  "serde",
@@ -493,10 +465,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "runner-schemes"
+name = "runner-run-core"
 version = "0.26.2"
 dependencies = [
- "runner-core",
+ "bitflags 2.13.2",
+ "json5",
+ "serde_json",
+ "toml",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "runner-run-providers"
+version = "0.26.2"
+dependencies = [
+ "anyhow",
+ "glob",
+ "json5",
+ "runner-run-core",
+ "runner-run-schemes",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "toml",
+ "yaml-rust2",
+]
+
+[[package]]
+name = "runner-run-schemes"
+version = "0.26.2"
+dependencies = [
+ "runner-run-core",
  "semver",
 ]
 
