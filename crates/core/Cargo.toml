@@ -5,7 +5,7 @@ name                   = "runner-run-core"
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-description            = "Core types and pipeline of runner-run; internal, no stable API"
+description            = "Core types and pipeline of runner-run. Internal, no stable API"
 readme                 = "../../README.md"
 repository.workspace   = true
 license.workspace      = true
@@ -16,10 +16,10 @@ categories             = ["command-line-utilities", "development-tools"]
 name = "runner_core"
 
 [dependencies]
-bitflags   = "2"
-json5      = "1"
-serde_json = "1"
-yaml-rust2 = "0.13"
+bitflags.workspace   = true
+json5.workspace      = true
+serde_json.workspace = true
+yaml-rust2.workspace = true
 
 [dependencies.toml]
 workspace = true

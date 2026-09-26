@@ -460,6 +460,7 @@ dependencies = [
  "shlex",
  "terminal_size",
  "toml",
+ "toml_parser",
  "unicode-width",
  "yaml-rust2",
 ]

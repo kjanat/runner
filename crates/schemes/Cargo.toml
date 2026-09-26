@@ -16,11 +16,9 @@ categories             = ["command-line-utilities", "development-tools"]
 name = "runner_schemes"
 
 [dependencies]
-semver = "1"
+runner-run-core.workspace = true
 
-[dependencies.runner-run-core]
-path    = "../core"
-version = "0.26.2"
+semver.workspace = true
 
 [lints]
 workspace = true

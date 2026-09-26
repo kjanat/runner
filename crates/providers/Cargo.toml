@@ -16,25 +16,23 @@ categories             = ["command-line-utilities", "development-tools"]
 name = "runner_providers"
 
 [dependencies]
-anyhow     = "1"
-glob       = "0.3"
-json5      = "1"
-serde      = { workspace = true }
-serde_json = "1"
-shlex      = "2"
-toml       = { workspace = true, features = ["parse", "serde"] }
-yaml-rust2 = "0.13"
+runner-run-core.workspace    = true
+runner-run-schemes.workspace = true
 
-[dependencies.runner-run-core]
-path    = "../core"
-version = "0.26.2"
+anyhow.workspace     = true
+glob.workspace       = true
+json5.workspace      = true
+serde.workspace      = true
+serde_json.workspace = true
+shlex.workspace      = true
+yaml-rust2.workspace = true
 
-[dependencies.runner-run-schemes]
-path    = "../schemes"
-version = "0.26.2"
+[dependencies.toml]
+workspace = true
+features  = ["parse", "serde"]
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 
 [lints]
 workspace = true
