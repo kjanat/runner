@@ -20,7 +20,7 @@
 		"runner-run": "catalog:",
 		"typescript": "catalog:"
 	},
-	"packageManager": "bun@1.4.1",
+	"packageManager": "bun@1.4.2",
 	"volta": {
 		"node": "26.4.0",
 		"npm": "11.17.0"
