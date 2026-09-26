@@ -10,6 +10,8 @@
 //! Dispatching a `package.json` script needs a Node package manager on
 //! PATH; tests that spawn one skip with a note when `npm` is absent.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -79,16 +81,7 @@ fn tool_available(name: &str) -> bool {
 
 /// Run `runner` against `dir` with every `RUNNER_*` variable scrubbed.
 fn runner_in(dir: &Path, args: &[&str]) -> Output {
-    let mut cmd = Command::new(runner_binary());
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(runner_binary());
     cmd.arg("--dir")
         .arg(dir)
         .args(args)
@@ -377,10 +370,7 @@ fn an_unknown_member_prefix_is_reported_not_sent_to_npx() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());
-    assert!(
-        stderr.contains("no workspace member named \"nope\""),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("workspace member nope"), "stderr: {stderr}");
 }
 
 /// Whether some stdout line names `expected` once both sides are canonical.
@@ -450,7 +440,7 @@ fn explain_reports_the_scope_a_member_task_was_picked_from() {
     let ws = workspace("explain-scope");
     let rfc = ws.path().join("rfc");
 
-    let output = runner_in(&rfc, &["--explain", "run", "site"]);
+    let output = runner_in(&rfc, &["--dry-run", "run", "site"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
@@ -462,7 +452,7 @@ fn explain_reports_the_scope_a_member_task_was_picked_from() {
         "stderr: {stderr}"
     );
 
-    let output = runner_in(ws.path(), &["--explain", "run", "hello"]);
+    let output = runner_in(ws.path(), &["--dry-run", "run", "hello"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stderr.contains("scope: root;"), "stderr: {stderr}");
@@ -499,7 +489,7 @@ fn per_task_config_addresses_a_member_task_by_member_and_name() {
     }
     let ws = workspace("member-task-config").file(
         "runner.toml",
-        "[tasks.\"rfc:site\"]\nstdout = \"discard\"\n",
+        "[tasks.\"rfc:site\".output.task]\nstdout = false\n",
     );
     let web = std::fs::canonicalize(ws.path().join("apps/web")).expect("member dir exists");
     let rfc = std::fs::canonicalize(ws.path().join("rfc")).expect("member dir exists");
@@ -510,7 +500,8 @@ fn per_task_config_addresses_a_member_task_by_member_and_name() {
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
         !printed_dir(&stdout, &rfc),
-        "[tasks.\"rfc:site\"] stdout = \"discard\" must drop the member's stdout. stdout: {stdout}",
+        "[tasks.\"rfc:site\".output.task] stdout = false must drop the member's stdout. stdout: \
+         {stdout}",
     );
 
     let output = runner_in(ws.path(), &["run", "@acme/web:site"]);

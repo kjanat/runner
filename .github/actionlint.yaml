@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/kjanat/actionlint/HEAD/actionlint.schema.json
+---
+config-variables: null
+config-secrets: null
+assume-default-permissions: permissive
+policy:
+  cache-call-unrestricted: true
+  cache-operation: true
+  cache-write-untrusted: false
+  disallow-suppressions: true
+  require-commit-hash: false
+  require-job-timeout: true
+  require-permissions: true
+  required-actions: []

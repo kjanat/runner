@@ -7,6 +7,8 @@
 //!
 //! Skips when the runtime under test is not installed.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -106,14 +108,13 @@ fn mise_bin_paths() -> Vec<PathBuf> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| {
+        .map_or_default(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .map(|line| PathBuf::from(line.trim()))
                 .filter(|p| p.is_dir())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// `PATH` for a spawned dispatch: the `run` binary's own dir first (so a nested
@@ -135,16 +136,7 @@ fn runner_command(dir: &Path) -> Command {
     let bin_dir = binary.parent().expect("binary lives in a directory");
     let joined = child_path(bin_dir);
 
-    let mut cmd = Command::new(&binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(&binary);
     cmd.env("PATH", joined).arg("--dir").arg(dir);
     cmd
 }
@@ -161,24 +153,37 @@ fn run_in(dir: &Path, args: &[&str]) -> Output {
 /// The `\u{2192}` dispatch arrow is written before the spawn, so assertions on
 /// *what would have run* still hold.
 fn arrow_only(dir: &Path, args: &[&str]) -> Output {
+    arrow_only_with(dir, args, &[])
+}
+
+/// [`arrow_only`] with extra `RUNNER_*` variables set.
+fn arrow_only_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let binary = run_binary();
     let bin_dir = binary.parent().expect("binary lives in a directory");
-    let mut cmd = Command::new(&binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
+    let mut cmd = support::command(&binary);
+    let tools = dir.join("audit-host-tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    #[cfg(unix)]
+    for name in ["node", "bun", "deno", "npx"] {
+        use std::os::unix::fs::PermissionsExt;
+        let file = tools.join(name);
+        std::fs::write(
+            &file,
+            "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 26.0.0; else exit 127; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    cmd.env("PATH", bin_dir)
-        .arg("--dir")
-        .arg(dir)
-        .args(args)
-        .output()
-        .expect("run should execute")
+    cmd.env(
+        "PATH",
+        std::env::join_paths([bin_dir, tools.as_path()]).unwrap(),
+    )
+    .envs(envs.iter().copied())
+    .arg("--dir")
+    .arg(dir)
+    .args(args)
+    .output()
+    .expect("run should execute")
 }
 
 /// An npm project (npm lockfile, so the resolver picks npm) whose `which`
@@ -217,6 +222,37 @@ fn runtime_bun_forces_the_scripts_process_tree_onto_bun() {
         "BUN",
         "--runtime bun must put the script's node on bun",
     );
+}
+
+#[test]
+fn a_package_manager_dispatches_while_bun_stands_in_for_node() {
+    if !tool_available("bun") || !tool_available("node") {
+        eprintln!("skipping: bun or node not found on PATH");
+        return;
+    }
+    let proj = probe_project("stand-in");
+    for pm in ["npm", "pnpm"] {
+        if !tool_available(pm) {
+            eprintln!("skipping {pm}: not found on PATH");
+            continue;
+        }
+        let output = run_in(proj.path(), &["--pm", pm, "--runtime", "bun", "which"]);
+        assert_stdout_has(
+            &output,
+            "BUN",
+            &format!("{pm} must run the script's node on bun"),
+        );
+        let planned = run_in(
+            proj.path(),
+            &["--dry-run", "--pm", pm, "--runtime", "bun", "which"],
+        );
+        let stderr = String::from_utf8_lossy(&planned.stderr);
+        assert!(
+            stderr.contains(&format!(r#"argv: ["{pm}", "run", "which"]"#))
+                && stderr.contains("stand-in: bun answers to node"),
+            "{pm} dispatches the task with bun as node: {stderr}"
+        );
+    }
 }
 
 #[test]
@@ -269,12 +305,12 @@ fn explain_names_the_runtime_and_where_it_came_from() {
         return;
     }
     let proj = probe_project("explain");
-    let output = run_in(proj.path(), &["--explain", "--runtime", "bun", "which"]);
+    let output = run_in(proj.path(), &["--dry-run", "--runtime", "bun", "which"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
         stderr.contains("bun via --runtime"),
-        "--explain must attribute the runtime to its source. stderr: {stderr}",
+        "--dry-run must attribute the runtime to its source. stderr: {stderr}",
     );
 }
 
@@ -382,15 +418,26 @@ fn runtime_does_not_hijack_a_non_js_file() {
 }
 
 #[test]
-fn runtime_selects_the_exec_fallback_primitive() {
-    // No task, no file, no installed dependency: the token goes to a package
-    // exec primitive, which used to be the resolved PM's regardless.
+fn runtime_selects_the_exec_fallback_primitive_once_reach_is_allowed() {
     let proj = probe_project("exec");
 
+    let refused = arrow_only_with(
+        proj.path(),
+        &["--runtime", "node", "definitely-not-a-real-tool-xyz"],
+        &[("RUNNER_DOWNLOAD", "false")],
+    );
+    assert!(
+        !refused.status.success()
+            && !String::from_utf8_lossy(&refused.stderr).contains("\u{2192} npx"),
+        "the exec rung is Reach::Network and RUNNER_DOWNLOAD=false refuses it. stderr: {}",
+        String::from_utf8_lossy(&refused.stderr),
+    );
+
     for (runtime, expected) in [("node", "npx"), ("bun", "bun x"), ("deno", "deno x")] {
-        let output = arrow_only(
+        let output = arrow_only_with(
             proj.path(),
             &["--runtime", runtime, "definitely-not-a-real-tool-xyz"],
+            &[("RUNNER_DOWNLOAD", "true")],
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -451,12 +498,16 @@ fn a_source_that_cannot_honour_the_runtime_says_so() {
     // The invariant: get the runtime, or be told it did not apply.
     let proj = TempProject::new("unhonored").file("justfile", "build:\n\t@echo JUST-RAN\n");
 
-    let output = arrow_only(proj.path(), &["--explain", "--runtime", "bun", "build"]);
+    let output = arrow_only(proj.path(), &["--dry-run", "--runtime", "bun", "build"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        stderr.contains("warn:") && stderr.contains("--runtime bun was not applied"),
+        stderr.contains("warn:") && stderr.contains("runtime bun was not applied"),
         "an unhonourable runtime must warn. stderr: {stderr}",
+    );
+    assert!(
+        !stderr.contains("via --pm"),
+        "a runtime choice is not a package-manager choice. stderr: {stderr}",
     );
     assert!(
         stderr.contains("just"),
@@ -464,7 +515,7 @@ fn a_source_that_cannot_honour_the_runtime_says_so() {
     );
     assert!(
         stderr.contains("\u{b7} runner runtime bun not applied"),
-        "--explain must carry the same fact. stderr: {stderr}",
+        "--dry-run must carry the same fact. stderr: {stderr}",
     );
 }
 
@@ -566,6 +617,177 @@ fn runtime_node_warns_about_the_lifecycle_scripts_it_skips() {
             !String::from_utf8_lossy(&quiet.stderr).contains("does not run"),
             "bun run executes pre/post; no warning is due. stderr: {}",
             String::from_utf8_lossy(&quiet.stderr),
+        );
+    }
+}
+
+/// A package project with harmless `npm`, `node`, `bun` and `deno` on `PATH`
+/// alone, the given `runner.toml`, and a lockfile when `locked`.
+#[cfg(unix)]
+fn fake_tool_project(tag: &str, config: &str, locked: bool) -> TempProject {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut project = TempProject::new(tag)
+        .file(
+            "package.json",
+            r#"{ "scripts": { "build": "true", "lint": "true" } }"#,
+        )
+        .file("check.js", "console.log(1)\n")
+        .file("runner.toml", config);
+    if locked {
+        project = project.file("package-lock.json", "{}\n");
+    }
+    for tool in ["npm", "node", "bun", "deno"] {
+        project = project.file(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
+        std::fs::set_permissions(
+            project.path().join("bin").join(tool),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod +x");
+    }
+    project
+}
+
+/// `runner --dry-run` with `args` in `project`, its stderr.
+#[cfg(unix)]
+fn dry_run_in(project: &TempProject, args: &[&str]) -> String {
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .arg("--dry-run")
+        .args(args)
+        .output()
+        .expect("runner should execute");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{args:?}: {stderr}");
+    stderr
+}
+
+#[cfg(unix)]
+#[test]
+fn a_task_table_runtime_found_only_on_path_runs_that_task_alone() {
+    let project = fake_tool_project(
+        "task-runtime-path",
+        "[tasks.build.runtime]\njavascript = \"bun\"\n",
+        true,
+    );
+    let check = project.path().join("check.js");
+    for (args, argv) in [
+        (
+            vec!["run", "build"],
+            r#"argv: ["bun", "--bun", "run", "build"]"#.to_owned(),
+        ),
+        (
+            vec!["run", "lint"],
+            r#"argv: ["npm", "run", "lint"]"#.to_owned(),
+        ),
+        (
+            vec!["run", "./check.js"],
+            format!(r#"argv: ["node", "{}"]"#, check.display()),
+        ),
+        (
+            vec!["install", "--no-tools"],
+            r#"argv: ["npm", "install"]"#.to_owned(),
+        ),
+    ] {
+        let stderr = dry_run_in(&project, &args);
+        assert!(stderr.contains(&argv), "{args:?}: {stderr}");
+    }
+    let doctor = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .arg("doctor")
+        .output()
+        .expect("runner should execute");
+    let report = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        report.contains("install             npm") && !report.contains("bun shadowed"),
+        "{report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_task_table_runtime_leaves_the_default_installer_alone() {
+    let project = fake_tool_project(
+        "task-runtime-install",
+        "[tasks.build.runtime]\njavascript = \"deno\"\n",
+        false,
+    );
+    let stderr = dry_run_in(&project, &["install", "--no-tools"]);
+    assert!(stderr.contains(r#"argv: ["npm", "install"]"#), "{stderr}");
+    let check = project.path().join("check.js");
+    let stderr = dry_run_in(&project, &["run", "./check.js"]);
+    assert!(
+        stderr.contains(&format!(r#"argv: ["node", "{}"]"#, check.display())),
+        "{stderr}"
+    );
+}
+
+/// `runner` with `args` in `project`, its stdout.
+#[cfg(unix)]
+fn report_in(project: &TempProject, args: &[&str]) -> String {
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .args(args)
+        .output()
+        .expect("runner should execute");
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(unix)]
+#[test]
+fn every_report_names_the_source_a_task_table_selects() {
+    let project = fake_tool_project(
+        "task-source-reports",
+        "[tasks.build]\nsource = \"just\"\n",
+        true,
+    )
+    .file("justfile", "build:\n\techo just-build\n");
+    let list = report_in(&project, &["list"]);
+    assert!(
+        list.contains("build: runs just, shadows package.json"),
+        "{list}"
+    );
+    let doctor: serde_json::Value =
+        serde_json::from_str(&report_in(&project, &["doctor", "--json"])).expect("doctor json");
+    assert_eq!(
+        doctor["conflicts"][0]["selected"], "root:just#build",
+        "{doctor}"
+    );
+    let why: serde_json::Value =
+        serde_json::from_str(&report_in(&project, &["why", "build", "--json"])).expect("why json");
+    assert_eq!(why["selected"]["task"]["fqn"], "root:just#build", "{why}");
+    let stderr = dry_run_in(&project, &["run", "build"]);
+    assert!(stderr.contains(r#"argv: ["just", "build"]"#), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn why_reports_the_runtime_a_task_table_selects() {
+    for config in [
+        "[runtime]\njavascript = \"node\"\n\n[tasks.build.runtime]\njavascript = \"bun\"\n",
+        "[tasks.build.runtime]\njavascript = \"bun\"\n",
+    ] {
+        let project = fake_tool_project("task-runtime-why", config, true);
+        let why: serde_json::Value =
+            serde_json::from_str(&report_in(&project, &["why", "build", "--json"]))
+                .expect("why json");
+        assert_eq!(why["runtime"]["runtime"], "bun", "{config}: {why}");
+        assert_eq!(why["runtime"]["applied"], true, "{config}: {why}");
+        let stderr = dry_run_in(&project, &["run", "build"]);
+        assert!(
+            stderr.contains(r#"argv: ["bun", "--bun", "run", "build"]"#),
+            "{config}: {stderr}"
         );
     }
 }

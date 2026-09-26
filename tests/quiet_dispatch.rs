@@ -1,6 +1,6 @@
 //! Integration coverage for `--quiet` / `RUNNER_QUIET`.
 //!
-//! The dispatch arrow (`→ <source> <task>`) and the `--explain` resolution
+//! The dispatch arrow (`→ <source> <task>`) and the `--dry-run` resolution
 //! trace must stay off stderr when quiet is on. Tests dispatch real tasks in
 //! throwaway temp projects so they are deterministic and succeed regardless of
 //! which package managers happen to be installed:
@@ -8,11 +8,15 @@
 //! - the arrow tests use a `Makefile` recipe that runs `true` (`make` is
 //!   ubiquitous on dev/CI machines);
 //! - the explain test uses a `package.json` script pinned to npm via an empty
-//!   lockfile (npm ships with Node on every runner), because `--explain` only
+//!   lockfile (npm ships with Node on every runner), because `--dry-run` only
 //!   traces package-manager resolution; a `make` task never emits it.
+
+mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use actions_rs::env::vars::GITHUB_ACTIONS;
 
 /// Self-cleaning temp directory. Avoids a dev-dependency for the integration
 /// crate; the in-crate `test_support::TempDir` is `pub(crate)` and thus not
@@ -51,6 +55,16 @@ impl Drop for TempProject {
     }
 }
 
+fn group(title: &str) -> String {
+    actions_rs::WorkflowCommand::new("group")
+        .message(title)
+        .to_string()
+}
+
+fn endgroup() -> String {
+    actions_rs::WorkflowCommand::new("endgroup").to_string()
+}
+
 fn run_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_run"))
 }
@@ -67,7 +81,7 @@ fn tool_available(bin: &str) -> bool {
 }
 
 /// Run the `run` binary against `dir` with every `RUNNER_*` var scrubbed, then
-/// `extra_env` applied. Globals (`--dir`, `--quiet`, `--explain`) must precede
+/// `extra_env` applied. Globals (`--dir`, `--quiet`, `--dry-run`) must precede
 /// the task positional, since `trailing_var_arg` consumes everything after it.
 fn run_in(dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
     command_in(run_binary(), dir, extra_env, args)
@@ -78,16 +92,7 @@ fn runner_in(dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
 }
 
 fn command_in(binary: PathBuf, dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
-    let mut cmd = Command::new(binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(binary);
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -180,17 +185,17 @@ fn quiet_keeps_github_actions_group_markers_off_stdout() {
     // Positive control: under Actions the group markers are the whole point,
     // so they must be there without `--quiet`.
     let shown_proj = make_project("gha-on");
-    let shown = run_in(shown_proj.path(), &[("GITHUB_ACTIONS", "true")], &["greet"]);
+    let shown = run_in(shown_proj.path(), &[(GITHUB_ACTIONS, "true")], &["greet"]);
     let shown_out = String::from_utf8_lossy(&shown.stdout);
     assert!(
-        shown_out.contains("::group::runner: greet") && shown_out.contains("::endgroup::"),
+        shown_out.contains(&group("runner: greet")) && shown_out.contains(&endgroup()),
         "expected a group to suppress. stdout: {shown_out}",
     );
 
     // #86: a parent parsing this stdout (`npm pack --json` piped into a
     // script) got `::group::` in front of the JSON and failed to parse it.
     let proj = make_project("gha-quiet");
-    let output = run_in(proj.path(), &[("GITHUB_ACTIONS", "true")], &["-q", "greet"]);
+    let output = run_in(proj.path(), &[(GITHUB_ACTIONS, "true")], &["-q", "greet"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -199,7 +204,7 @@ fn quiet_keeps_github_actions_group_markers_off_stdout() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert!(
-        !stdout.contains("::group::") && !stdout.contains("::endgroup::"),
+        !stdout.contains(&group("")) && !stdout.contains(&endgroup()),
         "--quiet must leave stdout to the task. stdout: {stdout}",
     );
 }
@@ -210,27 +215,27 @@ fn explain_overrides_quiet_and_reports_effective_policy() {
         eprintln!("skipping: `npm` not found on PATH");
         return;
     }
-    // Positive control: `--explain` alone emits the resolution trace.
+    // Positive control: `--dry-run` alone emits the resolution trace.
     let shown_proj = npm_project("explain-on");
-    let shown = run_in(shown_proj.path(), &[], &["--explain", "greet"]);
+    let shown = run_in(shown_proj.path(), &[], &["--dry-run", "greet"]);
     let shown_err = String::from_utf8_lossy(&shown.stderr);
     assert!(
         shown.status.success(),
-        "run --explain greet should succeed. status: {:?}, stderr: {shown_err}",
+        "run --dry-run greet should succeed. status: {:?}, stderr: {shown_err}",
         shown.status,
     );
     assert!(
         shown_err.contains("resolved:"),
-        "--explain should emit a resolution trace to suppress. stderr: {shown_err}",
+        "--dry-run should emit a resolution trace to suppress. stderr: {shown_err}",
     );
 
     // Explicit explain remains visible and reports effective policy.
     let hidden_proj = npm_project("explain-off");
-    let hidden = run_in(hidden_proj.path(), &[], &["--quiet", "--explain", "greet"]);
+    let hidden = run_in(hidden_proj.path(), &[], &["--quiet", "--dry-run", "greet"]);
     let hidden_err = String::from_utf8_lossy(&hidden.stderr);
     assert!(
         hidden.status.success(),
-        "run --quiet --explain greet should succeed. status: {:?}, stderr: {hidden_err}",
+        "run --quiet --dry-run greet should succeed. status: {:?}, stderr: {hidden_err}",
         hidden.status,
     );
     assert!(
@@ -238,7 +243,7 @@ fn explain_overrides_quiet_and_reports_effective_policy() {
             && hidden_err.contains("resolved:")
             && hidden_err.contains("level=quiet")
             && hidden_err.contains("diagnostics=normal"),
-        "--explain must override quiet presentation. stderr: {hidden_err}",
+        "--dry-run must override quiet presentation. stderr: {hidden_err}",
     );
 }
 
@@ -392,7 +397,7 @@ fn mute_hides_fatal_text_but_preserves_exit_status() {
     let muted = run_in(proj.path(), &[], &["-qqqq", "package.json:missing"]);
     assert!(!shown.status.success());
     assert!(!muted.status.success());
-    assert!(!shown.stderr.is_empty());
+    assert_ne!(shown.stderr.len(), 0);
     assert!(
         muted.stderr.is_empty(),
         "stderr: {}",
@@ -401,12 +406,11 @@ fn mute_hides_fatal_text_but_preserves_exit_status() {
 }
 
 #[test]
-fn configured_fatal_errors_false_hides_post_resolution_failure() {
-    let proj =
-        npm_project("configured-fatal").file("runner.toml", "[runner]\nfatal_errors = false\n");
+fn configured_errors_false_hides_post_resolution_failure() {
+    let proj = npm_project("configured-errors").file("runner.toml", "[output]\nerrors = false\n");
     let output = run_in(proj.path(), &[], &["package.json:missing"]);
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     assert!(
         output.stderr.is_empty(),
         "stderr: {}",
@@ -419,8 +423,8 @@ fn quiet_dashboard_emits_no_operational_output() {
     let proj = make_project("quiet-dashboard");
     let output = run_in(proj.path(), &[], &["-q"]);
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 0);
+    assert_eq!(output.stderr.len(), 0);
 }
 
 #[test]
@@ -428,13 +432,13 @@ fn quiet_clean_emits_no_operational_output() {
     let proj = npm_project("quiet-clean").dir("node_modules");
     let output = runner_in(proj.path(), &[], &["-q", "clean"]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout.len(), 0);
     assert!(String::from_utf8_lossy(&output.stderr).contains("requires --yes"));
 
     let confirmed = runner_in(proj.path(), &[], &["-q", "clean", "--yes"]);
     assert!(confirmed.status.success());
-    assert!(confirmed.stdout.is_empty());
-    assert!(confirmed.stderr.is_empty());
+    assert_eq!(confirmed.stdout.len(), 0);
+    assert_eq!(confirmed.stderr.len(), 0);
 }
 
 #[test]
@@ -442,8 +446,8 @@ fn quiet_clean_without_targets_emits_no_operational_output() {
     let proj = make_project("quiet-clean-empty");
     let output = run_in(proj.path(), &[], &["-q", "clean"]);
     assert!(output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 0);
+    assert_eq!(output.stderr.len(), 0);
 }
 
 #[test]
@@ -459,7 +463,7 @@ fn task_streams_require_explicit_discard_config() {
         )
         .file(
             "runner.toml",
-            "[tasks.greet]\nstdout = \"discard\"\nstderr = \"inherit\"\n",
+            "[tasks.greet.output.task]\nstdout = false\nstderr = true\n",
         );
     let output = run_in(proj.path(), &[], &["-qqqq", "greet"]);
     assert!(output.status.success());
@@ -480,8 +484,8 @@ fn qualified_task_settings_override_bare_task_settings_per_axis() {
         )
         .file(
             "runner.toml",
-            "[tasks.greet]\nstdout = \"discard\"\nstderr = \
-             \"discard\"\n[tasks.\"make:greet\"]\nstdout = \"inherit\"\n",
+            "[tasks.greet.output.task]\nstdout = false\nstderr = \
+             false\n[tasks.\"make:greet\".output.task]\nstdout = true\n",
         );
     let output = run_in(proj.path(), &[], &["-q", "make:greet"]);
     assert!(output.status.success());
@@ -499,7 +503,7 @@ fn fqn_task_uses_qualified_stream_settings() {
         .file("Makefile", "greet:\n\t@printf 'TASK-OUT\\n'\n")
         .file(
             "runner.toml",
-            "[tasks.\"root:make#greet\"]\nstdout = \"discard\"\n",
+            "[tasks.\"root:make#greet\".output.task]\nstdout = false\n",
         );
     let output = run_in(proj.path(), &[], &["-q", "root:make#greet"]);
     assert!(output.status.success());
@@ -513,7 +517,7 @@ fn explain_reports_unsupported_host_reduction() {
         return;
     }
     let proj = TempProject::new("just-explain").file("justfile", "greet:\n  @echo TASK-OUT\n");
-    let output = run_in(proj.path(), &[], &["-qqq", "--explain", "greet"]);
+    let output = run_in(proj.path(), &[], &["-qqq", "--dry-run", "greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stderr.contains("host: just diagnostics=reduced applied=normal"));
@@ -533,7 +537,7 @@ fn runner_and_host_config_axes_are_independent() {
             "{ \"scripts\": { \"greet\": \"echo SENTINEL-OUT\" } }\n",
         )
         .file("package-lock.json", "{}\n")
-        .file("runner.toml", "[runner]\nprogress = false\n");
+        .file("runner.toml", "[output]\nprogress = false\n");
     let runner_output = run_in(
         runner_only.path(),
         &[("NPM_CONFIG_LOGLEVEL", "notice")],
@@ -555,7 +559,7 @@ fn runner_and_host_config_axes_are_independent() {
             "{ \"scripts\": { \"greet\": \"echo SENTINEL-OUT\" } }\n",
         )
         .file("package-lock.json", "{}\n")
-        .file("runner.toml", "[host]\ndiagnostics = \"quiet\"\n");
+        .file("runner.toml", "[output.tool]\nquiet = true\n");
     let host_output = run_in(
         host_only.path(),
         &[("NPM_CONFIG_LOGLEVEL", "notice")],
@@ -570,32 +574,80 @@ fn runner_and_host_config_axes_are_independent() {
 }
 
 #[test]
-fn explicit_quiet_preset_outranks_per_task_host_verbosity() {
+fn quiet_preset_overrides_only_the_settings_it_expands_to() {
     if !tool_available("npm") {
         eprintln!("skipping: `npm` not found on PATH");
         return;
     }
-    let proj = TempProject::new("quiet-precedence")
+    let quiet_task = TempProject::new("quiet-preset-keeps")
         .file(
             "package.json",
             "{ \"scripts\": { \"greet\": \"echo SENTINEL-OUT\" } }\n",
         )
         .file("package-lock.json", "{}\n")
-        .file("runner.toml", "[tasks.greet]\nverbosity = \"quiet\"\n");
+        .file("runner.toml", "[tasks.greet.output.tool]\nquiet = true\n");
+    let kept = run_in(quiet_task.path(), &[], &["-q", "--dry-run", "greet"]);
+    let kept_stderr = String::from_utf8_lossy(&kept.stderr);
+    assert!(kept.status.success(), "stderr: {kept_stderr}");
+    assert!(
+        kept_stderr.contains("diagnostics=quiet applied=quiet args=[--silent]"),
+        "-q leaves the tool alone. stderr: {kept_stderr}",
+    );
 
-    let configured = run_in(proj.path(), &[], &["--explain", "greet"]);
+    let loud_task = TempProject::new("quiet-preset-overrides")
+        .file(
+            "package.json",
+            "{ \"scripts\": { \"greet\": \"echo SENTINEL-OUT\" } }\n",
+        )
+        .file("package-lock.json", "{}\n")
+        .file("runner.toml", "[tasks.greet.output.tool]\nquiet = false\n");
+    let configured = run_in(loud_task.path(), &[], &["--dry-run", "greet"]);
     let configured_stderr = String::from_utf8_lossy(&configured.stderr);
     assert!(configured.status.success(), "stderr: {configured_stderr}");
-    assert!(configured_stderr.contains("diagnostics=quiet applied=quiet args=[--silent]"));
+    assert!(configured_stderr.contains("diagnostics=normal applied=normal args=[]"));
 
-    let explicit = run_in(proj.path(), &[], &["-q", "--explain", "greet"]);
+    let explicit = run_in(loud_task.path(), &[], &["-qq", "--dry-run", "greet"]);
     let explicit_stderr = String::from_utf8_lossy(&explicit.stderr);
     assert!(explicit.status.success(), "stderr: {explicit_stderr}");
-    assert!(explicit_stderr.contains("diagnostics=normal applied=normal args=[]"));
+    assert!(
+        explicit_stderr.contains("diagnostics=quiet applied=quiet args=[--silent]"),
+        "-qq quiets the tool over the task. stderr: {explicit_stderr}",
+    );
 }
 
 #[test]
-fn explicit_host_normal_outranks_per_task_host_verbosity() {
+fn a_weaker_command_line_preset_keeps_the_environment_presets_other_settings() {
+    if !tool_available("npm") {
+        eprintln!("skipping: `npm` not found on PATH");
+        return;
+    }
+    let project = npm_project("quiet-layers");
+    let both = runner_in(
+        project.path(),
+        &[("RUNNER_QUIET", "2")],
+        &["-q", "run", "--dry-run", "greet"],
+    );
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(both.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("warnings=hide") && stderr.contains("args=[--silent]"),
+        "RUNNER_QUIET=2 still hides warnings and quiets the tool. stderr: {stderr}",
+    );
+    let restored = runner_in(
+        project.path(),
+        &[("RUNNER_QUIET", "2")],
+        &["-q", "--warnings", "run", "--dry-run", "greet"],
+    );
+    let stderr = String::from_utf8_lossy(&restored.stderr);
+    assert!(restored.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("warnings=show") && stderr.contains("args=[--silent]"),
+        "--warnings restores only warnings. stderr: {stderr}",
+    );
+}
+
+#[test]
+fn task_tool_quiet_outranks_project_tool_quiet() {
     if !tool_available("npm") {
         eprintln!("skipping: `npm` not found on PATH");
         return;
@@ -608,9 +660,9 @@ fn explicit_host_normal_outranks_per_task_host_verbosity() {
         .file("package-lock.json", "{}\n")
         .file(
             "runner.toml",
-            "[host]\ndiagnostics = \"normal\"\n[tasks.greet]\nverbosity = \"quiet\"\n",
+            "[output.tool]\nquiet = true\n[tasks.greet.output.tool]\nquiet = false\n",
         );
-    let output = run_in(proj.path(), &[], &["--explain", "greet"]);
+    let output = run_in(proj.path(), &[], &["--dry-run", "greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stderr.contains("diagnostics=normal applied=normal args=[]"));
@@ -644,26 +696,26 @@ fn explain_reports_exact_applied_host_args() {
         return;
     }
     let proj = npm_project("explain-host-args");
-    let output = run_in(proj.path(), &[], &["-qq", "--explain", "greet"]);
+    let output = run_in(proj.path(), &[], &["-qq", "--dry-run", "greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(stderr.contains("host: npm diagnostics=quiet applied=quiet args=[--silent]"));
 }
 
 #[test]
-fn explain_reports_output_policy_for_local_files() {
+fn explain_reports_output_policy_for_local_files_without_running_them() {
     if !tool_available("python3") {
         eprintln!("skipping: `python3` not found on PATH");
         return;
     }
     let proj = TempProject::new("local-file-explain").file("tool.py", "print('PY-OUT')\n");
-    let output = run_in(proj.path(), &[], &["-qq", "--explain", "./tool.py"]);
+    let output = run_in(proj.path(), &[], &["-qq", "--dry-run", "./tool.py"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
-        stdout.lines().any(|line| line == "PY-OUT"),
-        "stdout: {stdout}"
+        !stdout.lines().any(|line| line == "PY-OUT"),
+        "--dry-run stops after the plan. stdout: {stdout}"
     );
     assert!(
         stderr.contains("output: level=very-quiet progress=hide warnings=hide errors=show"),
@@ -692,14 +744,14 @@ fn explicit_quiet_keeps_config_warning_suppression() {
 
     let proj = make_project("quiet-config-warn").file(
         "runner.toml",
-        "[runner]\nwarnings = false\n\n[bogus]\nx = 1\n",
+        "[output]\nwarnings = false\n\n[bogus]\nx = 1\n",
     );
     let output = run_in(proj.path(), &[], &["-q", "greet"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
     assert!(
         !stderr.contains("unknown key `bogus`"),
-        "[runner] warnings = false must survive an explicit -q. stderr: {stderr}",
+        "[output] warnings = false must survive an explicit -q. stderr: {stderr}",
     );
 }
 
@@ -711,7 +763,7 @@ fn per_task_progress_switch_hides_only_that_tasks_arrow() {
     }
     let proj = TempProject::new("per-task-progress")
         .file("Makefile", "greet:\n\t@true\nother:\n\t@true\n")
-        .file("runner.toml", "[tasks.greet]\nprogress = false\n");
+        .file("runner.toml", "[tasks.greet.output]\nprogress = false\n");
 
     let hidden = run_in(proj.path(), &[], &["greet"]);
     let hidden_err = String::from_utf8_lossy(&hidden.stderr);
@@ -729,11 +781,11 @@ fn per_task_progress_switch_hides_only_that_tasks_arrow() {
         "other's arrow is untouched. stderr: {shown_err}",
     );
 
-    let explain = run_in(proj.path(), &[], &["--explain", "greet"]);
+    let explain = run_in(proj.path(), &[], &["--dry-run", "greet"]);
     let explain_err = String::from_utf8_lossy(&explain.stderr);
     assert!(
         explain_err.contains("output: level=off progress=hide"),
-        "--explain reports the per-task effective value. stderr: {explain_err}",
+        "--dry-run reports the per-task effective value. stderr: {explain_err}",
     );
 }
 
@@ -745,11 +797,11 @@ fn per_task_timing_switch_hides_only_that_tasks_chain_line() {
     }
     let proj = TempProject::new("per-task-timing")
         .file("Makefile", "greet:\n\t@true\nother:\n\t@true\n")
-        .file("runner.toml", "[tasks.greet]\ntask_timing = false\n");
+        .file("runner.toml", "[tasks.greet.output]\ntiming = false\n");
     let output = command_in(
         runner_binary(),
         proj.path(),
-        &[("GITHUB_ACTIONS", "")],
+        &[(GITHUB_ACTIONS, "")],
         &["run", "-s", "greet", "other"],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -767,13 +819,13 @@ fn mute_hides_clap_parse_errors() {
     let proj = make_project("mute-clap");
     let output = run_in(proj.path(), &[], &["-qqqq", "--definitely-invalid"]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 0);
+    assert_eq!(output.stderr.len(), 0);
 
     let clustered = run_in(proj.path(), &[], &["-qqqqZ"]);
     assert!(!clustered.status.success());
-    assert!(clustered.stdout.is_empty());
-    assert!(clustered.stderr.is_empty());
+    assert_eq!(clustered.stdout.len(), 0);
+    assert_eq!(clustered.stderr.len(), 0);
 }
 
 #[test]
@@ -789,7 +841,7 @@ fn qualified_parallel_task_uses_resolved_stream_policy() {
         )
         .file(
             "runner.toml",
-            "[tasks.one]\nstdout = \"discard\"\n[tasks.two]\nstdout = \"inherit\"\n",
+            "[tasks.one.output.task]\nstdout = false\n[tasks.two.output.task]\nstdout = true\n",
         );
     let output = run_in(proj.path(), &[], &["-q", "-p", "make:one", "make:two"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -809,10 +861,9 @@ fn summary_can_be_the_only_runner_output() {
         .file("Makefile", "one:\n\t@true\ntwo:\n\t@true\n")
         .file(
             "runner.toml",
-            "[runner]\nprogress = false\nwarnings = false\nerrors = false\ngroups = \
-             false\ntask_timing = false\nsummary = true\n[tasks.one]\nstdout = \
-             \"discard\"\nstderr = \"discard\"\n[tasks.two]\nstdout = \"discard\"\nstderr = \
-             \"discard\"\n",
+            "[output]\nprogress = false\nwarnings = false\nerrors = false\ngroups = false\ntiming \
+             = false\nsummary = true\n[tasks.one.output.task]\nstdout = false\nstderr = \
+             false\n[tasks.two.output.task]\nstdout = false\nstderr = false\n",
         );
     let output = run_in(proj.path(), &[], &["-s", "one", "two"]);
     let stdout = String::from_utf8_lossy(&output.stdout);

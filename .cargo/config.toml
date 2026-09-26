@@ -1,4 +1,4 @@
-#:schema https://gist.githubusercontent.com/kjanat/1172d9d2d6dbe7c6d9983aaabef2eea5/raw/cargo-config.bundle.json
+#:schema https://www.schemastore.org/cargo-config.json
 
 [alias]
 # one-letter
@@ -34,7 +34,7 @@ runner      = "bin-runner"
 
 # CI
 build-std = "-Z build-std=std,panic_abort build --locked --release --bin runner --bin run"
-dirtypub  = "publish --locked --allow-dirty -p runner-run"
+dirtypub  = "publish --locked --allow-dirty --workspace"
 
 # [target.<triple>]
 # linker = "…"              # linker to use

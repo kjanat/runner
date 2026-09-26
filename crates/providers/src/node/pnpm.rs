@@ -1,0 +1,88 @@
+//! pnpm.
+
+use runner_core::{
+    Capabilities, Declared, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind, NameShape,
+    Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptMechanism, ScriptSupport, Signal,
+    WorkspaceCap, t,
+};
+
+use super::manifest;
+
+fn package_manager(field: &Field<'_>) -> Option<Declared> {
+    manifest::package_manager(field, ProviderId::Pnpm)
+}
+
+fn dev_engines(field: &Field<'_>) -> Option<Declared> {
+    manifest::dev_engines(field, ProviderId::Pnpm)
+}
+
+const MANIFEST: [Signal; 2] = super::manifest_signals(package_manager, dev_engines);
+
+/// pnpm.
+pub const PROVIDER: Provider = Provider {
+    id: ProviderId::Pnpm,
+    label: "pnpm",
+    aliases: &["pnpx"],
+    ecosystem: Ecosystem::Node,
+    kind: Kind::PACKAGE_MANAGER,
+    program: Some("pnpm"),
+    signals: &[
+        Signal::Lockfile("pnpm-lock.yaml"),
+        MANIFEST[0],
+        MANIFEST[1],
+        Signal::Probe("pnpm"),
+    ],
+    caps: Capabilities {
+        writes: super::WRITES,
+        probe_priority: 2,
+        package_exec: Some(ExecCap {
+            program: None,
+            argv: runner_core::Template(&[
+                runner_core::Piece::Concat(&[
+                    runner_core::Piece::Lit("--package="),
+                    runner_core::Piece::Package,
+                ]),
+                runner_core::Piece::Lit("dlx"),
+                runner_core::Piece::Name,
+                runner_core::Piece::Args,
+            ]),
+            reach: Reach::Network,
+            accepts: NameShape::BARE,
+        }),
+        install: Some(InstallCap {
+            argv: t!["install", Frozen, Scripts],
+            frozen: Frozen::Flag("--frozen-lockfile"),
+            scripts: ScriptSupport {
+                deny: ScriptMechanism::Flag("--ignore-scripts"),
+                allow: ScriptMechanism::Warn("pnpm.onlyBuiltDependencies"),
+            },
+            locked_only_with: &[],
+            lockfiles: None,
+        }),
+        run_task: Some(RunTaskCap {
+            argv: t![Quiet, "run", Task, Sep("--"), Args],
+            sources: &[ProviderId::PackageJson],
+        }),
+        exec: Some(ExecCap {
+            program: None,
+            argv: t!["exec", Name, Args],
+            reach: Reach::Local,
+            accepts: NameShape::BARE,
+        }),
+        test: Some(super::TEST),
+        bins: Some(super::BINS),
+        workspaces: Some(WorkspaceCap {
+            declarations: super::workspace::declarations,
+        }),
+        clean: Some(super::CLEAN),
+        quiet: QuietSupport::flag(t!["--silent"]),
+        runs_on: Some(ProviderId::Node),
+        ..Capabilities::NONE
+    },
+    tasks: None,
+    version: None,
+    hooks: Hooks {
+        before_plan: Some(manifest::before_plan),
+        ..Hooks::NONE
+    },
+};

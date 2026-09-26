@@ -2,6 +2,14 @@
   "$id": "https://kjanat.github.io/runner/schemas/why.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
+    "JsRuntimeLabel": {
+      "type": "string",
+      "enum": [
+        "bun",
+        "deno",
+        "node"
+      ]
+    },
     "PmResolution": {
       "anyOf": [
         {
@@ -42,11 +50,11 @@
     "ProviderLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "node",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
         "cargo",
         "go",
@@ -58,13 +66,13 @@
     "TaskSourceLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "package.json",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
-        "cargo-alias",
+        "cargo",
         "go",
         "bacon",
         "mise",
@@ -99,8 +107,15 @@
           "type": "string"
         },
         "strategy": {
-          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, `ambiguous`, `runner-root`, or `exec-fallback`.",
+          "description": "Selection branch taken: `single-candidate`, `ranked`, `filtered`, `ambiguous`, `runner-root`, `not-found`, `refused`, or the resolving cascade rung.",
           "type": "string"
+        },
+        "tried": {
+          "description": "Cascade rungs visited while planning this token.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false
@@ -108,29 +123,13 @@
     "WhyMatch": {
       "type": "object",
       "required": [
-        "depth",
-        "display_order",
         "is_alias",
         "matched_by",
         "passthrough_to",
-        "selector",
-        "source_priority"
+        "rank",
+        "selector"
       ],
       "properties": {
-        "depth": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "format": "uint"
-        },
-        "display_order": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 255,
-          "format": "uint8"
-        },
         "is_alias": {
           "type": "boolean"
         },
@@ -144,14 +143,19 @@
             "string"
           ]
         },
+        "rank": {
+          "description": "The key `runner run` orders candidates by, lowest first.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhyRank"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "selector": {
           "type": "string"
-        },
-        "source_priority": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535,
-          "format": "uint16"
         }
       },
       "additionalProperties": false
@@ -162,14 +166,13 @@
         "errors",
         "fatal_errors",
         "groups",
-        "host_diagnostics",
-        "host_stream",
         "level",
         "progress",
+        "stderr",
+        "stdout",
         "summary",
-        "task_stderr",
-        "task_stdout",
-        "task_timing",
+        "timing",
+        "tool",
         "warnings"
       ],
       "properties": {
@@ -181,21 +184,6 @@
         },
         "groups": {
           "type": "boolean"
-        },
-        "host_diagnostics": {
-          "type": "string",
-          "enum": [
-            "normal",
-            "quiet",
-            "reduced"
-          ]
-        },
-        "host_stream": {
-          "type": "string",
-          "enum": [
-            "inherit",
-            "stderr"
-          ]
         },
         "level": {
           "type": "string",
@@ -210,20 +198,82 @@
         "progress": {
           "type": "boolean"
         },
+        "stderr": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "discard"
+          ]
+        },
+        "stdout": {
+          "type": "string",
+          "enum": [
+            "inherit",
+            "discard"
+          ]
+        },
         "summary": {
           "type": "boolean"
         },
-        "task_stderr": {
-          "type": "string"
-        },
-        "task_stdout": {
-          "type": "string"
-        },
-        "task_timing": {
+        "timing": {
           "type": "boolean"
+        },
+        "tool": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
         },
         "warnings": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyRank": {
+      "type": "object",
+      "required": [
+        "dispatch_order",
+        "dispatcher",
+        "priority",
+        "tier"
+      ],
+      "properties": {
+        "dispatch_order": {
+          "description": "The source's position in its dispatcher's sources.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "format": "uint"
+        },
+        "dispatcher": {
+          "description": "What dispatches the source: the chosen `runtime` or `package-manager`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "runtime",
+            "package-manager",
+            null
+          ]
+        },
+        "priority": {
+          "description": "The source's own task priority.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "tier": {
+          "description": "0 for sources a chosen package manager or runtime dispatches, 1 for the rest.",
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint"
         }
       },
       "additionalProperties": false
@@ -245,20 +295,15 @@
           ]
         },
         "note": {
-          "description": "Why the runtime did not apply, or the lifecycle scripts `node --run` will skip.",
+          "description": "Why the runtime did not apply, or what the runtime warns about for the selected task.",
           "type": [
             "null",
             "string"
           ]
         },
         "runtime": {
-          "description": "Forced JS runtime label (`node`, `bun`, or `deno`).",
-          "type": "string",
-          "enum": [
-            "node",
-            "bun",
-            "deno"
-          ]
+          "$ref": "#/$defs/JsRuntimeLabel",
+          "description": "Forced JS runtime label."
         },
         "via": {
           "description": "Where the runtime override came from (CLI, env, or config).",
@@ -340,7 +385,8 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/$defs/TaskSourceLabel"
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "The task source's label, e.g. `cargo`."
         },
         "name": {
           "type": "string"
@@ -353,7 +399,8 @@
           }
         },
         "provider": {
-          "$ref": "#/$defs/ProviderLabel"
+          "$ref": "#/$defs/ProviderLabel",
+          "description": "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
         },
         "resolved": {
           "description": "Effective command preview. Null when it depends on a PM resolution that was not performed for this candidate.",

@@ -18,29 +18,40 @@ Anything that cannot be derived from it does not belong in the core.
 | Present    | A provider with enough evidence to count as part of the project, plus its resolved version and bin dirs.     |
 | Capability | Something a present provider can do, with the parameters the core needs to drive it.                         |
 | Op         | What the user asked for: install, run a task, exec a name, run a file, test, clean, health.                  |
-| Policy     | The override chain, resolved once per invocation: CLI, env, `runner.toml`, manifest, lockfile, probe.        |
+| Policy     | The override chain, resolved per task: CLI, env, `[tasks.<name>]`, `runner.toml`, manifest, lockfile, probe. |
 | Plan       | One command, the provider that owns it, its trust and reach, and the evidence and policy that produced it.   |
 | Scheme     | An ecosystem's version grammar and comparison rules.                                                         |
 
 ## 2. Pipeline
 
 ```text
-observe(tree)            -> Vec<Evidence>
-resolve(evidence, policy) -> Project { present: Vec<Present>, tasks: Vec<Task>, warnings }
+observe(tree)            -> Result<Vec<Evidence>, io::Error>
+resolve(evidence, policy) -> Result<Project { present, tasks, warnings, unread }, io::Error>
 plan(project, op, policy) -> Result<Plan, Refusal>
 execute(plan)             -> ExitStatus
 explain(plan | project)   -> Report
 ```
 
-Each subcommand is one of these stages exposed.
+Each subcommand is one of these stages exposed. A failed read-only observation
+query is an error with its provider and scope, never an empty evidence list. A
+task source whose tasks cannot be read is recorded in `Project.unread` with its
+provider, scope and message; `list` reports it, and the run cascade refuses at
+the task rung instead of passing the name to later rungs. A tool manager's
+executable-directory query that fails leaves that provider without directories
+and adds a warning.
 
 | Subcommand                    | Stops after | Notes                                               |
 | ----------------------------- | ----------- | --------------------------------------------------- |
 | `info`, `list`, `completions` | resolve     | Render the project.                                 |
 | `doctor`                      | resolve     | Render the project plus every provider's health op. |
-| `why`, any `--explain`        | plan        | Render the plan without executing it.               |
+| `why`, any `--dry-run`        | plan        | Render the plan without executing it.               |
 | `run`, `install`, `clean`     | execute     | Render the plan's arrow, then spawn.                |
-| `config`, `schema`, `lsp`     | none        | Read the declaration tables directly.               |
+| `config`, `schema`, `lsp`     | none        | Read the config types directly.                     |
+
+Directory cleanup uses `CleanPlan { targets, because }`. Its targets come from
+the effective clean capabilities of the root's providers and the invoking
+member's providers. The executor removes those directories. Health capabilities declare a list of read-only argv templates and
+output parsers; doctor plans each check with host trust and reports query errors.
 
 Explanation is the plan rendered. No subcommand rebuilds a decision by a
 second code path.
@@ -64,10 +75,12 @@ it.
 4. **Local before network.** Rungs of the run cascade are sorted by `Reach`.
    A rung that can fetch never precedes a rung that cannot. Enforced by a
    test that asserts the cascade table is sorted.
-5. **Every setting declared once.** A config field, its env var, its CLI
-   flag, its schema entry, its completion and its doc line come from one row
-   of one table. Enforced by the existing drift guards, extended to provider
-   labels and capability names.
+5. **Every setting declared once.** A CLI flag and its `RUNNER_*` variable
+   come from one clap argument; the variable's name is derived from the
+   command tree. A config key, its schema entry, its completion and its hover
+   text come from one field of the config types. Enforced by the variable-name
+   test over the clap tree, the schema drift guard, and the test that every
+   schema key parses.
 6. **Observation is read only.** Reading a file and asking a tool a read-only
    question are both observation. Asking a tool to change anything is
    execution and only a plan does that. Enforced by review, and by
@@ -82,8 +95,8 @@ it.
    it.
 9. **No shell.** A plan is an argv. runner never renders a command line for a
    shell to parse. Tools that take a script body receive it as one argument.
-   Enforced by a test that greps plans for `sh -c`, `cmd /c` and
-   `powershell -Command`.
+   Provider-template tests enforce direct tool invocation. Explicit user shell
+   commands retain their supplied arguments.
 
 ## 4. Core types
 
@@ -143,13 +156,18 @@ bitflags! { pub struct Kind: u8 {
 
 ```rust
 pub enum Signal {
-    File(&'static str),        // present in the scope directory
-    FileUpwards(&'static str), // present in the scope directory or an ancestor
-    Lockfile(&'static str),    // a File that also pins the provider
+    File(&'static str),         // present in the scope directory
+    FileCaseless(&'static str), // present in the scope directory under any ASCII case
+    FileUpwards(&'static str),  // present in the scope directory or an ancestor
+    FileContent {
+        name: &'static str,
+        parse: fn(&str) -> Option<Declared>, // the file's text; None names nothing
+    },
+    Lockfile(&'static str), // a File that also pins the provider
     ManifestField {
-        file: &'static str,
+        files: &'static [&'static str], // tried in order; JSON, JSON5, YAML or TOML by extension
         path: &'static str,
-        parse: fn(&Value) -> Option<Declared>,
+        parse: fn(&Field) -> Option<Declared>, // the value at `path` and the whole manifest
     },
     EnvVar(&'static str), // set in runner's own environment
     Probe(&'static str),  // executable on PATH, checked last
@@ -165,14 +183,27 @@ pub enum Weight {
 }
 
 pub struct Evidence {
-    pub provider: ProviderId,
-    pub signal: SignalId,
+    pub provider: Option<ProviderId>, // None for a discovered file or binary
+    pub signal: Option<SignalId>,     // None when no provider signal owns the evidence
     pub at: PathBuf,
     pub scope: Scope,
     pub weight: Weight,
     pub declared: Option<Declared>, // a version constraint or a named alternative
 }
+```
 
+Evidence is compared by weight, then by the declaration's own rank: a field
+that names the provider (`packageManager`) outranks one that constrains it
+(`devEngines.packageManager`), which outranks a variant derived from either.
+A `packageManager` value that names no known manager voids
+`devEngines.packageManager` in the same manifest, so the manifest declares
+nothing and the lockfile or `PATH` decides. A signal's index in its
+provider's table orders nothing across providers.
+Among lockfiles of one ecosystem in one scope, one the repository tracks
+demotes the untracked others to `Configured`; the client answers the tracked
+question, since only it knows the repository.
+
+```rust
 pub enum Scope {
     Root,
     Member { name: String, dir: PathBuf },
@@ -183,6 +214,10 @@ pub enum Scope {
 lockfile says so) beats `Configured` (a tool config exists) beats `Present`
 (a directory such as `.venv` exists) beats `Probed` (it is on `PATH`). The
 resolver sorts on weight within an ecosystem after policy has had its say.
+
+`Signal::FileContent` reads a plain-text declaration such as `.nvmrc` or a
+`.tool-versions` line into `Declared::Version`, so a runtime's expected
+version is evidence like any manifest field.
 
 `Signal::Ask` exists for tools that own their own truth, such as
 `mise tasks --json`. It receives a directory and nothing else. It cannot see
@@ -199,16 +234,16 @@ pub struct Provider {
     pub kind: Kind,
     pub program: &'static str, // the executable name, probed with PATHEXT on Windows
     pub signals: &'static [Signal],
-    pub writes: &'static [&'static str], // install dirs this provider materialises
     pub caps: Capabilities,
-    pub tasks: Option<fn(&Present, &Tree) -> Result<Vec<Task>>>,
-    pub version: Option<fn(&Present) -> Result<String>>,
+    pub tasks: Option<fn(&Present, &Tree) -> Result<Extracted, Warning>>, /* tasks plus partial-read warnings */
+    pub version: Option<fn(&Path, &Present) -> Result<String>>, /* queried from the scope directory */
     pub hooks: Hooks,
 }
 
 pub struct Hooks {
-    pub before_plan: Option<fn(&Present, &Op, &mut Vec<Warning>)>,
-    pub after_observe: Option<fn(&Tree, &[Evidence]) -> Vec<Evidence>>,
+    pub before_plan:
+        Option<fn(&Tree, &Present, &Op, &Policy, &mut Vec<Warning>) -> Result<(), Refusal>>,
+    pub after_observe: Option<fn(&Tree, &[Evidence]) -> Result<Vec<Evidence>, io::Error>>,
 }
 ```
 
@@ -219,11 +254,20 @@ and each has a narrow reason:
 - `tasks` when the task format is the tool's own (justfile parsing, `mise
   tasks --json`, `[[bin]]` in `Cargo.toml`, `cmd/<name>` in Go).
 - `version` when `<program> --version` output needs a tool-specific parse.
-- `hooks.before_plan` for a warning the core cannot know, such as bun and
-  pnpm refusing to re-enable dependency build scripts without a manifest
-  allowlist.
+  It runs in the present's scope directory, so a directory-aware shim
+  answers for that project, and it runs for a manager the `PATH` fallback
+  admitted as much as for one the project named.
+- `hooks.before_plan` for a warning or refusal the core cannot know, such as
+  bun and pnpm refusing to re-enable dependency build scripts without a
+  manifest allowlist, `node --run` refusing a Node older than 22 or naming the
+  lifecycle scripts it skips, make refusing words after a goal, and mise
+  refusing a task run without the flags its usage spec requires. For a task
+  that forwards to another runner's same-named task, the core also runs the
+  forwarded provider's hook, so a `package.json` script `make build` meets
+  make's refusal.
 - `hooks.after_observe` for evidence derived from other evidence, such as
-  yarn classic versus berry from the `packageManager` field.
+  yarn classic versus berry from the `packageManager` field, Go inside a
+  checkout it can stamp, or Deno materializing `node_modules`.
 
 A provider that needs a fourth function is telling you the core is missing a
 capability parameter. Add the parameter.
@@ -234,27 +278,63 @@ capability parameter. Add the parameter.
 pub struct Capabilities {
     pub install: Option<InstallCap>,
     pub run_task: Option<RunTaskCap>,
+    pub run_default: Option<Template>,
+    pub package_exec: Option<ExecCap>,
     pub exec: Option<ExecCap>,
     pub run_file: Option<RunFileCap>,
     pub test: Option<TestCap>,
     pub bins: Option<BinsCap>,
+    pub writes: &'static [&'static str], // install dirs this provider materialises
+    pub packages: Option<PackagesCap>,
+    pub shims: Option<ShimsCap>,
     pub clean: Option<CleanCap>,
     pub workspaces: Option<WorkspaceCap>,
-    pub health: Option<HealthCap>,
+    pub health: &'static [HealthCap],
     pub usage: Option<UsageCap>,
     pub operations: &'static [&'static str],
     pub quiet: QuietSupport,
+    pub variants: &'static [(&'static str, Self)],
+    pub file_fallback: bool,
+    pub file_interpreters: &'static [&'static str],
+    pub task_priority: u8,
+    pub task_table: TaskTable, // None | Key("scripts") | Name
+    pub probe_priority: u8,    // order among package managers probed on PATH
 }
 ```
 
 Each capability holds an argv template and the parameters policy can turn on.
+Observation hooks can derive `Declared::Variant` evidence; planning selects the
+matching capability table without branching on provider identity. Yarn uses this
+for Classic and Berry; with neither observed, its base table denies scripts
+through both the Classic flag and the Berry variable. Go uses it to add
+`-buildvcs=true` inside a checkout, Deno to write `node_modules` only when it
+materializes one; `writes` lives in the table for that reason. `file_fallback` declares a
+default interpreter for a supported file when no project runtime takes it. This
+does not add the runtime to `Project.present`: the resulting plan carries the
+discovered file as evidence. `file_interpreters` identifies shebangs an
+explicitly chosen runtime can replace. `RunFileCap.unsupported` records
+recognized file types a runtime cannot execute; `UnsupportedFile` records the
+provider, path, reason, runtime-choice origin and compatible runtime providers.
+The core derives alternatives from effective capabilities in the file's scope.
+Clients offer the alternatives their own interfaces support. Observation hooks
+preserve read and parse errors. A missing optional file contributes no
+evidence. `task_priority` orders otherwise unranked task sources. Provider
+defaults rank candidates; they do not remove later cascade rungs. When a task
+source has no present package manager to run it, resolution takes the first
+supporting one on `PATH` in `probe_priority` order. A provider is shaped for the op before its
+`before_plan` hook runs, so a hook can only refuse an op the provider could
+take. A test runner whose discovery finds nothing refuses as `NoTests`, and
+the next present runner in candidate order is planned instead. When no runner
+finds tests the first `NoTests` stops the cascade; only a project without a
+test runner falls through.
 
 ```rust
 pub struct InstallCap {
-    pub argv: Template,                         // ["install"]
+    pub argv: Template,                                            // ["install"]
     pub frozen: Frozen, /* Flag("--frozen-lockfile") | Subcommand("ci") | Env("UV_FROZEN","1") | Unsupported */
-    pub scripts: ScriptSupport, /* deny: Flag("--ignore-scripts"), allow: Flag("--no-ignore-scripts") | Env(..) | Default | Unsupported */
-    pub locked_only_with: Option<&'static str>, // mise: `--locked` needs a lockfile present
+    pub scripts: ScriptSupport, /* deny: Flag("--ignore-scripts"), allow: Flag("--no-ignore-scripts") | Env(..) | FlagAndEnv(..) | Default | Unsupported */
+    pub locked_only_with: &'static [(&'static str, &'static str)], /* config/lockfile pairs; empty is unconditional */
+    pub lockfiles: Option<Lockfiles>, /* Named(&["npm-shrinkwrap.json"]) | Ask(fn(&Path) -> io::Result<Vec<PathBuf>>) */
 }
 
 pub struct RunTaskCap {
@@ -263,26 +343,32 @@ pub struct RunTaskCap {
 }
 
 pub struct ExecCap {
-    pub argv: Template,     // ["exec", Name, Args] or ["x", Name, Args]
-    pub reach: Reach,       // Network for npx, bun x, uvx, deno x; Local for `go run ./...` shapes
+    pub program: Option<&'static str>, // npx is not npm, uvx is not uv
+    pub argv: Template,                // ["exec", Name, Args] or ["x", Name, Args]
+    pub reach: Reach, // Network for npx, bun x, uvx, deno x; Local for `yarn run` shapes
     pub accepts: NameShape, // Bare | PathLike | Versioned, so `go run` only takes module paths
 }
 
 pub struct RunFileCap {
+    pub unsupported: &'static [(&'static str, &'static str)], // extension and refusal reason
+    pub program: Option<&'static str>,
     pub extensions: &'static [&'static str],
     pub argv: Template,
 }
 
 pub struct TestCap {
-    pub argv: Template,       // ["test", Args]
-    pub discovery: Discovery, /* Tool (the runner finds its own files) | Files { patterns } | Detect(fn) */
+    pub program: Option<&'static str>, // npm's test runner is `node --test`
+    pub argv: Template,                // ["test", Args]
+    pub discovery: Discovery, /* Tool (the runner finds its own files) | Files { patterns } | Detect(fn(&[&Path])) */
 }
 
 pub struct BinsCap {
     pub dirs: BinDirs,
-} // Static(&["node_modules/.bin"]) | Ask(fn(&Path) -> Vec<PathBuf>)
+} // Static(&["node_modules/.bin"]) | Ask(fn(&Path) -> io::Result<Vec<PathBuf>>)
 pub struct CleanCap {
     pub dirs: &'static [&'static str],
+    pub framework_dirs: &'static [&'static str],
+    pub dir_suffixes: &'static [&'static str],
 }
 pub struct WorkspaceCap {
     pub members: fn(&Tree) -> Result<Vec<Scope>>,
@@ -292,12 +378,19 @@ pub struct HealthCap {
     pub parse: fn(&[u8]) -> Health,
 }
 pub struct UsageCap {
-    pub spec: fn(&Present, &Task) -> Result<Option<UsageSpec>>,
+    pub spec: fn(&Tree, &Present, &Task) -> Result<Option<UsageSpec>, Warning>,
+} // UsageSpec { signature, args, flags }: completion, `why` and required-flag checks
+pub struct PackagesCap {
+    pub installed: fn(&Tree, &Path, &str) -> Result<Option<Installed>, Warning>,
+} // Installed { at, bins: [InstalledBin { name, runs: File(PathBuf) | Exec }], default_bin }
+pub struct ShimsCap {
+    pub dirs: fn() -> Vec<PathBuf>, // where the manager's shims live on this host
+    pub resolve: fn(&str, &Path) -> Shim, // Resolved(PathBuf) | NotProvisioned | Unknown
 }
 
 pub struct QuietSupport {
     pub levels: [Option<Template>; 4],
-    pub stream: Option<Template>,
+    pub limitation: &'static str, // why the ladder stops where it does, for the Clamp
 }
 ```
 
@@ -315,6 +408,8 @@ pub enum Piece {
     Frozen,
     Scripts,
     File,
+    Files, // what Discovery::Files found
+    Op,    // the tool-manager operation
 }
 pub struct Template(pub &'static [Piece]);
 ```
@@ -327,7 +422,8 @@ empty, and drops any parameter piece policy did not turn on.
 `Discovery::Files` is what `node --test` needs and `bun test` does not.
 `Discovery::Detect` is what Python needs, where the runner is itself a
 finding: pytest, nose2, ward, Django, tox, nox, unittest, in that order,
-each with its own evidence.
+each with its own evidence. It looks in the invocation directory, then the
+provider's scope, and settles on `unittest` only after both.
 
 ### 4.5 Ops and policy
 
@@ -339,7 +435,7 @@ pub enum Op<'a> {
     RunFile { file: &'a Path, args: &'a [String] },
     Test { args: &'a [String] },
     Clean,
-    Health,
+    Health { check: usize },
 }
 
 pub enum Layer {
@@ -352,16 +448,15 @@ pub enum Layer {
 }
 
 pub struct Policy {
-    pub pm: PerEcosystem<Choice>, // `--pm`, `RUNNER_PM`, `[pm].<eco>`
-    pub runner: Option<Choice>,   // `--runner`, `RUNNER_RUNNER`, `[tasks].prefer`
-    pub runtime: Option<Choice>,  // `--runtime`, `RUNNER_RUNTIME`, `[runtime].js`
-    pub frozen: bool,
-    pub scripts: ScriptPolicy,
-    pub reach: ReachPolicy, // Ask | Allow | Local
-    pub verbosity: Verbosity,
-    pub env: EnvLayers,                              // project, per tool, per task
-    pub tool_ops: BTreeMap<ProviderId, Vec<String>>, // `[tools.<name>].install`
-    pub trust: TrustPolicy,                          // see section 6
+    pub pm: PerEcosystem<Choice>, // `--pm`, `RUNNER_PM`, `[tasks.<name>].pm`
+    pub source: Option<Choice>,   // `--source`, `RUNNER_SOURCE`, `[tasks.<name>].source`
+    pub runtime: Option<Choice>,  // `--runtime`, `RUNNER_RUNTIME`, `[runtime].javascript`
+    pub frozen: bool,             // `[install].frozen`
+    pub scripts: ScriptPolicy,    // `[install].scripts`
+    pub download: Download,       // Ask | Allow | Refuse: `--download`, top-level `download`
+    pub verbosity: Verbosity,     // `[output.tool].quiet` and the quiet preset
+    pub env: EnvLayers,           // project, per tool, per task
+    pub trust: TrustPolicy,       // see section 6
 }
 
 pub struct Choice {
@@ -370,31 +465,32 @@ pub struct Choice {
 }
 ```
 
-Policy is built once from the declaration table and handed to `resolve` and
-`plan`. `observe` never sees it.
+Policy is built per task from the resolved settings and handed to `resolve`
+and `plan`. `observe` never sees it.
 
-The file that feeds it is specified by issue 123 (`runner.toml` v2): config
-holds only what observation cannot conclude, every key reads as a sentence a
-user would say, and a line detection would have concluded anyway is a lint
-error. Three tables: `[tools]` for vetoes and tie-breaks, `[tasks]` for
-decoration and composition, `[defaults]` for taste. Four additions the core
-needs that the issue leaves out:
-
-- `fetch = "ask" | "allow" | "never"`, a trust decision.
-- `env` at project, tool and task scope.
-- `[tools.<name>].install`, the operations a tool manager runs.
-- `quiet = true` on a task, translated by the provider table, in place of
-  `args = ["-q"]`.
+Settings come from two places. The clap tree defines every flag, and each flag
+reads a variable derived from its position: `RUNNER_<FLAG>` for a global flag,
+`RUNNER_<COMMAND>_<FLAG>` for a command's own, with a `--no-` form or an alias
+sharing its setting's variable. The `runner.toml` types define every config
+key: top-level `download`, `[runtime]`, `[chain]`, `[install]`, `[output]`,
+`[env]`, `[tools.<name>].env` and `[tasks.<name>]`. A setting resolves from the
+first layer that sets it: CLI, env, the task's table, the project table,
+evidence, default. An explicit `false` is a value. The `-q` preset expands
+into ordinary output settings at its own layer, and an individual output flag
+on that layer overrides it.
 
 ### 4.6 Plan
 
 ```rust
 pub struct Plan {
-    pub provider: ProviderId,
-    pub argv: Vec<OsString>, // program first, never a shell string
+    pub provider: Option<ProviderId>, // None for a file on disk or a binary on a search path
+    pub found: Option<PathBuf>,       // what the path, file, dep, bins or host rung found
+    pub argv: Vec<OsString>,          // program first, never a shell string
     pub cwd: PathBuf,
     pub env: Vec<(OsString, OsString)>,
+    pub env_remove: Vec<OsString>,
     pub path_prepend: Vec<PathBuf>, // empty when trust is Host
+    pub warnings: Vec<Warning>,
     pub trust: Trust,
     pub reach: Reach,
     pub clamps: Vec<Clamp>, // requested vs granted, for verbosity and scripts
@@ -413,6 +509,18 @@ pub enum Reach {
 }
 
 pub enum Refusal {
+    Invalid(String),
+    Observation {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
+    UnsupportedFile {
+        provider: ProviderId,
+        file: PathBuf,
+        reason: &'static str,
+        chosen_by: Option<Layer>,
+        alternatives: Vec<ProviderId>,
+    },
     NotFound {
         name: String,
         tried: Vec<Rung>,
@@ -425,16 +533,66 @@ pub enum Refusal {
         provider: ProviderId,
         op: &'static str,
     },
+    NoTask {
+        name: String,
+        source: Option<ProviderId>, // the source the address named
+        scope: Option<String>,      // the scope the address named
+    },
     Ambiguous {
+        name: String,
         candidates: Vec<(ProviderId, Scope)>,
+    },
+    NoTests {
+        provider: ProviderId,
+        dir: PathBuf,
+        patterns: Vec<String>,
+    },
+    NoSourceTask {
+        source: ProviderId, // the source policy chose
+        name: String,
+    },
+    NoLockfile {
+        provider: ProviderId,
+        dir: PathBuf,
+        lockfiles: Vec<String>, // the `Signal::Lockfile` names, then `InstallCap::lockfiles`
     },
     Unsafe(Unsafe),
 }
 ```
 
+`select` keeps only tasks of the source `policy.source` chose and refuses as
+`NoSourceTask` when another source alone defines the name; a name no task
+carries still falls through to the later rungs. A task's `[tasks.<key>].env`
+answers to `name`, `source:name`, `member:name` for a member task and the
+`scope:source#name` FQN, least specific first, the spellings the verbosity
+and stream settings use.
+
+A frozen install refuses as `NoLockfile` when none of the provider's
+`Signal::Lockfile` names exists in its scope, nor any path its
+`InstallCap::lockfiles` adds (`npm-shrinkwrap.json`, the file a Deno config
+names with `"lock"`), before the manager is spawned.
+`locked_only_with` is the exception for a provider whose lockfile is opt-in:
+its frozen form is dropped, and nothing is refused, when no config/lockfile
+pair exists. When the manifest and a lockfile in one scope name different
+managers, the manifest's declaration wins and `Project.disagreements` records
+both, which the package-manager decision reports as a warning. The plan's scope is the task's
+scope for a task, the file's scope for a file, the invocation scope for an
+exec, a test, a dependency's binary or a project bin the cascade found, and
+the provider's own scope for an install; a runtime inherited from the root
+still runs a member's file with the member's bin dirs, and a binary hoisted
+to the root still runs with the invoking member's bin dirs first.
+
 A `Plan` is complete. `execute` adds nothing and decides nothing. That is
-what makes `why`, `--explain`, `doctor` and the arrow line agree, because
-they all print the same struct.
+what makes `why`, `--dry-run`, `doctor` and the arrow line agree, because
+they all print the same struct. Command construction, synchronous execution and
+parallel spawning share the evidence guard. Provider planning asserts that its templates
+invoke tools directly. Explicit user shell commands preserve their argv. Configured execution
+also checks that the command's argv still equals the plan. The CLI run path requires
+a plan for subprocesses. `Dispatch::Builtin` executes in-process and explain renders
+that action. A parallel chain runs its builtins after spawning every other item,
+into buffers it replays through the same output as a task; `install` is refused
+there. Task bodies are left
+to their owning tools, including `deno task`; runner does not evaluate shell strings.
 
 `Trust` is set by the op. Toolchain installs and health checks are `Host`.
 Everything the project asked for is `Project`. See section 6.
@@ -490,6 +648,11 @@ pub static CASCADE: &[Rung] = &[
         reach: Reach::Local,
     },
     Rung {
+        name: "local-exec",
+        needs: Need::Cap(Cap::Exec),
+        reach: Reach::Local,
+    },
+    Rung {
         name: "manager",
         needs: Need::ToolManagerExec,
         reach: Reach::Network,
@@ -502,9 +665,17 @@ pub static CASCADE: &[Rung] = &[
 ];
 ```
 
+The manager rung runs only a tool manager the project configures. An
+activated shell or a binary on `PATH` is evidence of the tool, not of the
+project asking for it.
+
 The table is data so article 4 can be a test. The prompt lives in
-`plan`, keyed on `reach` and `policy.reach`, and it is the same prompt for
-every network rung.
+`plan`, keyed on `reach` and `policy.download`, and it is the same prompt for
+every network rung. Exec capabilities are tried only in the rung matching
+their declared reach; a local exec capability precedes fetching tool managers.
+Installs use the same download policy before spawning. Explanation stops
+before authorization and execution, so it can show a network plan under
+`download = false`.
 
 ### 4.8 Versions
 
@@ -564,20 +735,21 @@ pnpm is pure data:
 ```rust
 Provider {
     id: Pnpm, label: "pnpm", aliases: &[], ecosystem: Node, kind: PACKAGE_MANAGER, program: "pnpm",
-    signals: &[Lockfile("pnpm-lock.yaml"), ManifestField { file: "package.json", path: "packageManager", parse: node::package_manager },
-               ManifestField { file: "package.json", path: "devEngines.packageManager", parse: node::dev_engines }, Probe("pnpm")],
-    writes: &["node_modules"],
+    signals: &[Lockfile("pnpm-lock.yaml"), ManifestField { files: node::MANIFESTS, path: "packageManager", parse: node::package_manager },
+               ManifestField { files: node::MANIFESTS, path: "devEngines.packageManager", parse: node::dev_engines }, Probe("pnpm")],
     caps: Capabilities {
+        writes: &["node_modules"],
         install: Some(InstallCap { argv: t!["install"], frozen: Frozen::Flag("--frozen-lockfile"),
                                    scripts: ScriptSupport { deny: Flag("--ignore-scripts"), allow: Warn("needs onlyBuiltDependencies") }, .. }),
         run_task: Some(RunTaskCap { argv: t!["run", Task, Sep("--"), Args], sources: &[PackageJson] }),
         exec: Some(ExecCap { argv: t!["exec", Name, Args], reach: Network, accepts: Bare | Versioned }),
         run_file: None,
-        test: Some(TestCap { argv: t![Lit("node"), "--test", Args], discovery: Files(&["test.{js,ts,…}", "*.test.{js,ts,…}"]) }),
+        test: Some(TestCap { program: Some("node"), argv: t![FileFlags, "--test", Args, Files], discovery: Files(&["test.{js,ts,…}", "*.test.{js,ts,…}"]),
+                             file_flags: Some(node::strip_types) }),
         bins: Some(BinsCap { dirs: Static(&["node_modules/.bin"]) }),
         clean: Some(CleanCap { dirs: &["node_modules"] }),
         workspaces: Some(WorkspaceCap { members: node::workspace_members }),
-        quiet: QuietSupport { levels: [None, Some(t!["--silent"]), Some(t!["--silent"]), Some(t!["--silent"])], stream: None },
+        quiet: QuietSupport { levels: [None, Some(t!["--silent"]), None, None], stream: None },
         ..Capabilities::NONE
     },
     tasks: None, version: None, hooks: Hooks::NONE,
@@ -591,23 +763,22 @@ Provider {
     id: Mise, label: "mise", aliases: &["rtx"], ecosystem: Any, kind: TASK_SOURCE | TOOL_MANAGER, program: "mise",
     signals: &[FileUpwards("mise.toml"), FileUpwards(".mise.toml"), FileUpwards("mise.local.toml"),
                FileUpwards(".config/mise/config.toml"), EnvVar("MISE_SHELL"), Ask(mise::tasks_json)],
-    writes: &[],
     caps: Capabilities {
         run_task: Some(RunTaskCap { argv: t![Quiet, "run", Task, Sep("--"), Args], sources: &[Mise] }),
         exec: Some(ExecCap { argv: t!["exec", Sep("--"), Name, Args], reach: Network, accepts: Bare }),
         bins: Some(BinsCap { dirs: Ask(mise::bin_paths) }),
-        health: Some(HealthCap { argv: t!["tasks", "validate", "--json"], parse: mise::health }),
-        usage: Some(UsageCap { spec: mise::usage_spec }),
+        health: &[HealthCap { argv: t!["tasks", "validate", "--json"], parse: mise::health }],
+        usage: Some(UsageCap { spec: mise::usage }),
         operations: &["install", "bootstrap"],
-        install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: Some("mise.lock"), .. }),
-        quiet: QuietSupport { levels: [None, Some(t!["--quiet"]), Some(t!["--quiet"]), Some(t!["--quiet"])], stream: None },
+        install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: &[("mise.toml", "mise.lock")], .. }),
+        quiet: QuietSupport { levels: [None, Some(t!["--quiet"]), None, None], stream: None },
         ..Capabilities::NONE
     },
-    tasks: Some(mise::tasks), version: None, hooks: Hooks::NONE,
+    tasks: Some(mise::tasks), version: None, hooks: Hooks { before_plan: Some(mise::before_plan), .. },
 }
 ```
 
-Four functions, each answering a question only mise can answer. Nothing in
+Five functions, each answering a question only mise can answer. Nothing in
 `src/core` names mise.
 
 ## 6. Security and variability
@@ -640,8 +811,10 @@ Rules that follow:
    the denylist. A user-trust config may set anything.
 3. **Network is a flag, and the flag has a policy.** Every rung and every
    capability declares `Reach`. `Reach::Network` plans consult
-   `policy.reach`: `Ask` prompts on a terminal, `Allow` proceeds, `Local`
-   refuses. `RUNNER_REACH=local` makes CI deterministic.
+   `policy.download`: `Ask` prompts on a terminal and refuses without one,
+   `Allow` proceeds, `Refuse` refuses. Unset, it is `Ask` on an interactive
+   terminal outside CI and `Allow` elsewhere. `RUNNER_DOWNLOAD=0` makes CI
+   deterministic.
 4. **Lifecycle scripts are a declared parameter.** `ScriptPolicy` maps to
    each provider's `ScriptSupport`. When a provider cannot honour the
    request the plan records a `Clamp` and the arrow says so.
@@ -687,7 +860,9 @@ capability parameter, the core is missing one.
 
 Tool managers add one more axis each: mise, volta, asdf and proto declare
 tools, expose bin dirs, and may or may not be activated in the shell that
-ran runner. That is the `BinsCap::Ask` case plus `EnvVar` signals.
+ran runner. That is the `BinsCap::Ask` case plus `EnvVar` signals, and
+`ShimsCap` for the shims a manager puts on `PATH` in front of a tool it may
+not have provisioned.
 
 ## 7. Core services
 
@@ -702,10 +877,10 @@ never reimplements any of these.
 - **Env layering.** Project, tool, task, in that order, filtered by trust.
 - **Verbosity clamping.** Requested level to the strongest template the
   provider declares, recorded as a `Clamp`.
-- **Reach gate.** The prompt and the `RUNNER_REACH` policy.
-- **Labels, completion, schema, config validation.** All from the registry
-  and the declaration table.
-- **Rendering.** The arrow line, `why`, `doctor`, `--explain`, JSON, all
+- **Reach gate.** The prompt and the download policy.
+- **Labels, completion, schema, config validation.** All from the registry,
+  the clap tree and the config types.
+- **Rendering.** The arrow line, `why`, `doctor`, `--dry-run`, JSON, all
   from `Plan` and `Project`.
 - **Warnings.** One sink, one ordering, one place that decides what a quiet
   preset hides.
@@ -718,10 +893,10 @@ never reimplements any of these.
 fn run(args) -> ExitStatus {
     let tree = Tree::open(args.dir)?;
     let policy = Policy::from(&args, &config::load(&tree)?);
-    let evidence = observe(&tree);
+    let evidence = observe(&tree)?;
     let project = resolve(&tree, evidence, &policy);
     let plan = plan(&project, &Op::from(&args), &policy)?;
-    if args.explain { return render::explain(&plan); }
+    if args.dry_run { return render::explain(&plan); }
     render::arrow(&plan);
     execute(plan)
 }
@@ -741,10 +916,10 @@ the crate boundary is the boundary.
 ```text
 Cargo.toml                    workspace
 crates/
-  core/                       runner-core     types, pipeline, services, declaration table
-  schemes/                    runner-schemes  version grammars, one module per ecosystem
-  providers/                  runner-providers one file per provider, the registry
-  cli/                        runner-run      the `runner` and `run` binaries, rendering, lsp, schema output
+  core/                       runner-run-core      types, pipeline, services
+  schemes/                    runner-run-schemes   version grammars, one module per ecosystem
+  providers/                  runner-run-providers one file per provider, the registry
+  cli/                        runner-run           the `runner` and `run` binaries, rendering, lsp, schema output
 tests/                        integration tests over the binaries
 fixtures/                     test projects, one directory per scenario
 schemas/                      generated JSON schemas, committed
@@ -776,7 +951,7 @@ crates/core/src/
   lib.rs
   tree.rs        scope.rs       signal.rs      evidence.rs
   provider.rs    capability.rs  template.rs    registry.rs
-  op.rs          policy.rs      declare.rs     plan.rs
+  op.rs          policy.rs      plan.rs
   observe.rs     resolve.rs     cascade.rs     execute.rs
   probe.rs       env.rs         verbosity.rs   reach.rs
   task.rs        health.rs      warning.rs     scheme.rs
@@ -794,7 +969,8 @@ crates/cli/src/
   main.rs        bin/run.rs     args.rs
   commands/      run.rs install.rs clean.rs list.rs info.rs why.rs doctor.rs config.rs schema.rs completions.rs man.rs lsp/
   render/        arrow.rs explain.rs json.rs doctor.rs list.rs
-  config/        load.rs  (declaration table lives in core, clap glue here)
+  invocation.rs  the RUNNER_* variables derived from the clap tree
+  config/        load.rs values.rs
 ```
 
 `registry.rs` in `core` holds the `Provider` type and lookup by id, label
@@ -836,20 +1012,14 @@ Steps, each a pull request with the suite green at the end:
 8. Delete every `tool::*` free function the registry no longer calls. At
    this point `cli` contains no tool name.
 
-## 11. Open questions
+## 11. Settled questions
 
-- `ProviderId` as one enum, or keep three enums and index all into the
-  registry. One enum is simpler and matches the kinds-as-set model.
-- Provider data as Rust statics, or TOML embedded at build time. Statics
-  type-check the templates. TOML would let a user add a provider without a
-  build.
-- Polyglot `run test`: first present ecosystem by weight, every ecosystem in
-  sequence, or refuse as `Ambiguous` and ask for `test:cargo`.
-- Whether `Scope` needs a third variant for a nested workspace, a member
-  that is itself a workspace root.
-- Which schemes ship on day one. Ruby and Composer can start as `Unknown`.
-- Whether `providers` is one crate or one crate per ecosystem. One crate
-  keeps the registry a single array. Per ecosystem lets a build drop Ruby
-  and PHP for a smaller binary.
-- Publishing: `runner-run` stays the crates.io name for the binary crate.
-  Whether `runner-core` is published at all, or stays a path dependency.
+- `ProviderId` is one enum. Kinds are a set on each provider.
+- Provider data is Rust statics, so the templates type-check.
+- Polyglot `run test` plans the present runners in candidate order: policy
+  choices first, then by scope and ecosystem. A runner that finds no tests
+  yields to the next.
+- `Scope` has two variants. A directory that declares a workspace is the root
+  when invoked inside it and a member when invoked from an outer workspace.
+- The Node scheme ships. Other ecosystems check no versions.
+- `providers` is one crate, and the registry is a single array.

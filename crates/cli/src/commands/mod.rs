@@ -1,0 +1,975 @@
+//! Subcommand implementations: info, run, install, clean, list, completions.
+
+use std::ffi::OsString;
+use std::path::Path;
+use std::process::{Command, ExitStatus, Stdio};
+
+use colored::Colorize;
+
+use crate::provider::Named;
+use crate::resolver::ResolutionOverrides;
+use crate::types::{DetectionWarning, ProjectContext};
+use runner_core::ProviderId;
+
+mod clean;
+mod completions;
+mod config;
+mod doctor;
+mod info;
+pub(crate) mod install;
+mod list;
+#[cfg(feature = "lsp")]
+pub(crate) mod lsp;
+#[cfg(feature = "man")]
+mod man;
+pub(crate) mod run;
+pub(crate) mod schema;
+mod why;
+
+pub(crate) use clean::clean;
+pub(crate) use completions::{completions, parse_shell_arg};
+pub(crate) use config::config;
+pub(crate) use doctor::doctor;
+pub(crate) use info::info;
+pub(crate) use install::install;
+pub(crate) use list::list;
+#[cfg(feature = "man")]
+pub(crate) use man::{write_man_pages, write_runner_page_to_stdout};
+pub(crate) use run::run;
+pub(crate) use schema::write_schema;
+pub(crate) use why::why;
+
+/// Invocation metadata inherited by children.
+fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
+    command
+        .current_dir(dir)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    // Mark children (and, by env inheritance, all descendants) when this
+    // runner opens a GHA group around them, so a nested `runner`/`run`
+    // suppresses its own group. GHA groups don't nest. When we're already
+    // nested the marker is in our inherited env, so children get it for free.
+    if emits_group(overrides) {
+        command.env(GROUP_ACTIVE_ENV, "1");
+    }
+    // Same idea for warnings: this process has already printed (or suppressed)
+    // everything detection found for `dir` by the time it spawns anything, so a
+    // nested runner over the same root stays quiet instead of repeating it.
+    command.env(WARNED_ROOT_ENV, dir);
+    // A nested runner inherits the invocation's `-q` count, never a task's
+    // own output settings.
+    if overrides.quiet_level != crate::tool::QuietLevel::Off {
+        command.env("RUNNER_QUIET", overrides.quiet_level.as_count().to_string());
+    }
+    // A runtime from a flag or a variable belongs to the invocation; one from
+    // runner.toml belongs to this repo, and exporting it would outrank a nested
+    // project's own config.
+    if let Some(over) = overrides.runtime.as_ref()
+        && over.origin.propagates_to_nested()
+    {
+        command.env("RUNNER_RUNTIME", over.runtime.label());
+    }
+}
+
+fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides, task: &str) {
+    let (stdout, stderr) = overrides.task_streams_for(task);
+    print_output_explain(overrides, task);
+    if emits_group(overrides) && !overrides.emits_groups_for(task) {
+        command.env_remove(GROUP_ACTIVE_ENV);
+    }
+    set_task_stdio(command, stdout, stderr);
+}
+
+/// Complete the invocation metadata before a core plan is rendered or executed.
+///
+/// # Errors
+/// When a stand-in runtime cannot be linked under the program name it replaces.
+fn configure_plan(
+    plan: &mut runner_core::Plan,
+    overrides: &ResolutionOverrides,
+    task: &str,
+) -> anyhow::Result<()> {
+    if !overrides.dry_run {
+        link_stand_in(plan)?;
+    }
+    let mut metadata = Command::new("runner");
+    configure_spawn(&mut metadata, &plan.cwd, overrides);
+    if emits_group(overrides) && !overrides.emits_groups_for(task) {
+        metadata.env_remove(GROUP_ACTIVE_ENV);
+    }
+    for (key, value) in metadata.get_envs() {
+        plan.env.retain(|(seen, _)| seen != key);
+        if let Some(value) = value {
+            plan.env.push((key.to_owned(), value.to_owned()));
+        } else {
+            plan.env_remove.push(key.to_owned());
+        }
+    }
+    #[cfg(windows)]
+    if let Some(name) = plan
+        .argv
+        .first()
+        .and_then(|program| program.to_str())
+        .map(str::to_owned)
+    {
+        let prepend = plan.trust == runner_core::Trust::Project && !plan.path_prepend.is_empty();
+        let inherited = plan
+            .env
+            .iter()
+            .rev()
+            .find(|(key, _)| !prepend && key == "PATH")
+            .map(|(_, value)| value.clone())
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
+        let dirs = plan
+            .path_prepend
+            .iter()
+            .filter(|_| prepend)
+            .cloned()
+            .chain(std::env::split_paths(&inherited));
+        let pathext = std::env::var_os("PATHEXT");
+        if let Some(resolved) = runner_core::probe_in_dirs(&name, dirs, pathext.as_deref()) {
+            plan.argv[0] = resolved.into_os_string();
+        }
+    }
+    Ok(())
+}
+
+/// Link a stand-in runtime under the program name of the runtime it replaces,
+/// in a directory of its own, and put that directory first on the plan's `PATH`.
+fn link_stand_in(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
+    use anyhow::{Context as _, bail};
+    use std::hash::{Hash as _, Hasher as _};
+
+    let Some(stand_in) = plan.stand_in else {
+        return Ok(());
+    };
+    let provider = runner_providers::REGISTRY.by_id(stand_in.runtime);
+    let replaced = runner_providers::REGISTRY.by_id(stand_in.replaces);
+    let (Some(program), Some(cap), Some(name)) =
+        (provider.program, provider.caps.stands_in, replaced.program)
+    else {
+        bail!("{} cannot stand in for {}", provider.label, replaced.label);
+    };
+    if plan.trust != runner_core::Trust::Project {
+        bail!("{program} can stand in for {name} only for a project command");
+    }
+    let mut query = plan.clone();
+    query.argv = std::iter::once(program)
+        .chain(cap.executable.iter().copied())
+        .map(OsString::from)
+        .collect();
+    let output = runner_core::execute::command(&query)?
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .with_context(|| format!("cannot start {program} to link it as {name}"))?;
+    let executable = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if !output.status.success() || !executable.is_file() {
+        bail!("{program} did not report its executable, so it cannot stand in for {name}");
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    executable.hash(&mut hasher);
+    let dir = std::env::temp_dir().join(format!("runner-{name}-{:016x}", hasher.finish()));
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let link = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    if std::fs::canonicalize(&link).ok() != std::fs::canonicalize(&executable).ok() {
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&executable, &link);
+        #[cfg(windows)]
+        let linked = std::fs::hard_link(&executable, &link)
+            .or_else(|_| std::fs::copy(&executable, &link).map(drop));
+        match linked {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(error)
+                    .with_context(|| format!("cannot link {program} as {}", link.display()));
+            }
+            _ => {}
+        }
+    }
+    plan.path_prepend.insert(0, dir);
+    Ok(())
+}
+
+fn set_task_stdio(
+    command: &mut Command,
+    stdout: crate::tool::TaskStream,
+    stderr: crate::tool::TaskStream,
+) {
+    command.stdout(match stdout {
+        crate::tool::TaskStream::Inherit => Stdio::inherit(),
+        crate::tool::TaskStream::Discard => Stdio::null(),
+    });
+    command.stderr(match stderr {
+        crate::tool::TaskStream::Inherit => Stdio::inherit(),
+        crate::tool::TaskStream::Discard => Stdio::null(),
+    });
+}
+
+/// Ask the user to allow a download. Without a terminal to ask on, the
+/// answer is no.
+fn confirm_fetch(name: &str, rung: &str) -> bool {
+    use std::io::{self, IsTerminal, Write};
+    if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+        return false;
+    }
+    eprint!("{} may fetch via {rung}; continue? [y/N] ", name.bold());
+    if io::stderr().flush().is_err() {
+        return false;
+    }
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).is_ok() && input.trim().eq_ignore_ascii_case("y")
+}
+
+fn authorize_fetch(overrides: &ResolutionOverrides, name: &str, rung: &str) -> anyhow::Result<()> {
+    if !overrides.dry_run
+        && !runner_core::reach::permitted(
+            runner_core::Reach::Network,
+            run::core::download(overrides),
+            || confirm_fetch(name, rung),
+        )
+    {
+        anyhow::bail!(
+            "{name}: downloading via {rung} was refused; allow it with --download or \
+             RUNNER_DOWNLOAD=1"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn exit_code(status: ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        if let Some(code) = status.code() {
+            return code;
+        }
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+
+    status.code().unwrap_or(1)
+}
+
+/// Env marker a runner sets on its children when it is in GitHub Actions
+/// grouping mode ([`emits_group`]), so a nested `runner`/`run` (e.g. invoked
+/// through an `npm` script) detects it and stays silent instead of emitting a
+/// second `::group::` that would corrupt the parent's fold. Inherited
+/// transitively through intermediate processes; read into
+/// [`ResolutionOverrides::parent`].
+///
+/// The contract is "a parent is *collecting* your output, don't open your own
+/// group", which is slightly broader than "a literal `::group::` is open right
+/// now": it is also set in parallel-*streaming* mode, where the parent muxes
+/// child output behind a `[task] ` prefix instead of a group. Suppressing
+/// nested grouping is correct in every case; a nested group would otherwise
+/// either nest-and-corrupt (grouped) or render as inert prefixed text
+/// (streaming).
+pub(crate) const GROUP_ACTIVE_ENV: &str = "RUNNER_GROUP_ACTIVE";
+
+/// Env marker carrying the project root whose detection warnings a parent
+/// `runner`/`run` has already printed. A `package.json` script that calls
+/// `runner` again (the common `"fmt": "runner run lint:fix fmt:dprint"` shape)
+/// otherwise repeats every warning at every level.
+pub(crate) const WARNED_ROOT_ENV: &str = "RUNNER_WARNED_ROOT";
+
+/// Env marker carrying the stack of tasks the ancestor `runner`/`run`
+/// processes are currently dispatching, so a package script that calls
+/// `runner` again cannot resolve back to itself and fork bomb the machine.
+/// Inherited transitively, which is what makes it survive the package
+/// manager sitting between two runner processes (`run tsc` → `npm run tsc`
+/// → `run tsc`).
+pub(crate) const TASK_STACK_ENV: &str = "RUNNER_TASK_STACK";
+
+/// Separators inside [`TASK_STACK_ENV`]: ASCII record/unit separators, which
+/// no path or task name can contain.
+const FRAME_SEP: char = '\u{1e}';
+const FIELD_SEP: char = '\u{1f}';
+
+/// Identify a dispatch by canonical project root plus the qualified task,
+/// so the same task in two workspace members (or reached through a symlink)
+/// stays two distinct frames.
+fn task_frame(root: &Path, source: ProviderId, name: &str) -> String {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    format!(
+        "{}{FIELD_SEP}{}{FIELD_SEP}{name}",
+        root.to_string_lossy(),
+        source.label(),
+    )
+}
+
+/// The `source:task` form of a frame, which is also the qualified syntax the
+/// user can type to pin the offending candidate.
+fn frame_label(frame: &str) -> String {
+    let mut fields = frame.split(FIELD_SEP).skip(1);
+    let source = fields.next().unwrap_or_default();
+    let name = fields.next().unwrap_or_default();
+    format!("{source}:{name}")
+}
+
+fn inherited_task_stack() -> Vec<String> {
+    let Ok(raw) = std::env::var(TASK_STACK_ENV) else {
+        return Vec::new();
+    };
+    raw.split(FRAME_SEP)
+        .filter(|frame| !frame.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// Admit a task into the invocation stack, or reject it as a cycle.
+///
+/// Returns the [`TASK_STACK_ENV`] value to hand the child on success. The
+/// check runs regardless of `--quiet`: quiet suppresses dispatch output,
+/// never a safety diagnostic.
+pub(crate) fn push_task_frame(
+    root: &Path,
+    source: ProviderId,
+    name: &str,
+) -> anyhow::Result<OsString> {
+    let pushed = admit_frame(inherited_task_stack(), task_frame(root, source, name))?;
+    Ok(OsString::from(pushed.join(&FRAME_SEP.to_string())))
+}
+
+/// Pure core of [`push_task_frame`], split from the env read so the cycle
+/// rule is unit-testable without mutating the process environment.
+fn admit_frame(stack: Vec<String>, frame: String) -> anyhow::Result<Vec<String>> {
+    if let Some(start) = stack.iter().position(|seen| *seen == frame) {
+        let cycle: Vec<String> = stack[start..]
+            .iter()
+            .map(String::as_str)
+            .chain(std::iter::once(frame.as_str()))
+            .map(frame_label)
+            .collect();
+        anyhow::bail!(
+            "recursive task resolution detected: {}\nnote: this task dispatches itself through a \
+             nested `runner`/`run`; point the script at the binary, file, or qualified task it \
+             actually means",
+            cycle.join(" -> "),
+        );
+    }
+
+    let mut pushed = stack;
+    pushed.push(frame);
+    Ok(pushed)
+}
+
+/// Whether a parent runner already warned about this project.
+///
+/// Keyed on the root, not merely on the marker's presence: a nested runner
+/// pointed at a different directory (`--dir`, a monorepo package) has its own
+/// detection to report, and must still report it.
+pub(crate) fn parent_warned_about(root: &Path) -> bool {
+    let Some(marked) = std::env::var_os(WARNED_ROOT_ENV) else {
+        return false;
+    };
+    same_root(Path::new(&marked), root)
+}
+
+/// Compare two roots, preferring canonical paths so a symlinked or
+/// `..`-laden spelling of one directory doesn't read as two.
+fn same_root(marked: &Path, root: &Path) -> bool {
+    match (marked.canonicalize(), root.canonicalize()) {
+        (Ok(marked), Ok(root)) => marked == root,
+        _ => marked == root,
+    }
+}
+
+/// Whether a runner opens a GitHub Actions group: groups are on, it runs
+/// under GitHub Actions, and no parent runner already opened one, since
+/// GitHub Actions groups do not nest.
+const fn group_emission(groups: bool, under_github_actions: bool, parent_group_open: bool) -> bool {
+    groups && under_github_actions && !parent_group_open
+}
+
+/// Whether *this* runner emits a GitHub Actions group around its children:
+/// groups are on, we're under Actions, and a parent runner hasn't already
+/// opened one ([`ResolutionOverrides::parent`]). When true, the group-opening sites fire AND children are marked
+/// with [`GROUP_ACTIVE_ENV`] so a nested runner suppresses its own groups.
+/// When false, no group is opened (nested output flows into the parent's
+/// group, or grouping is off).
+///
+/// GitHub Actions reads `::group::`/`::endgroup::` off the child's own
+/// stdout, so a runner that decorates while `--quiet` is set corrupts any
+/// parent capturing that stdout (`npm pack --json` piped into a script).
+/// The markers cannot move to stderr instead: GitHub Actions does not
+/// preserve relative order between the two streams, so a fold opened there
+/// would close around the wrong lines.
+pub(crate) fn emits_group(overrides: &ResolutionOverrides) -> bool {
+    group_emission(
+        overrides.emits_groups(),
+        actions_rs::env::is_github_actions(),
+        overrides.parent.group_open,
+    )
+}
+
+/// Open a collapsible GitHub Actions log group titled `runner: {name}` when
+/// grouping is enabled (see [`emits_group`]).
+///
+/// The returned [`actions_rs::log::GroupGuard`] emits `::endgroup::` when it
+/// is dropped, including on the `?` error path and on panic, so callers
+/// just bind it for the duration of the run. Returns `None` (emitting
+/// nothing) when grouping is off, which lets callers hold it unconditionally.
+fn task_group(
+    overrides: &ResolutionOverrides,
+    name: &str,
+    task: &str,
+) -> Option<actions_rs::log::GroupGuard> {
+    (emits_group(overrides) && overrides.emits_groups_for(task))
+        .then(|| actions_rs::log::group_guard(format!("runner: {name}")))
+}
+
+/// Optional warning collector. `None` means "emit warnings to stderr
+/// directly" (single-task path). `Some(set)` means "stash for deduped
+/// emission later" (chain dispatch, chain executor emits the deduped
+/// set once at the end).
+pub(crate) type WarningSink<'a> = Option<&'a mut std::collections::HashSet<DetectionWarning>>;
+
+fn print_warnings(ctx: &ProjectContext, overrides: &ResolutionOverrides, sink: WarningSink<'_>) {
+    print_warning_slice(&ctx.warnings, overrides, sink);
+}
+
+/// Whether detection warnings stay unsaid: the user asked for silence
+/// (`--no-warnings`, or `-qq`+ which folds it in), or a parent runner already
+/// said them for this root.
+fn silenced(overrides: &ResolutionOverrides) -> bool {
+    overrides.silences_warnings() || overrides.parent.warned
+}
+
+pub(crate) use crate::render::explain::{print_explain, print_output_explain};
+
+pub(crate) fn print_core_warnings(
+    warnings: &[runner_core::Warning],
+    overrides: &ResolutionOverrides,
+    sink: WarningSink<'_>,
+) {
+    let warnings: Vec<_> = warnings
+        .iter()
+        .cloned()
+        .map(DetectionWarning::Pipeline)
+        .collect();
+    print_warning_slice(&warnings, overrides, sink);
+}
+
+pub(crate) fn print_warning_slice(
+    warnings: &[DetectionWarning],
+    overrides: &ResolutionOverrides,
+    sink: WarningSink<'_>,
+) {
+    if silenced(overrides) {
+        return;
+    }
+    if let Some(set) = sink {
+        for warning in warnings {
+            set.insert(warning.clone());
+        }
+        return;
+    }
+    for warning in warnings {
+        eprintln!("{} {warning}", "warn:".yellow().bold());
+    }
+}
+
+/// Emit a previously-collected warning set to stderr. Used by the chain
+/// executor after all per-task resolutions have populated the sink.
+///
+/// Sorted by `Display` form before emission so output is stable across
+/// runs; `HashSet` iteration order is unspecified, which made the
+/// warning block jump around between invocations of the same chain.
+pub(crate) fn emit_collected_warnings(
+    warnings: &std::collections::HashSet<DetectionWarning>,
+    overrides: &ResolutionOverrides,
+) {
+    if silenced(overrides) {
+        return;
+    }
+    let mut sorted: Vec<(String, &DetectionWarning)> =
+        warnings.iter().map(|w| (w.to_string(), w)).collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (_, warning) in sorted {
+        eprintln!("{} {warning}", "warn:".yellow().bold());
+    }
+}
+
+/// Render a [`std::time::Duration`] as a compact, human-readable string for
+/// per-task chain timing: sub-second values as whole milliseconds (`342ms`),
+/// sub-minute values as seconds with one decimal (`1.2s`), and anything
+/// longer as minutes plus zero-padded seconds (`1m 04s`).
+pub(crate) fn format_duration(elapsed: std::time::Duration) -> String {
+    let millis = elapsed.as_millis();
+    if millis < 1000 {
+        return format!("{millis}ms");
+    }
+    // Pick the band from the same rounded tenth-of-a-second that we actually
+    // print. Deciding on the truncated whole-second value while rendering a
+    // rounded one lets a duration in [59.95s, 60.0s) stay in the seconds band
+    // yet round up to a bogus "60.0s"; rounding here promotes it to "1m 00s".
+    // Half-up rounding via integer math also keeps this free of the
+    // float-to-int cast lints a `(secs_f64 * 10.0).round() as u64` would trip.
+    let tenths = (millis + 50) / 100;
+    if tenths >= 600 {
+        // Round straight from millis to whole seconds (half-up) in one step.
+        // The band decision stays on the rounded tenth so a duration in
+        // [59.95s, 60.0s) still promotes to "1m 00s"; for any millis in this
+        // band `(millis + 500) / 1000 >= 60`, so no "0m"/"60s" can leak.
+        // Rounding the already-rounded `tenths` again (`(tenths + 5) / 10`)
+        // would cascade two half-ups and shift the seconds boundary from 0.50
+        // to 0.45, over-reporting any [0.45s, 0.50s) fraction by a whole
+        // second (e.g. 60_450ms would print "1m 01s" instead of "1m 00s").
+        let secs = (millis + 500) / 1000;
+        return format!("{}m {:02}s", secs / 60, secs % 60);
+    }
+    format!("{}.{}s", tenths / 10, tenths % 10)
+}
+
+/// One-line completion summary shared by every chain output mode, e.g.
+/// `finished in 1.2s (exit 0)`. Sequential and live (streaming) parallel
+/// output prepend the task name via [`emit_task_timing`]; grouped parallel
+/// output folds this summary into each task's block footer.
+pub(crate) fn task_timing_summary(elapsed: std::time::Duration, code: i32) -> String {
+    format!("finished in {} (exit {code})", format_duration(elapsed))
+}
+
+/// Counterpart of [`task_timing_summary`] for a sibling that got runner's
+/// SIGKILL under kill-on-fail, so its line never reads as the task's own
+/// failure.
+pub(crate) fn task_killed_summary(elapsed: std::time::Duration) -> String {
+    format!("killed after {} (sibling failed)", format_duration(elapsed))
+}
+
+/// Whether `task`'s chain timing line is shown.
+pub(crate) fn timing_enabled_for(overrides: &ResolutionOverrides, task: &str) -> bool {
+    overrides.shows_timing_for(task)
+}
+
+/// Print a per-task timing line to stderr for the sequential and live
+/// (streaming) parallel paths, e.g. `· build finished in 1.2s (exit 0)`.
+/// Mirrors the dimmed `·` meta-line style used by the `--dry-run` trace and
+/// is suppressed by [`timing_enabled_for`]. Grouped parallel output instead folds
+/// the summary into each task's block footer (see the chain executor).
+pub(crate) fn emit_task_timing(
+    overrides: &ResolutionOverrides,
+    task: &str,
+    name: &str,
+    elapsed: std::time::Duration,
+    code: i32,
+) {
+    if !timing_enabled_for(overrides, task) {
+        return;
+    }
+    eprintln!(
+        "{} {} {}",
+        "·".dimmed(),
+        name.bold(),
+        task_timing_summary(elapsed, code).dimmed(),
+    );
+}
+
+/// Counterpart of [`emit_task_timing`] for a sibling that got runner's
+/// SIGKILL under kill-on-fail.
+pub(crate) fn emit_task_killed(
+    overrides: &ResolutionOverrides,
+    task: &str,
+    name: &str,
+    elapsed: std::time::Duration,
+) {
+    if !timing_enabled_for(overrides, task) {
+        return;
+    }
+    eprintln!(
+        "{} {} {}",
+        "·".dimmed(),
+        name.bold(),
+        task_killed_summary(elapsed).dimmed(),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    use super::{configure_spawn, group_emission};
+    use crate::resolver::ResolutionOverrides;
+    use crate::tool::test_support::TempDir;
+
+    #[test]
+    fn group_emission_needs_groups_actions_and_no_open_parent_group() {
+        assert!(group_emission(true, true, false));
+        assert!(!group_emission(true, true, true));
+        assert!(!group_emission(false, true, false));
+        assert!(!group_emission(true, false, false));
+    }
+
+    #[test]
+    fn admit_frame_accepts_distinct_tasks() {
+        use super::{admit_frame, task_frame};
+        use runner_core::ProviderId;
+
+        let root = PathBuf::from("/repo");
+        let stack = admit_frame(Vec::new(), task_frame(&root, ProviderId::PackageJson, "a"))
+            .expect("first frame");
+        let stack = admit_frame(stack, task_frame(&root, ProviderId::PackageJson, "b"))
+            .expect("a different task is not a cycle");
+
+        assert_eq!(stack.len(), 2);
+    }
+
+    #[test]
+    fn admit_frame_reports_the_whole_cycle() {
+        use super::{admit_frame, task_frame};
+        use runner_core::ProviderId;
+
+        let root = PathBuf::from("/repo");
+        let frame = |name: &str| task_frame(&root, ProviderId::PackageJson, name);
+        let stack = admit_frame(Vec::new(), frame("a")).expect("first frame");
+        let stack = admit_frame(stack, frame("b")).expect("second frame");
+
+        let err = admit_frame(stack, frame("a")).expect_err("a -> b -> a is a cycle");
+        let msg = format!("{err:#}");
+
+        assert!(
+            msg.contains("package.json:a -> package.json:b -> package.json:a"),
+            "the diagnostic must name every task in the loop. msg: {msg}",
+        );
+    }
+
+    #[test]
+    fn admit_frame_separates_the_same_task_in_two_roots() {
+        use super::{admit_frame, task_frame};
+        use runner_core::ProviderId;
+
+        // A workspace member dispatching its own `build` from the root's
+        // `build` is a normal fan-out, not a loop.
+        let stack = admit_frame(
+            Vec::new(),
+            task_frame(&PathBuf::from("/repo"), ProviderId::PackageJson, "build"),
+        )
+        .expect("root frame");
+
+        assert!(
+            admit_frame(
+                stack,
+                task_frame(
+                    &PathBuf::from("/repo/apps/web"),
+                    ProviderId::PackageJson,
+                    "build",
+                ),
+            )
+            .is_ok(),
+            "same task name under a different root must still dispatch",
+        );
+    }
+
+    #[test]
+    fn invocation_metadata_sets_current_dir() {
+        let dir = std::env::temp_dir();
+        let mut command = Command::new("runner-test-command");
+
+        configure_spawn(&mut command, dir.as_path(), &ResolutionOverrides::default());
+
+        assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+    }
+
+    #[test]
+    fn config_runtime_is_not_exported_to_children() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+
+        use crate::resolver::{OverrideOrigin, RuntimeOverride};
+        use runner_core::ProviderId;
+
+        let dir = std::env::temp_dir();
+        let runtime_env = |origin| {
+            let overrides = ResolutionOverrides {
+                runtime: Some(RuntimeOverride {
+                    runtime: ProviderId::Bun,
+                    origin,
+                }),
+                ..ResolutionOverrides::default()
+            };
+            let mut command = Command::new("runner-test-command");
+            configure_spawn(&mut command, dir.as_path(), &overrides);
+            command
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new("RUNNER_RUNTIME"))
+                .map(|(_, value)| value.map(ToOwned::to_owned))
+        };
+
+        assert_eq!(
+            runtime_env(OverrideOrigin::CliFlag),
+            Some(Some(OsString::from("bun"))),
+            "a --runtime flag must reach a nested runner",
+        );
+        assert_eq!(
+            runtime_env(OverrideOrigin::EnvVar),
+            Some(Some(OsString::from("bun"))),
+            "an ambient RUNNER_RUNTIME must reach a nested runner",
+        );
+        assert_eq!(
+            runtime_env(OverrideOrigin::ConfigFile {
+                path: PathBuf::from("/repo/runner.toml"),
+            }),
+            None,
+            "a repo-scoped [runtime].js must not be forced onto a nested project",
+        );
+    }
+
+    fn shim_plan(dir: &std::path::Path, args: &[String]) -> runner_core::Plan {
+        let tree = runner_core::Tree {
+            root: dir.to_owned(),
+            cwd: dir.to_owned(),
+            members: vec![],
+        };
+        let bin = dir.join("node_modules/.bin");
+        let project = runner_core::Project {
+            present: vec![runner_core::Present {
+                provider: runner_core::ProviderId::Npm,
+                scope: runner_core::Scope::Root,
+                version: None,
+                bin_dirs: vec![bin.clone()],
+                because: vec![],
+            }],
+            ..runner_core::Project::default()
+        };
+        let mut plan = runner_core::plan::plan_argv(
+            &tree,
+            &project,
+            &runner_core::Policy::default(),
+            bin.join("runner-test-shim"),
+            &runner_providers::REGISTRY,
+            std::iter::once(OsString::from("runner-test-shim"))
+                .chain(args.iter().map(OsString::from))
+                .collect(),
+        )
+        .unwrap();
+        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test").unwrap();
+        plan
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_resolves_dev_dependency_binary_via_child_path() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // End-to-end pin for the mechanism the PATH fix relies on: the
+        // OS-level bare-name lookup must honor the PATH set on the
+        // child Command (std documents this on `Command::new`). A
+        // devDependency-style shim that exists only under the project's
+        // `node_modules/.bin` has to spawn; this is exactly the
+        // "turbo.json task dies with ENOENT because turbo is only a
+        // devDependency" report.
+        let dir = TempDir::new("child-path-spawn");
+        let bin = dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).expect("bin dir should be created");
+        let shim = bin.join("runner-test-shim");
+        fs::write(&shim, "#!/bin/sh\nexit 42\n").expect("shim should be written");
+        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755))
+            .expect("shim should be marked executable");
+
+        let plan = shim_plan(dir.path(), &[]);
+        let mut command = runner_core::execute::command(&plan).unwrap();
+        let status = runner_core::execute::status(&plan, &mut command)
+            .expect("shim should spawn via the child PATH");
+        assert_eq!(status.code(), Some(42));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn configure_plan_resolves_cmd_shim_from_bin_dir() {
+        use std::ffi::OsStr;
+
+        // `CreateProcessW` never consults PATHEXT and the std child-PATH
+        // search only appends `.exe`, so a bare name backed only by a
+        // `.cmd` shim in node_modules/.bin must be rebuilt around the
+        // absolute shim path, with args and env tweaks surviving.
+        let dir = TempDir::new("win-bin-shim");
+        let bin = dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).expect("bin dir should be created");
+        let shim = bin.join("runner-test-shim.cmd");
+        fs::write(&shim, "@echo off\r\n").expect("shim should be written");
+
+        let mut plan = shim_plan(dir.path(), &["run".into()]);
+        plan.env.push(("RUNNER_TEST_MARKER".into(), "1".into()));
+        let command = runner_core::execute::command(&plan).unwrap();
+
+        assert_eq!(PathBuf::from(command.get_program()), shim);
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, [OsStr::new("run")]);
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == "RUNNER_TEST_MARKER" && value == Some(OsStr::new("1"))),
+        );
+    }
+
+    #[test]
+    fn no_warnings_suppresses_emission() {
+        use super::print_warning_slice;
+        use crate::resolver::ResolutionOverrides;
+        use crate::types::DetectionWarning;
+        use runner_core::ProviderId;
+
+        // Smoke: print_warning_slice with no_warnings=true must
+        // short-circuit before the eprintln. The test asserts no
+        // panic / no observable side effects; capturing stderr in
+        // cargo test is fiddly and not worth a fixture.
+        let warnings = vec![DetectionWarning::PmMismatch {
+            declared: ProviderId::Pnpm,
+            field: "packageManager",
+            lockfile: ProviderId::Yarn,
+        }];
+        let overrides = ResolutionOverrides {
+            output: crate::resolver::Output {
+                invocation: crate::tool::OutputChoice::default()
+                    .with(crate::tool::RunnerOutput::Warnings, false),
+                ..crate::resolver::Output::default()
+            },
+            ..ResolutionOverrides::default()
+        };
+        print_warning_slice(&warnings, &overrides, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_code_preserves_signal_status() {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        use super::exit_code;
+
+        assert_eq!(exit_code(std::process::ExitStatus::from_raw(5 << 8)), 5);
+        assert_eq!(exit_code(std::process::ExitStatus::from_raw(2)), 130);
+    }
+
+    #[test]
+    fn format_duration_uses_millis_below_one_second() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        assert_eq!(format_duration(Duration::from_millis(0)), "0ms");
+        assert_eq!(format_duration(Duration::from_millis(5)), "5ms");
+        assert_eq!(format_duration(Duration::from_millis(342)), "342ms");
+        // 999ms stays in the millisecond band; 1000ms crosses into seconds.
+        assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_duration_uses_seconds_with_one_decimal_under_a_minute() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        assert_eq!(format_duration(Duration::from_secs(1)), "1.0s");
+        assert_eq!(format_duration(Duration::from_millis(1234)), "1.2s");
+        assert_eq!(format_duration(Duration::from_millis(4200)), "4.2s");
+        assert_eq!(format_duration(Duration::from_millis(59_400)), "59.4s");
+    }
+
+    #[test]
+    fn format_duration_uses_minutes_and_padded_seconds_at_a_minute() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        // 60s is the boundary into the minute band; sub-minute seconds are
+        // zero-padded to two digits so columns stay aligned.
+        assert_eq!(format_duration(Duration::from_mins(1)), "1m 00s");
+        assert_eq!(format_duration(Duration::from_secs(64)), "1m 04s");
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 05s");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "61m 01s");
+    }
+
+    #[test]
+    fn format_duration_rounds_seconds_to_nearest_inside_minute_band() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        // Non-integer seconds inside the minute band must round half-up to the
+        // nearest whole second, not floor. Flooring would under-report by up to
+        // ~0.95s near band edges (the bug these inputs guard against).
+        assert_eq!(format_duration(Duration::from_millis(60_900)), "1m 01s");
+        assert_eq!(format_duration(Duration::from_millis(90_700)), "1m 31s");
+        assert_eq!(format_duration(Duration::from_millis(119_940)), "2m 00s");
+        // Well below the half-second boundary (0.449s) rounds down.
+        assert_eq!(format_duration(Duration::from_millis(90_449)), "1m 30s");
+        // Just inside [0.45s, 0.50s): rounding must stay half-up (boundary at
+        // 0.50, not 0.45). A cascaded double-rounding would bump these up a
+        // whole second (0.45 -> 0.5 tenth -> 1 second), so guard the window.
+        assert_eq!(format_duration(Duration::from_millis(60_450)), "1m 00s");
+        assert_eq!(format_duration(Duration::from_millis(60_499)), "1m 00s");
+        assert_eq!(format_duration(Duration::from_millis(90_450)), "1m 30s");
+        // The double-round bug visibly flipped the minute here (1m 59s -> 2m 00s).
+        assert_eq!(format_duration(Duration::from_millis(119_450)), "1m 59s");
+        // The true half-second boundary rounds up.
+        assert_eq!(format_duration(Duration::from_millis(60_500)), "1m 01s");
+    }
+
+    #[test]
+    fn format_duration_rounds_into_minute_band_near_sixty_seconds() {
+        use std::time::Duration;
+
+        use super::format_duration;
+
+        // Durations in [59.95s, 60.0s) have as_secs() == 59 but round up to
+        // 60.0s. The band must be chosen on the rounded value, so these promote
+        // into the minute band instead of printing a contract-violating "60.0s".
+        for millis in [59_950, 59_990, 59_999] {
+            let rendered = format_duration(Duration::from_millis(millis));
+            assert_eq!(rendered, "1m 00s", "{millis}ms should round into minutes");
+            assert_ne!(rendered, "60.0s", "{millis}ms must never print as 60.0s");
+        }
+        // The tenth just below the rounding boundary stays in the seconds band.
+        assert_eq!(format_duration(Duration::from_millis(59_940)), "59.9s");
+    }
+
+    #[test]
+    fn task_timing_summary_includes_duration_and_exit_code() {
+        use std::time::Duration;
+
+        use super::task_timing_summary;
+
+        assert_eq!(
+            task_timing_summary(Duration::from_millis(1500), 0),
+            "finished in 1.5s (exit 0)"
+        );
+        assert_eq!(
+            task_timing_summary(Duration::from_millis(200), 7),
+            "finished in 200ms (exit 7)"
+        );
+    }
+
+    #[test]
+    fn timing_enabled_reads_the_task_timing_category() {
+        use super::timing_enabled_for;
+        use crate::resolver::ResolutionOverrides;
+
+        let timing_enabled =
+            |overrides: &ResolutionOverrides| timing_enabled_for(overrides, "greet");
+        assert!(timing_enabled(&ResolutionOverrides::default()));
+        let with = |invocation, project| ResolutionOverrides {
+            output: crate::resolver::Output {
+                invocation,
+                project,
+                buffer: None,
+            },
+            ..ResolutionOverrides::default()
+        };
+        let none = crate::tool::OutputChoice::default();
+        assert!(!timing_enabled(&with(
+            crate::tool::OutputChoice::preset(crate::tool::QuietLevel::Quiet),
+            none
+        )));
+        assert!(!timing_enabled(&with(
+            none,
+            none.with(crate::tool::RunnerOutput::Timing, false)
+        )));
+    }
+}

@@ -2,6 +2,8 @@
 //! own `install` task instead of failing. Fixtures use `just`; if it is not
 //! on PATH the assertion is skipped rather than failing.
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -43,7 +45,7 @@ fn install_runs_the_install_task_when_no_package_manager_exists() {
     // Copied out of the repository so detection cannot walk up to this
     // repository's own manifests and lockfiles.
     let dir = fixture_dir("runs");
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", dir.to_str().unwrap(), "install"])
         .output()
         .expect("runner binary spawns");
@@ -66,15 +68,16 @@ fn install_runs_the_install_task_when_no_package_manager_exists() {
 }
 
 #[test]
-fn install_refuses_an_allowlist_no_package_manager_satisfies() {
+fn install_refuses_an_unobserved_explicit_package_manager() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let dir = fixture_dir("allowlist");
-    let output = Command::new(runner_binary())
+    let dir = fixture_dir("override");
+    let output = support::command(runner_binary())
         .args(["--dir", dir.to_str().unwrap(), "install"])
-        .env("RUNNER_INSTALL_PMS", "npm")
+        .env("RUNNER_PM", "pnpm")
+        .env("PATH", dir.join("empty-path"))
         .output()
         .expect("runner binary spawns");
     let _ = std::fs::remove_dir_all(&dir);
@@ -83,10 +86,10 @@ fn install_refuses_an_allowlist_no_package_manager_satisfies() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),
-        "an unmet install allowlist must fail. stdout: {stdout} stderr: {stderr}"
+        "an unobserved explicit package manager must fail. stdout: {stdout} stderr: {stderr}"
     );
     assert!(
-        stderr.contains("npm"),
+        stderr.contains("pnpm"),
         "the error names the listed manager. stderr: {stderr}"
     );
     assert!(

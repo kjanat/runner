@@ -1,10 +1,29 @@
 #:tombi toml-version = "v1.0.0"
 
 [package]
-name                   = "runner-core"
+name                   = "runner-run-core"
+version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true
-publish                = false
+description            = "Core types and pipeline of runner-run. Internal, no stable API"
+readme                 = "../../README.md"
+repository.workspace   = true
+license.workspace      = true
+keywords               = ["automation", "build-tool", "cli", "task-runner"]
+categories             = ["command-line-utilities", "development-tools"]
+
+[lib]
+name = "runner_core"
+
+[dependencies]
+bitflags.workspace   = true
+json5.workspace      = true
+serde_json.workspace = true
+yaml-rust2.workspace = true
+
+[dependencies.toml]
+workspace = true
+features  = ["parse", "serde"]
 
 [lints]
 workspace = true

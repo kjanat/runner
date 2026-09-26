@@ -2,20 +2,74 @@
   "$id": "https://kjanat.github.io/runner/schemas/doctor.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
-    "CollisionPolicy": {
-      "description": "How `runner install` reacts when two or more package managers in the\ninstall set write the same directory (a node PM plus a\n`nodeModulesDir`-enabled Deno both materializing `node_modules/`).\n\nSet via `[install].on_collision` / `RUNNER_INSTALL_ON_COLLISION`.",
-      "oneOf": [
-        {
-          "description": "Install with one writer per directory and shadow the rest, the same\nway a duplicate task name resolves to one source. An explicit\n`[install].pms` naming several writers is consent: they all run,\nserialized over the shared tree.",
+    "Chosen": {
+      "description": "A chosen provider and the layer that chose it.",
+      "type": "object",
+      "required": [
+        "origin",
+        "value"
+      ],
+      "properties": {
+        "origin": {
           "type": "string",
-          "const": "resolve"
+          "enum": [
+            "cli",
+            "env",
+            "task-config",
+            "config"
+          ]
         },
-        {
-          "description": "Refuse to install and exit non-zero rather than pick. For CI\nguardrails that want an ambiguous tree to block the run.",
-          "type": "string",
-          "const": "error"
+        "value": {
+          "$ref": "#/$defs/PackageManagerLabel"
         }
-      ]
+      },
+      "additionalProperties": false
+    },
+    "Chosen2": {
+      "description": "A chosen provider and the layer that chose it.",
+      "type": "object",
+      "required": [
+        "origin",
+        "value"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "env",
+            "task-config",
+            "config"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/JsRuntimeLabel"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Chosen3": {
+      "description": "A chosen provider and the layer that chose it.",
+      "type": "object",
+      "required": [
+        "origin",
+        "value"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "enum": [
+            "cli",
+            "env",
+            "task-config",
+            "config"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/TaskSourceLabel"
+        }
+      },
+      "additionalProperties": false
     },
     "Confidence": {
       "description": "How sure the resolver is about an ecosystem's PM selection.",
@@ -29,11 +83,6 @@
           "description": "Inferred: PATH probe found a usable binary.",
           "type": "string",
           "const": "medium"
-        },
-        {
-          "description": "Legacy `--fallback npm` default with no signal at all.",
-          "type": "string",
-          "const": "low"
         },
         {
           "description": "Resolution failed.",
@@ -186,7 +235,6 @@
         "name",
         "resolved",
         "scope",
-        "self_executable",
         "source",
         "source_pointer"
       ],
@@ -240,10 +288,6 @@
           "description": "`root`, or the workspace member name the task belongs to.",
           "type": "string"
         },
-        "self_executable": {
-          "description": "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false.",
-          "type": "boolean"
-        },
         "source": {
           "type": [
             "null",
@@ -255,6 +299,30 @@
             "null",
             "string"
           ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Download": {
+      "enum": [
+        true,
+        false,
+        "ask"
+      ]
+    },
+    "DownloadReport": {
+      "type": "object",
+      "required": [
+        "explicit",
+        "value"
+      ],
+      "properties": {
+        "explicit": {
+          "description": "Whether a layer set it; otherwise the interactive default applies.",
+          "type": "boolean"
+        },
+        "value": {
+          "$ref": "#/$defs/Download"
         }
       },
       "additionalProperties": false
@@ -309,7 +377,7 @@
           ]
         },
         "signals": {
-          "description": "Detection evidence. Node carries the full signal set (lockfile/manifest/PATH probe/shim classification, keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
+          "description": "Detection evidence. An ecosystem whose task source package managers dispatch carries that source's signals (lockfile, manifest, PATH probe, shims keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
         }
       },
       "additionalProperties": false
@@ -382,42 +450,22 @@
       "additionalProperties": false
     },
     "FailurePolicy": {
-      "description": "Failure policy for a chain. `FailFast` is the default and matches\n`make -j` semantics in parallel mode (let running siblings finish;\ndon't start new ones).",
+      "description": "What a chain does after one of its tasks fails.",
       "oneOf": [
         {
-          "description": "Stop the chain on the first failing task. In parallel mode,\nalready-running siblings complete naturally.",
+          "description": "Keep starting the remaining tasks.",
           "type": "string",
-          "const": "fail-fast"
+          "const": "continue"
         },
         {
-          "description": "Run every task to completion regardless of failures. Final exit\ncode reflects the first failure.",
+          "description": "Start no more tasks and let running ones finish.",
           "type": "string",
-          "const": "keep-going"
+          "const": "wait"
         },
         {
-          "description": "Parallel only: SIGKILL siblings on first failure (`std::process::Child::kill`).\nSequential callers accept this silently (no-op). Catch-able SIGTERM\nsemantics would need a libc/nix dep, deferred to a follow-up.",
+          "description": "Start no more tasks and stop running ones.",
           "type": "string",
-          "const": "kill-on-fail"
-        }
-      ]
-    },
-    "FallbackPolicy": {
-      "description": "What to do when no signal in steps 2–6 matches.\n\nSet via `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback`.",
-      "oneOf": [
-        {
-          "description": "Walk `$PATH` in canonical order and pick the first installed PM.\nErrors if nothing matches.",
-          "type": "string",
-          "const": "probe"
-        },
-        {
-          "description": "Legacy: silently default to `npm` so dispatch is attempted even\nwhen nothing is detected. Useful for backwards compatibility.",
-          "type": "string",
-          "const": "npm"
-        },
-        {
-          "description": "Refuse to proceed when no signal matches; error out with a list of\nsources that were checked.",
-          "type": "string",
-          "const": "error"
+          "const": "kill"
         }
       ]
     },
@@ -446,82 +494,34 @@
       },
       "additionalProperties": false
     },
-    "JsRuntime": {
-      "description": "The JavaScript runtime a task's process tree should execute on.\n\nDistinct from [`PackageManager`]: `--pm bun` says bun installs and runs\nscripts here, while this says which runtime the script and the binaries it\ninvokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`\nbin inside the script still resolves to system Node; `bun --bun run build`\nis what puts that bin on bun too.\n\nEach variant brings its own script runner, file runner and package-exec\nprimitive; no package manager is consulted on this path. Set, it also\noutranks a local file's `#!` line, which is the case the axis exists for.",
-      "oneOf": [
-        {
-          "description": "Node.js, via `node --run <script>` (Node 22+), `node <file>` and `npx`.\n\n`node --run` deliberately skips `pre`/`post` lifecycle scripts, which\n`npm run`, `bun run` and `deno task` all execute; runner warns when the\ntask being dispatched has one.",
-          "type": "string",
-          "const": "node"
-        },
-        {
-          "description": "Bun, via `bun --bun run <script>`, `bun <file>` and `bun x --bun`.",
-          "type": "string",
-          "const": "bun"
-        },
-        {
-          "description": "Deno, via `deno task <script>` (which reads `package.json` scripts as\nwell as `deno.json` tasks), `deno run <file>` and `deno x`.",
-          "type": "string",
-          "const": "deno"
-        }
+    "JsRuntimeLabel": {
+      "type": "string",
+      "enum": [
+        "bun",
+        "deno",
+        "node"
       ]
     },
-    "MismatchPolicy": {
-      "description": "How to react when manifest declaration (step 5) and lockfile (step 6)\ndisagree about which package manager the project uses.\n\nSet via `--on-mismatch` / `RUNNER_ON_MISMATCH` /\n`[resolution].on_mismatch`. Independent from\n`devEngines.packageManager` `onFail`. That policy governs whether\nthe *declared* PM can actually run; this one governs whether the\nresolver tolerates the declaration disagreeing with the install\nstate at all.",
-      "oneOf": [
-        {
-          "description": "Emit a `package.json` warning; prefer the declaration (Corepack\nsemantics, the lockfile is most likely stale).",
-          "type": "string",
-          "const": "warn"
-        },
-        {
-          "description": "Stay silent; prefer the declaration.",
-          "type": "string",
-          "const": "ignore"
-        },
-        {
-          "description": "Refuse to run and exit non-zero. Intended for CI guardrails where a\nmismatch should block the run.",
-          "type": "string",
-          "const": "error"
-        }
+    "LockfilePolicy": {
+      "description": "Whether an install may rewrite the lockfile.",
+      "type": "string",
+      "enum": [
+        "update",
+        "frozen"
       ]
     },
-    "OutputGrouping": {
-      "description": "Whether task output is grouped into collapsible blocks, under GitHub Actions and elsewhere.",
-      "type": "object",
-      "required": [
-        "github_group_parallel",
-        "group_output",
-        "parallel_grouped"
-      ],
-      "properties": {
-        "github_group_parallel": {
-          "description": "Group parallel output under GitHub Actions\n(`[github].group_parallel`).",
-          "type": "boolean"
-        },
-        "group_output": {
-          "description": "Broad GitHub Actions grouping switch (`[github].group_output`).",
-          "type": "boolean"
-        },
-        "parallel_grouped": {
-          "description": "Group parallel output outside GitHub Actions\n(`[parallel].grouped`).",
-          "type": "boolean"
-        }
-      },
-      "additionalProperties": false
-    },
-    "OutputPolicyReport": {
+    "OutputReport": {
       "type": "object",
       "required": [
         "errors",
         "fatal_errors",
         "groups",
-        "host_diagnostics",
-        "host_stream",
-        "level",
+        "parallel_buffer",
         "progress",
+        "quiet",
         "summary",
-        "task_timing",
+        "timing",
+        "tool",
         "warnings"
       ],
       "properties": {
@@ -534,22 +534,16 @@
         "groups": {
           "type": "boolean"
         },
-        "host_diagnostics": {
-          "type": "string",
-          "enum": [
-            "normal",
-            "quiet",
-            "reduced"
+        "parallel_buffer": {
+          "type": [
+            "boolean",
+            "null"
           ]
         },
-        "host_stream": {
-          "type": "string",
-          "enum": [
-            "inherit",
-            "stderr"
-          ]
+        "progress": {
+          "type": "boolean"
         },
-        "level": {
+        "quiet": {
           "type": "string",
           "enum": [
             "off",
@@ -559,14 +553,19 @@
             "mute"
           ]
         },
-        "progress": {
-          "type": "boolean"
-        },
         "summary": {
           "type": "boolean"
         },
-        "task_timing": {
+        "timing": {
           "type": "boolean"
+        },
+        "tool": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "quiet",
+            "reduced"
+          ]
         },
         "warnings": {
           "type": "boolean"
@@ -575,121 +574,49 @@
       "additionalProperties": false
     },
     "Overrides": {
-      "description": "The overrides in effect for this run: `--pm`, `--fallback`, the\n`RUNNER_*` env vars, and the `runner.toml` policy sections, reported by\ntheir labels. Where each came from (CLI, env, or config) is on the\n`list`/`info` surface instead.",
+      "description": "The settings in effect for this run, each at its effective value.",
       "type": "object",
       "required": [
+        "download",
+        "dry_run",
         "env",
-        "explain",
         "failure_policy",
-        "fallback",
-        "install_pms",
-        "no_warnings",
-        "on_collision",
-        "on_mismatch",
+        "install_tools",
+        "lockfile",
         "output",
-        "output_grouping",
         "pm",
-        "pm_by_ecosystem",
-        "prefer_runners",
-        "prefer_sources",
-        "quiet",
-        "runner",
         "runtime",
         "script_policy",
-        "task_source_pins",
-        "tool_install"
+        "source",
+        "tasks"
       ],
       "properties": {
+        "download": {
+          "$ref": "#/$defs/DownloadReport"
+        },
+        "dry_run": {
+          "type": "boolean"
+        },
         "env": {
           "$ref": "#/$defs/EnvNames",
           "description": "Variable names each `env` layer sets, narrowest last. Values are withheld: this payload is meant to be pasted into a bug report."
         },
-        "explain": {
-          "type": "boolean"
-        },
         "failure_policy": {
           "$ref": "#/$defs/FailurePolicy"
         },
-        "fallback": {
-          "$ref": "#/$defs/FallbackPolicy"
-        },
-        "install_pms": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/PackageManager"
-          }
-        },
-        "no_warnings": {
+        "install_tools": {
           "type": "boolean"
         },
-        "on_collision": {
-          "$ref": "#/$defs/CollisionPolicy"
-        },
-        "on_mismatch": {
-          "$ref": "#/$defs/MismatchPolicy"
+        "lockfile": {
+          "$ref": "#/$defs/LockfilePolicy"
         },
         "output": {
-          "$ref": "#/$defs/OutputPolicyReport"
-        },
-        "output_grouping": {
-          "$ref": "#/$defs/OutputGrouping"
+          "$ref": "#/$defs/OutputReport"
         },
         "pm": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PackageManager"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "pm_by_ecosystem": {
-          "type": "object",
-          "properties": {
-            "deno": {
-              "$ref": "#/$defs/PackageManager"
-            },
-            "go": {
-              "$ref": "#/$defs/PackageManager"
-            },
-            "node": {
-              "$ref": "#/$defs/PackageManager"
-            },
-            "php": {
-              "$ref": "#/$defs/PackageManager"
-            },
-            "python": {
-              "$ref": "#/$defs/PackageManager"
-            },
-            "ruby": {
-              "$ref": "#/$defs/PackageManager"
-            },
-            "rust": {
-              "$ref": "#/$defs/PackageManager"
-            }
-          },
-          "additionalProperties": false
-        },
-        "prefer_runners": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/TaskRunner"
-          }
-        },
-        "prefer_sources": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/TaskSourceLabel"
-          }
-        },
-        "quiet": {
-          "type": "boolean"
-        },
-        "runner": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TaskRunner"
+              "$ref": "#/$defs/Chosen"
             },
             {
               "type": "null"
@@ -699,7 +626,7 @@
         "runtime": {
           "anyOf": [
             {
-              "$ref": "#/$defs/JsRuntime"
+              "$ref": "#/$defs/Chosen2"
             },
             {
               "type": "null"
@@ -709,91 +636,41 @@
         "script_policy": {
           "$ref": "#/$defs/ScriptPolicy"
         },
-        "task_source_pins": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/TaskSourceLabel"
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Chosen3"
+            },
+            {
+              "type": "null"
             }
-          }
+          ]
         },
-        "tool_install": {
-          "description": "`[tools.<name>].install`, the operations `runner install` runs for each tool, in order.",
+        "tasks": {
+          "description": "The provider choices each `[tasks.<name>]` table makes.",
           "type": "object",
           "additionalProperties": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+            "$ref": "#/$defs/TaskReport"
           }
         }
       },
       "additionalProperties": false
     },
-    "PackageManager": {
-      "description": "A dependency manager detected via lockfile or config presence.",
-      "oneOf": [
-        {
-          "description": "npm, detected via `package-lock.json`.",
-          "type": "string",
-          "const": "npm"
-        },
-        {
-          "description": "Yarn, detected via `yarn.lock`.",
-          "type": "string",
-          "const": "yarn"
-        },
-        {
-          "description": "pnpm, detected via `pnpm-lock.yaml`.",
-          "type": "string",
-          "const": "pnpm"
-        },
-        {
-          "description": "Bun, detected via `bun.lockb` or `bun.lock`.",
-          "type": "string",
-          "const": "bun"
-        },
-        {
-          "description": "Cargo (Rust), detected via `Cargo.toml`.",
-          "type": "string",
-          "const": "cargo"
-        },
-        {
-          "description": "Deno, detected via `deno.json` / `deno.jsonc`.",
-          "type": "string",
-          "const": "deno"
-        },
-        {
-          "description": "uv (Python), detected via `uv.lock`.",
-          "type": "string",
-          "const": "uv"
-        },
-        {
-          "description": "Poetry (Python), detected via `poetry.lock` or Poetry `pyproject.toml` markers.",
-          "type": "string",
-          "const": "poetry"
-        },
-        {
-          "description": "Pipenv (Python), detected via `Pipfile` / `Pipfile.lock`.",
-          "type": "string",
-          "const": "pipenv"
-        },
-        {
-          "description": "Go modules, detected via `go.mod`.",
-          "type": "string",
-          "const": "go"
-        },
-        {
-          "description": "Bundler (Ruby), detected via `Gemfile`.",
-          "type": "string",
-          "const": "bundler"
-        },
-        {
-          "description": "Composer (PHP), detected via `composer.json`.",
-          "type": "string",
-          "const": "composer"
-        }
+    "PackageManagerLabel": {
+      "type": "string",
+      "enum": [
+        "npm",
+        "yarn",
+        "pnpm",
+        "bun",
+        "deno",
+        "cargo",
+        "go",
+        "uv",
+        "poetry",
+        "pipenv",
+        "bundler",
+        "composer"
       ]
     },
     "ProjectInfo": {
@@ -907,20 +784,20 @@
       "additionalProperties": false
     },
     "ScriptPolicy": {
-      "description": "Install-time lifecycle-script execution policy for `runner install`.\n\nLifecycle/build scripts (`postinstall`, native-extension compilation,\n…) are the primary supply-chain attack surface during dependency\ninstalls. This knob lets a project deny them across the package managers\nthat expose a skip mechanism, or force them on across the managers that\ncan express it. The latter matters because several package managers\n(npm, pnpm, …) are moving to scripts-off-by-default in upcoming majors.\n\nSet via `--no-scripts` (deny) / `--scripts` (force on) on the CLI,\n`RUNNER_INSTALL_SCRIPTS` (env), or `[install].scripts` (config), highest\nfirst.",
+      "description": "Whether an install runs lifecycle scripts.",
       "oneOf": [
         {
-          "description": "Leave each package manager at its own built-in default: npm,\nyarn-classic, pnpm (<10) and composer run dependency scripts, while\nbun, pnpm (>=10) and deno already deny them.",
+          "description": "Each package manager's own default.",
           "type": "string",
           "const": "default"
         },
         {
-          "description": "Skip lifecycle scripts wherever the package manager exposes a skip\nmechanism (npm/yarn/pnpm/bun `--ignore-scripts`, composer\n`--no-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=false`); deno already\ndenies by default. Managers without one (cargo, go, bundler, and the\nPython backends uv/poetry/pipenv) warn and proceed unchanged.",
+          "description": "Skip them where the package manager can.",
           "type": "string",
           "const": "deny"
         },
         {
-          "description": "Force lifecycle scripts on wherever the package manager can express it:\nnpm `--no-ignore-scripts`, yarn-berry `YARN_ENABLE_SCRIPTS=true`, deno\n`--allow-scripts` (allow all). Managers that already run scripts by\ndefault (composer, cargo, go, bundler, the Python backends, yarn-classic)\nare satisfied without a flag. bun and pnpm (>=10) deny dependency build\nscripts by default and re-enable them only through a manifest allowlist\n(`trustedDependencies` / `onlyBuiltDependencies`) that runner must not\nwrite, so they warn that force-on is not flag-expressible.",
+          "description": "Run them where the package manager can be told to.",
           "type": "string",
           "const": "allow"
         }
@@ -956,7 +833,8 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/$defs/TaskSourceLabel"
+          "$ref": "#/$defs/TaskSourceLabel",
+          "description": "Structured source label (same convention as `why`)."
         },
         "package": {
           "description": "Workspace member identity (`name`, `path`) for member sources; null for root sources."
@@ -981,56 +859,57 @@
       },
       "additionalProperties": false
     },
-    "TaskRunner": {
-      "description": "A task runner detected via config file presence.",
-      "oneOf": [
-        {
-          "description": "Turborepo, detected via `turbo.json` / `turbo.jsonc`.",
-          "type": "string",
-          "const": "turbo"
+    "TaskReport": {
+      "type": "object",
+      "required": [
+        "pm",
+        "runtime",
+        "source"
+      ],
+      "properties": {
+        "pm": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PackageManagerLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        {
-          "description": "Nx, detected via `nx.json`.",
-          "type": "string",
-          "const": "nx"
+        "runtime": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsRuntimeLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
-        {
-          "description": "GNU Make, detected via `Makefile` / `GNUmakefile` / `makefile`.",
-          "type": "string",
-          "const": "make"
-        },
-        {
-          "description": "just, detected via case-insensitive `justfile` / `.justfile`.",
-          "type": "string",
-          "const": "just"
-        },
-        {
-          "description": "go-task, detected via `Taskfile.yml` and variants.",
-          "type": "string",
-          "const": "task"
-        },
-        {
-          "description": "mise, detected via `mise.toml` / `.mise.toml`.",
-          "type": "string",
-          "const": "mise"
-        },
-        {
-          "description": "bacon, detected via `bacon.toml`.",
-          "type": "string",
-          "const": "bacon"
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskSourceLabel"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
-      ]
+      },
+      "additionalProperties": false
     },
     "TaskSourceLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "package.json",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
-        "cargo-alias",
+        "cargo",
         "go",
         "bacon",
         "mise",

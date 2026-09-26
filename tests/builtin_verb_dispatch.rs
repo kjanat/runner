@@ -2,8 +2,8 @@
 //!
 //! The explicit `runner <verb>` subcommand is ALWAYS the builtin: a
 //! same-named project task never shadows it. The run path (`run <verb>` /
-//! `runner run <verb>`) runs a same-named task when one exists, else falls
-//! back to the builtin's default (no-flag) form.
+//! `runner run <verb>`) also selects the builtin first; a same-named task
+//! requires an explicit source qualifier.
 //!
 //! `list` is the exercise verb here: its builtin is cheap (renders the task
 //! list, spawns nothing), unlike `install`/`clean` which would shell out to
@@ -12,6 +12,8 @@
 //!
 //! Fixtures use `just`; if it's not on PATH the assertions are skipped
 //! rather than failing, matching `info_deprecation.rs`.
+
+mod support;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -44,7 +46,7 @@ fn runner_list_is_always_builtin_even_with_a_list_task() {
         return;
     }
     // A project task named `list` does NOT shadow the explicit subcommand.
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", fixture("list-shadowed").to_str().unwrap(), "list"])
         .output()
         .expect("runner binary spawns");
@@ -63,7 +65,7 @@ fn runner_list_is_always_builtin_even_with_a_list_task() {
 }
 
 #[test]
-fn run_list_runs_a_same_named_task() {
+fn run_list_is_the_builtin_and_the_recipe_needs_a_qualifier() {
     if !just_available() {
         eprintln!("skipping: `just` not found on PATH");
         return;
@@ -79,7 +81,7 @@ fn run_list_runs_a_same_named_task() {
         ),
     ];
     for (label, binary, args) in invocations {
-        let output = Command::new(binary)
+        let output = support::command(binary)
             .args(&args)
             .output()
             .expect("binary spawns");
@@ -87,10 +89,24 @@ fn run_list_runs_a_same_named_task() {
         assert!(output.status.success(), "`{label}` should exit 0");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("project-list-recipe-ran"),
-            "`{label}` should run the project `list` recipe. stdout: {stdout}",
+            !stdout.contains("project-list-recipe-ran"),
+            "`{label}` is the builtin rung, which precedes the task rung. stdout: {stdout}",
+        );
+        assert!(
+            stdout.contains("just"),
+            "`{label}` lists the recipes. stdout: {stdout}"
         );
     }
+
+    let output = support::command(run_binary())
+        .args(["--dir", dir, "just:list"])
+        .output()
+        .expect("binary spawns");
+    assert!(output.status.success(), "`run just:list` should exit 0");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("project-list-recipe-ran"),
+        "the qualified name reaches the recipe",
+    );
 }
 
 #[test]
@@ -112,7 +128,7 @@ fn run_list_falls_back_to_builtin_when_no_task() {
             vec!["--dir", dir, "run", "list"],
         ),
     ] {
-        let output = Command::new(binary)
+        let output = support::command(binary)
             .args(&args)
             .output()
             .expect("binary spawns");

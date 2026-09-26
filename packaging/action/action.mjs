@@ -1,4 +1,5 @@
 // @ts-check
+/// <reference types="node" />
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

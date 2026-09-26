@@ -97,22 +97,25 @@ format        -- → run --quiet --bin run -- --pm npm dprint fmt               
 i             -- → install --path crates/cli                                          t             -- → test
 l             -- → clippy --all-targets --all-features -- -D warnings -D clippy::all
 -- Options --
---dir             -- Use this directory instead of the current one
---pm              -- Override the detected package manager (also reads RUNNER_PM when omitted). Valid: npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler (alias: bundle), composer
---runner          -- Override the detected task runner (also reads RUNNER_RUNNER when omitted). Valid: turbo, nx, make, just, task (alias: go-task), mise, bacon
---fallback        -- What to do when no detection signal matches: probe (default, PATH probe), npm (legacy silent fallback), error (refuse). Also reads RUNNER_FALLBACK when omitted.
---on-mismatch     -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
---explain         -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
---no-warnings     -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.
--q, --quiet       -- Graduated output policy: -q runner progress, -qq warnings + safe host quiet, -qqq recoverable error decoration, -qqqq mute. Task streams survive. RUNNER_QUIET accepts numeric levels; nested runners inherit it.
---host-stream     -- Keep the host tool's stdout clean by diverting its diagnostics to stderr: inherit (default) | stderr. Only pnpm can (via --use-stderr); other hosts no-op. Also reads RUNNER_HOST_STREAM.
---schema-version  -- Pin JSON output schema version (currently always 1). Affects --json output of doctor/list/why only.
---sequential      -- Run the given tasks sequentially. Conflicts with `--parallel`
---parallel        -- Run the given tasks in parallel. Conflicts with `--sequential`
---keep-going      -- Run every task in the chain regardless of failures. Conflicts with `--kill-on-fail`
---kill-on-fail    -- Parallel only: SIGKILL siblings on first failure. Accepted but unused in sequential mode
+--dir             -- Project directory, the current one when unset
+--pm              -- The package manager to use (npm, yarn, pnpm, bun, deno, cargo, go, uv, poetry, pipenv, bundler, composer)
+--runtime         -- The JavaScript runtime to use (bun, deno, node)
+--source          -- The task source that must supply the task (turbo, package.json, make, just, task, deno, cargo, go, bacon, mise, pyproject.toml)
+--package         -- Run <TASK> as the binary npm package <NAME> declares
+--download        -- Download packages a command needs: true, false or ask
+--no-download     -- Refuse a command that needs a download
+--dry-run         -- Print what would run and why, without running it
+--warnings        -- Print warnings
+--no-warnings     -- Hide warnings
+-q, --quiet       -- Print less, repeatable: -q through -qqqq
+--schema-version  -- Pin --json schema (currently always 1)
+--sequential      -- Chain tasks in order
+--parallel        -- Chain tasks concurrently
+--on-fail         -- What a chain does after a task fails
+--keep-going      -- Alias for --on-fail continue
+--kill-on-fail    -- Alias for --on-fail kill
 --help            -- Print help
---version         -- Print version
+--version         -- Print detailed build information
 ```
 
 ---
@@ -258,61 +261,55 @@ a long `--keep-going` run does not have to be found by scrolling:
 ```
 
 Under Actions, each failed task also lands in the Annotations panel. The
-annotations follow `[github].group_output`; the roll-up itself does not, so
-opting out of Actions decoration keeps the summary. `--quiet` silences both,
-along with everything else runner prints.
+annotations follow `[output] errors` and the roll-up follows `[output]
+summary`, so `groups = false` keeps both. `-q` hides the roll-up and `-qqq`
+the annotations.
 
 ### Quiet, all the way down
 
-Quiet is a four-rung output policy:
+`-q` is a preset over the individual `[output]` settings:
 
-| Level   | Runner output                                                      | Host diagnostics                         |
-| ------- | ------------------------------------------------------------------ | ---------------------------------------- |
-| `-q`    | Hide progress, groups, task timing, summary, and parallel prefixes | unchanged                                |
-| `-qq`   | Also hide non-fatal warnings                                       | safe host quiet mode                     |
-| `-qqq`  | Also hide recoverable error decoration                             | stronger reduction when safely supported |
-| `-qqqq` | No runner-authored text; preserve exit status                      | strongest safe reduction                 |
+| Level   | Runner output                                            | The tool                |
+| ------- | -------------------------------------------------------- | ----------------------- |
+| `-q`    | Hide progress, groups, timing, the summary, and prefixes | unchanged               |
+| `-qq`   | Also hide warnings                                       | its own quiet flag      |
+| `-qqq`  | Also hide runner's error messages                        | stronger safe reduction |
+| `-qqqq` | Print nothing of runner's own; keep the exit status      | stronger safe reduction |
 
-Larger counts clamp to `mute`. Task stdout and stderr survive every rung.
-Suppressing either requires explicit per-task `stdout = "discard"` or `stderr =
-"discard"`. `RUNNER_QUIET` accepts the same numeric levels and the resolved
-level is inherited by nested runner processes. Explicit `--explain` stays
-visible and reports the effective categories, host arguments, and safe fallback.
+Larger counts clamp to `-qqqq`. Task stdout and stderr survive every rung;
+`[tasks.<name>.output.task] stdout = false` (or `stderr`) discards one.
+`RUNNER_QUIET` takes the count, and nested runner processes inherit it.
+`--dry-run` stays visible and reports the effective settings, the tool's
+arguments, and any fallback.
 
-Host flags are adapter-specific, never inferred from similar names. See the
+The preset expands at its own layer and sets only what its row names. `-q`
+with `[output] warnings = false` hides both progress and warnings, `-qq
+--warnings` shows warnings again, and `-q` leaves a task's `[output.tool] quiet`
+alone because `-q` does not touch the tool. `RUNNER_QUIET=2` with `-q` hides
+warnings and quiets the tool, since the variable's preset sets both.
+
+Tool flags are adapter-specific, never inferred from similar names. See the
 [host quiet support matrix](docs/host-quiet-support-matrix.md) for exact flags,
 stream effects, exclusions, and version caveats.
 
-Orthogonally, `--host-stream stderr` (`RUNNER_HOST_STREAM`) asks the host to
-keep **stdout** clean by routing its diagnostics to stderr. Only pnpm has the
-primitive (`--use-stderr`); elsewhere it no-ops. It composes with any quiet
-level.
-
-Runner categories and host diagnostics are independently configurable in
-`[runner]` and `[host]`. An explicit `-q` merges with them and the quietest
-setting wins: `-q` with `[runner] warnings = false` hides both progress and
-warnings, and no config value re-enables something a quiet rung hides. Per
-task, `[tasks.<key>]` sets the host level, host stream, task streams, and the
-`progress`, `groups`, and `task_timing` switches for that task alone.
-
-For example, keep only the final chain summary while suppressing all other
-runner-authored output:
+For example, keep only the final chain summary:
 
 ```toml
-[runner]
-progress    = false
-warnings    = false
-errors      = false
-groups      = false
-task_timing = false
-summary     = true
+[output]
+progress = false
+warnings = false
+errors   = false
+groups   = false
+timing   = false
+summary  = true
 
-[host]
-diagnostics = "reduced"
+[output.tool]
+quiet = true
+
+[output.task]
+stdout = false
+stderr = false
 ```
-
-Task process output remains inherited. Set each task's `stdout`/`stderr` to
-`"discard"` when those streams should also be silent.
 
 <details>
 <summary><i>Install mechanics and outputs</i></summary>
@@ -350,7 +347,7 @@ run <target> [-- <args...>]         # alias for `runner run`
 
 runner install [--frozen] [--no-scripts|--scripts] [--no-tools]  # install dependencies
 runner clean [-y] [--include-framework]
-runner list [--raw] [--json]        # list available tasks
+runner list [--raw] [--json] [--only <source>]  # list available tasks
 runner info [--json]                # show detected project info
 runner doctor [--json]              # show every resolver signal
 runner why <task> [--json]          # explain how a task would dispatch
@@ -460,8 +457,14 @@ instead of spawning copies of itself.
 
 `--pm` says who installs and who invokes a script. `--runtime` says what the
 script and the binaries it shells out to actually execute on. Each runtime uses
-its own script runner, file runner and package-exec primitive; the package
-manager gets no vote:
+its own script runner, file runner and package-exec primitive.
+
+A package manager chosen beside a runtime still dispatches the task. npm, pnpm
+and Yarn run on Node, so `--pm pnpm --runtime node` runs `pnpm run <task>`.
+Bun can stand in for Node: `--pm pnpm --runtime bun` runs `pnpm run <task>`
+with Bun answering to `node` for the task's scripts. A runtime that cannot
+stand in for the one the package manager runs on, such as Deno under pnpm, is
+refused with both names:
 
 | `--runtime` | `package.json` script  | local file        | ad-hoc binary |
 | ----------- | ---------------------- | ----------------- | ------------- |
@@ -500,8 +503,9 @@ under `--runtime deno`) outranks the other sources while a runtime is forced,
 so `--runtime bun build` in a turborepo runs the script rather than the turbo
 task.
 
-Set it per project with `[runtime].js`, or per invocation with
-`RUNNER_RUNTIME`. Nested `runner`/`run` calls inherit it.
+Set it per project with `[runtime] javascript`, per task with
+`[tasks.<name>.runtime] javascript`, or per invocation with `RUNNER_RUNTIME`.
+Nested `runner`/`run` calls inherit the flag and the variable.
 
 ### Package selection
 
@@ -554,8 +558,10 @@ runner config validate      # parse + check it; exit 2 on error
 runner config path          # print the resolved runner.toml path
 ```
 
-Settings layer, highest priority first: **CLI flags → `RUNNER_*` env vars →
-`runner.toml` → manifest declarations** (`packageManager`, `devEngines`).
+Settings layer, highest priority first: **CLI flags, `RUNNER_*` variables,
+`[tasks.<name>]`, the rest of `runner.toml`, project evidence** (lockfiles,
+`packageManager`, `devEngines`), **defaults**. An explicit `false` is a value
+and overrides the layers below it. `env` maps merge by variable name.
 
 `runner config init` writes a `#:schema` directive on line 1, so editors with a
 TOML language server (tombi, taplo) get autocompletion and validation with no
@@ -564,112 +570,99 @@ extra setup.
 ```toml
 #:schema https://kjanat.github.io/runner/schemas/runner.toml.schema.json
 
-# Force the package manager per ecosystem, overriding lockfile detection.
-[pm]
-node   = "pnpm"  # npm | pnpm | yarn | bun | deno
-python = "uv"    # uv | poetry | pipenv
+# Downloads a command needs: true, false or "ask". Unset, runner asks on an
+# interactive terminal outside CI and allows elsewhere. "ask" without a
+# terminal refuses.
+download = "ask"
 
-[runner]
-progress     = true
-warnings     = true
-errors       = true
-groups       = true
-task_timing  = true
-summary      = true
-fatal_errors = true
+[runtime]
+javascript = "bun"  # node | bun | deno
 
-[host]
-diagnostics = "normal"   # normal | quiet | reduced
-stream      = "inherit"  # inherit | stderr
-
-# Per-task configuration, keyed by task name the way Cargo's [dependencies] is
-# keyed by crate name. `prefer` (global rank) and `overrides` (legacy per-task
-# pin map) are reserved keys; every other key is a task entry. A task entry is
-# either a string (shorthand source/runner pin, like serde = "1.0") or a table
-# of settings (runner, verbosity, ... like serde = { version, features }).
-# Labels are task runners, package managers (bun, npm, ... map to package.json),
-# or source names (package.json). Rank-only: unlisted sources still run. An
-# explicit qualifier (package.json:test), --runner, or --pm still outranks these.
-[tasks]
-prefer    = ["turbo", "bun"]                  # global order: turbo, then package.json
-overrides = { dev = "bun", build = "turbo" }  # legacy per-task pins beat the order
-
-# Task entries (Cargo-[dependencies] style):
-# build = "turbo"                                  # string → source/runner pin
-# test  = { runner = "bun", verbosity = "quiet" }  # table of per-task settings
-# [tasks.lint]                                      # sub-table form
-# verbosity = { level = "quiet", stream = "stderr" }  # off|quiet|very-quiet|silent|mute
-# stdout = "inherit"  # inherit | discard
-# stderr = "inherit"  # inherit | discard
-# progress = true     # this task's dispatch arrow
-# groups = true       # this task's GitHub Actions group
-# task_timing = true  # this task's chain timing line
-
-# `verbosity` is the per-task form of the -q / --host-stream flags: a string
-# (off|quiet|very-quiet|silent|mute) or a { level, stream } table, deep-merged under
-# any global flag/env. It quiets the host tool for that task. The runner's own
-# lines for the task follow `progress`, `groups`, and `task_timing`; a global
-# `-q` or `[runner]` false still wins over a per-task true.
-#
-# Keys layer from least to most specific, per axis: `site` (every task by that
-# name), `package.json:site` (that source), `rfc:site` (workspace member `rfc`),
-# `rfc:package.json#site` (the FQN `doctor --json` prints).
-# [tasks."rfc:site"]
-# stdout = "discard"
-
-# Deprecated, superseded by [tasks] above. Legacy ranked allow-list of task
-# runners that also *restricts* candidates (a same-named task under an unlisted
-# runner is rejected). Still honored for existing configs, with a warning.
-# [task_runner]
-# prefer = ["just", "turbo"]  # turbo, nx, make, just, task, mise, bacon
-
-# Restrict which detected package managers `runner install` runs. Empty/absent
-# installs every detected PM. Overridden by RUNNER_INSTALL_PMS
-# (comma-separated). `[pm]` above only scopes script dispatch, not the install
-# fan-out.
-# `on_collision` decides what happens when two of them write the same directory
-# (bun and a nodeModulesDir-enabled deno both writing node_modules). "resolve"
-# (the default) installs with the PM the resolver already picked for the
-# ecosystem and skips the other, saying so; naming both in `pms` runs both, one
-# after another over the shared tree. "error" refuses to pick and exits 2.
-# Overridden by RUNNER_INSTALL_ON_COLLISION.
-# `scripts` controls install-time lifecycle scripts (the main supply-chain
-# attack surface): "deny" skips them where the PM allows it
-# (npm/yarn/pnpm/bun/composer; deno already denies); "allow" forces them on
-# where the PM can express it (npm --no-ignore-scripts, yarn-berry
-# YARN_ENABLE_SCRIPTS=true, deno --allow-scripts), useful now that npm/pnpm are
-# moving to scripts-off-by-default. bun and pnpm (>=10) can't be forced on by a
-# flag (their dependency build scripts need a trustedDependencies /
-# onlyBuiltDependencies manifest allowlist runner won't write), so they warn.
-# Precedence: CLI --no-scripts/--scripts > RUNNER_INSTALL_SCRIPTS > [install].scripts.
-# The toolchain step (`mise install`, when a mise config is detected) has no
-# config key: detection decides whether it applies, and `--no-tools` turns it
-# off for one invocation.
-[install]
-pms          = ["bun"]    # only install with these; each must be detected
-scripts      = "deny"     # deny | allow  (absent = each PM's own default)
-on_collision = "resolve"  # resolve (one writer per install dir) | error
-
-# Resolver policy knobs.
-[resolution]
-fallback    = "probe"  # probe (PATH probe) | npm (legacy) | error
-on_mismatch = "warn"   # warn | error (exit 2) | ignore  (manifest vs lockfile)
-
-# Failure policy for `-s`/`-p` chains and `install <tasks>`.
-# keep_going and kill_on_fail are mutually exclusive; setting both is an error.
 [chain]
-keep_going   = false  # run every task despite failures (same as -k)
-kill_on_fail = false  # parallel: kill siblings on first failure (same as -K)
+on_fail = "wait"  # continue | wait | kill
 
-# GitHub Actions output grouping (active only under Actions).
-[github]
-group_output   = true  # ::group:: each task; annotate failed chain tasks
-group_parallel = true  # buffer parallel tasks, print each as one block
+[install]
+frozen  = false  # install exactly what the lockfile pins
+scripts = false  # dependencies' lifecycle scripts; unset keeps each manager's default
+tools   = true   # `mise install` first when a mise config is detected
 
-# Parallel (`-p`) output presentation outside GitHub Actions.
-[parallel]
-grouped = false  # buffer + print each task as one block on completion
+[output]
+warnings = true
+errors   = true  # runner's error text; a failed command still fails
+summary  = true  # the roll-up after a chain
+progress = true  # the `→ source task` line
+groups   = true  # GitHub Actions groups
+timing   = true  # each chain task's timing line
+
+[output.tool]
+quiet = false  # pass the tool its own quiet flag (npm --silent, make -s)
+
+[output.task]
+stdout = true  # false discards the task's stdout
+stderr = true
+
+[output.parallel]
+buffer = false  # print each parallel task as one block; on by default under Actions
+
+[env]
+FORCE_COLOR = "1"
+
+[tools.npm.env]
+npm_config_fund = "false"
+
+# `source` is a hard selection: the task must come from that source.
+[tasks.build]
+source  = "turbo"
+pm      = "pnpm"
+runtime = { javascript = "node" }
+env     = { NODE_ENV = "production" }
+
+[tasks.build.output]
+timing = false
+
+# Keys layer from least to most specific: `site` (every task by that name),
+# `package.json:site` (that source), `rfc:site` (workspace member `rfc`),
+# `rfc:package.json#site` (the name `doctor --json` prints).
+[tasks."rfc:site".output.task]
+stdout = false
 ```
+
+`[tasks.<name>.output]` takes the same `progress`, `groups`, `timing`, `tool`
+and `task` settings as `[output]`.
+
+`scripts = false` skips install-time lifecycle scripts where the package
+manager allows it (npm, yarn, pnpm, bun, composer; deno denies them already).
+`scripts = true` forces them on where the manager can express it. bun and pnpm
+10+ need a `trustedDependencies` / `onlyBuiltDependencies` allowlist in the
+manifest for that and warn instead.
+
+### Environment variables
+
+Every flag reads a variable named after it: `RUNNER_<FLAG>` for a global flag
+and `RUNNER_<COMMAND>_<FLAG>` for a command's own. A `--no-` form and an alias
+set the same variable as their flag. The `run` binary's own flags read
+`RUNNER_RUN_*`.
+
+| Variable                 | Flag                                       |
+| ------------------------ | ------------------------------------------ |
+| `RUNNER_DIR`             | `--dir`                                    |
+| `RUNNER_PM`              | `--pm`                                     |
+| `RUNNER_RUNTIME`         | `--runtime`                                |
+| `RUNNER_SOURCE`          | `--source`                                 |
+| `RUNNER_PACKAGE`         | `--package`                                |
+| `RUNNER_DOWNLOAD`        | `--download`, `--no-download`              |
+| `RUNNER_ON_FAIL`         | `--on-fail`, `-k`, `-K`                    |
+| `RUNNER_DRY_RUN`         | `--dry-run`                                |
+| `RUNNER_WARNINGS`        | `--warnings`, `--no-warnings`              |
+| `RUNNER_QUIET`           | `-q` (takes the count)                     |
+| `RUNNER_INSTALL_FROZEN`  | `runner install --frozen`, `--no-frozen`   |
+| `RUNNER_INSTALL_SCRIPTS` | `runner install --scripts`, `--no-scripts` |
+| `RUNNER_INSTALL_TOOLS`   | `runner install --tools`, `--no-tools`     |
+| `RUNNER_LIST_ONLY`       | `runner list --only` (comma-separated)     |
+
+Boolean variables take `1`/`0`, `true`/`false`, `yes`/`no` or `on`/`off`.
+`runner doctor` reports a variable with an invalid value and keeps going;
+other commands refuse to run.
 
 Unknown keys are rejected at parse time. Every field is optional; omit a
 section to keep its defaults. A committed JSON Schema lives at
@@ -688,11 +681,10 @@ runner lsp                  # speaks LSP over stdio
 It provides, reusing the same logic the CLI uses:
 
 - **diagnostics**, the exact `runner config validate` checks (syntax, unknown
-  keys, bad package-manager / runner / source labels, conflicting policies) plus
-  deprecation hints, live as you type;
+  keys, bad package-manager / runtime / source labels), live as you type;
 - **hover**, section and field documentation, sourced from the JSON Schema;
-- **completion**, section names, field names, and value sets (package managers,
-  the `[tasks]` runner/PM/source labels, policy enums, booleans).
+- **completion**, section names, field names, task names, and value sets
+  (package managers, runtimes, sources, policy enums, booleans).
 
 Point your editor's generic LSP client at `runner lsp` for files named
 `runner.toml`. Example (Neovim):
