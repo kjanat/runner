@@ -240,6 +240,27 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - The `schema` cargo feature is removed. Every build carries schemars, and
   `cargo schema` needs no flag.
 
+- `runner why`, `doctor`, `list` and completion rank same-named tasks with
+  the key `runner run` selects by: a `[tasks.overrides]` pin, then the tier a
+  chosen runner, the prefer list or a chosen package manager or runtime puts
+  the source in, then the source's position among the sources that
+  dispatcher runs, then the source's task priority. The default priority is
+  turbo, `package.json`, Makefile, justfile, Taskfile, `deno.json`, Cargo
+  aliases, Go, bacon, mise, `pyproject.toml`. `why --json` reports the key
+  as `match.rank`, which replaces `depth`, `display_order` and
+  `source_priority`, and each `doctor --json` duplicate-name conflict names
+  the field that decided it.
+
+- Two lockfiles of one ecosystem with equal standing resolve in the `PATH`
+  probe order: npm, bun, pnpm, yarn, deno.
+
+- A task addressed by source or workspace member that does not exist there
+  is refused with the address, as `task "site" not found in package.json of
+  workspace member nope`, by `run`, both chain modes and `why` alike.
+
+- A `packageManager` value that names no package manager is reported by the
+  `package.json` it is in, members included.
+
 ### Fixed
 
 - `--frozen` refuses before spawning a package manager whose lockfile is

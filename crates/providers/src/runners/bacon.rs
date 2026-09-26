@@ -15,6 +15,7 @@ pub const PROVIDER: Provider = Provider {
     signals: &[Signal::File("bacon.toml"), Signal::Probe("bacon")],
     writes: &[],
     caps: Capabilities {
+        task_priority: 8,
         run_default: Some(t![Quiet, Sep("--"), Args]),
         run_task: Some(RunTaskCap {
             argv: t![Task, Sep("--"), Args],

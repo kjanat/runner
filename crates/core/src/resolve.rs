@@ -233,9 +233,9 @@ fn extract_all(
 /// A provider is present in a scope when a signal stronger than a `PATH`
 /// probe was found there, or when policy names it and it is on `PATH`.
 /// Within an ecosystem the order is the policy's choice first, then by the
-/// strongest evidence, the same rule for every ecosystem. Unless policy is
-/// strict, a task source no present package manager can run gets the first
-/// one on `PATH`, in `probe_priority` order.
+/// strongest evidence, then `probe_priority`, the same rule for every
+/// ecosystem. Unless policy is strict, a task source no present package
+/// manager can run gets the first one on `PATH`, in `probe_priority` order.
 ///
 /// # Errors
 /// Returns observation failures.
@@ -268,6 +268,7 @@ pub fn resolve_presence(
             p.because
                 .first()
                 .map_or((Weight::Probed, 0), Evidence::strength),
+            provider.for_present(p).caps.probe_priority,
             provider.id,
         )
     });

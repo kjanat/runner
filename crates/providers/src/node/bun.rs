@@ -80,7 +80,7 @@ pub const PROVIDER: Provider = Provider {
         }),
         bins: Some(super::BINS),
         workspaces: Some(WorkspaceCap {
-            members: super::workspace::members,
+            declarations: super::workspace::declarations,
         }),
         clean: Some(super::CLEAN),
         as_runtime: Some(RuntimeCap {

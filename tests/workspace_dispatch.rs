@@ -377,10 +377,7 @@ fn an_unknown_member_prefix_is_reported_not_sent_to_npx() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());
-    assert!(
-        stderr.contains("no workspace member named \"nope\""),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("workspace member nope"), "stderr: {stderr}");
 }
 
 /// Whether some stdout line names `expected` once both sides are canonical.

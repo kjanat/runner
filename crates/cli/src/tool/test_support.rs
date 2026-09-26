@@ -55,43 +55,70 @@ pub(crate) fn project_root() -> PathBuf {
     })
 }
 
-/// Materialise the source files named by a unit fixture.
-pub(crate) fn seed_context(ctx: &crate::types::ProjectContext) {
+/// Declare the provider labelled `label` in a fixture and observe it again.
+pub(crate) fn declare(ctx: &mut crate::types::ProjectContext, label: &str) {
+    write_signal(&ctx.root, label);
+    seed_context(ctx);
+}
+
+/// Write the first file signal of the provider labelled `label` into `root`.
+pub(crate) fn write_signal(root: &Path, label: &str) {
     use runner_core::Signal;
     assert!(
-        ctx.root.starts_with(std::env::temp_dir()),
+        root.starts_with(std::env::temp_dir()),
         "fixture must be temporary"
     );
-    let labels = ctx
-        .package_managers
-        .iter()
-        .map(|pm| pm.label())
-        .chain(ctx.task_runners.iter().map(|runner| runner.label()))
-        .chain(ctx.tasks.iter().map(|task| task.source.label()));
-    for label in labels {
-        let provider = runner_providers::REGISTRY.by_label(label).unwrap();
-        let Some(name) = provider.signals.iter().find_map(|signal| match signal {
-            Signal::File(name)
-            | Signal::FileCaseless(name)
-            | Signal::FileUpwards(name)
-            | Signal::Lockfile(name) => Some(name),
-            _ => None,
-        }) else {
-            continue;
-        };
-        let path = ctx.root.join(name);
-        if path.exists() {
-            continue;
-        }
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let body = if path
-            .extension()
-            .is_some_and(|ext| ext == "json" || ext == "jsonc")
-        {
-            "{}"
-        } else {
-            ""
-        };
-        fs::write(path, body).unwrap();
+    let provider = runner_providers::REGISTRY.by_label(label).unwrap();
+    let Some(name) = provider.signals.iter().find_map(|signal| match signal {
+        Signal::File(name)
+        | Signal::FileCaseless(name)
+        | Signal::FileUpwards(name)
+        | Signal::Lockfile(name) => Some(name),
+        _ => None,
+    }) else {
+        return;
+    };
+    let path = root.join(name);
+    if path.exists() {
+        return;
     }
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let body = if path
+        .extension()
+        .is_some_and(|ext| ext == "json" || ext == "jsonc")
+    {
+        "{}"
+    } else {
+        ""
+    };
+    fs::write(path, body).unwrap();
+}
+
+/// Declare the sources of a unit fixture's tasks and observe it, with the
+/// fixture's own tasks.
+pub(crate) fn seed_context(ctx: &mut crate::types::ProjectContext) {
+    seed_context_with(ctx, &crate::resolver::ResolutionOverrides::default());
+}
+
+/// [`seed_context`] under the invocation's `overrides`.
+pub(crate) fn seed_context_with(
+    ctx: &mut crate::types::ProjectContext,
+    overrides: &crate::resolver::ResolutionOverrides,
+) {
+    for task in &ctx.tasks {
+        write_signal(&ctx.root, task.source.label());
+    }
+    ctx.project = crate::detect::observe(ctx, overrides)
+        .map(|mut project| {
+            project.tasks = ctx
+                .tasks
+                .iter()
+                .filter_map(crate::commands::run::core::task)
+                .collect();
+            project
+        })
+        .map_err(|error| crate::types::Unobserved {
+            kind: error.kind(),
+            message: error.to_string(),
+        });
 }

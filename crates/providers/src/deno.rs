@@ -1,5 +1,9 @@
 //! Deno.
 
+use std::path::Path;
+
+use crate::workspace::Manifest;
+
 use runner_core::{
     Capabilities, CleanCap, Declared, Discovery, Ecosystem, ExecCap, Field, Frozen, Hooks,
     InstallCap, Kind, Lockfiles, NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap,
@@ -18,8 +22,58 @@ fn dev_engines(field: &Field<'_>) -> Option<Declared> {
 
 const MANIFEST: [Signal; 2] = crate::node::manifest_signals(package_manager, dev_engines);
 
+const CONFIGS: [&str; 2] = ["deno.json", "deno.jsonc"];
+
+/// The Deno config in `dir` as a JSON value, `None` when there is none.
+fn config(dir: &Path) -> Result<Option<serde_json::Value>, runner_core::Warning> {
+    for name in CONFIGS {
+        let path = dir.join(name);
+        if let Some(text) = crate::workspace::read(&path)? {
+            return json5::from_str(&text).map(Some).map_err(|error| {
+                runner_core::Warning::general(format!("{}: {error}", path.display()))
+            });
+        }
+    }
+    Ok(None)
+}
+
+/// The workspace a Deno config's `"workspace"` declares at `root`, each member
+/// carrying a Deno config or a package manifest.
+fn declarations(root: &Path) -> Result<Vec<runner_core::Declaration>, runner_core::Warning> {
+    let globs = config(root)?.and_then(|config| match &config["workspace"] {
+        serde_json::Value::Array(list) => Some(list.clone()),
+        serde_json::Value::Object(map) => map
+            .get("members")
+            .and_then(serde_json::Value::as_array)
+            .cloned(),
+        _ => None,
+    });
+    let Some(globs) = globs else {
+        return Ok(Vec::new());
+    };
+    let globs: Vec<String> = globs
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect();
+    Ok(vec![runner_core::Declaration {
+        kind: "deno.json workspace",
+        members: crate::workspace::members(root, &globs, member_name)?,
+    }])
+}
+
+fn member_name(dir: &Path) -> Result<Manifest, runner_core::Warning> {
+    let name = |document: &serde_json::Value| Manifest::named(document["name"].as_str());
+    if let Some(config) = config(dir)? {
+        return Ok(name(&config));
+    }
+    Ok(runner_core::read_manifest(dir, crate::node::MANIFESTS)
+        .map_err(|error| runner_core::Warning::general(error.to_string()))?
+        .map_or(Manifest::Absent, |(_, document)| name(&document)))
+}
+
 /// The lockfile the nearest Deno config names with `"lock"`, relative to that config.
-fn lockfiles(dir: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+fn lockfiles(dir: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     #[derive(serde::Deserialize)]
     struct Config {
         lock: Option<serde_json::Value>,
@@ -72,6 +126,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: crate::node::WRITES,
     caps: Capabilities {
+        task_priority: 5,
         probe_priority: 4,
         package_exec: Some(ExecCap {
             program: None,
@@ -128,6 +183,7 @@ pub const PROVIDER: Provider = Provider {
             framework_dirs: &[],
             dirs: &[".deno"],
         }),
+        workspaces: Some(runner_core::WorkspaceCap { declarations }),
         quiet: QuietSupport::flag(t!["-q"]),
         ..Capabilities::NONE
     },

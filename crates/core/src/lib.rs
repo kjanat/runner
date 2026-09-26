@@ -24,6 +24,7 @@ pub mod template;
 pub mod tree;
 pub mod verbosity;
 pub mod warning;
+pub mod workspace;
 
 pub use capability::{
     BinDirs, BinsCap, Capabilities, CleanCap, Discovery, ExecCap, Frozen, HealthCap, InstallCap,
@@ -36,13 +37,13 @@ pub use env::{EnvLayers, EnvTable, LOADER_HOOKS, project_may_set};
 pub use evidence::{Evidence, Present, Weight};
 pub use execute::execute;
 pub use health::Health;
-pub use observe::observe;
+pub use observe::{observe, read_manifest};
 pub use op::Op;
 pub use plan::{
-    Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, Trust, Unsafe, decided_by,
-    dependency_plan, discover, dispatch, dispatch_from, ecosystem_of, file_plan, has_local_prefix,
-    is_directly_executable, plan, plan_argv, plan_bin, plan_found, plan_with, read_shebang,
-    resolve_path, scope_dir, select,
+    Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, TaskRank, Trust, Unsafe,
+    decided_by, dependency_plan, discover, dispatch, dispatch_from, ecosystem_of, file_plan,
+    has_local_prefix, is_directly_executable, plan, plan_argv, plan_bin, plan_found, plan_with,
+    ranked_tasks, read_shebang, resolve_path, scope_dir, select,
 };
 pub use policy::{
     Choice, Layer, OnMismatch, PerEcosystem, Policy, ReachPolicy, ScriptPolicy, TrustPolicy,
@@ -60,6 +61,7 @@ pub use template::{Piece, Rendered, Request, ScriptRequest, Template};
 pub use tree::Tree;
 pub use verbosity::Verbosity;
 pub use warning::Warning;
+pub use workspace::{Declaration, Member, Workspace};
 
 mod script;
 

@@ -294,7 +294,7 @@ fn task_key_items(
     };
     // First source wins on duplicate names, matching dispatch display.
     let mut tasks: BTreeMap<String, (&'static str, Option<String>)> = BTreeMap::new();
-    for task in crate::detect::detect(dir).tasks {
+    for task in crate::detect::detect(dir, &crate::resolver::ResolutionOverrides::default()).tasks {
         tasks
             .entry(task.name)
             .or_insert_with(|| (task.source.label(), task.description));

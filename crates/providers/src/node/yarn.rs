@@ -95,7 +95,7 @@ const CLASSIC: Capabilities = Capabilities {
     test: Some(super::TEST),
     bins: Some(super::BINS),
     workspaces: Some(WorkspaceCap {
-        members: super::workspace::members,
+        declarations: super::workspace::declarations,
     }),
     clean: Some(super::CLEAN),
     quiet: QuietSupport::flag(t!["--silent"]),
@@ -134,7 +134,7 @@ const BERRY: Capabilities = Capabilities {
     test: Some(super::TEST),
     bins: Some(super::BINS),
     workspaces: Some(WorkspaceCap {
-        members: super::workspace::members,
+        declarations: super::workspace::declarations,
     }),
     clean: Some(super::CLEAN),
     ..Capabilities::NONE

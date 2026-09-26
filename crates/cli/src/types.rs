@@ -1,7 +1,6 @@
 //! Shared types used across detection, commands, and tool modules.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -278,72 +277,14 @@ pub(crate) struct WorkspaceMember {
 }
 
 impl WorkspaceMember {
-    /// A member whose `label` is its name, to be disambiguated against its
-    /// siblings by [`WorkspaceMember::disambiguate`].
+    /// A member whose `label` is its name.
+    #[cfg(test)]
     pub(crate) fn new(name: String, path: String, dir: PathBuf) -> Self {
         Self {
             label: name.clone(),
             name,
             path,
             dir,
-        }
-    }
-
-    /// Relabel every member whose name a sibling shares to its path, so
-    /// each label addresses one member.
-    pub(crate) fn disambiguate(members: &mut [Self]) {
-        let mut counts: HashMap<&str, usize> = HashMap::with_capacity(members.len());
-        for member in &*members {
-            *counts.entry(member.name.as_str()).or_default() += 1;
-        }
-        let shared: HashSet<String> = counts
-            .into_iter()
-            .filter(|&(_, count)| count > 1)
-            .map(|(name, _)| name.to_owned())
-            .collect();
-        for member in members {
-            if shared.contains(&member.name) {
-                member.label.clone_from(&member.path);
-            }
-        }
-    }
-
-    /// Whether `scope` addresses this member: its name, its relative path,
-    /// or its directory name.
-    pub(crate) fn addressed_by(&self, scope: &str) -> bool {
-        self.name == scope
-            || self.path == scope
-            || self
-                .dir
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy() == scope)
-    }
-}
-
-/// The file at the workspace root that declares its members.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum WorkspaceKind {
-    /// `package.json` / `package.json5` / `package.yaml` `"workspaces"`.
-    PackageJson,
-    /// `pnpm-workspace.yaml` `packages`.
-    PnpmWorkspace,
-    /// `lerna.json` `packages`.
-    Lerna,
-    /// `deno.json` / `deno.jsonc` `"workspace"`.
-    DenoJson,
-    /// `Cargo.toml` `[workspace].members`.
-    Cargo,
-}
-
-impl WorkspaceKind {
-    /// Human-readable declaration label.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::PackageJson => "package.json workspaces",
-            Self::PnpmWorkspace => "pnpm-workspace.yaml",
-            Self::Lerna => "lerna.json",
-            Self::DenoJson => "deno.json workspace",
-            Self::Cargo => "Cargo.toml workspace",
         }
     }
 }
@@ -354,33 +295,13 @@ impl WorkspaceKind {
 pub(crate) struct Workspace {
     /// Directory holding the declarations.
     pub root: PathBuf,
-    /// Every declaration found, in detection order.
-    pub kinds: Vec<WorkspaceKind>,
+    /// Every declaration found, e.g. `pnpm-workspace.yaml`.
+    pub kinds: Vec<&'static str>,
     /// Members in path order.
     pub members: Vec<Arc<WorkspaceMember>>,
     /// The member containing the invocation directory, when runner was
     /// started inside one.
     pub current: Option<Arc<WorkspaceMember>>,
-}
-
-impl Workspace {
-    /// Members addressed by `scope` (see [`WorkspaceMember::addressed_by`]).
-    /// An exact name or path match wins over a bare directory name, so
-    /// `apps/web` and `tools/web` are only ambiguous when addressed as `web`.
-    pub(crate) fn resolve(&self, scope: &str) -> Vec<&Arc<WorkspaceMember>> {
-        let exact: Vec<_> = self
-            .members
-            .iter()
-            .filter(|member| member.name == scope || member.path == scope)
-            .collect();
-        if !exact.is_empty() {
-            return exact;
-        }
-        self.members
-            .iter()
-            .filter(|member| member.addressed_by(scope))
-            .collect()
-    }
 }
 
 /// Identifies the config file a [`Task`] was extracted from.
@@ -471,16 +392,6 @@ pub(crate) enum DetectionWarning {
         /// What happens instead.
         now: &'static str,
     },
-    /// `package.json` declared a `packageManager` value that doesn't
-    /// name a script-dispatching PM (typo, unsupported ecosystem,
-    /// empty version after `@`, etc.). Surfaced so the user sees what
-    /// the resolver couldn't honour instead of getting a silent
-    /// fall-through to lockfile/PATH probe.
-    UnparseablePackageManager {
-        /// The raw value as written in `package.json`, verbatim, so
-        /// the user can spot their typo without re-reading the file.
-        raw: String,
-    },
     /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
     /// that doesn't parse, and the command chose to report it instead
     /// of dying; `runner doctor` must be able to diagnose the broken
@@ -535,7 +446,7 @@ impl DetectionWarning {
     /// across the flat-struct → enum refactor.
     pub(crate) fn source(&self) -> &'static str {
         match self {
-            Self::PmMismatch { .. } | Self::UnparseablePackageManager { .. } => "package.json",
+            Self::PmMismatch { .. } => "package.json",
             Self::PathProbeFallback { .. } => "resolver",
             Self::Removed { .. } => "runner",
             Self::Pipeline(warning) => warning
@@ -593,11 +504,6 @@ impl DetectionWarning {
                 }
             }
             Self::Removed { name, now } => format!("{name} is no longer read; {now}"),
-            Self::UnparseablePackageManager { raw } => format!(
-                "packageManager value {raw:?} doesn't name a script-dispatching package manager \
-                 (expected one of npm|pnpm|yarn|bun|deno, optionally followed by @<version>); \
-                 declaration ignored, falling back to lockfile / PATH probe",
-            ),
             Self::InvalidEnvOverride { var, message, .. } => {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
             }
@@ -632,35 +538,29 @@ pub(crate) struct ProjectContext {
     /// Absolute path to the project root that was scanned: the workspace
     /// root when `cwd` sits inside a declared workspace, else `cwd`.
     pub root: PathBuf,
-    /// Detected package managers, ordered by detection priority.
-    pub package_managers: Vec<PackageManager>,
-    /// Detected task runners.
-    pub task_runners: Vec<TaskRunner>,
     /// All extracted tasks, sorted by source then name.
     pub tasks: Vec<Task>,
-    /// Expected Node.js version from `.nvmrc`, `.node-version`, etc.
-    pub node_version: Option<NodeVersion>,
-    /// Currently installed Node.js version (from `node --version`).
-    pub current_node: Option<String>,
-    /// Whether the project appears to be a monorepo.
-    pub is_monorepo: bool,
     /// Workspace declarations at the root and their expanded members.
     pub workspace: Option<Workspace>,
-    /// Which package managers materialize which install directory. A fact,
-    /// not a verdict: whether two writers sharing one directory is a problem
-    /// depends on the install set, which detection cannot know.
-    pub install_dirs: Vec<InstallDir>,
     /// Non-fatal detection issues surfaced to task-facing commands.
     pub warnings: Vec<DetectionWarning>,
+    /// The core's observation and resolution of the tree under this
+    /// invocation's policy.
+    pub project: Result<runner_core::Project, Unobserved>,
 }
 
-/// One install directory and every detected package manager that writes it.
+/// An observation that failed, kept so every command that needs the project
+/// reports the same failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InstallDir {
-    /// Path relative to the project root, e.g. `"node_modules"`.
-    pub dir: &'static str,
-    /// Writers in detection order.
-    pub writers: Vec<PackageManager>,
+pub(crate) struct Unobserved {
+    pub kind: std::io::ErrorKind,
+    pub message: String,
+}
+
+impl From<&Unobserved> for std::io::Error {
+    fn from(unobserved: &Unobserved) -> Self {
+        Self::new(unobserved.kind, unobserved.message.clone())
+    }
 }
 
 impl Task {
@@ -722,10 +622,64 @@ impl ProjectContext {
 
     /// Returns the first Node-ecosystem package manager, if any.
     pub(crate) fn primary_node_pm(&self) -> Option<PackageManager> {
-        self.package_managers
-            .iter()
-            .copied()
-            .find(|pm| pm.is_node())
+        self.package_managers().into_iter().find(|pm| pm.is_node())
+    }
+
+    /// The package managers the root shows in its files, strongest first.
+    pub(crate) fn package_managers(&self) -> Vec<PackageManager> {
+        self.observed(runner_core::Kind::PACKAGE_MANAGER)
+            .filter_map(PackageManager::from_label)
+            .collect()
+    }
+
+    /// The task runners the root shows in its files.
+    pub(crate) fn task_runners(&self) -> Vec<TaskRunner> {
+        self.observed(runner_core::Kind::TASK_SOURCE)
+            .filter_map(TaskRunner::from_label)
+            .collect()
+    }
+
+    /// The Node.js version the root expects.
+    pub(crate) fn node_version(&self) -> Option<NodeVersion> {
+        crate::detect::node_version(&self.root)
+    }
+
+    /// The installed Node.js version, asked of `node` only for a project that
+    /// expects a version or has a Node package manager.
+    pub(crate) fn current_node(&self) -> Option<String> {
+        (self.node_version().is_some() || self.package_managers().iter().any(|pm| pm.is_node()))
+            .then(crate::detect::current_node)
+            .flatten()
+    }
+
+    /// Whether the project is a workspace or run by a monorepo task runner.
+    pub(crate) fn is_monorepo(&self) -> bool {
+        self.workspace.is_some()
+            || self
+                .task_runners()
+                .iter()
+                .any(|runner| matches!(runner, TaskRunner::Turbo | TaskRunner::Nx))
+    }
+
+    /// The labels of the providers of `kind` a root file shows, not only a
+    /// `PATH` probe or the environment.
+    fn observed(&self, kind: runner_core::Kind) -> impl Iterator<Item = &'static str> {
+        let mut labels: Vec<&'static str> = Vec::new();
+        for present in self.project.iter().flat_map(|project| &project.present) {
+            let provider = runner_providers::REGISTRY.by_id(present.provider);
+            let shown = present
+                .because
+                .first()
+                .is_some_and(|evidence| evidence.weight <= runner_core::Weight::Configured);
+            if present.scope == runner_core::Scope::Root
+                && shown
+                && provider.kind.intersects(kind)
+                && !labels.contains(&provider.label)
+            {
+                labels.push(provider.label);
+            }
+        }
+        labels.into_iter()
     }
 }
 
@@ -1194,9 +1148,7 @@ fn split_operator(token: &str) -> (&str, &str) {
 
 /// Parse `current` (a `node --version`-style string with the `v`
 /// already stripped by detection) into a full [`semver::Version`],
-/// padding bare `major`/`major.minor` forms to a triple. Deliberately
-/// duplicates the padding in `tool::node::normalize_version`; `types`
-/// must not grow a dependency on `tool`.
+/// padding bare `major`/`major.minor` forms to a triple.
 fn parse_current_version(current: &str) -> Option<semver::Version> {
     let padded = match current.split('.').count() {
         1 => format!("{current}.0.0"),
@@ -1256,7 +1208,7 @@ mod tests {
         use std::path::PathBuf;
         use std::sync::Arc;
 
-        use super::{Task, TaskSource, Workspace, WorkspaceKind, WorkspaceMember};
+        use super::{Task, TaskSource, Workspace, WorkspaceMember};
 
         let mut members = vec![
             WorkspaceMember::new(
@@ -1275,10 +1227,11 @@ mod tests {
                 PathBuf::from("/ws/tools/web"),
             ),
         ];
-        WorkspaceMember::disambiguate(&mut members);
+        members[0].label = "apps/web".to_string();
+        members[2].label = "tools/web".to_string();
         let workspace = Workspace {
             root: PathBuf::from("/ws"),
-            kinds: vec![WorkspaceKind::PackageJson],
+            kinds: vec!["package.json workspaces"],
             members: members.into_iter().map(Arc::new).collect(),
             current: None,
         };
@@ -1305,11 +1258,6 @@ mod tests {
             spellings,
             vec!["apps/web:build", "api:build", "tools/web:build"],
         );
-        for (task, member) in tasks.iter().zip(&workspace.members) {
-            let resolved = workspace.resolve(task.scope());
-            assert_eq!(resolved.len(), 1, "{} is ambiguous", task.scope());
-            assert_eq!(resolved[0].dir, member.dir);
-        }
     }
 
     #[test]
@@ -1444,14 +1392,17 @@ mod tests {
     fn detection_warning_can_be_hashed() {
         use std::collections::HashSet;
 
-        let a = DetectionWarning::UnparseablePackageManager {
-            raw: "pnpm@".to_owned(),
+        let a = DetectionWarning::Removed {
+            name: "--a",
+            now: "b",
         };
-        let b = DetectionWarning::UnparseablePackageManager {
-            raw: "pnpm@".to_owned(),
+        let b = DetectionWarning::Removed {
+            name: "--a",
+            now: "b",
         };
-        let c = DetectionWarning::UnparseablePackageManager {
-            raw: "yarn@".to_owned(),
+        let c = DetectionWarning::Removed {
+            name: "--c",
+            now: "b",
         };
 
         let mut set = HashSet::new();

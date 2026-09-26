@@ -19,6 +19,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: &[],
     caps: Capabilities {
+        task_priority: 3,
         run_default: Some(t![Quiet, Args]),
         run_task: Some(RunTaskCap {
             argv: t![Task, Args],

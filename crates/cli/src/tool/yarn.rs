@@ -1,28 +1,8 @@
 //! Yarn, Node.js package manager.
 
 use std::path::Path;
-#[cfg(test)]
-use std::process::Command;
 
 use serde::Deserialize;
-
-/// Detected via `yarn.lock`.
-pub(crate) fn detect(dir: &Path) -> bool {
-    dir.join("yarn.lock").exists()
-}
-
-/// `yarn <task> [args...]` (yarn infers `run`).
-#[cfg(test)]
-pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
-    let mut c = super::program::command("yarn");
-    // `--silent` is yarn's global quiet switch (classic `-s`/`--silent`).
-    // yarn has no stdout-diversion primitive, so the stream axis no-ops.
-    if verbosity.silences() {
-        c.arg("--silent");
-    }
-    c.arg(task).args(args);
-    c
-}
 
 /// One line of `yarn bin --json`: a binary the workspace can run and the
 /// package that provides it.
@@ -89,22 +69,7 @@ fn parse_accessible_bins(stdout: &str) -> std::io::Result<Vec<AccessibleBin>> {
 }
 
 #[cfg(test)]
-mod verbosity_tests {
-    use super::run_cmd;
-    use crate::tool::{HostDiagnostics, HostVerbosity};
-
-    fn argv(cmd: &std::process::Command) -> Vec<String> {
-        cmd.get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn run_cmd_default_adds_no_verbosity_flag() {
-        let v = HostVerbosity::default();
-        assert_eq!(argv(&run_cmd("build", &[], v)), ["build"]);
-    }
-
+mod tests {
     #[test]
     fn accessible_bins_parse_the_ndjson_stream_and_skip_other_records() {
         use super::{AccessibleBin, parse_accessible_bins};
@@ -131,14 +96,5 @@ mod verbosity_tests {
                 },
             ]
         );
-    }
-
-    #[test]
-    fn run_cmd_quiet_maps_to_host_flag() {
-        let v = HostVerbosity {
-            diagnostics: HostDiagnostics::Quiet,
-            ..HostVerbosity::default()
-        };
-        assert_eq!(argv(&run_cmd("build", &[], v)), ["--silent", "build"]);
     }
 }

@@ -206,7 +206,7 @@
   "conflicts": [
     {
       "kind": "duplicate-task-name",
-      "reason": "2 sources define `build`; lowest (source_priority=1, source_depth=0, display_order=0, alias-last) key wins",
+      "reason": "2 sources define `build`; package.json runs because its source has the higher task priority",
       "selected": "root:package.json#build",
       "selector": "build",
       "severity": "info",
@@ -219,9 +219,14 @@
   "resolution": {
     "fqn_policy": "exact-only",
     "precedence": [
-      "source-priority",
-      "source-depth",
-      "display-order",
+      "nearest-scope",
+      "task-pin",
+      "chosen-runner",
+      "prefer-list",
+      "chosen-dispatcher",
+      "dispatch-order",
+      "task-priority",
+      "provider",
       "alias-last"
     ],
     "short_name_policy": "deterministic-precedence"

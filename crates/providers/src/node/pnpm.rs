@@ -72,7 +72,7 @@ pub const PROVIDER: Provider = Provider {
         test: Some(super::TEST),
         bins: Some(super::BINS),
         workspaces: Some(WorkspaceCap {
-            members: super::workspace::members,
+            declarations: super::workspace::declarations,
         }),
         clean: Some(super::CLEAN),
         quiet: QuietSupport::flag_with_stream(t!["--silent"], t!["--use-stderr"]),

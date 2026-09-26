@@ -51,6 +51,15 @@ pub(crate) fn python(path: &Path) -> anyhow::Result<Vec<(String, Option<String>)
 struct Package {
     #[serde(default)]
     scripts: Option<BTreeMap<String, String>>,
+    #[serde(default, rename = "packageManager")]
+    package_manager: Option<serde_json::Value>,
+}
+
+/// A manifest's scripts and its raw `packageManager` string.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Manifest {
+    pub scripts: Vec<(String, String)>,
+    pub package_manager: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -67,7 +76,7 @@ struct PyprojectProject {
 ///
 /// # Errors
 /// Reports unreadable or malformed manifests.
-pub(crate) fn package(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
+pub(crate) fn package(path: &Path) -> anyhow::Result<Manifest> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
     if path.extension().is_some_and(|ext| ext == "yaml") {
@@ -76,19 +85,26 @@ pub(crate) fn package(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
         let Some(root) = docs.first().and_then(yaml_rust2::Yaml::as_hash) else {
             anyhow::bail!("{} is not a YAML mapping", path.display());
         };
-        return Ok(root
-            .iter()
-            .find_map(|(key, value)| (key.as_str() == Some("scripts")).then_some(value))
-            .and_then(yaml_rust2::Yaml::as_hash)
-            .into_iter()
-            .flatten()
-            .filter_map(|(name, body)| {
-                Some((
-                    name.as_str()?.to_owned(),
-                    body.as_str().unwrap_or_default().to_owned(),
-                ))
-            })
-            .collect());
+        let field = |name: &str| {
+            root.iter()
+                .find_map(|(key, value)| (key.as_str() == Some(name)).then_some(value))
+        };
+        return Ok(Manifest {
+            scripts: field("scripts")
+                .and_then(yaml_rust2::Yaml::as_hash)
+                .into_iter()
+                .flatten()
+                .filter_map(|(name, body)| {
+                    Some((
+                        name.as_str()?.to_owned(),
+                        body.as_str().unwrap_or_default().to_owned(),
+                    ))
+                })
+                .collect(),
+            package_manager: field("packageManager")
+                .and_then(yaml_rust2::Yaml::as_str)
+                .map(str::to_owned),
+        });
     }
     let manifest: Package = if path.extension().is_some_and(|ext| ext == "json5") {
         json5::from_str(&content)
@@ -97,7 +113,14 @@ pub(crate) fn package(path: &Path) -> anyhow::Result<Vec<(String, String)>> {
         serde_json::from_str(&content)
             .with_context(|| format!("{} is not valid JSON", path.display()))?
     };
-    Ok(manifest.scripts.unwrap_or_default().into_iter().collect())
+    Ok(Manifest {
+        scripts: manifest.scripts.unwrap_or_default().into_iter().collect(),
+        package_manager: manifest
+            .package_manager
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
 }
 
 /// The task file behind `present`: its strongest evidence named one of `names`.
@@ -130,17 +153,35 @@ pub fn package_tasks(
     let Some(path) = source(present, crate::node::MANIFESTS) else {
         return Ok(runner_core::Extracted::default());
     };
-    let entries = package(path)
+    let manifest = package(path)
         .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
-    Ok(entries
-        .into_iter()
-        .map(|(name, command)| {
-            let mut task = super::task(present, name, None);
-            task.forwards_to = super::passthrough::detect_target(&task.name, &command);
-            task
+    let warnings = manifest
+        .package_manager
+        .filter(|raw| crate::node::manifest::names_no_manager(raw))
+        .map(|raw| {
+            runner_core::Warning::about(
+                present.provider,
+                format!(
+                    "packageManager value {raw:?} names no package manager (expected one of \
+                     npm|pnpm|yarn|bun|deno, optionally followed by @<version>); declaration \
+                     ignored"
+                ),
+            )
         })
-        .collect::<Vec<_>>()
-        .into())
+        .into_iter()
+        .collect();
+    Ok(runner_core::Extracted {
+        tasks: manifest
+            .scripts
+            .into_iter()
+            .map(|(name, command)| {
+                let mut task = super::task(present, name, None);
+                task.forwards_to = super::passthrough::detect_target(&task.name, &command);
+                task
+            })
+            .collect(),
+        warnings,
+    })
 }
 
 /// Python entry points in the observed scope.
@@ -238,25 +279,31 @@ mod tests {
         for (name, body) in [
             (
                 "package.json",
-                r#"{ "scripts": { "build": "vite build", "test": "vitest" } }"#,
+                r#"{ "packageManager": "pnpmm@9", "scripts": { "build": "vite build", "test": "vitest" } }"#,
             ),
             (
                 "package.json5",
-                "{ scripts: { build: 'vite build', test: 'vitest' } }",
+                "{ packageManager: 'pnpmm@9', scripts: { build: 'vite build', test: 'vitest' } }",
             ),
             (
                 "package.yaml",
-                "scripts:\n  build: vite build\n  test: vitest\n",
+                "packageManager: pnpmm@9\nscripts:\n  build: vite build\n  test: vitest\n",
             ),
             (
                 "package.yaml",
-                "scripts: { build: vite build, test: vitest }\n",
+                "packageManager: pnpmm@9\nscripts: { build: vite build, test: vitest }\n",
             ),
         ] {
             let dir = TempDir::new("package-scripts");
             let path = dir.path().join(name);
             fs::write(&path, body).unwrap();
-            let mut scripts = package(&path).unwrap();
+            let manifest = package(&path).unwrap();
+            assert_eq!(
+                manifest.package_manager.as_deref(),
+                Some("pnpmm@9"),
+                "{name}: {body}"
+            );
+            let mut scripts = manifest.scripts;
             scripts.sort_unstable();
             assert_eq!(
                 scripts,
@@ -279,7 +326,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            package(&path).unwrap(),
+            package(&path).unwrap().scripts,
             [("build".into(), "vite build".into())]
         );
     }
@@ -289,7 +336,10 @@ mod tests {
         let dir = TempDir::new("package-yaml-body");
         let path = dir.path().join("package.yaml");
         fs::write(&path, "scripts:\n  build: 1\n").unwrap();
-        assert_eq!(package(&path).unwrap(), [("build".into(), String::new())]);
+        assert_eq!(
+            package(&path).unwrap().scripts,
+            [("build".into(), String::new())]
+        );
     }
 
     #[test]

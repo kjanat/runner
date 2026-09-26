@@ -35,7 +35,6 @@ use super::labels::{StructuredSource, structured_source_label};
 use crate::chain::FailurePolicy;
 use crate::commands::install::InstallPlan;
 use crate::commands::run::decision::{Observed, PmDecision};
-use crate::commands::run::{select_task_entry, source_depth, source_priority};
 use crate::resolver::{
     CollisionPolicy, FallbackPolicy, LockfilePolicy, MismatchPolicy, OutputGrouping,
     ResolutionOverrides, ScriptPolicy,
@@ -476,7 +475,7 @@ impl<'a> DoctorReport<'a> {
             environment: environment(),
             runner: runner_info(),
             project: ProjectInfo {
-                monorepo: ctx.is_monorepo,
+                monorepo: ctx.is_monorepo(),
                 root: ctx.root.display().to_string(),
                 root_source: ctx.current_member().map_or_else(
                     || ctx.root.display().to_string(),
@@ -492,7 +491,7 @@ impl<'a> DoctorReport<'a> {
             sources: sources(ctx),
             tasks: tasks(ctx, overrides),
             tools: tools(ctx, &decisions),
-            conflicts: conflicts(ctx, overrides, observed.as_ref().ok(), plan.as_ref().ok()),
+            conflicts: conflicts(ctx, observed.as_ref().ok(), plan.as_ref().ok()),
             diagnostics,
             resolution: resolution_policy(),
         }
@@ -565,8 +564,8 @@ impl DoctorReport<'static> {
                 example_tool(DependencyKind::TaskRunner, "just", "1.36.0"),
             ],
             conflicts: vec![Conflict::DuplicateTaskName {
-                reason: "2 sources define `build`; lowest (source_priority=1, source_depth=0, \
-                         display_order=0, alias-last) key wins"
+                reason: "2 sources define `build`; package.json runs because its source has the \
+                         higher task priority"
                     .to_string(),
                 selected: "root:package.json#build".to_string(),
                 selector: "build".to_string(),
@@ -658,9 +657,14 @@ fn resolution_policy() -> ResolutionPolicy {
     ResolutionPolicy {
         fqn_policy: "exact-only",
         precedence: vec![
-            "source-priority",
-            "source-depth",
-            "display-order",
+            "nearest-scope",
+            "task-pin",
+            "chosen-runner",
+            "prefer-list",
+            "chosen-dispatcher",
+            "dispatch-order",
+            "task-priority",
+            "provider",
             "alias-last",
         ],
         short_name_policy: "deterministic-precedence",
@@ -826,7 +830,7 @@ impl Decisions {
     pub(crate) fn has_node_context(&self, ctx: &ProjectContext) -> bool {
         self.node.is_some()
             || ctx
-                .package_managers
+                .package_managers()
                 .iter()
                 .any(|pm| pm.ecosystem() == Ecosystem::Node)
             || ctx
@@ -838,7 +842,7 @@ impl Decisions {
     fn has_python_context(&self, ctx: &ProjectContext) -> bool {
         self.python.is_some()
             || ctx
-                .package_managers
+                .package_managers()
                 .iter()
                 .any(|pm| pm.ecosystem() == Ecosystem::Python)
             || ctx
@@ -854,7 +858,7 @@ fn ecosystems(
     resolve_shims: bool,
 ) -> Vec<EcosystemEntry> {
     let mut seen = Vec::new();
-    for pm in &ctx.package_managers {
+    for pm in &ctx.package_managers() {
         let eco = pm.ecosystem();
         if !seen.contains(&eco) {
             seen.push(eco);
@@ -962,7 +966,7 @@ fn decided_ecosystem(
 /// *is* the decision; there is no competing-PM resolution chain.
 fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
     let selected = ctx
-        .package_managers
+        .package_managers()
         .iter()
         .find(|pm| pm.ecosystem() == eco)
         .map(|pm| pm.label());
@@ -986,7 +990,7 @@ fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
 fn detected_pm_signals(ctx: &ProjectContext, eco: Ecosystem) -> serde_json::Value {
     serde_json::json!({
         "package_managers": ctx
-            .package_managers
+            .package_managers()
             .iter()
             .filter(|pm| pm.ecosystem() == eco)
             .map(|pm| pm.label())
@@ -1117,8 +1121,7 @@ fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
         tools.push(probe_tool(
             "node",
             DependencyKind::Runtime,
-            ctx.current_node
-                .as_deref()
+            ctx.current_node()
                 .map(|v| v.trim_start_matches('v').to_string()),
             true,
             &path,
@@ -1141,7 +1144,7 @@ fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
         ));
     }
 
-    for pm in &ctx.package_managers {
+    for pm in &ctx.package_managers() {
         let required = true;
         tools.push(probe_tool(
             pm_binary_name(*pm),
@@ -1152,7 +1155,7 @@ fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
             pathext_ref,
         ));
     }
-    for runner in &ctx.task_runners {
+    for runner in &ctx.task_runners() {
         tools.push(probe_tool(
             runner.label(),
             DependencyKind::TaskRunner,
@@ -1230,7 +1233,6 @@ fn probe_tool_version(binary: &Path) -> Option<String> {
 
 fn conflicts(
     ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
     observed: Option<&Observed>,
     plan: Option<&InstallPlan>,
 ) -> Vec<Conflict> {
@@ -1247,30 +1249,18 @@ fn conflicts(
     let duplicate_names = by_name
         .into_iter()
         .filter(|(_, group)| group.len() > 1)
-        .map(|((_, name), group)| {
-            let ranked = select_task_entry(ctx, overrides, &group);
-            let selected = observed
-                .and_then(|observed| observed.winner(ctx, &group))
-                .unwrap_or(ranked);
+        .filter_map(|((_, name), group)| {
+            let observed = observed?;
+            let selected = observed.winner(ctx, &group)?;
+            let ranked = observed.ranked(ctx, &group);
             let fqn_of = |task: &Task| super::labels::fqn(task);
-            let reason = if std::ptr::eq(selected, ranked) {
-                format!(
-                    "{count} sources define `{name}`; lowest (source_priority={priority}, \
-                     source_depth={depth}, display_order={order}, alias-last) key wins",
-                    count = group.len(),
-                    priority = source_priority(overrides, selected.source),
-                    depth = display_depth(source_depth(ctx, selected.source)),
-                    order = selected.source.display_order(),
-                )
-            } else {
-                format!(
-                    "{count} sources define `{name}`; the runner or package-manager choice \
-                     selects {source}",
-                    count = group.len(),
-                    source = selected.source.label(),
-                )
-            };
-            Conflict::DuplicateTaskName {
+            let reason = format!(
+                "{count} sources define `{name}`; {source} runs because {why}",
+                count = group.len(),
+                source = selected.source.label(),
+                why = crate::commands::run::core::rank_reason(&observed.policy, &ranked),
+            );
+            Some(Conflict::DuplicateTaskName {
                 reason,
                 selected: fqn_of(selected),
                 selector: selected.display_name().into_owned(),
@@ -1280,7 +1270,7 @@ fn conflicts(
                     .filter(|task| !std::ptr::eq(**task, selected))
                     .map(|task| fqn_of(task))
                     .collect(),
-            }
+            })
         });
 
     duplicate_names
@@ -1314,14 +1304,6 @@ fn install_dir_conflicts(plan: &InstallPlan) -> Vec<Conflict> {
         .collect()
 }
 
-fn display_depth(depth: usize) -> String {
-    if depth == usize::MAX {
-        "unresolved".to_string()
-    } else {
-        depth.to_string()
-    }
-}
-
 /// Run the health checks declared by present providers.
 pub(crate) fn provider_diagnostics(
     ctx: &ProjectContext,
@@ -1329,7 +1311,7 @@ pub(crate) fn provider_diagnostics(
 ) -> Vec<Diagnostic> {
     let tree = crate::commands::run::core::tree(ctx);
     let policy = crate::commands::run::core::policy(overrides);
-    let project = match crate::commands::run::core::project_under(ctx, &policy) {
+    let project = match crate::commands::run::core::project(ctx) {
         Ok(project) => project,
         Err(error) => {
             return vec![Diagnostic {
@@ -1428,20 +1410,16 @@ mod tests {
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
-        let ctx = ProjectContext {
+        crate::tool::test_support::write_signal(&root, PackageManager::Cargo.label());
+        let mut ctx = ProjectContext {
             cwd: root.clone(),
             root,
-            package_managers: vec![PackageManager::Cargo],
-            task_runners: Vec::new(),
             tasks,
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
         };
-        crate::tool::test_support::seed_context(&ctx);
+        crate::tool::test_support::seed_context(&mut ctx);
         ctx
     }
 
@@ -1551,7 +1529,7 @@ mod tests {
         // the report claims absent).
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);
         assert!(
-            !ctx.package_managers
+            !ctx.package_managers()
                 .iter()
                 .any(|pm| pm.ecosystem() == Ecosystem::Node),
             "precondition: no Node PM detected"
@@ -1581,7 +1559,7 @@ mod tests {
 
         let ctx = context(vec![task("build", TaskSource::PyprojectScripts)]);
         assert!(
-            !ctx.package_managers
+            !ctx.package_managers()
                 .iter()
                 .any(|pm| pm.ecosystem() == Ecosystem::Python),
             "precondition: no Python PM detected"
@@ -1616,8 +1594,8 @@ mod tests {
         )
         .expect("runtime override should parse");
         let mut ctx = context(vec![task("build", TaskSource::PackageJson)]);
-        ctx.package_managers.push(PackageManager::Bun);
-        crate::tool::test_support::seed_context(&ctx);
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Bun.label());
+        crate::tool::test_support::seed_context(&mut ctx);
         let report = DoctorReport::build(&ctx, &overrides, false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 

@@ -108,10 +108,14 @@ fn legacy_field_is_unreadable(manifest: &Value) -> bool {
     manifest
         .get("packageManager")
         .and_then(Value::as_str)
-        .map(str::trim)
-        .is_some_and(|raw| {
-            !raw.is_empty() && legacy(raw).is_none_or(|(name, _)| provider_named(name).is_none())
-        })
+        .is_some_and(names_no_manager)
+}
+
+/// Whether a `packageManager` value is nonempty and names no known manager.
+#[must_use]
+pub fn names_no_manager(raw: &str) -> bool {
+    let raw = raw.trim();
+    !raw.is_empty() && legacy(raw).is_none_or(|(name, _)| provider_named(name).is_none())
 }
 
 /// Check the requirement `devEngines.packageManager` declares for this provider.

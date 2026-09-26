@@ -1290,14 +1290,11 @@ fn build_overrides_lenient(
 fn dispatch_overrides(
     cli: &args::Cli,
     loaded_config: Option<&config::LoadedConfig>,
-    ctx: &mut types::ProjectContext,
-) -> Result<resolver::ResolutionOverrides> {
+) -> Result<(resolver::ResolutionOverrides, Vec<types::DetectionWarning>)> {
     match build_overrides(cli, loaded_config) {
-        Ok(overrides) => Ok(overrides),
+        Ok(overrides) => Ok((overrides, Vec::new())),
         Err(_) if matches!(cli.command, Some(args::Command::Doctor { .. })) => {
-            let (overrides, env_warnings) = build_overrides_lenient(cli, loaded_config)?;
-            ctx.warnings.extend(env_warnings);
-            Ok(overrides)
+            build_overrides_lenient(cli, loaded_config)
         }
         Err(e) => Err(e),
     }
@@ -1324,7 +1321,6 @@ fn removed_settings(overrides: &resolver::ResolutionOverrides) -> Vec<types::Det
 }
 
 fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
-    let mut ctx = detect::detect(dir);
     // A malformed `runner.toml` must not abort the `config` subcommand;
     // `config validate`/`show` exist to inspect and repair exactly that
     // file, and they re-load it with their own error handling. Unknown
@@ -1336,10 +1332,12 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
         Err(_) if matches!(cli.command, Some(args::Command::Config { .. })) => None,
         Err(e) => return Err(e),
     };
+    let (mut overrides, env_warnings) = dispatch_overrides(&cli, loaded_config.as_ref())?;
+    let mut ctx = detect::detect(dir, &overrides);
     if let Some(loaded) = &loaded_config {
         ctx.warnings.extend(loaded.warnings.iter().cloned());
     }
-    let mut overrides = dispatch_overrides(&cli, loaded_config.as_ref(), &mut ctx)?;
+    ctx.warnings.extend(env_warnings);
     ctx.warnings.extend(removed_settings(&overrides));
     // The first point where a resolved root and the inherited marker are both
     // in hand, so it is where the nesting question gets answered.
@@ -1824,8 +1822,6 @@ mod tests {
         ProjectContext {
             cwd: PathBuf::from("."),
             root: PathBuf::from("."),
-            package_managers: Vec::new(),
-            task_runners: Vec::new(),
             tasks: tasks
                 .iter()
                 .map(|name| Task {
@@ -1839,12 +1835,9 @@ mod tests {
                     member: None,
                 })
                 .collect(),
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
         }
     }
 

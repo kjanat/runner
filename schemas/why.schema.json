@@ -115,29 +115,13 @@
     "WhyMatch": {
       "type": "object",
       "required": [
-        "depth",
-        "display_order",
         "is_alias",
         "matched_by",
         "passthrough_to",
-        "selector",
-        "source_priority"
+        "rank",
+        "selector"
       ],
       "properties": {
-        "depth": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 0,
-          "format": "uint"
-        },
-        "display_order": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 255,
-          "format": "uint8"
-        },
         "is_alias": {
           "type": "boolean"
         },
@@ -151,14 +135,19 @@
             "string"
           ]
         },
+        "rank": {
+          "description": "The key `runner run` orders candidates by, lowest first.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WhyRank"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "selector": {
           "type": "string"
-        },
-        "source_priority": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 65535,
-          "format": "uint16"
         }
       },
       "additionalProperties": false
@@ -231,6 +220,62 @@
         },
         "warnings": {
           "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WhyRank": {
+      "type": "object",
+      "required": [
+        "dispatch_order",
+        "dispatcher",
+        "pinned",
+        "priority",
+        "tier"
+      ],
+      "properties": {
+        "dispatch_order": {
+          "description": "The source's position in its dispatcher's sources.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "format": "uint"
+        },
+        "dispatcher": {
+          "description": "What dispatches the source: the chosen `runtime` or `package-manager`.",
+          "type": [
+            "null",
+            "string"
+          ],
+          "enum": [
+            "runtime",
+            "package-manager",
+            null
+          ]
+        },
+        "pinned": {
+          "description": "Position in the task's `[tasks.overrides]` pin.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "format": "uint"
+        },
+        "priority": {
+          "description": "The source's own task priority.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255,
+          "format": "uint8"
+        },
+        "tier": {
+          "description": "0 for the chosen runner, then the prefer list, then sources a chosen package manager or runtime dispatches, then the rest.",
+          "type": "integer",
+          "minimum": 0,
+          "format": "uint"
         }
       },
       "additionalProperties": false

@@ -10,15 +10,17 @@ use anyhow::Result;
 use colored::Colorize;
 use serde::Serialize;
 
+use runner_core::{Refusal, TaskRank};
+
 use crate::commands::run::core::Prepared;
 use crate::commands::run::decision::PmDecision as Decision;
-use crate::commands::run::{
-    ScopeQuery, TokenLookup, allowed_runner_sources, ambiguous_members, lookup_token,
-    qualified_miss_error, root_runner, source_depth, source_priority,
-};
+use crate::commands::run::{refusal_error, root_runner};
 use crate::resolver::ResolutionOverrides;
 use crate::schema::labels;
-use crate::types::{JsRuntime, ProjectContext, Task, TaskSource, WorkspaceMember};
+use crate::types::{JsRuntime, ProjectContext, Task, TaskSource};
+
+/// Every task a token addresses, with its rank, lowest first.
+type Ranked<'a> = [(&'a Task, TaskRank)];
 
 /// Explain how `task` would resolve in the current project.
 ///
@@ -31,83 +33,64 @@ pub(crate) fn why(
     task: &str,
     json: bool,
 ) -> Result<()> {
-    // Interpret the token exactly like `run` does: qualified syntax
-    // (`deno:lint`), FQN (`root:package.json#name`), and the exact-name
-    // fallback for colon-named scripts all resolve here, so `why` can
-    // explain the very dispatch `run` would perform for the same token.
-    let (lookup, candidates) = lookup_token(ctx, task);
-    let TokenLookup {
-        qualifier,
-        scope,
-        task_name,
-    } = lookup;
-
-    if matches!(scope, ScopeQuery::Unresolved { .. }) {
-        return Err(qualified_miss_error(ctx, &scope, qualifier, task_name));
-    }
-
-    // A qualifier pins the source and outranks the runner constraint,
-    // mirroring `resolve_dispatch`.
-    let restricted: Vec<&Task> = qualifier.map_or_else(
-        || {
-            if scope.is_pinned() {
-                return candidates.clone();
-            }
-            allowed_runner_sources(overrides).map_or_else(
-                || candidates.clone(),
-                |allowed| {
-                    candidates
-                        .iter()
-                        .copied()
-                        .filter(|t| allowed.contains(&t.source))
-                        .collect()
-                },
-            )
-        },
-        |source| {
-            candidates
-                .iter()
-                .copied()
-                .filter(|t| t.source == source)
-                .collect()
-        },
-    );
-
-    // No candidate survived and the token names a detected task runner:
-    // `run` invokes that runner's own entry point, ahead of the runner
-    // constraint check, mirroring `resolve_dispatch`.
-    let root = (restricted.is_empty() && qualifier.is_none() && !scope.is_pinned())
-        .then(|| root_runner(ctx, overrides, task_name))
-        .flatten();
-
-    // A bare name several members define (and the root does not) has no
-    // winner: `run` refuses it, so `why` reports the tie instead of ranking.
-    let ambiguous = (!scope.is_pinned())
-        .then(|| ambiguous_members(&restricted))
-        .flatten();
-    let prepared = crate::commands::run::core::prepare(ctx, overrides, task)?;
-    let outcome = prepared.preview(ctx, overrides, task);
-    let selected = match prepared.selected(ctx, task) {
-        Ok(selected) => selected,
-        Err(
-            runner_core::Refusal::NotFound { .. }
-            | runner_core::Refusal::Ambiguous { .. }
-            | runner_core::Refusal::NoRunnerTask { .. },
-        ) => None,
-        Err(error) => return Err(error.into()),
+    let prepared = crate::commands::run::core::prepare(ctx, overrides, task)
+        .map_err(|refusal| refusal_error(ctx, task, &refusal))?;
+    let ranked = match crate::commands::run::core::ranked_in(
+        ctx,
+        &prepared.tree,
+        &prepared.project,
+        &prepared.policy,
+        task,
+    ) {
+        Ok(ranked) => ranked,
+        Err(Refusal::NoRunnerTask { .. }) => Vec::new(),
+        Err(refusal) => return Err(refusal_error(ctx, task, &refusal)),
     };
+    let outcome = prepared.preview(ctx, overrides, task);
+    let (selected, refused) = match prepared.selected(ctx, task) {
+        Ok(selected) => (selected, None),
+        Err(
+            refusal @ (Refusal::NotFound { .. }
+            | Refusal::Ambiguous { .. }
+            | Refusal::NoRunnerTask { .. }),
+        ) => (None, Some(refusal)),
+        Err(refusal) => return Err(refusal_error(ctx, task, &refusal)),
+    };
+    let ambiguous = match &refused {
+        Some(Refusal::Ambiguous { candidates, .. }) => {
+            let mut members: Vec<String> = Vec::new();
+            for (_, scope) in candidates {
+                let label = scope.label().to_owned();
+                if !members.contains(&label) {
+                    members.push(label);
+                }
+            }
+            Some(members)
+        }
+        _ => None,
+    };
+    let filtered = matches!(refused, Some(Refusal::NoRunnerTask { .. }));
+    let root = ranked
+        .is_empty()
+        .then(|| root_runner(ctx, overrides, task))
+        .flatten();
 
+    let verdict = Verdict {
+        ambiguous: ambiguous.as_deref(),
+        filtered,
+        root,
+        reason: crate::commands::run::core::rank_reason(&prepared.policy, &ranked),
+    };
     let pm_decision = pm_decision_for_selected(&prepared, overrides, selected);
 
     if !json && print_cascade_result(&outcome, task, root.is_some(), ambiguous.is_some()) {
         return Ok(());
     }
     if json {
-        let decision =
-            decision_report(&candidates, selected, qualifier, ambiguous.as_deref(), root);
+        let decision = decision_report(&ranked, selected, verdict);
         let report = build_report(
             task,
-            &candidates,
+            &ranked,
             selected,
             pm_decision.as_ref(),
             overrides,
@@ -123,16 +106,29 @@ pub(crate) fn why(
     } else {
         print_human(
             task,
-            &candidates,
+            &ranked,
             selected,
             pm_decision.as_ref(),
             overrides,
             ctx,
-            ambiguous.as_deref(),
+            verdict,
         );
     }
 
     Ok(())
+}
+
+/// What selection concluded besides the ranking itself.
+#[derive(Clone, Copy)]
+struct Verdict<'a> {
+    /// The workspace members that each define the name, when none is nearer.
+    ambiguous: Option<&'a [String]>,
+    /// Whether the chosen runner defines none of the candidates.
+    filtered: bool,
+    /// The task runner whose own entry point takes the token.
+    root: Option<crate::types::TaskRunner>,
+    /// Why the first candidate outranks the second.
+    reason: &'static str,
 }
 
 /// The human report for a token `run` hands to a task runner's own entry
@@ -199,7 +195,7 @@ struct WhyRuntime {
 }
 
 /// Render non-task cascade outcomes, leaving task details to the report below.
-type Preview = Result<(runner_core::Rung, runner_core::Dispatch), runner_core::Refusal>;
+type Preview = Result<(runner_core::Rung, runner_core::Dispatch), Refusal>;
 
 fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bool) -> bool {
     match outcome {
@@ -220,8 +216,8 @@ fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bo
             }
             return true;
         }
-        Err(runner_core::Refusal::Ambiguous { .. }) if ambiguous => {}
-        Err(runner_core::Refusal::NotFound { tried, .. }) => {
+        Err(Refusal::Ambiguous { .. }) if ambiguous => {}
+        Err(Refusal::NotFound { tried, .. }) => {
             println!(
                 "No plan for {task:?}; tried {}",
                 tried.iter().map(|r| r.name).collect::<Vec<_>>().join(", ")
@@ -482,11 +478,31 @@ struct WhyMatch<'a> {
     selector: &'a str,
     #[schemars(description = "How the selector matched. `why` matches exact names only today.")]
     matched_by: &'static str,
-    depth: Option<usize>,
-    display_order: u8,
-    source_priority: u16,
+    #[schemars(description = "The key `runner run` orders candidates by, lowest first.")]
+    rank: Option<WhyRank>,
     is_alias: bool,
     passthrough_to: Option<&'static str>,
+}
+
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+#[schemars(deny_unknown_fields)]
+struct WhyRank {
+    #[schemars(description = "Position in the task's `[tasks.overrides]` pin.")]
+    pinned: Option<usize>,
+    #[schemars(
+        description = "0 for the chosen runner, then the prefer list, then sources a chosen \
+                       package manager or runtime dispatches, then the rest."
+    )]
+    tier: usize,
+    #[schemars(
+        description = "What dispatches the source: the chosen `runtime` or `package-manager`.",
+        extend("enum" = ["runtime", "package-manager", null])
+    )]
+    dispatcher: Option<&'static str>,
+    #[schemars(description = "The source's position in its dispatcher's sources.")]
+    dispatch_order: Option<usize>,
+    #[schemars(description = "The source's own task priority.")]
+    priority: u8,
 }
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
@@ -511,7 +527,7 @@ struct Explanation<'a> {
 
 fn build_report<'a>(
     query: &'a str,
-    candidates: &[&'a Task],
+    ranked: &Ranked<'a>,
     selected: Option<&'a Task>,
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
@@ -536,19 +552,19 @@ fn build_report<'a>(
                 decision.strategy = "builtin";
                 decision.reason = "built-in commands take precedence over project tasks".into();
             }
-            if selected.is_none() && candidates.is_empty() {
+            if selected.is_none() && ranked.is_empty() {
                 decision.strategy = rung.name;
             }
         }
-        Err(runner_core::Refusal::NotFound { tried, .. }) => {
-            if candidates.is_empty() {
+        Err(Refusal::NotFound { tried, .. }) => {
+            if ranked.is_empty() {
                 decision.strategy = "not-found";
                 decision.reason = "no cascade rung resolves this token".into();
             }
             decision.tried = tried.iter().map(|r| r.name).collect();
             selected = None;
         }
-        Err(runner_core::Refusal::Ambiguous { .. }) => {
+        Err(Refusal::Ambiguous { .. }) => {
             decision.strategy = "ambiguous";
             selected = None;
         }
@@ -558,7 +574,7 @@ fn build_report<'a>(
             selected = None;
         }
     }
-    let candidate_report = |task: &'a Task| WhyCandidate {
+    let candidate_report = |task: &'a Task, rank: Option<&TaskRank>| WhyCandidate {
         task: {
             let mut report = task_report(task, ctx);
             if selected.is_some_and(|selected| std::ptr::eq(selected, task))
@@ -569,7 +585,7 @@ fn build_report<'a>(
             }
             report
         },
-        matched: match_report(query, task, overrides, ctx),
+        matched: match_report(query, task, rank),
     };
     WhyReport {
         schema: crate::schema::schema_url("why"),
@@ -580,8 +596,11 @@ fn build_report<'a>(
         pm_resolution: pm_decision.map(pm_resolution),
         runtime: runtime_report(overrides, selected, ctx),
         output: output_report(overrides, selected),
-        selected: selected.map(candidate_report),
-        candidates: candidates.iter().copied().map(candidate_report).collect(),
+        selected: selected.map(|task| candidate_report(task, rank_of(ranked, task))),
+        candidates: ranked
+            .iter()
+            .map(|(task, rank)| candidate_report(task, Some(rank)))
+            .collect(),
         decision,
     }
 }
@@ -663,100 +682,99 @@ fn task_report<'a>(task: &'a Task, ctx: &'a ProjectContext) -> WhyTask<'a> {
     }
 }
 
-fn match_report<'a>(
-    selector: &'a str,
-    task: &Task,
-    overrides: &ResolutionOverrides,
-    ctx: &ProjectContext,
-) -> WhyMatch<'a> {
-    let depth = source_depth(ctx, task.source);
+fn rank_of<'r>(ranked: &'r Ranked<'_>, task: &Task) -> Option<&'r TaskRank> {
+    ranked
+        .iter()
+        .find(|(candidate, _)| std::ptr::eq(*candidate, task))
+        .map(|(_, rank)| rank)
+}
+
+fn match_report<'a>(selector: &'a str, task: &Task, rank: Option<&TaskRank>) -> WhyMatch<'a> {
     WhyMatch {
         selector,
         matched_by: "name",
-        depth: (depth != usize::MAX).then_some(depth),
-        display_order: task.source.display_order(),
-        source_priority: source_priority(overrides, task.source),
+        rank: rank.map(|rank| WhyRank {
+            pinned: (rank.pinned != usize::MAX).then_some(rank.pinned),
+            tier: rank.tier,
+            dispatcher: (rank.dispatch_order != usize::MAX).then_some(if rank.by_package_manager {
+                "package-manager"
+            } else {
+                "runtime"
+            }),
+            dispatch_order: (rank.dispatch_order != usize::MAX).then_some(rank.dispatch_order),
+            priority: rank.priority,
+        }),
         is_alias: task.alias_of.is_some(),
         passthrough_to: task.passthrough_to.map(crate::types::TaskRunner::label),
     }
 }
 
 fn decision_report(
-    candidates: &[&Task],
+    ranked: &Ranked<'_>,
     selected: Option<&Task>,
-    qualifier: Option<TaskSource>,
-    ambiguous: Option<&[&WorkspaceMember]>,
-    root: Option<crate::types::TaskRunner>,
+    verdict: Verdict<'_>,
 ) -> WhyDecision {
-    if let Some(runner) = root {
-        return WhyDecision {
-            tried: Vec::new(),
-            strategy: "runner-root",
-            reason: format!(
+    let decision = |strategy, reason: String| WhyDecision {
+        tried: Vec::new(),
+        strategy,
+        reason,
+    };
+    if let Some(runner) = verdict.root {
+        return decision(
+            "runner-root",
+            format!(
                 "no task matched; `runner run` invokes {}'s own entry point and lets it pick its \
                  default target",
                 runner.label()
             ),
-        };
+        );
     }
-    if candidates.is_empty() {
-        return WhyDecision {
-            tried: Vec::new(),
-            strategy: "exec-fallback",
-            reason: "no task matched; `runner run` would route the name through the primary \
-                     package manager's exec primitive"
-                .to_string(),
-        };
+    if verdict.filtered {
+        return decision(
+            "filtered",
+            "the chosen runner defines no task by this name".to_owned(),
+        );
     }
-    if let Some(members) = ambiguous {
-        let names: Vec<&str> = members.iter().map(|member| member.label.as_str()).collect();
-        return WhyDecision {
-            tried: Vec::new(),
-            strategy: "ambiguous",
-            reason: format!(
+    if ranked.is_empty() {
+        return decision(
+            "exec-fallback",
+            "no task matched; `runner run` would route the name through the primary package \
+             manager's exec primitive"
+                .to_owned(),
+        );
+    }
+    if let Some(members) = verdict.ambiguous {
+        return decision(
+            "ambiguous",
+            format!(
                 "{} workspace members define this name and the root does not; `runner run` \
                  refuses it until qualified as `<member>:<task>` ({})",
                 members.len(),
-                names.join(", "),
+                members.join(", "),
             ),
-        };
-    }
-    if selected.is_none() {
-        let reason = qualifier.map_or_else(
-            || {
-                "every candidate was filtered out by --runner/RUNNER_RUNNER restrictions"
-                    .to_string()
-            },
-            |source| {
-                format!(
-                    "candidates exist for this name, but none are registered under the `{}:` \
-                     qualifier",
-                    source.label()
-                )
-            },
         );
-        return WhyDecision {
-            tried: Vec::new(),
-            strategy: "filtered",
-            reason,
-        };
     }
-    if candidates.len() == 1 {
-        return WhyDecision {
-            tried: Vec::new(),
-            strategy: "single-candidate",
-            reason: "exact task name matched one candidate".to_string(),
-        };
+    let Some(selected) = selected else {
+        return decision(
+            "filtered",
+            "selection chose none of the candidates".to_owned(),
+        );
+    };
+    if ranked.len() == 1 {
+        return decision(
+            "single-candidate",
+            "exact task name matched one candidate".to_owned(),
+        );
     }
-    WhyDecision {
-        tried: Vec::new(),
-        strategy: "ranked",
-        reason: format!(
-            "{} candidates; lowest (source_priority, source_depth, display_order, alias-last) key \
-             wins",
-            candidates.len()
+    decision(
+        "ranked",
+        format!(
+            "{} candidates; {} runs because {}",
+            ranked.len(),
+            selected.source.label(),
+            verdict.reason,
         ),
-    }
+    )
 }
 
 /// The facts the source declared beyond name and description, one line
@@ -830,15 +848,16 @@ fn usage_line(task: &Task, ctx: &ProjectContext, usage: &str) -> String {
 }
 
 /// One line per candidate with the rank key that ordered it.
-fn print_candidates(candidates: &[&Task], overrides: &ResolutionOverrides, ctx: &ProjectContext) {
-    println!("{}", "Candidates".bold());
-    for c in candidates {
-        let depth = source_depth(ctx, c.source);
-        let depth_label = if depth == usize::MAX {
-            "-".to_string()
+fn print_candidates(ranked: &Ranked<'_>) {
+    let shown = |value: usize| {
+        if value == usize::MAX {
+            "-".to_owned()
         } else {
-            depth.to_string()
-        };
+            value.to_string()
+        }
+    };
+    println!("{}", "Candidates".bold());
+    for (c, rank) in ranked {
         let alias_tag = c
             .alias_of
             .as_deref()
@@ -851,13 +870,14 @@ fn print_candidates(candidates: &[&Task], overrides: &ResolutionOverrides, ctx: 
             .as_ref()
             .map_or(String::new(), |member| format!(" ({})", member.name));
         println!(
-            "  {} {}{} [priority={}, depth={}, order={}]{}{}",
+            "  {} {}{} [pin={}, tier={}, dispatch={}, priority={}]{}{}",
             "·".dimmed(),
             c.source.label().bold(),
             scope_tag,
-            source_priority(overrides, c.source),
-            depth_label,
-            c.source.display_order(),
+            shown(rank.pinned),
+            rank.tier,
+            shown(rank.dispatch_order),
+            rank.priority,
             alias_tag,
             passthrough_tag,
         );
@@ -866,20 +886,20 @@ fn print_candidates(candidates: &[&Task], overrides: &ResolutionOverrides, ctx: 
 
 fn print_human(
     task: &str,
-    candidates: &[&Task],
+    ranked: &Ranked<'_>,
     selected: Option<&Task>,
     pm_decision: Option<&PmDecision>,
     overrides: &ResolutionOverrides,
     ctx: &ProjectContext,
-    ambiguous: Option<&[&WorkspaceMember]>,
+    verdict: Verdict<'_>,
 ) {
     println!("{} {}", "runner why".bold(), task.bold());
     println!();
 
-    if let Some(members) = ambiguous {
+    if let Some(members) = verdict.ambiguous {
         let spellings: Vec<String> = members
             .iter()
-            .map(|member| format!("{}:{task}", member.label))
+            .map(|member| format!("{member}:{task}"))
             .collect();
         println!(
             "  {}",
@@ -894,7 +914,15 @@ fn print_human(
         println!();
     }
 
-    if candidates.is_empty() {
+    if verdict.filtered {
+        println!(
+            "  {}",
+            "The chosen runner defines no task with that name.".dimmed()
+        );
+        return;
+    }
+
+    if ranked.is_empty() {
         println!(
             "  {}",
             "No task with that name in any detected source.".dimmed()
@@ -908,7 +936,7 @@ fn print_human(
         return;
     }
 
-    print_candidates(candidates, overrides, ctx);
+    print_candidates(ranked);
     println!();
 
     if let Some(sel) = selected {
@@ -918,10 +946,7 @@ fn print_human(
             "→".dimmed(),
             sel.source.label().green()
         );
-        println!(
-            "  {}",
-            "key: (source_priority, depth, display_order, alias_last)".dimmed()
-        );
+        println!("  {}", format!("because {}", verdict.reason).dimmed());
         print_detail(sel, ctx);
     }
 
@@ -975,25 +1000,22 @@ fn print_human(
 #[cfg(test)]
 mod tests {
 
-    use super::{PmDecision, WhyReport, build_report, decision_report, pm_decision_for_selected};
+    use super::{PmDecision, Verdict, build_report, decision_report, pm_decision_for_selected};
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
-        ProjectContext {
+        let mut ctx = ProjectContext {
             cwd: root.clone(),
             root,
-            package_managers: Vec::new(),
-            task_runners: Vec::new(),
             tasks,
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+            project: Ok(runner_core::Project::default()),
+        };
+        crate::tool::test_support::seed_context(&mut ctx);
+        ctx
     }
 
     fn why(
@@ -1002,7 +1024,6 @@ mod tests {
         task: &str,
         json: bool,
     ) -> anyhow::Result<()> {
-        crate::tool::test_support::seed_context(ctx);
         super::why(ctx, overrides, task, json)
     }
 
@@ -1019,30 +1040,45 @@ mod tests {
         }
     }
 
-    fn report<'a>(
-        query: &'a str,
-        candidates: &[&'a Task],
-        selected: Option<&'a Task>,
+    /// The `why --json` report for `query`, selected like `why` selects it.
+    fn report(
+        query: &str,
         pm_decision: Option<&PmDecision>,
         overrides: &ResolutionOverrides,
-        ctx: &'a ProjectContext,
-        qualifier: Option<TaskSource>,
-    ) -> WhyReport<'a> {
-        crate::tool::test_support::seed_context(ctx);
-        let decision = decision_report(candidates, selected, qualifier, None, None);
-        build_report(
+        ctx: &ProjectContext,
+    ) -> serde_json::Value {
+        let prepared =
+            crate::commands::run::core::prepare(ctx, overrides, query).expect("prepared");
+        let ranked = crate::commands::run::core::ranked_in(
+            ctx,
+            &prepared.tree,
+            &prepared.project,
+            &prepared.policy,
             query,
-            candidates,
+        )
+        .unwrap_or_default();
+        let selected = prepared.selected(ctx, query).ok().flatten();
+        let verdict = Verdict {
+            ambiguous: None,
+            filtered: false,
+            root: None,
+            reason: crate::commands::run::core::rank_reason(&prepared.policy, &ranked),
+        };
+        let decision = decision_report(&ranked, selected, verdict);
+        let outcome = prepared.preview(ctx, overrides, query);
+        serde_json::to_value(build_report(
+            query,
+            &ranked,
             selected,
             pm_decision,
             overrides,
             ctx,
             super::Explanation {
                 decision,
-                outcome: &crate::commands::run::core::prepare(ctx, overrides, query)
-                    .and_then(|p| p.preview(ctx, overrides, query)),
+                outcome: &outcome,
             },
-        )
+        ))
+        .expect("report should serialize")
     }
 
     #[test]
@@ -1082,7 +1118,7 @@ mod tests {
 
     #[test]
     fn why_pyproject_script_reports_python_pm_override() {
-        let ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
+        let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
         let overrides = ResolutionOverrides::from_cli_and_env(
             crate::resolver::CliOverrides {
                 pm: Some("uv"),
@@ -1093,6 +1129,7 @@ mod tests {
             None,
         )
         .expect("PM override should parse");
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         let selected = ctx.tasks.first();
         let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "greenpy")
             .expect("observation should succeed");
@@ -1113,19 +1150,8 @@ mod tests {
         let mut alias = task("t", TaskSource::CargoAliases);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias]);
-        let candidates = vec![&ctx.tasks[0]];
-        let selected = ctx.tasks.first();
 
-        let report = report(
-            "t",
-            &candidates,
-            selected,
-            None,
-            &ResolutionOverrides::default(),
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        let json = report("t", None, &ResolutionOverrides::default(), &ctx);
 
         assert_eq!(json["schema_version"], 1);
         assert_eq!(json["kind"], "runner.why");
@@ -1158,16 +1184,7 @@ mod tests {
     #[test]
     fn report_refuses_an_unmatched_name_and_lists_the_rungs_tried() {
         let ctx = context(vec![]);
-        let report = report(
-            "nope",
-            &[],
-            None,
-            None,
-            &ResolutionOverrides::default(),
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        let json = report("nope", None, &ResolutionOverrides::default(), &ctx);
 
         assert_eq!(json["selected"], serde_json::Value::Null);
         assert_eq!(json["candidates"], serde_json::json!([]));
@@ -1180,60 +1197,37 @@ mod tests {
 
     #[test]
     fn decision_names_the_runner_root_invocation() {
-        let decision = decision_report(&[], None, None, None, Some(crate::types::TaskRunner::Make));
+        let decision = decision_report(
+            &[],
+            None,
+            Verdict {
+                ambiguous: None,
+                filtered: false,
+                root: Some(crate::types::TaskRunner::Make),
+                reason: "",
+            },
+        );
 
         assert_eq!(decision.strategy, "runner-root");
         assert!(decision.reason.contains("make"), "{}", decision.reason);
     }
 
     #[test]
-    fn report_describes_qualifier_mismatch_as_filtered_not_runner_restricted() {
-        // `why deno:build` when "build" exists elsewhere but not under
-        // deno.json: `candidates` still lists the same-named tasks
-        // (useful diagnostic, `lookup_token` surfaces them precisely so
-        // this case is explainable), but nothing is eligible under the
-        // `deno:` qualifier, so `selected` is None. The "filtered" reason
-        // must name the qualifier, not blame a --runner restriction that
-        // was never set.
+    fn why_refuses_a_qualified_miss_like_run() {
         let ctx = context(vec![
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
-        let candidates: Vec<&Task> = ctx.tasks.iter().collect();
 
-        let report = report(
-            "deno:build",
-            &candidates,
-            None,
-            None,
-            &ResolutionOverrides::default(),
-            &ctx,
-            Some(TaskSource::DenoJson),
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
-
-        assert_eq!(json["selected"], serde_json::Value::Null);
-        assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
-        assert_eq!(json["decision"]["strategy"], "filtered");
-        assert_eq!(
-            json["decision"]["reason"],
-            "candidates exist for this name, but none are registered under the `deno:` qualifier"
-        );
+        let err = why(&ctx, &ResolutionOverrides::default(), "deno:build", true)
+            .expect_err("deno.json defines no build");
+        assert!(format!("{err:#}").contains("not found in deno"), "{err:#}");
     }
 
     #[test]
     fn report_builtin_takes_precedence_over_a_same_named_task() {
         let ctx = context(vec![task("list", TaskSource::Justfile)]);
-        let report = report(
-            "list",
-            &[&ctx.tasks[0]],
-            ctx.tasks.first(),
-            None,
-            &ResolutionOverrides::default(),
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(report).unwrap();
+        let json = report("list", None, &ResolutionOverrides::default(), &ctx);
         assert_eq!(json["decision"]["strategy"], "builtin");
         assert_eq!(json["decision"]["tried"], serde_json::json!(["builtin"]));
         assert!(json["selected"].is_null());
@@ -1245,18 +1239,8 @@ mod tests {
             task("build", TaskSource::PackageJson),
             task("build", TaskSource::Justfile),
         ]);
-        ctx.package_managers.push(PackageManager::Npm);
-        let candidates: Vec<&Task> = ctx.tasks.iter().collect();
-        let report = report(
-            "build",
-            &candidates,
-            ctx.tasks.first(),
-            None,
-            &ResolutionOverrides::default(),
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Npm.label());
+        let json = report("build", None, &ResolutionOverrides::default(), &ctx);
 
         assert_eq!(json["decision"]["strategy"], "ranked");
         assert_eq!(json["candidates"].as_array().map(Vec::len), Some(2));
@@ -1267,7 +1251,8 @@ mod tests {
     #[test]
     fn report_resolves_selected_pyproject_script_through_python_pm() {
         let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
-        ctx.package_managers.push(PackageManager::Uv);
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Uv.label());
+        crate::tool::test_support::seed_context(&mut ctx);
         let selected = ctx.tasks.first();
         let prepared =
             crate::commands::run::core::prepare(&ctx, &ResolutionOverrides::default(), "greenpy")
@@ -1275,18 +1260,13 @@ mod tests {
         let pm_decision =
             pm_decision_for_selected(&prepared, &ResolutionOverrides::default(), selected)
                 .expect("pyproject task should resolve PM diagnostics");
-        let candidates = vec![&ctx.tasks[0]];
 
-        let report = report(
+        let json = report(
             "greenpy",
-            &candidates,
-            selected,
             Some(&pm_decision),
             &ResolutionOverrides::default(),
             &ctx,
-            None,
         );
-        let json = serde_json::to_value(&report).expect("report should serialize");
 
         assert_eq!(json["selected"]["task"]["provider"], "python");
         assert_eq!(json["selected"]["task"]["resolved"], "uv run greenpy");
@@ -1329,14 +1309,15 @@ mod tests {
         ]);
         ctx.root = dir.path().to_path_buf();
         ctx.cwd = ctx.root.clone();
-        ctx.package_managers = vec![PackageManager::Pnpm];
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Pnpm.label());
         ctx.workspace = Some(crate::types::Workspace {
             root: ctx.root.clone(),
-            kinds: vec![crate::types::WorkspaceKind::PackageJson],
+            kinds: vec!["package.json workspaces"],
             members: vec![member],
             current: None,
         });
         let overrides = ResolutionOverrides::default();
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "build")
             .expect("observation should succeed");
         let (decision, _) = pm_decision_for_selected(&prepared, &overrides, ctx.tasks.get(1))
@@ -1365,9 +1346,9 @@ mod tests {
     #[test]
     fn forced_runtime_previews_the_runtime_command_not_the_pm_command() {
         let mut ctx = context(vec![task("build", TaskSource::PackageJson)]);
-        ctx.package_managers = vec![PackageManager::Bun];
-        crate::tool::test_support::seed_context(&ctx);
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Bun.label());
         let overrides = runtime_overrides("bun");
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         let selected = ctx.tasks.first();
         // A forced runtime supersedes PM resolution, exactly as dispatch does.
         let prepared = crate::commands::run::core::prepare(&ctx, &overrides, "build")
@@ -1375,16 +1356,7 @@ mod tests {
         let pm_decision = pm_decision_for_selected(&prepared, &overrides, selected);
         assert!(pm_decision.is_none(), "runtime must suppress PM resolution");
 
-        let report = report(
-            "build",
-            &[&ctx.tasks[0]],
-            selected,
-            None,
-            &overrides,
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        let json = report("build", None, &overrides, &ctx);
 
         assert_eq!(json["selected"]["task"]["resolved"], "bun --bun run build");
         assert_eq!(json["pm_resolution"], serde_json::Value::Null);
@@ -1399,23 +1371,14 @@ mod tests {
 
     #[test]
     fn node_runtime_preview_notes_the_skipped_lifecycle_scripts() {
-        let ctx = context(vec![
+        let mut ctx = context(vec![
             task("build", TaskSource::PackageJson),
             task("prebuild", TaskSource::PackageJson),
         ]);
         let overrides = runtime_overrides("node");
-        let selected = ctx.tasks.first();
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
 
-        let report = report(
-            "build",
-            &[&ctx.tasks[0]],
-            selected,
-            None,
-            &overrides,
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        let json = report("build", None, &overrides, &ctx);
 
         assert_eq!(json["selected"]["task"]["resolved"], "node --run build");
         assert_eq!(json["runtime"]["applied"], true);
@@ -1432,18 +1395,8 @@ mod tests {
     fn forced_runtime_reports_not_applied_for_a_source_it_cannot_honour() {
         let ctx = context(vec![task("build", TaskSource::Justfile)]);
         let overrides = runtime_overrides("bun");
-        let selected = ctx.tasks.first();
 
-        let report = report(
-            "build",
-            &[&ctx.tasks[0]],
-            selected,
-            None,
-            &overrides,
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        let json = report("build", None, &overrides, &ctx);
 
         // The justfile command is untouched; the runtime block says why.
         assert_eq!(json["selected"]["task"]["resolved"], "just build");
@@ -1462,18 +1415,8 @@ mod tests {
         let mut shortcut = task("f", TaskSource::Justfile);
         shortcut.alias_of = Some("fmt".to_string());
         let ctx = context(vec![task("fmt", TaskSource::Justfile), shortcut]);
-        let candidates = vec![&ctx.tasks[0]];
 
-        let report = report(
-            "fmt",
-            &candidates,
-            ctx.tasks.first(),
-            None,
-            &ResolutionOverrides::default(),
-            &ctx,
-            None,
-        );
-        let json = serde_json::to_value(&report).expect("report should serialize");
+        let json = report("fmt", None, &ResolutionOverrides::default(), &ctx);
 
         assert_eq!(
             json["selected"]["task"]["aliases"],

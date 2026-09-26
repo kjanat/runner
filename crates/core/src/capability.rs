@@ -6,10 +6,8 @@ use crate::evidence::Present;
 use crate::health::Health;
 use crate::provider::ProviderId;
 use crate::reach::Reach;
-use crate::scope::Scope;
 use crate::task::Task;
 use crate::template::Template;
-use crate::tree::Tree;
 use crate::warning::Warning;
 
 /// Everything a provider can do, each with the parameters policy can turn on.
@@ -316,8 +314,8 @@ pub struct CleanCap {
 /// Workspace member discovery.
 #[derive(Clone, Copy)]
 pub struct WorkspaceCap {
-    /// The members declared at the root.
-    pub members: fn(&Tree) -> Result<Vec<Scope>, Warning>,
+    /// The workspace declarations in a directory.
+    pub declarations: fn(&Path) -> Result<Vec<crate::workspace::Declaration>, Warning>,
 }
 
 /// A read-only self check.

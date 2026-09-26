@@ -30,6 +30,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: &[],
     caps: Capabilities {
+        task_priority: 9,
         install: Some(InstallCap {
             argv: t![Quiet, Op, Frozen],
             frozen: Frozen::Flag("--locked"),

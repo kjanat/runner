@@ -37,9 +37,13 @@
     "match": {
       "selector": "t",
       "matched_by": "name",
-      "depth": 0,
-      "display_order": 6,
-      "source_priority": 2,
+      "rank": {
+        "pinned": null,
+        "tier": 2,
+        "dispatcher": null,
+        "dispatch_order": null,
+        "priority": 6
+      },
       "is_alias": true,
       "passthrough_to": null
     }
@@ -63,9 +67,13 @@
       "match": {
         "selector": "t",
         "matched_by": "name",
-        "depth": 0,
-        "display_order": 6,
-        "source_priority": 2,
+        "rank": {
+          "pinned": null,
+          "tier": 2,
+          "dispatcher": null,
+          "dispatch_order": null,
+          "priority": 6
+        },
         "is_alias": true,
         "passthrough_to": null
       }

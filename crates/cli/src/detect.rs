@@ -3,49 +3,37 @@
 
 use std::path::Path;
 use std::process;
+use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::tool;
 use crate::types::{
-    DetectionWarning, InstallDir, NodeVersion, PackageManager, ProjectContext, Task, TaskRunner,
-    TaskSource,
+    DetectionWarning, NodeVersion, ProjectContext, Task, TaskRunner, TaskSource, Workspace,
+    WorkspaceMember,
 };
 
-/// Scan `dir` for known config/lock files and return a populated [`ProjectContext`].
-///
-/// Detection order:
-/// 1. Package managers (Node lockfiles take priority over `package.json` field)
-/// 2. Task runners
-/// 3. Node.js version constraints
-/// 4. Monorepo indicators
-/// 5. Task extraction (conditional on detected tools)
-pub(crate) fn detect(dir: &Path) -> ProjectContext {
-    let workspace = tool::workspace::anchor(dir);
+/// Anchor `dir` in its workspace or project root, then observe and resolve
+/// that tree under `overrides`.
+pub(crate) fn detect(
+    dir: &Path,
+    overrides: &crate::resolver::ResolutionOverrides,
+) -> ProjectContext {
+    let (workspace, workspace_warning) = anchor(dir);
     let root = workspace
         .as_ref()
         .map_or_else(|| project_root(dir), |workspace| workspace.root.clone());
     let mut ctx = ProjectContext {
         cwd: dir.to_path_buf(),
-        root: root.clone(),
-        package_managers: Vec::new(),
-        task_runners: Vec::new(),
+        root,
         tasks: Vec::new(),
-        node_version: None,
-        current_node: None,
-        is_monorepo: workspace.is_some(),
         workspace,
-        install_dirs: Vec::new(),
         warnings: Vec::new(),
+        project: Ok(runner_core::Project::default()),
     };
-    let dir = root.as_path();
-
-    detect_package_managers(dir, &mut ctx);
-    detect_install_dirs(dir, &mut ctx);
-    detect_task_runners(dir, &mut ctx);
-    detect_node_version(dir, &mut ctx);
-    detect_monorepo(dir, &mut ctx);
-    extract_tasks(&mut ctx);
+    ctx.warnings
+        .extend(workspace_warning.map(DetectionWarning::Pipeline));
+    resolve(&mut ctx, overrides);
 
     let mut tasks = std::mem::take(&mut ctx.tasks);
     tasks.sort_by(|a, b| {
@@ -87,6 +75,60 @@ fn project_root(dir: &Path) -> std::path::PathBuf {
         .map_or_else(|| dir.to_owned(), Path::to_path_buf)
 }
 
+/// The workspace `dir` belongs to, and the declaration that could not be read.
+fn anchor(dir: &Path) -> (Option<Workspace>, Option<runner_core::Warning>) {
+    match runner_core::workspace::anchor(
+        dir,
+        tool::files::vcs_root(dir).as_deref(),
+        holds_project_files(dir),
+        &runner_providers::REGISTRY,
+    ) {
+        Ok(workspace) => (workspace.map(workspace_view), None),
+        Err(warning) => (None, Some(warning)),
+    }
+}
+
+/// The CLI's view of a core workspace.
+fn workspace_view(workspace: runner_core::Workspace) -> Workspace {
+    let members: Vec<Arc<WorkspaceMember>> = workspace
+        .members
+        .into_iter()
+        .map(|member| {
+            Arc::new(WorkspaceMember {
+                name: member.name,
+                path: member.path,
+                label: member.label,
+                dir: member.dir,
+            })
+        })
+        .collect();
+    let current = workspace
+        .current
+        .and_then(|index| members.get(index).cloned());
+    Workspace {
+        root: workspace.root,
+        kinds: workspace.kinds,
+        members,
+        current,
+    }
+}
+
+/// Whether `dir` holds a file a provider signals, or a `runner.toml`.
+fn holds_project_files(dir: &Path) -> bool {
+    let signals = || runner_providers::REGISTRY.iter().flat_map(|p| p.signals);
+    let exact: Vec<&str> = signals()
+        .flat_map(runner_core::Signal::file_names)
+        .chain(["runner.toml"])
+        .collect();
+    let caseless: Vec<&str> = signals()
+        .filter_map(|signal| match signal {
+            runner_core::Signal::FileCaseless(name) => Some(*name),
+            _ => None,
+        })
+        .collect();
+    exact.iter().any(|name| dir.join(name).is_file()) || holds_caseless(dir, &caseless)
+}
+
 /// Whether `dir` holds a file spelled like one of `names` in any ASCII case.
 fn holds_caseless(dir: &Path, names: &[&str]) -> bool {
     !names.is_empty()
@@ -101,307 +143,57 @@ fn holds_caseless(dir: &Path, names: &[&str]) -> bool {
         })
 }
 
-// Install directories
-
-/// Record which detected package managers write which install directory.
-/// Whether a shared directory is a *collision* is an install-time question
-/// ([`crate::commands::install`] answers it against the effective install
-/// set), so nothing is judged or warned here.
-fn detect_install_dirs(dir: &Path, ctx: &mut ProjectContext) {
-    ctx.install_dirs = install_dirs(dir, &ctx.package_managers);
-}
-
-/// The install directories `pms` write under `dir`, from each provider's
-/// declared `writes`. Deno writes `node_modules` only when it materializes a
-/// local tree (see [`tool::deno::writes_node_modules`]).
-pub(crate) fn install_dirs(dir: &Path, pms: &[PackageManager]) -> Vec<InstallDir> {
-    let mut dirs: Vec<InstallDir> = Vec::new();
-    for pm in pms {
-        let Some(provider) = runner_providers::REGISTRY.by_label(pm.label()) else {
-            continue;
-        };
-        if *pm == PackageManager::Deno && !tool::deno::writes_node_modules(dir) {
-            continue;
-        }
-        for written in provider.writes {
-            match dirs.iter_mut().find(|entry| entry.dir == *written) {
-                Some(entry) => entry.writers.push(*pm),
-                None => dirs.push(InstallDir {
-                    dir: written,
-                    writers: vec![*pm],
-                }),
-            }
-        }
-    }
-    dirs
-}
-
-// Package managers
-
-/// Priority among Node PMs whose filesystem signal (lockfile or config
-/// file) is present in the directory: `bun > pnpm > yarn > npm`. Distinct
-/// from [`crate::resolver::node_probe_order`], the signal-less PATH
-/// fallback, where npm leads.
-const NODE_SIGNAL_PRIORITY: &[PackageManager] = &[
-    PackageManager::Bun,
-    PackageManager::Pnpm,
-    PackageManager::Yarn,
-    PackageManager::Npm,
-];
-
-/// Filesystem detector for a Node-ecosystem PM, keyed by
-/// [`NODE_SIGNAL_PRIORITY`]. Only ever called with a PM drawn from
-/// that array, so the wildcard is unreachable in practice, not a
-/// silently-accepted gap.
-fn node_pm_detector(pm: PackageManager) -> fn(&Path) -> bool {
-    match pm {
-        PackageManager::Bun => tool::bun::detect,
-        PackageManager::Pnpm => tool::pnpm::detect,
-        PackageManager::Yarn => tool::yarn::detect,
-        PackageManager::Npm => tool::npm::detect,
-        _ => |_| false,
-    }
-}
-
-/// Detect a Node-ecosystem PM in `dir` alone (no upward walk).
-///
-/// One lockfile answers by itself. Several is a question about intent, and the
-/// committed lockfile answers it: a project that ships `bun.lock` and ignores
-/// `package-lock.json` has said which manager is its own. Tracked status is the
-/// signal, not ignore status, which is ambiguous in both directions (a
-/// gitignored `bun.lock` can mean "we never commit lockfiles", which is
-/// evidence the project *does* use bun).
-///
-/// [`NODE_SIGNAL_PRIORITY`] decides only when git can't: no
-/// repository, no git, nothing committed, or several lockfiles committed.
-fn detect_local_node_pm(dir: &Path) -> Option<PackageManager> {
-    let present: Vec<PackageManager> = NODE_SIGNAL_PRIORITY
-        .iter()
-        .copied()
-        .filter(|&pm| node_pm_detector(pm)(dir))
-        .collect();
-    let (preferred, rest) = present.split_first()?;
-    if rest.is_empty() {
-        return Some(*preferred);
-    }
-    Some(committed_lockfile_pm(dir, &present).unwrap_or(*preferred))
-}
-
-/// The one package manager among `candidates` whose lockfile git tracks.
-///
-/// `None` when git leaves the question open: it couldn't answer, nothing is
-/// committed, or more than one lockfile is. A repository that commits two
-/// lockfiles is genuinely ambiguous, and detection must not dress a guess up as
-/// evidence.
-fn committed_lockfile_pm(dir: &Path, candidates: &[PackageManager]) -> Option<PackageManager> {
-    let names: Vec<&str> = candidates
-        .iter()
-        .flat_map(|pm| node_lockfiles(*pm))
-        .copied()
-        .collect();
-    let tracked = tool::git::tracked(dir, &names)?;
-    let mut committed = candidates.iter().copied().filter(|pm| {
-        node_lockfiles(*pm)
-            .iter()
-            .any(|lockfile| tracked.iter().any(|path| path == lockfile))
-    });
-    let only = committed.next()?;
-    committed.next().is_none().then_some(only)
-}
-
-/// The lockfiles a Node-ecosystem package manager writes.
-const fn node_lockfiles(pm: PackageManager) -> &'static [&'static str] {
-    match pm {
-        PackageManager::Bun => &["bun.lock", "bun.lockb"],
-        PackageManager::Pnpm => &["pnpm-lock.yaml"],
-        PackageManager::Yarn => &["yarn.lock"],
-        PackageManager::Npm => &["package-lock.json"],
-        _ => &[],
-    }
-}
-
-/// Detect package managers by checking for lockfiles and config files.
-///
-/// Node PM priority: bun > pnpm > yarn > npm > Node `packageManager` field.
-/// Within non-Node ecosystems, multiple PMs can coexist (e.g. Cargo + npm).
-fn detect_package_managers(dir: &Path, ctx: &mut ProjectContext) {
-    let node_pm = if let Some(pm) = detect_local_node_pm(dir) {
-        Some(pm)
-    } else if tool::node::has_package_json(dir) {
-        // Read the field with diagnostics so a present-but-unparseable
-        // value (typo, unsupported PM) doesn't disappear silently;
-        // emit a `DetectionWarning::UnparseablePackageManager` so the
-        // user sees the raw value they wrote and can fix it.
-        let (field_pm, unparseable) = tool::node::detect_pm_field_with_diagnostics(dir);
-        if let Some(raw) = unparseable {
-            ctx.warnings
-                .push(DetectionWarning::UnparseablePackageManager { raw });
-        }
-        // Mirror the resolver's manifest chain: legacy `packageManager`
-        // first, then `devEngines.packageManager`. When the manifest
-        // declares nothing (or only an unparseable legacy field, which
-        // per Corepack must not be substituted), fall back to the
-        // governing lockfile/manifest of an enclosing workspace so a
-        // member dir's `info`/`install` still target the right PM.
-        field_pm
-            .or_else(|| tool::node::detect_pm_from_manifest(dir))
-            .filter(|pm| pm.is_node())
-            .or_else(|| detect_node_pm_upwards(dir))
-    } else {
-        detect_node_pm_upwards(dir)
-    };
-    if let Some(pm) = node_pm {
-        ctx.package_managers.push(pm);
-    }
-
-    if tool::cargo_pm::detect(dir) {
-        ctx.package_managers.push(PackageManager::Cargo);
-    }
-    if tool::deno::detect(dir) {
-        ctx.package_managers.push(PackageManager::Deno);
-    }
-    if let Some(pm) = detect_python_pm_upwards(dir) {
-        ctx.package_managers.push(pm);
-    }
-    if tool::go_pm::detect(dir) {
-        ctx.package_managers.push(PackageManager::Go);
-    }
-    if tool::bundler::detect(dir) {
-        ctx.package_managers.push(PackageManager::Bundler);
-    }
-    if tool::composer::detect(dir) {
-        ctx.package_managers.push(PackageManager::Composer);
-    }
-}
-
-/// Walk upward, workspace-root-aware and VCS-bounded, for the package
-/// manager that governs a manifest-less (or PM-less) workspace member:
-/// the nearest ancestor Node lockfile, else the nearest ancestor
-/// manifest's `packageManager`/`devEngines` declaration.
-///
-/// Returns `None` outside a JS workspace so an unrelated outer-project
-/// lockfile is never adopted, the same guard that gates upward script
-/// discovery, applied to PM resolution.
-fn detect_node_pm_upwards(dir: &Path) -> Option<PackageManager> {
-    if !tool::node::within_workspace_upwards(dir) {
-        return None;
-    }
-    tool::files::find_in_ancestors(dir, |ancestor| {
-        detect_local_node_pm(ancestor)
-            .or_else(|| tool::node::detect_pm_from_manifest(ancestor).filter(|pm| pm.is_node()))
-    })
-}
-
-/// Walk upward, VCS-bounded, for the Python package manager governing
-/// a nested project directory. Nearest ancestor wins; within one directory
-/// keep the same uv > poetry > pipenv priority as local detection.
-fn detect_python_pm_upwards(dir: &Path) -> Option<PackageManager> {
-    tool::files::find_in_ancestors(dir, |ancestor| {
-        if tool::uv::detect(ancestor) {
-            Some(PackageManager::Uv)
-        } else if tool::poetry::detect(ancestor) {
-            Some(PackageManager::Poetry)
-        } else if tool::pipenv::detect(ancestor) {
-            Some(PackageManager::Pipenv)
-        } else {
-            None
-        }
-    })
-}
-
-// Task runners
-
-/// Detect task runners by checking for their config files.
-fn detect_task_runners(dir: &Path, ctx: &mut ProjectContext) {
-    if tool::turbo::detect(dir) {
-        ctx.task_runners.push(TaskRunner::Turbo);
-    }
-    if tool::nx::detect(dir) {
-        ctx.task_runners.push(TaskRunner::Nx);
-    }
-    if tool::make::detect(dir) {
-        ctx.task_runners.push(TaskRunner::Make);
-    }
-    if tool::just::detect(dir) {
-        ctx.task_runners.push(TaskRunner::Just);
-    }
-    if tool::go_task::detect(dir) {
-        ctx.task_runners.push(TaskRunner::GoTask);
-    }
-    if tool::mise::detect(dir) {
-        ctx.task_runners.push(TaskRunner::Mise);
-    }
-    if tool::bacon::detect(dir) {
-        ctx.task_runners.push(TaskRunner::Bacon);
-    }
-}
-
 // Node version
 
-/// Detect the expected Node.js version from version files and the current
-/// installed version via `node --version`.
-///
-/// Sources checked (first match wins):
-/// 1. `.nvmrc`
-/// 2. `.node-version`
-/// 3. `.tool-versions` (asdf `nodejs` key)
-/// 4. `package.json` `"engines.node"`
-fn detect_node_version(dir: &Path, ctx: &mut ProjectContext) {
+/// The Node.js version `dir` expects, from the first of `.nvmrc`,
+/// `.node-version`, `.tool-versions` (asdf `nodejs`) and `package.json`
+/// `engines.node` that names one.
+pub(crate) fn node_version(dir: &Path) -> Option<NodeVersion> {
+    #[derive(Deserialize)]
+    struct Engines {
+        node: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct Partial {
+        engines: Option<Engines>,
+    }
+
     for (file, source) in [(".nvmrc", ".nvmrc"), (".node-version", ".node-version")] {
         if let Ok(raw) = std::fs::read_to_string(dir.join(file)) {
             let v = raw.trim();
             if !v.is_empty() {
-                ctx.node_version = Some(NodeVersion {
+                return Some(NodeVersion {
                     expected: v.strip_prefix('v').unwrap_or(v).to_string(),
                     source,
                 });
-                break;
             }
         }
     }
 
-    if ctx.node_version.is_none()
-        && let Ok(content) = std::fs::read_to_string(dir.join(".tool-versions"))
-    {
+    if let Ok(content) = std::fs::read_to_string(dir.join(".tool-versions")) {
         for line in content.lines() {
             if let Some(v) = parse_tool_versions_node(line) {
-                ctx.node_version = Some(NodeVersion {
+                return Some(NodeVersion {
                     expected: v.to_string(),
                     source: ".tool-versions",
                 });
-                break;
             }
         }
     }
 
-    if ctx.node_version.is_none()
-        && let Ok(content) = std::fs::read_to_string(dir.join("package.json"))
-    {
-        #[derive(Deserialize)]
-        struct Engines {
-            node: Option<String>,
-        }
-        #[derive(Deserialize)]
-        struct Partial {
-            engines: Option<Engines>,
-        }
-        if let Ok(p) = serde_json::from_str::<Partial>(&content)
-            && let Some(v) = p.engines.and_then(|e| e.node)
-        {
-            ctx.node_version = Some(NodeVersion {
-                expected: v,
-                source: "package.json engines",
-            });
-        }
-    }
-
-    if ctx.node_version.is_some() || ctx.package_managers.iter().any(|pm| pm.is_node()) {
-        ctx.current_node = detect_current_node();
-    }
+    let content = std::fs::read_to_string(dir.join("package.json")).ok()?;
+    let expected = serde_json::from_str::<Partial>(&content)
+        .ok()?
+        .engines?
+        .node?;
+    Some(NodeVersion {
+        expected,
+        source: "package.json engines",
+    })
 }
 
-/// Shell out to `node --version` and parse the result.
-fn detect_current_node() -> Option<String> {
+/// The installed Node.js version, from `node --version`.
+pub(crate) fn current_node() -> Option<String> {
     let out = process::Command::new("node")
         .arg("--version")
         .output()
@@ -423,36 +215,39 @@ fn parse_tool_versions_node(line: &str) -> Option<&str> {
     (tool == "nodejs").then_some(version)
 }
 
-// Monorepo
+// Observation and resolution
 
-/// Check for monorepo indicators: workspace configs, turbo, nx, cargo workspace.
-fn detect_monorepo(dir: &Path, ctx: &mut ProjectContext) {
-    if dir.join("pnpm-workspace.yaml").exists() || dir.join("lerna.json").exists() {
-        ctx.is_monorepo = true;
-    }
-    if ctx.task_runners.contains(&TaskRunner::Turbo) || ctx.task_runners.contains(&TaskRunner::Nx) {
-        ctx.is_monorepo = true;
-    }
-    if tool::cargo_pm::detect_workspace(dir) {
-        ctx.is_monorepo = true;
-    }
+/// The core's project for `ctx`'s tree under `overrides`.
+pub(crate) fn observe(
+    ctx: &ProjectContext,
+    overrides: &crate::resolver::ResolutionOverrides,
+) -> std::io::Result<runner_core::Project> {
+    let tree = crate::commands::run::core::tree(ctx);
+    let evidence = crate::commands::run::core::observe_evidence(&tree)?;
+    runner_core::resolve(
+        &tree,
+        evidence,
+        &crate::commands::run::core::policy(overrides),
+        &runner_providers::REGISTRY,
+    )
 }
 
-// Task extraction
-
-/// Collect tasks from the registry's provider callbacks.
-fn extract_tasks(ctx: &mut ProjectContext) {
-    let tree = crate::commands::run::core::tree(ctx);
+/// Observe and resolve the tree under `overrides`, keeping the project and
+/// the tasks and warnings it carries.
+fn resolve(ctx: &mut ProjectContext, overrides: &crate::resolver::ResolutionOverrides) {
     let registry = &runner_providers::REGISTRY;
-    match crate::commands::run::core::observe_evidence(&tree).and_then(|evidence| {
-        runner_core::resolve(&tree, evidence, &runner_core::Policy::default(), registry)
-    }) {
+    match observe(ctx, overrides) {
         Ok(project) => {
+            ctx.warnings.extend(
+                project
+                    .warnings
+                    .iter()
+                    .cloned()
+                    .map(DetectionWarning::Pipeline),
+            );
             ctx.warnings
-                .extend(project.warnings.into_iter().map(DetectionWarning::Pipeline));
-            ctx.warnings
-                .extend(project.unread.into_iter().map(DetectionWarning::Unread));
-            for task in project.tasks {
+                .extend(project.unread.iter().cloned().map(DetectionWarning::Unread));
+            for task in &project.tasks {
                 let source = TaskSource::from_label(registry.by_id(task.source).label)
                     .expect("registered task source");
                 let member = match &task.scope {
@@ -466,24 +261,30 @@ fn extract_tasks(ctx: &mut ProjectContext) {
                         .cloned(),
                 };
                 ctx.tasks.push(Task {
-                    name: task.name,
+                    name: task.name.clone(),
                     source,
                     member,
-                    description: task.description,
-                    alias_of: task.alias_of,
-                    run_target: task.target,
+                    description: task.description.clone(),
+                    alias_of: task.alias_of.clone(),
+                    run_target: task.target.clone(),
                     passthrough_to: task
                         .forwards_to
                         .and_then(|id| TaskRunner::from_label(registry.by_id(id).label)),
-                    detail: task.detail,
+                    detail: task.detail.clone(),
                 });
             }
+            ctx.project = Ok(project);
         }
-        Err(error) => ctx
-            .warnings
-            .push(DetectionWarning::Pipeline(runner_core::Warning::general(
-                error.to_string(),
-            ))),
+        Err(error) => {
+            ctx.warnings
+                .push(DetectionWarning::Pipeline(runner_core::Warning::general(
+                    error.to_string(),
+                )));
+            ctx.project = Err(crate::types::Unobserved {
+                kind: error.kind(),
+                message: error.to_string(),
+            });
+        }
     }
 }
 
@@ -497,306 +298,6 @@ mod tests {
     use crate::detect::detect;
     use crate::tool::test_support::TempDir;
     use crate::types::PackageManager;
-
-    #[test]
-    fn parses_tool_versions_node_entry() {
-        assert_eq!(parse_tool_versions_node("nodejs 20.11.1"), Some("20.11.1"));
-    }
-
-    #[test]
-    fn ignores_malformed_tool_versions_entry() {
-        assert_eq!(parse_tool_versions_node("nodejs20.11.1"), None);
-    }
-
-    #[test]
-    fn strips_tool_versions_inline_comments() {
-        assert_eq!(
-            parse_tool_versions_node("nodejs 20.11.1 # pinned for ci"),
-            Some("20.11.1")
-        );
-    }
-
-    #[test]
-    fn detect_records_warnings_for_invalid_task_configs() {
-        let dir = TempDir::new("detect-warning");
-        fs::write(dir.path().join("turbo.json"), "{").expect("turbo.json should be written");
-
-        let ctx = detect(dir.path());
-
-        assert_eq!(ctx.warnings.len(), 1);
-        assert_eq!(ctx.warnings[0].source(), "turbo");
-    }
-
-    #[test]
-    fn detect_records_warning_for_unparseable_package_manager_field() {
-        // The user typo'd `pnpm` → `pnpmm`. The resolver can't dispatch
-        // through `pnpmm@9`, so the manifest declaration is ignored,
-        // but the detection layer surfaces the raw value verbatim so
-        // the user sees their typo instead of staring at a doctor
-        // report that just shows `manifest_pm: null`.
-        let dir = TempDir::new("detect-unparseable-pm-field");
-        fs::write(
-            dir.path().join("package.json"),
-            r#"{ "packageManager": "pnpmm@9.0.0" }"#,
-        )
-        .expect("package.json should be written");
-
-        let ctx = detect(dir.path());
-
-        let detail = ctx
-            .warnings
-            .iter()
-            .find_map(|w| {
-                matches!(
-                    w,
-                    crate::types::DetectionWarning::UnparseablePackageManager { .. }
-                )
-                .then(|| w.detail())
-            })
-            .expect("unparseable-packageManager warning should be emitted");
-        assert!(
-            detail.contains("pnpmm@9.0.0"),
-            "warning should echo the raw value verbatim: {detail}",
-        );
-        assert!(
-            detail.contains("npm|pnpm|yarn|bun|deno"),
-            "warning should list the accepted values: {detail}",
-        );
-    }
-
-    #[test]
-    fn detect_models_cargo_aliases_as_aliases() {
-        let dir = TempDir::new("detect-cargo-alias-shape");
-        let cargo_dir = dir.path().join(".cargo");
-        fs::create_dir_all(&cargo_dir).expect(".cargo dir should be created");
-        fs::write(
-            dir.path().join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
-        )
-        .expect("Cargo.toml should be written");
-        fs::write(
-            cargo_dir.join("config.toml"),
-            "[alias]\nl = \"clippy --all-targets\"\n",
-        )
-        .expect("config.toml should be written");
-
-        let ctx = detect(dir.path());
-        let task = ctx
-            .tasks
-            .iter()
-            .find(|task| task.source == crate::types::TaskSource::CargoAliases && task.name == "l")
-            .expect("cargo alias should be detected");
-
-        assert_eq!(task.description, None);
-        assert_eq!(task.alias_of.as_deref(), Some("clippy --all-targets"));
-    }
-
-    #[test]
-    fn detect_models_go_cmd_packages_as_tasks() {
-        let dir = TempDir::new("detect-go-cmd-package");
-        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
-            .expect("go.mod should be written");
-        let cmd_dir = dir.path().join("cmd").join("serve");
-        fs::create_dir_all(&cmd_dir).expect("cmd package dir should be created");
-        fs::write(cmd_dir.join("main.go"), "package main\n\nfunc main() {}\n")
-            .expect("main.go should be written");
-
-        let ctx = detect(dir.path());
-
-        assert!(ctx.tasks.iter().any(|task| {
-            task.source == crate::types::TaskSource::GoPackage
-                && task.name == "serve"
-                && task.run_target.as_deref() == Some("./cmd/serve")
-        }));
-    }
-
-    #[test]
-    fn detect_models_root_go_main_package_as_task() {
-        let dir = TempDir::new("detect-go-root-package");
-        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
-            .expect("go.mod should be written");
-        fs::write(
-            dir.path().join("main.go"),
-            "package main\n\nfunc main() {}\n",
-        )
-        .expect("main.go should be written");
-
-        let ctx = detect(dir.path());
-
-        // Root task name is the last `module` path segment (deterministic),
-        // not the temp directory's randomized name.
-        assert!(ctx.tasks.iter().any(|task| {
-            task.source == crate::types::TaskSource::GoPackage
-                && task.name == "app"
-                && task.run_target.as_deref() == Some(".")
-        }));
-    }
-
-    #[test]
-    fn detect_lists_pyproject_scripts_for_uv_projects() {
-        // Headline regression (issue): a uv project's `[project.scripts]`
-        // console entry points were detected as a package manager but
-        // never surfaced as runnable tasks.
-        let dir = TempDir::new("detect-pyproject-scripts-uv");
-        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\nbodysuit = \
-             \"greenpy.bodysuit:main\"\ngreenpy = \"greenpy.main:main\"\nnavel-stamper = \
-             \"greenpy.navel_stamper:main\"\n",
-        )
-        .expect("pyproject.toml should be written");
-
-        let ctx = detect(dir.path());
-
-        assert!(ctx.package_managers.contains(&PackageManager::Uv));
-        let names: Vec<&str> = ctx
-            .tasks
-            .iter()
-            .filter(|t| t.source == crate::types::TaskSource::PyprojectScripts)
-            .map(|t| t.name.as_str())
-            .collect();
-        assert_eq!(names, ["bodysuit", "greenpy", "navel-stamper"]);
-        // The entry-point target rides along as the task description.
-        assert!(ctx.tasks.iter().any(|t| {
-            t.source == crate::types::TaskSource::PyprojectScripts
-                && t.name == "greenpy"
-                && t.description.as_deref() == Some("greenpy.main:main")
-        }));
-    }
-
-    #[test]
-    fn detect_lists_pyproject_scripts_from_nested_uv_project() {
-        let dir = TempDir::new("detect-pyproject-nested-uv");
-        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
-        let nested = dir.path().join("src").join("pkg");
-        fs::create_dir_all(&nested).expect("nested dir should be created");
-        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \
-             \"greenpy.main:main\"\n",
-        )
-        .expect("pyproject.toml should be written");
-
-        let ctx = detect(&nested);
-
-        assert_eq!(ctx.package_managers, [PackageManager::Uv]);
-        assert!(ctx.tasks.iter().any(|task| {
-            task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
-        }));
-    }
-
-    #[test]
-    fn detect_lists_pyproject_scripts_without_detected_python_pm() {
-        let dir = TempDir::new("detect-pyproject-scripts-no-pm");
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \
-             \"greenpy.main:main\"\n",
-        )
-        .expect("pyproject.toml should be written");
-
-        let ctx = detect(dir.path());
-
-        assert!(
-            ctx.package_managers.is_empty(),
-            "generic pyproject scripts do not imply a specific Python PM",
-        );
-        assert!(ctx.tasks.iter().any(|task| {
-            task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
-        }));
-    }
-
-    #[test]
-    fn detect_lists_pyproject_scripts_for_poetry_projects() {
-        let dir = TempDir::new("detect-pyproject-scripts-poetry");
-        fs::write(
-            dir.path().join("pyproject.toml"),
-            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[project.scripts]\ncli = \
-             \"demo.cli:main\"\n",
-        )
-        .expect("pyproject.toml should be written");
-
-        let ctx = detect(dir.path());
-
-        assert!(ctx.package_managers.contains(&PackageManager::Poetry));
-        assert!(ctx.tasks.iter().any(|t| {
-            t.source == crate::types::TaskSource::PyprojectScripts && t.name == "cli"
-        }));
-    }
-
-    #[test]
-    fn node_modules_writers_recorded_for_bun_plus_deno_node_modules_dir() {
-        use crate::types::PackageManager;
-        let dir = TempDir::new("detect-collision");
-        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
-        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
-        fs::write(
-            dir.path().join("deno.jsonc"),
-            r#"{ "nodeModulesDir": "auto" }"#,
-        )
-        .expect("deno.jsonc");
-
-        let ctx = detect(dir.path());
-
-        let writers = ctx
-            .install_dirs
-            .iter()
-            .find(|entry| entry.dir == "node_modules")
-            .map(|entry| entry.writers.clone())
-            .expect("bun + node_modules-dir deno both write node_modules");
-        assert_eq!(writers, vec![PackageManager::Bun, PackageManager::Deno]);
-        // A shared directory is a fact; whether it is a collision depends on the
-        // install set, which detection knows nothing about. That is now enforced
-        // by the type system: there is no collision variant on `DetectionWarning`
-        // for detection to emit. The install planner owns that verdict.
-    }
-
-    #[test]
-    fn deno_is_no_node_modules_writer_when_it_opts_out_of_a_local_tree() {
-        let dir = TempDir::new("detect-no-collision");
-        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
-        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
-        // Explicit `none` overrides the package.json default of `manual`, so
-        // deno resolves npm packages from its global cache.
-        fs::write(
-            dir.path().join("deno.jsonc"),
-            r#"{ "nodeModulesDir": "none" }"#,
-        )
-        .expect("deno.jsonc");
-
-        let ctx = detect(dir.path());
-
-        let writers = ctx
-            .install_dirs
-            .iter()
-            .find(|entry| entry.dir == "node_modules")
-            .map(|entry| entry.writers.clone())
-            .expect("bun still writes node_modules");
-        assert_eq!(writers, vec![PackageManager::Bun]);
-    }
-
-    #[test]
-    fn a_deno_project_with_a_package_json_writes_node_modules_without_being_told_to() {
-        // The shape that used to slip through: no `nodeModulesDir` line at all,
-        // so runner said deno kept its deps in the global cache, while
-        // `deno install` was in fact populating node_modules alongside bun.
-        let dir = TempDir::new("detect-implicit-collision");
-        fs::write(dir.path().join("package.json"), r#"{"name":"x"}"#).expect("package.json");
-        fs::write(dir.path().join("bun.lock"), "").expect("bun.lock");
-        fs::write(dir.path().join("deno.jsonc"), r#"{ "tasks": {} }"#).expect("deno.jsonc");
-
-        let ctx = detect(dir.path());
-
-        let writers = ctx
-            .install_dirs
-            .iter()
-            .find(|entry| entry.dir == "node_modules")
-            .map(|entry| entry.writers.clone())
-            .expect("both write node_modules");
-        assert_eq!(writers, vec![PackageManager::Bun, PackageManager::Deno]);
-    }
 
     /// `git init` + commit the named files. Returns false only when git is
     /// unavailable, so the caller can skip rather than fail.
@@ -847,21 +348,236 @@ mod tests {
     }
 
     #[test]
+    fn parses_tool_versions_node_entry() {
+        assert_eq!(parse_tool_versions_node("nodejs 20.11.1"), Some("20.11.1"));
+    }
+
+    #[test]
+    fn ignores_malformed_tool_versions_entry() {
+        assert_eq!(parse_tool_versions_node("nodejs20.11.1"), None);
+    }
+
+    #[test]
+    fn strips_tool_versions_inline_comments() {
+        assert_eq!(
+            parse_tool_versions_node("nodejs 20.11.1 # pinned for ci"),
+            Some("20.11.1")
+        );
+    }
+
+    #[test]
+    fn detect_records_warnings_for_invalid_task_configs() {
+        let dir = TempDir::new("detect-warning");
+        fs::write(dir.path().join("turbo.json"), "{").expect("turbo.json should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.warnings.len(), 1);
+        assert_eq!(ctx.warnings[0].source(), "turbo");
+    }
+
+    #[test]
+    fn detect_records_warning_for_unparseable_package_manager_field() {
+        let dir = TempDir::new("detect-unparseable-pm-field");
+        fs::write(
+            dir.path().join("package.json"),
+            r#"{ "packageManager": "pnpmm@9.0.0" }"#,
+        )
+        .expect("package.json should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        let detail = ctx
+            .warnings
+            .iter()
+            .find_map(|w| {
+                (w.source() == "package.json" && w.detail().contains("packageManager"))
+                    .then(|| w.detail())
+            })
+            .expect("unparseable-packageManager warning should be emitted");
+        assert!(
+            detail.contains("pnpmm@9.0.0"),
+            "warning should echo the raw value verbatim: {detail}",
+        );
+        assert!(
+            detail.contains("npm|pnpm|yarn|bun|deno"),
+            "warning should list the accepted values: {detail}",
+        );
+    }
+
+    #[test]
+    fn detect_models_cargo_aliases_as_aliases() {
+        let dir = TempDir::new("detect-cargo-alias-shape");
+        let cargo_dir = dir.path().join(".cargo");
+        fs::create_dir_all(&cargo_dir).expect(".cargo dir should be created");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+        )
+        .expect("Cargo.toml should be written");
+        fs::write(
+            cargo_dir.join("config.toml"),
+            "[alias]\nl = \"clippy --all-targets\"\n",
+        )
+        .expect("config.toml should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+        let task = ctx
+            .tasks
+            .iter()
+            .find(|task| task.source == crate::types::TaskSource::CargoAliases && task.name == "l")
+            .expect("cargo alias should be detected");
+
+        assert_eq!(task.description, None);
+        assert_eq!(task.alias_of.as_deref(), Some("clippy --all-targets"));
+    }
+
+    #[test]
+    fn detect_models_go_cmd_packages_as_tasks() {
+        let dir = TempDir::new("detect-go-cmd-package");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        let cmd_dir = dir.path().join("cmd").join("serve");
+        fs::create_dir_all(&cmd_dir).expect("cmd package dir should be created");
+        fs::write(cmd_dir.join("main.go"), "package main\n\nfunc main() {}\n")
+            .expect("main.go should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::GoPackage
+                && task.name == "serve"
+                && task.run_target.as_deref() == Some("./cmd/serve")
+        }));
+    }
+
+    #[test]
+    fn detect_models_root_go_main_package_as_task() {
+        let dir = TempDir::new("detect-go-root-package");
+        fs::write(dir.path().join("go.mod"), "module example.com/app\n")
+            .expect("go.mod should be written");
+        fs::write(
+            dir.path().join("main.go"),
+            "package main\n\nfunc main() {}\n",
+        )
+        .expect("main.go should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        // Root task name is the last `module` path segment (deterministic),
+        // not the temp directory's randomized name.
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::GoPackage
+                && task.name == "app"
+                && task.run_target.as_deref() == Some(".")
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_for_uv_projects() {
+        // Headline regression (issue): a uv project's `[project.scripts]`
+        // console entry points were detected as a package manager but
+        // never surfaced as runnable tasks.
+        let dir = TempDir::new("detect-pyproject-scripts-uv");
+        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\nbodysuit = \
+             \"greenpy.bodysuit:main\"\ngreenpy = \"greenpy.main:main\"\nnavel-stamper = \
+             \"greenpy.navel_stamper:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        assert!(ctx.package_managers().contains(&PackageManager::Uv));
+        let names: Vec<&str> = ctx
+            .tasks
+            .iter()
+            .filter(|t| t.source == crate::types::TaskSource::PyprojectScripts)
+            .map(|t| t.name.as_str())
+            .collect();
+        assert_eq!(names, ["bodysuit", "greenpy", "navel-stamper"]);
+        // The entry-point target rides along as the task description.
+        assert!(ctx.tasks.iter().any(|t| {
+            t.source == crate::types::TaskSource::PyprojectScripts
+                && t.name == "greenpy"
+                && t.description.as_deref() == Some("greenpy.main:main")
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_from_nested_uv_project() {
+        let dir = TempDir::new("detect-pyproject-nested-uv");
+        fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
+        let nested = dir.path().join("src").join("pkg");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::write(dir.path().join("uv.lock"), "").expect("uv.lock should be written");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \
+             \"greenpy.main:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(&nested, &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.package_managers(), [PackageManager::Uv]);
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_without_detected_python_pm() {
+        let dir = TempDir::new("detect-pyproject-scripts-no-pm");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"greenpy\"\nversion = \"0.1.0\"\n\n[project.scripts]\ngreenpy = \
+             \"greenpy.main:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        assert!(
+            ctx.package_managers().is_empty(),
+            "generic pyproject scripts do not imply a specific Python PM",
+        );
+        assert!(ctx.tasks.iter().any(|task| {
+            task.source == crate::types::TaskSource::PyprojectScripts && task.name == "greenpy"
+        }));
+    }
+
+    #[test]
+    fn detect_lists_pyproject_scripts_for_poetry_projects() {
+        let dir = TempDir::new("detect-pyproject-scripts-poetry");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.poetry]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[project.scripts]\ncli = \
+             \"demo.cli:main\"\n",
+        )
+        .expect("pyproject.toml should be written");
+
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+
+        assert!(ctx.package_managers().contains(&PackageManager::Poetry));
+        assert!(ctx.tasks.iter().any(|t| {
+            t.source == crate::types::TaskSource::PyprojectScripts && t.name == "cli"
+        }));
+    }
+
+    #[test]
     fn the_committed_lockfile_wins_over_the_preference_order() {
-        // npm's lockfile is committed and bun's is not, so this is an npm
-        // project, even though bun outranks npm in NODE_SIGNAL_PRIORITY.
-        let dir = two_lockfiles("detect-committed-npm");
-        fs::write(dir.path().join(".gitignore"), "bun.lock\n").expect(".gitignore");
-        if !commit_in(
-            dir.path(),
-            &["package-lock.json", ".gitignore", "package.json"],
-        ) {
+        let dir = two_lockfiles("detect-committed-bun");
+        fs::write(dir.path().join(".gitignore"), "package-lock.json\n").expect(".gitignore");
+        if !commit_in(dir.path(), &["bun.lock", ".gitignore", "package.json"]) {
             eprintln!("skipping: git unavailable");
             return;
         }
 
-        let ctx = detect(dir.path());
-        assert_eq!(ctx.package_managers, vec![PackageManager::Npm]);
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+        assert_eq!(ctx.primary_node_pm(), Some(PackageManager::Bun));
     }
 
     #[test]
@@ -878,8 +594,8 @@ mod tests {
             return;
         }
 
-        let ctx = detect(dir.path());
-        assert_eq!(ctx.package_managers, vec![PackageManager::Bun]);
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+        assert_eq!(ctx.package_managers(), vec![PackageManager::Bun]);
     }
 
     #[test]
@@ -895,16 +611,16 @@ mod tests {
             return;
         }
 
-        let ctx = detect(dir.path());
-        assert_eq!(ctx.package_managers, vec![PackageManager::Bun]);
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+        assert_eq!(ctx.primary_node_pm(), Some(PackageManager::Npm));
     }
 
     #[test]
     fn outside_a_repository_the_preference_order_decides() {
         let dir = two_lockfiles("detect-no-git");
 
-        let ctx = detect(dir.path());
-        assert_eq!(ctx.package_managers, vec![PackageManager::Bun]);
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
+        assert_eq!(ctx.primary_node_pm(), Some(PackageManager::Npm));
     }
 
     #[test]
@@ -921,9 +637,9 @@ mod tests {
         )
         .expect("package.json should be written");
 
-        let ctx = detect(dir.path());
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
 
-        assert_eq!(ctx.package_managers, [PackageManager::Deno]);
+        assert_eq!(ctx.package_managers(), [PackageManager::Deno]);
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
@@ -962,7 +678,7 @@ mod tests {
                 eprintln!("skipping: git unavailable");
                 return;
             }
-            let ctx = detect(&src);
+            let ctx = detect(&src, &crate::resolver::ResolutionOverrides::default());
             assert_eq!(ctx.root, dir.path(), "{name}");
             if name == "JUSTFILE" && runner_core::probe_with("just", &[]).is_none() {
                 continue;
@@ -996,9 +712,9 @@ mod tests {
         )
         .expect("member package.json should be written");
 
-        let ctx = detect(&nested);
+        let ctx = detect(&nested, &crate::resolver::ResolutionOverrides::default());
 
-        assert!(ctx.package_managers.contains(&PackageManager::Deno));
+        assert!(ctx.package_managers().contains(&PackageManager::Deno));
         assert!(ctx.tasks.iter().any(|task| task.name == "member"));
         assert!(ctx.tasks.iter().any(|task| task.name == "root"));
     }
@@ -1015,10 +731,10 @@ mod tests {
         )
         .expect("package.json should be written");
 
-        let ctx = detect(dir.path());
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
 
         assert!(
-            ctx.package_managers.is_empty(),
+            ctx.package_managers().is_empty(),
             "no lockfile/pm field → no PM detected, yet scripts must still list",
         );
         assert!(ctx.tasks.iter().any(
@@ -1047,7 +763,7 @@ mod tests {
         )
         .expect("member package.json should be written");
 
-        let ctx = detect(&nested);
+        let ctx = detect(&nested, &crate::resolver::ResolutionOverrides::default());
 
         assert!(
             ctx.tasks
@@ -1068,7 +784,7 @@ mod tests {
         let sub = dir.path().join("sub");
         fs::create_dir_all(&sub).expect("subdir should be created");
 
-        let ctx = detect(&sub);
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
 
         assert_eq!(ctx.root, sub);
         assert!(ctx.tasks.iter().all(|task| task.name != "home"));
@@ -1086,7 +802,7 @@ mod tests {
         let sub = dir.path().join("sub");
         fs::create_dir_all(&sub).expect("subdir should be created");
 
-        let ctx = detect(&sub);
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
 
         assert!(
             ctx.tasks
@@ -1109,9 +825,9 @@ mod tests {
         )
         .expect("package.json should be written");
 
-        let ctx = detect(dir.path());
+        let ctx = detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
 
-        assert_eq!(ctx.package_managers, [PackageManager::Pnpm]);
+        assert_eq!(ctx.package_managers(), [PackageManager::Pnpm]);
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));
@@ -1143,9 +859,9 @@ mod tests {
         )
         .expect("member package.json should be written");
 
-        let ctx = detect(&member);
+        let ctx = detect(&member, &crate::resolver::ResolutionOverrides::default());
 
-        assert_eq!(ctx.package_managers, [PackageManager::Pnpm]);
+        assert_eq!(ctx.package_managers(), [PackageManager::Pnpm]);
         assert!(ctx.tasks.iter().any(
             |task| task.source == crate::types::TaskSource::PackageJson && task.name == "build"
         ));

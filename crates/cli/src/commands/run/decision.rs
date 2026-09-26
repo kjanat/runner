@@ -28,7 +28,7 @@ impl Observed {
         overrides: &ResolutionOverrides,
     ) -> std::io::Result<Self> {
         let policy = super::core::policy(overrides);
-        let project = super::core::project_under(ctx, &policy)?;
+        let project = super::core::project(ctx)?;
         Ok(Self {
             tree: super::core::tree(ctx),
             policy,
@@ -39,6 +39,23 @@ impl Observed {
     /// The package manager that dispatches `source` in the invocation scope.
     pub(crate) fn decision(&self, source: ProviderId) -> Option<PmDecision> {
         decide(&self.tree, &self.project, &self.policy, source)
+    }
+
+    /// The tasks of `group` in the order `runner run` ranks them.
+    pub(crate) fn ranked<'a>(
+        &self,
+        ctx: &'a crate::types::ProjectContext,
+        group: &[&'a crate::types::Task],
+    ) -> Vec<(&'a crate::types::Task, runner_core::TaskRank)> {
+        let Some(first) = group.first() else {
+            return Vec::new();
+        };
+        let token = ctx.spelling(first);
+        super::core::ranked_in(ctx, &self.tree, &self.project, &self.policy, &token)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(task, _)| group.iter().any(|member| std::ptr::eq(*member, *task)))
+            .collect()
     }
 
     /// The task of `group` that `runner run` selects under this invocation's
@@ -324,14 +341,14 @@ mod tests {
     }
 
     fn node_decision(dir: &TempDir, overrides: &ResolutionOverrides) -> Option<PmDecision> {
-        let ctx = crate::detect::detect(dir.path());
+        let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         Observed::observe(&ctx, overrides)
             .expect("observation")
             .decision(ProviderId::PackageJson)
     }
 
     fn node_warnings(dir: &TempDir, overrides: &ResolutionOverrides) -> Vec<DetectionWarning> {
-        let ctx = crate::detect::detect(dir.path());
+        let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         let observed = Observed::observe(&ctx, overrides).expect("observation");
         observed
             .decision(ProviderId::PackageJson)
@@ -510,7 +527,7 @@ mod tests {
             ),
         ] {
             let dir = project(name, files);
-            let ctx = crate::detect::detect(dir.path());
+            let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
             let decision = Observed::observe(&ctx, &ResolutionOverrides::default())
                 .expect("observation")
                 .decision(ProviderId::PackageJson);
@@ -650,7 +667,7 @@ mod tests {
                 r#"{ "devEngines": { "packageManager": { "name": "pnpm", "version": "9.0.0" } } }"#,
             )],
         );
-        let ctx = crate::detect::detect(dir.path());
+        let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         let observed =
             Observed::observe(&ctx, &ResolutionOverrides::default()).expect("observation");
         let declaration = observed
@@ -664,7 +681,7 @@ mod tests {
             "decision-manifest-declaration-legacy",
             &[("package.json", r#"{ "packageManager": "yarn@4.3.0" }"#)],
         );
-        let ctx = crate::detect::detect(legacy.path());
+        let ctx = crate::detect::detect(legacy.path(), &ResolutionOverrides::default());
         let declaration = Observed::observe(&ctx, &ResolutionOverrides::default())
             .expect("observation")
             .manifest_declaration(ProviderId::PackageJson)

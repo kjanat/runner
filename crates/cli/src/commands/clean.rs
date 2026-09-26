@@ -21,7 +21,7 @@ pub(crate) fn clean(
     out: &mut Out<'_>,
 ) -> Result<()> {
     let tree = super::run::core::tree(ctx);
-    let project = super::run::core::project_under(ctx, &super::run::core::policy(overrides))?;
+    let project = super::run::core::project(ctx)?;
     let plan = runner_core::clean::plan(
         &tree,
         &project,
@@ -88,10 +88,10 @@ pub(crate) fn clean(
 }
 
 #[cfg(test)]
-fn collect_targets(ctx: &ProjectContext, include_framework: bool) -> Vec<String> {
+fn collect_targets(ctx: &mut ProjectContext, include_framework: bool) -> Vec<String> {
     crate::tool::test_support::seed_context(ctx);
     let tree = super::run::core::tree(ctx);
-    let project = super::run::core::project_under(ctx, &runner_core::Policy::default()).unwrap();
+    let project = super::run::core::project(ctx).unwrap();
     runner_core::clean::plan(
         &tree,
         &project,
@@ -110,7 +110,7 @@ mod tests {
     use std::fs;
 
     use super::collect_targets;
-    use crate::tool::test_support::TempDir;
+    use crate::tool::test_support::{TempDir, declare, write_signal};
     use crate::types::ProjectContext;
     use crate::types::{PackageManager, TaskRunner};
 
@@ -118,25 +118,21 @@ mod tests {
         ProjectContext {
             cwd: root.to_path_buf(),
             root: root.to_path_buf(),
-            package_managers: vec![PackageManager::Npm],
-            task_runners: Vec::new(),
             tasks: Vec::new(),
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
         }
     }
 
     #[test]
     fn collect_targets_skips_framework_dirs_by_default() {
         let dir = TempDir::new("clean-node-default");
+        write_signal(dir.path(), PackageManager::Npm.label());
         fs::create_dir(dir.path().join("node_modules")).expect("node_modules should be created");
         fs::create_dir(dir.path().join(".next")).expect(".next should be created");
 
-        let targets = collect_targets(&context(dir.path()), false);
+        let targets = collect_targets(&mut context(dir.path()), false);
 
         assert_eq!(targets, ["node_modules"]);
     }
@@ -144,10 +140,11 @@ mod tests {
     #[test]
     fn collect_targets_includes_framework_dirs_on_opt_in() {
         let dir = TempDir::new("clean-node-framework");
+        write_signal(dir.path(), PackageManager::Npm.label());
         fs::create_dir(dir.path().join("node_modules")).expect("node_modules should be created");
         fs::create_dir(dir.path().join(".next")).expect(".next should be created");
 
-        let targets = collect_targets(&context(dir.path()), true);
+        let targets = collect_targets(&mut context(dir.path()), true);
 
         assert_eq!(targets, [".next", "node_modules"]);
     }
@@ -158,10 +155,9 @@ mod tests {
         fs::create_dir(dir.path().join(".turbo")).expect(".turbo should be created");
 
         let mut ctx = context(dir.path());
-        ctx.package_managers.clear();
-        ctx.task_runners = vec![TaskRunner::Turbo];
+        declare(&mut ctx, TaskRunner::Turbo.label());
 
-        let targets = collect_targets(&ctx, false);
+        let targets = collect_targets(&mut ctx, false);
 
         assert_eq!(targets, [".turbo"]);
     }
@@ -169,10 +165,11 @@ mod tests {
     #[test]
     fn collect_targets_skips_files_named_like_artifact_dirs() {
         let dir = TempDir::new("clean-file-target");
+        write_signal(dir.path(), PackageManager::Npm.label());
         fs::write(dir.path().join("node_modules"), "nope")
             .expect("node_modules file should be written");
 
-        let targets = collect_targets(&context(dir.path()), false);
+        let targets = collect_targets(&mut context(dir.path()), false);
 
         assert_eq!(targets.len(), 0);
     }
@@ -186,9 +183,8 @@ mod tests {
         fs::create_dir(dir.path().join("pkg.egg-info")).expect("pkg.egg-info should be created");
 
         let mut ctx = context(dir.path());
-        ctx.package_managers.clear();
 
-        let targets = collect_targets(&ctx, false);
+        let targets = collect_targets(&mut ctx, false);
 
         assert_eq!(targets, ["dist", "pkg.egg-info"]);
     }
@@ -198,7 +194,6 @@ mod tests {
         let dir = TempDir::new("clean-unobserved");
         fs::create_dir(dir.path().join("dist")).unwrap();
         let mut ctx = context(dir.path());
-        ctx.package_managers.clear();
-        assert_eq!(collect_targets(&ctx, false).len(), 0);
+        assert_eq!(collect_targets(&mut ctx, false).len(), 0);
     }
 }

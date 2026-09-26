@@ -1,50 +1,47 @@
-//! Workspace members declared at a Node root.
+//! Workspaces declared at a Node root.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
-use runner_core::{Scope, Tree, Warning};
+use runner_core::{Declaration, Warning};
 use serde_json::Value;
 use yaml_rust2::YamlLoader;
 
-/// The members `package.json` `workspaces`, `pnpm-workspace.yaml` and
-/// `lerna.json` declare under the root, each carrying a manifest.
+use crate::workspace::{Manifest, members, read};
+
+/// The workspaces `pnpm-workspace.yaml`, the package manifest's `workspaces`
+/// and `lerna.json` declare at `root`, each member carrying a package
+/// manifest.
 ///
 /// # Errors
 ///
-/// When a declaration file exists but cannot be read.
-pub fn members(tree: &Tree) -> Result<Vec<Scope>, Warning> {
-    let root = tree.root.as_path();
-    let mut globs = Vec::new();
-    globs.extend(pnpm_globs(root)?);
-    globs.extend(package_json_globs(root)?);
-    globs.extend(lerna_globs(root)?);
-    let mut scopes = Vec::new();
-    for dir in expand(root, &globs)? {
-        if !dir.join("package.json").is_file()
-            || scopes
-                .iter()
-                .any(|s| matches!(s, Scope::Member { dir: d, .. } if *d == dir))
-        {
-            continue;
+/// When a declaration or a member manifest exists but cannot be read.
+pub fn declarations(root: &Path) -> Result<Vec<Declaration>, Warning> {
+    let mut found = Vec::new();
+    for (kind, globs) in [
+        ("pnpm-workspace.yaml", pnpm_globs(root)?),
+        ("package.json workspaces", manifest_globs(root)?),
+        ("lerna.json", lerna_globs(root)?),
+    ] {
+        if let Some(globs) = globs {
+            found.push(Declaration {
+                kind,
+                members: members(root, &globs, manifest_name)?,
+            });
         }
-        let name = manifest_name(&dir)?.unwrap_or_else(|| relative(root, &dir));
-        scopes.push(Scope::Member { name, dir });
     }
-    Ok(scopes)
+    Ok(found)
 }
 
-fn read(root: &Path, file: &str) -> Result<Option<String>, Warning> {
-    let path = root.join(file);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(Some(text)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(Warning::general(format!("{}: {error}", path.display()))),
-    }
+fn strings(list: &[Value]) -> Vec<String> {
+    list.iter()
+        .filter_map(Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
-fn pnpm_globs(root: &Path) -> Result<Vec<String>, Warning> {
-    let Some(text) = read(root, "pnpm-workspace.yaml")? else {
-        return Ok(Vec::new());
+fn pnpm_globs(root: &Path) -> Result<Option<Vec<String>>, Warning> {
+    let Some(text) = read(&root.join("pnpm-workspace.yaml"))? else {
+        return Ok(None);
     };
     let docs = YamlLoader::load_from_str(&text)
         .map_err(|err| Warning::general(format!("pnpm-workspace.yaml: {err}")))?;
@@ -56,127 +53,48 @@ fn pnpm_globs(root: &Path) -> Result<Vec<String>, Warning> {
                 .filter_map(yaml_rust2::Yaml::as_str)
                 .map(ToOwned::to_owned)
                 .collect()
-        })
-        .unwrap_or_default())
+        }))
 }
 
-fn package_json_globs(root: &Path) -> Result<Vec<String>, Warning> {
-    let Some(text) = read(root, "package.json")? else {
-        return Ok(Vec::new());
-    };
-    let manifest: Value = serde_json::from_str(&text)
-        .map_err(|err| Warning::general(format!("package.json: {err}")))?;
-    let workspaces = match &manifest["workspaces"] {
-        Value::Array(list) => list.clone(),
-        Value::Object(map) => map
-            .get("packages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    };
-    Ok(workspaces
-        .iter()
-        .filter_map(Value::as_str)
-        .map(ToOwned::to_owned)
-        .collect())
+fn manifest(dir: &Path) -> Result<Option<Value>, Warning> {
+    runner_core::read_manifest(dir, super::MANIFESTS)
+        .map(|found| found.map(|(_, document)| document))
+        .map_err(|error| Warning::general(error.to_string()))
 }
 
-fn lerna_globs(root: &Path) -> Result<Vec<String>, Warning> {
-    let Some(text) = read(root, "lerna.json")? else {
-        return Ok(Vec::new());
+fn manifest_globs(root: &Path) -> Result<Option<Vec<String>>, Warning> {
+    Ok(
+        manifest(root)?.and_then(|document| match &document["workspaces"] {
+            Value::Array(list) => Some(strings(list)),
+            Value::Object(map) => Some(
+                map.get("packages")
+                    .and_then(Value::as_array)
+                    .map_or_else(Vec::new, |list| strings(list)),
+            ),
+            _ => None,
+        }),
+    )
+}
+
+fn lerna_globs(root: &Path) -> Result<Option<Vec<String>>, Warning> {
+    let Some(text) = read(&root.join("lerna.json"))? else {
+        return Ok(None);
     };
     let lerna: Value = serde_json::from_str(&text)
         .map_err(|err| Warning::general(format!("lerna.json: {err}")))?;
     if lerna["useWorkspaces"].as_bool() == Some(true) {
-        return Ok(Vec::new());
-    }
-    Ok(lerna["packages"].as_array().map_or_else(
-        || vec!["packages/*".to_owned()],
-        |list| {
-            list.iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        },
-    ))
-}
-
-fn manifest_name(dir: &Path) -> Result<Option<String>, Warning> {
-    let Some(text) = read(dir, "package.json")? else {
         return Ok(None);
-    };
-    let manifest: Value = serde_json::from_str(&text).map_err(|error| {
-        Warning::general(format!("{}: {error}", dir.join("package.json").display()))
-    })?;
-    Ok(manifest["name"]
-        .as_str()
-        .filter(|name| !name.is_empty())
-        .map(ToOwned::to_owned))
-}
-
-fn relative(root: &Path, dir: &Path) -> String {
-    dir.strip_prefix(root)
-        .unwrap_or(dir)
-        .components()
-        .filter_map(|c| match c {
-            Component::Normal(segment) => Some(segment.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/")
-}
-
-const MATCH_OPTIONS: glob::MatchOptions = glob::MatchOptions {
-    case_sensitive: true,
-    require_literal_separator: true,
-    require_literal_leading_dot: true,
-};
-
-fn expand(root: &Path, globs: &[String]) -> Result<Vec<PathBuf>, Warning> {
-    let (negatives, positives): (Vec<&str>, Vec<&str>) = globs
-        .iter()
-        .map(String::as_str)
-        .partition(|g| g.starts_with('!'));
-    let negatives: Vec<glob::Pattern> = negatives
-        .iter()
-        .map(|g| {
-            glob::Pattern::new(&normalize(&g[1..]))
-                .map_err(|error| Warning::general(format!("workspace glob {g}: {error}")))
-        })
-        .collect::<Result<_, _>>()?;
-    let escaped_root = glob::Pattern::escape(&root.to_string_lossy());
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for positive in positives {
-        let pattern = normalize(positive);
-        if pattern.is_empty() {
-            continue;
-        }
-        let paths = glob::glob_with(&format!("{escaped_root}/{pattern}"), MATCH_OPTIONS)
-            .map_err(|error| Warning::general(format!("workspace glob {pattern}: {error}")))?;
-        for path in paths {
-            let path = path.map_err(|error| Warning::general(error.to_string()))?;
-            let Ok(rel) = path.strip_prefix(root) else {
-                continue;
-            };
-            let in_node_modules = rel.components().any(|c| c.as_os_str() == "node_modules");
-            let excluded = negatives
-                .iter()
-                .any(|n| n.matches_path_with(rel, MATCH_OPTIONS));
-            if path.is_dir() && !in_node_modules && !excluded && !dirs.contains(&path) {
-                dirs.push(path);
-            }
-        }
     }
-    dirs.sort();
-    Ok(dirs)
+    Ok(Some(lerna["packages"].as_array().map_or_else(
+        || vec!["packages/*".to_owned()],
+        |list| strings(list),
+    )))
 }
 
-fn normalize(glob: &str) -> String {
-    glob.trim()
-        .trim_start_matches("./")
-        .trim_end_matches('/')
-        .to_owned()
+fn manifest_name(dir: &Path) -> Result<Manifest, Warning> {
+    Ok(manifest(dir)?.map_or(Manifest::Absent, |document| {
+        Manifest::named(document["name"].as_str())
+    }))
 }
 
 #[cfg(test)]
@@ -184,12 +102,10 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use runner_core::{Scope, Tree};
-
-    use super::members;
+    use super::declarations;
 
     #[test]
-    fn members_come_from_every_declaration_and_carry_their_manifest_name() {
+    fn every_declaration_names_its_members_and_their_manifest_names() {
         let root = std::env::temp_dir().join(format!("runner-ws-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         for (dir, name) in [("apps/web", "web"), ("packages/lib", "@acme/lib")] {
@@ -208,24 +124,19 @@ mod tests {
             "packages:\n  - packages/*\n",
         )
         .expect("pnpm-workspace.yaml");
-        let tree = Tree {
-            cwd: root.clone(),
-            root: root.clone(),
-            members: Vec::new(),
-        };
-        let found = members(&tree).expect("members");
+        let found = declarations(&root).expect("declarations");
+        let kinds: Vec<&str> = found.iter().map(|declaration| declaration.kind).collect();
+        assert_eq!(kinds, ["pnpm-workspace.yaml", "package.json workspaces"]);
         assert_eq!(
-            found,
-            [
-                Scope::Member {
-                    name: "web".to_owned(),
-                    dir: root.join("apps").join("web"),
-                },
-                Scope::Member {
-                    name: "@acme/lib".to_owned(),
-                    dir: root.join("packages").join("lib"),
-                },
-            ]
+            found[0].members,
+            [(
+                Some("@acme/lib".to_owned()),
+                root.join("packages").join("lib")
+            )]
+        );
+        assert_eq!(
+            found[1].members,
+            [(Some("web".to_owned()), root.join("apps").join("web"))]
         );
         let _ = fs::remove_dir_all(PathBuf::from(&root));
     }

@@ -133,16 +133,15 @@ fn format_conflicts(
     let conflicts: Vec<(String, &'static str, Vec<&'static str>)> = by_name
         .into_values()
         .filter_map(|group| {
-            let group = crate::commands::run::narrow_scope(ctx, group);
-            // A single source never duplicates a name; only cross-source
-            // collisions are conflicts.
+            let nearest = group.iter().map(|task| ctx.scope_rank(task)).min()?;
+            let group: Vec<&Task> = group
+                .into_iter()
+                .filter(|task| ctx.scope_rank(task) == nearest)
+                .collect();
             if group.iter().map(|t| t.source).collect::<HashSet<_>>().len() < 2 {
                 return None;
             }
-            let winner = observed
-                .as_ref()
-                .and_then(|observed| observed.winner(ctx, &group))
-                .unwrap_or_else(|| crate::commands::run::select_task_entry(ctx, overrides, &group));
+            let winner = observed.as_ref()?.winner(ctx, &group)?;
             let mut shadowed: Vec<&'static str> = group
                 .iter()
                 .filter(|t| t.source != winner.source)
@@ -205,15 +204,10 @@ mod tests {
         let ctx = ProjectContext {
             cwd: PathBuf::from("."),
             root: PathBuf::from("."),
-            package_managers: Vec::new(),
-            task_runners: Vec::new(),
             tasks: Vec::new(),
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
         };
 
         let err = super::list(
@@ -246,19 +240,17 @@ mod tests {
     }
 
     fn ctx_with_tasks(tasks: Vec<Task>) -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from("/tmp/conflicts"),
-            root: PathBuf::from("/tmp/conflicts"),
-            package_managers: Vec::new(),
-            task_runners: Vec::new(),
+        let root = crate::tool::test_support::project_root();
+        let mut ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
             tasks,
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+            project: Ok(runner_core::Project::default()),
+        };
+        crate::tool::test_support::seed_context(&mut ctx);
+        ctx
     }
 
     #[test]
@@ -291,7 +283,7 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
         std::fs::write(dir.path().join("justfile"), "build:\n\techo just\n").unwrap();
-        let ctx = crate::detect::detect(dir.path());
+        let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
                 runner: crate::types::TaskRunner::Just,

@@ -114,6 +114,15 @@ pub enum Refusal {
         /// The rungs tried, in order.
         tried: Vec<Rung>,
     },
+    /// A task addressed by source or scope does not exist there.
+    NoTask {
+        /// The task name.
+        name: String,
+        /// The source the address named.
+        source: Option<ProviderId>,
+        /// The scope the address named, as spelled.
+        scope: Option<String>,
+    },
     /// A network rung was refused by policy or the user.
     Declined {
         /// The name.
@@ -130,6 +139,8 @@ pub enum Refusal {
     },
     /// More than one provider could take the request.
     Ambiguous {
+        /// The task name.
+        name: String,
         /// Every candidate and its scope.
         candidates: Vec<(ProviderId, Scope)>,
     },
@@ -190,13 +201,17 @@ impl std::fmt::Display for Refusal {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            Self::NoTask { name, scope, .. } => match scope {
+                Some(scope) => write!(f, "task {name} not found in {scope}"),
+                None => write!(f, "task {name} not found in the named source"),
+            },
             Self::Declined { name, rung } => {
                 write!(f, "reach policy refused {name} at the {} rung", rung.name)
             }
             Self::NoCapability { op, .. } => write!(f, "the selected provider cannot {op}"),
-            Self::Ambiguous { candidates } => write!(
+            Self::Ambiguous { name, candidates } => write!(
                 f,
-                "ambiguous task; qualify its source and scope ({})",
+                "ambiguous task {name}; qualify its source and scope ({})",
                 candidates
                     .iter()
                     .map(|(_, scope)| scope.label())
@@ -1589,18 +1604,48 @@ fn gate(cascade: &Cascade<'_>, rung: Rung, name: &str, made: &Plan) -> Result<()
     })
 }
 
-/// The task `name` addresses, narrowed to the nearest scope.
+/// The task `token` selects: the first of its [`ranked_tasks`].
 ///
 /// # Errors
 ///
 /// `Ambiguous` when several workspace members define the name and no nearer
-/// scope does.
+/// scope does, and every refusal of [`ranked_tasks`].
 pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Task>, Refusal> {
+    let ranked = ranked_tasks(cascade, token)?;
+    let mut members: Vec<&Scope> = Vec::new();
+    for scope in ranked.iter().map(|(task, _)| &task.scope) {
+        if matches!(scope, Scope::Member { .. }) && !members.contains(&scope) {
+            members.push(scope);
+        }
+    }
+    if members.len() > 1 {
+        return Err(Refusal::Ambiguous {
+            name: ranked[0].0.name.clone(),
+            candidates: ranked
+                .iter()
+                .map(|(task, _)| (task.source, task.scope.clone()))
+                .collect(),
+        });
+    }
+    Ok(ranked.first().map(|(task, _)| *task))
+}
+
+/// The tasks `token` addresses in the nearest scope that defines it, each
+/// with its [`TaskRank`], lowest rank first.
+///
+/// # Errors
+///
+/// `NoTask` when the token names a source or scope that defines no such
+/// task, and `NoRunnerTask` when the chosen runner defines none of them.
+pub fn ranked_tasks<'a>(
+    cascade: &'a Cascade<'_>,
+    token: &str,
+) -> Result<Vec<(&'a Task, TaskRank)>, Refusal> {
     let (mut scope, mut source, mut name) = task_address(cascade, token);
     if !cascade.project.tasks.iter().any(|t| {
         t.name == name
             && source.is_none_or(|s| s == t.source)
-            && scope.is_none_or(|s| scope_matches(&t.scope, s))
+            && scope.is_none_or(|s| scope_matches(cascade.tree, &t.scope, s))
     }) && cascade.project.tasks.iter().any(|t| t.name == token)
     {
         scope = None;
@@ -1615,7 +1660,7 @@ pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Ta
         .filter(|task| {
             task.name == name
                 && source.is_none_or(|source| task.source == source)
-                && scope.is_none_or(|scope| scope_matches(&task.scope, scope))
+                && scope.is_none_or(|scope| scope_matches(cascade.tree, &task.scope, scope))
         })
         .collect();
     if let Some(choice) = &cascade.policy.runner
@@ -1635,37 +1680,71 @@ pub fn select<'a>(cascade: &'a Cascade<'_>, token: &str) -> Result<Option<&'a Ta
         .min()
     else {
         return if source.is_some() || scope.is_some() {
-            Err(Refusal::NotFound {
-                name: token.into(),
-                tried: CASCADE[..3].to_vec(),
+            Err(Refusal::NoTask {
+                name: name.to_owned(),
+                source,
+                scope: scope.map(str::to_owned),
             })
         } else {
-            Ok(None)
+            Ok(Vec::new())
         };
     };
-    found.retain(|task| scope_rank(cascade.tree, &task.scope) == nearest);
-    let mut members: Vec<&Scope> = Vec::new();
-    for scope in found.iter().map(|task| &task.scope) {
-        if matches!(scope, Scope::Member { .. }) && !members.contains(&scope) {
-            members.push(scope);
-        }
-    }
-    if members.len() > 1 {
-        return Err(Refusal::Ambiguous {
-            candidates: found
-                .iter()
-                .map(|task| (task.source, task.scope.clone()))
-                .collect(),
-        });
-    }
-    found.sort_by_key(|task| task_rank(cascade.policy, cascade.project, cascade.registry, task));
-    Ok(found.first().copied())
+    let mut ranked: Vec<(&Task, TaskRank)> = found
+        .into_iter()
+        .filter(|task| scope_rank(cascade.tree, &task.scope) == nearest)
+        .map(|task| {
+            (
+                task,
+                task_rank(cascade.policy, cascade.project, cascade.registry, task),
+            )
+        })
+        .collect();
+    ranked.sort_by_key(|(_, rank)| *rank);
+    Ok(ranked)
 }
 
-fn scope_matches(scope: &Scope, spelling: &str) -> bool {
+/// The key same-named tasks in one scope are ordered by, lowest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskRank {
+    /// The task's position in its per-task pin, `usize::MAX` when unpinned.
+    pub pinned: usize,
+    /// 0 for the chosen runner's source, then the prefer list in order, then
+    /// sources a chosen package manager or runtime dispatches, then the rest.
+    pub tier: usize,
+    /// Whether a package manager (rather than a runtime) dispatches it.
+    pub by_package_manager: bool,
+    /// The source's position in the dispatching provider's sources.
+    pub dispatch_order: usize,
+    /// The source's own task priority.
+    pub priority: u8,
+    /// The source.
+    pub source: ProviderId,
+    /// Whether the task is an alias.
+    pub alias: bool,
+}
+
+/// Whether `spelling` addresses `scope`: `root` the root, and a member by its
+/// name or its path under the root, else by its directory name when no
+/// member has that name or path.
+fn scope_matches(tree: &Tree, scope: &Scope, spelling: &str) -> bool {
+    let named = |scope: &Scope| match scope {
+        Scope::Root => false,
+        Scope::Member { name, dir } => {
+            name == spelling
+                || dir
+                    .strip_prefix(&tree.root)
+                    .is_ok_and(|path| path == Path::new(spelling))
+        }
+    };
     match scope {
         Scope::Root => spelling == "root",
-        Scope::Member { name, dir } => name == spelling || dir.ends_with(spelling),
+        Scope::Member { dir, .. } => {
+            if tree.members.iter().any(named) {
+                named(scope)
+            } else {
+                dir.file_name().is_some_and(|name| name == spelling)
+            }
+        }
     }
 }
 
@@ -1697,7 +1776,7 @@ fn task_address<'a>(
                 .tree
                 .members
                 .iter()
-                .any(|s| scope_matches(s, prefix))
+                .any(|s| scope_matches(cascade.tree, s, prefix))
         {
             if let Some((label, name)) = rest.split_once(':')
                 && let Some(id) = source(label)
@@ -1725,12 +1804,7 @@ fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
 /// dispatches, each in that provider's order, then registry order, with aliases last. A per-task pin wins unless
 /// a runner is chosen or the command line or environment chose a package
 /// manager.
-fn task_rank(
-    policy: &Policy,
-    project: &Project,
-    registry: &Registry,
-    task: &Task,
-) -> (usize, usize, (bool, usize), u8, ProviderId, bool) {
+fn task_rank(policy: &Policy, project: &Project, registry: &Registry, task: &Task) -> TaskRank {
     let pinned = if policy.runner.is_none()
         && policy
             .pm
@@ -1783,17 +1857,19 @@ fn task_rank(
     } else {
         policy.prefer.len() + 1 + usize::from(dispatched.is_none())
     };
-    (
+    let (by_package_manager, dispatch_order) = dispatched.unwrap_or((true, usize::MAX));
+    TaskRank {
         pinned,
         tier,
-        dispatched.unwrap_or((true, usize::MAX)),
-        registry
+        by_package_manager,
+        dispatch_order,
+        priority: registry
             .effective(task.source, project, &task.scope)
             .caps
             .task_priority,
-        task.source,
-        task.alias_of.is_some(),
-    )
+        source: task.source,
+        alias: task.alias_of.is_some(),
+    }
 }
 
 /// The exec plan for `rung`: a tool manager's primitive, or any other present
@@ -2835,12 +2911,12 @@ mod tests {
         };
         let task = task("build");
         assert_eq!(
-            super::task_rank(&policy, &project, &Registry(PROVIDERS), &task).1,
-            super::task_rank(&Policy::default(), &project, &Registry(PROVIDERS), &task).1
+            super::task_rank(&policy, &project, &Registry(PROVIDERS), &task).tier,
+            super::task_rank(&Policy::default(), &project, &Registry(PROVIDERS), &task).tier
         );
         assert!(
-            super::task_rank(&policy, &Project::default(), &Registry(PROVIDERS), &task).1
-                < super::task_rank(&policy, &project, &Registry(PROVIDERS), &task).1
+            super::task_rank(&policy, &Project::default(), &Registry(PROVIDERS), &task).tier
+                < super::task_rank(&policy, &project, &Registry(PROVIDERS), &task).tier
         );
     }
 
@@ -3305,6 +3381,42 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_member_name_or_path_outranks_a_directory_name() {
+        let root = PathBuf::from("/ws");
+        let tree = |names: [&str; 2]| Tree {
+            cwd: root.clone(),
+            root: root.clone(),
+            members: ["apps/web", "tools/web"]
+                .into_iter()
+                .zip(names)
+                .map(|(path, name)| Scope::Member {
+                    name: name.to_owned(),
+                    dir: root.join(path),
+                })
+                .collect(),
+        };
+        let addressed = |tree: &Tree, spelling: &str| -> Vec<PathBuf> {
+            tree.members
+                .iter()
+                .filter(|scope| super::scope_matches(tree, scope, spelling))
+                .filter_map(|scope| match scope {
+                    Scope::Member { dir, .. } => Some(dir.clone()),
+                    Scope::Root => None,
+                })
+                .collect()
+        };
+        let named = tree(["@acme/web", "web"]);
+        assert_eq!(addressed(&named, "web"), [root.join("tools/web")]);
+        assert_eq!(addressed(&named, "apps/web"), [root.join("apps/web")]);
+        assert_eq!(addressed(&named, "nope").len(), 0);
+        let unnamed = tree(["@acme/app-web", "@acme/tool-web"]);
+        assert_eq!(
+            addressed(&unnamed, "web"),
+            [root.join("apps/web"), root.join("tools/web")]
+        );
+    }
+
+    #[test]
     fn a_miss_lists_every_rung_it_tried_in_order() {
         let registry = Registry(FAKES);
         let policy = Policy::default();
@@ -3454,7 +3566,7 @@ mod tests {
         };
         let refusal = dispatch(&cascade(&tree, &project, &policy, &registry), "build", &[])
             .expect_err("two members, no winner");
-        let Refusal::Ambiguous { candidates } = refusal else {
+        let Refusal::Ambiguous { candidates, .. } = refusal else {
             panic!("a tie is ambiguous");
         };
         assert_eq!(candidates.len(), 2);

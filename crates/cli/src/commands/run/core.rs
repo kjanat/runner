@@ -2,7 +2,7 @@
 
 use runner_core::{
     Choice, Ecosystem as CoreEcosystem, Layer, PerEcosystem, Policy, Project, ProviderId, Scope,
-    Task as CoreTask, Tree, Verbosity,
+    Task as CoreTask, TaskRank, Tree, Verbosity,
 };
 use runner_providers::REGISTRY;
 
@@ -51,21 +51,11 @@ pub(crate) fn observe_evidence(tree: &Tree) -> std::io::Result<Vec<runner_core::
     Ok(evidence)
 }
 
-/// Observe provider facts in every scope before resolving policy.
-pub(crate) fn project_under(ctx: &ProjectContext, policy: &Policy) -> std::io::Result<Project> {
-    let tree = tree(ctx);
-    let evidence = observe_evidence(&tree)?;
-    let mut project = runner_core::resolve::resolve_presence(&tree, evidence, policy, &REGISTRY)?;
-    project.tasks = ctx.tasks.iter().filter_map(task).collect();
-    project.unread = ctx
-        .warnings
-        .iter()
-        .filter_map(|warning| match warning {
-            crate::types::DetectionWarning::Unread(unread) => Some(unread.clone()),
-            _ => None,
-        })
-        .collect();
-    Ok(project)
+/// The project `ctx` observed and resolved, or the failure that stopped it.
+pub(crate) fn project(ctx: &ProjectContext) -> std::io::Result<Project> {
+    ctx.project
+        .clone()
+        .map_err(|unobserved| (&unobserved).into())
 }
 
 /// The core's view of one task.
@@ -191,6 +181,68 @@ pub(super) fn selected_in<'a>(
         .find(|entry| task(entry).as_ref() == Some(selected)))
 }
 
+/// The tasks `token` addresses in its nearest scope, lowest rank first, as
+/// `ctx` holds them.
+///
+/// # Errors
+///
+/// Returns the selection refusal.
+pub(crate) fn ranked_in<'a>(
+    ctx: &'a ProjectContext,
+    tree: &Tree,
+    project: &Project,
+    policy: &Policy,
+    token: &str,
+) -> Result<Vec<(&'a Task, TaskRank)>, runner_core::Refusal> {
+    let cascade = runner_core::Cascade {
+        tree,
+        project,
+        policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: None,
+        confirm: None,
+    };
+    Ok(runner_core::ranked_tasks(&cascade, token)?
+        .into_iter()
+        .filter_map(|(ranked, rank)| {
+            ctx.tasks
+                .iter()
+                .find(|entry| task(entry).as_ref() == Some(ranked))
+                .map(|entry| (entry, rank))
+        })
+        .collect())
+}
+
+/// Why the first of `ranked` outranks the second, from the first rank field
+/// that separates them.
+pub(crate) fn rank_reason(policy: &Policy, ranked: &[(&Task, TaskRank)]) -> &'static str {
+    let [(_, first), (_, second), ..] = ranked else {
+        return "it is the only candidate";
+    };
+    if first.pinned != second.pinned {
+        "its `[tasks.overrides]` pin lists it first"
+    } else if first.tier != second.tier {
+        if first.tier == 0 && policy.runner.is_some() {
+            "the chosen runner defines it"
+        } else if first.tier <= policy.prefer.len() {
+            "the prefer list ranks its source first"
+        } else {
+            "the chosen package manager or runtime dispatches it"
+        }
+    } else if first.by_package_manager != second.by_package_manager {
+        "the chosen runtime dispatches it"
+    } else if first.dispatch_order != second.dispatch_order {
+        "the dispatching provider lists its source first"
+    } else if first.priority != second.priority {
+        "its source has the higher task priority"
+    } else if first.source != second.source {
+        "provider order breaks the tie"
+    } else {
+        "a recipe outranks an alias"
+    }
+}
+
 /// Inputs shared by execution and explanation while the detector migrates.
 pub(crate) struct Prepared {
     pub tree: Tree,
@@ -206,7 +258,7 @@ pub(crate) fn prepare(
 ) -> Result<Prepared, runner_core::Refusal> {
     let tree = tree(ctx);
     let mut policy = policy(overrides);
-    let project = project_under(ctx, &policy)?;
+    let project = project(ctx)?;
     let key = if BUILTINS.contains(&token) {
         token.to_owned()
     } else {
@@ -437,26 +489,23 @@ mod tests {
 
     use runner_core::{ProviderId, Scope};
 
-    use super::{policy, project_under, source_provider, tree};
+    use super::{policy, project, source_provider, tree};
     use crate::resolver::ResolutionOverrides;
     use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
-        let ctx = ProjectContext {
+        crate::tool::test_support::write_signal(&root, PackageManager::Pnpm.label());
+        crate::tool::test_support::write_signal(&root, TaskRunner::Just.label());
+        let mut ctx = ProjectContext {
             cwd: root.clone(),
             root,
-            package_managers: vec![PackageManager::Pnpm],
-            task_runners: vec![TaskRunner::Just],
             tasks,
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
         };
-        crate::tool::test_support::seed_context(&ctx);
+        crate::tool::test_support::seed_context(&mut ctx);
         ctx
     }
 
@@ -499,7 +548,7 @@ mod tests {
     #[test]
     fn detected_tools_and_task_sources_all_become_present_providers() {
         let ctx = context(vec![task("build", TaskSource::PackageJson)]);
-        let found = project_under(&ctx, &runner_core::Policy::default()).unwrap();
+        let found = project(&ctx).unwrap();
         let ids: Vec<ProviderId> = found.present.iter().map(|p| p.provider).collect();
         assert!(ids.contains(&ProviderId::Pnpm));
         assert!(ids.contains(&ProviderId::Just));
@@ -570,7 +619,7 @@ mod tests {
         ]);
         ctx.root = dir.path().to_owned();
         ctx.cwd = ctx.root.clone();
-        ctx.package_managers = vec![PackageManager::Yarn];
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Yarn.label());
         let overrides = ResolutionOverrides {
             runtime: Some(RuntimeOverride {
                 runtime: crate::types::JsRuntime::Bun,
@@ -578,6 +627,7 @@ mod tests {
             }),
             ..ResolutionOverrides::default()
         };
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         let prepared = super::prepare(&ctx, &overrides, "build").unwrap();
         assert!(
             prepared
@@ -594,7 +644,6 @@ mod tests {
         std::fs::write(ctx.root.join("package.json"), "{ invalid").unwrap();
         let metadata = prepared.selected(&ctx, "build").unwrap().unwrap();
         assert!(prepared.preview(&ctx, &overrides, "build").is_ok());
-        assert!(super::prepare(&ctx, &overrides, "build").is_err());
         assert_eq!(super::task(metadata).as_ref(), Some(selected));
         assert_eq!(
             super::task_key(
@@ -626,8 +675,9 @@ mod tests {
         let mut ctx = context(Vec::new());
         ctx.root = dir.path().to_owned();
         ctx.cwd = ctx.root.clone();
-        ctx.package_managers = vec![PackageManager::Yarn];
+        crate::tool::test_support::declare(&mut ctx, PackageManager::Yarn.label());
         let overrides = ResolutionOverrides::default();
+        crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         for error in [
             super::prepare(&ctx, &overrides, "build")
                 .and_then(|p| p.preview(&ctx, &overrides, "build"))

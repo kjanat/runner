@@ -16,7 +16,10 @@ pub const PROVIDER: Provider = Provider {
         parse: super::table,
     }],
     writes: &[],
-    caps: Capabilities::NONE,
+    caps: Capabilities {
+        task_priority: 10,
+        ..Capabilities::NONE
+    },
     tasks: Some(crate::extract::scripts::python_tasks),
     version: None,
     hooks: Hooks::NONE,

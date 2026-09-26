@@ -1,30 +1,10 @@
-//! Per-tool modules: detection, task extraction, and command building.
-//!
-//! Each module corresponds to a single tool (package manager or task runner)
-//! and exposes a consistent set of public functions:
-//!
-//! - `detect(dir)`, returns `true` if the tool's config/lockfile exists
-//! - `extract_tasks(dir)`, parses config and returns task names or a parse error
-//! - `run_cmd(task, args)`, builds a [`std::process::Command`] to run a task
-//! - `quiet_capabilities()`, declares safe host-only diagnostic reduction
-//! - `exec_cmd(args)`, builds a [`std::process::Command`] for ad-hoc execution
-//! - clean-dir constants, directories to remove on `runner clean`
-//!
-//! Not every module exposes every function; only what the tool supports. The
-//! audited host contract is documented in `docs/host-quiet-support-matrix.md`.
+//! Tool-specific helpers the CLI needs beyond the provider registry, and the
+//! output policy shared by every command.
 
 /// bacon, Rust background checker (`bacon.toml`).
 pub(crate) mod bacon;
-/// Bun JavaScript runtime and package manager.
-pub(crate) mod bun;
-/// Bundler, the Ruby dependency manager (`Gemfile`).
-pub(crate) mod bundler;
 /// Cargo `[alias]` table, `.cargo/config.toml` aliases as runnable tasks.
 pub(crate) mod cargo_aliases;
-/// Cargo, the Rust package manager and build tool (`Cargo.toml`).
-pub(crate) mod cargo_pm;
-/// Composer, the PHP dependency manager (`composer.json`).
-pub(crate) mod composer;
 /// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
 pub(crate) mod deno;
 /// Shared filesystem helpers for tool modules.
@@ -43,29 +23,14 @@ pub(crate) mod make;
 pub(crate) mod mise;
 /// Shared Node.js helpers: `package.json` parsing, script extraction, PM detection.
 pub(crate) mod node;
-/// npm, the default Node.js package manager (`package-lock.json`).
-pub(crate) mod npm;
-/// Nx monorepo build system (`nx.json`).
-pub(crate) mod nx;
-/// Detect `package.json` scripts that wrap a known task runner.
-/// Pipenv, a Python dependency manager (`Pipfile`).
-pub(crate) mod pipenv;
-/// pnpm, a fast Node.js package manager (`pnpm-lock.yaml`).
-pub(crate) mod pnpm;
-/// Poetry, a Python dependency manager (`poetry.lock`, `pyproject.toml`).
-pub(crate) mod poetry;
 /// Spawn helper with Windows-aware PATH/PATHEXT resolution.
 pub(crate) mod program;
 /// Shared Python tooling helpers.
 pub(crate) mod python;
 /// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).
 pub(crate) mod turbo;
-/// uv, a fast Python package manager (`uv.lock`).
-pub(crate) mod uv;
 /// Volta toolchain manager, shim classification and `volta which` resolution.
 pub(crate) mod volta;
-/// Workspace member discovery from root declarations.
-pub(crate) mod workspace;
 /// Yarn, a Node.js package manager (`yarn.lock`).
 pub(crate) mod yarn;
 
@@ -448,20 +413,6 @@ impl Stream {
 
     /// Both variants, for "expected one of …" messages.
     pub(crate) const ALL: [Self; 2] = [Self::Inherit, Self::Stderr];
-}
-
-impl HostVerbosity {
-    /// Whether the applied host plan includes its safe quiet flag.
-    #[cfg(test)]
-    pub(crate) fn silences(self) -> bool {
-        self.diagnostics >= HostDiagnostics::Quiet
-    }
-
-    /// `true` when stdout should be kept clean by moving diagnostics to stderr.
-    #[cfg(test)]
-    pub(crate) fn diverts_to_stderr(self) -> bool {
-        self.stream == Stream::Stderr
-    }
 }
 
 #[cfg(test)]

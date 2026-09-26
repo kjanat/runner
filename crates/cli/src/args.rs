@@ -213,7 +213,7 @@ fn task_candidates() -> Vec<CompletionCandidate> {
     let Ok(dir) = completion_dir() else {
         return vec![];
     };
-    let ctx = crate::detect::detect(&dir);
+    let ctx = crate::detect::detect(&dir, &crate::resolver::ResolutionOverrides::default());
     task_candidates_from(&ctx.tasks, ctx.current_member().map(std::sync::Arc::as_ref))
 }
 
@@ -398,7 +398,7 @@ fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidat
     let Ok(dir) = completion_dir() else {
         return vec![];
     };
-    let ctx = crate::detect::detect(&dir);
+    let ctx = crate::detect::detect(&dir, &crate::resolver::ResolutionOverrides::default());
     let Some(entry) = ctx
         .tasks
         .iter()
@@ -637,29 +637,21 @@ fn member_task_candidates(
     candidates
 }
 
-/// Index of the task supplying each name's bare candidate, mirroring the
-/// runtime selector's default tier (`Turbo > Package > others`, then
-/// `display_order`, then recipes-before-aliases, see
-/// `commands::run::select::select_task_entry`). Previously the bare label came
-/// from whichever source appeared first in detection order, which could
-/// name a different source than the one `runner <name>` actually
-/// dispatches to. The selector's `[task_runner].prefer` and nearest-config
-/// (`source_depth`) tiebreaks need config plus a `ProjectContext` the
-/// completion callback doesn't have, so the bare label aligns with the
-/// *default* tier only, still strictly better than detection order, and
-/// the qualified `source:name` forms remain for exact disambiguation.
+/// Index of the task supplying each name's bare candidate, in the order the
+/// core ranks same-named tasks under an empty policy. A current-member task
+/// outranks a same-named root task.
 fn bare_winners<'a>(
     tasks: &[&'a crate::types::Task],
     swallowed: impl Fn(&crate::types::Task) -> bool,
 ) -> std::collections::HashMap<&'a str, usize> {
-    let no_overrides = crate::resolver::ResolutionOverrides::default();
-    // A current-member task outranks a same-named root task, matching the
-    // scope precedence `run` applies from inside a member.
     let bare_rank = |task: &crate::types::Task| {
+        let source = crate::commands::run::core::source_provider(task.source);
         (
             task.member.is_none(),
-            crate::commands::run::source_priority(&no_overrides, task.source),
-            task.source.display_order(),
+            source.map_or(u8::MAX, |id| {
+                runner_providers::REGISTRY.by_id(id).caps.task_priority
+            }),
+            source,
             task.alias_of.is_some(),
         )
     };
@@ -697,7 +689,7 @@ fn bare_winners<'a>(
 /// `"build": "vite build"` keeps its qualified form even when a
 /// `turbo.json` `build` task is present. `runner list` still surfaces both
 /// sources for transparency, and `runner build` already dispatches through
-/// turbo per the source-priority order in `commands::run::source_priority`.
+/// turbo, which outranks `package.json` by task priority.
 fn task_candidates_from(
     all_tasks: &[crate::types::Task],
     current: Option<&crate::types::WorkspaceMember>,

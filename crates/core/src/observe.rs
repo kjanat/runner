@@ -208,6 +208,26 @@ fn manifest_field(
     files: &[&str],
     path: &str,
 ) -> io::Result<Option<(PathBuf, serde_json::Value, serde_json::Value)>> {
+    let Some((at, document)) = read_manifest(dir, files)? else {
+        return Ok(None);
+    };
+    Ok(path
+        .split('.')
+        .try_fold(&document, |node, key| node.get(key))
+        .cloned()
+        .map(|value| (at, document, value)))
+}
+
+/// The first of `files` present in `dir`, read as JSON, JSON5, YAML or TOML
+/// by its extension.
+///
+/// # Errors
+///
+/// Returns the path and the failure when the file cannot be read or parsed.
+pub fn read_manifest(
+    dir: &Path,
+    files: &[&str],
+) -> io::Result<Option<(PathBuf, serde_json::Value)>> {
     let mut present = None;
     for file in files {
         if let Some(at) = file_in(dir, file)? {
@@ -226,11 +246,7 @@ fn manifest_field(
             format!("{}: {error}", at.display()),
         )
     })?;
-    Ok(path
-        .split('.')
-        .try_fold(&document, |node, key| node.get(key))
-        .cloned()
-        .map(|value| (at, document, value)))
+    Ok(Some((at, document)))
 }
 
 /// Read a manifest as JSON, JSON5, YAML or TOML by its extension.

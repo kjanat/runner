@@ -25,7 +25,8 @@ mod scope_tests {
         )
         .expect("turbo.json should be written");
 
-        let ctx = crate::detect::detect(dir.path());
+        let ctx =
+            crate::detect::detect(dir.path(), &crate::resolver::ResolutionOverrides::default());
         let mut tasks: Vec<(&str, &str)> = ctx
             .tasks
             .iter()

@@ -45,24 +45,28 @@ pub(crate) fn info(
     );
     println!();
 
-    if ctx.package_managers.is_empty() && ctx.task_runners.is_empty() && ctx.tasks.is_empty() {
+    let package_managers = ctx.package_managers();
+    let task_runners = ctx.task_runners();
+    if package_managers.is_empty() && task_runners.is_empty() && ctx.tasks.is_empty() {
         println!("  {}", "No project detected in current directory.".dimmed());
         return Ok(());
     }
 
-    if !ctx.package_managers.is_empty() {
-        let pms: Vec<&str> = ctx.package_managers.iter().map(|pm| pm.label()).collect();
+    if !package_managers.is_empty() {
+        let pms: Vec<&str> = package_managers.iter().map(|pm| pm.label()).collect();
         println!("  {:<20}{}", "Package Managers".dimmed(), pms.join(", "));
     }
 
-    if !ctx.task_runners.is_empty() {
-        let trs: Vec<&str> = ctx.task_runners.iter().map(|tr| tr.label()).collect();
+    if !task_runners.is_empty() {
+        let trs: Vec<&str> = task_runners.iter().map(|tr| tr.label()).collect();
         println!("  {:<20}{}", "Task Runners".dimmed(), trs.join(", "));
     }
 
-    if let Some(nv) = &ctx.node_version {
+    let node_version = ctx.node_version();
+    let current_node = ctx.current_node();
+    if let Some(nv) = &node_version {
         let mut line = format!("{} ({})", nv.expected, nv.source);
-        if let Some(cur) = &ctx.current_node {
+        if let Some(cur) = &current_node {
             if version_matches(&nv.expected, cur) {
                 let _ = write!(line, ", current {cur} {}", "(ok)".green());
             } else {
@@ -70,11 +74,12 @@ pub(crate) fn info(
             }
         }
         println!("  {:<20}{}", "Node".dimmed(), line);
-    } else if let Some(cur) = &ctx.current_node {
+    } else if let Some(cur) = &current_node {
         println!("  {:<20}{}", "Node".dimmed(), cur);
     }
 
-    if ctx.is_monorepo {
+    let monorepo = ctx.is_monorepo();
+    if monorepo {
         println!("  {:<20}{}", "Monorepo".dimmed(), "yes".green());
     }
 
@@ -97,10 +102,10 @@ pub(crate) fn info(
         // separator just below. The renderer reserves this so the list
         // collapses to compact before the banner pushes it offscreen.
         let banner_rows = 2 // title + trailing blank
-            + usize::from(!ctx.package_managers.is_empty())
-            + usize::from(!ctx.task_runners.is_empty())
-            + usize::from(ctx.node_version.is_some() || ctx.current_node.is_some())
-            + usize::from(ctx.is_monorepo)
+            + usize::from(!package_managers.is_empty())
+            + usize::from(!task_runners.is_empty())
+            + usize::from(node_version.is_some() || current_node.is_some())
+            + usize::from(monorepo)
             + usize::from(ctx.workspace.is_some())
             + 1; // blank separator before the task list
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
@@ -153,12 +158,7 @@ fn workspace_line(workspace: &Workspace, width: Option<usize>) -> String {
 }
 
 fn workspace_kinds(workspace: &Workspace) -> String {
-    workspace
-        .kinds
-        .iter()
-        .map(|kind| kind.label())
-        .collect::<Vec<_>>()
-        .join(", ")
+    workspace.kinds.join(", ")
 }
 
 fn title_line(arg0: Option<OsString>, stdout_is_terminal: bool) -> String {
@@ -201,10 +201,10 @@ mod tests {
     fn workspace_with(names: &[&str]) -> crate::types::Workspace {
         use std::sync::Arc;
 
-        use crate::types::{WorkspaceKind, WorkspaceMember};
+        use crate::types::WorkspaceMember;
         crate::types::Workspace {
             root: std::path::PathBuf::from("/ws"),
-            kinds: vec![WorkspaceKind::PackageJson],
+            kinds: vec!["package.json workspaces"],
             members: names
                 .iter()
                 .map(|name| {

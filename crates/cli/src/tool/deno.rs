@@ -1,8 +1,6 @@
 //! Deno, secure JavaScript/TypeScript runtime.
 
-use std::path::{Component, Path, PathBuf};
-#[cfg(test)]
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -12,21 +10,9 @@ use crate::tool::node;
 /// Supported Deno config filenames (priority order).
 pub(crate) const FILENAMES: &[&str] = &["deno.json", "deno.jsonc"];
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum WorkspaceField {
-    Members(Vec<String>),
-    Config { members: Vec<String> },
-}
-
-#[derive(Deserialize)]
-struct WorkspaceConfig {
-    workspace: Option<WorkspaceField>,
-}
-
 /// Resolve the nearest supported Deno config while walking upward.
 pub(crate) fn find_config_upwards(dir: &Path) -> Option<PathBuf> {
-    let boundary = vcs_root(dir);
+    let boundary = files::vcs_root(dir);
 
     for ancestor in dir.ancestors() {
         if !within_boundary(ancestor, boundary.as_deref()) {
@@ -44,135 +30,8 @@ pub(crate) fn find_config_upwards(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Detected via `deno.json`, `deno.jsonc`, `deno.lock`, or `packageManager:
-/// deno@...` in a supported package manifest.
-pub(crate) fn detect(dir: &Path) -> bool {
-    find_config_upwards(dir).is_some()
-        || dir.join("deno.lock").exists()
-        || detect_pm_from_field_upwards(dir)
-            .is_some_and(|pm| pm == crate::types::PackageManager::Deno)
-}
-
-fn detect_pm_from_field_upwards(dir: &Path) -> Option<crate::types::PackageManager> {
-    let boundary = vcs_root(dir);
-
-    for ancestor in dir.ancestors() {
-        if !within_boundary(ancestor, boundary.as_deref()) {
-            break;
-        }
-
-        if let Some(path) = files::find_first(ancestor, FILENAMES).filter(|path| path.is_file())
-            && ancestor != dir
-            && !workspace_includes_dir(&path, dir)
-        {
-            return None;
-        }
-
-        if let Some(pm) = node::detect_pm_from_field(ancestor) {
-            return Some(pm);
-        }
-    }
-
-    None
-}
-
-fn workspace_includes_dir(config_path: &Path, dir: &Path) -> bool {
-    let Some(patterns) = workspace_patterns(config_path) else {
-        return true;
-    };
-
-    let Some(config_dir) = config_path.parent() else {
-        return false;
-    };
-
-    if dir == config_dir {
-        return true;
-    }
-
-    dir.ancestors()
-        .take_while(|ancestor| *ancestor != config_dir)
-        .filter_map(|ancestor| ancestor.strip_prefix(config_dir).ok())
-        .any(|relative| {
-            patterns
-                .iter()
-                .any(|pattern| workspace_pattern_matches(pattern, relative))
-        })
-}
-
-/// The `"workspace"` member globs declared by the config at `config_path`.
-pub(crate) fn workspace_patterns(config_path: &Path) -> Option<Vec<String>> {
-    let content = std::fs::read_to_string(config_path).ok()?;
-    let config = json5::from_str::<WorkspaceConfig>(&content).ok()?;
-
-    match config.workspace? {
-        WorkspaceField::Members(members) | WorkspaceField::Config { members } => Some(members),
-    }
-}
-
-fn workspace_pattern_matches(pattern: &str, relative: &Path) -> bool {
-    let pattern = normalize_workspace_pattern(pattern);
-    let path = path_segments(relative);
-
-    pattern.len() == path.len()
-        && pattern
-            .iter()
-            .zip(path.iter())
-            .all(|(expected, actual)| expected == "*" || expected == actual)
-}
-
-fn normalize_workspace_pattern(pattern: &str) -> Vec<String> {
-    Path::new(pattern)
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(segment) => Some(segment.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn path_segments(path: &Path) -> Vec<String> {
-    path.components()
-        .filter_map(|component| match component {
-            Component::Normal(segment) => Some(segment.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect()
-}
-
-fn vcs_root(dir: &Path) -> Option<PathBuf> {
-    dir.ancestors()
-        .find(|ancestor| ancestor.join(".jj").is_dir() || ancestor.join(".git").exists())
-        .map(Path::to_path_buf)
-}
-
 fn within_boundary(path: &Path, boundary: Option<&Path>) -> bool {
     boundary.is_none_or(|boundary| path == boundary || path.starts_with(boundary))
-}
-
-/// The `"name"` declared by the config in `dir`, if any.
-pub(crate) fn config_name(dir: &Path) -> Option<String> {
-    #[derive(Deserialize)]
-    struct Partial {
-        name: Option<String>,
-    }
-    let path = files::find_first(dir, FILENAMES).filter(|path| path.is_file())?;
-    let content = std::fs::read_to_string(path).ok()?;
-    json5::from_str::<Partial>(&content).ok()?.name
-}
-
-/// `deno task <task> [args...]`
-#[cfg(test)]
-pub(crate) fn run_cmd(task: &str, args: &[String], verbosity: super::HostVerbosity) -> Command {
-    let mut c = super::program::command("deno");
-    c.arg("task");
-    // `-q`/`--quiet` suppresses `deno task`'s own diagnostic output. It must
-    // precede the task name; anything after is forwarded to the task. deno has
-    // no stdout-diversion primitive, so the stream axis no-ops.
-    if verbosity.silences() {
-        c.arg("-q");
-    }
-    c.arg(task).args(args);
-    c
 }
 
 /// Whether this Deno project materializes a local `node_modules/`, in which
@@ -215,9 +74,8 @@ fn declared_node_modules_dir(dir: &Path) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
 
-    use super::{detect, find_config_upwards, workspace_pattern_matches};
+    use super::find_config_upwards;
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -302,26 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn detect_supports_package_manager_field() {
-        let dir = TempDir::new("deno-package-manager-field");
-        fs::write(
-            dir.path().join("package.json"),
-            r#"{ "packageManager": "deno@2.7.12" }"#,
-        )
-        .expect("package.json should be written");
-
-        assert!(detect(dir.path()));
-    }
-
-    #[test]
-    fn detect_supports_deno_lock() {
-        let dir = TempDir::new("deno-lock-detect");
-        fs::write(dir.path().join("deno.lock"), "{}").expect("deno.lock should be written");
-
-        assert!(detect(dir.path()));
-    }
-
-    #[test]
     fn find_config_upwards_prefers_nearest_config() {
         let dir = TempDir::new("deno-config-upwards");
         let nested = dir.path().join("apps").join("site").join("src");
@@ -340,16 +178,6 @@ mod tests {
         let path = find_config_upwards(&nested).expect("nearest config should resolve");
 
         assert!(path.ends_with("apps/site/deno.json"));
-    }
-
-    #[test]
-    fn detect_does_not_leak_parent_deno_into_git_repo() {
-        let outer = TempDir::new("deno-detect-boundary-outer");
-        let repo = outer.path().join("repo");
-        fs::create_dir_all(repo.join(".git")).expect("git dir should be created");
-        fs::write(outer.path().join("deno.lock"), "{}").expect("outer deno.lock should be written");
-
-        assert!(!detect(&repo));
     }
 
     #[test]
@@ -383,44 +211,5 @@ mod tests {
         let path = find_config_upwards(&nested).expect("workspace member should resolve");
 
         assert!(path.ends_with("deno.json"));
-    }
-
-    #[test]
-    fn workspace_pattern_matches_single_level_glob() {
-        assert!(workspace_pattern_matches(
-            "packages/*",
-            Path::new("packages/site")
-        ));
-        assert!(!workspace_pattern_matches(
-            "packages/*",
-            Path::new("packages/site/src"),
-        ));
-    }
-}
-
-#[cfg(test)]
-mod verbosity_tests {
-    use super::run_cmd;
-    use crate::tool::{HostDiagnostics, HostVerbosity};
-
-    fn argv(cmd: &std::process::Command) -> Vec<String> {
-        cmd.get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect()
-    }
-
-    #[test]
-    fn run_cmd_default_adds_no_verbosity_flag() {
-        let v = HostVerbosity::default();
-        assert_eq!(argv(&run_cmd("build", &[], v)), ["task", "build"]);
-    }
-
-    #[test]
-    fn run_cmd_quiet_maps_to_host_flag() {
-        let v = HostVerbosity {
-            diagnostics: HostDiagnostics::Quiet,
-            ..HostVerbosity::default()
-        };
-        assert_eq!(argv(&run_cmd("build", &[], v)), ["task", "-q", "build"]);
     }
 }

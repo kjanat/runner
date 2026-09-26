@@ -108,7 +108,7 @@ impl<'a> Project<'a> {
             schema_version: super::SCHEMA_VERSION,
             root: ctx.root.display().to_string(),
             ecosystems: ctx
-                .package_managers
+                .package_managers()
                 .iter()
                 .map(|pm| pm.ecosystem().label())
                 .collect(),
@@ -185,9 +185,9 @@ pub(crate) struct Detected<'a> {
     /// Detected task runners.
     pub task_runners: Vec<&'static str>,
     /// `.nvmrc` / `.node-version` / `engines.node` declaration.
-    pub node_version: Option<NodeVersionInfo<'a>>,
+    pub node_version: Option<NodeVersionInfo>,
     /// `node --version` output, when the binary is on PATH.
-    pub current_node: Option<&'a str>,
+    pub current_node: Option<String>,
     /// Whether the project looks like a monorepo (workspace globs, turbo, nx).
     pub monorepo: bool,
     /// Workspace declarations at the root and their members. Additive field
@@ -199,14 +199,14 @@ pub(crate) struct Detected<'a> {
 impl<'a> Detected<'a> {
     fn from_ctx(ctx: &'a ProjectContext) -> Self {
         Self {
-            package_managers: ctx.package_managers.iter().map(|pm| pm.label()).collect(),
-            task_runners: ctx.task_runners.iter().map(|tr| tr.label()).collect(),
-            node_version: ctx.node_version.as_ref().map(|nv| NodeVersionInfo {
-                expected: &nv.expected,
+            package_managers: ctx.package_managers().iter().map(|pm| pm.label()).collect(),
+            task_runners: ctx.task_runners().iter().map(|tr| tr.label()).collect(),
+            node_version: ctx.node_version().map(|nv| NodeVersionInfo {
+                expected: nv.expected,
                 source: nv.source,
             }),
-            current_node: ctx.current_node.as_deref(),
-            monorepo: ctx.is_monorepo,
+            current_node: ctx.current_node(),
+            monorepo: ctx.is_monorepo(),
             workspace: ctx.workspace.as_ref().map(WorkspaceInfo::from_workspace),
         }
     }
@@ -235,7 +235,7 @@ impl<'a> WorkspaceInfo<'a> {
                 .current
                 .as_ref()
                 .map(|member| member.name.as_str()),
-            kinds: workspace.kinds.iter().map(|kind| kind.label()).collect(),
+            kinds: workspace.kinds.clone(),
             members: workspace
                 .members
                 .iter()
@@ -264,9 +264,9 @@ pub(crate) struct WorkspaceMemberInfo<'a> {
 
 /// Node version declaration plus the file it came from.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct NodeVersionInfo<'a> {
+pub(crate) struct NodeVersionInfo {
     /// Version string as written (e.g. `"20.11.0"`, `">=18"`).
-    pub expected: &'a str,
+    pub expected: String,
     /// Source file that declared the version (e.g. `".nvmrc"`).
     pub source: &'static str,
 }
@@ -601,31 +601,30 @@ mod tests {
     use crate::resolver::ResolutionOverrides;
     use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
 
-    fn empty_context(root: &str) -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from(root),
-            root: PathBuf::from(root),
-            package_managers: vec![PackageManager::Pnpm],
-            task_runners: Vec::new(),
+    fn pnpm_context() -> ProjectContext {
+        let root = crate::tool::test_support::project_root();
+        crate::tool::test_support::write_signal(&root, PackageManager::Pnpm.label());
+        let mut ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
             tasks: Vec::new(),
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
-        }
+            project: Ok(runner_core::Project::default()),
+        };
+        crate::tool::test_support::seed_context(&mut ctx);
+        ctx
     }
 
     #[test]
     fn project_serializes_schema_version_field() {
-        let ctx = empty_context("/tmp/test");
+        let ctx = pnpm_context();
         let overrides = ResolutionOverrides::default();
         let project = Project::build(&ctx, &overrides);
         let value = serde_json::to_value(&project).expect("Project should serialize to JSON");
 
         assert_eq!(value["schema_version"], 1);
-        assert_eq!(value["root"], "/tmp/test");
+        assert_eq!(value["root"], ctx.root.to_str().unwrap());
         assert!(
             value["ecosystems"]
                 .as_array()
@@ -635,7 +634,7 @@ mod tests {
 
     #[test]
     fn info_view_drops_tasks_array() {
-        let mut ctx = empty_context("/tmp/test");
+        let mut ctx = pnpm_context();
         ctx.tasks.push(Task {
             name: "build".to_string(),
             source: TaskSource::PackageJson,
@@ -655,7 +654,7 @@ mod tests {
 
     #[test]
     fn list_view_filters_by_source() {
-        let mut ctx = empty_context("/tmp/test");
+        let mut ctx = pnpm_context();
         ctx.tasks.push(Task {
             name: "build".to_string(),
             source: TaskSource::PackageJson,
@@ -688,8 +687,6 @@ mod tests {
         let ctx = ProjectContext {
             cwd: PathBuf::from("/tmp/test"),
             root: PathBuf::from("/tmp/test"),
-            package_managers: Vec::new(),
-            task_runners: Vec::new(),
             tasks: vec![Task {
                 name: "fmt".to_string(),
                 source: TaskSource::Justfile,
@@ -700,12 +697,9 @@ mod tests {
                 detail: crate::types::TaskDetail::default(),
                 member: None,
             }],
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
             workspace: None,
-            install_dirs: Vec::new(),
             warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
         };
 
         let project = Project::build_with_schema(&ctx, &ResolutionOverrides::default(), false);

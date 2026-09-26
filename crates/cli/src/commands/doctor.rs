@@ -77,26 +77,29 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::{build_report, doctor};
     use crate::resolver::ResolutionOverrides;
     use crate::types::{PackageManager, ProjectContext};
 
     fn context() -> ProjectContext {
-        ProjectContext {
-            cwd: PathBuf::from("/tmp/test"),
-            root: PathBuf::from("/tmp/test"),
-            package_managers: vec![PackageManager::Pnpm, PackageManager::Cargo],
-            task_runners: Vec::new(),
-            tasks: Vec::new(),
-            node_version: None,
-            current_node: None,
-            is_monorepo: false,
-            workspace: None,
-            install_dirs: Vec::new(),
-            warnings: Vec::new(),
+        context_with(&[PackageManager::Pnpm, PackageManager::Cargo])
+    }
+
+    fn context_with(pms: &[PackageManager]) -> ProjectContext {
+        let root = crate::tool::test_support::project_root();
+        for pm in pms {
+            crate::tool::test_support::write_signal(&root, pm.label());
         }
+        let mut ctx = ProjectContext {
+            cwd: root.clone(),
+            root,
+            tasks: Vec::new(),
+            workspace: None,
+            warnings: Vec::new(),
+            project: Ok(runner_core::Project::default()),
+        };
+        crate::tool::test_support::seed_context(&mut ctx);
+        ctx
     }
 
     #[test]
@@ -162,9 +165,9 @@ mod tests {
             r#"{ "scripts": { "build": "tsc" } }"#,
         )
         .expect("package.json should be written");
-        let ctx = detect(dir.path());
+        let ctx = detect(dir.path(), &ResolutionOverrides::default());
         assert!(
-            ctx.package_managers.is_empty(),
+            ctx.package_managers().is_empty(),
             "precondition: no lockfile-detected package manager"
         );
 
@@ -173,8 +176,7 @@ mod tests {
 
     #[test]
     fn node_context_is_absent_without_node_signals() {
-        let mut ctx = context();
-        ctx.package_managers = vec![PackageManager::Cargo];
+        let ctx = context_with(&[PackageManager::Cargo]);
 
         assert!(!super::node_context(&ctx, &ResolutionOverrides::default()));
     }
@@ -207,7 +209,7 @@ mod tests {
         fs::write(dir.path().join("pnpm-lock.yaml"), "lockfileVersion: 9\n")
             .expect("pnpm-lock.yaml should be written");
 
-        let ctx = detect(dir.path());
+        let ctx = detect(dir.path(), &ResolutionOverrides::default());
         let report = build_report(&ctx, &ResolutionOverrides::default());
 
         let warnings = report["warnings"].as_array().expect("warnings array");

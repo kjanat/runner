@@ -11,6 +11,7 @@ pub mod powershell;
 pub mod python;
 pub mod registry;
 pub mod runners;
+pub mod workspace;
 
 pub use registry::{PROVIDERS, REGISTRY};
 

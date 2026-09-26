@@ -21,6 +21,7 @@ pub const PROVIDER: Provider = Provider {
     ],
     writes: &["vendor"],
     caps: Capabilities {
+        task_priority: 7,
         file_fallback: true,
         install: Some(InstallCap {
             argv: t!["mod", "download"],
