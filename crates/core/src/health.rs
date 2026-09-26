@@ -31,6 +31,7 @@ pub fn check(
         .ok_or(crate::Refusal::NoCapability {
             provider: provider.id,
             op: "health",
+            chosen_by: None,
         })?;
     let plan = crate::plan_with(
         tree,

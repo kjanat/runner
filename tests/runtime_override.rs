@@ -726,6 +726,35 @@ fn a_task_table_runtime_leaves_the_default_installer_alone() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_task_table_package_manager_that_cannot_run_the_task_refuses_it() {
+    let project = fake_tool_project("task-pm-refused", "[tasks.build]\npm = \"go\"\n", true);
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .args(["--dry-run", "run", "build"])
+        .output()
+        .expect("runner should execute");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    let config = project.path().join("runner.toml");
+    assert!(
+        stderr.contains(&format!(
+            r#"go cannot run "build" (selected by {})"#,
+            config.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("argv:"), "{stderr}");
+    let stderr = dry_run_in(&project, &["run", "lint"]);
+    assert!(
+        stderr.contains(r#"argv: ["npm", "run", "lint"]"#),
+        "{stderr}"
+    );
+}
+
 /// `runner` with `args` in `project`, its stdout.
 #[cfg(unix)]
 fn report_in(project: &TempProject, args: &[&str]) -> String {

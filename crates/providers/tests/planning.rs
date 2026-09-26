@@ -1259,7 +1259,7 @@ fn an_activated_but_unconfigured_manager_takes_no_miss() {
 }
 
 #[test]
-fn an_invocation_package_manager_without_exec_refuses_the_exec_rungs() {
+fn a_chosen_package_manager_without_exec_refuses_the_exec_rungs() {
     let fixture = Fixture::new();
     let project = Project {
         present: vec![
@@ -1292,23 +1292,28 @@ fn an_invocation_package_manager_without_exec_refuses_the_exec_rungs() {
         runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[])
             .map(|(rung, dispatched)| (rung.name, dispatched))
     };
-    for layer in [runner_core::Layer::Cli, runner_core::Layer::Env] {
+    for layer in [
+        runner_core::Layer::Cli,
+        runner_core::Layer::Env,
+        runner_core::Layer::ConfigFile("runner.toml".into()),
+    ] {
         let refused = outcome(layer.clone());
         assert!(
             matches!(
-                refused,
+                &refused,
                 Err(Refusal::NoCapability {
                     provider: ProviderId::Cargo,
                     op: "exec",
-                })
+                    chosen_by: Some(chosen),
+                }) if *chosen == layer
             ),
             "{layer:?}: {refused:?}"
         );
     }
     let (rung, Dispatch::Plan(plan)) =
-        outcome(runner_core::Layer::ConfigFile("runner.toml".into())).unwrap()
+        outcome(runner_core::Layer::Lockfile("Cargo.lock".into())).unwrap()
     else {
-        panic!("a configured choice leaves exec to the other providers");
+        panic!("a detected choice leaves exec to the other providers");
     };
     assert_eq!(rung, "exec");
     assert_eq!(plan.provider, Some(ProviderId::Npm));
@@ -1758,7 +1763,7 @@ fn a_manifest_that_disagrees_with_the_lockfile_is_recorded_and_wins() {
 }
 
 #[test]
-fn an_invocation_package_manager_that_cannot_dispatch_the_source_is_refused() {
+fn a_chosen_package_manager_that_cannot_dispatch_the_source_is_refused() {
     let fixture = Fixture::new();
     let task = named_task(ProviderId::PackageJson, "build");
     let op = Op::Run {
@@ -1778,22 +1783,24 @@ fn an_invocation_package_manager_that_cannot_dispatch_the_source_is_refused() {
             runner_core::Ecosystem::Rust,
             runner_core::Choice {
                 id: ProviderId::Cargo,
-                from,
+                from: from.clone(),
             },
         );
         matches!(
             runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY),
             Err(Refusal::NoCapability {
                 provider: ProviderId::Cargo,
+                chosen_by: Some(chosen),
                 ..
-            })
+            }) if chosen == from
         )
     };
     assert!(refuses(runner_core::Layer::Cli));
     assert!(refuses(runner_core::Layer::Env));
-    assert!(!refuses(runner_core::Layer::ConfigFile(
+    assert!(refuses(runner_core::Layer::ConfigFile(
         "runner.toml".into()
     )));
+    assert!(!refuses(runner_core::Layer::Lockfile("Cargo.lock".into())));
     let make = named_task(ProviderId::Make, "build");
     let mut policy = Policy::default();
     policy.pm.0.insert(

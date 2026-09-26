@@ -368,6 +368,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `--source just run build` fails when the justfile has no `build` recipe,
   naming the source and the task.
 
+- `[tasks.<name>].pm` naming a package manager that cannot run the task
+  fails like `--pm`, naming the `runner.toml` that chose it, where it used
+  to fall back to the detected manager.
+
+- Editors complete provider values in `runner.toml` from labels alone. File
+  names and exec binaries such as `deno.json` and `npx` still validate.
+
 - `[tasks.<key>].env` matches the same keys as `[tasks.<key>.output]`:
   `build`, `package.json:build`, `rfc:build` for a member task,
   and `rfc:package.json#build`, least specific first.

@@ -24,6 +24,15 @@ pub enum Layer {
     Probe,
 }
 
+impl Layer {
+    /// Whether the user named the choice with a flag, a variable or a
+    /// `runner.toml` value.
+    #[must_use]
+    pub const fn is_explicit(&self) -> bool {
+        matches!(self, Self::Cli | Self::Env | Self::ConfigFile(_))
+    }
+}
+
 /// A provider chosen by one layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {

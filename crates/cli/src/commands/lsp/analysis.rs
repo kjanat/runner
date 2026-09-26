@@ -570,6 +570,20 @@ mod tests {
     }
 
     #[test]
+    fn provider_values_complete_labels_and_leave_aliases_out() {
+        let runtime = complete("[runtime]\njavascript = \n", 1, 13, false);
+        assert_eq!(labels(&runtime), ["bun", "deno", "node"]);
+        for (line, column) in [("pm = ", 5), ("source = ", 9)] {
+            let items = complete(&format!("[tasks.build]\n{line}\n"), 1, column, false);
+            let names = labels(&items);
+            for alias in ["npx", "bunx", "deno.json", "go.mod", "Makefile", "justfile"] {
+                assert!(!names.contains(&alias), "{line}{alias}: {names:?}");
+            }
+            assert!(!names.is_empty(), "{line}");
+        }
+    }
+
+    #[test]
     fn key_completion_replaces_the_typed_token() {
         let items = complete("[install]\nfro\n", 1, 3, false);
         let item = items.iter().find(|i| i.label == "frozen").expect("frozen");

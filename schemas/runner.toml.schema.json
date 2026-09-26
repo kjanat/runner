@@ -169,14 +169,19 @@
             "null",
             "string"
           ],
-          "enum": [
-            "bun",
-            "bunx",
-            "deno",
-            "deno.json",
-            "deno.jsonc",
-            "node",
-            null
+          "anyOf": [
+            {
+              "enum": [
+                "bun",
+                "deno",
+                "node",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:bunx|deno\\.json|deno\\.jsonc)$"
+            }
           ]
         }
       },
@@ -265,29 +270,28 @@
             "null",
             "string"
           ],
-          "enum": [
-            "npm",
-            "npx",
-            "yarn",
-            "yarnpkg",
-            "pnpm",
-            "pnpx",
-            "bun",
-            "bunx",
-            "deno",
-            "deno.json",
-            "deno.jsonc",
-            "cargo",
-            "cargo-alias",
-            "go",
-            "go.mod",
-            "uv",
-            "poetry",
-            "pipenv",
-            "bundler",
-            "bundle",
-            "composer",
-            null
+          "anyOf": [
+            {
+              "enum": [
+                "npm",
+                "yarn",
+                "pnpm",
+                "bun",
+                "deno",
+                "cargo",
+                "go",
+                "uv",
+                "poetry",
+                "pipenv",
+                "bundler",
+                "composer",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:npx|yarnpkg|pnpx|bunx|deno\\.json|deno\\.jsonc|cargo-alias|go\\.mod|bundle)$"
+            }
           ]
         },
         "runtime": {
@@ -300,34 +304,27 @@
             "null",
             "string"
           ],
-          "enum": [
-            "turbo",
-            "turbo.json",
-            "turbo.jsonc",
-            "package.json",
-            "make",
-            "Makefile",
-            "just",
-            "justfile",
-            "task",
-            "go-task",
-            "Taskfile",
-            "deno",
-            "deno.json",
-            "deno.jsonc",
-            "cargo",
-            "cargo-alias",
-            "go",
-            "go.mod",
-            "bacon",
-            "bacon.toml",
-            "mise",
-            "rtx",
-            "mise.toml",
-            ".mise.toml",
-            "pyproject.toml",
-            "pyproject",
-            null
+          "anyOf": [
+            {
+              "enum": [
+                "turbo",
+                "package.json",
+                "make",
+                "just",
+                "task",
+                "deno",
+                "cargo",
+                "go",
+                "bacon",
+                "mise",
+                "pyproject.toml",
+                null
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:turbo\\.json|turbo\\.jsonc|Makefile|justfile|go-task|Taskfile|deno\\.json|deno\\.jsonc|cargo-alias|go\\.mod|bacon\\.toml|rtx|mise\\.toml|\\.mise\\.toml|pyproject)$"
+            }
           ]
         }
       },

@@ -136,7 +136,7 @@ pub fn before_plan(
 ) -> Result<(), Refusal> {
     if decided_by(policy, present)
         .first()
-        .is_some_and(|layer| matches!(layer, Layer::Cli | Layer::Env | Layer::ConfigFile(_)))
+        .is_some_and(Layer::is_explicit)
     {
         return Ok(());
     }

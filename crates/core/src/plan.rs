@@ -147,6 +147,8 @@ pub enum Refusal {
         provider: ProviderId,
         /// The op.
         op: &'static str,
+        /// The layer that chose the provider, when one did.
+        chosen_by: Option<Layer>,
     },
     /// More than one provider could take the request.
     Ambiguous {
@@ -374,13 +376,11 @@ pub fn plan(
                     provider.label
                 )));
             }
-            if needs_manager
-                && !dispatches(provider)
-                && matches!(choice.from, Layer::Cli | Layer::Env)
-            {
+            if needs_manager && !dispatches(provider) && choice.from.is_explicit() {
                 return Err(Refusal::NoCapability {
                     provider: choice.id,
                     op: op.name(),
+                    chosen_by: Some(choice.from.clone()),
                 });
             }
         }
@@ -414,6 +414,7 @@ pub fn plan(
             .first()
             .map_or(ProviderId::ALL[0], |present| present.provider),
         op: op.name(),
+        chosen_by: None,
     }))
 }
 
@@ -631,6 +632,7 @@ impl<'a> Shaping<'_, 'a> {
         Refusal::NoCapability {
             provider: self.provider.id,
             op: self.op.name(),
+            chosen_by: None,
         }
     }
 
@@ -2004,7 +2006,7 @@ fn exec_plan(
     Ok(None)
 }
 
-/// The package managers the command line or environment chose for `scope`.
+/// The package managers the user chose for `scope`.
 ///
 /// # Errors
 ///
@@ -2020,19 +2022,23 @@ fn invocation_managers<'a>(
         .pm
         .0
         .values()
-        .filter(|choice| matches!(choice.from, Layer::Cli | Layer::Env))
+        .filter(|choice| choice.from.is_explicit())
         .map(|choice| {
-            cascade.project.present_in(choice.id, scope).ok_or_else(|| {
-                Refusal::Invalid(format!(
-                    "no evidence for package manager {}",
-                    cascade.registry.by_id(choice.id).label
-                ))
-            })
+            cascade
+                .project
+                .present_in(choice.id, scope)
+                .map(|present| (present, &choice.from))
+                .ok_or_else(|| {
+                    Refusal::Invalid(format!(
+                        "no evidence for package manager {}",
+                        cascade.registry.by_id(choice.id).label
+                    ))
+                })
         })
-        .collect::<Result<Vec<&Present>, Refusal>>()?;
+        .collect::<Result<Vec<(&Present, &Layer)>, Refusal>>()?;
     match forced.first() {
-        Some(first)
-            if forced.iter().all(|present| {
+        Some((first, layer))
+            if forced.iter().all(|(present, _)| {
                 cascade
                     .registry
                     .by_id(present.provider)
@@ -2045,9 +2051,10 @@ fn invocation_managers<'a>(
             Err(Refusal::NoCapability {
                 provider: first.provider,
                 op: op.name(),
+                chosen_by: Some((*layer).clone()),
             })
         }
-        _ => Ok(forced),
+        _ => Ok(forced.into_iter().map(|(present, _)| present).collect()),
     }
 }
 

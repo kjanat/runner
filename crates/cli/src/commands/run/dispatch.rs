@@ -667,10 +667,19 @@ pub(crate) fn refusal_error(
                 rung.name
             )
         }
-        Refusal::NoCapability { provider, op } => anyhow!(
-            "{} cannot {op} {task_name:?}",
-            runner_providers::REGISTRY.by_id(*provider).label,
-        ),
+        Refusal::NoCapability {
+            provider,
+            op,
+            chosen_by,
+        } => {
+            let origin = chosen_by
+                .as_ref()
+                .map_or_else(String::new, |layer| format!(" ({})", pm_origin(layer)));
+            anyhow!(
+                "{} cannot {op} {task_name:?}{origin}",
+                runner_providers::REGISTRY.by_id(*provider).label,
+            )
+        }
         Refusal::NoTests { dir, patterns, .. } => anyhow!(
             "no test files found under {}: expected one of {}",
             dir.display(),
@@ -715,10 +724,18 @@ fn runtime_suggestions(
 }
 
 fn runtime_origin(layer: &runner_core::Layer) -> String {
+    origin(layer, "--runtime", "RUNNER_RUNTIME")
+}
+
+fn pm_origin(layer: &runner_core::Layer) -> String {
+    origin(layer, "--pm", "RUNNER_PM")
+}
+
+fn origin(layer: &runner_core::Layer, flag: &str, variable: &str) -> String {
     use runner_core::Layer;
     match layer {
-        Layer::Cli => "selected by --runtime".into(),
-        Layer::Env => "selected by RUNNER_RUNTIME".into(),
+        Layer::Cli => format!("selected by {flag}"),
+        Layer::Env => format!("selected by {variable}"),
         Layer::ConfigFile(path) => format!("selected by {}", path.display()),
         Layer::Manifest(path) => format!("declared in {}", path.display()),
         Layer::Lockfile(path) => format!("locked in {}", path.display()),

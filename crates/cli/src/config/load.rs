@@ -120,7 +120,7 @@ pub(crate) struct RunnerConfig {
 pub(crate) struct RuntimeSettings {
     /// The runtime JavaScript and TypeScript run on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = js_runtime_labels()))]
+    #[schemars(extend("anyOf" = js_runtime_labels()))]
     pub javascript: Option<String>,
 }
 
@@ -297,11 +297,11 @@ pub(crate) struct ToolSettings {
 pub(crate) struct TaskSettings {
     /// The task source that must supply this task (`just`, `package.json`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = task_source_labels()))]
+    #[schemars(extend("anyOf" = task_source_labels()))]
     pub source: Option<String>,
     /// The package manager that runs this task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = package_manager_labels()))]
+    #[schemars(extend("anyOf" = package_manager_labels()))]
     pub pm: Option<String>,
     /// The runtime this task runs on, over `[runtime]`.
     #[serde(default, skip_serializing_if = "RuntimeSettings::is_empty")]
@@ -319,26 +319,39 @@ fn task_output_is_empty(output: &TaskOutput) -> bool {
     output == &TaskOutput::default()
 }
 
-fn js_runtime_labels() -> Vec<Option<&'static str>> {
-    labels(crate::provider::js_runtimes())
+fn js_runtime_labels() -> Vec<serde_json::Value> {
+    labels(&crate::provider::js_runtimes())
 }
 
-fn package_manager_labels() -> Vec<Option<&'static str>> {
-    labels(crate::provider::package_managers())
+fn package_manager_labels() -> Vec<serde_json::Value> {
+    labels(&crate::provider::package_managers())
 }
 
-fn task_source_labels() -> Vec<Option<&'static str>> {
-    labels(crate::provider::task_sources())
+fn task_source_labels() -> Vec<serde_json::Value> {
+    labels(&crate::provider::task_sources())
 }
 
-/// `ids`' labels and aliases plus `null`, the values an optional provider
-/// key accepts.
-fn labels(ids: Vec<runner_core::ProviderId>) -> Vec<Option<&'static str>> {
-    ids.into_iter()
-        .flat_map(|id| std::iter::once(id.label()).chain(id.provider().aliases.iter().copied()))
-        .map(Some)
+/// `ids`' labels and `null` as an enum editors complete, then their aliases
+/// as a pattern editors only validate.
+fn labels(ids: &[runner_core::ProviderId]) -> Vec<serde_json::Value> {
+    let names: Vec<Option<&str>> = ids
+        .iter()
+        .map(|id| Some(id.label()))
         .chain([None])
-        .collect()
+        .collect();
+    let aliases: Vec<String> = ids
+        .iter()
+        .flat_map(|id| id.provider().aliases)
+        .map(|alias| regress::escape(alias))
+        .collect();
+    let mut branches = vec![serde_json::json!({ "enum": names })];
+    if !aliases.is_empty() {
+        branches.push(serde_json::json!({
+            "type": "string",
+            "pattern": format!("^(?:{})$", aliases.join("|")),
+        }));
+    }
+    branches
 }
 
 /// `RunnerConfig`'s schema, generated once per process.
@@ -462,8 +475,30 @@ mod tests {
 
     use super::{CONFIG_FILENAME, Download, LoadedConfig, RunnerConfig, load};
     use crate::chain::FailurePolicy;
+    use crate::provider::Named as _;
     use crate::tool::test_support::TempDir;
     use crate::types::DetectionWarning;
+
+    #[test]
+    fn provider_alias_patterns_are_unicode_ecmascript_matching_aliases_alone() {
+        for ids in [
+            crate::provider::js_runtimes(),
+            crate::provider::package_managers(),
+            crate::provider::task_sources(),
+        ] {
+            let branches = super::labels(&ids);
+            let pattern = branches[1]["pattern"].as_str().expect("an alias pattern");
+            let regex = regress::Regex::with_flags(pattern, "u").expect("a unicode pattern");
+            for id in &ids {
+                for alias in id.provider().aliases {
+                    assert!(regex.find(alias).is_some(), "{pattern} misses {alias}");
+                }
+                assert!(regex.find(id.label()).is_none(), "{pattern} takes {id:?}");
+            }
+            assert!(regex.find("deno.jsonX").is_none(), "{pattern}");
+            assert!(regex.find("denoXjson").is_none(), "{pattern}");
+        }
+    }
 
     fn unknown_paths(loaded: &LoadedConfig) -> Vec<String> {
         loaded
