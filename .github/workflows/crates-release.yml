@@ -25,16 +25,16 @@ jobs:
     timeout-minutes: 30
     permissions: { contents: read, id-token: write, actions: read }
     environment: { name: crates-io, url: "${{ steps.verify.outputs.url }}" }
-    env: { HAS_CARGO_REGISTRY_TOKEN: "${{ secrets.CARGO_REGISTRY_TOKEN != '' }}" }
+    env: { HAS_CARGO_REGISTRY_TOKEN: "${{ case(secrets.CARGO_REGISTRY_TOKEN != '', 'true', 'false') }}" }
     steps:
       - uses: actions/checkout@v7
         with: { ref: "refs/tags/${{ env.RELEASE_TAG }}", persist-credentials: false }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: verify tag matches Cargo.toml version
+        shell: "bash -euxo pipefail {0}"
         id: verify
         run: |
-          set -euo pipefail
           tag_version="${RELEASE_TAG#v}"
           metadata=$(cargo metadata --no-deps --format-version 1)
           fields=$(jq -er '.workspace_default_members[0] as $id | .packages[] | select(.id == $id) | "\(.name) \(.version) \(.manifest_path)"' <<<"${metadata}")
@@ -47,16 +47,20 @@ jobs:
           fi
           echo "ok: tag ${RELEASE_TAG} matches ${manifest_path} version ${manifest_version}"
           echo "url=https://crates.io/crates/${name}/${manifest_version}" >> "${GITHUB_OUTPUT}"
-          echo "MAN_DIR=$(dirname "${manifest_path}")/man" >> "${GITHUB_ENV}"
+          echo "man_dir=$(dirname "${manifest_path}")/man"                >> "${GITHUB_ENV}"
 
       - name: download man pages
         if: inputs.run-id != ''
         uses: actions/download-artifact@v8
-        with: { name: man-pages, path: "${{ env.MAN_DIR }}", run-id: "${{ inputs.run-id }}", github-token: "${{ github.token }}" }
+        with:
+          name: man-pages
+          path: ${{ env.man_dir }}
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ github.token }}
 
       - name: build man pages
         if: inputs.run-id == ''
-        run: cargo man --output "${MAN_DIR}"
+        run: cargo man --output "${man_dir}"
 
       - run: cargo dirtypub --dry-run
 

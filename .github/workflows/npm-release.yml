@@ -52,7 +52,10 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: ".github/scripts\n.github/actions\npackaging/npm/targets.json"
+          sparse-checkout: |
+            .github/actions
+            .github/scripts
+            packaging/npm/targets.json
           sparse-checkout-cone-mode: false
 
       - uses: actions/setup-node@v7
@@ -63,8 +66,7 @@ jobs:
         env: { GH_TOKEN: "${{ github.token }}", INPUT_RUN_ID: "${{ inputs.run-id }}" }
         run: |
           set -euo pipefail
-          if [[ -n "${INPUT_RUN_ID}" ]]; then
-            run_id="${INPUT_RUN_ID}"
+          if [[ -n "${INPUT_RUN_ID}" ]]; then run_id="${INPUT_RUN_ID}";
           else
             run_id=$(gh run list \
               --repo "${GITHUB_REPOSITORY}" \
@@ -75,19 +77,22 @@ jobs:
               --json databaseId \
               --jq '.[0].databaseId')
           fi
+
           if [[ -z "${run_id}" || "${run_id}" == "null" ]]; then
             echo "error: no run-id resolvable for ${RELEASE_TAG}" >&2
             exit 1
           fi
+
           # Numeric guard, blocks GITHUB_OUTPUT injection.
           if ! [[ "${run_id}" =~ ^[0-9]+$ ]]; then
             echo "error: run-id '${run_id}' is not a positive integer" >&2
             exit 1
           fi
+
           echo "run-id=${run_id}" >> "${GITHUB_OUTPUT}"
 
       - name: download dist artifact
-        uses: ./.github/actions/dist-artifact
+        uses: $/.github/actions/dist-artifact
         with: { run-id: "${{ steps.resolve.outputs.run-id }}", token: "${{ github.token }}" }
 
       # Execute what will be published; build-dist's smoke test runs
@@ -105,10 +110,7 @@ jobs:
           set -euo pipefail
           platforms="$(jq -c '[.targets[] | {pkg: .pkg, experimental: (.experimental // false)}]' packaging/npm/targets.json)"
           facade="$(jq -r '.facade' packaging/npm/targets.json)"
-          {
-            echo "platforms=${platforms}"
-            echo "facade=${facade}"
-          } | tee -a "${GITHUB_OUTPUT}"
+          { echo "platforms=${platforms}"; echo "facade=${facade}"; } | tee -a "${GITHUB_OUTPUT}"
 
   publish:
     name: publish ${{ matrix.pkg }}
@@ -131,7 +133,7 @@ jobs:
         with: { registry-url: "${{ env.REGISTRY }}" }
 
       - name: download dist artifact
-        uses: ./.github/actions/dist-artifact
+        uses: $/.github/actions/dist-artifact
         with: { run-id: "${{ needs.setup.outputs.run-id }}", token: "${{ github.token }}" }
 
       - name: publish to npm
@@ -168,7 +170,7 @@ jobs:
         with: { registry-url: "${{ env.REGISTRY }}" }
 
       - name: download dist artifact
-        uses: ./.github/actions/dist-artifact
+        uses: $/.github/actions/dist-artifact
         with: { run-id: "${{ needs.setup.outputs.run-id }}", token: "${{ github.token }}" }
 
       - name: publish to npm

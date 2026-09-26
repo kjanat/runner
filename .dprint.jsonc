@@ -30,7 +30,7 @@
 		}, {
 			"command": "rustup run nightly rustfmt --emit stdout",
 			"exts": ["rs"],
-			"cacheKeyFiles": ["rustfmt.toml", ".cargo/config.toml"],
+			"cacheKeyFiles": ["rustfmt.toml", "rust-toolchain.toml", ".cargo/config.toml"],
 			"setupCommand": "rustup component add rustfmt --toolchain nightly",
 		}, {
 			"command": "just --dump --justfile {{file_path}}",

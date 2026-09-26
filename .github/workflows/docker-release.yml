@@ -38,7 +38,7 @@ jobs:
           sparse-checkout: ".github/scripts\n.github/actions\n.github/docker"
           sparse-checkout-cone-mode: false
 
-      - uses: ./.github/actions/dist-artifact
+      - uses: $/.github/actions/dist-artifact
         with: { run-id: "${{ inputs.run-id }}", token: "${{ secrets.GITHUB_TOKEN }}" }
 
       - name: prepare build context
