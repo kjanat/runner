@@ -792,7 +792,7 @@ mod tests {
             because: Vec::new(),
             decided_by: Vec::new(),
             scope: runner_core::Scope::Root,
-            node: None,
+            stand_in: None,
         };
         assert_eq!(super::plan_label(&plan, "main.ts"), "deno run");
     }

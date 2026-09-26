@@ -225,6 +225,37 @@ fn runtime_bun_forces_the_scripts_process_tree_onto_bun() {
 }
 
 #[test]
+fn a_package_manager_dispatches_while_bun_stands_in_for_node() {
+    if !tool_available("bun") || !tool_available("node") {
+        eprintln!("skipping: bun or node not found on PATH");
+        return;
+    }
+    let proj = probe_project("stand-in");
+    for pm in ["npm", "pnpm"] {
+        if !tool_available(pm) {
+            eprintln!("skipping {pm}: not found on PATH");
+            continue;
+        }
+        let output = run_in(proj.path(), &["--pm", pm, "--runtime", "bun", "which"]);
+        assert_stdout_has(
+            &output,
+            "BUN",
+            &format!("{pm} must run the script's node on bun"),
+        );
+        let planned = run_in(
+            proj.path(),
+            &["--dry-run", "--pm", pm, "--runtime", "bun", "which"],
+        );
+        let stderr = String::from_utf8_lossy(&planned.stderr);
+        assert!(
+            stderr.contains(&format!(r#"argv: ["{pm}", "run", "which"]"#))
+                && stderr.contains("stand-in: bun answers to node"),
+            "{pm} dispatches the task with bun as node: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn runtime_survives_a_nested_run() {
     if !tool_available("bun") || !tool_available("node") {
         eprintln!("skipping: bun or node not found on PATH");

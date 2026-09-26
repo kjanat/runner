@@ -43,12 +43,17 @@ pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Pl
             plan.decided_by
         ),
     );
-    if let Some(node) = plan.node {
+    if let Some(stand_in) = plan.stand_in {
+        let program = |id| {
+            let provider = runner_providers::REGISTRY.by_id(id);
+            provider.program.unwrap_or(provider.label)
+        };
         print_explain(
             overrides,
             &format!(
-                "node: {} answers to node for this command",
-                runner_providers::REGISTRY.by_id(node).label
+                "stand-in: {} answers to {}",
+                program(stand_in.runtime),
+                program(stand_in.replaces)
             ),
         );
     }

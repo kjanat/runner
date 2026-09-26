@@ -20,6 +20,30 @@ fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
 
+fn group(task: &str) -> String {
+    actions_rs::WorkflowCommand::new("group")
+        .message(format!("runner: {task}"))
+        .to_string()
+}
+
+fn any_group() -> String {
+    actions_rs::WorkflowCommand::new("group").to_string()
+}
+
+fn endgroup() -> String {
+    actions_rs::WorkflowCommand::new("endgroup").to_string()
+}
+
+fn error(title: Option<&str>) -> String {
+    let annotation = title.map_or_else(actions_rs::Annotation::new, |title| {
+        actions_rs::Annotation::new().title(title)
+    });
+    let command = annotation
+        .command(actions_rs::AnnotationKind::Error, "")
+        .to_string();
+    command.strip_suffix("::").unwrap_or(&command).to_owned()
+}
+
 fn runner_command() -> Command {
     support::command(runner_binary())
 }
@@ -360,14 +384,8 @@ fn grouped_parallel_chain_folds_timing_into_group_footer_under_actions() {
     // `::endgroup::`. Groups are flat (GitHub Actions can't nest them) and the
     // supervisor flushes one block at a time, so the markers strictly alternate
     // group/endgroup; pair them up and assert each block carries its timing.
-    let groups: Vec<usize> = stdout
-        .match_indices("::group::runner: ")
-        .map(|(i, _)| i)
-        .collect();
-    let ends: Vec<usize> = stdout
-        .match_indices("::endgroup::")
-        .map(|(i, _)| i)
-        .collect();
+    let groups: Vec<usize> = stdout.match_indices(&group("")).map(|(i, _)| i).collect();
+    let ends: Vec<usize> = stdout.match_indices(&endgroup()).map(|(i, _)| i).collect();
     assert_eq!(
         groups.len(),
         2,
@@ -546,10 +564,10 @@ fn a_runner_nested_in_a_github_actions_group_opens_no_group_of_its_own() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(stdout.matches("::group::").count(), 1, "{stdout}");
-    let opened = stdout.find("::group::runner: outer").expect("outer group");
+    assert_eq!(stdout.matches(&any_group()).count(), 1, "{stdout}");
+    let opened = stdout.find(&group("outer")).expect("outer group");
     let ran = stdout.find("inner-ran").expect("inner output");
-    let closed = stdout.find("::endgroup::").expect("group closes");
+    let closed = stdout.find(&endgroup()).expect("group closes");
     assert!(opened < ran && ran < closed, "{stdout}");
 }
 
@@ -766,14 +784,14 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
     );
 
     let g_build = stdout
-        .find("::group::runner: build")
+        .find(&group("build"))
         .unwrap_or_else(|| panic!("missing build group. stdout: {stdout}"));
     let end_build = g_build
         + stdout[g_build..]
-            .find("::endgroup::")
+            .find(&endgroup())
             .unwrap_or_else(|| panic!("build group not closed. stdout: {stdout}"));
     let g_test = stdout
-        .find("::group::runner: test")
+        .find(&group("test"))
         .unwrap_or_else(|| panic!("missing test group. stdout: {stdout}"));
     let build_ran = stdout
         .find("build-ran")
@@ -787,12 +805,12 @@ fn sequential_chain_wraps_steps_in_github_actions_groups() {
         "expected build group to open, contain build-ran, close, then test group. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::group::runner: ").count(),
+        stdout.matches(&group("")).count(),
         2,
         "expected exactly two groups. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::endgroup::").count(),
+        stdout.matches(&endgroup()).count(),
         2,
         "expected exactly two endgroups. stdout: {stdout}",
     );
@@ -820,11 +838,11 @@ fn single_task_is_grouped_under_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        stdout.contains("::group::runner: build"),
+        stdout.contains(&group("build")),
         "single task should be wrapped in a group. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::group::").count(),
+        stdout.matches(&any_group()).count(),
         1,
         "exactly one group for a single task. stdout: {stdout}",
     );
@@ -852,11 +870,11 @@ fn no_groups_emitted_outside_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("::group::"),
+        !stdout.contains(&any_group()),
         "no GHA groups in a normal terminal. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::endgroup::"),
+        !stdout.contains(&endgroup()),
         "no GHA endgroups in a normal terminal. stdout: {stdout}",
     );
 }
@@ -883,7 +901,7 @@ fn config_opt_out_disables_grouping_under_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("::group::"),
+        !stdout.contains(&any_group()),
         "config opt-out must suppress groups. stdout: {stdout}",
     );
 }
@@ -912,7 +930,7 @@ fn groups_false_under_github_actions_streams_parallel_output() {
         "both tasks stream their output. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::group::") && !stdout.contains("runner: build"),
+        !stdout.contains(&any_group()) && !stdout.contains("runner: build"),
         "groups = false emits no grouped blocks. stdout: {stdout}",
     );
 }
@@ -946,7 +964,7 @@ fn parallel_chain_grouped_under_github_actions() {
     // Each task's output sits inside its own group; completion order between
     // the two is nondeterministic, so assert per-task containment, not order.
     let g_build = stdout
-        .find("::group::runner: build")
+        .find(&group("build"))
         .unwrap_or_else(|| panic!("missing build group. stdout: {stdout}"));
     let build_ran = stdout
         .find("build-ran")
@@ -956,16 +974,16 @@ fn parallel_chain_grouped_under_github_actions() {
         "build output must sit inside build's group. stdout: {stdout}",
     );
     assert!(
-        stdout.contains("::group::runner: test"),
+        stdout.contains(&group("test")),
         "missing test group. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::group::runner: ").count(),
+        stdout.matches(&group("")).count(),
         2,
         "expected exactly two groups. stdout: {stdout}",
     );
     assert_eq!(
-        stdout.matches("::endgroup::").count(),
+        stdout.matches(&endgroup()).count(),
         2,
         "expected exactly two endgroups. stdout: {stdout}",
     );
@@ -993,7 +1011,7 @@ fn parallel_chain_grouped_with_plain_headers_outside_github_actions() {
         "expected success. stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("::group::") && !stdout.contains("::endgroup::"),
+        !stdout.contains(&any_group()) && !stdout.contains(&endgroup()),
         "no workflow-command syntax outside GitHub Actions. stdout: {stdout}",
     );
     assert!(
@@ -1265,7 +1283,7 @@ fn github_actions_annotates_each_failed_chain_task() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("::error") && stdout.contains("fail-mid"),
+        stdout.contains(&error(None)) && stdout.contains("fail-mid"),
         "expected an error annotation naming the task. stdout: {stdout}",
     );
     assert!(
@@ -1273,7 +1291,7 @@ fn github_actions_annotates_each_failed_chain_task() {
         "the annotation carries the task's own exit code. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::error title=runner%3A ok-one"),
+        !stdout.contains(&error(Some("runner: ok-one"))),
         "a passing task must not be annotated. stdout: {stdout}",
     );
 }
@@ -1300,7 +1318,7 @@ fn silent_suppresses_github_actions_annotations() {
         "fail-mid must fail the chain. stdout: {stdout}",
     );
     assert!(
-        !stdout.contains("::error"),
+        !stdout.contains(&error(None)),
         "-qqq must keep annotations off stdout. stdout: {stdout}",
     );
 }
@@ -1325,7 +1343,7 @@ fn quiet_keeps_github_actions_error_annotations() {
         "fail-mid must fail the chain. stdout: {stdout}",
     );
     assert!(
-        stdout.contains("::error") && stdout.contains("fail-mid"),
+        stdout.contains(&error(None)) && stdout.contains("fail-mid"),
         "-q keeps runner errors. stdout: {stdout}",
     );
 }
@@ -1347,11 +1365,11 @@ fn groups_opt_out_keeps_annotations_and_the_summary() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stdout.contains("::group::"),
+        !stdout.contains(&any_group()),
         "groups = false emits no groups. stdout: {stdout}",
     );
     assert!(
-        stdout.contains("::error") && stdout.contains("fail-mid"),
+        stdout.contains(&error(None)) && stdout.contains("fail-mid"),
         "annotations follow errors. stdout: {stdout}",
     );
     assert!(

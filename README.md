@@ -457,10 +457,14 @@ instead of spawning copies of itself.
 
 `--pm` says who installs and who invokes a script. `--runtime` says what the
 script and the binaries it shells out to actually execute on. Each runtime uses
-its own script runner, file runner and package-exec primitive. npm, pnpm and
-Yarn run on Node, so `--pm pnpm --runtime node` runs `pnpm run <task>`. Any
-other JavaScript package manager chosen beside a runtime is refused with both
-names:
+its own script runner, file runner and package-exec primitive.
+
+A package manager chosen beside a runtime still dispatches the task. npm, pnpm
+and Yarn run on Node, so `--pm pnpm --runtime node` runs `pnpm run <task>`.
+Bun can stand in for Node: `--pm pnpm --runtime bun` runs `pnpm run <task>`
+with Bun answering to `node` for the task's scripts. A runtime that cannot
+stand in for the one the package manager runs on, such as Deno under pnpm, is
+refused with both names:
 
 | `--runtime` | `package.json` script  | local file        | ad-hoc binary |
 | ----------- | ---------------------- | ----------------- | ------------- |

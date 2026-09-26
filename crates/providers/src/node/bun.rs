@@ -3,7 +3,7 @@
 use runner_core::{
     Capabilities, Declared, Discovery, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind,
     NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap, RunTaskCap, RuntimeCap,
-    ScriptMechanism, ScriptSupport, Signal, TestCap, WorkspaceCap, t,
+    ScriptMechanism, ScriptSupport, Signal, StandInCap, TestCap, WorkspaceCap, t,
 };
 
 use super::manifest;
@@ -89,7 +89,11 @@ pub const PROVIDER: Provider = Provider {
             exec: Some(t!["x", "--bun", Name, Args]),
         }),
         quiet: QuietSupport::flag(t!["--silent"]),
-        as_node: Some(&["-e", "console.log(process.execPath)"]),
+        runs_on: Some(ProviderId::Bun),
+        stands_in: Some(StandInCap {
+            replaces: ProviderId::Node,
+            executable: &["-e", "console.log(process.execPath)"],
+        }),
         ..Capabilities::NONE
     },
     tasks: None,

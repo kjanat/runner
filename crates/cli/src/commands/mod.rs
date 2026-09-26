@@ -84,14 +84,14 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
 /// Complete the invocation metadata before a core plan is rendered or executed.
 ///
 /// # Errors
-/// When the runtime `plan.node` names cannot be linked as `node`.
+/// When a stand-in runtime cannot be linked under the program name it replaces.
 fn configure_plan(
     plan: &mut runner_core::Plan,
     overrides: &ResolutionOverrides,
     task: &str,
 ) -> anyhow::Result<()> {
     if !overrides.dry_run {
-        link_node(plan)?;
+        link_stand_in(plan)?;
     }
     let mut metadata = Command::new("runner");
     configure_spawn(&mut metadata, &plan.cwd, overrides);
@@ -136,41 +136,44 @@ fn configure_plan(
     Ok(())
 }
 
-/// Link the runtime `plan.node` names as `node` in a directory of its own, and
-/// put that directory first on the plan's `PATH`.
-fn link_node(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
+/// Link a stand-in runtime under the program name of the runtime it replaces,
+/// in a directory of its own, and put that directory first on the plan's `PATH`.
+fn link_stand_in(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
     use anyhow::{Context as _, bail};
     use std::hash::{Hash as _, Hasher as _};
 
-    let Some(runtime) = plan.node else {
+    let Some(stand_in) = plan.stand_in else {
         return Ok(());
     };
-    let provider = runner_providers::REGISTRY.by_id(runtime);
-    let (Some(program), Some(args)) = (provider.program, provider.caps.as_node) else {
-        bail!("{} cannot stand in for node", provider.label);
+    let provider = runner_providers::REGISTRY.by_id(stand_in.runtime);
+    let replaced = runner_providers::REGISTRY.by_id(stand_in.replaces);
+    let (Some(program), Some(cap), Some(name)) =
+        (provider.program, provider.caps.stands_in, replaced.program)
+    else {
+        bail!("{} cannot stand in for {}", provider.label, replaced.label);
     };
     if plan.trust != runner_core::Trust::Project {
-        bail!("{program} can stand in for node only for a project command");
+        bail!("{program} can stand in for {name} only for a project command");
     }
     let mut query = plan.clone();
     query.argv = std::iter::once(program)
-        .chain(args.iter().copied())
+        .chain(cap.executable.iter().copied())
         .map(OsString::from)
         .collect();
     let output = runner_core::execute::command(&query)?
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
-        .with_context(|| format!("cannot start {program} to link it as node"))?;
+        .with_context(|| format!("cannot start {program} to link it as {name}"))?;
     let executable = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
     if !output.status.success() || !executable.is_file() {
-        bail!("{program} did not report its executable, so it cannot stand in for node");
+        bail!("{program} did not report its executable, so it cannot stand in for {name}");
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     executable.hash(&mut hasher);
-    let dir = std::env::temp_dir().join(format!("runner-node-{:016x}", hasher.finish()));
+    let dir = std::env::temp_dir().join(format!("runner-{name}-{:016x}", hasher.finish()));
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let link = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+    let link = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if std::fs::canonicalize(&link).ok() != std::fs::canonicalize(&executable).ok() {
         let _ = std::fs::remove_file(&link);
         #[cfg(unix)]

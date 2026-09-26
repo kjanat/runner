@@ -73,9 +73,8 @@ pub struct Capabilities {
     pub as_runtime: Option<RuntimeCap>,
     /// The runtime this package manager runs tasks on.
     pub runs_on: Option<ProviderId>,
-    /// Arguments that make this runtime print the executable a `node` link
-    /// must point at, when it can run `node` scripts in `node`'s place.
-    pub as_node: Option<&'static [&'static str]>,
+    /// The runtime this one can run in the place of.
+    pub stands_in: Option<StandInCap>,
     /// Operations a tool manager accepts on install.
     pub operations: &'static [&'static str],
     /// The quiet ladder.
@@ -109,7 +108,7 @@ impl Capabilities {
         usage: None,
         as_runtime: None,
         runs_on: None,
-        as_node: None,
+        stands_in: None,
         operations: &[],
         quiet: QuietSupport::NONE,
     };
@@ -221,6 +220,17 @@ bitflags::bitflags! {
         /// A registry specifier such as `jsr:@std/http` or `npm:cowsay`.
         const REGISTRY = 8;
     }
+}
+
+/// A runtime that can take another runtime's place under that runtime's
+/// program name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandInCap {
+    /// The runtime it replaces.
+    pub replaces: ProviderId,
+    /// Arguments that make it print its own executable, the file to link
+    /// under the replaced runtime's program name.
+    pub executable: &'static [&'static str],
 }
 
 /// The argv a runtime uses when policy names it, where it differs from the

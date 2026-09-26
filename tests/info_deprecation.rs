@@ -15,6 +15,16 @@ mod support;
 use std::path::PathBuf;
 use std::process::Command;
 
+fn deprecation() -> String {
+    actions_rs::Annotation::new()
+        .title("Deprecation")
+        .command(
+            actions_rs::AnnotationKind::Warning,
+            "`runner info` is deprecated; use `runner list`",
+        )
+        .to_string()
+}
+
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
@@ -90,14 +100,14 @@ fn info_emits_github_actions_annotation_under_ci() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("::warning title=Deprecation::"),
+        stderr.contains(&deprecation()),
         "expected a GitHub Actions warning annotation on stderr under CI, got: {stderr}",
     );
     // The annotation must not leak into stdout (keeps `--json` pipes
     // clean).
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        !stdout.contains("::warning"),
+        !stdout.contains(&deprecation()),
         "GHA annotation must stay on stderr, not stdout. stdout: {stdout}",
     );
 }
@@ -140,7 +150,7 @@ fn info_omits_github_annotation_outside_ci() {
         "plain deprecation warning still expected, got: {stderr}",
     );
     assert!(
-        !stderr.contains("::warning"),
+        !stderr.contains(&deprecation()),
         "no GHA annotation outside CI, got: {stderr}",
     );
 }

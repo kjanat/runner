@@ -946,7 +946,7 @@ mod tests {
         let mut admitted = project.clone();
         admitted.admit(&tree(), &chosen, &registry);
         assert_eq!(ids(&admitted), [ProviderId::Pnpm, ProviderId::Npm]);
-        let mut unchanged = project.clone();
+        let mut unchanged = project;
         unchanged.admit(&tree(), &Policy::default(), &registry);
         assert_eq!(ids(&unchanged), [ProviderId::Pnpm]);
     }

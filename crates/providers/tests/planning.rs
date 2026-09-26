@@ -1401,13 +1401,13 @@ fn a_package_manager_runs_under_a_runtime_that_stands_in_for_node() {
     let choose = |runtime: ProviderId, pm: ProviderId| {
         let mut policy = Policy {
             download: Download::Allow,
-            runtime: Some(runtime_core_choice(runtime)),
+            runtime: Some(cli_choice(runtime)),
             ..Policy::default()
         };
         policy
             .pm
             .0
-            .insert(runner_core::Ecosystem::Node, runtime_core_choice(pm));
+            .insert(runner_core::Ecosystem::Node, cli_choice(pm));
         policy
     };
     let task = named_task(ProviderId::PackageJson, "build");
@@ -1425,7 +1425,13 @@ fn a_package_manager_runs_under_a_runtime_that_stands_in_for_node() {
     )
     .expect("npm runs the task with bun as node");
     assert_eq!(plan.provider, Some(ProviderId::Npm));
-    assert_eq!(plan.node, Some(ProviderId::Bun));
+    assert_eq!(
+        plan.stand_in,
+        Some(runner_core::StandIn {
+            runtime: ProviderId::Bun,
+            replaces: ProviderId::Node,
+        })
+    );
 
     let deno = choose(ProviderId::Deno, ProviderId::Npm);
     let Err(Refusal::Invalid(message)) =
@@ -1461,10 +1467,10 @@ fn a_package_manager_runs_under_a_runtime_that_stands_in_for_node() {
     )
     .expect("one provider for both choices plans");
     assert_eq!(plan.provider, Some(ProviderId::Bun));
-    assert_eq!(plan.node, None);
+    assert_eq!(plan.stand_in, None);
 }
 
-fn runtime_core_choice(id: ProviderId) -> runner_core::Choice {
+const fn cli_choice(id: ProviderId) -> runner_core::Choice {
     runner_core::Choice {
         id,
         from: runner_core::Layer::Cli,

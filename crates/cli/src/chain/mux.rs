@@ -192,6 +192,11 @@ impl BufferSink {
         // Tokens from child `::stop-commands::<token>` directives whose paired
         // `::<token>::` resume should also be dropped (see the neutralize block).
         let mut stopped_tokens: Vec<Vec<u8>> = Vec::new();
+        let stop_commands = actions_rs::WorkflowCommand::new("stop-commands").to_string();
+        let group = actions_rs::WorkflowCommand::new("group").to_string();
+        let endgroup = actions_rs::WorkflowCommand::new("endgroup").to_string();
+        let resume = actions_rs::WorkflowCommand::new("token").to_string();
+        let (open, close) = resume.split_once("token").unwrap_or_default();
 
         loop {
             let mut stream = [0_u8; 1];
@@ -233,15 +238,15 @@ impl BufferSink {
                 // close) and every later annotation. Drop the directive and
                 // remember the token so its paired resume is dropped too; an
                 // unpaired resume falls through as a harmless unknown command.
-                if let Some(token) = line.strip_prefix(b"::stop-commands::".as_slice()) {
+                if let Some(token) = line.strip_prefix(stop_commands.as_bytes()) {
                     if !token.is_empty() {
                         stopped_tokens.push(token.to_vec());
                     }
                     continue;
                 }
                 if let Some(pos) = stopped_tokens.iter().position(|t| {
-                    line.strip_prefix(b"::".as_slice())
-                        .and_then(|inner| inner.strip_suffix(b"::".as_slice()))
+                    line.strip_prefix(open.as_bytes())
+                        .and_then(|inner| inner.strip_suffix(close.as_bytes()))
                         == Some(t.as_slice())
                 }) {
                     stopped_tokens.swap_remove(pos);
@@ -252,14 +257,14 @@ impl BufferSink {
                 // than emit a stray blank line); `::endgroup::` dropped.
                 // `::warning::`/`::error::`/`::notice::` annotations fall
                 // through verbatim.
-                if let Some(title) = line.strip_prefix(b"::group::".as_slice()) {
+                if let Some(title) = line.strip_prefix(group.as_bytes()) {
                     if !title.is_empty() {
                         out.write_all(title)?;
                         out.write_all(b"\n")?;
                     }
                     continue;
                 }
-                if line.starts_with(b"::endgroup::") {
+                if line.starts_with(endgroup.as_bytes()) {
                     continue;
                 }
             }
@@ -459,14 +464,27 @@ mod tests {
         assert_eq!(stderr, b"second\n");
     }
 
+    fn command(name: &'static str, message: &str) -> String {
+        actions_rs::WorkflowCommand::new(name)
+            .message(message)
+            .to_string()
+    }
+
+    fn warning(message: &str) -> String {
+        actions_rs::Annotation::new()
+            .command(actions_rs::AnnotationKind::Warning, message)
+            .to_string()
+    }
+
     #[test]
     fn replay_neutralizes_child_group_commands_when_enabled() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        sink.emit("[i]", false, "::group::Building").unwrap();
+        sink.emit("[i]", false, &command("group", "Building"))
+            .unwrap();
         sink.emit("[i]", false, "compiling...").unwrap();
-        sink.emit("[i]", false, "::endgroup::").unwrap();
-        sink.emit("[i]", false, "::group::").unwrap(); // titleless → dropped, no blank line
-        sink.emit("[i]", true, "::warning::heads up").unwrap();
+        sink.emit("[i]", false, &command("endgroup", "")).unwrap();
+        sink.emit("[i]", false, &command("group", "")).unwrap();
+        sink.emit("[i]", true, &warning("heads up")).unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -474,18 +492,15 @@ mod tests {
         sink.replay_to(&mut stdout, &mut stderr, true)
             .expect("buffer should replay");
 
-        // `::group::Building` → plain `Building`; `::endgroup::` and a titleless
-        // `::group::` dropped; a normal line is kept; the `::warning::`
-        // annotation stays verbatim.
         assert_eq!(stdout, b"Building\ncompiling...\n");
-        assert_eq!(stderr, b"::warning::heads up\n");
+        assert_eq!(stderr, format!("{}\n", warning("heads up")).as_bytes());
     }
 
     #[test]
     fn replay_without_neutralize_keeps_child_group_commands_verbatim() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        sink.emit("[i]", false, "::group::X").unwrap();
-        sink.emit("[i]", false, "::endgroup::").unwrap();
+        sink.emit("[i]", false, &command("group", "X")).unwrap();
+        sink.emit("[i]", false, &command("endgroup", "")).unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -493,20 +508,21 @@ mod tests {
         sink.replay_to(&mut stdout, &mut stderr, false)
             .expect("buffer should replay");
 
-        assert_eq!(stdout, b"::group::X\n::endgroup::\n");
+        assert_eq!(
+            stdout,
+            format!("{}\n{}\n", command("group", "X"), command("endgroup", "")).as_bytes()
+        );
     }
 
     #[test]
     fn replay_neutralizes_stop_commands_and_paired_resume() {
         let sink = BufferSink::new().expect("buffer sink should open");
-        // A child trying to disable command processing: the directive AND its
-        // matching resume must be dropped, or the parent's later `::endgroup::`
-        // (and annotations) would be swallowed.
-        sink.emit("[i]", false, "::stop-commands::abc123").unwrap();
+        sink.emit("[i]", false, &command("stop-commands", "abc123"))
+            .unwrap();
         sink.emit("[i]", false, "real output").unwrap();
-        sink.emit("[i]", false, "::abc123::").unwrap(); // paired resume → dropped
-        sink.emit("[i]", false, "::other::").unwrap(); // unpaired → harmless, kept
-        sink.emit("[i]", true, "::warning::kept").unwrap();
+        sink.emit("[i]", false, &command("abc123", "")).unwrap();
+        sink.emit("[i]", false, &command("other", "")).unwrap();
+        sink.emit("[i]", true, &warning("kept")).unwrap();
         sink.close();
 
         let mut stdout = Vec::new();
@@ -514,8 +530,11 @@ mod tests {
         sink.replay_to(&mut stdout, &mut stderr, true)
             .expect("buffer should replay");
 
-        assert_eq!(stdout, b"real output\n::other::\n");
-        assert_eq!(stderr, b"::warning::kept\n");
+        assert_eq!(
+            stdout,
+            format!("real output\n{}\n", command("other", "")).as_bytes()
+        );
+        assert_eq!(stderr, format!("{}\n", warning("kept")).as_bytes());
     }
 
     struct FullSink;

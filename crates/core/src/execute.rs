@@ -125,7 +125,7 @@ mod tests {
             }],
             decided_by: Vec::new(),
             scope: Scope::Root,
-            node: None,
+            stand_in: None,
         }
     }
 

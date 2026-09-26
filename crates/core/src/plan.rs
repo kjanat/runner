@@ -72,8 +72,17 @@ pub struct Plan {
     pub decided_by: Vec<Layer>,
     /// The scope it runs in.
     pub scope: Scope,
-    /// The runtime that answers to `node` for this command.
-    pub node: Option<ProviderId>,
+    /// The runtime that takes another's place for this command.
+    pub stand_in: Option<StandIn>,
+}
+
+/// A runtime answering to another runtime's program name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandIn {
+    /// The runtime that runs.
+    pub runtime: ProviderId,
+    /// The runtime whose program name it answers to.
+    pub replaces: ProviderId,
 }
 
 impl Plan {
@@ -408,12 +417,16 @@ pub fn plan(
     }))
 }
 
-/// Whether `pm` runs its tasks on `runtime`, itself or with `runtime`
-/// answering to `node`.
+/// Whether `pm` runs its tasks on `runtime`, itself or with `runtime` standing
+/// in for the runtime `pm` runs on.
 fn runs_under(pm: ProviderId, runtime: ProviderId, registry: &Registry) -> bool {
     let runs_on = registry.by_id(pm).caps.runs_on;
     runs_on == Some(runtime)
-        || (runs_on == Some(ProviderId::Node) && registry.by_id(runtime).caps.as_node.is_some())
+        || registry
+            .by_id(runtime)
+            .caps
+            .stands_in
+            .is_some_and(|stand_in| runs_on == Some(stand_in.replaces))
 }
 
 /// The chosen package managers that run on the chosen runtime.
@@ -427,16 +440,19 @@ fn on_runtime<'p>(policy: &'p Policy, registry: &Registry) -> impl Iterator<Item
     })
 }
 
-/// `made` with the chosen runtime answering to `node`, when a package manager
-/// that runs on Node carries it out under another runtime.
+/// `made` with the chosen runtime standing in for the runtime its package
+/// manager runs on.
 fn under_runtime(mut made: Plan, policy: &Policy, registry: &Registry) -> Plan {
     if let (Some(provider), Some(runtime)) = (made.provider, &policy.runtime)
-        && provider != runtime.id
-        && registry.by_id(provider).caps.runs_on == Some(ProviderId::Node)
-        && runtime.id != ProviderId::Node
-        && registry.by_id(runtime.id).caps.as_node.is_some()
+        && let Some(runs_on) = registry.by_id(provider).caps.runs_on
+        && runs_on != runtime.id
+        && let Some(stand_in) = registry.by_id(runtime.id).caps.stands_in
+        && stand_in.replaces == runs_on
     {
-        made.node = Some(runtime.id);
+        made.stand_in = Some(StandIn {
+            runtime: runtime.id,
+            replaces: runs_on,
+        });
         if !made.decided_by.contains(&runtime.from) {
             made.decided_by.push(runtime.from.clone());
         }
@@ -452,26 +468,23 @@ fn refuse_both_chosen(
     op: &Op<'_>,
     registry: &Registry,
 ) -> Result<(), Refusal> {
-    let Some(pm) = policy.pm.0.values().find(|pm| {
-        pm.id != runtime.id
-            && !runs_under(pm.id, runtime.id, registry)
-            && matches!(
-                registry.by_id(pm.id).ecosystem,
-                Ecosystem::Node | Ecosystem::Deno
-            )
+    let Some((pm, runs_on)) = policy.pm.0.values().find_map(|pm| {
+        let runs_on = registry.by_id(pm.id).caps.runs_on?;
+        (pm.id != runtime.id && !runs_under(pm.id, runtime.id, registry)).then_some((pm, runs_on))
     }) else {
         return Ok(());
     };
     let runtime = registry.by_id(runtime.id).label;
     Err(Refusal::Invalid(format!(
         "runner cannot run {} under package manager {} on runtime {runtime}: {runtime} does not \
-         stand in for node",
+         stand in for {}",
         match op {
             Op::Run { .. } => "the task",
             Op::Test { .. } => "the tests",
             _ => "the command",
         },
         registry.by_id(pm.id).label,
+        registry.by_id(runs_on).label,
     )))
 }
 
@@ -1071,7 +1084,7 @@ pub fn plan_with(
         because: present.because.clone(),
         decided_by: decided_by(policy, present),
         scope,
-        node: None,
+        stand_in: None,
     })
 }
 
@@ -1166,7 +1179,7 @@ fn plan_argv_in(
         because: vec![evidence],
         decided_by: Vec::new(),
         scope,
-        node: None,
+        stand_in: None,
     })
 }
 

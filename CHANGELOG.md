@@ -488,15 +488,24 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   reports the other as shadowed. The install directories come from each package manager's declaration, so uv,
   Poetry and Pipenv sharing `.venv` collide too.
 
-- A JavaScript package-manager choice beside a runtime choice it does not
-  run on is refused, naming both: `--pm npm --runtime bun run <name>` says
-  `package manager npm and runtime bun cannot both apply`. The same holds for
-  `[tasks.<name>].pm` beside a runtime from any layer. npm, pnpm and Yarn
-  run on Node, so `--pm pnpm` beside `--runtime node` runs `pnpm run`.
+- A package manager chosen beside a runtime dispatches the task on that
+  runtime. npm, pnpm and Yarn run on Node, and Bun stands in for Node:
+  `--pm pnpm --runtime bun run build` runs `pnpm run build` with Bun answering
+  to `node` for its scripts. A runtime that cannot stand in is refused naming
+  both: `runner cannot run the task under package manager pnpm on runtime deno:
+  deno does not stand in for node`. The same holds for `[tasks.<name>].pm`
+  beside a runtime from any layer.
 
 - A runtime or package manager that only `[tasks.<name>]` chooses counts as
-  present when it is on `PATH`, so `[tasks.build.runtime] javascript = "bun"`
-  runs `build` on Bun without a Bun lockfile.
+  present for that task when it is on `PATH`, so
+  `[tasks.build.runtime] javascript = "bun"` runs `build` on Bun without a Bun
+  lockfile while other tasks, files and `install` keep their defaults.
+
+- `list`, `doctor` and `why` report the source and runtime a task table
+  selects, as `run` uses them.
+
+- `--no-download` or `--no-warnings` after a subcommand overrides the
+  positive flag before it, and the reverse.
 
 - A valid command-line value overrides an invalid `RUNNER_*` value for the
   same setting: `RUNNER_PM=bogus runner --pm npm` runs with npm.

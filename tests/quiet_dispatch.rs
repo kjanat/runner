@@ -55,6 +55,16 @@ impl Drop for TempProject {
     }
 }
 
+fn group(title: &str) -> String {
+    actions_rs::WorkflowCommand::new("group")
+        .message(title)
+        .to_string()
+}
+
+fn endgroup() -> String {
+    actions_rs::WorkflowCommand::new("endgroup").to_string()
+}
+
 fn run_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_run"))
 }
@@ -178,7 +188,7 @@ fn quiet_keeps_github_actions_group_markers_off_stdout() {
     let shown = run_in(shown_proj.path(), &[(GITHUB_ACTIONS, "true")], &["greet"]);
     let shown_out = String::from_utf8_lossy(&shown.stdout);
     assert!(
-        shown_out.contains("::group::runner: greet") && shown_out.contains("::endgroup::"),
+        shown_out.contains(&group("runner: greet")) && shown_out.contains(&endgroup()),
         "expected a group to suppress. stdout: {shown_out}",
     );
 
@@ -194,7 +204,7 @@ fn quiet_keeps_github_actions_group_markers_off_stdout() {
         String::from_utf8_lossy(&output.stderr),
     );
     assert!(
-        !stdout.contains("::group::") && !stdout.contains("::endgroup::"),
+        !stdout.contains(&group("")) && !stdout.contains(&endgroup()),
         "--quiet must leave stdout to the task. stdout: {stdout}",
     );
 }

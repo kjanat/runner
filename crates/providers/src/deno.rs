@@ -202,6 +202,7 @@ const CAPS: Capabilities = Capabilities {
     }),
     workspaces: Some(runner_core::WorkspaceCap { declarations }),
     quiet: QuietSupport::flag(t!["-q"]),
+    runs_on: Some(ProviderId::Deno),
     ..Capabilities::NONE
 };
 

@@ -347,7 +347,7 @@ where
     let args = prioritize_top_level_help(args, &command);
     command = shorten_help_subcommand(command);
 
-    let parsed = invocation::parse::<args::Cli>(command.clone(), args)?;
+    let parsed = invocation::parse::<args::Cli>(command.clone(), &args)?;
     if version_request(&parsed.cli.version, parsed.cli.global.quiet).is_some()
         && parsed.cli.command.is_some()
     {
@@ -523,7 +523,7 @@ where
     }
     let args = prioritize_top_level_help(args, &command);
 
-    let parsed = invocation::parse::<args::RunAliasCli>(command.clone(), args)?;
+    let parsed = invocation::parse::<args::RunAliasCli>(command.clone(), &args)?;
     let cli = &parsed.cli;
     let has_task_action = cli.task.is_some()
         || !cli.args.is_empty()
@@ -1038,14 +1038,14 @@ fn run_builtin(
     out: &mut render::out::Out<'_>,
     sink: commands::WarningSink<'_>,
 ) -> Result<i32> {
-    let words = ["runner", name]
+    let words: Vec<OsString> = ["runner", name]
         .into_iter()
         .chain(args.iter().map(String::as_str))
         .map(OsString::from)
         .collect();
     let parsed = match invocation::parse::<BuiltinArgs>(
         invocation::bind(BuiltinArgs::command(), invocation::PREFIX),
-        words,
+        &words,
     ) {
         Ok(parsed) => parsed,
         Err(error) => return write_clap_error(&error, !overrides.shows_errors(), out),

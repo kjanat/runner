@@ -355,10 +355,10 @@ fn check(arg: &Arg, raw: &OsStr) -> Result<(), String> {
 /// one exclusive group or two that give one setting different values.
 pub(crate) fn parse<P: clap::FromArgMatches>(
     command: Command,
-    args: Vec<OsString>,
+    args: &[OsString],
 ) -> Result<Parsed<P>, clap::Error> {
     let (mut command, env_issues) = detach_invalid(command);
-    let mut matches = command.try_get_matches_from_mut(args.clone())?;
+    let mut matches = command.try_get_matches_from_mut(args)?;
     let mut origins = Origins::default();
     origins.collect(&matches, &command);
     let mut displaced = Vec::new();
@@ -396,7 +396,7 @@ pub(crate) fn parse<P: clap::FromArgMatches>(
     }
     if !displaced.is_empty() {
         command = detach_ids(command, &displaced);
-        matches = command.try_get_matches_from_mut(args.clone())?;
+        matches = command.try_get_matches_from_mut(args)?;
         origins = Origins::default();
         origins.collect(&matches, &command);
     }
@@ -410,7 +410,7 @@ pub(crate) fn parse<P: clap::FromArgMatches>(
             ),
         ));
     }
-    origins.order(&args, &command);
+    origins.order(args, &command);
     let mut path = Vec::new();
     let mut at = &matches;
     while let Some((name, sub)) = at.subcommand() {

@@ -794,7 +794,7 @@ mod tests {
     fn parse(words: &[&str]) -> Result<crate::invocation::Parsed<Cli>, clap::Error> {
         crate::invocation::parse(
             crate::invocation::bind(Cli::command(), crate::invocation::PREFIX),
-            osv(words),
+            &osv(words),
         )
     }
 
