@@ -544,8 +544,7 @@ fn explain_host(
         });
         let quiet_args = quiet
             .at(verbosity.index())
-            .map(|template| template.render(&runner_core::Request::default()).args)
-            .unwrap_or_default();
+            .map_or_default(|template| template.render(&runner_core::Request::default()).args);
         crate::commands::print_explain(
             overrides,
             &format!(

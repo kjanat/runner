@@ -28,20 +28,16 @@ pub(crate) fn tree(ctx: &ProjectContext) -> Tree {
     Tree {
         cwd: ctx.cwd.clone(),
         root: ctx.root.clone(),
-        members: ctx
-            .workspace
-            .as_ref()
-            .map(|workspace| {
-                workspace
-                    .members
-                    .iter()
-                    .map(|member| Scope::Member {
-                        name: member.label.clone(),
-                        dir: member.dir.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        members: ctx.workspace.as_ref().map_or_default(|workspace| {
+            workspace
+                .members
+                .iter()
+                .map(|member| Scope::Member {
+                    name: member.label.clone(),
+                    dir: member.dir.clone(),
+                })
+                .collect()
+        }),
     }
 }
 
@@ -97,7 +93,7 @@ pub(crate) fn task(task: &Task) -> Option<CoreTask> {
 /// The core's view of the settings for the task `key` names, or for the
 /// invocation as a whole with `None`.
 pub(crate) fn policy(overrides: &ResolutionOverrides, key: Option<&str>) -> Policy {
-    let task = key.map(|key| overrides.task(key)).unwrap_or_default();
+    let task = key.map_or_default(|key| overrides.task(key));
     let config = |task_key: &str| {
         overrides
             .config

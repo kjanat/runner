@@ -3,7 +3,7 @@
 //! Speaks LSP over stdio and provides three editor features, each reusing the
 //! same internals the CLI does:
 //! - **diagnostics**: the exact `runner config validate` pipeline ([`crate::config`]
-//!   + [`crate::resolver::validate_config`]), mapped to ranges;
+//!   + [`crate::resolver::config_issues`]), mapped to ranges;
 //! - **hover**: section/field documentation pulled from the generated JSON
 //!   Schema (i.e. the `RunnerConfig` doc comments);
 //! - **completion**: section names, field names, and value sets (enums, booleans,
@@ -16,6 +16,7 @@
 mod analysis;
 mod diagnostics;
 mod schema_index;
+mod syntax;
 mod text;
 
 use std::collections::HashMap;
@@ -186,8 +187,7 @@ impl Server {
             .documents
             .get(uri)
             .filter(|_| is_runner_toml(uri))
-            .map(|text| diagnostics::compute(text, &LineIndex::new(text)))
-            .unwrap_or_default();
+            .map_or_default(|text| diagnostics::compute(text, &LineIndex::new(text)));
         send_diagnostics(connection, uri.clone(), diagnostics);
     }
 

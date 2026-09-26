@@ -24,7 +24,12 @@ fn runner_binary() -> PathBuf {
 /// (the "a parent already opened a group" marker), which makes a spawned
 /// runner suppress its own grouping and fall back to the live muxer.
 fn runner_command() -> Command {
-    let mut cmd = Command::new(runner_binary());
+    scrubbed(runner_binary())
+}
+
+/// `binary` with every `RUNNER_*` variable scrubbed.
+fn scrubbed(binary: PathBuf) -> Command {
+    let mut cmd = Command::new(binary);
     for (key, _) in std::env::vars_os() {
         if key
             .to_string_lossy()
@@ -489,6 +494,84 @@ fn chain_rejects_mutually_exclusive_mode_flags() {
         stderr.contains("--sequential") || stderr.contains("--parallel"),
         "expected clap conflict diagnostic. stderr: {stderr}",
     );
+}
+
+#[test]
+fn a_command_line_mode_displaces_the_opposite_mode_from_the_environment() {
+    if !just_available() {
+        eprintln!("skipping: `just` not found on PATH");
+        return;
+    }
+    let run = PathBuf::from(env!("CARGO_BIN_EXE_run"));
+    for (binary, variable, flag, prefixed) in [
+        (runner_binary(), "RUNNER_RUN_PARALLEL", "-s", false),
+        (run.clone(), "RUNNER_RUN_PARALLEL", "-s", false),
+        (runner_binary(), "RUNNER_RUN_SEQUENTIAL", "-p", true),
+        (run, "RUNNER_RUN_SEQUENTIAL", "-p", true),
+    ] {
+        let mut words = vec!["--dir".into(), fixture("chain-sequential").into_os_string()];
+        if binary == runner_binary() {
+            words.push("run".into());
+        }
+        words.extend([flag, "build", "test"].map(std::ffi::OsString::from));
+        let output = scrubbed(binary)
+            .args(&words)
+            .env(variable, "1")
+            .output()
+            .expect("binary spawns");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{variable}=1 {flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            stdout.contains("[build]"),
+            prefixed,
+            "{variable}=1 {flag}: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn opposite_modes_from_the_environment_are_a_usage_error() {
+    let output = runner_command()
+        .arg("--dir")
+        .arg(fixture("chain-sequential"))
+        .args(["run", "build", "test"])
+        .env("RUNNER_RUN_SEQUENTIAL", "1")
+        .env("RUNNER_RUN_PARALLEL", "true")
+        .output()
+        .expect("runner binary spawns");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("RUNNER_RUN_SEQUENTIAL") && stderr.contains("RUNNER_RUN_PARALLEL"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_command_line_format_displaces_the_opposite_format_from_the_environment() {
+    for (variable, flag, json) in [
+        ("RUNNER_LIST_JSON", "--raw", false),
+        ("RUNNER_LIST_RAW", "--json", true),
+    ] {
+        let output = runner_command()
+            .arg("--dir")
+            .arg(fixture("chain-sequential"))
+            .args(["list", flag])
+            .env(variable, "1")
+            .output()
+            .expect("runner binary spawns");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{variable}=1 {flag}: {stdout}");
+        assert_eq!(
+            stdout.trim_start().starts_with('{'),
+            json,
+            "{variable}=1 {flag}: {stdout}"
+        );
+    }
 }
 
 #[test]

@@ -98,70 +98,9 @@ impl LineIndex {
     }
 }
 
-/// Locate the byte range of a `[section]` (or `[a.b]`) header line in `text`,
-/// matching the dotted `path` exactly (whitespace-insensitive). Returns the
-/// range of the header line's content. Used to anchor a section-level
-/// diagnostic when the parser gives no span of its own.
-pub(super) fn find_header_range(index: &LineIndex, text: &str, path: &str) -> Option<Range> {
-    for (line, raw) in text.lines().enumerate() {
-        let trimmed = raw.trim();
-        if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
-            && inner.trim() == path
-        {
-            return Some(index.line_range(text, line));
-        }
-    }
-    None
-}
-
-/// Locate the byte range of a bare `key` assignment (`key = ...`) under the
-/// section whose header is `section` (or anywhere, when `section` is `None`).
-/// Returns the range of the `key` token itself. Best-effort: the first match
-/// wins.
-pub(super) fn find_key_range(
-    index: &LineIndex,
-    text: &str,
-    section: Option<&str>,
-    key: &str,
-) -> Option<Range> {
-    let mut current: Option<String> = None;
-    for (line, raw) in text.lines().enumerate() {
-        let trimmed = raw.trim_start();
-        if let Some(inner) = trimmed
-            .trim_end()
-            .strip_prefix('[')
-            .and_then(|s| s.strip_suffix(']'))
-        {
-            current = Some(inner.trim().to_string());
-            continue;
-        }
-        if section.is_some_and(|want| current.as_deref() != Some(want)) {
-            continue;
-        }
-        let Some((lhs, _)) = trimmed.split_once('=') else {
-            continue;
-        };
-        if lhs.trim() == key {
-            // Column of the key token = leading whitespace of the raw line.
-            let indent = raw.len() - trimmed.len();
-            let key_start_col = indent + (lhs.len() - lhs.trim_start().len());
-            let line_start = position_line_start(index, line);
-            let start = line_start + key_start_col;
-            return Some(index.range(text, start, start + key.len()));
-        }
-    }
-    None
-}
-
-/// Byte offset of the start of `line` (0 when out of bounds is impossible here
-/// because callers iterate existing lines).
-fn position_line_start(index: &LineIndex, line: usize) -> usize {
-    index.line_starts.get(line).copied().unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{LineIndex, find_header_range, find_key_range};
+    use super::LineIndex;
 
     #[test]
     fn position_and_offset_round_trip() {
@@ -171,16 +110,6 @@ mod tests {
         let pos = index.position(text, 6);
         assert_eq!((pos.line, pos.character), (1, 0));
         assert_eq!(index.offset(text, pos), 6);
-    }
-
-    #[test]
-    fn finds_header_and_key_ranges() {
-        let text = "[env]\nCI = \"1\"\n";
-        let index = LineIndex::new(text);
-        assert!(find_header_range(&index, text, "env").is_some());
-        assert!(find_key_range(&index, text, Some("env"), "CI").is_some());
-        // Same key, wrong section → no match.
-        assert!(find_key_range(&index, text, Some("tasks"), "CI").is_none());
     }
 
     #[test]

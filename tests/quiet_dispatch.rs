@@ -611,6 +611,37 @@ fn quiet_preset_overrides_only_the_settings_it_expands_to() {
 }
 
 #[test]
+fn a_weaker_command_line_preset_keeps_the_environment_presets_other_settings() {
+    if !tool_available("npm") {
+        eprintln!("skipping: `npm` not found on PATH");
+        return;
+    }
+    let project = npm_project("quiet-layers");
+    let both = runner_in(
+        project.path(),
+        &[("RUNNER_QUIET", "2")],
+        &["-q", "run", "--dry-run", "greet"],
+    );
+    let stderr = String::from_utf8_lossy(&both.stderr);
+    assert!(both.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("warnings=hide") && stderr.contains("args=[--silent]"),
+        "RUNNER_QUIET=2 still hides warnings and quiets the tool. stderr: {stderr}",
+    );
+    let restored = runner_in(
+        project.path(),
+        &[("RUNNER_QUIET", "2")],
+        &["-q", "--warnings", "run", "--dry-run", "greet"],
+    );
+    let stderr = String::from_utf8_lossy(&restored.stderr);
+    assert!(restored.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("warnings=show") && stderr.contains("args=[--silent]"),
+        "--warnings restores only warnings. stderr: {stderr}",
+    );
+}
+
+#[test]
 fn task_tool_quiet_outranks_project_tool_quiet() {
     if !tool_available("npm") {
         eprintln!("skipping: `npm` not found on PATH");

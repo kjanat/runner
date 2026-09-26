@@ -212,7 +212,7 @@ impl PmDecision {
             pm,
             layer,
             flag,
-            at: strongest.map(|e| e.at.clone()).unwrap_or_default(),
+            at: strongest.map_or_default(|e| e.at.clone()),
             field: declared.map(|(field, _)| field),
             on_fail: declared.and_then(|(_, declared)| match declared {
                 Some(Declared::Constraint { on_fail, .. }) => Some(*on_fail),
@@ -246,14 +246,10 @@ impl PmDecision {
             ),
             Layer::ConfigFile(path) => format!("{pm} via runner.toml at {}", path.display()),
             Layer::Manifest(path) => {
-                let field = self
-                    .field
-                    .map(|field| format!(" {field:?}"))
-                    .unwrap_or_default();
+                let field = self.field.map_or_default(|field| format!(" {field:?}"));
                 let on_fail = self
                     .on_fail
-                    .map(|on_fail| format!(" (onFail={})", on_fail.label()))
-                    .unwrap_or_default();
+                    .map_or_default(|on_fail| format!(" (onFail={})", on_fail.label()));
                 format!("{pm} via {}{field}{on_fail}", file_name(path))
             }
             Layer::Lockfile(path) => format!("{pm} via {}", file_name(path)),
@@ -277,14 +273,12 @@ impl PmDecision {
             warnings.push(DetectionWarning::PathProbeFallback {
                 picked: self.pm,
                 ecosystem: self.pm.ecosystem(),
-                others_available: provider
-                    .map(|id| {
-                        probe_order_for(id)
-                            .into_iter()
-                            .filter(|other| *other != self.pm)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                others_available: provider.map_or_default(|id| {
+                    probe_order_for(id)
+                        .into_iter()
+                        .filter(|other| *other != self.pm)
+                        .collect()
+                }),
             });
         }
         for disagreement in &project.disagreements {
@@ -385,8 +379,7 @@ mod tests {
         let observed = Observed::observe(&ctx, overrides).expect("observation");
         observed
             .decision(ProviderId::PackageJson)
-            .map(|decision| decision.warnings(&observed.project))
-            .unwrap_or_default()
+            .map_or_default(|decision| decision.warnings(&observed.project))
     }
 
     fn with_pm_override(pm: ProviderId, origin: OverrideOrigin) -> ResolutionOverrides {

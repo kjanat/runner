@@ -22,14 +22,13 @@ fn declarations(root: &Path) -> Result<Vec<runner_core::Declaration>, runner_cor
         workspace
             .get(key)
             .and_then(toml::Value::as_array)
-            .map(|items| {
+            .map_or_default(|items| {
                 items
                     .iter()
                     .filter_map(toml::Value::as_str)
                     .map(ToOwned::to_owned)
                     .collect::<Vec<_>>()
             })
-            .unwrap_or_default()
     };
     let globs: Vec<String> = list("members")
         .into_iter()

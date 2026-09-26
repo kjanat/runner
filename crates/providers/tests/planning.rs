@@ -2544,11 +2544,13 @@ fn an_explicit_source_choice_rejects_a_task_another_source_defines() {
         Some(ProviderId::Just)
     );
     assert_eq!(runner_core::select(&cascade, "tsc"), Ok(None));
-    let outcome = runner_core::dispatch(&cascade, "build", &[]);
-    assert!(
-        matches!(outcome, Err(Refusal::NoSourceTask { .. })),
-        "{outcome:?}"
-    );
+    for token in ["build", "sh", "test"] {
+        let outcome = runner_core::dispatch(&cascade, token, &[]);
+        assert!(
+            matches!(&outcome, Err(Refusal::NoSourceTask { source: ProviderId::Just, name }) if name == token),
+            "{token}: {outcome:?}"
+        );
+    }
     assert_eq!(
         runner_core::select(&cascade, "package.json:lint"),
         Err(Refusal::Invalid(

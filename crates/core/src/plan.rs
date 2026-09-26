@@ -1413,7 +1413,15 @@ fn rung_dispatch(
         .map(dispatched)
     };
 
+    let chosen = cascade.policy.source.as_ref();
     Ok(match rung.needs {
+        Need::InstalledDep | Need::Cap(Cap::Test) | Need::ProjectBins if chosen.is_some() => None,
+        Need::ToolManagerExec | Need::Cap(Cap::Exec) if let Some(choice) = chosen => {
+            return Err(Refusal::NoSourceTask {
+                source: choice.id,
+                name: token.to_owned(),
+            });
+        }
         Need::BareVerb => builtin(cascade, token).map(Dispatch::Builtin),
         Need::ExplicitPath => {
             if !has_local_prefix(token) {
@@ -1550,6 +1558,12 @@ fn host_rung(
         provider.program == Some(token) && provider.caps.run_default.is_some()
     });
     let Some(present) = root else {
+        if let Some(choice) = &cascade.policy.source {
+            return Err(Refusal::NoSourceTask {
+                source: choice.id,
+                name: token.to_owned(),
+            });
+        }
         return probe_with(token, &[]).map(found).transpose();
     };
     if let Some(choice) = &cascade.policy.source

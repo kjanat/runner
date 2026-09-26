@@ -344,10 +344,7 @@ impl ToolSpec {
     fn version(&self) -> String {
         match self {
             Self::Version(version) => version.to_string(),
-            Self::Detailed { version } => version
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_default(),
+            Self::Detailed { version } => version.as_ref().map_or_default(ToString::to_string),
             Self::Unknown(_) => String::new(),
         }
     }
@@ -581,7 +578,7 @@ pub fn usage_spec(root: &Path, task: &str) -> std::io::Result<Option<UsageSpec>>
                 name: arg.name,
                 help: arg.help.filter(|h| !h.trim().is_empty()),
                 required: arg.required,
-                choices: arg.choices.map(|c| c.choices).unwrap_or_default(),
+                choices: arg.choices.map_or_default(|c| c.choices),
             })
             .collect(),
         flags: cmd

@@ -1,9 +1,4 @@
-//! Position analysis for hover and completion.
-//!
-//! A small, TOML-aware (not TOML-complete) reading of the line under the cursor
-//! plus the nearest `[section]` header above it. Enough to answer "what section
-//! am I in, and am I on a key or a value?", which drives both hover lookups and
-//! completion candidate sets without a full document parse.
+//! Hover and completion at a cursor, read from the buffer as `toml_parser` parses it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -14,115 +9,10 @@ use lsp_types::{
 };
 
 use super::schema_index::{FieldDoc, FieldType, SchemaIndex, TableDoc};
+use super::syntax::{Document, Key, Place};
 use super::text::LineIndex;
+use crate::config::{KeyPath, toml_key};
 use crate::provider::Named;
-
-/// What the cursor is sitting on within its line.
-enum LineShape {
-    /// A `[section]` header line; the string is the (possibly partial) path.
-    Header(String),
-    /// The key side of an assignment (or a bare word being typed as a key).
-    Key,
-    /// The value side, right of `=`.
-    Value {
-        /// The key on the left of the `=`.
-        key: String,
-        /// Whether the cursor sits inside an unclosed `"`/`'` string
-        /// literal (odd quote count before it).
-        in_string: bool,
-    },
-    /// Blank / whitespace-only line.
-    Empty,
-    /// The cursor sits at or after a `#` comment start.
-    Comment,
-}
-
-/// The cursor's section context plus what it's on.
-struct Cursor {
-    /// Nearest `[section]` header above the cursor line.
-    section: Option<String>,
-    /// Shape of the cursor's own line.
-    shape: LineShape,
-}
-
-/// Byte offset of the `#` that starts a comment on `line`, if any, the
-/// first `#` outside a `"`/`'` string literal.
-fn comment_start(line: &str) -> Option<usize> {
-    let (mut in_basic, mut in_literal) = (false, false);
-    for (offset, c) in line.char_indices() {
-        match c {
-            '"' if !in_literal => in_basic = !in_basic,
-            '\'' if !in_basic => in_literal = !in_literal,
-            '#' if !in_basic && !in_literal => return Some(offset),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Strip a `[section]` header line to its inner path. Tolerates a missing
-/// closing bracket so a half-typed `[ta` still reads as a header.
-fn header_path(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    let inner = trimmed.strip_prefix('[')?;
-    Some(inner.strip_suffix(']').unwrap_or(inner).trim().to_string())
-}
-
-/// Read the cursor context from the document text and position.
-fn analyze(index: &LineIndex, text: &str, pos: Position) -> Cursor {
-    let line_no = pos.line as usize;
-    let line_text = text.lines().nth(line_no).unwrap_or("");
-
-    let section = text.lines().take(line_no).filter_map(header_path).last();
-
-    let line_start = index.offset(text, Position::new(pos.line, 0));
-    let within = index.offset(text, pos).saturating_sub(line_start);
-    if comment_start(line_text).is_some_and(|hash| within >= hash) {
-        return Cursor {
-            section,
-            shape: LineShape::Comment,
-        };
-    }
-
-    if header_path(line_text).is_some() && line_text.trim_start().starts_with('[') {
-        let partial = line_text
-            .trim()
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .trim()
-            .to_string();
-        return Cursor {
-            section,
-            shape: LineShape::Header(partial),
-        };
-    }
-
-    let shape = line_text.find('=').map_or_else(
-        || {
-            if line_text.trim().is_empty() {
-                LineShape::Empty
-            } else {
-                LineShape::Key
-            }
-        },
-        |eq| {
-            if within > eq {
-                let before_cursor = line_text
-                    .get(eq + 1..within.min(line_text.len()))
-                    .unwrap_or("");
-                LineShape::Value {
-                    key: line_text[..eq].trim().to_string(),
-                    in_string: before_cursor.matches('"').count() % 2 == 1
-                        || before_cursor.matches('\'').count() % 2 == 1,
-                }
-            } else {
-                LineShape::Key
-            }
-        },
-    );
-
-    Cursor { section, shape }
-}
 
 /// Build a hover response for the cursor, if it lands on something documented.
 pub(super) fn hover(
@@ -131,17 +21,13 @@ pub(super) fn hover(
     text: &str,
     pos: Position,
 ) -> Option<Hover> {
-    let cursor = analyze(index, text, pos);
-    let (title, body) = match cursor.shape {
-        LineShape::Header(path) => describe_section(schema, &path)?,
-        LineShape::Key | LineShape::Value { .. } => {
-            let key = match &cursor.shape {
-                LineShape::Value { key, .. } => key.clone(),
-                _ => current_key(text, pos)?,
-            };
-            describe_field(schema, cursor.section.as_deref().unwrap_or(""), &key)?
-        }
-        LineShape::Empty | LineShape::Comment => return None,
+    let cursor = Document::parse(text).at(index.offset(text, pos));
+    let section = cursor.section.unwrap_or_default();
+    let (title, body) = match cursor.place {
+        Place::Header(keys) => describe_section(schema, &names(&keys))?,
+        Place::Key(keys) => describe_field(schema, &section, &names(&keys))?,
+        Place::Value { key, .. } => describe_field(schema, &section, &key)?,
+        Place::Empty | Place::Comment => return None,
     };
     Some(Hover {
         contents: HoverContents::Markup(markdown(&title, &body)),
@@ -149,27 +35,31 @@ pub(super) fn hover(
     })
 }
 
-/// The bare key token on the cursor's line (text before `=`, or the first word).
-fn current_key(text: &str, pos: Position) -> Option<String> {
-    let line = text.lines().nth(pos.line as usize)?;
-    let lhs = line.split('=').next().unwrap_or(line).trim();
-    let key = lhs.split_whitespace().next()?;
-    (!key.is_empty()).then(|| key.to_string())
+fn names(keys: &[Key]) -> Vec<String> {
+    keys.iter().map(|key| key.name.clone()).collect()
 }
 
 /// Hover/title for a `[section]` header.
-fn describe_section(schema: &SchemaIndex, path: &str) -> Option<(String, String)> {
+fn describe_section(schema: &SchemaIndex, path: &[String]) -> Option<(String, String)> {
     let table = schema.table(path)?;
-    Some((format!("[{path}]"), table.description.unwrap_or_default()))
+    Some((
+        format!("[{}]", KeyPath(path.to_vec())),
+        table.description.unwrap_or_default(),
+    ))
 }
 
-/// Hover/title for a `key` (possibly dotted) within `section`.
-fn describe_field(schema: &SchemaIndex, section: &str, key: &str) -> Option<(String, String)> {
+/// Hover/title for `key` within `section`.
+fn describe_field(
+    schema: &SchemaIndex,
+    section: &[String],
+    key: &[String],
+) -> Option<(String, String)> {
     let (table, field) = field_of(schema, section, key)?;
+    let key_text = KeyPath(key.to_vec()).to_string();
     let title = if section.is_empty() {
-        key.to_owned()
+        key_text
     } else {
-        format!("[{section}].{key}")
+        format!("[{}].{key_text}", KeyPath(section.to_vec()))
     };
     Some((
         title,
@@ -181,16 +71,14 @@ fn describe_field(schema: &SchemaIndex, section: &str, key: &str) -> Option<(Str
     ))
 }
 
-/// The table holding the last segment of a dotted `key` in `section`, and that
-/// segment.
-fn field_of(schema: &SchemaIndex, section: &str, key: &str) -> Option<(TableDoc, String)> {
-    let (prefix, field) = key.rsplit_once('.').unwrap_or(("", key));
-    let path = [section, prefix]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(".");
-    Some((schema.table(&path)?, field.trim().to_owned()))
+/// The table holding the last key of `key` in `section`, and that key.
+fn field_of(
+    schema: &SchemaIndex,
+    section: &[String],
+    key: &[String],
+) -> Option<(TableDoc, String)> {
+    let (field, prefix) = key.split_last()?;
+    Some((schema.table(&[section, prefix].concat())?, field.clone()))
 }
 
 /// Completion candidates for the cursor. `project_dir` anchors project-task
@@ -204,65 +92,51 @@ pub(super) fn completion(
     project_dir: Option<&Path>,
     snippets: bool,
 ) -> Vec<CompletionItem> {
-    let cursor = analyze(index, text, pos);
-    let section = cursor.section.as_deref().unwrap_or("");
-    match cursor.shape {
-        LineShape::Header(partial) => header_items(schema, &partial, project_dir, false),
-        LineShape::Value { key, in_string } => value_items(schema, section, &key, in_string),
-        LineShape::Key => key_items(index, schema, section, text, pos, project_dir, snippets),
-        LineShape::Empty if cursor.section.is_none() => {
-            let mut items = field_items(schema, "", None, snippets);
-            items.extend(header_items(schema, "", project_dir, true));
+    let offset = index.offset(text, pos);
+    let cursor = Document::parse(text).at(offset);
+    let section = cursor.section.clone().unwrap_or_default();
+    let before = |keys: Vec<Key>| -> Vec<Key> {
+        keys.into_iter()
+            .filter(|key| key.span.start <= offset)
+            .collect()
+    };
+    match cursor.place {
+        Place::Header(keys) => header_items(schema, &before(keys), project_dir, false),
+        Place::Value { key, in_string } => value_items(schema, &section, &key, in_string),
+        Place::Key(keys) => {
+            let keys = before(keys);
+            let replace = keys
+                .last()
+                .map(|key| index.range(text, key.span.start, offset));
+            let parent = names(keys.split_last().map_or(&[][..], |(_, parent)| parent));
+            entry_items(
+                schema,
+                &[section, parent].concat(),
+                replace,
+                project_dir,
+                snippets,
+            )
+        }
+        Place::Empty if cursor.section.is_none() => {
+            let mut items = field_items(schema, &[], None, snippets);
+            items.extend(header_items(schema, &[], project_dir, true));
             items
         }
-        LineShape::Empty => entry_items(schema, section, None, project_dir, snippets),
-        LineShape::Comment => Vec::new(),
+        Place::Empty => entry_items(schema, &section, None, project_dir, snippets),
+        Place::Comment => Vec::new(),
     }
-}
-
-/// Completion on the key side of a line. A dotted key completes the fields of
-/// the table its path names; the typed token is replaced via an explicit text
-/// edit so a client can only ever substitute it, never append to it.
-fn key_items(
-    index: &LineIndex,
-    schema: &SchemaIndex,
-    section: &str,
-    text: &str,
-    pos: Position,
-    project_dir: Option<&Path>,
-    snippets: bool,
-) -> Vec<CompletionItem> {
-    let Some((token, range)) = key_token(index, text, pos) else {
-        return entry_items(schema, section, None, project_dir, snippets);
-    };
-    let Some((prefix, partial)) = token.rsplit_once('.') else {
-        return entry_items(schema, section, Some(range), project_dir, snippets);
-    };
-    let after_dot = lsp_types::Range {
-        start: Position {
-            line: range.end.line,
-            character: range.end.character - u32::try_from(partial.chars().count()).unwrap_or(0),
-        },
-        end: range.end,
-    };
-    let path = [section, prefix]
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(".");
-    entry_items(schema, &path, Some(after_dot), project_dir, snippets)
 }
 
 /// The keys a table takes: its declared fields, or for `[tasks]` the project's
 /// own task names.
 fn entry_items(
     schema: &SchemaIndex,
-    path: &str,
+    path: &[String],
     replace: Option<lsp_types::Range>,
     project_dir: Option<&Path>,
     snippets: bool,
 ) -> Vec<CompletionItem> {
-    if path == "tasks" {
+    if path == ["tasks"] {
         return task_names(project_dir)
             .into_iter()
             .map(|(name, source, description)| {
@@ -324,76 +198,41 @@ fn edit_item(
     }
 }
 
-/// Render a task name as a TOML key: bare when possible, quoted otherwise
-/// (e.g. `build:web` → `"build:web"`).
-fn toml_key(name: &str) -> String {
-    let bare = !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-    if bare {
-        name.to_string()
-    } else {
-        format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
-    }
-}
-
-/// The whitespace-delimited token immediately before the cursor and its
-/// range, when non-empty.
-fn key_token(index: &LineIndex, text: &str, pos: Position) -> Option<(String, lsp_types::Range)> {
-    let line_text = text.lines().nth(pos.line as usize)?;
-    let line_start = index.offset(text, Position::new(pos.line, 0));
-    let within = index
-        .offset(text, pos)
-        .saturating_sub(line_start)
-        .min(line_text.len());
-    let before = line_text.get(..within)?;
-    let token_start = before.rfind(char::is_whitespace).map_or(0, |i| {
-        i + before[i..].chars().next().map_or(1, char::len_utf8)
-    });
-    let token = &before[token_start..];
-    if token.is_empty() {
-        return None;
-    }
-    Some((
-        token.to_string(),
-        index.range(text, line_start + token_start, line_start + within),
-    ))
-}
-
-/// Header-path completion. A dotted partial (`[output.`) completes only the
-/// parent's sub-tables as their child name, and `[tasks.` the project's task
-/// names; an undotted one completes every header path the schema declares.
+/// Header completion over the `keys` written before the cursor. Past a dot it
+/// offers the parent's sub-tables, or for `[tasks.` the project's task names;
+/// otherwise every header path the schema declares.
 fn header_items(
     schema: &SchemaIndex,
-    partial: &str,
+    keys: &[Key],
     project_dir: Option<&Path>,
     bracketed: bool,
 ) -> Vec<CompletionItem> {
-    let Some((parent, _)) = partial.rsplit_once('.') else {
+    let Some((_, parent)) = keys.split_last().filter(|(_, parent)| !parent.is_empty()) else {
         return schema
             .header_paths()
             .into_iter()
             .map(|path| {
+                let label = KeyPath(path.clone()).to_string();
                 let insert = if bracketed {
-                    format!("[{path}]")
+                    format!("[{label}]")
                 } else {
-                    path.clone()
+                    label.clone()
                 };
-                section_item(schema, &path, path.clone(), insert)
+                section_item(schema, &path, label, insert)
             })
             .collect();
     };
-    if parent == "tasks" {
+    let parent = names(parent);
+    if parent == ["tasks"] {
         return task_names(project_dir)
             .into_iter()
             .map(|(name, _, _)| {
                 let key = toml_key(&name);
-                section_item(schema, "tasks", name, key)
+                section_item(schema, &parent, name, key)
             })
             .collect();
     }
-    let Some(table) = schema.table(parent) else {
+    let Some(table) = schema.table(&parent) else {
         return Vec::new();
     };
     table
@@ -403,16 +242,21 @@ fn header_items(
         .map(|(name, _)| {
             section_item(
                 schema,
-                &format!("{parent}.{name}"),
+                &[parent.clone(), vec![name.clone()]].concat(),
                 name.clone(),
-                name.clone(),
+                toml_key(name),
             )
         })
         .collect()
 }
 
 /// A section completion item labeled `label`, documented from `path`.
-fn section_item(schema: &SchemaIndex, path: &str, label: String, insert: String) -> CompletionItem {
+fn section_item(
+    schema: &SchemaIndex,
+    path: &[String],
+    label: String,
+    insert: String,
+) -> CompletionItem {
     let doc = describe_section(schema, path)
         .map(|(_, body)| body)
         .filter(|body| !body.is_empty())
@@ -429,7 +273,7 @@ fn section_item(schema: &SchemaIndex, path: &str, label: String, insert: String)
 /// Field-name completion for the table at `path`.
 fn field_items(
     schema: &SchemaIndex,
-    path: &str,
+    path: &[String],
     replace: Option<lsp_types::Range>,
     snippets: bool,
 ) -> Vec<CompletionItem> {
@@ -463,11 +307,12 @@ fn field_insert(
     field: &FieldDoc,
     snippets: bool,
 ) -> (String, Option<InsertTextFormat>) {
+    let key = toml_key(name);
     if field.field_type == FieldType::Table {
-        return (format!("{name}."), None);
+        return (format!("{key}."), None);
     }
     if !snippets {
-        return (format!("{name} = "), None);
+        return (format!("{key} = "), None);
     }
     let scaffold = if field.field_type == FieldType::String {
         "\"$0\""
@@ -475,7 +320,7 @@ fn field_insert(
         "$0"
     };
     (
-        format!("{name} = {scaffold}"),
+        format!("{key} = {scaffold}"),
         Some(InsertTextFormat::SNIPPET),
     )
 }
@@ -483,8 +328,8 @@ fn field_insert(
 /// Value completion for `key` in `section`: the values the schema lists.
 fn value_items(
     schema: &SchemaIndex,
-    section: &str,
-    key: &str,
+    section: &[String],
+    key: &[String],
     in_string: bool,
 ) -> Vec<CompletionItem> {
     let Some((table, field)) = field_of(schema, section, key) else {
@@ -588,6 +433,39 @@ mod tests {
             panic!("expected a hover");
         };
         assert!(markup.value.contains("JavaScript"), "{}", markup.value);
+    }
+
+    #[test]
+    fn a_quoted_task_key_with_dots_resolves_its_tables() {
+        for text in [
+            "[tasks.\"package.json:build\".runtime]\njavascript = \"bun\"\n",
+            "[tasks.'package.json:build'.runtime]\njavascript = \"bun\"\n",
+            "[tasks.\"v1.2\"]\nruntime.javascript = \"bun\"\n",
+        ] {
+            let result = hover(
+                &LineIndex::new(text),
+                &SchemaIndex::build(),
+                text,
+                Position::new(1, 3),
+            );
+            let Some(lsp_types::Hover {
+                contents: lsp_types::HoverContents::Markup(markup),
+                ..
+            }) = result
+            else {
+                panic!("expected a hover for {text:?}");
+            };
+            assert!(markup.value.contains("JavaScript"), "{}", markup.value);
+        }
+        let items = complete(
+            "[tasks.\"package.json:build\"]\nruntime.javascript = \n",
+            1,
+            21,
+            false,
+        );
+        assert!(labels(&items).contains(&"deno"), "{:?}", labels(&items));
+        let items = complete("[tasks.\"package.json:build\".\n", 0, 28, false);
+        assert!(labels(&items).contains(&"runtime"), "{:?}", labels(&items));
     }
 
     #[test]

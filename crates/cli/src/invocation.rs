@@ -38,13 +38,14 @@ pub(crate) enum Origin {
 /// keyed by argument id, the innermost subcommand's winning.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Origins {
-    origins: HashMap<String, Origin>,
+    by_id: HashMap<String, Origin>,
     last: HashMap<String, usize>,
+    shadowed: HashMap<String, OsString>,
 }
 
 impl Origins {
     pub(crate) fn of(&self, id: &str) -> Option<Origin> {
-        self.origins.get(id).copied()
+        self.by_id.get(id).copied()
     }
 
     pub(crate) fn is_cli(&self, id: &str) -> bool {
@@ -65,6 +66,11 @@ impl Origins {
         self.given(id, value)
     }
 
+    /// The value `id`'s variable holds when the command line also set `id`.
+    pub(crate) fn shadowed(&self, id: &str) -> Option<&OsStr> {
+        self.shadowed.get(id).map(OsString::as_os_str)
+    }
+
     /// Whether `--no-<id>` is the last of the pair the command line gave.
     pub(crate) fn negated(&self, id: &str) -> bool {
         let negation = format!("no_{id}");
@@ -78,13 +84,20 @@ impl Origins {
             let id = arg.get_id().as_str();
             match matches.value_source(id) {
                 Some(ValueSource::CommandLine) => {
-                    self.origins.insert(id.to_owned(), Origin::Cli);
+                    self.by_id.insert(id.to_owned(), Origin::Cli);
                     if let Some(last) = matches.indices_of(id).and_then(Iterator::max) {
                         self.last.insert(id.to_owned(), last);
                     }
+                    if let Some(raw) = arg
+                        .get_env()
+                        .and_then(std::env::var_os)
+                        .filter(|raw| !raw.is_empty())
+                    {
+                        self.shadowed.insert(id.to_owned(), raw);
+                    }
                 }
                 Some(ValueSource::EnvVariable) => {
-                    self.origins.insert(id.to_owned(), Origin::Env);
+                    self.by_id.insert(id.to_owned(), Origin::Env);
                     self.last.remove(id);
                 }
                 _ => {}
@@ -317,9 +330,10 @@ pub(crate) fn parse<P: clap::FromArgMatches>(
     args: Vec<OsString>,
 ) -> Result<Parsed<P>, clap::Error> {
     let (mut command, env_issues) = detach_invalid(command);
-    let matches = command.try_get_matches_from_mut(args)?;
+    let mut matches = command.try_get_matches_from_mut(args.clone())?;
     let mut origins = Origins::default();
     origins.collect(&matches, &command);
+    let mut displaced = Vec::new();
     for group in EXCLUSIVE {
         let given: Vec<&&str> = group.iter().filter(|id| origins.is_cli(id)).collect();
         if let [first, second, ..] = given.as_slice() {
@@ -332,6 +346,31 @@ pub(crate) fn parse<P: clap::FromArgMatches>(
                 ),
             ));
         }
+        let from_env: Vec<&&str> = group
+            .iter()
+            .filter(|id| origins.of(id) == Some(Origin::Env))
+            .collect();
+        if given.is_empty() {
+            let set: Vec<&&&str> = from_env.iter().filter(|id| is_set(&matches, id)).collect();
+            if let [first, second, ..] = set.as_slice() {
+                return Err(command.error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    format!(
+                        "{} cannot be used with {}",
+                        env_name(&command, first),
+                        env_name(&command, second)
+                    ),
+                ));
+            }
+        } else {
+            displaced.extend(from_env.into_iter().map(|id| (*id).to_owned()));
+        }
+    }
+    if !displaced.is_empty() {
+        command = detach_ids(command, &displaced);
+        matches = command.try_get_matches_from_mut(args)?;
+        origins = Origins::default();
+        origins.collect(&matches, &command);
     }
     if let Some((first, second)) = contradiction(&matches, &origins) {
         return Err(command.error(
@@ -390,6 +429,45 @@ fn cli_value(matches: &ArgMatches, id: &str) -> Option<String> {
             .flatten()
             .map(|raw| raw.to_string_lossy().into_owned())
     })
+}
+
+/// `command` with the variables of the arguments `ids` detached, throughout
+/// its tree.
+fn detach_ids(command: Command, ids: &[String]) -> Command {
+    let mut command = command.mut_args(|arg| {
+        if ids.iter().any(|id| id == arg.get_id().as_str()) {
+            arg.env(None)
+        } else {
+            arg
+        }
+    });
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .collect();
+    for name in names {
+        command = command.mut_subcommand(name, |sub| detach_ids(sub, ids));
+    }
+    command
+}
+
+/// Whether the switch `id` is on at any level of `matches`.
+fn is_set(matches: &ArgMatches, id: &str) -> bool {
+    matches.try_get_one::<bool>(id).ok().flatten() == Some(&true)
+        || matches.subcommand().is_some_and(|(_, sub)| is_set(sub, id))
+}
+
+/// The variable the argument `id` reads, anywhere in `command`'s tree.
+fn env_name(command: &Command, id: &str) -> String {
+    fn find<'a>(command: &'a Command, id: &str) -> Option<&'a Arg> {
+        command
+            .get_arguments()
+            .find(|arg| arg.get_id().as_str() == id && arg.get_env().is_some())
+            .or_else(|| command.get_subcommands().find_map(|sub| find(sub, id)))
+    }
+    find(command, id)
+        .and_then(Arg::get_env)
+        .map_or_else(|| id.to_owned(), |var| var.to_string_lossy().into_owned())
 }
 
 /// `--long` for the argument `id` anywhere in `command`'s tree.
@@ -462,7 +540,17 @@ pub(crate) fn settings(
         download,
         on_fail,
         dry_run: global.dry_run,
-        quiet: origins.given("quiet", global.quiet),
+        quiet: origins
+            .given("quiet", global.quiet)
+            .into_iter()
+            .chain(
+                origins
+                    .shadowed("quiet")
+                    .and_then(OsStr::to_str)
+                    .and_then(|raw| raw.parse().ok())
+                    .map(|count| (count, Origin::Env)),
+            )
+            .collect(),
         warnings: origins.switch(
             "warnings",
             global.diagnostics.warnings,

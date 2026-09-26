@@ -44,27 +44,21 @@ pub(crate) fn print_human(human: &Human<'_>) {
 fn print_detected(report: &Value) {
     let detected = &report["detected"];
     print_section("Detected", |out| {
-        let pms = detected["package_managers"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
+        let pms = detected["package_managers"].as_array().map_or_default(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
         if !pms.is_empty() {
             writeln_field(out, "package managers", &pms);
         }
-        let trs = detected["task_runners"]
-            .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
+        let trs = detected["task_runners"].as_array().map_or_default(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        });
         if !trs.is_empty() {
             writeln_field(out, "task runners", &trs);
         }
@@ -201,19 +195,16 @@ fn write_install_plan(out: &mut String, plan: &InstallPlan) {
 
 fn print_warnings(human: &Human<'_>) {
     let Human { report, health, .. } = *human;
-    let mut warnings: Vec<(String, String)> = report["warnings"]
-        .as_array()
-        .map(|ws| {
-            ws.iter()
-                .map(|w| {
-                    (
-                        w["source"].as_str().unwrap_or("?").to_string(),
-                        w["detail"].as_str().unwrap_or("?").to_string(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut warnings: Vec<(String, String)> = report["warnings"].as_array().map_or_default(|ws| {
+        ws.iter()
+            .map(|w| {
+                (
+                    w["source"].as_str().unwrap_or("?").to_string(),
+                    w["detail"].as_str().unwrap_or("?").to_string(),
+                )
+            })
+            .collect()
+    });
     warnings.extend(health.iter().map(|issue| {
         (
             issue.source.unwrap_or("health").to_string(),

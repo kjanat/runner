@@ -671,9 +671,7 @@ fn resolution_policy() -> ResolutionPolicy {
 fn invocation() -> Invocation {
     Invocation {
         argv: std::env::args().collect(),
-        cwd: std::env::current_dir()
-            .map(|d| d.display().to_string())
-            .unwrap_or_default(),
+        cwd: std::env::current_dir().map_or_default(|d| d.display().to_string()),
         started_at: rfc3339_utc_now(),
     }
 }
@@ -682,13 +680,11 @@ fn environment() -> Environment {
     Environment {
         arch: std::env::consts::ARCH,
         os: std::env::consts::OS,
-        path_entries: std::env::var_os("PATH")
-            .map(|path| {
-                std::env::split_paths(&path)
-                    .map(|entry| entry.display().to_string())
-                    .collect()
-            })
-            .unwrap_or_default(),
+        path_entries: std::env::var_os("PATH").map_or_default(|path| {
+            std::env::split_paths(&path)
+                .map(|entry| entry.display().to_string())
+                .collect()
+        }),
         shell: std::env::var("SHELL").ok(),
     }
 }
@@ -1265,8 +1261,7 @@ fn diagnostic(warning: &DetectionWarning) -> Diagnostic {
 fn rfc3339_utc_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_secs());
     rfc3339_utc(secs)
 }
 

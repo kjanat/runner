@@ -48,17 +48,16 @@ impl SchemaIndex {
         }
     }
 
-    /// The table a dotted header path names: `output.task`, `tasks.build`,
-    /// `tasks.build.runtime`. User-named segments go through a map's entry
-    /// schema.
-    pub(super) fn table(&self, path: &str) -> Option<TableDoc> {
+    /// The table `path` names: `["output", "task"]`, `["tasks", "build"]`,
+    /// `["tasks", "build", "runtime"]`. User-named keys go through a map's
+    /// entry schema.
+    pub(super) fn table<S: AsRef<str>>(&self, path: &[S]) -> Option<TableDoc> {
         let mut node = self.resolve(self.root);
         let mut description = None;
-        for segment in path.split('.').filter(|segment| !segment.is_empty()) {
-            let segment = segment.trim().trim_matches('"');
+        for key in path {
             let field = node
                 .get("properties")
-                .and_then(|properties| properties.get(segment))
+                .and_then(|properties| properties.get(key.as_ref()))
                 .or_else(|| node.get("additionalProperties").filter(|v| v.is_object()))?;
             description = string_field(field, "description");
             node = self.resolve(field);
@@ -66,13 +65,12 @@ impl SchemaIndex {
         let fields = node
             .get("properties")
             .and_then(Value::as_object)
-            .map(|properties| {
+            .map_or_default(|properties| {
                 properties
                     .iter()
                     .map(|(name, field)| (name.clone(), self.field(field)))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         Some(TableDoc {
             description: description.or_else(|| string_field(node, "description")),
             fields,
@@ -82,24 +80,20 @@ impl SchemaIndex {
     /// Every header path whose tables the schema declares, sorted: each table
     /// field of the root and of its nested tables. Map entries are the user's
     /// names and cannot be listed.
-    pub(super) fn header_paths(&self) -> Vec<String> {
+    pub(super) fn header_paths(&self) -> Vec<Vec<String>> {
         let mut paths = Vec::new();
-        self.collect_paths("", &mut paths);
+        self.collect_paths(&[], &mut paths);
         paths.sort();
         paths
     }
 
-    fn collect_paths(&self, prefix: &str, paths: &mut Vec<String>) {
+    fn collect_paths(&self, prefix: &[String], paths: &mut Vec<Vec<String>>) {
         let Some(table) = self.table(prefix) else {
             return;
         };
         for (name, field) in &table.fields {
             if field.field_type == FieldType::Table {
-                let path = if prefix.is_empty() {
-                    name.clone()
-                } else {
-                    format!("{prefix}.{name}")
-                };
+                let path = [prefix, std::slice::from_ref(name)].concat();
                 paths.push(path.clone());
                 self.collect_paths(&path, paths);
             }
@@ -204,26 +198,30 @@ mod tests {
     #[test]
     fn nested_and_map_tables_resolve() {
         let schema = SchemaIndex::build();
-        let task = schema.table("output.task").expect("output.task");
+        let task = schema.table(&["output", "task"]).expect("output.task");
         assert!(task.fields.contains_key("stderr"));
-        let build = schema.table("tasks.build").expect("a task entry");
+        let build = schema
+            .table(&["tasks", "package.json:build"])
+            .expect("a task entry");
         assert!(build.fields.contains_key("pm"));
-        let runtime = schema.table("tasks.build.runtime").expect("its runtime");
+        let runtime = schema
+            .table(&["tasks", "package.json:build", "runtime"])
+            .expect("its runtime");
         assert_eq!(runtime.fields["javascript"].field_type, FieldType::String);
-        assert!(schema.table("zoot").is_none());
+        assert!(schema.table(&["zoot"]).is_none());
     }
 
     #[test]
     fn values_come_from_enums_consts_and_booleans() {
         let schema = SchemaIndex::build();
-        let root = schema.table("").expect("root");
+        let root = schema.table::<&str>(&[]).expect("root");
         let download: Vec<&str> = root.fields["download"]
             .values
             .iter()
             .map(|(value, _)| value.as_str())
             .collect();
         assert_eq!(download, ["true", "false", "ask"]);
-        let chain = schema.table("chain").expect("chain");
+        let chain = schema.table(&["chain"]).expect("chain");
         let actions: Vec<&str> = chain.fields["on_fail"]
             .values
             .iter()
@@ -231,7 +229,7 @@ mod tests {
             .collect();
         assert_eq!(actions, ["continue", "wait", "kill"]);
         assert_eq!(
-            schema.table("install").unwrap().fields["frozen"].field_type,
+            schema.table(&["install"]).unwrap().fields["frozen"].field_type,
             FieldType::Bool
         );
     }
@@ -247,7 +245,7 @@ mod tests {
             "tasks",
         ] {
             assert!(
-                paths.iter().any(|path| path == expected),
+                paths.iter().any(|path| path.join(".") == expected),
                 "{expected}: {paths:?}"
             );
         }

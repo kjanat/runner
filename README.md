@@ -285,7 +285,8 @@ arguments, and any fallback.
 The preset expands at its own layer and sets only what its row names. `-q`
 with `[output] warnings = false` hides both progress and warnings, `-qq
 --warnings` shows warnings again, and `-q` leaves a task's `[output.tool] quiet`
-alone because `-q` does not touch the tool.
+alone because `-q` does not touch the tool. `RUNNER_QUIET=2` with `-q` hides
+warnings and quiets the tool, since the variable's preset sets both.
 
 Tool flags are adapter-specific, never inferred from similar names. See the
 [host quiet support matrix](docs/host-quiet-support-matrix.md) for exact flags,

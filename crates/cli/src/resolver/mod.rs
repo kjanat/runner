@@ -7,7 +7,7 @@ pub(crate) mod probe;
 mod types;
 
 pub(crate) use error::ResolveError;
-pub(crate) use overrides::{Invocation, validate_config};
+pub(crate) use overrides::{Invocation, config_issues, validate_config};
 pub(crate) use probe::probe_in as probe_path_for_doctor;
 #[cfg(test)]
 pub(crate) use types::{

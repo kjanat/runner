@@ -1,17 +1,18 @@
 //! Diagnostics for a `runner.toml` buffer.
 //!
 //! Runs exactly the checks `runner config validate` runs, TOML parse, unknown
-//! keys, the deprecation nudges, and the resolver's field/policy validation,
-//! against in-memory text, mapping each finding to an editor range. The
-//! validation logic itself is reused verbatim from [`crate::config`] and
-//! [`crate::resolver`]; only the range-anchoring is LSP-specific.
+//! keys, and the resolver's value validation, against in-memory text, mapping
+//! each finding to the range of the key it names. The validation logic itself
+//! is reused verbatim from [`crate::config`] and [`crate::resolver`]; only the
+//! range-anchoring is LSP-specific.
 
 use std::path::PathBuf;
 
 use lsp_types::{Diagnostic, DiagnosticSeverity, Range};
 
-use super::text::{LineIndex, find_header_range, find_key_range};
-use crate::config::{self, LoadedConfig, RunnerConfig};
+use super::syntax::Document;
+use super::text::LineIndex;
+use crate::config::{self, KeyPath, LoadedConfig, RunnerConfig};
 use crate::types::DetectionWarning;
 
 /// The `source` field stamped on every diagnostic this server emits.
@@ -25,10 +26,23 @@ pub(super) fn compute(text: &str, index: &LineIndex) -> Vec<Diagnostic> {
         Ok(value) => value,
         Err(error) => return vec![parse_error(text, index, &error)],
     };
+    let document = Document::parse(text);
+    let at = |path: &KeyPath| {
+        document.span_of(path.keys()).map_or_else(
+            || index.line_range(text, 0),
+            |span| index.range(text, span.start, span.end),
+        )
+    };
 
     let mut out = Vec::new();
     for warning in config::collect_unknown_keys(&value) {
-        out.push(warning_diagnostic(text, index, &warning));
+        if let DetectionWarning::UnknownConfigKey { path } = &warning {
+            out.push(diagnostic(
+                at(path),
+                DiagnosticSeverity::WARNING,
+                warning.detail(),
+            ));
+        }
     }
 
     // Deserialize from the text, not the parsed `value`: the text-based
@@ -43,15 +57,18 @@ pub(super) fn compute(text: &str, index: &LineIndex) -> Vec<Diagnostic> {
     };
 
     let loaded = LoadedConfig {
-        path: PathBuf::from("runner.toml"),
+        path: PathBuf::from(config::CONFIG_FILENAME),
         config,
         warnings: Vec::new(),
     };
-    if let Err(error) = crate::resolver::validate_config(&loaded) {
-        let message = format!("{error:#}");
-        let range =
-            anchor_from_message(text, index, &message).unwrap_or_else(|| index.line_range(text, 0));
-        out.push(error_diagnostic(range, message));
+    for issue in crate::resolver::config_issues(&loaded) {
+        if let DetectionWarning::InvalidConfigValue { key, message, .. } = &issue {
+            out.push(diagnostic(
+                at(key),
+                DiagnosticSeverity::ERROR,
+                format!("{key}: {message}"),
+            ));
+        }
     }
 
     out
@@ -64,56 +81,21 @@ fn parse_error(text: &str, index: &LineIndex, error: &toml::de::Error) -> Diagno
         || index.line_range(text, 0),
         |span| index.range(text, span.start, span.end),
     );
-    error_diagnostic(range, error.message().to_string())
+    diagnostic(
+        range,
+        DiagnosticSeverity::ERROR,
+        error.message().to_string(),
+    )
 }
 
-/// Build a `WARNING`-severity diagnostic for an unknown key, anchored at the
-/// offending key or section.
-fn warning_diagnostic(text: &str, index: &LineIndex, warning: &DetectionWarning) -> Diagnostic {
-    let path = match warning {
-        DetectionWarning::UnknownConfigKey { path } => path.as_str(),
-        _ => warning.source(),
-    };
-    let range = range_for_path(text, index, path).unwrap_or_else(|| index.line_range(text, 0));
+fn diagnostic(range: Range, severity: DiagnosticSeverity, message: String) -> Diagnostic {
     Diagnostic {
         range,
-        severity: Some(DiagnosticSeverity::WARNING),
-        source: Some(SOURCE.to_string()),
-        message: warning.detail(),
-        ..Diagnostic::default()
-    }
-}
-
-/// An `ERROR`-severity diagnostic at `range`.
-fn error_diagnostic(range: Range, message: String) -> Diagnostic {
-    Diagnostic {
-        range,
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity: Some(severity),
         source: Some(SOURCE.to_string()),
         message,
         ..Diagnostic::default()
     }
-}
-
-/// Resolve a dotted key path to its buffer range: the key under its table's
-/// header, else the header itself.
-fn range_for_path(text: &str, index: &LineIndex, path: &str) -> Option<Range> {
-    match path.rsplit_once('.') {
-        Some((section, field)) => find_key_range(index, text, Some(section), field)
-            .or_else(|| find_header_range(index, text, path))
-            .or_else(|| find_header_range(index, text, section)),
-        None => {
-            find_header_range(index, text, path).or_else(|| find_key_range(index, text, None, path))
-        }
-    }
-}
-
-/// Anchor for a resolver error, whose message starts with the dotted key it
-/// rejects: `runner.toml tasks.build.pm: …`.
-fn anchor_from_message(text: &str, index: &LineIndex, message: &str) -> Option<Range> {
-    let rest = message.strip_prefix("runner.toml ").unwrap_or(message);
-    let (path, _) = rest.split_once(':')?;
-    range_for_path(text, index, path.trim())
 }
 
 #[cfg(test)]
@@ -160,6 +142,21 @@ mod tests {
             .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
             .expect("an error diagnostic");
         assert!(diag.message.contains("unknown package manager"), "{diag:?}");
+        assert_eq!(diag.range.start.line, 1, "{diag:?}");
+    }
+
+    #[test]
+    fn a_quoted_task_key_anchors_its_error_to_its_line() {
+        let text = "[tasks.\"package.json:build\"]\npm = \"zoot\"\n";
+        let found = diagnostics(text);
+        let diag = found
+            .iter()
+            .find(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            .expect("an error diagnostic");
+        assert!(
+            diag.message.starts_with("tasks.\"package.json:build\".pm:"),
+            "{diag:?}"
+        );
         assert_eq!(diag.range.start.line, 1, "{diag:?}");
     }
 

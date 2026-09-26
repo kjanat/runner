@@ -144,7 +144,7 @@ pub(crate) struct ParentMarkers {
 impl ResolutionOverrides {
     /// The output for `task`, or for the invocation as a whole with `None`.
     pub(crate) fn output_for(&self, task: Option<&str>) -> Resolved {
-        let task = task.map(|key| self.task(key).output).unwrap_or_default();
+        let task = task.map_or_default(|key| self.task(key).output);
         self.output
             .invocation
             .over(task)

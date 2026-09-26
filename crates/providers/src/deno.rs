@@ -102,8 +102,7 @@ fn lockfiles(dir: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     };
     Ok(path
         .zip(config.parent())
-        .map(|(path, base)| vec![base.join(path)])
-        .unwrap_or_default())
+        .map_or_default(|(path, base)| vec![base.join(path)]))
 }
 
 /// Deno.

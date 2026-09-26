@@ -169,8 +169,9 @@ fn quiet_level_for_error(cli_count: u8) -> tool::QuietLevel {
     std::env::var("RUNNER_QUIET")
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .map(|count| tool::QuietLevel::from_count(u8::try_from(count).unwrap_or(u8::MAX)))
-        .unwrap_or_default()
+        .map_or_default(|count| {
+            tool::QuietLevel::from_count(u8::try_from(count).unwrap_or(u8::MAX))
+        })
 }
 
 fn quiet_level_from_args<I, T>(args: I, task_position: args::TaskPosition) -> tool::QuietLevel
@@ -1212,7 +1213,7 @@ fn load_config(
         Err(error) if matches!(command, Some(args::Command::Doctor { .. })) => Ok((
             None,
             vec![types::DetectionWarning::InvalidConfigValue {
-                key: config::CONFIG_FILENAME.to_owned(),
+                key: config::KeyPath::default(),
                 raw: String::new(),
                 message: format!("{error:#}"),
             }],

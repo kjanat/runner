@@ -106,14 +106,13 @@ fn mise_bin_paths() -> Vec<PathBuf> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| {
+        .map_or_default(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
                 .map(|line| PathBuf::from(line.trim()))
                 .filter(|p| p.is_dir())
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// `PATH` for a spawned dispatch: the `run` binary's own dir first (so a nested
@@ -605,4 +604,56 @@ fn runtime_node_warns_about_the_lifecycle_scripts_it_skips() {
             String::from_utf8_lossy(&quiet.stderr),
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_task_table_runtime_found_only_on_path_runs_that_task_alone() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let project = TempProject::new("task-runtime-path")
+        .file(
+            "package.json",
+            r#"{ "scripts": { "build": "true", "lint": "true" } }"#,
+        )
+        .file("package-lock.json", "{}\n")
+        .file(
+            "runner.toml",
+            "[tasks.build.runtime]\njavascript = \"bun\"\n",
+        )
+        .file("bin/npm", "#!/bin/sh\necho 10.0.0\n")
+        .file("bin/bun", "#!/bin/sh\necho 1.2.0\n");
+    let bin = project.path().join("bin");
+    for tool in ["npm", "bun"] {
+        std::fs::set_permissions(bin.join(tool), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x");
+    }
+    let dry_run = |task: &str| {
+        let mut cmd = Command::new(run_binary());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("RUNNER_") {
+                cmd.env_remove(&key);
+            }
+        }
+        cmd.env("PATH", &bin)
+            .arg("--dir")
+            .arg(project.path())
+            .args(["--dry-run", task])
+            .output()
+            .expect("run should execute")
+    };
+    let build = dry_run("build");
+    let stderr = String::from_utf8_lossy(&build.stderr);
+    assert!(build.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains(r#"argv: ["bun", "--bun", "run", "build"]"#),
+        "stderr: {stderr}"
+    );
+    let lint = dry_run("lint");
+    let stderr = String::from_utf8_lossy(&lint.stderr);
+    assert!(lint.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains(r#"argv: ["npm", "run", "lint"]"#),
+        "stderr: {stderr}"
+    );
 }

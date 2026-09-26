@@ -28,7 +28,8 @@ pub(crate) struct Invocation {
     pub download: Option<(Download, Origin)>,
     pub on_fail: Option<(FailurePolicy, Origin)>,
     pub dry_run: bool,
-    pub quiet: Option<(u8, Origin)>,
+    /// The `-q` preset each layer gave, strongest first.
+    pub quiet: Vec<(u8, Origin)>,
     pub warnings: Option<(bool, Origin)>,
     pub frozen: Option<(bool, Origin)>,
     pub scripts: Option<(bool, Origin)>,
@@ -79,7 +80,7 @@ impl ResolutionOverrides {
             .and_then(|raw| {
                 label(
                     &mut issues,
-                    "runtime.javascript".into(),
+                    ["runtime", "javascript"].into(),
                     raw,
                     crate::provider::parse_js_runtime,
                 )
@@ -87,7 +88,8 @@ impl ResolutionOverrides {
         let tasks = file.map_or_else(Default::default, |file| task_choices(file, &mut issues));
         let quiet_level = invocation
             .quiet
-            .map_or(QuietLevel::Off, |(count, _)| QuietLevel::from_count(count));
+            .first()
+            .map_or(QuietLevel::Off, |(count, _)| QuietLevel::from_count(*count));
         let install = file.map(|file| &file.install);
         let frozen = invocation
             .frozen
@@ -161,7 +163,7 @@ impl ResolutionOverrides {
 /// `raw` parsed by `parse`, or `None` with the failure recorded against `key`.
 fn label(
     issues: &mut Vec<DetectionWarning>,
-    key: String,
+    key: crate::config::KeyPath,
     raw: &str,
     parse: fn(&str) -> Result<ProviderId, String>,
 ) -> Option<ProviderId> {
@@ -188,7 +190,7 @@ fn task_choices(
                 source: settings.source.as_deref().and_then(|raw| {
                     label(
                         issues,
-                        format!("tasks.{name}.source"),
+                        ["tasks", name, "source"].into(),
                         raw,
                         crate::provider::parse_task_source,
                     )
@@ -196,7 +198,7 @@ fn task_choices(
                 pm: settings.pm.as_deref().and_then(|raw| {
                     label(
                         issues,
-                        format!("tasks.{name}.pm"),
+                        ["tasks", name, "pm"].into(),
                         raw,
                         crate::provider::parse_package_manager,
                     )
@@ -204,7 +206,7 @@ fn task_choices(
                 runtime: settings.runtime.javascript.as_deref().and_then(|raw| {
                     label(
                         issues,
-                        format!("tasks.{name}.runtime.javascript"),
+                        ["tasks", name, "runtime", "javascript"].into(),
                         raw,
                         crate::provider::parse_js_runtime,
                     )
@@ -267,9 +269,10 @@ fn invocation_output(invocation: &Invocation, layer: Origin) -> OutputChoice {
     let at = |value: Option<(bool, Origin)>| value.filter(|(_, origin)| *origin == layer);
     let preset = invocation
         .quiet
-        .filter(|(_, origin)| *origin == layer)
+        .iter()
+        .find(|(_, origin)| *origin == layer)
         .map_or_else(OutputChoice::default, |(count, _)| {
-            OutputChoice::preset(QuietLevel::from_count(count))
+            OutputChoice::preset(QuietLevel::from_count(*count))
         });
     preset.with_some(
         RunnerOutput::Warnings,
@@ -292,6 +295,11 @@ fn task_output(output: &TaskOutput) -> OutputChoice {
 /// The first value that names no provider of its kind.
 pub(crate) fn validate_config(loaded: &LoadedConfig) -> Result<()> {
     ResolutionOverrides::resolve(&Invocation::default(), Some(loaded)).map(drop)
+}
+
+/// Every value in a loaded `runner.toml` that names no provider of its kind.
+pub(crate) fn config_issues(loaded: &LoadedConfig) -> Vec<DetectionWarning> {
+    ResolutionOverrides::resolve_lenient(&Invocation::default(), Some(loaded)).1
 }
 
 #[cfg(test)]
@@ -383,7 +391,7 @@ mod tests {
     fn a_quiet_preset_yields_to_an_explicit_flag_of_its_own_layer_only() {
         let resolved = resolve(
             &Invocation {
-                quiet: Some((2, Origin::Env)),
+                quiet: vec![(2, Origin::Env)],
                 warnings: Some((true, Origin::Env)),
                 ..Invocation::default()
             },
@@ -397,13 +405,44 @@ mod tests {
         );
         let cli_preset = resolve(
             &Invocation {
-                quiet: Some((2, Origin::Cli)),
+                quiet: vec![(2, Origin::Cli)],
                 warnings: Some((true, Origin::Env)),
                 ..Invocation::default()
             },
             "",
         );
         assert!(!cli_preset.shows_warnings());
+    }
+
+    #[test]
+    fn a_weaker_command_line_preset_keeps_what_only_the_environment_preset_sets() {
+        let both = resolve(
+            &Invocation {
+                quiet: vec![(1, Origin::Cli), (2, Origin::Env)],
+                ..Invocation::default()
+            },
+            "",
+        );
+        assert!(!both.shows_progress());
+        assert!(!both.shows_warnings());
+        assert_eq!(
+            both.host_verbosity_for("build").diagnostics,
+            HostDiagnostics::Quiet
+        );
+        let restored = resolve(
+            &Invocation {
+                quiet: vec![(1, Origin::Cli), (2, Origin::Env)],
+                warnings: Some((true, Origin::Cli)),
+                ..Invocation::default()
+            },
+            "",
+        );
+        assert!(restored.shows_warnings());
+        assert!(!restored.shows_progress());
+        assert_eq!(
+            restored.host_verbosity_for("build").diagnostics,
+            HostDiagnostics::Quiet
+        );
     }
 
     #[test]
@@ -457,7 +496,7 @@ mod tests {
             ResolutionOverrides::resolve_lenient(&Invocation::default(), Some(&loaded));
         assert!(matches!(
             issues.as_slice(),
-            [DetectionWarning::InvalidConfigValue { key, .. }] if key == "tasks.build.pm"
+            [DetectionWarning::InvalidConfigValue { key, .. }] if key.to_string() == "tasks.build.pm"
         ));
         assert_eq!(resolved.task("build").source, Some(ProviderId::Just));
         assert_eq!(resolved.task("build").pm, None);

@@ -371,14 +371,14 @@ fn object_schema(node: &'static serde_json::Value) -> &'static serde_json::Value
 /// the typed parse.
 pub(crate) fn collect_unknown_keys(value: &toml::Value) -> Vec<DetectionWarning> {
     let mut warnings = Vec::new();
-    walk(value, schema(), "", &mut warnings);
+    walk(value, schema(), &super::KeyPath::default(), &mut warnings);
     warnings
 }
 
 fn walk(
     value: &toml::Value,
     node: &'static serde_json::Value,
-    path: &str,
+    path: &super::KeyPath,
     warnings: &mut Vec<DetectionWarning>,
 ) {
     let Some(table) = value.as_table() else {
@@ -392,11 +392,7 @@ fn walk(
         .get("additionalProperties")
         .filter(|entries| entries.is_object());
     for (key, value) in table {
-        let at = if path.is_empty() {
-            key.clone()
-        } else {
-            format!("{path}.{key}")
-        };
+        let at = path.join(key.clone());
         if let Some(field) = properties.and_then(|properties| properties.get(key)) {
             walk(value, field, &at, warnings);
         } else if let Some(entry) = entries {
@@ -474,7 +470,7 @@ mod tests {
             .warnings
             .iter()
             .filter_map(|w| match w {
-                DetectionWarning::UnknownConfigKey { path } => Some(path.clone()),
+                DetectionWarning::UnknownConfigKey { path } => Some(path.to_string()),
                 _ => None,
             })
             .collect()

@@ -510,6 +510,23 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - A mise shim for Volta no longer marks every mise shim as a Volta shim in
   `doctor`, `info` and their JSON.
 
+- A command-line choice displaces its opposite from the environment:
+  `RUNNER_RUN_PARALLEL=1 runner run -s a b` runs in sequence and
+  `RUNNER_LIST_JSON=1 runner list --raw` prints names. Both of a pair set in
+  the environment is a usage error.
+
+- Under a `--source` choice a bare name the source does not supply is refused
+  instead of running a program from `PATH`. File paths, builtins and the
+  chosen runner's own entry point still run.
+
+- `RUNNER_QUIET` and `-q` each expand at their own layer, so
+  `RUNNER_QUIET=2 runner -q` still hides warnings and quiets the tool.
+
+- `runner lsp` reads `runner.toml` with the TOML parser, so hover, completion
+  and diagnostics work under quoted keys such as
+  `[tasks."package.json:build".runtime]`. Config warnings and errors print
+  such keys quoted.
+
 - A `packageManager` naming Deno dispatches `package.json` scripts through
   `deno task` when an npm lockfile or a `devEngines.packageManager` naming
   npm sits beside it.

@@ -201,8 +201,8 @@ pub(crate) enum DetectionWarning {
     /// A `runner.toml` value names no provider of its kind. `doctor` reports
     /// it and ignores the value; other commands refuse to run.
     InvalidConfigValue {
-        /// The dotted key.
-        key: String,
+        /// The key.
+        key: crate::config::KeyPath,
         /// The value.
         raw: String,
         /// Why it is invalid.
@@ -215,9 +215,9 @@ pub(crate) enum DetectionWarning {
     /// dispatch under another. Surfaced as a warning so genuine typos stay
     /// visible instead of vanishing silently.
     UnknownConfigKey {
-        /// Dotted path to the unrecognized key: `"github"` for an unknown
-        /// section, `"chain.fast"` for an unknown field within a known one.
-        path: String,
+        /// The unrecognized key: `github` for an unknown section,
+        /// `chain.fast` for an unknown field within a known one.
+        path: crate::config::KeyPath,
     },
     /// A runtime was chosen but
     /// the task that won selection dispatches through a tool with no JS
@@ -305,6 +305,10 @@ impl DetectionWarning {
                 "runtime {} was not applied: this dispatches through {source}, which selects no \
                  JS runtime",
                 runtime.label(),
+            ),
+            Self::InvalidConfigValue { key, message, .. } if key.keys().is_empty() => format!(
+                "{} is invalid and was ignored for this report: {message}",
+                crate::config::CONFIG_FILENAME
             ),
             Self::InvalidConfigValue { key, message, .. } => {
                 format!("{key} is invalid and was ignored for this report: {message}")
@@ -867,9 +871,9 @@ mod tests {
     fn detection_warning_can_be_hashed() {
         use std::collections::HashSet;
 
-        let a = DetectionWarning::UnknownConfigKey { path: "a".into() };
-        let b = DetectionWarning::UnknownConfigKey { path: "a".into() };
-        let c = DetectionWarning::UnknownConfigKey { path: "c".into() };
+        let a = DetectionWarning::UnknownConfigKey { path: ["a"].into() };
+        let b = DetectionWarning::UnknownConfigKey { path: ["a"].into() };
+        let c = DetectionWarning::UnknownConfigKey { path: ["c"].into() };
 
         let mut set = HashSet::new();
         set.insert(a);
