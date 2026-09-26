@@ -88,6 +88,38 @@ fn local_exec_precedes_a_fetching_manager() {
 }
 
 #[test]
+fn pnpm_exec_runs_under_a_local_fetch_policy() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Pnpm)],
+        ..Project::default()
+    };
+    let policy = Policy {
+        reach: ReachPolicy::Local,
+        ..Policy::default()
+    };
+    let cascade = Cascade {
+        tree: &fixture.0,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: None,
+        confirm: None,
+    };
+    let (rung, Dispatch::Plan(plan)) =
+        dispatch_from(&cascade, "test", "runner-audit-local-pnpm-target", &[]).unwrap()
+    else {
+        panic!("expected plan")
+    };
+    assert_eq!(rung.name, "local-exec");
+    assert_eq!(
+        plan.argv,
+        ["pnpm", "exec", "runner-audit-local-pnpm-target"].map(std::ffi::OsString::from)
+    );
+}
+
+#[test]
 fn discovered_binary_has_evidence_and_no_unrelated_tool_environment() {
     let fixture = Fixture::new();
     let found = fixture.0.root.join("binary");
@@ -861,6 +893,90 @@ fn named_task(source: ProviderId, name: &str) -> runner_core::Task {
         forwards_to: None,
         detail: runner_core::TaskDetail::default(),
     }
+}
+
+#[test]
+fn a_chosen_provider_selects_its_own_sources_in_its_order() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Deno)],
+        tasks: vec![
+            named_task(ProviderId::PackageJson, "check"),
+            named_task(ProviderId::Deno, "check"),
+        ],
+        ..Project::default()
+    };
+    let choice = runner_core::Choice {
+        id: ProviderId::Deno,
+        from: runner_core::Layer::Cli,
+    };
+    let mut by_pm = Policy::default();
+    by_pm
+        .pm
+        .0
+        .insert(runner_core::Ecosystem::Deno, choice.clone());
+    let by_runtime = Policy {
+        runtime: Some(choice),
+        ..Policy::default()
+    };
+    for policy in [&by_pm, &by_runtime] {
+        let cascade = Cascade {
+            tree: &fixture.0,
+            project: &project,
+            policy,
+            registry: &REGISTRY,
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        let selected = runner_core::select(&cascade, "check").unwrap().unwrap();
+        assert_eq!(selected.source, ProviderId::Deno, "{policy:?}");
+    }
+}
+
+#[test]
+fn a_configured_package_manager_keeps_per_task_pins() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Npm)],
+        tasks: vec![
+            named_task(ProviderId::PackageJson, "build"),
+            named_task(ProviderId::Just, "build"),
+        ],
+        ..Project::default()
+    };
+    let selected = |from: runner_core::Layer| {
+        let mut policy = Policy::default();
+        policy
+            .task_sources
+            .insert("build".into(), vec![ProviderId::Just]);
+        policy.pm.0.insert(
+            runner_core::Ecosystem::Node,
+            runner_core::Choice {
+                id: ProviderId::Npm,
+                from,
+            },
+        );
+        let cascade = Cascade {
+            tree: &fixture.0,
+            project: &project,
+            policy: &policy,
+            registry: &REGISTRY,
+            builtins: &[],
+            dep: None,
+            confirm: None,
+        };
+        runner_core::select(&cascade, "build")
+            .unwrap()
+            .unwrap()
+            .source
+    };
+    assert_eq!(
+        selected(runner_core::Layer::ConfigFile("runner.toml".into())),
+        ProviderId::Just
+    );
+    assert_eq!(selected(runner_core::Layer::Cli), ProviderId::PackageJson);
+    assert_eq!(selected(runner_core::Layer::Env), ProviderId::PackageJson);
 }
 
 #[test]

@@ -28,7 +28,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   and a `--package` fetch consult the policy before spawning. `ask` prompts
   once on a terminal, `allow` proceeds, `local` refuses, which makes CI
   deterministic. Local rungs never ask: the project's own bin dirs, `PATH`
-  and a local exec form such as `yarn run` come before any fetching rung.
+  and a local exec form such as `yarn run` or `pnpm exec` come before any
+  fetching rung.
 
 - `runner.toml` may set `[defaults].fetch`, and `[defaults].frozen` makes
   every install keep its lockfile. The schema describes each key from the
@@ -358,8 +359,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   <name>` once the local rungs miss, naming the chosen manager. A `--pm`
   choice with an exec primitive is the only manager asked.
 
-- Task sources are read concurrently, so `run`, `list` and completion wait
-  for the slowest extractor.
+- Task sources are read concurrently, on as many threads as the host runs
+  at once, so `run`, `list` and completion wait for the slowest extractor.
 
 - `runner clean` from a workspace member removes the root's directories as
   well as the member's.
@@ -421,6 +422,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - A parallel chain item whose output cannot be written, as with stdout on a
   full disk, fails with exit 1 in both the prefixed and the grouped mode, and
   so does a parallel install lane.
+
+- `--pm deno` or `--runtime deno` runs the `deno.json` task over a
+  `package.json` script of the same name, in the order the chosen provider
+  lists its sources.
+
+- A `[tasks].overrides` pin still applies when `runner.toml` sets `[pm]`;
+  only a `--pm` or `RUNNER_PM` choice sets it aside.
 
 ### Security
 

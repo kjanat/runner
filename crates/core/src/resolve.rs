@@ -148,28 +148,20 @@ pub fn resolve(
     registry: &Registry,
 ) -> std::io::Result<Project> {
     let mut project = resolve_presence(tree, evidence, policy, registry)?;
-    let extracted: Vec<_> = std::thread::scope(|threads| {
-        let mut handles = Vec::new();
-        for present in &project.present {
-            if let Some(extract) = registry.by_id(present.provider).tasks {
-                handles.push((present, threads.spawn(move || extract(present, tree))));
-            }
-        }
-        handles
-            .into_iter()
-            .map(|(present, handle)| {
-                (
-                    present.provider,
-                    present.scope.clone(),
-                    handle
-                        .join()
-                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
-                )
-            })
-            .collect()
-    });
+    let jobs: Vec<_> = project
+        .present
+        .iter()
+        .filter_map(|present| {
+            registry
+                .by_id(present.provider)
+                .tasks
+                .map(|extract| (present, extract))
+        })
+        .collect();
+    let extracted = extract_all(tree, &jobs);
     let mut unread = Vec::new();
-    for (provider, scope, outcome) in extracted {
+    for ((present, _), outcome) in jobs.iter().zip(extracted) {
+        let (provider, scope) = (present.provider, present.scope.clone());
         match outcome {
             Ok(found) => {
                 project.warnings.extend(found.warnings);
@@ -192,6 +184,48 @@ pub fn resolve(
     }
     project.unread = unread;
     Ok(project)
+}
+
+type Extract = fn(&Present, &Tree) -> Result<crate::Extracted, Warning>;
+
+/// Run every extractor on at most as many threads as the host runs at once,
+/// returning the outcomes in `jobs` order. A job no thread could be spawned
+/// for runs on the calling thread.
+fn extract_all(
+    tree: &Tree,
+    jobs: &[(&Present, Extract)],
+) -> Vec<Result<crate::Extracted, Warning>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        let mut done = Vec::new();
+        loop {
+            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some((present, extract)) = jobs.get(index) else {
+                return done;
+            };
+            done.push((index, extract(present, tree)));
+        }
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(2, std::num::NonZero::get)
+        .max(2)
+        .min(jobs.len());
+    let mut outcomes: Vec<_> = std::thread::scope(|threads| {
+        let handles: Vec<_> = (1..workers)
+            .filter_map(|_| std::thread::Builder::new().spawn_scoped(threads, work).ok())
+            .collect();
+        let mut outcomes = work();
+        for handle in handles {
+            outcomes.extend(
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+            );
+        }
+        outcomes
+    });
+    outcomes.sort_by_key(|(index, _)| *index);
+    outcomes.into_iter().map(|(_, outcome)| outcome).collect()
 }
 
 /// Turn evidence into present providers.
@@ -707,6 +741,63 @@ mod tests {
         let order: Vec<ProviderId> = project.present.iter().map(|p| p.provider).collect();
         let sources: Vec<ProviderId> = project.tasks.iter().map(|task| task.source).collect();
         assert_eq!(sources, order);
+    }
+
+    #[test]
+    fn task_extraction_runs_on_a_bounded_number_of_threads() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static RUNNING: AtomicUsize = AtomicUsize::new(0);
+        fn bound() -> usize {
+            std::thread::available_parallelism()
+                .map_or(2, std::num::NonZero::get)
+                .max(2)
+        }
+        fn count(present: &crate::Present, _: &Tree) -> Result<crate::Extracted, crate::Warning> {
+            let running = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            RUNNING.fetch_sub(1, Ordering::SeqCst);
+            if running > bound() {
+                return Err(crate::Warning::about(
+                    present.provider,
+                    format!("{running} extractors at once"),
+                ));
+            }
+            Ok(vec![crate::Task {
+                name: format!("{:?}", present.scope),
+                source: present.provider,
+                scope: present.scope.clone(),
+                target: None,
+                description: None,
+                alias_of: None,
+                forwards_to: None,
+                detail: crate::TaskDetail::default(),
+            }]
+            .into())
+        }
+        static SOURCES: &[Provider] = &[Provider {
+            tasks: Some(count),
+            ..fake(ProviderId::Npm, "npm", Ecosystem::Node)
+        }];
+        let members: Vec<Scope> = (0..200)
+            .map(|index| Scope::Member {
+                name: format!("m{index:03}"),
+                dir: PathBuf::from(format!("/p/m{index:03}")),
+            })
+            .collect();
+        let evidence = members
+            .iter()
+            .map(|scope| Evidence {
+                scope: scope.clone(),
+                ..found(ProviderId::Npm, Weight::Locked)
+            })
+            .collect();
+        let project = resolve(&tree(), evidence, &Policy::default(), &Registry(SOURCES)).unwrap();
+        assert_eq!(project.unread, []);
+        let scopes: Vec<&Scope> = project.tasks.iter().map(|task| &task.scope).collect();
+        let present: Vec<&Scope> = project.present.iter().map(|p| &p.scope).collect();
+        assert_eq!(scopes, present);
+        assert_eq!(scopes.len(), members.len());
     }
 
     #[test]

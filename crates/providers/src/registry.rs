@@ -369,8 +369,8 @@ mod tests {
             (
                 ProviderId::Pnpm,
                 &["pnpm", "exec", "eslint", "--fix"],
-                bare_or_versioned,
-                Reach::Network,
+                NameShape::BARE,
+                Reach::Local,
             ),
             (
                 ProviderId::Bun,

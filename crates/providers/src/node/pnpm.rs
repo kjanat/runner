@@ -66,8 +66,8 @@ pub const PROVIDER: Provider = Provider {
         exec: Some(ExecCap {
             program: None,
             argv: t!["exec", Name, Args],
-            reach: Reach::Network,
-            accepts: NameShape::BARE.union(NameShape::VERSIONED),
+            reach: Reach::Local,
+            accepts: NameShape::BARE,
         }),
         test: Some(super::TEST),
         bins: Some(super::BINS),

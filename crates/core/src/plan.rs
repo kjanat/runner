@@ -1721,20 +1721,22 @@ fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
 }
 
 /// The order same-named tasks are tried: the runner policy chose, then the
-/// sources its package manager or runtime dispatches, then registry order,
-/// with aliases last.
+/// sources its package manager or runtime dispatches in that provider's
+/// order, then registry order, with aliases last. A per-task pin wins unless
+/// a runner is chosen or the command line or environment chose a package
+/// manager.
 fn task_rank(
     policy: &Policy,
     project: &Project,
     registry: &Registry,
     task: &Task,
-) -> (usize, usize, u8, ProviderId, bool) {
+) -> (usize, usize, usize, u8, ProviderId, bool) {
     let pinned = if policy.runner.is_none()
         && policy
             .pm
             .0
             .values()
-            .all(|choice| choice.from == Layer::Probe)
+            .all(|choice| !matches!(choice.from, Layer::Cli | Layer::Env))
     {
         policy
             .task_sources
@@ -1754,23 +1756,27 @@ fn task_rank(
         .values()
         .chain(policy.runtime.iter())
         .filter(|choice| choice.from != Layer::Probe)
-        .any(|choice| {
+        .filter_map(|choice| {
             registry
                 .effective(choice.id, project, &task.scope)
                 .caps
-                .run_task
-                .is_some_and(|cap| cap.sources.contains(&task.source))
-        });
+                .run_task?
+                .sources
+                .iter()
+                .position(|source| *source == task.source)
+        })
+        .min();
     let tier = if chosen {
         0
     } else if let Some(rank) = policy.prefer.iter().position(|id| *id == task.source) {
         rank + 1
     } else {
-        policy.prefer.len() + 1 + usize::from(!dispatched)
+        policy.prefer.len() + 1 + usize::from(dispatched.is_none())
     };
     (
         pinned,
         tier,
+        dispatched.unwrap_or(usize::MAX),
         registry
             .effective(task.source, project, &task.scope)
             .caps
