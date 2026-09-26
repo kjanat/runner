@@ -43,7 +43,7 @@ fn interactive() -> bool {
     std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()
         && !actions_rs::env::is_github_actions()
-        && std::env::var_os("CI").is_none_or(|ci| ci.is_empty() || ci == "false" || ci == "0")
+        && !actions_rs::env::is_ci()
 }
 
 impl ResolutionOverrides {

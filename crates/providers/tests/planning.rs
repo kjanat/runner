@@ -1388,71 +1388,87 @@ fn a_source_choice_refuses_another_runners_default_entry() {
 }
 
 #[test]
-fn a_package_manager_beside_a_runtime_that_takes_the_op_is_refused() {
+fn a_package_manager_runs_under_a_runtime_that_stands_in_for_node() {
     let fixture = Fixture::new();
     let project = Project {
         present: vec![
             fixture.present(ProviderId::Npm),
             fixture.present(ProviderId::Bun),
+            fixture.present(ProviderId::Deno),
         ],
         ..Project::default()
     };
-    let mut policy = Policy {
-        download: Download::Allow,
-        runtime: Some(runner_core::Choice {
-            id: ProviderId::Bun,
-            from: runner_core::Layer::Cli,
-        }),
-        ..Policy::default()
+    let choose = |runtime: ProviderId, pm: ProviderId| {
+        let mut policy = Policy {
+            download: Download::Allow,
+            runtime: Some(runtime_core_choice(runtime)),
+            ..Policy::default()
+        };
+        policy
+            .pm
+            .0
+            .insert(runner_core::Ecosystem::Node, runtime_core_choice(pm));
+        policy
     };
-    policy.pm.0.insert(
-        runner_core::Ecosystem::Node,
-        runner_core::Choice {
-            id: ProviderId::Npm,
-            from: runner_core::Layer::Cli,
-        },
-    );
-    let cascade = Cascade {
-        tree: &fixture.0,
-        project: &project,
-        policy: &policy,
-        registry: &REGISTRY,
-        builtins: &[],
-        dep: None,
-        confirm: None,
-    };
-    let Err(Refusal::Invalid(message)) =
-        runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[])
-    else {
-        panic!("npm and bun cannot both run the command");
-    };
-    assert_eq!(
-        message,
-        "package manager npm and runtime bun cannot both apply: bun runs the command itself"
-    );
-
     let task = named_task(ProviderId::PackageJson, "build");
     let op = Op::Run {
         task: &task,
         args: &[],
     };
-    let Err(Refusal::Invalid(message)) =
-        runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY)
-    else {
-        panic!("npm and bun cannot both run the task");
-    };
-    assert!(message.contains("bun runs the task itself"), "{message}");
 
-    policy.pm.0.insert(
-        runner_core::Ecosystem::Node,
-        runner_core::Choice {
-            id: ProviderId::Bun,
-            from: runner_core::Layer::Cli,
-        },
+    let plan = runner_core::plan(
+        &fixture.0,
+        &project,
+        &choose(ProviderId::Bun, ProviderId::Npm),
+        &op,
+        &REGISTRY,
+    )
+    .expect("npm runs the task with bun as node");
+    assert_eq!(plan.provider, Some(ProviderId::Npm));
+    assert_eq!(plan.node, Some(ProviderId::Bun));
+
+    let deno = choose(ProviderId::Deno, ProviderId::Npm);
+    let Err(Refusal::Invalid(message)) =
+        runner_core::plan(&fixture.0, &project, &deno, &op, &REGISTRY)
+    else {
+        panic!("deno does not stand in for node");
+    };
+    assert_eq!(
+        message,
+        "runner cannot run the task under package manager npm on runtime deno: deno does not \
+         stand in for node"
     );
-    let plan = runner_core::plan(&fixture.0, &project, &policy, &op, &REGISTRY)
-        .expect("one provider for both choices plans");
+    let cascade = Cascade {
+        tree: &fixture.0,
+        project: &project,
+        policy: &deno,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: None,
+        confirm: None,
+    };
+    assert!(matches!(
+        runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[]),
+        Err(Refusal::Invalid(message)) if message.contains("the command under package manager npm")
+    ));
+
+    let plan = runner_core::plan(
+        &fixture.0,
+        &project,
+        &choose(ProviderId::Bun, ProviderId::Bun),
+        &op,
+        &REGISTRY,
+    )
+    .expect("one provider for both choices plans");
     assert_eq!(plan.provider, Some(ProviderId::Bun));
+    assert_eq!(plan.node, None);
+}
+
+fn runtime_core_choice(id: ProviderId) -> runner_core::Choice {
+    runner_core::Choice {
+        id,
+        from: runner_core::Layer::Cli,
+    }
 }
 
 #[test]

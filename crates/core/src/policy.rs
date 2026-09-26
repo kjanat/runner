@@ -94,9 +94,6 @@ pub struct Policy {
     pub source: Option<Choice>,
     /// The runtime.
     pub runtime: Option<Choice>,
-    /// Providers a task's own settings choose, present when only `PATH`
-    /// shows them.
-    pub named: Vec<ProviderId>,
     /// Whether installs must not touch the lockfile.
     pub frozen: bool,
     /// What to do with lifecycle scripts.

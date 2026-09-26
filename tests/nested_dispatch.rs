@@ -15,6 +15,8 @@
 //! a real `node_modules` bin and a `make` recipe reach the shell.
 #![cfg(unix)]
 
+mod support;
+
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -119,16 +121,7 @@ fn run_once(dir: &Path, args: &[&str]) -> Output {
     )
     .expect("PATH joins");
 
-    let mut cmd = Command::new(&binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(&binary);
     cmd.env("PATH", joined)
         .arg("--dir")
         .arg(dir)

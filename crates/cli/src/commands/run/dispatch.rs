@@ -234,7 +234,7 @@ fn spawn_plan(
     args: &[String],
     mut plan: runner_core::Plan,
 ) -> Result<Dispatch> {
-    crate::commands::configure_plan(&mut plan, overrides, token);
+    crate::commands::configure_plan(&mut plan, overrides, token)?;
     crate::render::explain::print_plan(overrides, &plan);
     print_dispatch_arrow(overrides, token, &plan_label(&plan, token), token, args);
     let mut command = runner_core::execute::command(&plan)?;
@@ -475,7 +475,7 @@ pub(super) fn complete_plan(
     let entry = chosen.entry;
     prepare_task(ctx, overrides, entry, chosen.key, plan, sink)?;
     prepare_host(chosen.token, chosen.rung, plan)?;
-    crate::commands::configure_plan(plan, overrides, chosen.key);
+    crate::commands::configure_plan(plan, overrides, chosen.key)?;
     runner_core::execute::command(plan)?;
     Ok(())
 }
@@ -792,6 +792,7 @@ mod tests {
             because: Vec::new(),
             decided_by: Vec::new(),
             scope: runner_core::Scope::Root,
+            node: None,
         };
         assert_eq!(super::plan_label(&plan, "main.ts"), "deno run");
     }

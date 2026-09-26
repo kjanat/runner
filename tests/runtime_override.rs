@@ -7,6 +7,8 @@
 //!
 //! Skips when the runtime under test is not installed.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -134,16 +136,7 @@ fn runner_command(dir: &Path) -> Command {
     let bin_dir = binary.parent().expect("binary lives in a directory");
     let joined = child_path(bin_dir);
 
-    let mut cmd = Command::new(&binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(&binary);
     cmd.env("PATH", joined).arg("--dir").arg(dir);
     cmd
 }
@@ -167,16 +160,7 @@ fn arrow_only(dir: &Path, args: &[&str]) -> Output {
 fn arrow_only_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     let binary = run_binary();
     let bin_dir = binary.parent().expect("binary lives in a directory");
-    let mut cmd = Command::new(&binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(&binary);
     let tools = dir.join("audit-host-tools");
     std::fs::create_dir_all(&tools).unwrap();
     #[cfg(unix)]
@@ -606,54 +590,173 @@ fn runtime_node_warns_about_the_lifecycle_scripts_it_skips() {
     }
 }
 
+/// A package project with harmless `npm`, `node`, `bun` and `deno` on `PATH`
+/// alone, the given `runner.toml`, and a lockfile when `locked`.
 #[cfg(unix)]
-#[test]
-fn a_task_table_runtime_found_only_on_path_runs_that_task_alone() {
+fn fake_tool_project(tag: &str, config: &str, locked: bool) -> TempProject {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let project = TempProject::new("task-runtime-path")
+    let mut project = TempProject::new(tag)
         .file(
             "package.json",
             r#"{ "scripts": { "build": "true", "lint": "true" } }"#,
         )
-        .file("package-lock.json", "{}\n")
-        .file(
-            "runner.toml",
-            "[tasks.build.runtime]\njavascript = \"bun\"\n",
-        )
-        .file("bin/npm", "#!/bin/sh\necho 10.0.0\n")
-        .file("bin/bun", "#!/bin/sh\necho 1.2.0\n");
-    let bin = project.path().join("bin");
-    for tool in ["npm", "bun"] {
-        std::fs::set_permissions(bin.join(tool), std::fs::Permissions::from_mode(0o755))
-            .expect("chmod +x");
+        .file("check.js", "console.log(1)\n")
+        .file("runner.toml", config);
+    if locked {
+        project = project.file("package-lock.json", "{}\n");
     }
-    let dry_run = |task: &str| {
-        let mut cmd = Command::new(run_binary());
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("RUNNER_") {
-                cmd.env_remove(&key);
-            }
-        }
-        cmd.env("PATH", &bin)
-            .arg("--dir")
-            .arg(project.path())
-            .args(["--dry-run", task])
-            .output()
-            .expect("run should execute")
-    };
-    let build = dry_run("build");
-    let stderr = String::from_utf8_lossy(&build.stderr);
-    assert!(build.status.success(), "stderr: {stderr}");
-    assert!(
-        stderr.contains(r#"argv: ["bun", "--bun", "run", "build"]"#),
-        "stderr: {stderr}"
+    for tool in ["npm", "node", "bun", "deno"] {
+        project = project.file(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
+        std::fs::set_permissions(
+            project.path().join("bin").join(tool),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod +x");
+    }
+    project
+}
+
+/// `runner --dry-run` with `args` in `project`, its stderr.
+#[cfg(unix)]
+fn dry_run_in(project: &TempProject, args: &[&str]) -> String {
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .arg("--dry-run")
+        .args(args)
+        .output()
+        .expect("runner should execute");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "{args:?}: {stderr}");
+    stderr
+}
+
+#[cfg(unix)]
+#[test]
+fn a_task_table_runtime_found_only_on_path_runs_that_task_alone() {
+    let project = fake_tool_project(
+        "task-runtime-path",
+        "[tasks.build.runtime]\njavascript = \"bun\"\n",
+        true,
     );
-    let lint = dry_run("lint");
-    let stderr = String::from_utf8_lossy(&lint.stderr);
-    assert!(lint.status.success(), "stderr: {stderr}");
+    let check = project.path().join("check.js");
+    for (args, argv) in [
+        (
+            vec!["run", "build"],
+            r#"argv: ["bun", "--bun", "run", "build"]"#.to_owned(),
+        ),
+        (
+            vec!["run", "lint"],
+            r#"argv: ["npm", "run", "lint"]"#.to_owned(),
+        ),
+        (
+            vec!["run", "./check.js"],
+            format!(r#"argv: ["node", "{}"]"#, check.display()),
+        ),
+        (
+            vec!["install", "--no-tools"],
+            r#"argv: ["npm", "install"]"#.to_owned(),
+        ),
+    ] {
+        let stderr = dry_run_in(&project, &args);
+        assert!(stderr.contains(&argv), "{args:?}: {stderr}");
+    }
+    let doctor = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .arg("doctor")
+        .output()
+        .expect("runner should execute");
+    let report = String::from_utf8_lossy(&doctor.stdout);
     assert!(
-        stderr.contains(r#"argv: ["npm", "run", "lint"]"#),
-        "stderr: {stderr}"
+        report.contains("install             npm") && !report.contains("bun shadowed"),
+        "{report}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_task_table_runtime_leaves_the_default_installer_alone() {
+    let project = fake_tool_project(
+        "task-runtime-install",
+        "[tasks.build.runtime]\njavascript = \"deno\"\n",
+        false,
+    );
+    let stderr = dry_run_in(&project, &["install", "--no-tools"]);
+    assert!(stderr.contains(r#"argv: ["npm", "install"]"#), "{stderr}");
+    let check = project.path().join("check.js");
+    let stderr = dry_run_in(&project, &["run", "./check.js"]);
+    assert!(
+        stderr.contains(&format!(r#"argv: ["node", "{}"]"#, check.display())),
+        "{stderr}"
+    );
+}
+
+/// `runner` with `args` in `project`, its stdout.
+#[cfg(unix)]
+fn report_in(project: &TempProject, args: &[&str]) -> String {
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .args(args)
+        .output()
+        .expect("runner should execute");
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[cfg(unix)]
+#[test]
+fn every_report_names_the_source_a_task_table_selects() {
+    let project = fake_tool_project(
+        "task-source-reports",
+        "[tasks.build]\nsource = \"just\"\n",
+        true,
+    )
+    .file("justfile", "build:\n\techo just-build\n");
+    let list = report_in(&project, &["list"]);
+    assert!(
+        list.contains("build: runs just, shadows package.json"),
+        "{list}"
+    );
+    let doctor: serde_json::Value =
+        serde_json::from_str(&report_in(&project, &["doctor", "--json"])).expect("doctor json");
+    assert_eq!(
+        doctor["conflicts"][0]["selected"], "root:just#build",
+        "{doctor}"
+    );
+    let why: serde_json::Value =
+        serde_json::from_str(&report_in(&project, &["why", "build", "--json"])).expect("why json");
+    assert_eq!(why["selected"]["task"]["fqn"], "root:just#build", "{why}");
+    let stderr = dry_run_in(&project, &["run", "build"]);
+    assert!(stderr.contains(r#"argv: ["just", "build"]"#), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn why_reports_the_runtime_a_task_table_selects() {
+    for config in [
+        "[runtime]\njavascript = \"node\"\n\n[tasks.build.runtime]\njavascript = \"bun\"\n",
+        "[tasks.build.runtime]\njavascript = \"bun\"\n",
+    ] {
+        let project = fake_tool_project("task-runtime-why", config, true);
+        let why: serde_json::Value =
+            serde_json::from_str(&report_in(&project, &["why", "build", "--json"]))
+                .expect("why json");
+        assert_eq!(why["runtime"]["runtime"], "bun", "{config}: {why}");
+        assert_eq!(why["runtime"]["applied"], true, "{config}: {why}");
+        let stderr = dry_run_in(&project, &["run", "build"]);
+        assert!(
+            stderr.contains(r#"argv: ["bun", "--bun", "run", "build"]"#),
+            "{config}: {stderr}"
+        );
+    }
 }

@@ -72,6 +72,8 @@ pub struct Plan {
     pub decided_by: Vec<Layer>,
     /// The scope it runs in.
     pub scope: Scope,
+    /// The runtime that answers to `node` for this command.
+    pub node: Option<ProviderId>,
 }
 
 impl Plan {
@@ -377,7 +379,7 @@ pub fn plan(
     let mut last = None;
     for present in candidates(tree, project, policy, op, registry) {
         match plan_with(tree, project, policy, present, op, registry) {
-            Ok(made) => return Ok(made),
+            Ok(made) => return Ok(under_runtime(made, policy, registry)),
             Err(refusal @ Refusal::Unsafe(_)) => return Err(refusal),
             Err(refusal)
                 if matches!(op, Op::Test { .. })
@@ -406,6 +408,14 @@ pub fn plan(
     }))
 }
 
+/// Whether `pm` runs its tasks on `runtime`, itself or with `runtime`
+/// answering to `node`.
+fn runs_under(pm: ProviderId, runtime: ProviderId, registry: &Registry) -> bool {
+    let runs_on = registry.by_id(pm).caps.runs_on;
+    runs_on == Some(runtime)
+        || (runs_on == Some(ProviderId::Node) && registry.by_id(runtime).caps.as_node.is_some())
+}
+
 /// The chosen package managers that run on the chosen runtime.
 fn on_runtime<'p>(policy: &'p Policy, registry: &Registry) -> impl Iterator<Item = &'p Choice> {
     let registry = *registry;
@@ -413,8 +423,25 @@ fn on_runtime<'p>(policy: &'p Policy, registry: &Registry) -> impl Iterator<Item
         policy
             .runtime
             .as_ref()
-            .is_some_and(|runtime| registry.by_id(pm.id).caps.runs_on == Some(runtime.id))
+            .is_some_and(|runtime| runs_under(pm.id, runtime.id, &registry))
     })
+}
+
+/// `made` with the chosen runtime answering to `node`, when a package manager
+/// that runs on Node carries it out under another runtime.
+fn under_runtime(mut made: Plan, policy: &Policy, registry: &Registry) -> Plan {
+    if let (Some(provider), Some(runtime)) = (made.provider, &policy.runtime)
+        && provider != runtime.id
+        && registry.by_id(provider).caps.runs_on == Some(ProviderId::Node)
+        && runtime.id != ProviderId::Node
+        && registry.by_id(runtime.id).caps.as_node.is_some()
+    {
+        made.node = Some(runtime.id);
+        if !made.decided_by.contains(&runtime.from) {
+            made.decided_by.push(runtime.from.clone());
+        }
+    }
+    made
 }
 
 /// Refuse a JavaScript package-manager choice beside a runtime choice that
@@ -427,7 +454,7 @@ fn refuse_both_chosen(
 ) -> Result<(), Refusal> {
     let Some(pm) = policy.pm.0.values().find(|pm| {
         pm.id != runtime.id
-            && registry.by_id(pm.id).caps.runs_on != Some(runtime.id)
+            && !runs_under(pm.id, runtime.id, registry)
             && matches!(
                 registry.by_id(pm.id).ecosystem,
                 Ecosystem::Node | Ecosystem::Deno
@@ -437,13 +464,14 @@ fn refuse_both_chosen(
     };
     let runtime = registry.by_id(runtime.id).label;
     Err(Refusal::Invalid(format!(
-        "package manager {} and runtime {runtime} cannot both apply: {runtime} {} itself",
-        registry.by_id(pm.id).label,
+        "runner cannot run {} under package manager {} on runtime {runtime}: {runtime} does not \
+         stand in for node",
         match op {
-            Op::Run { .. } => "runs the task",
-            Op::Test { .. } => "runs the tests",
-            _ => "runs the command",
+            Op::Run { .. } => "the task",
+            Op::Test { .. } => "the tests",
+            _ => "the command",
         },
+        registry.by_id(pm.id).label,
     )))
 }
 
@@ -1043,6 +1071,7 @@ pub fn plan_with(
         because: present.because.clone(),
         decided_by: decided_by(policy, present),
         scope,
+        node: None,
     })
 }
 
@@ -1137,6 +1166,7 @@ fn plan_argv_in(
         because: vec![evidence],
         decided_by: Vec::new(),
         scope,
+        node: None,
     })
 }
 
@@ -1953,7 +1983,7 @@ fn exec_plan(
             &op,
             cascade.registry,
         ) {
-            Ok(made) => return Ok(Some(made)),
+            Ok(made) => return Ok(Some(under_runtime(made, cascade.policy, cascade.registry))),
             Err(Refusal::Unsafe(Unsafe::NameShape { .. }) | Refusal::NoCapability { .. }) => {}
             Err(refusal) => return Err(refusal),
         }

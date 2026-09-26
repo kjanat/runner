@@ -7,8 +7,10 @@
 //! sleep in between. One manager installs a shared `node_modules/`, and
 //! managers with their own directories run alongside it.
 
+mod support;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
@@ -70,7 +72,7 @@ fn install_in(dir: &Path, env: &[(&str, &str)]) -> (Output, String) {
         paths.extend(std::env::split_paths(&path));
     }
     let path = std::env::join_paths(paths).expect("test PATH entries are valid");
-    let mut cmd = Command::new(runner_binary());
+    let mut cmd = support::command(runner_binary());
     cmd.arg("install")
         .current_dir(dir)
         .env("PATH", path)

@@ -2,6 +2,8 @@
 //! own `install` task instead of failing. Fixtures use `just`; if it is not
 //! on PATH the assertion is skipped rather than failing.
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -43,7 +45,7 @@ fn install_runs_the_install_task_when_no_package_manager_exists() {
     // Copied out of the repository so detection cannot walk up to this
     // repository's own manifests and lockfiles.
     let dir = fixture_dir("runs");
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", dir.to_str().unwrap(), "install"])
         .output()
         .expect("runner binary spawns");
@@ -72,7 +74,7 @@ fn install_refuses_an_unobserved_explicit_package_manager() {
         return;
     }
     let dir = fixture_dir("override");
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", dir.to_str().unwrap(), "install"])
         .env("RUNNER_PM", "pnpm")
         .env("PATH", dir.join("empty-path"))

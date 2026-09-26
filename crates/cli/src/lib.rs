@@ -1172,11 +1172,13 @@ fn dispatch_builtin(
                     "warn:".yellow().bold()
                 )?;
                 if actions_rs::env::is_github_actions() {
-                    writeln!(
-                        out.stderr(),
-                        "::warning title=Deprecation::`runner info` is deprecated; use `runner \
-                         list`"
-                    )?;
+                    actions_rs::Annotation::new()
+                        .title("Deprecation")
+                        .command(
+                            actions_rs::AnnotationKind::Warning,
+                            "`runner info` is deprecated; use `runner list`",
+                        )
+                        .issue_to(out.stderr())?;
                 }
             }
             schema_version_for_json(json, schema_version)?;

@@ -89,6 +89,7 @@ pub const PROVIDER: Provider = Provider {
             exec: Some(t!["x", "--bun", Name, Args]),
         }),
         quiet: QuietSupport::flag(t!["--silent"]),
+        as_node: Some(&["-e", "console.log(process.execPath)"]),
         ..Capabilities::NONE
     },
     tasks: None,

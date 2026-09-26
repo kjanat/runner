@@ -17,6 +17,7 @@ pub(crate) struct Observed {
     pub tree: Tree,
     pub policy: Policy,
     pub project: Project,
+    overrides: ResolutionOverrides,
 }
 
 impl Observed {
@@ -34,6 +35,7 @@ impl Observed {
             tree: super::core::tree(ctx),
             policy,
             project,
+            overrides: overrides.clone(),
         })
     }
 
@@ -52,7 +54,8 @@ impl Observed {
             return Vec::new();
         };
         let token = ctx.spelling(first);
-        super::core::ranked_in(ctx, &self.tree, &self.project, &self.policy, &token)
+        let policy = super::core::policy(&self.overrides, Some(&token));
+        super::core::ranked_in(ctx, &self.tree, &self.project, &policy, &token)
             .unwrap_or_default()
             .into_iter()
             .filter(|(task, _)| group.iter().any(|member| std::ptr::eq(*member, *task)))
@@ -67,9 +70,9 @@ impl Observed {
         group: &[&'a crate::types::Task],
     ) -> Option<&'a crate::types::Task> {
         let token = ctx.spelling(group.first()?);
+        let policy = super::core::policy(&self.overrides, Some(&token));
         let selected =
-            super::core::selected_in(ctx, &self.tree, &self.project, &self.policy, &token)
-                .ok()??;
+            super::core::selected_in(ctx, &self.tree, &self.project, &policy, &token).ok()??;
         group
             .iter()
             .copied()

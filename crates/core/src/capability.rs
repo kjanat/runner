@@ -73,6 +73,9 @@ pub struct Capabilities {
     pub as_runtime: Option<RuntimeCap>,
     /// The runtime this package manager runs tasks on.
     pub runs_on: Option<ProviderId>,
+    /// Arguments that make this runtime print the executable a `node` link
+    /// must point at, when it can run `node` scripts in `node`'s place.
+    pub as_node: Option<&'static [&'static str]>,
     /// Operations a tool manager accepts on install.
     pub operations: &'static [&'static str],
     /// The quiet ladder.
@@ -106,6 +109,7 @@ impl Capabilities {
         usage: None,
         as_runtime: None,
         runs_on: None,
+        as_node: None,
         operations: &[],
         quiet: QuietSupport::NONE,
     };

@@ -140,13 +140,6 @@ pub(crate) fn policy(overrides: &ResolutionOverrides, key: Option<&str>) -> Poli
                 |key| overrides.runtime_for(key),
             )
             .and_then(|chosen| runtime_choice(chosen.runtime, &chosen.origin)),
-        named: overrides
-            .tasks
-            .values()
-            .flat_map(|task| [task.pm, task.runtime])
-            .flatten()
-            .filter_map(|id| provider(id.label()))
-            .collect(),
         frozen: false,
         scripts: runner_core::ScriptPolicy::Default,
         download: download(overrides),
@@ -258,13 +251,14 @@ pub(crate) fn prepare(
     token: &str,
 ) -> Result<Prepared, runner_core::Refusal> {
     let tree = tree(ctx);
-    let project = project(ctx)?;
+    let mut project = project(ctx)?;
     let key = if BUILTINS.contains(&token) {
         token.to_owned()
     } else {
         task_key(ctx, &tree, &project, &policy(overrides, Some(token)), token)?
     };
     let mut policy = policy(overrides, Some(&key));
+    project.admit(&tree, &policy, &REGISTRY);
     let requested = overrides.host_verbosity_for(&key);
     if overrides.dry_run {
         policy.download = runner_core::Download::Allow;
@@ -339,8 +333,11 @@ impl Prepared {
                 }
             })
         };
+        let mut project = self.project.clone();
+        project.admit(&self.tree, &policy, &REGISTRY);
         let mut cascade = self.cascade(&dep, None);
         cascade.policy = &policy;
+        cascade.project = &project;
         let (rung, mut dispatch) = runner_core::dispatch(&cascade, token, &[])?;
         if let runner_core::Dispatch::Plan(plan) = &mut dispatch {
             let entry = if rung.name == "task" {

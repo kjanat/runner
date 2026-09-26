@@ -25,6 +25,8 @@ pub struct Project {
     pub unread: Vec<Unread>,
     /// Manifests and lockfiles that name different package managers.
     pub disagreements: Vec<Disagreement>,
+    /// Providers only a `PATH` probe shows, admitted by [`Project::admit`].
+    pub probed: Vec<Present>,
 }
 
 /// A manifest and a lockfile in one scope that name different package managers.
@@ -107,6 +109,35 @@ impl Project {
                     self.present.iter().position(|p| std::ptr::eq(p, *present)),
                 )
             })
+    }
+
+    /// Admit the probed providers `policy` chooses, for a plan made under
+    /// that policy.
+    pub fn admit(&mut self, tree: &Tree, policy: &Policy, registry: &Registry) {
+        let chosen: Vec<ProviderId> = choices(policy)
+            .map(|choice| choice.id)
+            .filter(|id| !self.present.iter().any(|p| p.provider == *id))
+            .collect();
+        for id in chosen {
+            let admitted: Vec<Present> = self
+                .probed
+                .iter()
+                .filter(|probed| probed.provider == id)
+                .cloned()
+                .collect();
+            for mut present in admitted {
+                present.bin_dirs = bin_dirs(tree, registry, &present).unwrap_or_default();
+                let search = search_dirs(&self.present, &present.scope);
+                observe_version(
+                    tree,
+                    registry.by_id(id),
+                    &mut present,
+                    &search,
+                    &mut self.warnings,
+                );
+                self.present.push(present);
+            }
+        }
     }
 
     /// Query every present provider's executable directories again.
@@ -247,7 +278,7 @@ pub fn resolve_presence(
     registry: &Registry,
 ) -> std::io::Result<Project> {
     let mut warnings = Vec::new();
-    let mut present = observed_presence(evidence, policy, registry);
+    let (mut present, probed) = observed_presence(evidence, policy, registry);
     for choice in choices(policy) {
         if !present.iter().any(|p| p.provider == choice.id) {
             warnings.push(Warning::about(
@@ -278,6 +309,7 @@ pub fn resolve_presence(
         present,
         warnings,
         disagreements,
+        probed,
         ..Project::default()
     };
     project.refresh_bins(tree, registry);
@@ -338,7 +370,7 @@ fn observed_presence(
     evidence: Vec<Evidence>,
     policy: &Policy,
     registry: &Registry,
-) -> Vec<Present> {
+) -> (Vec<Present>, Vec<Present>) {
     let mut by_key: BTreeMap<(ProviderId, Scope), Vec<Evidence>> = BTreeMap::new();
     for item in evidence {
         let Some(provider) = item.provider else {
@@ -350,6 +382,7 @@ fn observed_presence(
             .push(item);
     }
     let mut present = Vec::new();
+    let mut probed = Vec::new();
     for ((id, scope), mut because) in by_key {
         let provider = registry.by_id(id);
         because.retain(|item| !matches!(item.declared, Some(crate::Declared::Alternative(other)) if other != id));
@@ -366,21 +399,20 @@ fn observed_presence(
         let Some(strongest) = because.first().map(|item| item.weight) else {
             continue;
         };
-        if strongest == Weight::Probed
-            && chosen_by(policy, id).is_none()
-            && !policy.named.contains(&id)
-        {
-            continue;
-        }
-        present.push(Present {
+        let observed = Present {
             provider: id,
             scope,
             version: None,
             bin_dirs: Vec::new(),
             because,
-        });
+        };
+        if strongest == Weight::Probed && chosen_by(policy, id).is_none() {
+            probed.push(observed);
+        } else {
+            present.push(observed);
+        }
     }
-    present
+    (present, probed)
 }
 
 /// The executable directories every provider present in `scope` or the root
@@ -892,20 +924,31 @@ mod tests {
     }
 
     #[test]
-    fn a_provider_a_task_names_is_admitted_from_a_probe_without_ranking_first() {
+    fn a_probed_provider_is_admitted_only_for_the_policy_that_chooses_it() {
         let registry = Registry(FAKES);
-        let policy = Policy {
-            named: vec![ProviderId::Npm],
-            ..Policy::default()
-        };
         let evidence = vec![
             found(ProviderId::Npm, Weight::Probed),
             found(ProviderId::Pnpm, Weight::Locked),
         ];
-        let project = resolve(&tree(), evidence, &policy, &registry).unwrap();
-        let ids: Vec<ProviderId> = project.present.iter().map(|p| p.provider).collect();
-        assert_eq!(ids, [ProviderId::Pnpm, ProviderId::Npm]);
-        assert_eq!(project.warnings, []);
+        let project = resolve(&tree(), evidence, &Policy::default(), &registry).unwrap();
+        let ids = |project: &super::Project| -> Vec<ProviderId> {
+            project.present.iter().map(|p| p.provider).collect()
+        };
+        assert_eq!(ids(&project), [ProviderId::Pnpm]);
+        let mut chosen = Policy::default();
+        chosen.pm.0.insert(
+            Ecosystem::Node,
+            Choice {
+                id: ProviderId::Npm,
+                from: Layer::ConfigFile("runner.toml".into()),
+            },
+        );
+        let mut admitted = project.clone();
+        admitted.admit(&tree(), &chosen, &registry);
+        assert_eq!(ids(&admitted), [ProviderId::Pnpm, ProviderId::Npm]);
+        let mut unchanged = project.clone();
+        unchanged.admit(&tree(), &Policy::default(), &registry);
+        assert_eq!(ids(&unchanged), [ProviderId::Pnpm]);
     }
 
     #[test]

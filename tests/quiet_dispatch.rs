@@ -11,8 +11,12 @@
 //!   lockfile (npm ships with Node on every runner), because `--dry-run` only
 //!   traces package-manager resolution; a `make` task never emits it.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+use actions_rs::env::vars::GITHUB_ACTIONS;
 
 /// Self-cleaning temp directory. Avoids a dev-dependency for the integration
 /// crate; the in-crate `test_support::TempDir` is `pub(crate)` and thus not
@@ -78,16 +82,7 @@ fn runner_in(dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
 }
 
 fn command_in(binary: PathBuf, dir: &Path, extra_env: &[(&str, &str)], args: &[&str]) -> Output {
-    let mut cmd = Command::new(binary);
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(binary);
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -180,7 +175,7 @@ fn quiet_keeps_github_actions_group_markers_off_stdout() {
     // Positive control: under Actions the group markers are the whole point,
     // so they must be there without `--quiet`.
     let shown_proj = make_project("gha-on");
-    let shown = run_in(shown_proj.path(), &[("GITHUB_ACTIONS", "true")], &["greet"]);
+    let shown = run_in(shown_proj.path(), &[(GITHUB_ACTIONS, "true")], &["greet"]);
     let shown_out = String::from_utf8_lossy(&shown.stdout);
     assert!(
         shown_out.contains("::group::runner: greet") && shown_out.contains("::endgroup::"),
@@ -190,7 +185,7 @@ fn quiet_keeps_github_actions_group_markers_off_stdout() {
     // #86: a parent parsing this stdout (`npm pack --json` piped into a
     // script) got `::group::` in front of the JSON and failed to parse it.
     let proj = make_project("gha-quiet");
-    let output = run_in(proj.path(), &[("GITHUB_ACTIONS", "true")], &["-q", "greet"]);
+    let output = run_in(proj.path(), &[(GITHUB_ACTIONS, "true")], &["-q", "greet"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success(),
@@ -796,7 +791,7 @@ fn per_task_timing_switch_hides_only_that_tasks_chain_line() {
     let output = command_in(
         runner_binary(),
         proj.path(),
-        &[("GITHUB_ACTIONS", "")],
+        &[(GITHUB_ACTIONS, "")],
         &["run", "-s", "greet", "other"],
     );
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -235,12 +235,12 @@ fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bo
     false
 }
 
-/// Whether a forced runtime dispatches `source` itself, so `commands::run` skips
-/// package-manager resolution for it.
-fn runtime_supersedes_pm(overrides: &ResolutionOverrides, source: ProviderId) -> bool {
+/// Whether the runtime `task` runs on dispatches its source itself, so
+/// `commands::run` skips package-manager resolution for it.
+fn runtime_supersedes_pm(overrides: &ResolutionOverrides, task: &Task) -> bool {
     overrides
-        .js_runtime()
-        .is_some_and(|rt| crate::commands::run::runtime_honors(source, rt))
+        .runtime_for(&crate::commands::run::task_output_key(task))
+        .is_some_and(|over| crate::commands::run::runtime_honors(task.source, over.runtime))
 }
 
 /// The runtime block: the override plus whether it reaches `selected`.
@@ -249,7 +249,10 @@ fn runtime_report(
     selected: Option<&Task>,
     outcome: &Preview,
 ) -> Option<WhyRuntime> {
-    let over = overrides.runtime.as_ref()?;
+    let over = selected.map_or_else(
+        || overrides.runtime.clone(),
+        |task| overrides.runtime_for(&crate::commands::run::task_output_key(task)),
+    )?;
     let runtime = over.runtime;
     let (applied, note) = match selected {
         Some(task) if crate::commands::run::runtime_honors(task.source, runtime) => {
@@ -288,8 +291,9 @@ fn pm_decision_for_selected(
     overrides: &ResolutionOverrides,
     selected: Option<&Task>,
 ) -> Option<PmDecision> {
-    let source = selected.map(|task| task.source)?;
-    if !source.is_managed() || runtime_supersedes_pm(overrides, source) {
+    let task = selected?;
+    let source = task.source;
+    if !source.is_managed() || runtime_supersedes_pm(overrides, task) {
         return None;
     }
     let scope = selected

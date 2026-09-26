@@ -1,7 +1,9 @@
 //! Integration coverage for version selectors, modifiers, and precedence.
 
+mod support;
+
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn binary(name: &str) -> PathBuf {
     match name {
@@ -12,7 +14,7 @@ fn binary(name: &str) -> PathBuf {
 }
 
 fn invoke(name: &str, args: &[&str]) -> Output {
-    Command::new(binary(name))
+    support::command(binary(name))
         .args(args)
         .output()
         .expect("version binary spawns")

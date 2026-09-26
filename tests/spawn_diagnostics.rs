@@ -1,7 +1,9 @@
 //! Regression coverage for actionable process-spawn errors.
 
+mod support;
+
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static PROJECT_ID: AtomicU32 = AtomicU32::new(0);
@@ -64,16 +66,7 @@ fn run_in(project: &TempProject, args: &[&str]) -> Output {
     let empty_path = project.path().join("empty-path");
     std::fs::create_dir_all(&empty_path).expect("create isolated PATH");
 
-    let mut command = Command::new(runner_binary());
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            command.env_remove(&key);
-        }
-    }
+    let mut command = support::command(runner_binary());
     command
         .env("PATH", empty_path)
         .arg("--dir")

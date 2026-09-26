@@ -10,6 +10,8 @@
 //! Dispatching a `package.json` script needs a Node package manager on
 //! PATH; tests that spawn one skip with a note when `npm` is absent.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -79,16 +81,7 @@ fn tool_available(name: &str) -> bool {
 
 /// Run `runner` against `dir` with every `RUNNER_*` variable scrubbed.
 fn runner_in(dir: &Path, args: &[&str]) -> Output {
-    let mut cmd = Command::new(runner_binary());
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
+    let mut cmd = support::command(runner_binary());
     cmd.arg("--dir")
         .arg(dir)
         .args(args)

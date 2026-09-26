@@ -10,6 +10,8 @@
 //! assertions are skipped rather than failing, matching
 //! `chain_integration.rs`.
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -40,7 +42,7 @@ fn info_warns_and_renders_list_when_not_shadowed() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args([
             "--dir",
             fixture("info-deprecated").to_str().unwrap(),
@@ -76,13 +78,13 @@ fn info_emits_github_actions_annotation_under_ci() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args([
             "--dir",
             fixture("info-deprecated").to_str().unwrap(),
             "info",
         ])
-        .env("GITHUB_ACTIONS", "true")
+        .env(actions_rs::env::vars::GITHUB_ACTIONS, "true")
         .output()
         .expect("runner binary spawns");
 
@@ -103,7 +105,7 @@ fn info_emits_github_actions_annotation_under_ci() {
 #[test]
 fn very_quiet_hides_info_deprecation() {
     let dir = fixture("info-deprecated");
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .arg("--dir")
         .arg(dir)
         .args(["-qq", "info"])
@@ -122,13 +124,13 @@ fn info_omits_github_annotation_outside_ci() {
     }
     // Explicitly clear the var so the test is deterministic even when
     // the test host itself runs under GitHub Actions.
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args([
             "--dir",
             fixture("info-deprecated").to_str().unwrap(),
             "info",
         ])
-        .env_remove("GITHUB_ACTIONS")
+        .env_remove(actions_rs::env::vars::GITHUB_ACTIONS)
         .output()
         .expect("runner binary spawns");
 
@@ -149,7 +151,7 @@ fn info_json_maps_to_list_json_with_tasks_array() {
         eprintln!("skipping: `just` not found on PATH");
         return;
     }
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args([
             "--dir",
             fixture("info-deprecated").to_str().unwrap(),
@@ -190,7 +192,7 @@ fn runner_info_is_the_deprecated_alias_even_when_a_task_is_named_info() {
     // The explicit subcommand is always the builtin: a project task named
     // `info` does NOT shadow it. `runner info` stays the deprecated
     // alias-for-list even when the fixture defines an `info` recipe.
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", fixture("info-shadowed").to_str().unwrap(), "info"])
         .output()
         .expect("runner binary spawns");
@@ -234,7 +236,7 @@ fn run_info_is_the_builtin_and_the_recipe_needs_a_qualifier() {
         ),
     ];
     for (label, binary, args) in invocations {
-        let output = Command::new(binary)
+        let output = support::command(binary)
             .args(&args)
             .output()
             .expect("binary spawns");
@@ -252,7 +254,7 @@ fn run_info_is_the_builtin_and_the_recipe_needs_a_qualifier() {
         );
     }
 
-    let output = Command::new(run_binary())
+    let output = support::command(run_binary())
         .args(["--dir", dir, "just:info"])
         .output()
         .expect("binary spawns");
@@ -271,7 +273,7 @@ fn bare_runner_still_shows_the_dashboard() {
     }
     // No subcommand → the project dashboard survives the `info`
     // subcommand deprecation.
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", fixture("info-deprecated").to_str().unwrap()])
         .output()
         .expect("runner binary spawns");

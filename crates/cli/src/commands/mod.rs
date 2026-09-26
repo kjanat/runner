@@ -82,7 +82,17 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
 }
 
 /// Complete the invocation metadata before a core plan is rendered or executed.
-fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides, task: &str) {
+///
+/// # Errors
+/// When the runtime `plan.node` names cannot be linked as `node`.
+fn configure_plan(
+    plan: &mut runner_core::Plan,
+    overrides: &ResolutionOverrides,
+    task: &str,
+) -> anyhow::Result<()> {
+    if !overrides.dry_run {
+        link_node(plan)?;
+    }
     let mut metadata = Command::new("runner");
     configure_spawn(&mut metadata, &plan.cwd, overrides);
     if emits_group(overrides) && !overrides.emits_groups_for(task) {
@@ -123,6 +133,61 @@ fn configure_plan(plan: &mut runner_core::Plan, overrides: &ResolutionOverrides,
             plan.argv[0] = resolved.into_os_string();
         }
     }
+    Ok(())
+}
+
+/// Link the runtime `plan.node` names as `node` in a directory of its own, and
+/// put that directory first on the plan's `PATH`.
+fn link_node(plan: &mut runner_core::Plan) -> anyhow::Result<()> {
+    use anyhow::{Context as _, bail};
+    use std::hash::{Hash as _, Hasher as _};
+
+    let Some(runtime) = plan.node else {
+        return Ok(());
+    };
+    let provider = runner_providers::REGISTRY.by_id(runtime);
+    let (Some(program), Some(args)) = (provider.program, provider.caps.as_node) else {
+        bail!("{} cannot stand in for node", provider.label);
+    };
+    if plan.trust != runner_core::Trust::Project {
+        bail!("{program} can stand in for node only for a project command");
+    }
+    let mut query = plan.clone();
+    query.argv = std::iter::once(program)
+        .chain(args.iter().copied())
+        .map(OsString::from)
+        .collect();
+    let output = runner_core::execute::command(&query)?
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .with_context(|| format!("cannot start {program} to link it as node"))?;
+    let executable = std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if !output.status.success() || !executable.is_file() {
+        bail!("{program} did not report its executable, so it cannot stand in for node");
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    executable.hash(&mut hasher);
+    let dir = std::env::temp_dir().join(format!("runner-node-{:016x}", hasher.finish()));
+    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let link = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+    if std::fs::canonicalize(&link).ok() != std::fs::canonicalize(&executable).ok() {
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&executable, &link);
+        #[cfg(windows)]
+        let linked = std::fs::hard_link(&executable, &link)
+            .or_else(|_| std::fs::copy(&executable, &link).map(drop));
+        match linked {
+            Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+                return Err(error)
+                    .with_context(|| format!("cannot link {program} as {}", link.display()));
+            }
+            _ => {}
+        }
+    }
+    plan.path_prepend.insert(0, dir);
+    Ok(())
 }
 
 fn set_task_stdio(
@@ -681,7 +746,7 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test");
+        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test").unwrap();
         plan
     }
 

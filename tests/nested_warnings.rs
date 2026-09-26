@@ -4,6 +4,8 @@
 //! a single `runner fmt` becomes two runner processes over one project. Both
 //! used to print the same detection warnings.
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -55,7 +57,7 @@ fn a_nested_runner_does_not_repeat_the_warnings_its_parent_printed() {
     }
     let path = std::env::join_paths(paths).expect("test PATH entries are valid");
 
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .arg("run")
         .arg("outer")
         .current_dir(&dir)
@@ -91,7 +93,7 @@ fn a_nested_runner_over_a_different_root_still_warns() {
     std::fs::create_dir_all(&elsewhere).expect("create other dir");
     std::fs::write(elsewhere.join("runner.toml"), "[nonsense]\nkey = 1\n").expect("runner.toml");
 
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .arg("list")
         .current_dir(&elsewhere)
         .env("RUNNER_WARNED_ROOT", &dir)

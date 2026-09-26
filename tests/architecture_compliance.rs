@@ -2,10 +2,14 @@
 
 //! Execution boundaries exercised with harmless fake host tools.
 
+mod support;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+use actions_rs::env::vars::{CI, GITHUB_ACTIONS};
 
 struct Fixture(PathBuf);
 
@@ -41,7 +45,7 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str], download: &str) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_runner"));
+        let mut command = support::command(env!("CARGO_BIN_EXE_runner"));
         command
             .env_clear()
             .env("PATH", self.0.join("bin"))
@@ -87,7 +91,7 @@ fn local_policy_refuses_install_before_any_package_manager_runs() {
 fn without_a_terminal_the_default_downloads_and_an_explicit_ask_refuses() {
     let fixture = Fixture::new();
     let install = || {
-        Command::new(env!("CARGO_BIN_EXE_runner"))
+        support::command(env!("CARGO_BIN_EXE_runner"))
             .env_clear()
             .env("PATH", fixture.0.join("bin"))
             .env("HOME", &fixture.0)
@@ -116,6 +120,57 @@ fn without_a_terminal_the_default_downloads_and_an_explicit_ask_refuses() {
         String::from_utf8_lossy(&defaulted.stderr)
     );
     assert!(fixture.0.join("executed").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn on_a_terminal_the_default_asks_unless_ci_or_github_actions_says_otherwise() {
+    let Some(script) = ["/usr/bin/script", "/bin/script"]
+        .into_iter()
+        .map(std::path::Path::new)
+        .find(|path| path.is_file())
+    else {
+        eprintln!("skipping: `script` not found");
+        return;
+    };
+    let fixture = Fixture::new();
+    let install = |ci: Option<(&str, &str)>| {
+        let _ = std::fs::remove_file(fixture.0.join("executed"));
+        let mut command = support::command(script);
+        command
+            .env_clear()
+            .env("PATH", fixture.0.join("bin"))
+            .env("HOME", &fixture.0)
+            .env("AUDIT_LOG", fixture.0.join("executed"))
+            .current_dir(&fixture.0)
+            .arg("-qec")
+            .arg(format!(
+                "{} install --no-tools",
+                env!("CARGO_BIN_EXE_runner")
+            ))
+            .arg("/dev/null")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        if let Some((name, value)) = ci {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), b"n\n").unwrap();
+        let output = child.wait_with_output().unwrap();
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            fixture.0.join("executed").exists(),
+        )
+    };
+    let (terminal, ran) = install(None);
+    assert!(terminal.contains("[y/N]"), "{terminal}");
+    assert!(!ran, "a declined prompt must not install: {terminal}");
+    for ci in [(CI, "true"), (GITHUB_ACTIONS, "true")] {
+        let (output, ran) = install(Some(ci));
+        assert!(!output.contains("[y/N]"), "{ci:?}: {output}");
+        assert!(ran, "{ci:?} installs without asking: {output}");
+    }
 }
 
 #[test]
@@ -317,7 +372,7 @@ fn cli_yarn_variant_uses_the_observed_package_manager_declaration() {
 }
 
 fn builtin_command(fixture: &Fixture, alias: bool, args: &[&str]) -> Command {
-    let mut command = Command::new(if alias {
+    let mut command = support::command(if alias {
         env!("CARGO_BIN_EXE_run")
     } else {
         env!("CARGO_BIN_EXE_runner")
@@ -901,7 +956,7 @@ fn path_search_skips_a_nonexecutable_file() {
     let path = later.join("audit-host");
     std::fs::write(&path, "#!/bin/sh\necho executable\n").unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_runner"))
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
         .env_clear()
         .env("HOME", &fixture.0)
         .env(
@@ -1021,7 +1076,7 @@ fn plug_n_play_packages_resolve_in_the_invoking_member() {
     )
     .unwrap();
     std::fs::set_permissions(&yarn, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_runner"))
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
         .env_clear()
         .env("PATH", fixture.0.join("bin"))
         .env("HOME", &fixture.0)

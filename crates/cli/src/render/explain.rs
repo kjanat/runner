@@ -43,6 +43,15 @@ pub(crate) fn print_plan(overrides: &ResolutionOverrides, plan: &runner_core::Pl
             plan.decided_by
         ),
     );
+    if let Some(node) = plan.node {
+        print_explain(
+            overrides,
+            &format!(
+                "node: {} answers to node for this command",
+                runner_providers::REGISTRY.by_id(node).label
+            ),
+        );
+    }
     for clamp in &plan.clamps {
         print_explain(
             overrides,

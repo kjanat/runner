@@ -10,6 +10,8 @@
 //! Env vars are injected per spawned child (never `std::env::set_var`),
 //! so these tests are safe under the parallel test runner.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -18,23 +20,8 @@ fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
 
-/// Command for the runner binary with every inherited `RUNNER_*`
-/// variable scrubbed, so only what a test sets explicitly reaches the
-/// child. A dev box exporting e.g. `RUNNER_WARNINGS` or `RUNNER_PM` would
-/// otherwise flip these assertions. Matched
-/// case-insensitively because Windows env lookups ignore case.
 fn runner_command() -> Command {
-    let mut cmd = Command::new(runner_binary());
-    for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("RUNNER_")
-        {
-            cmd.env_remove(&key);
-        }
-    }
-    cmd
+    support::command(runner_binary())
 }
 
 /// Minimal self-cleaning temp project: a directory holding only a
@@ -221,4 +208,20 @@ fn doctor_and_config_survive_an_invalid_config_value() {
         .output()
         .expect("runner binary spawns");
     assert!(!list.status.success(), "other commands stay strict");
+}
+
+#[test]
+fn the_test_environment_removes_the_ci_variables() {
+    let command = runner_command();
+    let removed: Vec<&std::ffi::OsStr> = command
+        .get_envs()
+        .filter(|(_, value)| value.is_none())
+        .map(|(key, _)| key)
+        .collect();
+    for name in support::CI_VARIABLES {
+        assert!(
+            removed.contains(&std::ffi::OsStr::new(name)),
+            "{name}: {removed:?}"
+        );
+    }
 }

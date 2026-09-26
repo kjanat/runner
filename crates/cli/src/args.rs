@@ -1588,6 +1588,50 @@ mod tests {
     }
 
     #[test]
+    fn the_later_of_a_pair_wins_on_either_side_of_a_subcommand() {
+        use crate::config::Download;
+        let cli = crate::invocation::Origin::Cli;
+        let settings = |argv: &[&str]| {
+            let parsed = parse(argv).expect("parses");
+            crate::invocation::settings(
+                &parsed.cli.global,
+                parsed.cli.command.as_ref(),
+                &parsed.origins,
+            )
+        };
+        for (argv, expected) in [
+            (
+                &["runner", "--download", "install", "--no-download"][..],
+                Download::Refuse,
+            ),
+            (
+                &["runner", "--no-download", "install", "--download"],
+                Download::Allow,
+            ),
+            (
+                &["runner", "--download", "--no-download", "install"],
+                Download::Refuse,
+            ),
+            (
+                &["runner", "install", "--no-download", "--download"],
+                Download::Allow,
+            ),
+        ] {
+            assert_eq!(settings(argv).download, Some((expected, cli)), "{argv:?}");
+        }
+        for (argv, expected) in [
+            (
+                &["runner", "--warnings", "list", "--no-warnings"][..],
+                false,
+            ),
+            (&["runner", "--no-warnings", "list", "--warnings"], true),
+            (&["runner", "list", "--warnings", "--no-warnings"], false),
+        ] {
+            assert_eq!(settings(argv).warnings, Some((expected, cli)), "{argv:?}");
+        }
+    }
+
+    #[test]
     fn download_takes_an_optional_value() {
         let origin = crate::invocation::Origin::Cli;
         for (argv, expected) in [

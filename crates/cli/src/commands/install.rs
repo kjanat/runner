@@ -226,7 +226,7 @@ impl InstallExecution {
             &runner_core::Op::Install { operations },
             &REGISTRY,
         )?;
-        super::configure_plan(&mut plan, overrides, "install");
+        super::configure_plan(&mut plan, overrides, "install")?;
         Ok(plan)
     }
 }

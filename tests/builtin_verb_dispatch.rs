@@ -13,6 +13,8 @@
 //! Fixtures use `just`; if it's not on PATH the assertions are skipped
 //! rather than failing, matching `info_deprecation.rs`.
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -44,7 +46,7 @@ fn runner_list_is_always_builtin_even_with_a_list_task() {
         return;
     }
     // A project task named `list` does NOT shadow the explicit subcommand.
-    let output = Command::new(runner_binary())
+    let output = support::command(runner_binary())
         .args(["--dir", fixture("list-shadowed").to_str().unwrap(), "list"])
         .output()
         .expect("runner binary spawns");
@@ -79,7 +81,7 @@ fn run_list_is_the_builtin_and_the_recipe_needs_a_qualifier() {
         ),
     ];
     for (label, binary, args) in invocations {
-        let output = Command::new(binary)
+        let output = support::command(binary)
             .args(&args)
             .output()
             .expect("binary spawns");
@@ -96,7 +98,7 @@ fn run_list_is_the_builtin_and_the_recipe_needs_a_qualifier() {
         );
     }
 
-    let output = Command::new(run_binary())
+    let output = support::command(run_binary())
         .args(["--dir", dir, "just:list"])
         .output()
         .expect("binary spawns");
@@ -126,7 +128,7 @@ fn run_list_falls_back_to_builtin_when_no_task() {
             vec!["--dir", dir, "run", "list"],
         ),
     ] {
-        let output = Command::new(binary)
+        let output = support::command(binary)
             .args(&args)
             .output()
             .expect("binary spawns");
