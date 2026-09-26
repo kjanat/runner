@@ -25,7 +25,6 @@ pub const PROVIDER: Provider = Provider {
         Signal::File("requirements.txt"),
         Signal::Probe(if cfg!(windows) { "python" } else { "python3" }),
     ],
-    writes: &[],
     caps: Capabilities {
         clean: Some(super::CLEAN),
         file_fallback: true,

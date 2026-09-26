@@ -50,20 +50,11 @@ pub(crate) fn doctor(
         report: &report,
         overrides,
         plan: plan.as_ref(),
-        node_context: node_context(ctx, overrides),
         tools: super::install::tools_step(ctx, overrides, super::install::InstallFlags::default()),
         health: &crate::schema::doctor::provider_diagnostics(ctx, overrides),
     });
 
     Ok(())
-}
-
-/// Whether the human report shows the Node sections: the same predicate
-/// the structured report uses, so a `package.json` whose scripts resolve
-/// without a lockfile-detected package manager still counts.
-fn node_context(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> bool {
-    let observed = crate::commands::run::decision::Observed::observe(ctx, overrides);
-    crate::schema::doctor::Decisions::from_observed(&observed, overrides).has_node_context(ctx)
 }
 
 /// Legacy stub retained for the existing tests that exercise
@@ -79,16 +70,17 @@ fn build_report(ctx: &ProjectContext, overrides: &ResolutionOverrides) -> Value 
 mod tests {
     use super::{build_report, doctor};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{PackageManager, ProjectContext};
+    use crate::types::ProjectContext;
+    use runner_core::ProviderId;
 
     fn context() -> ProjectContext {
-        context_with(&[PackageManager::Pnpm, PackageManager::Cargo])
+        context_with(&[ProviderId::Pnpm, ProviderId::Cargo])
     }
 
-    fn context_with(pms: &[PackageManager]) -> ProjectContext {
+    fn context_with(pms: &[ProviderId]) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
         for pm in pms {
-            crate::tool::test_support::write_signal(&root, pm.label());
+            crate::tool::test_support::write_signal(&root, *pm);
         }
         let mut ctx = ProjectContext {
             cwd: root.clone(),
@@ -103,21 +95,16 @@ mod tests {
     }
 
     #[test]
-    fn build_report_omits_volta_shims_when_not_resolving() {
+    fn build_report_omits_shims_when_not_resolving() {
         let ctx = context();
         let report = build_report(&ctx, &ResolutionOverrides::default());
+        let signals = &report["signals"]["package.json"];
 
-        // `Project::build` passes `resolve_shims = false`; the additive
-        // field must vanish entirely, keeping the flat shape untouched.
         assert!(
-            report["signals"]["node"].get("volta_shims").is_none(),
-            "volta_shims must be omitted when empty: {}",
-            report["signals"]["node"],
+            signals.get("shims").is_none(),
+            "shims must be omitted when empty: {signals}",
         );
-        assert!(
-            report["signals"]["node"].get("path_probe").is_some(),
-            "path_probe shape must be unchanged",
-        );
+        assert!(signals.get("path_probe").is_some(), "{signals}");
     }
 
     #[test]
@@ -153,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn node_context_holds_for_package_json_without_a_lockfile() {
+    fn package_json_is_dispatched_without_a_lockfile() {
         use std::fs;
 
         use crate::detect::detect;
@@ -171,14 +158,21 @@ mod tests {
             "precondition: no lockfile-detected package manager"
         );
 
-        assert!(super::node_context(&ctx, &ResolutionOverrides::default()));
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+        assert!(report["signals"].get("package.json").is_some(), "{report}");
+        assert!(
+            report["decisions"].get("package.json").is_some(),
+            "{report}"
+        );
     }
 
     #[test]
-    fn node_context_is_absent_without_node_signals() {
-        let ctx = context_with(&[PackageManager::Cargo]);
+    fn a_rust_project_dispatches_no_managed_source() {
+        let ctx = context_with(&[ProviderId::Cargo]);
 
-        assert!(!super::node_context(&ctx, &ResolutionOverrides::default()));
+        let report = build_report(&ctx, &ResolutionOverrides::default());
+        assert_eq!(report["signals"], serde_json::json!({}));
+        assert_eq!(report["decisions"], serde_json::json!({}));
     }
 
     #[test]

@@ -11,8 +11,8 @@
 //! - `tasks[].resolved` and `tasks[].source` are nullable: a
 //!   `package.json` script's command depends on PM resolution, which can
 //!   fail, and a source anchor file can be undiscoverable.
-//! - `sources[].kind` uses the structured source labels (`cargo-alias`,
-//!   `just`, …) shared with `why`, not the flat `list`/`info` labels.
+//! - `sources[].kind` is the source's registry label (`cargo`, `just`, …),
+//!   the same label `why` and `list` print.
 //! - `overrides.pm`/`overrides.runner` are bare labels; the provenance
 //!   (`cli`/`env`/`config:…`) remains available on the flat `list`/`info`
 //!   surface.
@@ -31,18 +31,17 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use super::labels::{StructuredSource, structured_source_label};
+use super::labels::{EcosystemLabel, PmLabel, RunnerLabel, RuntimeLabel, SourceLabel};
 use crate::chain::FailurePolicy;
 use crate::commands::install::InstallPlan;
 use crate::commands::run::decision::{Observed, PmDecision};
+use crate::provider::Named;
 use crate::resolver::{
     CollisionPolicy, FallbackPolicy, LockfilePolicy, MismatchPolicy, OutputGrouping,
     ResolutionOverrides, ScriptPolicy,
 };
-use crate::types::{
-    DetectionWarning, Ecosystem, JsRuntime, PackageManager, ProjectContext, Task, TaskRunner,
-    TaskSource,
-};
+use crate::types::{DetectionWarning, ProjectContext, Task};
+use runner_core::{Ecosystem, ProviderId};
 
 /// `runner doctor --json` payload.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
@@ -161,20 +160,18 @@ struct Overrides {
     explain: bool,
     fallback: FallbackPolicy,
     failure_policy: FailurePolicy,
-    /// The install allowlist. Install has none, so this is always empty.
-    install_pms: Vec<PackageManager>,
     no_warnings: bool,
     on_collision: CollisionPolicy,
     output_grouping: OutputGrouping,
     quiet: bool,
     output: OutputPolicyReport,
     on_mismatch: MismatchPolicy,
-    pm: Option<PackageManager>,
-    pm_by_ecosystem: BTreeMap<Ecosystem, PackageManager>,
-    prefer_runners: Vec<TaskRunner>,
-    prefer_sources: Vec<StructuredSource>,
-    runner: Option<TaskRunner>,
-    runtime: Option<JsRuntime>,
+    pm: Option<PmLabel>,
+    pm_by_ecosystem: BTreeMap<EcosystemLabel, PmLabel>,
+    prefer_runners: Vec<RunnerLabel>,
+    prefer_sources: Vec<SourceLabel>,
+    runner: Option<RunnerLabel>,
+    runtime: Option<RuntimeLabel>,
     script_policy: ScriptPolicy,
     #[schemars(extend("enum" = ["ask", "allow", "local"]))]
     fetch: &'static str,
@@ -189,7 +186,7 @@ struct Overrides {
                        tool, in order."
     )]
     tool_install: BTreeMap<String, Vec<String>>,
-    task_source_pins: BTreeMap<String, Vec<StructuredSource>>,
+    task_source_pins: BTreeMap<String, Vec<SourceLabel>>,
 }
 
 #[derive(schemars::JsonSchema, Debug, Serialize)]
@@ -213,10 +210,12 @@ struct EcosystemEntry {
     name: &'static str,
     root: String,
     selected_package_manager: Option<&'static str>,
-    #[schemars(description = "Detection evidence. Node carries the full signal set \
-                              (lockfile/manifest/PATH probe/shim classification, keyed by tool \
-                              with the shim manager as data); other ecosystems list their \
-                              detected package managers.")]
+    #[schemars(
+        description = "Detection evidence. An ecosystem whose task source package managers \
+                       dispatch carries that source's signals (lockfile, manifest, PATH probe, \
+                       shims keyed by tool with the shim manager as data); other ecosystems list \
+                       their detected package managers."
+    )]
     signals: serde_json::Value,
 }
 
@@ -248,7 +247,7 @@ struct SourceEntry<'a> {
     #[schemars(description = "Stable source identity: `src:<scope>:<kind>`.")]
     id: String,
     #[schemars(description = "Structured source label (same convention as `why`).")]
-    kind: StructuredSource,
+    kind: SourceLabel,
     #[schemars(
         description = "Workspace member identity (`name`, `path`) for member sources; null for \
                        root sources."
@@ -293,13 +292,6 @@ struct DoctorTask<'a> {
     resolved: Option<String>,
     #[schemars(description = "`root`, or the workspace member name the task belongs to.")]
     scope: &'a str,
-    #[schemars(
-        description = "True when runner can run this task without its source's primary tool. Only \
-                       deno tasks runner can execute via the embedded task shell (leaf command, \
-                       no `dependencies`, no `deno` invocation) qualify today; all other sources \
-                       are false."
-    )]
-    self_executable: bool,
     source: Option<String>,
     source_pointer: Option<String>,
 }
@@ -427,7 +419,7 @@ impl<'a> DoctorReport<'a> {
         resolve_shims: bool,
     ) -> Self {
         let observed = Observed::observe(ctx, overrides);
-        let decisions = Decisions::from_observed(&observed, overrides);
+        let decisions = Decisions::from_observed(ctx, &observed, overrides);
         let plan = crate::commands::install::plan_install(ctx, overrides);
 
         // A collision is the install plan's verdict, not a detection fact, so
@@ -487,7 +479,7 @@ impl<'a> DoctorReport<'a> {
                     .map(super::project::WorkspaceInfo::from_workspace),
             },
             overrides: overrides_report(overrides),
-            ecosystems: ecosystems(ctx, &decisions, resolve_shims),
+            ecosystems: ecosystems(ctx, observed.as_ref().ok(), &decisions, resolve_shims),
             sources: sources(ctx),
             tasks: tasks(ctx, overrides),
             tools: tools(ctx, &decisions),
@@ -540,23 +532,23 @@ impl DoctorReport<'static> {
             ),
             ecosystems: vec![example_node_ecosystem()],
             sources: vec![
-                example_source(TaskSource::PackageJson, "package.json", Some("scripts")),
-                example_source(TaskSource::Justfile, "justfile", None),
+                example_source(ProviderId::PackageJson, "package.json", Some("scripts")),
+                example_source(ProviderId::Just, "justfile", None),
             ],
             tasks: vec![
                 example_task(
-                    TaskSource::PackageJson,
+                    ProviderId::PackageJson,
                     "package.json",
                     "build",
                     "bun run build",
                 ),
                 example_task(
-                    TaskSource::PackageJson,
+                    ProviderId::PackageJson,
                     "package.json",
                     "fmt:update",
                     "bun run fmt:update",
                 ),
-                example_task(TaskSource::Justfile, "justfile", "build", "just build"),
+                example_task(ProviderId::Just, "justfile", "build", "just build"),
             ],
             tools: vec![
                 example_tool(DependencyKind::Runtime, "node", "24.0.0"),
@@ -588,23 +580,34 @@ fn example_node_ecosystem() -> EcosystemEntry {
         name: "node",
         root: EXAMPLE_ROOT.to_string(),
         selected_package_manager: Some("bun"),
-        signals: serde_json::json!({
-            "lockfile_pm": "bun",
-            "manifest_pm": "bun",
-            "path_probe": { "bun": "/usr/bin/bun", "npm": "/usr/bin/npm" },
-        }),
+        signals: serde_json::to_value(super::project::SourceSignals {
+            lockfile_pm: Some("bun"),
+            manifest_pm: Some(super::project::ManifestPm {
+                pm: "bun",
+                source: "packageManager",
+                version: Some("1.1.0".to_string()),
+                on_fail: runner_core::OnFail::Ignore.label(),
+            }),
+            path_probe: [
+                ("bun", Some("/usr/bin/bun".to_string())),
+                ("npm", Some("/usr/bin/npm".to_string())),
+            ]
+            .into(),
+            shims: BTreeMap::new(),
+        })
+        .expect("signals serialize"),
     }
 }
 
 fn example_source(
-    source: TaskSource,
+    source: ProviderId,
     relpath: &str,
     task_pointer: Option<&'static str>,
 ) -> SourceEntry<'static> {
     SourceEntry {
         exists: true,
-        id: format!("src:root:{}", structured_source_label(source)),
-        kind: StructuredSource(source),
+        id: format!("src:root:{}", source.label()),
+        kind: SourceLabel(source),
         package: None,
         path: format!("{EXAMPLE_ROOT}/{relpath}"),
         relpath: relpath.to_string(),
@@ -614,7 +617,7 @@ fn example_source(
 }
 
 fn example_task(
-    source: TaskSource,
+    source: ProviderId,
     relpath: &str,
     name: &'static str,
     resolved: &str,
@@ -630,13 +633,11 @@ fn example_task(
         name,
         resolved: Some(resolved.to_string()),
         scope: "root",
-        self_executable: false,
         source: Some(format!("{EXAMPLE_ROOT}/{relpath}")),
-        source_pointer: Some(match source {
-            TaskSource::PackageJson => format!("scripts.{name}"),
-            TaskSource::CargoAliases => format!("alias.{name}"),
-            _ => name.to_string(),
-        }),
+        source_pointer: Some(
+            super::labels::task_container_key(source)
+                .map_or_else(|| name.to_string(), |key| format!("{key}.{name}")),
+        ),
     }
 }
 
@@ -728,7 +729,6 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
         explain: overrides.explain,
         fallback: overrides.fallback,
         failure_policy: overrides.failure_policy,
-        install_pms: Vec::new(),
         no_warnings: overrides.no_warnings,
         on_collision: overrides.on_collision,
         output_grouping: overrides.grouping,
@@ -740,21 +740,26 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             host_stream: overrides.global_host_stream().label(),
         },
         on_mismatch: overrides.on_mismatch,
-        pm: overrides.pm.as_ref().map(|o| o.pm),
+        pm: overrides.pm.as_ref().map(|o| PmLabel(o.pm)),
         pm_by_ecosystem: overrides
             .pm_by_ecosystem
             .iter()
-            .map(|(&eco, o)| (eco, o.pm))
+            .map(|(&eco, o)| (EcosystemLabel(eco), PmLabel(o.pm)))
             .collect(),
-        prefer_runners: overrides.prefer_runners.clone(),
+        prefer_runners: overrides
+            .prefer_runners
+            .iter()
+            .copied()
+            .map(RunnerLabel)
+            .collect(),
         prefer_sources: overrides
             .prefer_sources
             .iter()
             .copied()
-            .map(StructuredSource)
+            .map(SourceLabel)
             .collect(),
-        runner: overrides.runner.as_ref().map(|o| o.runner),
-        runtime: overrides.runtime.as_ref().map(|o| o.runtime),
+        runner: overrides.runner.as_ref().map(|o| RunnerLabel(o.runner)),
+        runtime: overrides.runtime.as_ref().map(|o| RuntimeLabel(o.runtime)),
         script_policy: overrides.script_policy,
         fetch: overrides.reach.label(),
         lockfile: overrides.lockfile,
@@ -770,167 +775,110 @@ fn overrides_report(overrides: &ResolutionOverrides) -> Overrides {
             .map(|(name, sources)| {
                 (
                     name.clone(),
-                    sources.iter().copied().map(StructuredSource).collect(),
+                    sources.iter().copied().map(SourceLabel).collect(),
                 )
             })
             .collect(),
     }
 }
 
-/// The package-manager decisions the report describes, per dispatched source.
+/// The package-manager decision for each task source package managers dispatch.
 pub(crate) struct Decisions {
-    node: Option<PmDecision>,
-    python: Option<PmDecision>,
-    manifest: Option<crate::commands::run::decision::ManifestDeclaration>,
+    sources: Vec<(ProviderId, Option<PmDecision>)>,
     error: Option<String>,
     warnings: Vec<DetectionWarning>,
 }
 
 impl Decisions {
     pub(crate) fn from_observed(
+        ctx: &ProjectContext,
         observed: &std::io::Result<Observed>,
         overrides: &ResolutionOverrides,
     ) -> Self {
+        let sources = super::project::dispatched_sources(ctx, observed.as_ref().ok());
         let Ok(observed) = observed else {
             return Self {
-                node: None,
-                python: None,
-                manifest: None,
+                sources: sources.into_iter().map(|source| (source, None)).collect(),
                 error: observed.as_ref().err().map(ToString::to_string),
                 warnings: Vec::new(),
             };
         };
-        let node = observed.decision(runner_core::ProviderId::PackageJson);
-        let python = observed.decision(runner_core::ProviderId::Pyproject);
-        let warnings = [&node, &python]
+        let sources: Vec<(ProviderId, Option<PmDecision>)> = sources
             .into_iter()
-            .flatten()
+            .map(|source| (source, observed.decision(source)))
+            .collect();
+        let warnings = sources
+            .iter()
+            .filter_map(|(_, decision)| decision.as_ref())
             .flat_map(|decision| decision.warnings(&observed.project, overrides))
             .collect();
         Self {
-            manifest: observed.manifest_declaration(runner_core::ProviderId::PackageJson),
-            node,
-            python,
+            sources,
             error: None,
             warnings,
         }
     }
 
-    /// The decision for `ecosystem`'s scripts, when the ecosystem has one.
-    const fn for_ecosystem(&self, ecosystem: Ecosystem) -> Option<&PmDecision> {
-        match ecosystem {
-            Ecosystem::Node => self.node.as_ref(),
-            Ecosystem::Python => self.python.as_ref(),
-            _ => None,
-        }
-    }
-
-    /// Whether the project carries Node context: a dispatching package
-    /// manager, a detected Node package manager, or a `package.json` task.
-    pub(crate) fn has_node_context(&self, ctx: &ProjectContext) -> bool {
-        self.node.is_some()
-            || ctx
-                .package_managers()
-                .iter()
-                .any(|pm| pm.ecosystem() == Ecosystem::Node)
-            || ctx
-                .tasks
-                .iter()
-                .any(|t| matches!(t.source, TaskSource::PackageJson))
-    }
-
-    fn has_python_context(&self, ctx: &ProjectContext) -> bool {
-        self.python.is_some()
-            || ctx
-                .package_managers()
-                .iter()
-                .any(|pm| pm.ecosystem() == Ecosystem::Python)
-            || ctx
-                .tasks
-                .iter()
-                .any(|t| matches!(t.source, TaskSource::PyprojectScripts))
+    /// The dispatched source of `ecosystem` and its decision.
+    fn for_ecosystem(&self, ecosystem: Ecosystem) -> Option<(ProviderId, Option<&PmDecision>)> {
+        self.sources
+            .iter()
+            .find(|(source, _)| source.ecosystem() == ecosystem)
+            .map(|(source, decision)| (*source, decision.as_ref()))
     }
 }
 
 fn ecosystems(
     ctx: &ProjectContext,
+    observed: Option<&Observed>,
     decisions: &Decisions,
     resolve_shims: bool,
 ) -> Vec<EcosystemEntry> {
     let mut seen = Vec::new();
-    for pm in &ctx.package_managers() {
-        let eco = pm.ecosystem();
+    let dispatched = decisions.sources.iter().map(|(source, _)| *source);
+    for eco in ctx
+        .package_managers()
+        .into_iter()
+        .chain(dispatched)
+        .map(Named::ecosystem)
+    {
         if !seen.contains(&eco) {
             seen.push(eco);
         }
     }
-    if decisions.has_node_context(ctx) && !seen.contains(&Ecosystem::Node) {
-        seen.push(Ecosystem::Node);
-    }
-    if decisions.has_python_context(ctx) && !seen.contains(&Ecosystem::Python) {
-        seen.push(Ecosystem::Python);
-    }
 
     seen.into_iter()
-        .map(|eco| match eco {
-            Ecosystem::Node => node_ecosystem(ctx, decisions, resolve_shims),
-            Ecosystem::Python => decided_ecosystem(
-                ctx,
-                Ecosystem::Python,
-                decisions,
-                detected_pm_signals(ctx, Ecosystem::Python),
-            ),
-            other => single_pm_ecosystem(ctx, other),
+        .map(|eco| match decisions.for_ecosystem(eco) {
+            Some((source, decision)) => {
+                let signals = super::project::source_signals(ctx, observed, source, resolve_shims);
+                decided_ecosystem(
+                    ctx,
+                    source,
+                    decision,
+                    decisions.error.as_deref(),
+                    serde_json::to_value(signals).unwrap_or_default(),
+                )
+            }
+            None => single_pm_ecosystem(ctx, eco),
         })
         .collect()
 }
 
-fn node_ecosystem(
-    ctx: &ProjectContext,
-    decisions: &Decisions,
-    resolve_shims: bool,
-) -> EcosystemEntry {
-    let probes = super::project::probe_signals(&ctx.root, resolve_shims);
-    // Shims are keyed by tool and carry the shim *manager* as data, not
-    // as the field name. Volta is merely the first manager the prober
-    // classifies; asdf/mise/proto entries slot in without a contract
-    // change. (The flat `list`/`info` shape's `volta_shims` spelling is
-    // frozen; only this structured report gets the generic shape.)
-    let shims = probes
-        .volta_shims
-        .iter()
-        .map(|(name, shim)| {
-            (
-                (*name).to_string(),
-                serde_json::json!({ "manager": "volta", "resolved": shim.resolved }),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>();
-    let signals = serde_json::json!({
-        "lockfile_pm": ctx.primary_node_pm().map(PackageManager::label),
-        "manifest_pm": decisions.manifest.as_ref().map(|d| d.pm.label()),
-        "path_probe": probes.path_probe,
-        "shims": shims,
-    });
-    decided_ecosystem(ctx, Ecosystem::Node, decisions, signals)
-}
-
-/// An ecosystem whose scripts are dispatched by a chosen package manager.
+/// An ecosystem whose `source` tasks are dispatched by a chosen package manager.
 fn decided_ecosystem(
     ctx: &ProjectContext,
-    eco: Ecosystem,
-    decisions: &Decisions,
+    source: ProviderId,
+    decision: Option<&PmDecision>,
+    error: Option<&str>,
     signals: serde_json::Value,
 ) -> EcosystemEntry {
-    let (decision, selected) = decisions.for_ecosystem(eco).map_or_else(
+    let (decision, selected) = decision.map_or_else(
         || {
             (
                 EcosystemDecision {
                     confidence: Confidence::None,
-                    reason: decisions
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| format!("no {} package manager detected", eco.label())),
+                    reason: error
+                        .map_or_else(|| crate::provider::no_dispatcher(source), ToOwned::to_owned),
                     selected: None,
                 },
                 None,
@@ -955,15 +903,15 @@ fn decided_ecosystem(
 
     EcosystemEntry {
         decision,
-        name: eco.label(),
+        name: source.ecosystem().label(),
         root: ctx.root.display().to_string(),
         selected_package_manager: selected,
         signals,
     }
 }
 
-/// Single-PM ecosystems (rust/go/deno/ruby/php): the detected manager
-/// *is* the decision; there is no competing-PM resolution chain.
+/// An ecosystem without a dispatched task source: the detected manager
+/// *is* the decision.
 fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
     let selected = ctx
         .package_managers()
@@ -983,19 +931,15 @@ fn single_pm_ecosystem(ctx: &ProjectContext, eco: Ecosystem) -> EcosystemEntry {
         name: eco.label(),
         root: ctx.root.display().to_string(),
         selected_package_manager: selected,
-        signals: detected_pm_signals(ctx, eco),
+        signals: serde_json::json!({
+            "package_managers": ctx
+                .package_managers()
+                .iter()
+                .filter(|pm| pm.ecosystem() == eco)
+                .map(|pm| pm.label())
+                .collect::<Vec<_>>(),
+        }),
     }
-}
-
-fn detected_pm_signals(ctx: &ProjectContext, eco: Ecosystem) -> serde_json::Value {
-    serde_json::json!({
-        "package_managers": ctx
-            .package_managers()
-            .iter()
-            .filter(|pm| pm.ecosystem() == eco)
-            .map(|pm| pm.label())
-            .collect::<Vec<_>>(),
-    })
 }
 
 fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
@@ -1012,8 +956,8 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
     seen.into_iter()
         .map(|task| {
             let source = task.source;
-            let kind = StructuredSource(source);
-            let anchor = super::labels::source_anchor(source, task.dir(&ctx.root));
+            let kind = SourceLabel(source);
+            let anchor = task.detail.source.clone();
             let path = anchor
                 .as_ref()
                 .map_or_else(String::new, |p| p.display().to_string());
@@ -1022,7 +966,7 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
             });
             SourceEntry {
                 exists: anchor.as_ref().is_some_and(|p| p.is_file()),
-                id: format!("src:{}:{}", task.scope(), structured_source_label(source)),
+                id: format!("src:{}:{}", task.scope(), source.label()),
                 kind,
                 package: task
                     .member
@@ -1031,7 +975,7 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
                 path,
                 relpath,
                 scope: task.scope(),
-                task_pointer: task_container_key(source),
+                task_pointer: super::labels::task_container_key(source),
             }
         })
         .collect()
@@ -1039,19 +983,6 @@ fn sources(ctx: &ProjectContext) -> Vec<SourceEntry<'_>> {
 
 fn tasks<'a>(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Vec<DoctorTask<'a>> {
     let prepared = crate::commands::run::core::prepare(ctx, overrides, "");
-
-    // `anchor_file` walks the filesystem; resolve each distinct
-    // (scope, source) pair once instead of once per task.
-    let mut anchors: std::collections::HashMap<(&str, TaskSource), Option<String>> =
-        std::collections::HashMap::new();
-    for task in &ctx.tasks {
-        anchors
-            .entry((task.scope(), task.source))
-            .or_insert_with(|| {
-                super::labels::source_anchor(task.source, task.dir(&ctx.root))
-                    .map(|p| p.display().to_string())
-            });
-    }
 
     ctx.tasks
         .iter()
@@ -1088,26 +1019,10 @@ fn tasks<'a>(ctx: &'a ProjectContext, overrides: &ResolutionOverrides) -> Vec<Do
                     runner_core::Dispatch::Builtin(_) => None,
                 }),
             scope: task.scope(),
-            self_executable: false,
-            source: anchors.get(&(task.scope(), task.source)).cloned().flatten(),
+            source: task.detail.source.as_ref().map(|p| p.display().to_string()),
             source_pointer: super::labels::source_pointer(task),
         })
         .collect()
-}
-
-/// Container key holding tasks inside the source file.
-const fn task_container_key(source: TaskSource) -> Option<&'static str> {
-    match source {
-        TaskSource::CargoAliases => Some("alias"),
-        TaskSource::PackageJson => Some("scripts"),
-        TaskSource::DenoJson
-        | TaskSource::TurboJson
-        | TaskSource::Taskfile
-        | TaskSource::MiseToml => Some("tasks"),
-        TaskSource::BaconToml => Some("jobs"),
-        TaskSource::PyprojectScripts => Some("project.scripts"),
-        TaskSource::Makefile | TaskSource::Justfile | TaskSource::GoPackage => None,
-    }
 }
 
 fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
@@ -1117,27 +1032,28 @@ fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
 
     let mut tools = Vec::new();
 
-    if decisions.has_node_context(ctx) {
-        tools.push(probe_tool(
-            "node",
-            DependencyKind::Runtime,
-            ctx.current_node()
-                .map(|v| v.trim_start_matches('v').to_string()),
-            true,
-            &path,
-            pathext_ref,
-        ));
+    let runtimes = ctx.runtime_versions();
+    let mut ecosystems: Vec<Ecosystem> = Vec::new();
+    for (source, _) in &decisions.sources {
+        if !ecosystems.contains(&source.ecosystem()) {
+            ecosystems.push(source.ecosystem());
+        }
     }
-    // Same reasoning as the node runtime probe above: a resolved
-    // `uv run <task>` must never reference an interpreter the tools
-    // surface claims absent.
-    if decisions.has_python_context(ctx) {
-        use crate::tool::python::PYTHON_BIN;
-
+    for interpreter in runner_providers::REGISTRY.iter().filter(|provider| {
+        provider.kind.contains(runner_core::Kind::RUNTIME)
+            && !provider.kind.intersects(runner_core::Kind::PACKAGE_MANAGER)
+            && ecosystems.contains(&provider.ecosystem)
+    }) {
+        let Some(program) = interpreter.program else {
+            continue;
+        };
         tools.push(probe_tool(
-            PYTHON_BIN,
+            program,
             DependencyKind::Runtime,
-            None,
+            runtimes
+                .iter()
+                .find(|runtime| runtime.runtime == interpreter.id)
+                .and_then(|runtime| runtime.current.clone()),
             true,
             &path,
             pathext_ref,
@@ -1147,7 +1063,7 @@ fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
     for pm in &ctx.package_managers() {
         let required = true;
         tools.push(probe_tool(
-            pm_binary_name(*pm),
+            pm.provider().program.unwrap_or_else(|| pm.label()),
             DependencyKind::PackageManager,
             None,
             required,
@@ -1167,15 +1083,6 @@ fn tools(ctx: &ProjectContext, decisions: &Decisions) -> Vec<Tool> {
     }
 
     tools
-}
-
-/// Binary actually probed for a PM. Labels and binaries coincide except
-/// Bundler, whose CLI is `bundle`.
-const fn pm_binary_name(pm: PackageManager) -> &'static str {
-    match pm {
-        PackageManager::Bundler => "bundle",
-        _ => pm.label(),
-    }
 }
 
 fn probe_tool(
@@ -1403,14 +1310,16 @@ const fn civil_from_days(days: i64) -> (i64, i64, i64) {
 
 #[cfg(test)]
 mod tests {
+    use crate::provider::Named;
 
     use super::{DoctorReport, rfc3339_utc};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{Ecosystem, PackageManager, ProjectContext, Task, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::{Ecosystem, ProviderId};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
-        crate::tool::test_support::write_signal(&root, PackageManager::Cargo.label());
+        crate::tool::test_support::write_signal(&root, ProviderId::Cargo);
         let mut ctx = ProjectContext {
             cwd: root.clone(),
             root,
@@ -1423,7 +1332,7 @@ mod tests {
         ctx
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.to_string(),
             source,
@@ -1485,9 +1394,9 @@ mod tests {
 
     #[test]
     fn v3_report_surfaces_duplicate_names_as_conflicts() {
-        let mut alias = task("t", TaskSource::CargoAliases);
+        let mut alias = task("t", ProviderId::Cargo);
         alias.alias_of = Some("test".to_string());
-        let ctx = context(vec![alias, task("t", TaskSource::Justfile)]);
+        let ctx = context(vec![alias, task("t", ProviderId::Just)]);
         let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
@@ -1497,22 +1406,19 @@ mod tests {
         // The justfile recipe wins: same tier, but recipes rank before
         // aliases.
         assert_eq!(conflict["selected"], "root:just#t");
-        assert_eq!(
-            conflict["shadowed"],
-            serde_json::json!(["root:cargo-alias#t"])
-        );
+        assert_eq!(conflict["shadowed"], serde_json::json!(["root:cargo#t"]));
     }
 
     #[test]
     fn v3_report_resolves_cargo_alias_tasks() {
-        let mut alias = task("t", TaskSource::CargoAliases);
+        let mut alias = task("t", ProviderId::Cargo);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias]);
         let report = DoctorReport::build(&ctx, &ResolutionOverrides::default(), false);
         let json = serde_json::to_value(&report).expect("report should serialize");
 
         let task = &json["tasks"][0];
-        assert_eq!(task["fqn"], "root:cargo-alias#t");
+        assert_eq!(task["fqn"], "root:cargo#t");
         assert_eq!(task["is_alias"], true);
         assert_eq!(task["definition"], "test");
         assert_eq!(task["resolved"], "cargo t");
@@ -1527,7 +1433,7 @@ mod tests {
         // and `tools` must surface Node too; otherwise the document is
         // internally inconsistent (tasks reference a runtime the rest of
         // the report claims absent).
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let ctx = context(vec![task("build", ProviderId::PackageJson)]);
         assert!(
             !ctx.package_managers()
                 .iter()
@@ -1555,9 +1461,8 @@ mod tests {
         // a bare pyproject.toml with [project.scripts] but no uv.lock/poetry
         // markers still resolves tasks via the detected/overridden Python
         // PM, so ecosystems/tools must surface Python too.
-        use crate::tool::python::PYTHON_BIN;
-
-        let ctx = context(vec![task("build", TaskSource::PyprojectScripts)]);
+        let python = ProviderId::Python.provider().program;
+        let ctx = context(vec![task("build", ProviderId::Pyproject)]);
         assert!(
             !ctx.package_managers()
                 .iter()
@@ -1574,7 +1479,7 @@ mod tests {
         );
         let tools = json["tools"].as_array().expect("tools array");
         assert!(
-            tools.iter().any(|t| t["name"] == PYTHON_BIN),
+            tools.iter().any(|t| t["name"].as_str() == python),
             "python runtime tool must be probed when pyproject.toml tasks exist"
         );
     }
@@ -1593,8 +1498,8 @@ mod tests {
             None,
         )
         .expect("runtime override should parse");
-        let mut ctx = context(vec![task("build", TaskSource::PackageJson)]);
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Bun.label());
+        let mut ctx = context(vec![task("build", ProviderId::PackageJson)]);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Bun);
         crate::tool::test_support::seed_context(&mut ctx);
         let report = DoctorReport::build(&ctx, &overrides, false);
         let json = serde_json::to_value(&report).expect("report should serialize");
@@ -1643,11 +1548,8 @@ mod tests {
             ]
             .into(),
             script_policy: ScriptPolicy::Deny,
-            prefer_sources: vec![TaskSource::Justfile, TaskSource::CargoAliases],
-            task_source_overrides: BTreeMap::from([(
-                "build".to_string(),
-                vec![TaskSource::Justfile],
-            )]),
+            prefer_sources: vec![ProviderId::Just, ProviderId::Cargo],
+            task_source_overrides: BTreeMap::from([("build".to_string(), vec![ProviderId::Just])]),
             ..ResolutionOverrides::default()
         };
 
@@ -1665,10 +1567,7 @@ mod tests {
             serde_json::json!({"npm": ["install"], "pnpm": []})
         );
         assert_eq!(ov["script_policy"], "deny");
-        assert_eq!(
-            ov["prefer_sources"],
-            serde_json::json!(["just", "cargo-alias"])
-        );
+        assert_eq!(ov["prefer_sources"], serde_json::json!(["just", "cargo"]));
         assert_eq!(ov["task_source_pins"]["build"], serde_json::json!(["just"]));
     }
 
@@ -1773,9 +1672,6 @@ mod tests {
         }
     }
 
-    /// The closed key set depends on `Ecosystem` variants carrying no doc
-    /// comments (see `src/types.rs`); a `///` there silently reverts the
-    /// map to open `additionalProperties`. This pins the shape.
     #[test]
     fn pm_by_ecosystem_schema_keys_stay_closed() {
         let schema = serde_json::to_value(schemars::schema_for!(super::Overrides))
@@ -1793,8 +1689,12 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        let mut expected: Vec<&str> = Ecosystem::ALL.iter().map(|eco| eco.label()).collect();
+        let mut expected: Vec<&str> = crate::provider::package_managers()
+            .into_iter()
+            .map(|pm| pm.ecosystem().label())
+            .collect();
         expected.sort_unstable();
+        expected.dedup();
         assert_eq!(keys, expected);
     }
 }

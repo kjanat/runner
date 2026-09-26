@@ -1,6 +1,6 @@
 //! Core types, pipeline and services for runner.
 
-pub mod capability;
+mod capability;
 pub mod cascade;
 pub mod declare;
 pub mod env;
@@ -22,14 +22,16 @@ pub mod signal;
 pub mod task;
 pub mod template;
 pub mod tree;
+pub mod usage;
 pub mod verbosity;
 pub mod warning;
 pub mod workspace;
 
 pub use capability::{
-    BinDirs, BinsCap, Capabilities, CleanCap, Discovery, ExecCap, Frozen, HealthCap, InstallCap,
-    Lockfiles, NameShape, QuietSupport, RunFileCap, RunTaskCap, RuntimeCap, ScriptMechanism,
-    ScriptSupport, TestCap, UsageCap, UsageSpec, WorkspaceCap,
+    BinDirs, BinRuns, BinsCap, Capabilities, CleanCap, Discovery, ExecCap, FileFlagsFn, Frozen,
+    HealthCap, InstallCap, Installed, InstalledBin, Lockfiles, NameShape, PackagesCap,
+    QuietSupport, RunFileCap, RunTaskCap, RuntimeCap, ScriptMechanism, ScriptSupport, Shim,
+    ShimsCap, TaskTable, TestCap, UsageCap, WorkspaceCap,
 };
 pub use cascade::{CASCADE, Cap, Need, Rung};
 pub use declare::{SETTINGS, Setting, SettingKind};
@@ -59,6 +61,7 @@ pub use signal::{Declared, Field, OnFail, Signal, SignalId};
 pub use task::{Extracted, Task, TaskDetail};
 pub use template::{Piece, Rendered, Request, ScriptRequest, Template};
 pub use tree::Tree;
+pub use usage::{UsageArg, UsageFlag, UsageSpec, usage};
 pub use verbosity::Verbosity;
 pub use warning::Warning;
 pub use workspace::{Declaration, Member, Workspace};

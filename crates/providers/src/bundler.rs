@@ -18,7 +18,6 @@ pub const PROVIDER: Provider = Provider {
         Signal::Lockfile("Gemfile.lock"),
         Signal::Probe("bundle"),
     ],
-    writes: &[],
     caps: Capabilities {
         install: Some(InstallCap {
             argv: t!["install"],

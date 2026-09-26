@@ -32,8 +32,8 @@ pub const PROVIDER: Provider = Provider {
         MANIFEST[1],
         Signal::Probe("npm"),
     ],
-    writes: super::WRITES,
     caps: Capabilities {
+        writes: super::WRITES,
         package_exec: Some(ExecCap {
             program: Some("npx"),
             argv: t!["--package", Package, "--", Name, Args],

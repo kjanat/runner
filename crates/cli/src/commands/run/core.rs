@@ -1,5 +1,6 @@
 //! CLI invocation inputs for observation, resolution and planning.
 
+use crate::provider::Named;
 use runner_core::{
     Choice, Ecosystem as CoreEcosystem, Layer, PerEcosystem, Policy, Project, ProviderId, Scope,
     Task as CoreTask, TaskRank, Tree, Verbosity,
@@ -9,7 +10,8 @@ use runner_providers::REGISTRY;
 pub(crate) const BUILTINS: &[&str] = &["install", "clean", "list", "info", "completions"];
 
 use crate::resolver::ResolutionOverrides;
-use crate::types::{Ecosystem, JsRuntime, ProjectContext, Task, TaskRunner, TaskSource};
+use crate::types::{ProjectContext, Task};
+use runner_core::Ecosystem;
 
 /// The provider `label` names.
 pub(crate) fn provider(label: &str) -> Option<ProviderId> {
@@ -17,7 +19,7 @@ pub(crate) fn provider(label: &str) -> Option<ProviderId> {
 }
 
 /// The provider a task source is read by.
-pub(crate) fn source_provider(source: TaskSource) -> Option<ProviderId> {
+pub(crate) fn source_provider(source: ProviderId) -> Option<ProviderId> {
     provider(source.label())
 }
 
@@ -56,6 +58,20 @@ pub(crate) fn project(ctx: &ProjectContext) -> std::io::Result<Project> {
     ctx.project
         .clone()
         .map_err(|unobserved| (&unobserved).into())
+}
+
+/// The argument spec `task`'s source declares for it.
+///
+/// # Errors
+/// Returns the source's failure to read the spec.
+pub(crate) fn usage(
+    ctx: &ProjectContext,
+    task: &Task,
+) -> Result<Option<runner_core::UsageSpec>, runner_core::Warning> {
+    let (Some(task), Ok(project)) = (self::task(task), ctx.project.as_ref()) else {
+        return Ok(None);
+    };
+    runner_core::usage(&tree(ctx), project, &task, &REGISTRY)
 }
 
 /// The core's view of one task.
@@ -112,7 +128,7 @@ pub(crate) fn policy(overrides: &ResolutionOverrides) -> Policy {
                 overrides
                     .prefer_runners
                     .iter()
-                    .filter_map(|runner| runner.task_source()),
+                    .filter_map(|runner| runner.as_task_source()),
             )
             .filter_map(source_provider)
             .collect(),
@@ -282,20 +298,26 @@ impl Prepared {
         super::decision::decide(&self.tree, &self.project, &self.policy, source)
     }
 
-    /// The package manager that dispatches `selected` in its own scope, else
-    /// the one for `package.json` scripts in the invocation scope.
+    /// The package manager that dispatches `selected` in its own scope when
+    /// package managers dispatch its source, else the first one that
+    /// dispatches a managed source in that scope.
     pub(crate) fn decision_for(
         &self,
         selected: Option<&Task>,
     ) -> Option<super::decision::PmDecision> {
-        let Some(selected) = selected.and_then(task) else {
-            return self.decision(ProviderId::PackageJson);
-        };
-        let source = match selected.source {
-            ProviderId::Pyproject => ProviderId::Pyproject,
-            _ => ProviderId::PackageJson,
-        };
-        self.decision_in(source, &selected.scope)
+        let selected = selected.and_then(task);
+        let scope = selected.as_ref().map_or_else(
+            || runner_core::plan::scope_at(&self.tree, &self.tree.cwd),
+            |task| task.scope.clone(),
+        );
+        if let Some(task) = &selected
+            && task.source.is_managed()
+        {
+            return self.decision_in(task.source, &scope);
+        }
+        crate::provider::managed_sources()
+            .into_iter()
+            .find_map(|source| self.decision_in(source, &scope))
     }
 
     /// The package manager that dispatches `source` in `scope`.
@@ -348,7 +370,6 @@ impl Prepared {
                 overrides,
                 &super::dispatch::Chosen {
                     token,
-                    args: &[],
                     rung,
                     entry,
                     key: &key,
@@ -390,15 +411,15 @@ fn layer(origin: &crate::resolver::OverrideOrigin) -> Layer {
     }
 }
 
-fn runner_choice(runner: TaskRunner, origin: &crate::resolver::OverrideOrigin) -> Option<Choice> {
-    let source = runner.task_source()?;
+fn runner_choice(runner: ProviderId, origin: &crate::resolver::OverrideOrigin) -> Option<Choice> {
+    let source = runner.as_task_source()?;
     Some(Choice {
         id: source_provider(source)?,
         from: layer(origin),
     })
 }
 
-fn runtime_choice(runtime: JsRuntime, origin: &crate::resolver::OverrideOrigin) -> Option<Choice> {
+fn runtime_choice(runtime: ProviderId, origin: &crate::resolver::OverrideOrigin) -> Option<Choice> {
     Some(Choice {
         id: provider(runtime.label())?,
         from: layer(origin),
@@ -485,18 +506,19 @@ fn tool_ops(
 
 #[cfg(test)]
 mod tests {
+    use crate::provider::Named;
     use std::path::PathBuf;
 
     use runner_core::{ProviderId, Scope};
 
     use super::{policy, project, source_provider, tree};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+    use crate::types::{ProjectContext, Task};
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
-        crate::tool::test_support::write_signal(&root, PackageManager::Pnpm.label());
-        crate::tool::test_support::write_signal(&root, TaskRunner::Just.label());
+        crate::tool::test_support::write_signal(&root, ProviderId::Pnpm);
+        crate::tool::test_support::write_signal(&root, ProviderId::Just);
         let mut ctx = ProjectContext {
             cwd: root.clone(),
             root,
@@ -509,7 +531,7 @@ mod tests {
         ctx
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.to_string(),
             source,
@@ -525,17 +547,17 @@ mod tests {
     #[test]
     fn every_task_source_the_cli_models_names_a_provider() {
         for source in [
-            TaskSource::PackageJson,
-            TaskSource::Makefile,
-            TaskSource::Justfile,
-            TaskSource::Taskfile,
-            TaskSource::TurboJson,
-            TaskSource::DenoJson,
-            TaskSource::CargoAliases,
-            TaskSource::GoPackage,
-            TaskSource::BaconToml,
-            TaskSource::MiseToml,
-            TaskSource::PyprojectScripts,
+            ProviderId::PackageJson,
+            ProviderId::Make,
+            ProviderId::Just,
+            ProviderId::Task,
+            ProviderId::Turbo,
+            ProviderId::Deno,
+            ProviderId::Cargo,
+            ProviderId::Go,
+            ProviderId::Bacon,
+            ProviderId::Mise,
+            ProviderId::Pyproject,
         ] {
             assert!(
                 source_provider(source).is_some(),
@@ -547,7 +569,7 @@ mod tests {
 
     #[test]
     fn detected_tools_and_task_sources_all_become_present_providers() {
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let ctx = context(vec![task("build", ProviderId::PackageJson)]);
         let found = project(&ctx).unwrap();
         let ids: Vec<ProviderId> = found.present.iter().map(|p| p.provider).collect();
         assert!(ids.contains(&ProviderId::Pnpm));
@@ -614,15 +636,15 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("bun.lock"), "").unwrap();
         let mut ctx = context(vec![
-            task("build", TaskSource::PackageJson),
-            task("build", TaskSource::Justfile),
+            task("build", ProviderId::PackageJson),
+            task("build", ProviderId::Just),
         ]);
         ctx.root = dir.path().to_owned();
         ctx.cwd = ctx.root.clone();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Yarn.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Yarn);
         let overrides = ResolutionOverrides {
             runtime: Some(RuntimeOverride {
-                runtime: crate::types::JsRuntime::Bun,
+                runtime: ProviderId::Bun,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -675,7 +697,7 @@ mod tests {
         let mut ctx = context(Vec::new());
         ctx.root = dir.path().to_owned();
         ctx.cwd = ctx.root.clone();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Yarn.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Yarn);
         let overrides = ResolutionOverrides::default();
         crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         for error in [

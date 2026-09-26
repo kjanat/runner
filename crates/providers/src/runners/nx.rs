@@ -13,7 +13,6 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::TASK_SOURCE,
     program: Some("nx"),
     signals: &[Signal::File("nx.json"), Signal::Probe("nx")],
-    writes: &[],
     caps: Capabilities {
         clean: Some(CleanCap {
             dir_suffixes: &[],

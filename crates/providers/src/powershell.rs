@@ -50,7 +50,6 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::RUNTIME,
     program: Some(PROGRAM),
     signals: SIGNALS,
-    writes: &[],
     caps: Capabilities {
         file_fallback: true,
         file_interpreters: INTERPRETERS,

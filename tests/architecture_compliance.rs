@@ -222,7 +222,7 @@ fn a_host_manager_plan_cannot_resolve_to_a_project_shim() {
 }
 
 #[test]
-fn go_task_keeps_vcs_stamping_in_the_planned_environment() {
+fn go_task_stamps_vcs_inside_a_checkout() {
     let fixture = Fixture::new();
     fixture.file("go.mod", "module example.com/auditgo\n\ngo 1.24\n");
     fixture.file("main.go", "package main\nfunc main() {}\n");
@@ -232,7 +232,7 @@ fn go_task_keeps_vcs_stamping_in_the_planned_environment() {
     fixture.file(
         "bin/go",
         "#!/bin/sh\ncase \"$1\" in\n version) echo 'go version go1.24.0 linux/amd64';;\n run) \
-         printf '%s\\n' \"$GOFLAGS\" >> \"$AUDIT_LOG\";;\nesac\n",
+         printf '%s\\n' \"$2\" >> \"$AUDIT_LOG\";;\nesac\n",
     );
     let output = fixture.run(&["run", "auditgo"], "local");
     assert!(

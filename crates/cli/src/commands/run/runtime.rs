@@ -20,12 +20,14 @@
 //! literally into the task's argv, so deno must not get one. bun accepts args
 //! directly.
 
+use crate::provider::Named;
 use crate::resolver::ResolutionOverrides;
-use crate::types::{DetectionWarning, JsRuntime, PackageManager, ProjectContext, Task, TaskSource};
+use crate::types::{DetectionWarning, Task};
+use runner_core::{Ecosystem, ProviderId};
 
 /// The runtime an explicit `--runtime` / `RUNNER_RUNTIME` / `[runtime].js`
 /// selected, if any.
-pub(super) fn overridden(overrides: &ResolutionOverrides) -> Option<JsRuntime> {
+pub(super) fn overridden(overrides: &ResolutionOverrides) -> Option<ProviderId> {
     overrides.js_runtime()
 }
 
@@ -34,12 +36,12 @@ pub(super) fn overridden(overrides: &ResolutionOverrides) -> Option<JsRuntime> {
 /// It replaces a JS one (`npx`, `yarn exec`, `pnpm exec`, `bun x`, `deno x`)
 /// and a resolver that found nothing at all. A Python/Go/Rust/Ruby/PHP
 /// project's exec primitive is left alone: there is no JS process to move.
-pub(super) fn replaces_exec(resolved_pm: Option<PackageManager>) -> bool {
-    resolved_pm.is_none_or(|pm| pm.is_node() || pm == PackageManager::Deno)
+pub(super) fn replaces_exec(resolved_pm: Option<ProviderId>) -> bool {
+    resolved_pm.is_none_or(|pm| matches!(pm.ecosystem(), Ecosystem::Node | Ecosystem::Deno))
 }
 
 /// The task sources the runtime's own `run_task` capability accepts.
-pub(super) fn honored_sources(runtime: JsRuntime) -> Vec<TaskSource> {
+pub(super) fn honored_sources(runtime: ProviderId) -> Vec<ProviderId> {
     runner_providers::REGISTRY
         .by_label(runtime.label())
         .and_then(|provider| provider.caps.run_task)
@@ -47,14 +49,14 @@ pub(super) fn honored_sources(runtime: JsRuntime) -> Vec<TaskSource> {
             cap.sources
                 .iter()
                 .filter_map(|id| {
-                    TaskSource::from_label(runner_providers::REGISTRY.by_id(*id).label)
+                    crate::provider::task_source(runner_providers::REGISTRY.by_id(*id).label)
                 })
                 .collect()
         })
 }
 
 /// Whether a task from `source` dispatches on `runtime`.
-pub(crate) fn honors(source: TaskSource, runtime: JsRuntime) -> bool {
+pub(crate) fn honors(source: ProviderId, runtime: ProviderId) -> bool {
     honored_sources(runtime).contains(&source)
 }
 
@@ -75,7 +77,7 @@ pub(super) fn report_unhonored(
 pub(super) fn report_unhonored_source(
     overrides: &ResolutionOverrides,
     name: &str,
-    source: TaskSource,
+    source: ProviderId,
     sink: crate::commands::WarningSink<'_>,
 ) {
     let Some(runtime) = overridden(overrides) else {
@@ -106,11 +108,11 @@ pub(super) fn report_unhonored_source(
 /// is about to run through a non-JS ecosystem's exec primitive.
 pub(super) fn report_unapplied_exec(
     overrides: &ResolutionOverrides,
-    runtime: JsRuntime,
-    resolved_pm: Option<PackageManager>,
+    runtime: ProviderId,
+    resolved_pm: Option<ProviderId>,
     sink: crate::commands::WarningSink<'_>,
 ) {
-    let source = resolved_pm.map_or("PATH", PackageManager::label);
+    let source = resolved_pm.map_or("PATH", Named::label);
     crate::commands::print_explain(
         overrides,
         &format!(
@@ -125,50 +127,13 @@ pub(super) fn report_unapplied_exec(
     );
 }
 
-/// Warn when `node --run` will skip lifecycle scripts the project defines.
-///
-/// Node's `--run` deliberately omits `pre<task>` / `post<task>`, unlike `npm
-/// run`, `bun run` and `deno task`, which all run them. Silent omission turns
-/// a generated-source `prebuild` into a stale build that fails somewhere else,
-/// so name the scripts that will not run.
-pub(super) fn warn_skipped_lifecycle(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    task: &str,
-    sink: crate::commands::WarningSink<'_>,
-) {
-    let skipped = lifecycle_scripts(ctx, task);
-    if skipped.is_empty() {
-        return;
-    }
-    crate::commands::print_warning_slice(
-        &[DetectionWarning::NodeRunSkipsLifecycle {
-            task: task.to_string(),
-            skipped,
-        }],
-        overrides,
-        sink,
-    );
-}
-
-/// The `pre<task>` / `post<task>` scripts `package.json` actually declares.
-pub(crate) fn lifecycle_scripts(ctx: &ProjectContext, task: &str) -> Vec<String> {
-    [format!("pre{task}"), format!("post{task}")]
-        .into_iter()
-        .filter(|name| {
-            ctx.tasks
-                .iter()
-                .any(|entry| entry.source == TaskSource::PackageJson && entry.name == *name)
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{honors, replaces_exec};
-    use crate::types::{JsRuntime, PackageManager, TaskSource};
+    use crate::provider::Named;
+    use runner_core::ProviderId;
 
-    fn script(runtime: JsRuntime, args: &[String]) -> (String, Vec<String>) {
+    fn script(runtime: ProviderId, args: &[String]) -> (String, Vec<String>) {
         let provider = runner_providers::REGISTRY
             .by_label(runtime.label())
             .unwrap();
@@ -201,7 +166,7 @@ mod tests {
         };
         let task = runner_core::Task {
             name: "build".into(),
-            source: runner_core::ProviderId::PackageJson,
+            source: ProviderId::PackageJson,
             scope: runner_core::Scope::Root,
             target: None,
             description: None,
@@ -229,14 +194,14 @@ mod tests {
 
     #[test]
     fn node_scripts_need_an_injected_double_dash() {
-        let (program, args) = script(JsRuntime::Node, &[String::from("--watch")]);
+        let (program, args) = script(ProviderId::Node, &[String::from("--watch")]);
         assert_eq!(program, "node");
         assert_eq!(args, ["--run", "build", "--", "--watch"]);
     }
 
     #[test]
     fn bun_scripts_take_args_directly_under_a_forced_runtime() {
-        let (program, args) = script(JsRuntime::Bun, &[String::from("--watch")]);
+        let (program, args) = script(ProviderId::Bun, &[String::from("--watch")]);
         assert_eq!(program, "bun");
         assert_eq!(args, ["--bun", "run", "build", "--watch"]);
     }
@@ -244,37 +209,37 @@ mod tests {
     #[test]
     fn deno_scripts_must_not_get_a_double_dash() {
         // `deno task build -- --watch` forwards the `--` into the task's argv.
-        let (program, args) = script(JsRuntime::Deno, &[String::from("--watch")]);
+        let (program, args) = script(ProviderId::Deno, &[String::from("--watch")]);
         assert_eq!(program, "deno");
         assert_eq!(args, ["task", "build", "--watch"]);
     }
 
     #[test]
     fn no_runtime_emits_a_trailing_bare_double_dash_without_args() {
-        assert_eq!(script(JsRuntime::Node, &[]).1, ["--run", "build"]);
-        assert_eq!(script(JsRuntime::Bun, &[]).1, ["--bun", "run", "build"]);
-        assert_eq!(script(JsRuntime::Deno, &[]).1, ["task", "build"]);
+        assert_eq!(script(ProviderId::Node, &[]).1, ["--run", "build"]);
+        assert_eq!(script(ProviderId::Bun, &[]).1, ["--bun", "run", "build"]);
+        assert_eq!(script(ProviderId::Deno, &[]).1, ["task", "build"]);
     }
 
     #[test]
     fn exec_replacement_is_scoped_to_js_ecosystems() {
         assert!(replaces_exec(None));
-        assert!(replaces_exec(Some(PackageManager::Pnpm)));
-        assert!(replaces_exec(Some(PackageManager::Deno)));
-        assert!(!replaces_exec(Some(PackageManager::Uv)));
-        assert!(!replaces_exec(Some(PackageManager::Go)));
-        assert!(!replaces_exec(Some(PackageManager::Cargo)));
+        assert!(replaces_exec(Some(ProviderId::Pnpm)));
+        assert!(replaces_exec(Some(ProviderId::Deno)));
+        assert!(!replaces_exec(Some(ProviderId::Uv)));
+        assert!(!replaces_exec(Some(ProviderId::Go)));
+        assert!(!replaces_exec(Some(ProviderId::Cargo)));
     }
 
     #[test]
     fn package_json_honors_every_runtime_and_deno_json_only_deno() {
-        for runtime in JsRuntime::all() {
-            assert!(honors(TaskSource::PackageJson, *runtime));
-            assert!(!honors(TaskSource::TurboJson, *runtime));
-            assert!(!honors(TaskSource::Justfile, *runtime));
+        for runtime in crate::provider::js_runtimes() {
+            assert!(honors(ProviderId::PackageJson, runtime));
+            assert!(!honors(ProviderId::Turbo, runtime));
+            assert!(!honors(ProviderId::Just, runtime));
         }
-        assert!(honors(TaskSource::DenoJson, JsRuntime::Deno));
-        assert!(!honors(TaskSource::DenoJson, JsRuntime::Bun));
-        assert!(!honors(TaskSource::DenoJson, JsRuntime::Node));
+        assert!(honors(ProviderId::Deno, ProviderId::Deno));
+        assert!(!honors(ProviderId::Deno, ProviderId::Bun));
+        assert!(!honors(ProviderId::Deno, ProviderId::Node));
     }
 }

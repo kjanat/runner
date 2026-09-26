@@ -15,9 +15,12 @@ pub const PROVIDER: Provider = Provider {
         Signal::File("package.json5"),
         Signal::File("package.yaml"),
     ],
-    writes: &[],
     caps: Capabilities {
+        task_table: runner_core::TaskTable::Key("scripts"),
         task_priority: 1,
+        packages: Some(runner_core::PackagesCap {
+            installed: super::packages::node_modules,
+        }),
         ..Capabilities::NONE
     },
     tasks: Some(crate::extract::scripts::package_tasks),

@@ -8,7 +8,7 @@ use clap::{Args, Parser, Subcommand};
 use clap_complete::aot::Shell;
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate, SubcommandCandidates};
 
-use crate::types::{PackageManager, TaskRunner};
+use crate::provider::Named;
 
 /// Color palette for help output. clap auto-disables when stdout isn't a
 /// TTY or `NO_COLOR` is set, so the same constant works for piped output
@@ -87,12 +87,12 @@ static DIR_HELP: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Comma-joined, cyan-styled list of every [`PackageManager`] label.
+/// Comma-joined, cyan-styled list of every [`ProviderId`] label.
 /// Built once at first help-text access via [`LazyLock`]; rebuilding the
 /// list on every `--help` invocation would waste work for a value that is
-/// fully determined by the [`PackageManager::all`] enumeration.
+/// fully determined by the [`ProviderId::all`] enumeration.
 static PM_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = PackageManager::all()
+    let joined = crate::provider::package_managers()
         .iter()
         .map(|pm| pm.label())
         .collect::<Vec<_>>()
@@ -100,10 +100,10 @@ static PM_HELP: LazyLock<String> = LazyLock::new(|| {
     format!("Force PM ({joined}) {}", env_suffix("RUNNER_PM"))
 });
 
-/// Comma-joined, cyan-styled list of every [`TaskRunner`] label.
+/// Comma-joined, cyan-styled list of every [`ProviderId`] label.
 /// Lazy-built for the same reason as [`PM_HELP`].
 static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = TaskRunner::all()
+    let joined = crate::provider::runners()
         .iter()
         .map(|r| r.label())
         .collect::<Vec<_>>()
@@ -114,10 +114,10 @@ static RUNNER_HELP: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Comma-joined, cyan-styled list of every [`JsRuntime`] label.
+/// Comma-joined, cyan-styled list of every [`ProviderId`] label.
 /// Lazy-built for the same reason as [`PM_HELP`].
 static RUNTIME_HELP: LazyLock<String> = LazyLock::new(|| {
-    let joined = crate::types::JsRuntime::all()
+    let joined = crate::provider::js_runtimes()
         .iter()
         .map(|r| r.label())
         .collect::<Vec<_>>()
@@ -179,7 +179,7 @@ static RUNTIME_LONG_HELP: LazyLock<String> = LazyLock::new(|| {
 });
 
 /// Sort aliases after all real recipes in completion candidates by offsetting
-/// their display order beyond any realistic [`TaskSource::display_order`] value.
+/// their display order beyond any realistic [`ProviderId::display_order`] value.
 const ALIAS_DISPLAY_ORDER_OFFSET: usize = 100;
 /// Inside a workspace member, root tasks sort behind the member's own.
 const ROOT_DISPLAY_ORDER_OFFSET: usize = 20;
@@ -392,21 +392,22 @@ fn chain_args_candidates() -> Vec<CompletionCandidate> {
 }
 
 /// Candidates for a task's own arguments, from the spec its source
-/// declares. Only mise carries one today; every other source returns
-/// nothing and the trailing words stay uncompleted.
+/// declares. A source without one leaves the trailing words uncompleted.
 fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidate> {
     let Ok(dir) = completion_dir() else {
         return vec![];
     };
     let ctx = crate::detect::detect(&dir, &crate::resolver::ResolutionOverrides::default());
-    let Some(entry) = ctx
+    let Some(spec) = ctx
         .tasks
         .iter()
-        .find(|entry| entry.name == task && entry.source == crate::types::TaskSource::MiseToml)
+        .filter(|entry| entry.name == task && ctx.is_local(entry))
+        .find_map(|entry| {
+            crate::commands::run::core::usage(&ctx, entry)
+                .ok()
+                .flatten()
+        })
     else {
-        return vec![];
-    };
-    let Ok(Some(spec)) = crate::tool::mise::usage_spec(entry.dir(&ctx.root), task) else {
         return vec![];
     };
 
@@ -452,7 +453,7 @@ fn task_usage_candidates(task: &str, typed: &[String]) -> Vec<CompletionCandidat
 
 /// Which positional the cursor sits on: the count of already-complete
 /// positional words before it, skipping flags and the values they consume.
-fn positional_index(spec: &crate::tool::mise::UsageSpec, typed: &[String]) -> usize {
+fn positional_index(spec: &runner_core::UsageSpec, typed: &[String]) -> usize {
     // The final entry is the word being completed, not a finished one.
     let complete = typed.split_last().map_or(&[][..], |(_, rest)| rest);
     let mut index = 0;
@@ -577,7 +578,7 @@ fn member_task_candidates(
 
     let root_names: HashSet<&str> = root_tasks.iter().map(|task| task.name.as_str()).collect();
     let mut members_for_name: HashMap<&str, HashSet<&str>> = HashMap::new();
-    let mut sources_for_scoped_name: HashMap<(&str, &str), HashSet<crate::types::TaskSource>> =
+    let mut sources_for_scoped_name: HashMap<(&str, &str), HashSet<runner_core::ProviderId>> =
         HashMap::new();
     for task in member_tasks {
         members_for_name
@@ -590,15 +591,13 @@ fn member_task_candidates(
             .insert(task.source);
     }
     let is_self_passthrough = |task: &crate::types::Task| -> bool {
-        task.source == crate::types::TaskSource::PackageJson
-            && task
-                .passthrough_to
-                .and_then(TaskRunner::task_source)
-                .is_some_and(|peer| {
-                    sources_for_scoped_name
-                        .get(&(task.scope(), task.name.as_str()))
-                        .is_some_and(|set| set.contains(&peer))
-                })
+        task.passthrough_to
+            .and_then(Named::as_task_source)
+            .is_some_and(|peer| {
+                sources_for_scoped_name
+                    .get(&(task.scope(), task.name.as_str()))
+                    .is_some_and(|set| set.contains(&peer))
+            })
     };
     let mut candidates = Vec::new();
     let mut bare_emitted: HashSet<&str> = HashSet::new();
@@ -612,7 +611,8 @@ fn member_task_candidates(
             |desc| format!("{source_label}: {desc}"),
         );
         let tag = format!("{source_label} ({})", task.scope());
-        let order = usize::from(task.source.display_order()) + MEMBER_DISPLAY_ORDER_OFFSET;
+        let order =
+            usize::from(task.source.provider().caps.task_priority) + MEMBER_DISPLAY_ORDER_OFFSET;
         let unique_member = members_for_name
             .get(task.name.as_str())
             .is_some_and(|members| members.len() == 1);
@@ -680,28 +680,25 @@ fn bare_winners<'a>(
 /// `bare_winner` computation below), not from detection order, so it names the
 /// source `runner <name>` actually dispatches to.
 ///
-/// Exception: a `package.json` script whose body is a literal turbo
-/// passthrough wrapper (`"build": "turbo run build"`, the canonical
-/// Turborepo pattern) is dropped from completion candidates *iff* a
-/// same-named `turbo.json` task also exists. The passthrough flag is set
-/// during detection by inspecting the actual script body
-/// ([`crate::tool::turbo::is_self_passthrough`]), so a real script like
-/// `"build": "vite build"` keeps its qualified form even when a
-/// `turbo.json` `build` task is present. `runner list` still surfaces both
-/// sources for transparency, and `runner build` already dispatches through
-/// turbo, which outranks `package.json` by task priority.
+/// Exception: a task whose body only forwards to another runner's
+/// same-named task (`"build": "turbo run build"`) is dropped from completion
+/// candidates *iff* that runner's source defines the task. Detection reads
+/// the forwarding from the task body, so a real script like `"build": "vite
+/// build"` keeps its qualified form. `runner list` still surfaces both
+/// sources.
 fn task_candidates_from(
     all_tasks: &[crate::types::Task],
     current: Option<&crate::types::WorkspaceMember>,
 ) -> Vec<CompletionCandidate> {
     use std::collections::{HashMap, HashSet};
 
-    use crate::types::{Task, TaskSource};
+    use crate::types::Task;
+    use runner_core::ProviderId;
 
     let (member_tasks, tasks) = partition_local(all_tasks, current);
     let member_candidates = member_task_candidates(&member_tasks, &tasks);
 
-    let mut sources_for_name: HashMap<&str, HashSet<TaskSource>> = HashMap::new();
+    let mut sources_for_name: HashMap<&str, HashSet<ProviderId>> = HashMap::new();
     for task in &tasks {
         sources_for_name
             .entry(&task.name)
@@ -718,13 +715,12 @@ fn task_candidates_from(
         let Some(runner) = task.passthrough_to else {
             return false;
         };
-        let Some(peer_source) = runner.task_source() else {
+        let Some(peer_source) = runner.as_task_source() else {
             return false;
         };
-        task.source == TaskSource::PackageJson
-            && sources_for_name
-                .get(task.name.as_str())
-                .is_some_and(|set| set.contains(&peer_source))
+        sources_for_name
+            .get(task.name.as_str())
+            .is_some_and(|set| set.contains(&peer_source))
     };
 
     let mut effective_count: HashMap<&str, usize> = HashMap::new();
@@ -760,13 +756,14 @@ fn task_candidates_from(
                 (
                     help,
                     source_label.to_string(),
-                    usize::from(task.source.display_order()) + scope_offset,
+                    usize::from(task.source.provider().caps.task_priority) + scope_offset,
                 )
             },
             |target| {
                 let help = format!("→ {target}");
                 let tag = format!("{source_label} (aliases)");
-                let order = usize::from(task.source.display_order()) + ALIAS_DISPLAY_ORDER_OFFSET;
+                let order = usize::from(task.source.provider().caps.task_priority)
+                    + ALIAS_DISPLAY_ORDER_OFFSET;
                 (help, tag, order)
             },
         );
@@ -990,8 +987,8 @@ mod tests {
 
     /// Two positionals with distinct choices, plus a value-taking flag, so
     /// each completion position is distinguishable from the others.
-    fn two_positional_spec() -> crate::tool::mise::UsageSpec {
-        use crate::tool::mise::{UsageArg, UsageFlag, UsageSpec};
+    fn two_positional_spec() -> runner_core::UsageSpec {
+        use runner_core::{UsageArg, UsageFlag, UsageSpec};
         UsageSpec {
             signature: "[first] [second]".to_string(),
             args: vec![
@@ -1112,9 +1109,10 @@ mod tests {
         // No chain flag at all.
         assert!(!scan_run_argv(&osv(&["completer", "--", "runner", "run", ""])).chain);
     }
-    use crate::types::{Task, TaskSource};
+    use crate::types::Task;
+    use runner_core::ProviderId;
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.into(),
             source,
@@ -1129,9 +1127,9 @@ mod tests {
 
     fn turbo_passthrough(name: &str) -> Task {
         Task {
-            passthrough_to: Some(crate::types::TaskRunner::Turbo),
+            passthrough_to: Some(ProviderId::Turbo),
             detail: crate::types::TaskDetail::default(),
-            ..task(name, TaskSource::PackageJson)
+            ..task(name, ProviderId::PackageJson)
         }
     }
 
@@ -1153,11 +1151,11 @@ mod tests {
         ));
         let member = |name: &str, member: &Arc<WorkspaceMember>| Task {
             member: Some(Arc::clone(member)),
-            ..task(name, TaskSource::PackageJson)
+            ..task(name, ProviderId::PackageJson)
         };
         let tasks = vec![
-            task("site", TaskSource::PackageJson),
-            task("hello", TaskSource::PackageJson),
+            task("site", ProviderId::PackageJson),
+            task("hello", ProviderId::PackageJson),
             member("site", &rfc),
             member("check", &rfc),
             member("site", &web),
@@ -1193,9 +1191,9 @@ mod tests {
     #[test]
     fn qualified_candidates_emitted_for_duplicates() {
         let tasks = vec![
-            task("test", TaskSource::PackageJson),
-            task("test", TaskSource::Makefile),
-            task("build", TaskSource::PackageJson),
+            task("test", ProviderId::PackageJson),
+            task("test", ProviderId::Make),
+            task("build", ProviderId::PackageJson),
         ];
         let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
@@ -1218,8 +1216,8 @@ mod tests {
     fn package_json_passthrough_to_turbo_collapses_to_bare_name() {
         let tasks = vec![
             turbo_passthrough("build"),
-            task("build", TaskSource::TurboJson),
-            task("fmt", TaskSource::PackageJson),
+            task("build", ProviderId::Turbo),
+            task("fmt", ProviderId::PackageJson),
         ];
         let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
@@ -1247,8 +1245,8 @@ mod tests {
     fn passthrough_swallow_keeps_unrelated_runner_qualified_forms() {
         let tasks = vec![
             turbo_passthrough("build"),
-            task("build", TaskSource::Makefile),
-            task("build", TaskSource::TurboJson),
+            task("build", ProviderId::Make),
+            task("build", ProviderId::Turbo),
         ];
         let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
@@ -1280,8 +1278,8 @@ mod tests {
         let tasks = vec![
             // Same name, but `passthrough_to_turbo: false` because the
             // command body is `vite build`, not `turbo run build`.
-            task("build", TaskSource::PackageJson),
-            task("build", TaskSource::TurboJson),
+            task("build", ProviderId::PackageJson),
+            task("build", ProviderId::Turbo),
         ];
         let candidates = task_candidates_from(&tasks, None);
         let values: Vec<String> = candidates
@@ -1307,8 +1305,8 @@ mod tests {
         // candidate's label must therefore name turbo, not the detection-order
         // first source; otherwise the completion menu misreports what runs.
         let tasks = vec![
-            task("build", TaskSource::PackageJson),
-            task("build", TaskSource::TurboJson),
+            task("build", ProviderId::PackageJson),
+            task("build", ProviderId::Turbo),
         ];
         let candidates = task_candidates_from(&tasks, None);
         let bare = candidates
@@ -1342,8 +1340,8 @@ mod tests {
         // sources turbo outranks make, so the bare label names turbo.
         let tasks = vec![
             turbo_passthrough("build"),
-            task("build", TaskSource::Makefile),
-            task("build", TaskSource::TurboJson),
+            task("build", ProviderId::Make),
+            task("build", ProviderId::Turbo),
         ];
         let candidates = task_candidates_from(&tasks, None);
         let bare = candidates
@@ -1390,11 +1388,11 @@ mod tests {
         let tasks = vec![
             Task {
                 description: Some("Build the project".into()),
-                ..task("build", TaskSource::Justfile)
+                ..task("build", ProviderId::Just)
             },
             Task {
                 alias_of: Some("build".into()),
-                ..task("b", TaskSource::Justfile)
+                ..task("b", ProviderId::Just)
             },
         ];
         let candidates = task_candidates_from(&tasks, None);
@@ -1913,9 +1911,8 @@ pub(crate) struct GlobalOpts {
     pub package_selection: Option<String>,
 
     /// What to do when a task source has no package manager evidence:
-    /// `probe` (default, take one from PATH) or `error` (refuse). `npm` is
-    /// accepted and behaves as `probe`. Also reads `$RUNNER_FALLBACK` when
-    /// omitted.
+    /// `probe` (default, take one from PATH) or `error` (refuse). Also reads
+    /// `$RUNNER_FALLBACK` when omitted.
     #[arg(
         long = "fallback",
         global = true,
@@ -1924,7 +1921,6 @@ pub(crate) struct GlobalOpts {
         help = concat!(
             "No detection match: ",
             cyan!("probe"), " (default), ",
-            cyan!("npm"), ", ",
             cyan!("error"), " ",
             "[env: ", cyan!("RUNNER_FALLBACK"), "]"
         ),

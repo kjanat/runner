@@ -3,8 +3,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use std::process::Command;
-
 /// Detected via `go.mod`.
 #[must_use]
 pub fn detect(dir: &Path) -> bool {
@@ -141,41 +139,68 @@ fn is_main_package_line(line: &str) -> bool {
         || tail.starts_with("/*")
 }
 
-/// Turn VCS stamping on for a package-form `go run` inside a checkout.
+/// A `vcs` variant for each scope Go runs tasks in inside a checkout, so a
+/// `go run` there stamps the revision instead of `(devel)`.
 ///
-/// `debug.ReadBuildInfo` then reports the revision instead of `(devel)`.
-/// Go skips the stamp for `go run` by default, and
-/// `-buildvcs=true` is a hard error outside a checkout, with the VCS tool
-/// missing, or on a toolchain before 1.18, so each is checked first. A
-/// `GOFLAGS` the command already carries, from the env layers, is what gets
-/// merged; the process's own is the fallback.
-pub fn stamp_vcs(command: &mut Command, project: &Path) {
-    let Some(tool) = go_vcs_tool(project) else {
-        return;
-    };
-    if !tool_on_path(tool) || !toolchain_stamps_vcs() {
-        return;
+/// Go skips the stamp for `go run` by default, and `-buildvcs=true` is a hard
+/// error outside a checkout, with the VCS tool missing, or on a toolchain
+/// before 1.18, so each is checked first. A `GOFLAGS` that already decides
+/// `-buildvcs` either way leaves the choice to it.
+///
+/// # Errors
+/// Never; the signature is the observation hook's.
+pub fn vcs_variant(
+    tree: &runner_core::Tree,
+    evidence: &[runner_core::Evidence],
+) -> std::io::Result<Vec<runner_core::Evidence>> {
+    let goflags = std::env::var("GOFLAGS").ok();
+    if goflags
+        .as_deref()
+        .is_some_and(|flags| flags.split_whitespace().any(decides_buildvcs))
+    {
+        return Ok(Vec::new());
     }
-    if let Some(flags) = goflags_with_buildvcs(command_goflags(command).as_deref()) {
-        command.env("GOFLAGS", flags);
-    }
+    Ok(checkout_variants(tree, evidence, &toolchain_stamps_vcs))
 }
 
-/// The `GOFLAGS` the child will see: the command's own entry when one is
-/// set, nothing when it was removed, else the inherited one.
-fn command_goflags(command: &Command) -> Option<String> {
-    match command.get_envs().find(|(key, _)| *key == "GOFLAGS") {
-        Some((_, Some(value))) => Some(value.to_string_lossy().into_owned()),
-        Some((_, None)) => None,
-        None => std::env::var("GOFLAGS").ok(),
+fn checkout_variants(
+    tree: &runner_core::Tree,
+    evidence: &[runner_core::Evidence],
+    stamps: &dyn Fn() -> bool,
+) -> Vec<runner_core::Evidence> {
+    let mut derived: Vec<runner_core::Evidence> = Vec::new();
+    let mut toolchain = None;
+    for item in evidence.iter().filter(|item| {
+        item.provider == Some(runner_core::ProviderId::Go)
+            && item.weight <= runner_core::Weight::Configured
+    }) {
+        if derived.iter().any(|seen| seen.scope == item.scope) {
+            continue;
+        }
+        let dir = runner_core::scope_dir(tree, &item.scope);
+        let Some((marker, tool)) = go_vcs_tool(&dir) else {
+            continue;
+        };
+        if !tool_on_path(tool) || !*toolchain.get_or_insert_with(stamps) {
+            continue;
+        }
+        derived.push(runner_core::Evidence {
+            provider: Some(runner_core::ProviderId::Go),
+            signal: None,
+            at: marker,
+            scope: item.scope.clone(),
+            weight: runner_core::Weight::Probed,
+            declared: Some(runner_core::Declared::Variant("vcs".into())),
+        });
     }
+    derived
 }
 
-/// The version-control tool Go would invoke for `project`, from the nearest
-/// checkout marker above it. Go's `cmd/go/internal/vcs` knows Git,
+/// The checkout marker nearest above `project` and the version-control tool
+/// Go would invoke for it. Go's `cmd/go/internal/vcs` knows Git,
 /// Mercurial, Subversion, Bazaar and Fossil; a native Jujutsu checkout has
 /// no marker Go reads.
-fn go_vcs_tool(project: &Path) -> Option<&'static str> {
+fn go_vcs_tool(project: &Path) -> Option<(PathBuf, &'static str)> {
     const MARKERS: [(&str, &str); 6] = [
         (".git", "git"),
         (".hg", "hg"),
@@ -187,8 +212,8 @@ fn go_vcs_tool(project: &Path) -> Option<&'static str> {
     project.ancestors().find_map(|dir| {
         MARKERS
             .iter()
-            .find(|(marker, _)| dir.join(marker).exists())
-            .map(|(_, tool)| *tool)
+            .map(|(marker, tool)| (dir.join(marker), *tool))
+            .find(|(marker, _)| marker.exists())
     })
 }
 
@@ -219,20 +244,6 @@ fn supports_buildvcs(version_line: &str) -> bool {
         .next()
         .and_then(|digits| digits.parse::<u32>().ok())
         .is_none_or(|minor| minor >= 18)
-}
-
-/// `GOFLAGS` with `-buildvcs=true` appended, or `None` when the caller
-/// already decided `-buildvcs` either way, in the `-` or `--` spelling.
-fn goflags_with_buildvcs(existing: Option<&str>) -> Option<String> {
-    let existing = existing.unwrap_or("").trim();
-    if existing.split_whitespace().any(decides_buildvcs) {
-        return None;
-    }
-    Some(if existing.is_empty() {
-        "-buildvcs=true".to_string()
-    } else {
-        format!("{existing} -buildvcs=true")
-    })
 }
 
 fn decides_buildvcs(flag: &str) -> bool {
@@ -395,31 +406,14 @@ mod tests {
     }
 
     #[test]
-    fn goflags_gain_buildvcs_unless_already_decided() {
-        use super::goflags_with_buildvcs;
-        assert_eq!(
-            goflags_with_buildvcs(None).as_deref(),
-            Some("-buildvcs=true")
-        );
-        assert_eq!(
-            goflags_with_buildvcs(Some("")).as_deref(),
-            Some("-buildvcs=true")
-        );
-        assert_eq!(
-            goflags_with_buildvcs(Some("-mod=vendor")).as_deref(),
-            Some("-mod=vendor -buildvcs=true")
-        );
-        assert_eq!(goflags_with_buildvcs(Some("-buildvcs=false")), None);
-        assert_eq!(goflags_with_buildvcs(Some("--buildvcs=false")), None);
-        assert_eq!(goflags_with_buildvcs(Some("-buildvcs")), None);
-        assert_eq!(
-            goflags_with_buildvcs(Some("-mod=vendor -buildvcs=auto")),
-            None
-        );
-        assert_eq!(
-            goflags_with_buildvcs(Some("-tags=buildvcs")).as_deref(),
-            Some("-tags=buildvcs -buildvcs=true")
-        );
+    fn a_goflags_flag_decides_buildvcs_in_either_spelling() {
+        use super::decides_buildvcs;
+        assert!(decides_buildvcs("-buildvcs=false"));
+        assert!(decides_buildvcs("--buildvcs=false"));
+        assert!(decides_buildvcs("-buildvcs"));
+        assert!(decides_buildvcs("-buildvcs=auto"));
+        assert!(!decides_buildvcs("-tags=buildvcs"));
+        assert!(!decides_buildvcs("-mod=vendor"));
     }
 
     #[test]
@@ -449,15 +443,18 @@ mod tests {
         );
 
         fs::create_dir_all(dir.path().join(".hg")).expect("hg dir");
-        assert_eq!(go_vcs_tool(&project), Some("hg"));
+        assert_eq!(go_vcs_tool(&project), Some((dir.path().join(".hg"), "hg")));
 
         fs::write(dir.path().join(".git"), "gitdir: elsewhere\n").expect("git file");
-        assert_eq!(go_vcs_tool(&project), Some("git"));
+        assert_eq!(
+            go_vcs_tool(&project),
+            Some((dir.path().join(".git"), "git"))
+        );
     }
 
     #[test]
-    fn stamp_vcs_merges_after_env_layers_and_only_inside_a_git_checkout() {
-        use super::stamp_vcs;
+    fn a_go_scope_inside_a_git_checkout_gets_the_vcs_variant() {
+        use super::checkout_variants;
         if runner_core::probe::probe_in(
             "git",
             &std::env::var_os("PATH").unwrap_or_default(),
@@ -469,38 +466,35 @@ mod tests {
             return;
         }
         let dir = TempDir::new("go-buildvcs");
+        let tree = runner_core::Tree {
+            cwd: dir.path().to_owned(),
+            root: dir.path().to_owned(),
+            members: Vec::new(),
+        };
+        let go_mod = runner_core::Evidence {
+            provider: Some(runner_core::ProviderId::Go),
+            signal: Some(runner_core::SignalId(0)),
+            at: dir.path().join("go.mod"),
+            scope: runner_core::Scope::Root,
+            weight: runner_core::Weight::Configured,
+            declared: None,
+        };
 
-        let mut outside = Command::new("go");
-        stamp_vcs(&mut outside, dir.path());
-        assert_eq!(goflags_of(&outside), None);
+        assert_eq!(
+            checkout_variants(&tree, std::slice::from_ref(&go_mod), &|| true),
+            []
+        );
 
         fs::create_dir_all(dir.path().join(".git")).expect("git dir should be created");
-        let mut inside = Command::new("go");
-        stamp_vcs(&mut inside, dir.path());
-        assert!(
-            goflags_of(&inside).is_some_and(|v| v.ends_with("-buildvcs=true")),
-            "GOFLAGS should carry -buildvcs=true inside a checkout"
-        );
-
-        let mut layered = Command::new("go");
-        layered.env("GOFLAGS", "-mod=vendor");
-        stamp_vcs(&mut layered, dir.path());
+        let derived = checkout_variants(&tree, std::slice::from_ref(&go_mod), &|| true);
+        assert_eq!(derived.len(), 1);
         assert_eq!(
-            goflags_of(&layered).as_deref(),
-            Some("-mod=vendor -buildvcs=true")
+            derived[0].declared,
+            Some(runner_core::Declared::Variant("vcs".into()))
         );
-
-        let mut decided = Command::new("go");
-        decided.env("GOFLAGS", "--buildvcs=false");
-        stamp_vcs(&mut decided, dir.path());
-        assert_eq!(goflags_of(&decided).as_deref(), Some("--buildvcs=false"));
-    }
-
-    fn goflags_of(command: &Command) -> Option<String> {
-        command
-            .get_envs()
-            .find(|(k, _)| *k == "GOFLAGS")
-            .and_then(|(_, v)| v)
-            .map(|v| v.to_string_lossy().into_owned())
+        assert!(
+            checkout_variants(&tree, std::slice::from_ref(&go_mod), &|| false).is_empty(),
+            "a toolchain before 1.18 rejects -buildvcs"
+        );
     }
 }

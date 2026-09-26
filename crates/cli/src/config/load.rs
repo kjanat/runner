@@ -8,14 +8,14 @@
 //!
 //! ```toml
 //! [pm]
-//! node   = "pnpm"      # one of npm|pnpm|yarn|bun|deno
-//! python = "uv"        # one of uv|poetry|pipenv
+//! node   = "pnpm"
+//! python = "uv"
 //!
 //! [tasks]
 //! prefer = ["just", "turbo"]
 //!
 //! [resolution]
-//! fallback     = "probe"   # probe|npm|error
+//! fallback     = "probe"   # probe|error
 //! on_mismatch  = "warn"    # warn|error|ignore
 //! ```
 //!
@@ -39,7 +39,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::types::{DetectionWarning, PackageManager};
+use crate::provider::Named;
+use crate::types::DetectionWarning;
+use runner_core::ProviderId;
 
 /// Canonical config filename, written by `runner config init`. Its dotfile form
 /// (`.` + this) is the hidden variant; both are accepted during discovery.
@@ -233,15 +235,22 @@ pub(crate) struct HostOutputSection {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub(crate) struct RuntimeSection {
-    /// JavaScript runtime: `node`, `bun`, or `deno`. Absent leaves the
-    /// runtime to the detected package manager, the behaviour before this
-    /// key existed.
+    /// JavaScript runtime label. Absent leaves the runtime to the detected
+    /// package manager.
     #[schemars(
         description = runner_core::Setting::doc_for("runtime.js"),
-        extend("enum" = ["node", "bun", "deno", null])
+        extend("enum" = js_runtime_labels())
     )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub js: Option<String>,
+}
+
+fn js_runtime_labels() -> Vec<Option<&'static str>> {
+    crate::provider::js_runtimes()
+        .into_iter()
+        .map(|runtime| Some(runtime.label()))
+        .chain([None])
+        .collect()
 }
 
 /// Lifecycle-script and shared-directory policy for installation.
@@ -389,20 +398,42 @@ pub(crate) struct ParallelSection {
     pub grouped: bool,
 }
 
-/// `[pm]` section, per-ecosystem package manager overrides.
-#[derive(Debug, Clone, Default, Deserialize, Serialize, schemars::JsonSchema)]
-#[schemars(deny_unknown_fields)]
-pub(crate) struct PmSection {
-    /// Package manager used to dispatch Node `package.json` scripts.
-    /// Valid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = ["npm", "pnpm", "yarn", "bun", "deno", null]))]
-    pub node: Option<String>,
-    /// Package manager used for Python ecosystems.
-    /// Valid values: `uv`, `poetry`, `pipenv`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = ["uv", "poetry", "pipenv", null]))]
-    pub python: Option<String>,
+/// `[pm]` section, the package manager per ecosystem label.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(transparent)]
+pub(crate) struct PmSection(pub BTreeMap<String, String>);
+
+impl schemars::JsonSchema for PmSection {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "PmSection".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut properties = serde_json::Map::new();
+        for source in crate::provider::managed_sources() {
+            let mut labels: Vec<serde_json::Value> = crate::provider::dispatchers(source)
+                .into_iter()
+                .map(|pm| pm.label().into())
+                .collect();
+            labels.push(serde_json::Value::Null);
+            properties.insert(
+                source.ecosystem().label().to_owned(),
+                serde_json::json!({
+                    "description": format!(
+                        "Package manager that dispatches {} tasks.",
+                        source.label()
+                    ),
+                    "enum": labels,
+                }),
+            );
+        }
+        schemars::json_schema!({
+            "description": "`[pm]` section, the package manager per ecosystem.",
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": false,
+        })
+    }
 }
 
 /// `[tasks]` section, per-task configuration keyed by task name, plus the two
@@ -557,10 +588,9 @@ pub(crate) struct VerbosityTable {
 #[schemars(deny_unknown_fields)]
 pub(crate) struct ResolutionSection {
     /// `probe` (default) takes a package manager from PATH for a task source
-    /// with no package manager evidence; `error` refuses. `npm` is accepted
-    /// and behaves as `probe`.
+    /// with no package manager evidence; `error` refuses.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(extend("enum" = ["probe", "npm", "error", null]))]
+    #[schemars(extend("enum" = ["probe", "error", null]))]
     #[schemars(extend("default" = crate::resolver::FallbackPolicy::default().label()))]
     pub fallback: Option<String>,
     /// `warn` (default), `error`, `ignore`, how to react when declaration
@@ -838,61 +868,44 @@ fn read_first_candidate(dir: &Path) -> Result<Option<(PathBuf, String)>> {
     Ok(None)
 }
 
-/// Validate `[pm].node` against the set of script-dispatching PMs.
+/// Validate `[pm].<ecosystem>`: `raw` must name a package manager that
+/// dispatches the task source of `ecosystem`. `Ok(None)` for an ecosystem
+/// without such a source, which the load already warned about.
 ///
 /// # Errors
 ///
-/// Returns an error if `raw` does not name a known PM, or if it names a PM
-/// that cannot run `package.json` scripts (e.g. `cargo`).
-pub(crate) fn parse_node_pm(raw: &str) -> Result<PackageManager> {
-    let pm = PackageManager::from_label(raw)
-        .ok_or_else(|| anyhow!("[pm].node: unknown package manager {raw:?}"))?;
-    let eco = pm.ecosystem();
-    if !runner_providers::REGISTRY
-        .by_label(pm.label())
-        .and_then(|p| p.caps.run_task)
-        .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::PackageJson))
-    {
+/// Returns an error if `raw` names no package manager, or one that cannot
+/// dispatch the ecosystem's task source.
+pub(crate) fn parse_pm(
+    ecosystem: &str,
+    raw: &str,
+) -> Result<Option<(runner_core::Ecosystem, ProviderId)>> {
+    let Some(source) = crate::provider::managed_sources()
+        .into_iter()
+        .find(|source| source.ecosystem().label() == ecosystem)
+    else {
+        return Ok(None);
+    };
+    let pm = crate::provider::package_manager(raw)
+        .ok_or_else(|| anyhow!("[pm].{ecosystem}: unknown package manager {raw:?}"))?;
+    if !crate::provider::dispatchers(source).contains(&pm) {
         return Err(anyhow!(
-            "[pm].node: {} cannot dispatch package.json scripts (it belongs to ecosystem {:?})",
+            "[pm].{ecosystem}: {} cannot dispatch {} tasks",
             pm.label(),
-            eco,
+            source.label(),
         ));
     }
-    Ok(pm)
-}
-
-/// Validate `[pm].python` against the Python ecosystem.
-///
-/// # Errors
-///
-/// Returns an error if `raw` does not name a known PM or if the named PM
-/// is not part of the Python ecosystem.
-pub(crate) fn parse_python_pm(raw: &str) -> Result<PackageManager> {
-    let pm = PackageManager::from_label(raw)
-        .ok_or_else(|| anyhow!("[pm].python: unknown package manager {raw:?}"))?;
-    if !runner_providers::REGISTRY
-        .by_label(pm.label())
-        .and_then(|p| p.caps.run_task)
-        .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::Pyproject))
-    {
-        return Err(anyhow!(
-            "[pm].python: {} is not a Python package manager",
-            pm.label(),
-        ));
-    }
-    Ok(pm)
+    Ok(Some((source.ecosystem(), pm)))
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use super::{
-        CONFIG_FILENAME, LoadedConfig, RunnerConfig, load, parse_node_pm, parse_python_pm,
-    };
+    use super::{CONFIG_FILENAME, LoadedConfig, RunnerConfig, load, parse_pm};
     use crate::tool::test_support::TempDir;
-    use crate::types::{DetectionWarning, PackageManager};
+    use crate::types::DetectionWarning;
+    use runner_core::ProviderId;
 
     /// Dotted paths of the unknown-key warnings a load produced.
     fn unknown_paths(loaded: &LoadedConfig) -> Vec<String> {
@@ -957,7 +970,10 @@ mod tests {
             .expect("config should be present");
 
         assert!(loaded.path.ends_with(CONFIG_FILENAME));
-        assert_eq!(loaded.config.pm.node.as_deref(), Some("npm"));
+        assert_eq!(
+            loaded.config.pm.0.get("node").map(String::as_str),
+            Some("npm")
+        );
     }
 
     #[test]
@@ -977,7 +993,10 @@ mod tests {
             .expect("config should be present");
 
         assert!(!loaded.path.to_string_lossy().contains(".config"));
-        assert_eq!(loaded.config.pm.node.as_deref(), Some("npm"));
+        assert_eq!(
+            loaded.config.pm.0.get("node").map(String::as_str),
+            Some("npm")
+        );
     }
 
     #[test]
@@ -1198,8 +1217,14 @@ mod tests {
             .expect("config should be present");
 
         assert!(loaded.path.ends_with(CONFIG_FILENAME));
-        assert_eq!(loaded.config.pm.node.as_deref(), Some("pnpm"));
-        assert_eq!(loaded.config.pm.python.as_deref(), Some("uv"));
+        assert_eq!(
+            loaded.config.pm.0.get("node").map(String::as_str),
+            Some("pnpm")
+        );
+        assert_eq!(
+            loaded.config.pm.0.get("python").map(String::as_str),
+            Some("uv")
+        );
     }
 
     #[test]
@@ -1220,7 +1245,10 @@ mod tests {
 
         assert_eq!(unknown_paths(&loaded), vec!["zoot".to_string()]);
         // Known config beside the unknown section is still honored.
-        assert_eq!(loaded.config.pm.node.as_deref(), Some("bun"));
+        assert_eq!(
+            loaded.config.pm.0.get("node").map(String::as_str),
+            Some("bun")
+        );
     }
 
     #[test]
@@ -1310,29 +1338,34 @@ mod tests {
     }
 
     #[test]
-    fn parse_node_pm_accepts_node_and_deno() {
-        assert_eq!(parse_node_pm("pnpm").unwrap(), PackageManager::Pnpm);
-        assert_eq!(parse_node_pm("bun").unwrap(), PackageManager::Bun);
-        assert_eq!(parse_node_pm("deno").unwrap(), PackageManager::Deno);
+    fn parse_pm_accepts_every_dispatcher_of_the_ecosystem_source() {
+        use runner_core::Ecosystem;
+
+        assert_eq!(
+            parse_pm("node", "pnpm").unwrap(),
+            Some((Ecosystem::Node, ProviderId::Pnpm))
+        );
+        assert_eq!(
+            parse_pm("node", "deno").unwrap(),
+            Some((Ecosystem::Node, ProviderId::Deno))
+        );
+        assert_eq!(
+            parse_pm("python", "pipenv").unwrap(),
+            Some((Ecosystem::Python, ProviderId::Pipenv))
+        );
     }
 
     #[test]
-    fn parse_node_pm_rejects_cross_ecosystem() {
-        let err = parse_node_pm("cargo").expect_err("cargo should not be a Node PM");
-        assert!(format!("{err}").contains("cannot dispatch package.json scripts"));
+    fn parse_pm_rejects_a_package_manager_of_another_source() {
+        let err = parse_pm("node", "cargo").expect_err("cargo cannot dispatch package.json");
+        assert!(format!("{err}").contains("cannot dispatch package.json tasks"));
+        let err = parse_pm("python", "pnpm").expect_err("pnpm cannot dispatch pyproject");
+        assert!(format!("{err}").contains("cannot dispatch pyproject.toml tasks"));
     }
 
     #[test]
-    fn parse_python_pm_accepts_uv_poetry_pipenv() {
-        assert_eq!(parse_python_pm("uv").unwrap(), PackageManager::Uv);
-        assert_eq!(parse_python_pm("poetry").unwrap(), PackageManager::Poetry);
-        assert_eq!(parse_python_pm("pipenv").unwrap(), PackageManager::Pipenv);
-    }
-
-    #[test]
-    fn parse_python_pm_rejects_node_pm() {
-        let err = parse_python_pm("pnpm").expect_err("pnpm should not be Python");
-        assert!(format!("{err}").contains("not a Python package manager"));
+    fn parse_pm_skips_an_ecosystem_without_a_managed_source() {
+        assert_eq!(parse_pm("rust", "cargo").unwrap(), None);
     }
 
     #[test]

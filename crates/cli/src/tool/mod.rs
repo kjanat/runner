@@ -1,38 +1,12 @@
-//! Tool-specific helpers the CLI needs beyond the provider registry, and the
-//! output policy shared by every command.
+//! Filesystem, git and spawn helpers, and the output policy shared by every
+//! command.
 
-/// bacon, Rust background checker (`bacon.toml`).
-pub(crate) mod bacon;
-/// Cargo `[alias]` table, `.cargo/config.toml` aliases as runnable tasks.
-pub(crate) mod cargo_aliases;
-/// Deno JavaScript/TypeScript runtime (`deno.json` / `deno.jsonc`).
-pub(crate) mod deno;
-/// Shared filesystem helpers for tool modules.
+/// Shared filesystem helpers.
 pub(crate) mod files;
 /// Git queries used by detection.
 pub(crate) mod git;
-/// Go modules (`go.mod`).
-pub(crate) mod go_pm;
-/// go-task, a task runner using `Taskfile.yml`.
-pub(crate) mod go_task;
-/// just, a command runner using `justfile`.
-pub(crate) mod just;
-/// GNU Make (`Makefile`).
-pub(crate) mod make;
-/// mise, a polyglot dev tool manager (`mise.toml`).
-pub(crate) mod mise;
-/// Shared Node.js helpers: `package.json` parsing, script extraction, PM detection.
-pub(crate) mod node;
 /// Spawn helper with Windows-aware PATH/PATHEXT resolution.
 pub(crate) mod program;
-/// Shared Python tooling helpers.
-pub(crate) mod python;
-/// Turborepo monorepo build system (`turbo.json` / `turbo.jsonc`).
-pub(crate) mod turbo;
-/// Volta toolchain manager, shim classification and `volta which` resolution.
-pub(crate) mod volta;
-/// Yarn, a Node.js package manager (`yarn.lock`).
-pub(crate) mod yarn;
 
 #[cfg(test)]
 pub(crate) mod test_support;

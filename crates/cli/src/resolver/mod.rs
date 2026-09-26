@@ -23,9 +23,6 @@ pub(crate) use error::ResolveError;
 /// `commands::config::validate`; see [`overrides::validate_config`].
 pub(crate) use overrides::validate_config;
 pub(crate) use policies::parse_quiet_env;
-/// Re-export of the canonical Node PATH-probe order so the doctor's
-/// schema layer doesn't carry its own copy.
-pub(crate) use probe::node_probe_order;
 /// Re-export of the pure-function probe variant for the `doctor` subcommand.
 /// Lets `commands::doctor` exercise the same PATH walk the resolver uses without
 /// owning the env-reading logic.
@@ -61,7 +58,8 @@ mod tests {
     use super::{OverrideOrigin, ResolutionOverrides, ResolveError};
     use crate::config::{LoadedConfig, PmSection, RunnerConfig};
     use crate::tool::test_support::TempDir;
-    use crate::types::{DetectionWarning, Ecosystem, PackageManager, TaskRunner};
+    use crate::types::DetectionWarning;
+    use runner_core::{Ecosystem, ProviderId};
 
     #[test]
     fn cli_pm_value_parses_to_overrides() {
@@ -75,7 +73,7 @@ mod tests {
         .expect("--pm yarn should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
-        assert_eq!(pm.pm, PackageManager::Yarn);
+        assert_eq!(pm.pm, ProviderId::Yarn);
         assert_eq!(pm.origin, OverrideOrigin::CliFlag);
         assert!(overrides.runner.is_none());
     }
@@ -92,7 +90,7 @@ mod tests {
         .expect("RUNNER_PM=bun should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
-        assert_eq!(pm.pm, PackageManager::Bun);
+        assert_eq!(pm.pm, ProviderId::Bun);
         assert_eq!(pm.origin, OverrideOrigin::EnvVar);
     }
 
@@ -108,7 +106,7 @@ mod tests {
         .expect("both sources should parse");
 
         let pm = overrides.pm.expect("pm override should be present");
-        assert_eq!(pm.pm, PackageManager::Yarn);
+        assert_eq!(pm.pm, ProviderId::Yarn);
         assert_eq!(pm.origin, OverrideOrigin::CliFlag);
     }
 
@@ -138,7 +136,7 @@ mod tests {
         .expect("--runner just should parse");
 
         let runner: RunnerOverride = overrides.runner.expect("runner override should be present");
-        assert_eq!(runner.runner, TaskRunner::Just);
+        assert_eq!(runner.runner, ProviderId::Just);
         assert_eq!(runner.origin, OverrideOrigin::CliFlag);
     }
 
@@ -378,10 +376,7 @@ mod tests {
         .expect("valid env value should parse");
 
         assert_eq!(warnings.len(), 0);
-        assert_eq!(
-            overrides.pm.expect("pm should be set").pm,
-            PackageManager::Bun
-        );
+        assert_eq!(overrides.pm.expect("pm should be set").pm, ProviderId::Bun);
     }
 
     #[test]
@@ -401,10 +396,7 @@ mod tests {
             warnings.is_empty(),
             "shadowed env must not warn: {warnings:?}"
         );
-        assert_eq!(
-            overrides.pm.expect("pm should be set").pm,
-            PackageManager::Yarn
-        );
+        assert_eq!(overrides.pm.expect("pm should be set").pm, ProviderId::Yarn);
     }
 
     #[test]
@@ -497,7 +489,7 @@ mod tests {
 
         assert_eq!(
             overrides.pm.expect("pm should be present").pm,
-            PackageManager::Bundler,
+            ProviderId::Bundler,
         );
     }
 
@@ -514,7 +506,7 @@ mod tests {
 
         assert_eq!(
             overrides.runner.expect("runner should be present").runner,
-            TaskRunner::GoTask,
+            ProviderId::Task,
         );
     }
 
@@ -523,10 +515,7 @@ mod tests {
             path: PathBuf::from("/test/runner.toml"),
             warnings: Vec::new(),
             config: RunnerConfig {
-                pm: PmSection {
-                    node: Some(node.to_owned()),
-                    python: None,
-                },
+                pm: PmSection([("node".to_owned(), node.to_owned())].into()),
                 ..RunnerConfig::default()
             },
         }
@@ -546,7 +535,7 @@ mod tests {
             .pm_by_ecosystem
             .get(&Ecosystem::Node)
             .expect("Node ecosystem entry should be present");
-        assert_eq!(entry.pm, PackageManager::Bun);
+        assert_eq!(entry.pm, ProviderId::Bun);
         match &entry.origin {
             OverrideOrigin::ConfigFile { path } => {
                 assert!(path.ends_with("runner.toml"));
@@ -561,10 +550,7 @@ mod tests {
             path: PathBuf::from("/test/runner.toml"),
             warnings: Vec::new(),
             config: RunnerConfig {
-                pm: PmSection {
-                    node: None,
-                    python: Some("uv".to_owned()),
-                },
+                pm: PmSection([("python".to_owned(), "uv".to_owned())].into()),
                 ..RunnerConfig::default()
             },
         };
@@ -578,7 +564,7 @@ mod tests {
             .pm_by_ecosystem
             .get(&Ecosystem::Python)
             .expect("python ecosystem entry should be present");
-        assert_eq!(entry.pm, PackageManager::Uv);
+        assert_eq!(entry.pm, ProviderId::Uv);
     }
 
     #[test]
@@ -589,7 +575,7 @@ mod tests {
             ..OverrideSources::default()
         })
         .expect_err("cargo is not a node-script PM");
-        assert!(format!("{err}").contains("cannot dispatch package.json scripts"));
+        assert!(format!("{err}").contains("cannot dispatch package.json tasks"));
     }
 
     fn loaded_from_toml(dir: &TempDir, body: &str) -> LoadedConfig {
@@ -636,7 +622,7 @@ mod tests {
     #[test]
     fn tasks_prefer_parses_pm_and_runner_labels() {
         use crate::config::TasksSection;
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         let loaded = config_with_tasks(TasksSection {
             prefer: vec!["bun".to_string(), "turbo".to_string()],
@@ -652,7 +638,7 @@ mod tests {
         // (a runner) to turbo.json, proving the unified label vocabulary.
         assert_eq!(
             overrides.prefer_sources,
-            vec![TaskSource::PackageJson, TaskSource::TurboJson],
+            vec![ProviderId::PackageJson, ProviderId::Turbo],
         );
         // The deprecated list is left empty when `[tasks]` drives selection.
         assert_eq!(overrides.prefer_runners.len(), 0);
@@ -661,7 +647,7 @@ mod tests {
     #[test]
     fn tasks_prefer_expands_deno_to_both_its_sources() {
         use crate::config::TasksSection;
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         let loaded = config_with_tasks(TasksSection {
             prefer: vec!["deno".to_string()],
@@ -675,7 +661,7 @@ mod tests {
 
         assert_eq!(
             overrides.prefer_sources,
-            vec![TaskSource::DenoJson, TaskSource::PackageJson],
+            vec![ProviderId::Deno, ProviderId::PackageJson],
         );
     }
 
@@ -701,7 +687,7 @@ mod tests {
 
     #[test]
     fn tasks_prefer_applies_beside_a_task_runner_section() {
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         let dir = TempDir::new("resolver-tasks-prefer-beside-task-runner");
         let loaded = loaded_from_toml(
@@ -723,7 +709,7 @@ mod tests {
         })
         .expect("config should parse");
 
-        assert_eq!(overrides.prefer_sources, vec![TaskSource::TurboJson]);
+        assert_eq!(overrides.prefer_sources, vec![ProviderId::Turbo]);
         assert_eq!(overrides.prefer_runners.len(), 0);
     }
 
@@ -749,7 +735,7 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::config::TasksSection;
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         let loaded = config_with_tasks(TasksSection {
             prefer: Vec::new(),
@@ -767,11 +753,11 @@ mod tests {
 
         assert_eq!(
             overrides.task_source_overrides.get("build"),
-            Some(&vec![TaskSource::TurboJson]),
+            Some(&vec![ProviderId::Turbo]),
         );
         assert_eq!(
             overrides.task_source_overrides.get("dev"),
-            Some(&vec![TaskSource::PackageJson]),
+            Some(&vec![ProviderId::PackageJson]),
         );
     }
 
@@ -834,7 +820,7 @@ mod tests {
 
         assert_eq!(
             overrides.pm.expect("pm override should be present").pm,
-            PackageManager::Yarn
+            ProviderId::Yarn
         );
         assert!(overrides.explain);
         assert!(overrides.runner.is_none());
@@ -1159,7 +1145,7 @@ mod tests {
         .expect("padded env value should parse after trimming");
         assert_eq!(
             from_env.pm.expect("pm should be present").pm,
-            PackageManager::Pnpm
+            ProviderId::Pnpm
         );
 
         let from_cli = ResolutionOverrides::from_sources(&OverrideSources {
@@ -1172,7 +1158,7 @@ mod tests {
         .expect("padded CLI value should parse after trimming");
         assert_eq!(
             from_cli.pm.expect("pm should be present").pm,
-            PackageManager::Yarn
+            ProviderId::Yarn
         );
 
         // Whitespace-only values are treated as unset (same as empty
@@ -1230,7 +1216,7 @@ mod tests {
             .pm_by_ecosystem
             .get(&Ecosystem::Node)
             .expect("[pm].node is keyed by the key's ecosystem");
-        assert_eq!(node.pm, PackageManager::Deno);
+        assert_eq!(node.pm, ProviderId::Deno);
         assert!(!overrides.pm_by_ecosystem.contains_key(&Ecosystem::Deno));
     }
 

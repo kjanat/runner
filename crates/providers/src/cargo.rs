@@ -76,8 +76,9 @@ pub const PROVIDER: Provider = Provider {
         Signal::Lockfile("Cargo.lock"),
         Signal::Probe("cargo"),
     ],
-    writes: &["target"],
     caps: Capabilities {
+        writes: &["target"],
+        task_table: runner_core::TaskTable::Key("alias"),
         task_priority: 6,
         workspaces: Some(runner_core::WorkspaceCap { declarations }),
         install: Some(InstallCap {

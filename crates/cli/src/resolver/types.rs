@@ -8,11 +8,12 @@ use std::path::PathBuf;
 
 use crate::chain::FailurePolicy;
 use crate::config::LoadedConfig;
+use crate::provider::Named;
 use crate::tool::{
     HostDiagnostics, HostVerbosity, OutputPolicy, QuietLevel, RunnerOutput, RunnerOutputPolicy,
     Stream, TaskStream,
 };
-use crate::types::{Ecosystem, JsRuntime, PackageManager, TaskRunner, TaskSource};
+use runner_core::{Ecosystem, ProviderId};
 
 /// User-supplied overrides assembled from CLI flags, environment variables,
 /// and (Phase 3+) a `runner.toml` file.
@@ -35,7 +36,7 @@ pub(crate) struct ResolutionOverrides {
     pub pm_by_ecosystem: HashMap<Ecosystem, PmOverride>,
     /// Task-runner override from `--runner` / `RUNNER_RUNNER`. When set,
     /// the source selector restricts candidates to that runner's
-    /// [`TaskRunner::task_source`].
+    /// [`crate::provider::Named::as_task_source`].
     pub runner: Option<RunnerOverride>,
     /// JS runtime override from `--runtime` / `RUNNER_RUNTIME` /
     /// `[runtime].js`. Selects which runtime executes a task's process tree
@@ -46,18 +47,18 @@ pub(crate) struct ResolutionOverrides {
     /// Empty when no config is loaded, the section is empty, or `[tasks]`
     /// supersedes it. When non-empty, the source selector restricts candidates
     /// to runners in the list (in listed order).
-    pub prefer_runners: Vec<TaskRunner>,
+    pub prefer_runners: Vec<ProviderId>,
     /// Global rank-only task-source order from `[tasks].prefer`. Empty when
-    /// unset. Each entry is a [`TaskSource`] (resolved from a runner, package
+    /// unset. Each entry is a [`ProviderId`] (resolved from a runner, package
     /// manager, or source label); a same-name conflict prefers earlier
     /// entries, and any source not listed still resolves (it just ranks
     /// below listed ones). Never restricts.
-    pub prefer_sources: Vec<TaskSource>,
+    pub prefer_sources: Vec<ProviderId>,
     /// Per-task source pins from `[tasks].overrides`: task name → preferred
-    /// [`TaskSource`]s, most-native first. When a pinned task has a candidate
+    /// [`ProviderId`]s, most-native first. When a pinned task has a candidate
     /// under one of these sources, that candidate wins; otherwise the normal
     /// ranking applies (no hard error).
-    pub task_source_overrides: BTreeMap<String, Vec<TaskSource>>,
+    pub task_source_overrides: BTreeMap<String, Vec<ProviderId>>,
     /// What to do when no signal in steps 2–6 matches.
     pub fallback: FallbackPolicy,
     /// What to do when the manifest declaration (step 5) disagrees with
@@ -321,7 +322,7 @@ impl ResolutionOverrides {
     /// The JS runtime an explicit override selected, if any. The single read
     /// of [`Self::runtime`]'s value; everything that dispatches, propagates or
     /// reports the runtime goes through here.
-    pub(crate) fn js_runtime(&self) -> Option<JsRuntime> {
+    pub(crate) fn js_runtime(&self) -> Option<ProviderId> {
         self.runtime.as_ref().map(|over| over.runtime)
     }
 }
@@ -330,7 +331,7 @@ impl ResolutionOverrides {
 /// `source:name` (root scope) or `scope:source#name`.
 struct TaskIdentity<'a> {
     scope: &'a str,
-    source: TaskSource,
+    source: ProviderId,
     name: &'a str,
 }
 
@@ -340,14 +341,14 @@ impl<'a> TaskIdentity<'a> {
             let (scope, source) = prefix
                 .rsplit_once(':')
                 .map_or(("root", prefix), |(scope, source)| (scope, source));
-            return TaskSource::from_label(source).map(|source| Self {
+            return crate::provider::task_source(source).map(|source| Self {
                 scope,
                 source,
                 name,
             });
         }
         let (source, name) = task.split_once(':')?;
-        TaskSource::from_label(source).map(|source| Self {
+        crate::provider::task_source(source).map(|source| Self {
             scope: "root",
             source,
             name,
@@ -405,9 +406,6 @@ pub(crate) enum FallbackPolicy {
     /// Errors if nothing matches.
     #[default]
     Probe,
-    /// Legacy: silently default to `npm` so dispatch is attempted even
-    /// when nothing is detected. Useful for backwards compatibility.
-    Npm,
     /// Refuse to proceed when no signal matches; error out with a list of
     /// sources that were checked.
     Error,
@@ -418,13 +416,12 @@ impl FallbackPolicy {
     /// them. Single source of truth for
     /// [`super::policies::parse_fallback_label`] and any surface that
     /// needs to advertise or validate against the same closed set.
-    pub(crate) const ALL: [Self; 3] = [Self::Probe, Self::Npm, Self::Error];
+    pub(crate) const ALL: [Self; 2] = [Self::Probe, Self::Error];
 
     /// The `--fallback` / `RUNNER_FALLBACK` / `[resolution].fallback` label.
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Probe => "probe",
-            Self::Npm => "npm",
             Self::Error => "error",
         }
     }
@@ -577,7 +574,7 @@ pub(crate) struct EnvLayers {
 #[derive(Debug, Clone)]
 pub(crate) struct PmOverride {
     /// The chosen package manager.
-    pub pm: PackageManager,
+    pub pm: ProviderId,
     /// Where the override came from.
     pub origin: OverrideOrigin,
 }
@@ -586,7 +583,7 @@ pub(crate) struct PmOverride {
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeOverride {
     /// The chosen runtime.
-    pub runtime: JsRuntime,
+    pub runtime: ProviderId,
     /// Where the override came from. Surfaced by `--explain` so the user can
     /// attribute the runtime decision to its origin.
     pub origin: OverrideOrigin,
@@ -610,7 +607,7 @@ impl RuntimeOverride {
 #[derive(Debug, Clone)]
 pub(crate) struct RunnerOverride {
     /// The chosen task runner.
-    pub runner: TaskRunner,
+    pub runner: ProviderId,
     /// Where the override came from. Surfaced by `--explain` and `doctor`
     /// so the user can attribute the constraint to its origin.
     pub origin: OverrideOrigin,

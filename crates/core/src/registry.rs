@@ -42,8 +42,6 @@ pub struct Provider {
     pub program: Option<&'static str>,
     /// What observation looks for.
     pub signals: &'static [Signal],
-    /// Install directories this provider materialises.
-    pub writes: &'static [&'static str],
     /// What the provider can do.
     pub caps: Capabilities,
     /// Task extraction when the format is the tool's own.

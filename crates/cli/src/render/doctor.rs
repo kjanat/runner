@@ -6,8 +6,9 @@ use colored::Colorize;
 use serde_json::{Map, Value};
 
 use crate::commands::install::InstallPlan;
+use crate::provider::Named;
 use crate::resolver::{ResolutionOverrides, ResolveError};
-use crate::types::TaskRunner;
+use runner_core::ProviderId;
 
 /// Everything the human report reads.
 #[derive(Clone, Copy)]
@@ -18,10 +19,8 @@ pub(crate) struct Human<'a> {
     pub overrides: &'a ResolutionOverrides,
     /// The install plan, or why none could be made.
     pub plan: Result<&'a InstallPlan, &'a ResolveError>,
-    /// Whether the Node sections are shown.
-    pub node_context: bool,
     /// The tool manager the toolchain step runs.
-    pub tools: Option<TaskRunner>,
+    pub tools: Option<ProviderId>,
     /// mise's own verdict on the project.
     pub health: &'a [crate::schema::doctor::Diagnostic],
 }
@@ -37,7 +36,7 @@ pub(crate) fn print_human(human: &Human<'_>) {
 
     print_detected(human.report);
     print_overrides(human);
-    print_node_signals(human);
+    print_signals(human.report);
     print_decisions(human);
     print_warnings(human);
 }
@@ -69,10 +68,17 @@ fn print_detected(report: &Value) {
         if !trs.is_empty() {
             writeln_field(out, "task runners", &trs);
         }
-        if let Some(nv) = detected["node_version"].as_object() {
-            let expected = nv["expected"].as_str().unwrap_or("?");
-            let source = nv["source"].as_str().unwrap_or("?");
-            writeln_field(out, "node version", &format!("{expected} ({source})"));
+        for runtime in detected["runtimes"].as_array().into_iter().flatten() {
+            let name = runtime["name"].as_str().unwrap_or("?");
+            let expected = &runtime["expected"];
+            if let Some(version) = expected["version"].as_str() {
+                let source = expected["source"].as_str().unwrap_or("?");
+                writeln_field(
+                    out,
+                    &format!("{name} version"),
+                    &format!("{version} ({source})"),
+                );
+            }
         }
         if detected["monorepo"].as_bool() == Some(true) {
             writeln_field(out, "monorepo", "yes");
@@ -133,71 +139,58 @@ fn print_overrides(human: &Human<'_>) {
     });
 }
 
-fn print_node_signals(human: &Human<'_>) {
-    let Human {
-        report,
-        node_context,
-        ..
-    } = *human;
-    print_section("Signals (Node)", |out| {
-        if !node_context {
-            return;
-        }
-        let node = &report["signals"]["node"];
-        if let Some(lp) = node["lockfile_pm"].as_str() {
-            writeln_field(out, "lockfile pm", lp);
-        }
-        if let Some(mp) = node["manifest_pm"].as_object() {
-            let pm = mp["pm"].as_str().unwrap_or("?");
-            let source = mp["source"].as_str().unwrap_or("?");
-            let version = mp["version"]
-                .as_str()
-                .map_or(String::new(), |v| format!(" {v}"));
-            let on_fail = mp["on_fail"].as_str().unwrap_or("?");
-            writeln_field(
-                out,
-                "manifest pm",
-                &format!("{pm}{version} via {source} (onFail={on_fail})"),
-            );
-        }
-        if let Some(probe) = node["path_probe"].as_object() {
-            let shims = node["volta_shims"].as_object();
-            let _ = writeln!(out, "  {}", "PATH probe".dimmed());
-            for (bin, path) in probe {
-                for line in probe_lines(bin, path.as_str(), shims.and_then(|s| s.get(bin))) {
-                    let _ = writeln!(out, "{line}");
+fn print_signals(report: &Value) {
+    let empty = Map::new();
+    for (source, signals) in report["signals"].as_object().unwrap_or(&empty) {
+        print_section(&format!("Signals ({source})"), |out| {
+            if let Some(lp) = signals["lockfile_pm"].as_str() {
+                writeln_field(out, "lockfile pm", lp);
+            }
+            if let Some(mp) = signals["manifest_pm"].as_object() {
+                let pm = mp.get("pm").and_then(Value::as_str).unwrap_or("?");
+                let field = mp.get("source").and_then(Value::as_str).unwrap_or("?");
+                let version = mp
+                    .get("version")
+                    .and_then(Value::as_str)
+                    .map_or(String::new(), |v| format!(" {v}"));
+                let on_fail = mp.get("on_fail").and_then(Value::as_str).unwrap_or("?");
+                writeln_field(
+                    out,
+                    "manifest pm",
+                    &format!("{pm}{version} via {field} (onFail={on_fail})"),
+                );
+            }
+            if let Some(probe) = signals["path_probe"].as_object() {
+                let shims = signals["shims"].as_object();
+                let _ = writeln!(out, "  {}", "PATH probe".dimmed());
+                for (bin, path) in probe {
+                    for line in probe_lines(bin, path.as_str(), shims.and_then(|s| s.get(bin))) {
+                        let _ = writeln!(out, "{line}");
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 fn print_decisions(human: &Human<'_>) {
     let Human {
         report,
         plan,
-        node_context,
         tools,
         ..
     } = *human;
     print_section("Decisions", |out| {
-        // `Map<String, Value>` indexes panic on missing keys (unlike
-        // `Value` indexing, which yields `Null`). Use `.get` so a
-        // `node_pm` decision missing its `via` field renders `?`
-        // instead of crashing the renderer.
-        if let Some(pm) = report["decisions"]["node_pm"]
-            .as_object()
-            .filter(|_| node_context)
-        {
-            let via = pm.get("via").and_then(Value::as_str).unwrap_or("?");
-            writeln_field(out, "node scripts", via);
-        }
-        if let Some(err) = report["decisions"]["node_pm_error"]
-            .as_str()
-            .filter(|_| node_context)
-        {
-            writeln!(out, "  {:<20}{}", "node scripts".red(), err.red())
-                .expect("writeln to String should not fail");
+        let empty = Map::new();
+        for (source, decision) in report["decisions"].as_object().unwrap_or(&empty) {
+            let label = format!("{source} tasks");
+            if let Some(via) = decision.get("via").and_then(Value::as_str) {
+                writeln_field(out, &label, via);
+            } else {
+                let error = decision.get("error").and_then(Value::as_str).unwrap_or("?");
+                writeln!(out, "  {:<20}{}", label.red(), error.red())
+                    .expect("writeln to String should not fail");
+            }
         }
         if let Some(runner) = tools {
             writeln_field(out, "tools", runner.label());
@@ -291,19 +284,25 @@ fn print_warnings(human: &Human<'_>) {
 }
 
 /// The `PATH probe` lines for one manager: its path, or `not found`, on the
-/// first line, and where a Volta shim resolves on a second.
+/// first line, and where a shim resolves on a second.
 fn probe_lines(bin: &str, path: Option<&str>, shim: Option<&Value>) -> Vec<String> {
     let Some(path) = path else {
         return vec![format!("    {bin:<18}{}", "not found".dimmed())];
     };
     let first = format!("    {bin:<18}{path}");
-    match shim.map(|s| s["resolved"].as_str()) {
-        Some(Some(real)) => vec![first, format!("{:22}-> {real} {}", "", "(volta)".dimmed())],
-        Some(None) => vec![format!(
+    let Some(shim) = shim else {
+        return vec![first];
+    };
+    let manager = shim["manager"].as_str().unwrap_or("?");
+    match shim["resolved"].as_str() {
+        Some(real) => vec![
+            first,
+            format!("{:22}-> {real} {}", "", format!("({manager})").dimmed()),
+        ],
+        None => vec![format!(
             "{first} {}",
-            "(volta shim, not provisioned)".dimmed()
+            format!("({manager} shim, not provisioned)").dimmed()
         )],
-        None => vec![first],
     }
 }
 
@@ -341,7 +340,7 @@ mod tests {
         let plain = probe_lines("bun", Some(r"C:\bun\bun.EXE"), None);
         assert_eq!(plain, [format!("    {:<18}{}", "bun", r"C:\bun\bun.EXE")]);
 
-        let shim = json!({ "resolved": r"C:\Volta\image\npm\11.6.2\npm.cmd" });
+        let shim = json!({ "manager": "volta", "resolved": r"C:\Volta\image\npm\11.6.2\npm.cmd" });
         let resolved = probe_lines("npm", Some(r"C:\Volta\npm.EXE"), Some(&shim));
         assert_eq!(resolved.len(), 2, "{resolved:?}");
         assert!(resolved[0].ends_with(r"C:\Volta\npm.EXE"), "{resolved:?}");
@@ -351,7 +350,7 @@ mod tests {
         );
         assert!(resolved[1].contains("(volta)"), "{resolved:?}");
 
-        let phantom = json!({ "resolved": null });
+        let phantom = json!({ "manager": "volta", "resolved": null });
         let unprovisioned = probe_lines("pnpm", Some(r"C:\Volta\pnpm.EXE"), Some(&phantom));
         assert_eq!(unprovisioned.len(), 1);
         assert!(

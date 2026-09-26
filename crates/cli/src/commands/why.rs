@@ -15,9 +15,11 @@ use runner_core::{Refusal, TaskRank};
 use crate::commands::run::core::Prepared;
 use crate::commands::run::decision::PmDecision as Decision;
 use crate::commands::run::{refusal_error, root_runner};
+use crate::provider::Named;
 use crate::resolver::ResolutionOverrides;
-use crate::schema::labels;
-use crate::types::{JsRuntime, ProjectContext, Task, TaskSource};
+use crate::schema::labels::{self, RuntimeLabel};
+use crate::types::{ProjectContext, Task};
+use runner_core::ProviderId;
 
 /// Every task a token addresses, with its rank, lowest first.
 type Ranked<'a> = [(&'a Task, TaskRank)];
@@ -80,6 +82,7 @@ pub(crate) fn why(
         filtered,
         root,
         reason: crate::commands::run::core::rank_reason(&prepared.policy, &ranked),
+        outcome: &outcome,
     };
     let pm_decision = pm_decision_for_selected(&prepared, overrides, selected);
 
@@ -126,14 +129,16 @@ struct Verdict<'a> {
     /// Whether the chosen runner defines none of the candidates.
     filtered: bool,
     /// The task runner whose own entry point takes the token.
-    root: Option<crate::types::TaskRunner>,
+    root: Option<ProviderId>,
     /// Why the first candidate outranks the second.
     reason: &'static str,
+    /// What the cascade would dispatch.
+    outcome: &'a Preview,
 }
 
 /// The human report for a token `run` hands to a task runner's own entry
 /// point.
-fn print_root(task: &str, runner: crate::types::TaskRunner) {
+fn print_root(task: &str, runner: ProviderId) {
     println!("{} {}", "runner why".bold(), task.bold());
     println!();
     println!(
@@ -174,11 +179,8 @@ struct WhyWarning {
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[schemars(deny_unknown_fields)]
 struct WhyRuntime {
-    #[schemars(
-        description = "Forced JS runtime label (`node`, `bun`, or `deno`).",
-        extend("enum" = ["node", "bun", "deno"])
-    )]
-    runtime: &'static str,
+    #[schemars(description = "Forced JS runtime label.")]
+    runtime: RuntimeLabel,
     #[schemars(description = "Where the runtime override came from (CLI, env, or config).")]
     via: String,
     #[schemars(
@@ -188,8 +190,8 @@ struct WhyRuntime {
     applied: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(
-        description = "Why the runtime did not apply, or the lifecycle scripts `node --run` will \
-                       skip."
+        description = "Why the runtime did not apply, or what the runtime warns about for the \
+                       selected task."
     )]
     note: Option<String>,
 }
@@ -235,7 +237,7 @@ fn print_cascade_result(outcome: &Preview, task: &str, root: bool, ambiguous: bo
 
 /// Whether a forced runtime dispatches `source` itself, so `commands::run` skips
 /// package-manager resolution for it.
-fn runtime_supersedes_pm(overrides: &ResolutionOverrides, source: TaskSource) -> bool {
+fn runtime_supersedes_pm(overrides: &ResolutionOverrides, source: ProviderId) -> bool {
     overrides
         .js_runtime()
         .is_some_and(|rt| crate::commands::run::runtime_honors(source, rt))
@@ -245,15 +247,22 @@ fn runtime_supersedes_pm(overrides: &ResolutionOverrides, source: TaskSource) ->
 fn runtime_report(
     overrides: &ResolutionOverrides,
     selected: Option<&Task>,
-    ctx: &ProjectContext,
+    outcome: &Preview,
 ) -> Option<WhyRuntime> {
     let over = overrides.runtime.as_ref()?;
     let runtime = over.runtime;
     let (applied, note) = match selected {
         Some(task) if crate::commands::run::runtime_honors(task.source, runtime) => {
-            let note = (runtime == JsRuntime::Node)
-                .then(|| lifecycle_note(ctx, &task.name))
-                .flatten();
+            let note = match outcome {
+                Ok((_, runner_core::Dispatch::Plan(plan))) if !plan.warnings.is_empty() => Some(
+                    plan.warnings
+                        .iter()
+                        .map(|warning| warning.message.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; "),
+                ),
+                _ => None,
+            };
             (Some(true), note)
         }
         Some(task) => (
@@ -267,18 +276,11 @@ fn runtime_report(
         None => (None, None),
     };
     Some(WhyRuntime {
-        runtime: runtime.label(),
+        runtime: RuntimeLabel(runtime),
         via: over.describe(),
         applied,
         note,
     })
-}
-
-/// `node --run` omits `pre`/`post` scripts the project defines; name them.
-fn lifecycle_note(ctx: &ProjectContext, task: &str) -> Option<String> {
-    let skipped = crate::commands::run::runtime_lifecycle_scripts(ctx, task);
-    (!skipped.is_empty())
-        .then(|| format!("node --run skips lifecycle scripts: {}", skipped.join(", ")))
 }
 
 fn pm_decision_for_selected(
@@ -287,28 +289,14 @@ fn pm_decision_for_selected(
     selected: Option<&Task>,
 ) -> Option<PmDecision> {
     let source = selected.map(|task| task.source)?;
-    let (provider, missing) = match source {
-        // A forced runtime that dispatches the script reads it through its own
-        // runner, so `commands::run` never resolves a node PM; reporting one here
-        // would describe a decision dispatch does not make.
-        TaskSource::PackageJson if runtime_supersedes_pm(overrides, source) => return None,
-        TaskSource::PackageJson => (
-            runner_core::ProviderId::PackageJson,
-            "no node package manager detected to run package.json scripts; pin one with `--pm \
-             <name>`, set `RUNNER_PM=<name>`, add it to runner.toml, or install a supported PM",
-        ),
-        TaskSource::PyprojectScripts => (
-            runner_core::ProviderId::Pyproject,
-            "no Python package manager detected to run pyproject scripts; install uv, poetry, or \
-             pipenv",
-        ),
-        _ => return None,
-    };
+    if !source.is_managed() || runtime_supersedes_pm(overrides, source) {
+        return None;
+    }
     let scope = selected
         .and_then(crate::commands::run::core::task)
         .map_or(runner_core::Scope::Root, |task| task.scope);
-    Some(prepared.decision_in(provider, &scope).map_or_else(
-        || Err(missing.to_owned()),
+    Some(prepared.decision_in(source, &scope).map_or_else(
+        || Err(crate::provider::no_dispatcher(source)),
         |decision| {
             let warnings = decision
                 .warnings(&prepared.project, overrides)
@@ -413,9 +401,9 @@ struct WhyTask<'a> {
     #[schemars(
         description = "Tool family that would execute the task (e.g. `cargo`, `just`, `node`)."
     )]
-    provider: labels::Provider,
-    #[schemars(description = "Task mechanism label (structured source label, e.g. `cargo-alias`).")]
-    kind: labels::StructuredSource,
+    provider: labels::FamilyLabel,
+    #[schemars(description = "The task source's label, e.g. `cargo`.")]
+    kind: labels::SourceLabel,
     #[schemars(description = "Config file the task was extracted from, when resolvable.")]
     source: Option<String>,
     #[schemars(
@@ -594,7 +582,7 @@ fn build_report<'a>(
         root: ctx.root.display().to_string(),
         query,
         pm_resolution: pm_decision.map(pm_resolution),
-        runtime: runtime_report(overrides, selected, ctx),
+        runtime: runtime_report(overrides, selected, outcome),
         output: output_report(overrides, selected),
         selected: selected.map(|task| candidate_report(task, rank_of(ranked, task))),
         candidates: ranked
@@ -647,9 +635,12 @@ fn task_report<'a>(task: &'a Task, ctx: &'a ProjectContext) -> WhyTask<'a> {
     WhyTask {
         name: &task.name,
         fqn: labels::fqn(task),
-        provider: labels::Provider(task.source),
-        kind: labels::StructuredSource(task.source),
-        source: labels::source_anchor(task.source, task.dir(&ctx.root))
+        provider: labels::FamilyLabel(task.source),
+        kind: labels::SourceLabel(task.source),
+        source: task
+            .detail
+            .source
+            .as_ref()
             .map(|path| path.display().to_string()),
         source_pointer: labels::source_pointer(task),
         description: task.description.as_deref(),
@@ -705,7 +696,7 @@ fn match_report<'a>(selector: &'a str, task: &Task, rank: Option<&TaskRank>) -> 
             priority: rank.priority,
         }),
         is_alias: task.alias_of.is_some(),
-        passthrough_to: task.passthrough_to.map(crate::types::TaskRunner::label),
+        passthrough_to: task.passthrough_to.map(Named::label),
     }
 }
 
@@ -831,19 +822,15 @@ fn print_detail(task: &Task, ctx: &ProjectContext) {
 fn usage_line(task: &Task, ctx: &ProjectContext, usage: &str) -> String {
     // Prefer the signature the source itself renders; fall back to the
     // raw spec when the source cannot be asked for a parsed one.
-    let rendered = (task.source == TaskSource::MiseToml)
-        .then(
-            || match crate::tool::mise::usage_spec(&ctx.root, &task.name) {
-                Ok(spec) => spec,
-                Err(error) => {
-                    eprintln!("warn: {error}");
-                    None
-                }
-            },
-        )
-        .flatten()
-        .filter(|spec| !spec.signature.trim().is_empty())
-        .map(|spec| format!("{} {}", task.name, spec.signature));
+    let rendered = match crate::commands::run::core::usage(ctx, task) {
+        Ok(spec) => spec,
+        Err(warning) => {
+            eprintln!("warn: {}", warning.message);
+            None
+        }
+    }
+    .filter(|spec| !spec.signature.trim().is_empty())
+    .map(|spec| format!("{} {}", task.name, spec.signature));
     rendered.unwrap_or_else(|| usage.replace('\n', "\n              "))
 }
 
@@ -966,7 +953,7 @@ fn print_human(
         }
     }
 
-    if let Some(rt) = runtime_report(overrides, selected, ctx) {
+    if let Some(rt) = runtime_report(overrides, selected, verdict.outcome) {
         println!();
         println!("{}", "Runtime".bold());
         println!("  {}", rt.via);
@@ -1002,7 +989,8 @@ mod tests {
 
     use super::{PmDecision, Verdict, build_report, decision_report, pm_decision_for_selected};
     use crate::resolver::{DiagnosticFlags, ResolutionOverrides};
-    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
@@ -1027,7 +1015,7 @@ mod tests {
         super::why(ctx, overrides, task, json)
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.to_string(),
             source,
@@ -1058,14 +1046,15 @@ mod tests {
         )
         .unwrap_or_default();
         let selected = prepared.selected(ctx, query).ok().flatten();
+        let outcome = prepared.preview(ctx, overrides, query);
         let verdict = Verdict {
             ambiguous: None,
             filtered: false,
             root: None,
             reason: crate::commands::run::core::rank_reason(&prepared.policy, &ranked),
+            outcome: &outcome,
         };
         let decision = decision_report(&ranked, selected, verdict);
-        let outcome = prepared.preview(ctx, overrides, query);
         serde_json::to_value(build_report(
             query,
             &ranked,
@@ -1091,8 +1080,8 @@ mod tests {
     #[test]
     fn why_with_multiple_candidates_renders_both_formats() {
         let ctx = context(vec![
-            task("build", TaskSource::PackageJson),
-            task("build", TaskSource::Justfile),
+            task("build", ProviderId::PackageJson),
+            task("build", ProviderId::Just),
         ]);
         why(&ctx, &ResolutionOverrides::default(), "build", true).expect("json should succeed");
         why(&ctx, &ResolutionOverrides::default(), "build", false).expect("human should succeed");
@@ -1100,7 +1089,7 @@ mod tests {
 
     #[test]
     fn why_renders_the_runner_constraint_refusal() {
-        let ctx = context(vec![task("build", TaskSource::PackageJson)]);
+        let ctx = context(vec![task("build", ProviderId::PackageJson)]);
         let overrides = ResolutionOverrides::from_cli_and_env(
             crate::resolver::CliOverrides {
                 runner: Some("just"),
@@ -1118,7 +1107,7 @@ mod tests {
 
     #[test]
     fn why_pyproject_script_reports_python_pm_override() {
-        let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
+        let mut ctx = context(vec![task("greenpy", ProviderId::Pyproject)]);
         let overrides = ResolutionOverrides::from_cli_and_env(
             crate::resolver::CliOverrides {
                 pm: Some("uv"),
@@ -1138,7 +1127,7 @@ mod tests {
 
         match pm_decision {
             Ok((decision, _)) => {
-                assert_eq!(decision.pm, PackageManager::Uv);
+                assert_eq!(decision.pm, ProviderId::Uv);
                 assert!(decision.describe().contains("--pm"));
             }
             Err(err) => panic!("override should resolve: {err}"),
@@ -1147,7 +1136,7 @@ mod tests {
 
     #[test]
     fn report_describes_cargo_alias_like_the_committed_example() {
-        let mut alias = task("t", TaskSource::CargoAliases);
+        let mut alias = task("t", ProviderId::Cargo);
         alias.alias_of = Some("test".to_string());
         let ctx = context(vec![alias]);
 
@@ -1160,9 +1149,9 @@ mod tests {
 
         let task = &json["selected"]["task"];
         assert_eq!(task["name"], "t");
-        assert_eq!(task["fqn"], "root:cargo-alias#t");
+        assert_eq!(task["fqn"], "root:cargo#t");
         assert_eq!(task["provider"], "cargo");
-        assert_eq!(task["kind"], "cargo-alias");
+        assert_eq!(task["kind"], "cargo");
         assert_eq!(task["source_pointer"], "alias.t");
         assert_eq!(task["definition"], "test");
         assert_eq!(task["resolved"], "cargo t");
@@ -1197,14 +1186,16 @@ mod tests {
 
     #[test]
     fn decision_names_the_runner_root_invocation() {
+        let outcome = Err(runner_core::Refusal::Invalid(String::new()));
         let decision = decision_report(
             &[],
             None,
             Verdict {
                 ambiguous: None,
                 filtered: false,
-                root: Some(crate::types::TaskRunner::Make),
+                root: Some(ProviderId::Make),
                 reason: "",
+                outcome: &outcome,
             },
         );
 
@@ -1215,8 +1206,8 @@ mod tests {
     #[test]
     fn why_refuses_a_qualified_miss_like_run() {
         let ctx = context(vec![
-            task("build", TaskSource::PackageJson),
-            task("build", TaskSource::Justfile),
+            task("build", ProviderId::PackageJson),
+            task("build", ProviderId::Just),
         ]);
 
         let err = why(&ctx, &ResolutionOverrides::default(), "deno:build", true)
@@ -1226,7 +1217,7 @@ mod tests {
 
     #[test]
     fn report_builtin_takes_precedence_over_a_same_named_task() {
-        let ctx = context(vec![task("list", TaskSource::Justfile)]);
+        let ctx = context(vec![task("list", ProviderId::Just)]);
         let json = report("list", None, &ResolutionOverrides::default(), &ctx);
         assert_eq!(json["decision"]["strategy"], "builtin");
         assert_eq!(json["decision"]["tried"], serde_json::json!(["builtin"]));
@@ -1236,10 +1227,10 @@ mod tests {
     #[test]
     fn report_ranks_multiple_candidates() {
         let mut ctx = context(vec![
-            task("build", TaskSource::PackageJson),
-            task("build", TaskSource::Justfile),
+            task("build", ProviderId::PackageJson),
+            task("build", ProviderId::Just),
         ]);
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Npm.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Npm);
         let json = report("build", None, &ResolutionOverrides::default(), &ctx);
 
         assert_eq!(json["decision"]["strategy"], "ranked");
@@ -1250,8 +1241,8 @@ mod tests {
 
     #[test]
     fn report_resolves_selected_pyproject_script_through_python_pm() {
-        let mut ctx = context(vec![task("greenpy", TaskSource::PyprojectScripts)]);
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Uv.label());
+        let mut ctx = context(vec![task("greenpy", ProviderId::Pyproject)]);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Uv);
         crate::tool::test_support::seed_context(&mut ctx);
         let selected = ctx.tasks.first();
         let prepared =
@@ -1301,15 +1292,15 @@ mod tests {
             member_dir,
         ));
         let mut ctx = context(vec![
-            task("root-build", TaskSource::PackageJson),
+            task("root-build", ProviderId::PackageJson),
             Task {
                 member: Some(Arc::clone(&member)),
-                ..task("build", TaskSource::PackageJson)
+                ..task("build", ProviderId::PackageJson)
             },
         ]);
         ctx.root = dir.path().to_path_buf();
         ctx.cwd = ctx.root.clone();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Pnpm.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Pnpm);
         ctx.workspace = Some(crate::types::Workspace {
             root: ctx.root.clone(),
             kinds: vec!["package.json workspaces"],
@@ -1323,11 +1314,11 @@ mod tests {
         let (decision, _) = pm_decision_for_selected(&prepared, &overrides, ctx.tasks.get(1))
             .expect("a package.json task has a decision")
             .expect("bun is present in the member");
-        assert_eq!(decision.pm, PackageManager::Bun);
+        assert_eq!(decision.pm, ProviderId::Bun);
         let (decision, _) = pm_decision_for_selected(&prepared, &overrides, ctx.tasks.first())
             .expect("a package.json task has a decision")
             .expect("pnpm is present at the root");
-        assert_eq!(decision.pm, PackageManager::Pnpm);
+        assert_eq!(decision.pm, ProviderId::Pnpm);
     }
 
     fn runtime_overrides(label: &str) -> ResolutionOverrides {
@@ -1345,8 +1336,8 @@ mod tests {
 
     #[test]
     fn forced_runtime_previews_the_runtime_command_not_the_pm_command() {
-        let mut ctx = context(vec![task("build", TaskSource::PackageJson)]);
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Bun.label());
+        let mut ctx = context(vec![task("build", ProviderId::PackageJson)]);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Bun);
         let overrides = runtime_overrides("bun");
         crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
         let selected = ctx.tasks.first();
@@ -1372,9 +1363,14 @@ mod tests {
     #[test]
     fn node_runtime_preview_notes_the_skipped_lifecycle_scripts() {
         let mut ctx = context(vec![
-            task("build", TaskSource::PackageJson),
-            task("prebuild", TaskSource::PackageJson),
+            task("build", ProviderId::PackageJson),
+            task("prebuild", ProviderId::PackageJson),
         ]);
+        std::fs::write(
+            ctx.root.join("package.json"),
+            r#"{ "scripts": { "build": "tsc", "prebuild": "gen" } }"#,
+        )
+        .expect("manifest");
         let overrides = runtime_overrides("node");
         crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
 
@@ -1393,7 +1389,7 @@ mod tests {
 
     #[test]
     fn forced_runtime_reports_not_applied_for_a_source_it_cannot_honour() {
-        let ctx = context(vec![task("build", TaskSource::Justfile)]);
+        let ctx = context(vec![task("build", ProviderId::Just)]);
         let overrides = runtime_overrides("bun");
 
         let json = report("build", None, &overrides, &ctx);
@@ -1412,9 +1408,9 @@ mod tests {
 
     #[test]
     fn report_collects_sibling_aliases() {
-        let mut shortcut = task("f", TaskSource::Justfile);
+        let mut shortcut = task("f", ProviderId::Just);
         shortcut.alias_of = Some("fmt".to_string());
-        let ctx = context(vec![task("fmt", TaskSource::Justfile), shortcut]);
+        let ctx = context(vec![task("fmt", ProviderId::Just), shortcut]);
 
         let json = report("fmt", None, &ResolutionOverrides::default(), &ctx);
 

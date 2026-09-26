@@ -13,8 +13,9 @@ use super::types::{CollisionPolicy, ExplainSource, FallbackPolicy, MismatchPolic
 use super::{ResolveError, join_labels};
 use crate::chain::FailurePolicy;
 use crate::config::{LoadedConfig, TaskSpec, VerbosityConfig};
+use crate::provider::Named;
 use crate::tool::{QuietLevel, Stream, TaskStream};
-use crate::types::{JsRuntime, PackageManager, TaskRunner, TaskSource};
+use runner_core::ProviderId;
 
 /// Treat any env-var value as truthy unless it's empty, `"0"`, or a
 /// case-insensitive variant of `false` / `no` / `off`.
@@ -80,57 +81,57 @@ pub(super) fn resolve_fallback_policy(
     Ok(FallbackPolicy::default())
 }
 
-/// Resolve a `[tasks]` label to the [`TaskSource`]s it names, most-native
+/// Resolve a `[tasks]` label to the [`ProviderId`]s it names, most-native
 /// first. The label vocabulary is unified across the three kinds a user might
 /// reach for, tried in order of richest mapping:
 ///
 /// 1. a **package manager** (`bun`, `npm`, `pnpm`, `yarn`, `deno`, `cargo`,
-///    `uv`, …) → its [`PackageManager::owned_task_sources`] (`bun` →
+///    `uv`, …) → its [`crate::provider::Named::dispatches`] (`bun` →
 ///    `package.json`; `deno` → `deno.json` then `package.json`),
 /// 2. a **task runner** (`turbo`, `make`, `just`, `task`, `mise`, `bacon`) →
-///    its [`TaskRunner::task_source`] (`nx` resolves to nothing; it has no
+///    its [`crate::provider::Named::as_task_source`] (`nx` resolves to nothing; it has no
 ///    extractable source, which is recognized but contributes no source),
 /// 3. a **source name** (`package.json`, `pyproject.toml`, …) via
-///    [`TaskSource::from_label`].
+///    [`crate::provider::task_source`].
 ///
 /// Returns `Ok(vec)` for a recognized label (possibly empty, e.g. `nx`) and
 /// `Err` for an unknown one. PM is tried first so a dual-natured tool like
 /// `deno` expands to both its sources rather than just `deno.json`.
-fn resolve_source_label(raw: &str) -> Result<Vec<TaskSource>> {
+fn resolve_source_label(raw: &str) -> Result<Vec<ProviderId>> {
     let label = raw.trim();
-    if let Some(pm) = PackageManager::from_label(label) {
-        return Ok(pm.owned_task_sources().to_vec());
+    if let Some(pm) = crate::provider::package_manager(label) {
+        return Ok(pm.dispatches().to_vec());
     }
-    if let Some(runner) = TaskRunner::from_label(label) {
-        return Ok(runner.task_source().into_iter().collect());
+    if let Some(runner) = crate::provider::runner(label) {
+        return Ok(runner.as_task_source().into_iter().collect());
     }
-    if let Some(source) = TaskSource::from_label(label) {
+    if let Some(source) = crate::provider::task_source(label) {
         return Ok(vec![source]);
     }
     Err(anyhow!(
         "unknown source {label:?}; expected a task runner ({}), a package manager ({}), or a \
          source name like package.json",
-        join_labels(TaskRunner::all().iter().map(|r| r.label())),
+        join_labels(crate::provider::runners().iter().map(|r| r.label())),
         join_labels(
-            PackageManager::all()
+            crate::provider::package_managers()
                 .iter()
                 .copied()
-                .map(PackageManager::label)
+                .map(Named::label)
         ),
     ))
 }
 
-/// Parse `[tasks].prefer` into a deduped, ranked list of [`TaskSource`]s.
+/// Parse `[tasks].prefer` into a deduped, ranked list of [`ProviderId`]s.
 /// Empty/missing → empty `Vec`. Rank-only: the list never restricts; it only
 /// reorders same-name conflicts (see `commands::run::select`).
 ///
 /// Unknown labels are a hard error (like the legacy prefer-list) so a typo
 /// surfaces at startup rather than silently changing selection.
-pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<TaskSource>> {
+pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<ProviderId>> {
     let Some(loaded) = config else {
         return Ok(Vec::new());
     };
-    let mut out: Vec<TaskSource> = Vec::new();
+    let mut out: Vec<ProviderId> = Vec::new();
     for entry in &loaded.config.tasks.prefer {
         let trimmed = entry.trim();
         if trimmed.is_empty() {
@@ -146,7 +147,7 @@ pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<Ta
     Ok(out)
 }
 
-/// Parse per-task source pins (task name → preferred [`TaskSource`]s,
+/// Parse per-task source pins (task name → preferred [`ProviderId`]s,
 /// most-native first) from both the legacy `[tasks].overrides` map and the
 /// `runner` field of a `[tasks.<name>]` entry. Empty/missing → empty map. A
 /// label that names no task source (e.g. `nx`) is rejected here: a pin must be
@@ -155,7 +156,7 @@ pub(super) fn parse_tasks_prefer(config: Option<&LoadedConfig>) -> Result<Vec<Ta
 /// same task.
 pub(super) fn parse_tasks_overrides(
     config: Option<&LoadedConfig>,
-) -> Result<BTreeMap<String, Vec<TaskSource>>> {
+) -> Result<BTreeMap<String, Vec<ProviderId>>> {
     let Some(loaded) = config else {
         return Ok(BTreeMap::new());
     };
@@ -286,11 +287,11 @@ pub(super) fn parse_host_stream_label(raw: &str) -> Result<Stream> {
 }
 
 /// Parse a `--runtime` / `RUNNER_RUNTIME` / `[runtime].js` label.
-pub(super) fn parse_runtime_label(raw: &str) -> Result<JsRuntime> {
-    JsRuntime::from_label(raw).ok_or_else(|| {
+pub(super) fn parse_runtime_label(raw: &str) -> Result<ProviderId> {
+    crate::provider::js_runtime(raw).ok_or_else(|| {
         anyhow!(
             "unknown runtime {raw:?}; expected one of {}",
-            join_labels(JsRuntime::all().iter().map(|r| r.label())),
+            join_labels(crate::provider::js_runtimes().iter().map(|r| r.label())),
         )
     })
 }

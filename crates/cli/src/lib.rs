@@ -68,6 +68,7 @@ mod commands;
 mod complete;
 mod config;
 mod detect;
+mod provider;
 mod render;
 mod resolver;
 mod schema;
@@ -1300,26 +1301,6 @@ fn dispatch_overrides(
     }
 }
 
-/// Warnings for settings that are set but no longer read.
-fn removed_settings(overrides: &resolver::ResolutionOverrides) -> Vec<types::DetectionWarning> {
-    let mut warnings = Vec::new();
-    if overrides.fallback == resolver::FallbackPolicy::Npm {
-        warnings.push(types::DetectionWarning::Removed {
-            name: "--fallback npm",
-            now: "a task source with no package manager evidence uses the first one on PATH, as \
-                  with --fallback probe",
-        });
-    }
-    if std::env::var_os("RUNNER_INSTALL_PMS").is_some() {
-        warnings.push(types::DetectionWarning::Removed {
-            name: "RUNNER_INSTALL_PMS",
-            now: "runner install uses every detected package manager; set [tools.<name>].install \
-                  = false to leave one out",
-        });
-    }
-    warnings
-}
-
 fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
     // A malformed `runner.toml` must not abort the `config` subcommand;
     // `config validate`/`show` exist to inspect and repair exactly that
@@ -1338,7 +1319,6 @@ fn dispatch(cli: args::Cli, dir: &Path) -> Result<i32> {
         ctx.warnings.extend(loaded.warnings.iter().cloned());
     }
     ctx.warnings.extend(env_warnings);
-    ctx.warnings.extend(removed_settings(&overrides));
     // The first point where a resolved root and the inherited marker are both
     // in hand, so it is where the nesting question gets answered.
     overrides.parent.warned = commands::parent_warned_about(&ctx.root);
@@ -1438,26 +1418,8 @@ mod tests {
     use crate::args;
     use crate::resolver::ResolveError;
     use crate::tool::test_support::TempDir;
-    use crate::types::{ProjectContext, Task, TaskSource};
-
-    #[test]
-    fn a_legacy_npm_fallback_is_reported_as_no_longer_read() {
-        let overrides = crate::resolver::ResolutionOverrides {
-            fallback: crate::resolver::FallbackPolicy::Npm,
-            ..crate::resolver::ResolutionOverrides::default()
-        };
-        let warnings = super::removed_settings(&overrides);
-        assert!(warnings.iter().any(|warning| {
-            warning
-                .to_string()
-                .contains("--fallback npm is no longer read")
-        }));
-        assert!(
-            super::removed_settings(&crate::resolver::ResolutionOverrides::default())
-                .iter()
-                .all(|warning| !warning.to_string().contains("--fallback"))
-        );
-    }
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
 
     fn parsed_version(args: &[&str]) -> super::VersionRequest {
         let parsed = parse_cli(args.iter().copied()).expect("valid CLI arguments");
@@ -1826,7 +1788,7 @@ mod tests {
                 .iter()
                 .map(|name| Task {
                     name: (*name).to_string(),
-                    source: TaskSource::PackageJson,
+                    source: ProviderId::PackageJson,
                     run_target: None,
                     description: None,
                     alias_of: None,

@@ -161,30 +161,22 @@
       "additionalProperties": false
     },
     "PmSection": {
-      "description": "`[pm]` section, per-ecosystem package manager overrides.",
+      "description": "`[pm]` section, the package manager per ecosystem.",
       "type": "object",
       "properties": {
         "node": {
-          "description": "Package manager used to dispatch Node `package.json` scripts.\nValid values: `npm`, `pnpm`, `yarn`, `bun`, `deno`.",
-          "type": [
-            "null",
-            "string"
-          ],
+          "description": "Package manager that dispatches package.json tasks.",
           "enum": [
             "npm",
+            "bun",
             "pnpm",
             "yarn",
-            "bun",
             "deno",
             null
           ]
         },
         "python": {
-          "description": "Package manager used for Python ecosystems.\nValid values: `uv`, `poetry`, `pipenv`.",
-          "type": [
-            "null",
-            "string"
-          ],
+          "description": "Package manager that dispatches pyproject.toml tasks.",
           "enum": [
             "uv",
             "poetry",
@@ -200,7 +192,7 @@
       "type": "object",
       "properties": {
         "fallback": {
-          "description": "`probe` (default) takes a package manager from PATH for a task source\nwith no package manager evidence; `error` refuses. `npm` is accepted\nand behaves as `probe`.",
+          "description": "`probe` (default) takes a package manager from PATH for a task source\nwith no package manager evidence; `error` refuses.",
           "default": "probe",
           "type": [
             "null",
@@ -208,7 +200,6 @@
           ],
           "enum": [
             "probe",
-            "npm",
             "error",
             null
           ]
@@ -297,9 +288,9 @@
             "string"
           ],
           "enum": [
-            "node",
             "bun",
             "deno",
+            "node",
             null
           ]
         }
@@ -320,12 +311,12 @@
         "yarn",
         "pnpm",
         "bun",
-        "cargo",
         "deno",
+        "cargo",
+        "go",
         "uv",
         "poetry",
         "pipenv",
-        "go",
         "bundler",
         "composer",
         "package.json",

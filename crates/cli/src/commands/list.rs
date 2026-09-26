@@ -8,11 +8,12 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use colored::Colorize;
 
+use crate::provider::Named;
 use crate::render::list::write_tasks_grouped;
 use crate::render::out::Out;
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
-use crate::types::{ProjectContext, Task, TaskSource};
+use crate::types::{ProjectContext, Task};
 
 /// Write tasks to `out`.
 ///
@@ -22,7 +23,7 @@ use crate::types::{ProjectContext, Task, TaskSource};
 ///
 /// # Errors
 ///
-/// Returns an error when `source` doesn't name a known [`TaskSource`],
+/// Returns an error when `source` doesn't name a known [`ProviderId`],
 /// when `--json` serialization fails, or when `out` fails to take the
 /// output.
 pub(crate) fn list(
@@ -36,7 +37,7 @@ pub(crate) fn list(
 ) -> Result<()> {
     let parsed_source = match source {
         None => None,
-        Some(label) => Some(TaskSource::from_label(label).ok_or_else(|| {
+        Some(label) => Some(crate::provider::task_source(label).ok_or_else(|| {
             let expected = expected_source_labels();
             anyhow!(
                 "--source {label:?}: unknown source label (expected one of: {expected}, legacy \
@@ -74,12 +75,7 @@ pub(crate) fn list(
         // always full detail, never collapse. The height-adaptive
         // compact path is reserved for the bare `runner` / `runner
         // info` glance view (see `print_tasks_grouped`).
-        write_tasks_grouped(
-            out,
-            &filtered,
-            &ctx.root,
-            ctx.current_member().map(Arc::as_ref),
-        )?;
+        write_tasks_grouped(out, &filtered, ctx.current_member().map(Arc::as_ref))?;
         if let Some(report) = format_conflicts(ctx, overrides, out.is_terminal()) {
             out.stdout().write_all(report.as_bytes())?;
         }
@@ -88,10 +84,10 @@ pub(crate) fn list(
 }
 
 fn expected_source_labels() -> String {
-    TaskSource::all()
+    crate::provider::task_sources()
         .iter()
         .copied()
-        .map(TaskSource::label)
+        .map(Named::label)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -197,7 +193,8 @@ mod tests {
 
     use super::{expected_source_labels, format_conflicts};
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{ProjectContext, Task, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
 
     #[test]
     fn invalid_source_error_mentions_pyproject() {
@@ -226,7 +223,7 @@ mod tests {
         assert!(expected_source_labels().contains("pyproject.toml"));
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.into(),
             source,
@@ -256,9 +253,9 @@ mod tests {
     #[test]
     fn format_conflicts_flags_cross_source_shadowing() {
         let ctx = ctx_with_tasks(vec![
-            task("run", TaskSource::Justfile),
-            task("run", TaskSource::CargoAliases),
-            task("build", TaskSource::Justfile), // single source → not a conflict
+            task("run", ProviderId::Just),
+            task("run", ProviderId::Cargo),
+            task("build", ProviderId::Just), // single source → not a conflict
         ]);
 
         let report = format_conflicts(&ctx, &ResolutionOverrides::default(), false)
@@ -286,7 +283,7 @@ mod tests {
         let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
-                runner: crate::types::TaskRunner::Just,
+                runner: ProviderId::Just,
                 origin: crate::resolver::OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -301,8 +298,8 @@ mod tests {
     #[test]
     fn format_conflicts_returns_none_without_collisions() {
         let ctx = ctx_with_tasks(vec![
-            task("build", TaskSource::Justfile),
-            task("test", TaskSource::CargoAliases),
+            task("build", ProviderId::Just),
+            task("test", ProviderId::Cargo),
         ]);
         assert!(format_conflicts(&ctx, &ResolutionOverrides::default(), false).is_none());
     }

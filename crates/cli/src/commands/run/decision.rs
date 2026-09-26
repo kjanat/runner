@@ -8,8 +8,9 @@ use runner_core::{
 };
 use runner_providers::REGISTRY;
 
+use crate::provider::Named;
 use crate::resolver::{MismatchPolicy, ResolutionOverrides};
-use crate::types::{DetectionWarning, PackageManager};
+use crate::types::DetectionWarning;
 
 /// Observation and resolution for one invocation.
 pub(crate) struct Observed {
@@ -75,6 +76,22 @@ impl Observed {
             .find(|task| std::ptr::eq(*task, selected))
     }
 
+    /// The package manager a lockfile in the invocation scope pins for `source`.
+    pub(crate) fn locked(&self, source: ProviderId) -> Option<ProviderId> {
+        let scope = runner_core::plan::scope_at(&self.tree, &self.tree.cwd);
+        self.project
+            .present
+            .iter()
+            .filter(|present| present.scope == scope && dispatches(present.provider, source))
+            .find(|present| {
+                present
+                    .because
+                    .iter()
+                    .any(|evidence| evidence.weight == runner_core::Weight::Locked)
+            })
+            .and_then(|present| crate::provider::package_manager(present.provider.label()))
+    }
+
     /// What the manifest in the invocation scope declares for `source`'s package manager.
     pub(crate) fn manifest_declaration(&self, source: ProviderId) -> Option<ManifestDeclaration> {
         let scope = runner_core::plan::scope_at(&self.tree, &self.tree.cwd);
@@ -88,7 +105,7 @@ impl Observed {
                     .is_some_and(|chosen| std::ptr::eq(chosen, *present))
             })
             .find_map(|present| {
-                let pm = PackageManager::from_label(REGISTRY.by_id(present.provider).label)?;
+                let pm = crate::provider::package_manager(REGISTRY.by_id(present.provider).label)?;
                 let (evidence, field) = manifest_field(present)?;
                 Some(ManifestDeclaration {
                     pm,
@@ -109,7 +126,7 @@ impl Observed {
 
 /// A package-manager declaration read from a manifest.
 pub(crate) struct ManifestDeclaration {
-    pub pm: PackageManager,
+    pub pm: ProviderId,
     pub field: &'static str,
     pub version: Option<String>,
     pub on_fail: OnFail,
@@ -149,7 +166,7 @@ pub(crate) fn decide_in(
 /// A package-manager decision, from the layer that made it and the evidence behind it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PmDecision {
-    pub pm: PackageManager,
+    pub pm: ProviderId,
     pub layer: Layer,
     pub at: PathBuf,
     pub field: Option<&'static str>,
@@ -164,7 +181,7 @@ impl PmDecision {
         because: &[Evidence],
         scope: &Scope,
     ) -> Option<Self> {
-        let pm = PackageManager::from_label(REGISTRY.by_id(provider).label)?;
+        let pm = crate::provider::package_manager(REGISTRY.by_id(provider).label)?;
         let layer = decided_by.first()?.clone();
         let strongest = because.first();
         let declared = strongest.and_then(|e| {
@@ -253,13 +270,19 @@ impl PmDecision {
                 continue;
             }
             let Some(lockfile) =
-                PackageManager::from_label(REGISTRY.by_id(disagreement.locked).label)
+                crate::provider::package_manager(REGISTRY.by_id(disagreement.locked).label)
+            else {
+                continue;
+            };
+            let Some((_, field)) = project
+                .present_in(disagreement.declared, &disagreement.scope)
+                .and_then(manifest_field)
             else {
                 continue;
             };
             warnings.push(DetectionWarning::PmMismatch {
                 declared: self.pm,
-                field: self.field.unwrap_or("packageManager"),
+                field,
                 lockfile,
             });
         }
@@ -273,31 +296,20 @@ fn file_name(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
         .to_string_lossy()
 }
 
-/// The package managers on `PATH` that dispatch what `provider` dispatches, in probe order.
-fn probe_order_for(provider: ProviderId) -> Vec<PackageManager> {
-    let Some(cap) = REGISTRY.by_id(provider).caps.run_task else {
-        return Vec::new();
-    };
-    let mut providers: Vec<_> = REGISTRY
-        .iter()
-        .filter(|candidate| {
-            candidate.kind.contains(runner_core::Kind::PACKAGE_MANAGER)
-                && candidate.caps.run_task.is_some_and(|other| {
-                    other
-                        .sources
-                        .iter()
-                        .any(|source| cap.sources.contains(source))
-                })
-                && candidate
-                    .program
-                    .is_some_and(|program| runner_core::probe_with(program, &[]).is_some())
-        })
-        .collect();
-    providers.sort_by_key(|candidate| candidate.caps.probe_priority);
-    providers
-        .into_iter()
-        .filter_map(|candidate| PackageManager::from_label(candidate.label))
-        .collect()
+/// The package managers on `PATH` that dispatch what `pm` dispatches, in probe order.
+fn probe_order_for(pm: ProviderId) -> Vec<ProviderId> {
+    let mut found: Vec<ProviderId> = Vec::new();
+    for source in pm.dispatches() {
+        for other in crate::provider::dispatchers(*source) {
+            let program = other.provider().program;
+            if !found.contains(&other)
+                && program.is_some_and(|program| runner_core::probe_with(program, &[]).is_some())
+            {
+                found.push(other);
+            }
+        }
+    }
+    found
 }
 
 fn dispatches(provider: ProviderId, source: ProviderId) -> bool {
@@ -330,7 +342,8 @@ mod tests {
     use super::{Observed, PmDecision};
     use crate::resolver::{MismatchPolicy, OverrideOrigin, PmOverride, ResolutionOverrides};
     use crate::tool::test_support::TempDir;
-    use crate::types::{DetectionWarning, Ecosystem, PackageManager};
+    use crate::types::DetectionWarning;
+    use runner_core::Ecosystem;
 
     fn project(name: &str, files: &[(&str, &str)]) -> TempDir {
         let dir = TempDir::new(name);
@@ -356,14 +369,14 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn with_pm_override(pm: PackageManager, origin: OverrideOrigin) -> ResolutionOverrides {
+    fn with_pm_override(pm: ProviderId, origin: OverrideOrigin) -> ResolutionOverrides {
         ResolutionOverrides {
             pm: Some(PmOverride { pm, origin }),
             ..ResolutionOverrides::default()
         }
     }
 
-    fn with_config_pm(pm: PackageManager, eco: Ecosystem) -> ResolutionOverrides {
+    fn with_config_pm(pm: ProviderId, eco: Ecosystem) -> ResolutionOverrides {
         let mut map = HashMap::new();
         map.insert(
             eco,
@@ -389,7 +402,7 @@ mod tests {
             &[("package.json", "{}"), ("pnpm-lock.yaml", LOCK)],
         );
         let decision = node_decision(&dir, &ResolutionOverrides::default()).expect("pnpm");
-        assert_eq!(decision.pm, PackageManager::Pnpm);
+        assert_eq!(decision.pm, ProviderId::Pnpm);
         assert!(matches!(decision.layer, Layer::Lockfile(_)));
         let described = decision.describe();
         assert!(
@@ -418,7 +431,7 @@ mod tests {
             ],
         );
         let decision = node_decision(&dir, &ResolutionOverrides::default()).expect("bun");
-        assert_eq!(decision.pm, PackageManager::Bun);
+        assert_eq!(decision.pm, ProviderId::Bun);
     }
 
     #[test]
@@ -432,7 +445,7 @@ mod tests {
             ],
         );
         let decision = node_decision(&dir, &ResolutionOverrides::default()).expect("deno");
-        assert_eq!(decision.pm, PackageManager::Deno);
+        assert_eq!(decision.pm, ProviderId::Deno);
     }
 
     #[test]
@@ -447,14 +460,14 @@ mod tests {
         );
         let cli = node_decision(
             &dir,
-            &with_pm_override(PackageManager::Yarn, OverrideOrigin::CliFlag),
+            &with_pm_override(ProviderId::Yarn, OverrideOrigin::CliFlag),
         )
         .expect("yarn");
-        assert_eq!(cli.pm, PackageManager::Yarn);
+        assert_eq!(cli.pm, ProviderId::Yarn);
         assert_eq!(cli.describe(), "yarn via --pm (CLI override)");
         let env = node_decision(
             &dir,
-            &with_pm_override(PackageManager::Yarn, OverrideOrigin::EnvVar),
+            &with_pm_override(ProviderId::Yarn, OverrideOrigin::EnvVar),
         )
         .expect("yarn");
         assert_eq!(env.describe(), "yarn via RUNNER_PM (environment)");
@@ -473,10 +486,10 @@ mod tests {
         );
         let decision = node_decision(
             &dir,
-            &with_pm_override(PackageManager::Deno, OverrideOrigin::CliFlag),
+            &with_pm_override(ProviderId::Deno, OverrideOrigin::CliFlag),
         )
         .expect("deno");
-        assert_eq!(decision.pm, PackageManager::Deno);
+        assert_eq!(decision.pm, ProviderId::Deno);
     }
 
     #[test]
@@ -490,7 +503,7 @@ mod tests {
         );
         let overrides = ResolutionOverrides::default();
         let decision = node_decision(&dir, &overrides).expect("yarn");
-        assert_eq!(decision.pm, PackageManager::Yarn);
+        assert_eq!(decision.pm, ProviderId::Yarn);
         assert!(matches!(decision.layer, Layer::Manifest(_)));
         assert_eq!(decision.field, Some("packageManager"));
         let described = decision.describe();
@@ -531,7 +544,7 @@ mod tests {
             let decision = Observed::observe(&ctx, &ResolutionOverrides::default())
                 .expect("observation")
                 .decision(ProviderId::PackageJson);
-            assert_eq!(decision.map(|d| d.pm), Some(PackageManager::Deno), "{name}");
+            assert_eq!(decision.map(|d| d.pm), Some(ProviderId::Deno), "{name}");
         }
     }
 
@@ -545,7 +558,7 @@ mod tests {
             )],
         );
         let decision = node_decision(&dir, &ResolutionOverrides::default()).expect("bun");
-        assert_eq!(decision.pm, PackageManager::Bun);
+        assert_eq!(decision.pm, ProviderId::Bun);
         assert_eq!(decision.field, Some("devEngines.packageManager"));
         assert_eq!(decision.on_fail, Some(OnFail::Warn));
         assert!(
@@ -566,10 +579,10 @@ mod tests {
         );
         let decision = node_decision(
             &dir,
-            &with_pm_override(PackageManager::Bun, OverrideOrigin::CliFlag),
+            &with_pm_override(ProviderId::Bun, OverrideOrigin::CliFlag),
         )
         .expect("bun");
-        assert_eq!(decision.pm, PackageManager::Bun);
+        assert_eq!(decision.pm, ProviderId::Bun);
         assert_eq!(decision.layer, Layer::Cli);
     }
 
@@ -584,7 +597,7 @@ mod tests {
         );
         let overrides = ResolutionOverrides::default();
         let decision = node_decision(&dir, &overrides).expect("pnpm");
-        assert_eq!(decision.pm, PackageManager::Pnpm);
+        assert_eq!(decision.pm, ProviderId::Pnpm);
         assert!(matches!(decision.layer, Layer::Manifest(_)));
         assert_eq!(node_warnings(&dir, &overrides).len(), 0);
     }
@@ -604,7 +617,7 @@ mod tests {
         };
         assert_eq!(
             node_decision(&dir, &ignore).map(|d| d.pm),
-            Some(PackageManager::Yarn)
+            Some(ProviderId::Yarn)
         );
         assert_eq!(node_warnings(&dir, &ignore).len(), 0);
         let warn = ResolutionOverrides {
@@ -624,21 +637,21 @@ mod tests {
                 ("yarn.lock", ""),
             ],
         );
-        let decision = node_decision(&dir, &with_config_pm(PackageManager::Yarn, Ecosystem::Node))
-            .expect("yarn");
-        assert_eq!(decision.pm, PackageManager::Yarn);
+        let decision =
+            node_decision(&dir, &with_config_pm(ProviderId::Yarn, Ecosystem::Node)).expect("yarn");
+        assert_eq!(decision.pm, ProviderId::Yarn);
         assert_eq!(
             decision.describe(),
             "yarn via runner.toml at /test/runner.toml"
         );
-        let mut both = with_config_pm(PackageManager::Yarn, Ecosystem::Node);
+        let mut both = with_config_pm(ProviderId::Yarn, Ecosystem::Node);
         both.pm = Some(PmOverride {
-            pm: PackageManager::Pnpm,
+            pm: ProviderId::Pnpm,
             origin: OverrideOrigin::CliFlag,
         });
         assert_eq!(
             node_decision(&dir, &both).map(|d| d.pm),
-            Some(PackageManager::Pnpm)
+            Some(ProviderId::Pnpm)
         );
     }
 
@@ -653,9 +666,9 @@ mod tests {
                 ("deno.lock", "{}"),
             ],
         );
-        let decision = node_decision(&dir, &with_config_pm(PackageManager::Deno, Ecosystem::Node))
-            .expect("deno");
-        assert_eq!(decision.pm, PackageManager::Deno);
+        let decision =
+            node_decision(&dir, &with_config_pm(ProviderId::Deno, Ecosystem::Node)).expect("deno");
+        assert_eq!(decision.pm, ProviderId::Deno);
     }
 
     #[test]
@@ -673,7 +686,7 @@ mod tests {
         let declaration = observed
             .manifest_declaration(ProviderId::PackageJson)
             .expect("declared");
-        assert_eq!(declaration.pm, PackageManager::Pnpm);
+        assert_eq!(declaration.pm, ProviderId::Pnpm);
         assert_eq!(declaration.field, "devEngines.packageManager");
         assert_eq!(declaration.version.as_deref(), Some("9.0.0"));
         assert_eq!(declaration.on_fail, OnFail::Error);
@@ -686,7 +699,7 @@ mod tests {
             .expect("observation")
             .manifest_declaration(ProviderId::PackageJson)
             .expect("declared");
-        assert_eq!(declaration.pm, PackageManager::Yarn);
+        assert_eq!(declaration.pm, ProviderId::Yarn);
         assert_eq!(declaration.field, "packageManager");
         assert_eq!(declaration.version.as_deref(), Some("4.3.0"));
         assert_eq!(declaration.on_fail, OnFail::Ignore);
@@ -722,16 +735,16 @@ mod tests {
         };
         let cases = [
             (
-                decision(PackageManager::Yarn, Layer::Cli, None, None),
+                decision(ProviderId::Yarn, Layer::Cli, None, None),
                 "yarn via --pm (CLI override)",
             ),
             (
-                decision(PackageManager::Bun, Layer::Env, None, None),
+                decision(ProviderId::Bun, Layer::Env, None, None),
                 "bun via RUNNER_PM (environment)",
             ),
             (
                 decision(
-                    PackageManager::Pnpm,
+                    ProviderId::Pnpm,
                     Layer::ConfigFile(PathBuf::from("/proj/runner.toml")),
                     None,
                     None,
@@ -740,7 +753,7 @@ mod tests {
             ),
             (
                 decision(
-                    PackageManager::Pnpm,
+                    ProviderId::Pnpm,
                     Layer::Manifest(PathBuf::from("/proj/package.json")),
                     Some("packageManager"),
                     None,
@@ -749,7 +762,7 @@ mod tests {
             ),
             (
                 decision(
-                    PackageManager::Bun,
+                    ProviderId::Bun,
                     Layer::Manifest(PathBuf::from("/proj/package.json")),
                     Some("devEngines.packageManager"),
                     Some(OnFail::Error),
@@ -758,7 +771,7 @@ mod tests {
             ),
             (
                 decision(
-                    PackageManager::Pnpm,
+                    ProviderId::Pnpm,
                     Layer::Lockfile(PathBuf::from("/proj/pnpm-lock.yaml")),
                     None,
                     None,
@@ -766,7 +779,7 @@ mod tests {
                 "pnpm via pnpm-lock.yaml",
             ),
             (
-                decision(PackageManager::Npm, Layer::Probe, None, None),
+                decision(ProviderId::Npm, Layer::Probe, None, None),
                 "npm via PATH probe at /usr/bin/npm",
             ),
         ];

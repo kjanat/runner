@@ -15,6 +15,7 @@ use lsp_types::{
 
 use super::schema_index::{FieldDoc, FieldType, SchemaIndex};
 use super::text::LineIndex;
+use crate::provider::Named;
 
 /// What the cursor is sitting on within its line.
 enum LineShape {

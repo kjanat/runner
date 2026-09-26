@@ -260,12 +260,14 @@ pub fn tasks(
     let root = runner_core::plan::scope_dir(tree, &present.scope);
     let extracted = extract_tasks(&root)
         .map_err(|e| runner_core::Warning::about(present.provider, format!("{e:#}")))?;
+    let anchor = find_anchor(&root);
     Ok(extracted
         .into_iter()
         .map(|entry| {
             let expansion = entry.display_command();
             let mut task = super::task(present, entry.name, None);
             task.alias_of = (expansion != task.name).then_some(expansion);
+            task.detail.source.clone_from(&anchor);
             task
         })
         .collect::<Vec<_>>()

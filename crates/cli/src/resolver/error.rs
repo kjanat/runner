@@ -14,7 +14,8 @@
 
 use std::fmt;
 
-use crate::types::PackageManager;
+use crate::provider::Named;
+use runner_core::ProviderId;
 
 /// A resolver-side failure. Distinct from `anyhow::Error` so the
 /// terminal exit-code mapping in `main` can treat resolver failures as a
@@ -32,11 +33,11 @@ pub(crate) enum ResolveError {
     /// override a contract: what the user pinned is what runs.
     PmOverrideNotDetected {
         /// The PM the override named.
-        pm: PackageManager,
+        pm: ProviderId,
         /// Where the override came from (flag, env var, config file).
         origin: super::types::OverrideOrigin,
         /// What detection actually found, for the error message.
-        detected: Vec<PackageManager>,
+        detected: Vec<ProviderId>,
     },
     /// Both `keep_going` and `kill_on_fail` were set to true at the same
     /// source (or once layered across CLI/env/config). The chain executor
@@ -52,7 +53,7 @@ pub(crate) enum ResolveError {
         /// The shared directory, e.g. `"node_modules"`.
         dir: &'static str,
         /// The colliding writers, in detection order.
-        writers: Vec<PackageManager>,
+        writers: Vec<ProviderId>,
     },
 }
 
@@ -98,7 +99,7 @@ impl fmt::Display for ResolveError {
     }
 }
 
-fn install_dir_collision(dir: &str, writers: &[PackageManager]) -> String {
+fn install_dir_collision(dir: &str, writers: &[ProviderId]) -> String {
     let list = writers
         .iter()
         .map(|pm| pm.label())
@@ -120,9 +121,9 @@ mod tests {
     #[test]
     fn pm_override_not_detected_display_names_source_and_detected() {
         let err = ResolveError::PmOverrideNotDetected {
-            pm: PackageManager::Pnpm,
+            pm: ProviderId::Pnpm,
             origin: super::super::types::OverrideOrigin::EnvVar,
-            detected: vec![PackageManager::Npm, PackageManager::Cargo],
+            detected: vec![ProviderId::Npm, ProviderId::Cargo],
         };
         let msg = format!("{err}");
         assert!(msg.contains("pnpm"), "msg: {msg}");
@@ -133,7 +134,7 @@ mod tests {
     #[test]
     fn pm_override_not_detected_display_handles_empty_detected() {
         let err = ResolveError::PmOverrideNotDetected {
-            pm: PackageManager::Pnpm,
+            pm: ProviderId::Pnpm,
             origin: super::super::types::OverrideOrigin::CliFlag,
             detected: Vec::new(),
         };

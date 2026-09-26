@@ -9,8 +9,10 @@ use std::fmt::Write as _;
 use anyhow::{Result, anyhow};
 use runner_core::Refusal;
 
+use crate::provider::Named;
 use crate::resolver::ResolutionOverrides;
-use crate::types::{DetectionWarning, ProjectContext, TaskRunner, TaskSource};
+use crate::types::{DetectionWarning, ProjectContext};
+use runner_core::ProviderId;
 
 /// The error for a refusal of task selection.
 pub(super) fn selection_error(ctx: &ProjectContext, refusal: &Refusal) -> anyhow::Error {
@@ -87,7 +89,7 @@ fn member_ambiguity_message(task_name: &str, names: &[String]) -> anyhow::Error 
 fn reversed_qualifier_error(
     ctx: &ProjectContext,
     task: &str,
-    source: TaskSource,
+    source: ProviderId,
     task_part: &str,
 ) -> anyhow::Error {
     let src_label = source.label();
@@ -114,10 +116,10 @@ fn append_unreadable_note(ctx: &ProjectContext, msg: &mut String) {
 
 /// The source and task a `task:source` token names when its suffix after
 /// the last `:` is a source label.
-pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(TaskSource, &str)> {
+pub(super) fn detect_reversed_qualifier(input: &str) -> Option<(ProviderId, &str)> {
     let colon = input.rfind(':')?;
     let suffix = &input[colon + 1..];
-    let source = TaskSource::from_label(suffix)?;
+    let source = crate::provider::task_source(suffix)?;
     Some((source, &input[..colon]))
 }
 
@@ -152,21 +154,16 @@ pub(crate) fn precheck_task(
 }
 
 /// The task runner whose own entry point `run <token>` invokes when no
-/// task carries the token's name: a detected make, just, task or bacon
-/// spelled by its label, permitted by any `--runner` or
-/// `[task_runner].prefer` constraint. turbo, nx and mise have no default
-/// target.
+/// task carries the token's name: a detected runner with a default
+/// invocation, spelled by its label, permitted by any `--runner` or
+/// `[tasks].prefer` constraint.
 pub(crate) fn root_runner(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     token: &str,
-) -> Option<TaskRunner> {
-    let runner = TaskRunner::from_label(token).filter(|runner| runner.label() == token)?;
-    if !matches!(
-        runner,
-        TaskRunner::Make | TaskRunner::Just | TaskRunner::GoTask | TaskRunner::Bacon
-    ) || !ctx.task_runners().contains(&runner)
-    {
+) -> Option<ProviderId> {
+    let runner = crate::provider::runner(token).filter(|runner| runner.label() == token)?;
+    if runner.provider().caps.run_default.is_none() || !ctx.task_runners().contains(&runner) {
         return None;
     }
     if overrides
@@ -191,9 +188,8 @@ mod tests {
 
     use super::precheck_task;
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{
-        DetectionWarning, ProjectContext, Task, TaskRunner, TaskSource, Workspace, WorkspaceMember,
-    };
+    use crate::types::{DetectionWarning, ProjectContext, Task, Workspace, WorkspaceMember};
+    use runner_core::ProviderId;
 
     fn context() -> ProjectContext {
         let root = crate::tool::test_support::project_root();
@@ -207,7 +203,7 @@ mod tests {
         }
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.to_string(),
             source,
@@ -231,7 +227,7 @@ mod tests {
     fn member_task(name: &str, member: &Arc<WorkspaceMember>) -> Task {
         Task {
             member: Some(Arc::clone(member)),
-            ..task(name, TaskSource::PackageJson)
+            ..task(name, ProviderId::PackageJson)
         }
     }
 
@@ -257,7 +253,7 @@ mod tests {
             members: vec![Arc::clone(&rfc), Arc::clone(&web)],
             current: None,
         });
-        ctx.tasks.push(task("test", TaskSource::CargoAliases));
+        ctx.tasks.push(task("test", ProviderId::Cargo));
         ctx.tasks.push(member_task("site", &rfc));
         ctx.tasks.push(member_task("check", &rfc));
         ctx.tasks.push(member_task("site", &web));
@@ -286,7 +282,7 @@ mod tests {
     fn an_fqn_names_the_scope_source_and_task() {
         let mut ctx = workspace_context();
         ctx.tasks
-            .push(task("deno:importsmap", TaskSource::PackageJson));
+            .push(task("deno:importsmap", ProviderId::PackageJson));
         for token in [
             "root:package.json#deno:importsmap",
             "package.json#deno:importsmap",
@@ -308,23 +304,22 @@ mod tests {
     #[test]
     fn the_exact_name_wins_on_a_qualified_miss() {
         let mut ctx = context();
-        ctx.tasks
-            .push(task("deno:importsmap", TaskSource::Justfile));
+        ctx.tasks.push(task("deno:importsmap", ProviderId::Just));
 
         let found = selected(&mut ctx, "deno:importsmap");
         assert_eq!(found.name, "deno:importsmap");
-        assert_eq!(found.source, TaskSource::Justfile);
+        assert_eq!(found.source, ProviderId::Just);
     }
 
     #[test]
     fn a_qualified_hit_outranks_the_exact_name() {
         let mut ctx = context();
-        ctx.tasks.push(task("importsmap", TaskSource::DenoJson));
+        ctx.tasks.push(task("importsmap", ProviderId::Deno));
         ctx.tasks
-            .push(task("deno:importsmap", TaskSource::PackageJson));
+            .push(task("deno:importsmap", ProviderId::PackageJson));
 
         let found = selected(&mut ctx, "deno:importsmap");
-        assert_eq!(found.source, TaskSource::DenoJson);
+        assert_eq!(found.source, ProviderId::Deno);
         assert_eq!(found.name, "importsmap");
     }
 
@@ -332,7 +327,7 @@ mod tests {
     /// added so every scope defines it.
     fn inside_rfc_context() -> ProjectContext {
         let mut ctx = workspace_context();
-        ctx.tasks.push(task("site", TaskSource::PackageJson));
+        ctx.tasks.push(task("site", ProviderId::PackageJson));
         let workspace = ctx.workspace.as_mut().expect("workspace");
         let rfc = workspace
             .members
@@ -361,10 +356,10 @@ mod tests {
     #[test]
     fn a_source_qualifier_reaches_a_root_task_the_member_shadows() {
         let mut ctx = inside_rfc_context();
-        ctx.tasks.push(task("site", TaskSource::Makefile));
+        ctx.tasks.push(task("site", ProviderId::Make));
 
         let found = selected(&mut ctx, "make:site");
-        assert_eq!(found.source, TaskSource::Makefile);
+        assert_eq!(found.source, ProviderId::Make);
         assert!(found.member.is_none());
     }
 
@@ -428,17 +423,17 @@ mod tests {
         let mut ctx = workspace_context();
         let just = add_member(&mut ctx, "just", "tools/just");
         ctx.tasks.push(member_task("fmt", &just));
-        ctx.tasks.push(task("fmt", TaskSource::Justfile));
+        ctx.tasks.push(task("fmt", ProviderId::Just));
 
         let found = selected(&mut ctx, "just:fmt");
-        assert_eq!(found.source, TaskSource::Justfile);
+        assert_eq!(found.source, ProviderId::Just);
         assert!(found.member.is_none());
     }
 
     #[test]
     fn a_colon_prefix_naming_no_member_stays_part_of_the_name() {
         let mut ctx = workspace_context();
-        ctx.tasks.push(task("fmt:update", TaskSource::PackageJson));
+        ctx.tasks.push(task("fmt:update", ProviderId::PackageJson));
 
         assert_eq!(selected(&mut ctx, "fmt:update").name, "fmt:update");
     }
@@ -527,8 +522,7 @@ mod tests {
         // Chain mode (`run -p deno:importsmap …`) failed precheck with
         // `task "importsmap" not found in deno` for the same shadowing.
         let mut ctx = context();
-        ctx.tasks
-            .push(task("deno:importsmap", TaskSource::Justfile));
+        ctx.tasks.push(task("deno:importsmap", ProviderId::Just));
 
         precheck(&mut ctx, &ResolutionOverrides::default(), "deno:importsmap")
             .expect("colon-named task must pass precheck");
@@ -550,7 +544,7 @@ mod tests {
         let mut ctx = context();
         ctx.warnings
             .push(DetectionWarning::Unread(runner_core::Unread {
-                provider: runner_core::ProviderId::PackageJson,
+                provider: ProviderId::PackageJson,
                 scope: runner_core::Scope::Root,
                 message: "invalid JSON".to_string(),
             }));
@@ -576,7 +570,7 @@ mod tests {
         // under an active `[task_runner].prefer` aborts on a token that a
         // single `run ./gen.sh` executes fine.
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
         for token in ["./gen.sh", "../gen.sh", "/abs/gen.sh", "~/gen.sh"] {
@@ -589,10 +583,10 @@ mod tests {
     #[test]
     fn precheck_passes_root_invocation_under_matching_runner_constraint() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
-                runner: TaskRunner::Make,
+                runner: ProviderId::Make,
                 origin: crate::resolver::OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -604,9 +598,9 @@ mod tests {
     #[test]
     fn precheck_passes_root_invocation_under_a_prefer_list_without_make() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         let preferred = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
 
@@ -617,7 +611,7 @@ mod tests {
     #[test]
     fn precheck_passes_a_bare_miss_under_a_runner_choice_to_the_cascade() {
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
         precheck_task(&context(), &overrides, "gen")
@@ -630,7 +624,7 @@ mod tests {
         // `[task_runner].prefer`, a prefix-less miss under it must NOT fail
         // precheck; nothing is hard-rejected. It only reorders.
         let overrides = ResolutionOverrides {
-            prefer_sources: vec![TaskSource::TurboJson],
+            prefer_sources: vec![ProviderId::Turbo],
             ..ResolutionOverrides::default()
         };
         precheck_task(&context(), &overrides, "gen")

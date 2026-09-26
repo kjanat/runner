@@ -15,8 +15,8 @@ pub const PROVIDER: Provider = Provider {
         path: "project.scripts",
         parse: super::table,
     }],
-    writes: &[],
     caps: Capabilities {
+        task_table: runner_core::TaskTable::Key("project.scripts"),
         task_priority: 10,
         ..Capabilities::NONE
     },

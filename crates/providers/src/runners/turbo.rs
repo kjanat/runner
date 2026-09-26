@@ -18,8 +18,8 @@ pub const PROVIDER: Provider = Provider {
         Signal::File("turbo.jsonc"),
         Signal::Probe("turbo"),
     ],
-    writes: &[],
     caps: Capabilities {
+        task_table: runner_core::TaskTable::Key("tasks"),
         task_priority: 0,
         run_task: Some(RunTaskCap {
             argv: t!["run", Task, Sep("--"), Args],

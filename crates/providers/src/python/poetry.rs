@@ -40,8 +40,8 @@ pub const PROVIDER: Provider = Provider {
         },
         Signal::Probe("poetry"),
     ],
-    writes: &[".venv"],
     caps: Capabilities {
+        writes: &[".venv"],
         install: Some(InstallCap {
             argv: t!["install"],
             frozen: Frozen::Unsupported,

@@ -636,7 +636,6 @@ mod tests {
             kind: Kind::PACKAGE_MANAGER,
             program: Some(label),
             signals: &[Signal::Probe("x")],
-            writes: &[],
             caps: Capabilities {
                 bins: Some(BinsCap {
                     dirs: BinDirs::Static(&["node_modules/.bin"]),

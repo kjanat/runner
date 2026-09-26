@@ -996,6 +996,13 @@ pub fn plan_with(
     if let Some(hook) = provider.hooks.before_plan {
         hook(tree, present, op, policy, &mut warnings)?;
     }
+    if let Op::Run { task, .. } = op
+        && let Some(forwarded) = task.forwards_to.filter(|id| *id != provider.id)
+        && let Some(hook) = registry.by_id(forwarded).hooks.before_plan
+        && let Some(forwarded) = project.present_in(forwarded, &task.scope)
+    {
+        hook(tree, forwarded, op, policy, &mut warnings)?;
+    }
     let Fill { mut request, files } = fill;
     request.files = &files;
     let program = shape.program.ok_or_else(|| shaping.refuse())?;
@@ -2478,7 +2485,6 @@ mod tests {
             kind: Kind::PACKAGE_MANAGER,
             program: Some("npm"),
             signals: &[Signal::Probe("npm")],
-            writes: &[],
             caps: Capabilities {
                 run_task: Some(RunTaskCap {
                     argv: t![Quiet, "run", Task, Sep("--"), Args],
@@ -2514,7 +2520,6 @@ mod tests {
             kind: Kind::PACKAGE_MANAGER.union(Kind::RUNTIME),
             program: Some("bun"),
             signals: &[Signal::Probe("bun")],
-            writes: &[],
             caps: Capabilities {
                 run_task: Some(RunTaskCap {
                     argv: t!["run", Task, Args],
@@ -2552,7 +2557,6 @@ mod tests {
             kind: Kind::PACKAGE_MANAGER,
             program: Some("go"),
             signals: &[Signal::Probe("go")],
-            writes: &[],
             caps: Capabilities {
                 exec: Some(ExecCap {
                     program: None,
@@ -2574,7 +2578,6 @@ mod tests {
             kind: Kind::TASK_SOURCE,
             program: None,
             signals: &[Signal::File("package.json")],
-            writes: &[],
             caps: Capabilities::NONE,
             tasks: None,
             version: None,

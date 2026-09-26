@@ -4,186 +4,9 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A language/runtime ecosystem that owns one or more package managers.
-///
-/// Used by the resolver to scope overrides, a `[pm].node = "pnpm"` entry
-/// in `runner.toml` applies only when resolving for [`Ecosystem::Node`].
-/// Deno is its own ecosystem even though its package manager can also
-/// dispatch `package.json` scripts.
-///
-/// Variants use `//`, not `///`: a per-variant doc comment defeats
-/// `BTreeMap`'s closed-key-set schema optimization for `Overrides.pm_by_ecosystem`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, schemars::JsonSchema, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum Ecosystem {
-    // Node.js (npm, yarn, pnpm, bun).
-    Node,
-    // Deno.
-    Deno,
-    // Python (uv, poetry, pipenv).
-    Python,
-    // Rust (cargo).
-    Rust,
-    // Go.
-    Go,
-    // Ruby (bundler).
-    Ruby,
-    // PHP (composer).
-    Php,
-}
+use runner_core::{Ecosystem, ProviderId};
 
-/// Ordered by [`Self::label`] so `BTreeMap<Ecosystem, _>` keys serialize
-/// alphabetically, matching the `String`-keyed flat `info`/`list` surface.
-impl Ord for Ecosystem {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.label().cmp(other.label())
-    }
-}
-
-impl PartialOrd for Ecosystem {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ecosystem {
-    /// Every variant, for tests that need the closed set (schema
-    /// assertions, serialization drift tests).
-    #[cfg(test)]
-    pub(crate) const ALL: [Self; 7] = [
-        Self::Node,
-        Self::Deno,
-        Self::Python,
-        Self::Rust,
-        Self::Go,
-        Self::Ruby,
-        Self::Php,
-    ];
-
-    /// Lower-case label used in human messages, JSON output, and
-    /// override origins. Single source of truth so `doctor --json` and
-    /// resolver warnings agree on the spelling.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Node => "node",
-            Self::Deno => "deno",
-            Self::Python => "python",
-            Self::Rust => "rust",
-            Self::Go => "go",
-            Self::Ruby => "ruby",
-            Self::Php => "php",
-        }
-    }
-}
-
-/// A dependency manager detected via lockfile or config presence.
-#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum PackageManager {
-    /// npm, detected via `package-lock.json`.
-    Npm,
-    /// Yarn, detected via `yarn.lock`.
-    Yarn,
-    /// pnpm, detected via `pnpm-lock.yaml`.
-    Pnpm,
-    /// Bun, detected via `bun.lockb` or `bun.lock`.
-    Bun,
-    /// Cargo (Rust), detected via `Cargo.toml`.
-    Cargo,
-    /// Deno, detected via `deno.json` / `deno.jsonc`.
-    Deno,
-    /// uv (Python), detected via `uv.lock`.
-    Uv,
-    /// Poetry (Python), detected via `poetry.lock` or Poetry `pyproject.toml` markers.
-    Poetry,
-    /// Pipenv (Python), detected via `Pipfile` / `Pipfile.lock`.
-    Pipenv,
-    /// Go modules, detected via `go.mod`.
-    Go,
-    /// Bundler (Ruby), detected via `Gemfile`.
-    Bundler,
-    /// Composer (PHP), detected via `composer.json`.
-    Composer,
-}
-
-/// The JavaScript runtime a task's process tree should execute on.
-///
-/// Distinct from [`PackageManager`]: `--pm bun` says bun installs and runs
-/// scripts here, while this says which runtime the script and the binaries it
-/// invokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`
-/// bin inside the script still resolves to system Node; `bun --bun run build`
-/// is what puts that bin on bun too.
-///
-/// Each variant brings its own script runner, file runner and package-exec
-/// primitive; no package manager is consulted on this path. Set, it also
-/// outranks a local file's `#!` line, which is the case the axis exists for.
-#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum JsRuntime {
-    /// Node.js, via `node --run <script>` (Node 22+), `node <file>` and `npx`.
-    ///
-    /// `node --run` deliberately skips `pre`/`post` lifecycle scripts, which
-    /// `npm run`, `bun run` and `deno task` all execute; runner warns when the
-    /// task being dispatched has one.
-    Node,
-    /// Bun, via `bun --bun run <script>`, `bun <file>` and `bun x --bun`.
-    Bun,
-    /// Deno, via `deno task <script>` (which reads `package.json` scripts as
-    /// well as `deno.json` tasks), `deno run <file>` and `deno x`.
-    Deno,
-}
-
-impl JsRuntime {
-    /// Human-readable CLI name (e.g. `"bun"`).
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Node => "node",
-            Self::Bun => "bun",
-            Self::Deno => "deno",
-        }
-    }
-
-    /// Parse a user-supplied label (CLI flag value, env var, config field).
-    /// Surrounding whitespace is trimmed to match [`PackageManager::from_label`].
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label.trim() {
-            "node" => Some(Self::Node),
-            "bun" => Some(Self::Bun),
-            "deno" => Some(Self::Deno),
-            _ => None,
-        }
-    }
-
-    /// Every variant in a fixed order, for help text and error messages.
-    pub(crate) const fn all() -> &'static [Self] {
-        &[Self::Node, Self::Bun, Self::Deno]
-    }
-}
-
-/// A task runner detected via config file presence.
-#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
-pub(crate) enum TaskRunner {
-    /// Turborepo, detected via `turbo.json` / `turbo.jsonc`.
-    Turbo,
-    /// Nx, detected via `nx.json`.
-    Nx,
-    /// GNU Make, detected via `Makefile` / `GNUmakefile` / `makefile`.
-    Make,
-    /// just, detected via case-insensitive `justfile` / `.justfile`.
-    Just,
-    /// go-task, detected via `Taskfile.yml` and variants. Serializes as
-    /// `"task"` (matching [`Self::label`]); `kebab-case` alone would
-    /// produce `"go-task"`, the accepted parse *alias*, not the canonical
-    /// label.
-    #[schemars(description = "go-task, detected via `Taskfile.yml` and variants.")]
-    #[serde(rename = "task")]
-    GoTask,
-    /// mise, detected via `mise.toml` / `.mise.toml`.
-    Mise,
-    /// bacon, detected via `bacon.toml`.
-    Bacon,
-}
+use crate::provider::Named;
 
 /// A runnable task extracted from a project config file.
 #[derive(Debug, Clone)]
@@ -191,7 +14,7 @@ pub(crate) struct Task {
     /// Name as it appears in the config (e.g. `"dev"`, `"build"`).
     pub name: String,
     /// Which config file this task was extracted from.
-    pub source: TaskSource,
+    pub source: ProviderId,
     /// Tool-specific execution target. Used by Go packages to keep the
     /// display name separate from the `go run` target (`.` vs `./cmd/name`).
     pub run_target: Option<String>,
@@ -204,12 +27,12 @@ pub(crate) struct Task {
     /// `Some(runner)` when this task's command body is a thin
     /// passthrough to a task runner for a same-named target, e.g. a
     /// `package.json` script `"build": "just build"` records
-    /// `Some(TaskRunner::Just)`. Set during detection by inspecting the
+    /// `Some(ProviderId::Just)`. Set during detection by inspecting the
     /// actual script body, not inferred from name collisions, so real
     /// scripts like `"build": "vite build"` are never flagged. Used by
     /// completion to avoid emitting a redundant `package.json:build`
     /// candidate alongside the underlying runner's `build` task.
-    pub passthrough_to: Option<TaskRunner>,
+    pub passthrough_to: Option<ProviderId>,
     /// The workspace member this task belongs to; `None` for root tasks.
     pub member: Option<Arc<WorkspaceMember>>,
     /// Everything else the source declared about the task. Populated by
@@ -304,45 +127,24 @@ pub(crate) struct Workspace {
     pub current: Option<Arc<WorkspaceMember>>,
 }
 
-/// Identifies the config file a [`Task`] was extracted from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum TaskSource {
-    /// Node package manifest `"scripts"` field (`package.json`,
-    /// `package.json5`, `package.yaml`).
-    PackageJson,
-    /// Makefile target.
-    Makefile,
-    /// justfile recipe.
-    Justfile,
-    /// go-task `Taskfile.yml` task.
-    Taskfile,
-    /// `turbo.json` / `turbo.jsonc` `"tasks"` (v2) or `"pipeline"` (v1).
-    TurboJson,
-    /// `deno.json` / `deno.jsonc` `"tasks"` field.
-    DenoJson,
-    /// Cargo `[alias]` table, built-ins plus user aliases merged across the
-    /// hierarchical `.cargo/config.toml` chain.
-    CargoAliases,
-    /// Go root or `cmd/<name>` package containing `package main`.
-    GoPackage,
-    /// `bacon.toml` `[jobs.<name>]` tables.
-    BaconToml,
-    /// `mise.toml` / `.mise.toml` `[tasks.<name>]` tables (and the
-    /// inline `[tasks]` flat form).
-    MiseToml,
-    /// `pyproject.toml` `[project.scripts]`, PEP 621 console-script
-    /// entry points, dispatched via the detected Python PM's `run`
-    /// (`uv run`, `poetry run`, `pipenv run`).
-    PyprojectScripts,
+/// A runtime the root declares, the version it expects, and the version installed.
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeVersion {
+    /// The runtime.
+    pub runtime: ProviderId,
+    /// The version the project declares.
+    pub expected: Option<ExpectedVersion>,
+    /// The installed version.
+    pub current: Option<String>,
 }
 
-/// Expected Node.js version parsed from a version file.
+/// A declared runtime version and the file or field that declares it.
 #[derive(Debug, Clone)]
-pub(crate) struct NodeVersion {
-    /// The version string (e.g. `"20.11.0"`, `">=18"`).
-    pub expected: String,
-    /// Which file it was read from (e.g. `".nvmrc"`, `"package.json engines"`).
-    pub source: &'static str,
+pub(crate) struct ExpectedVersion {
+    /// The version or range as written (e.g. `"20.11.0"`, `">=18"`).
+    pub version: String,
+    /// Where it is declared (e.g. `".nvmrc"`, `"package.json engines.node"`).
+    pub source: String,
 }
 
 /// Non-fatal issue found while detecting project metadata or resolving a
@@ -365,13 +167,13 @@ pub(crate) enum DetectionWarning {
     /// is likely stale.
     PmMismatch {
         /// The PM the manifest declared.
-        declared: PackageManager,
+        declared: ProviderId,
         /// Which manifest field carried the declaration, `"packageManager"`
         /// or `"devEngines.packageManager"`. `&'static str` so it round-trips
         /// through `Display` and JSON unchanged.
         field: &'static str,
         /// The PM the lockfile points to.
-        lockfile: PackageManager,
+        lockfile: ProviderId,
     },
     /// Resolver fell through to `PATH` probe because no declarations or
     /// lockfiles matched. Reports the picked binary plus any others that
@@ -379,18 +181,11 @@ pub(crate) enum DetectionWarning {
     /// and environment.
     PathProbeFallback {
         /// Which PM the resolver picked.
-        picked: PackageManager,
+        picked: ProviderId,
         /// Ecosystem the probe ran for (Node, Python, …).
         ecosystem: Ecosystem,
         /// Other PMs found on `PATH` that the resolver did not pick.
-        others_available: Vec<PackageManager>,
-    },
-    /// A setting this build no longer reads.
-    Removed {
-        /// The flag, variable or value as the user spelled it.
-        name: &'static str,
-        /// What happens instead.
-        now: &'static str,
+        others_available: Vec<ProviderId>,
     },
     /// An env-var override (`RUNNER_PM`, `RUNNER_RUNNER`) held a value
     /// that doesn't parse, and the command chose to report it instead
@@ -423,18 +218,9 @@ pub(crate) enum DetectionWarning {
     /// no-op.
     RuntimeNotApplied {
         /// The runtime the user asked for.
-        runtime: JsRuntime,
+        runtime: ProviderId,
         /// Label of the task source that won selection (`"just"`, `"make"`).
         source: &'static str,
-    },
-    /// `--runtime node` dispatches `node --run`, which skips `pre`/`post`
-    /// lifecycle scripts, and this task has some. `npm run`, `bun run` and
-    /// `deno task` all run them, so the same task behaves differently here.
-    NodeRunSkipsLifecycle {
-        /// The task being dispatched.
-        task: String,
-        /// The declared `pre`/`post` scripts that will not run.
-        skipped: Vec<String>,
     },
 }
 
@@ -446,15 +232,17 @@ impl DetectionWarning {
     /// across the flat-struct → enum refactor.
     pub(crate) fn source(&self) -> &'static str {
         match self {
-            Self::PmMismatch { .. } => "package.json",
+            Self::PmMismatch { declared, .. } => crate::provider::managed_sources()
+                .into_iter()
+                .find(|source| declared.dispatches().contains(source))
+                .map_or("runner", Named::label),
             Self::PathProbeFallback { .. } => "resolver",
-            Self::Removed { .. } => "runner",
             Self::Pipeline(warning) => warning
                 .provider
                 .map_or("project", |id| runner_providers::REGISTRY.by_id(id).label),
             Self::Unread(unread) => runner_providers::REGISTRY.by_id(unread.provider).label,
             Self::InvalidEnvOverride { .. } => "env",
-            Self::RuntimeNotApplied { .. } | Self::NodeRunSkipsLifecycle { .. } => "runtime",
+            Self::RuntimeNotApplied { .. } => "runtime",
             Self::UnknownConfigKey { .. } => "runner.toml",
         }
     }
@@ -503,7 +291,6 @@ impl DetectionWarning {
                     )
                 }
             }
-            Self::Removed { name, now } => format!("{name} is no longer read; {now}"),
             Self::InvalidEnvOverride { var, message, .. } => {
                 format!("{var} is set but invalid and was ignored for this report: {message}")
             }
@@ -511,10 +298,6 @@ impl DetectionWarning {
                 "--runtime {} was not applied: this dispatches through {source}, which selects no \
                  JS runtime",
                 runtime.label(),
-            ),
-            Self::NodeRunSkipsLifecycle { task, skipped } => format!(
-                "`node --run {task}` does not run {} (npm run, bun run and deno task do)",
-                skipped.join(" or "),
             ),
             Self::UnknownConfigKey { path } => format!(
                 "unknown key `{path}` ignored: it may be a typo or written by a newer runner. \
@@ -620,45 +403,46 @@ impl ProjectContext {
         task.spelling_from(self.current_member().map(Arc::as_ref), &self.tasks)
     }
 
-    /// Returns the first Node-ecosystem package manager, if any.
-    pub(crate) fn primary_node_pm(&self) -> Option<PackageManager> {
-        self.package_managers().into_iter().find(|pm| pm.is_node())
-    }
-
     /// The package managers the root shows in its files, strongest first.
-    pub(crate) fn package_managers(&self) -> Vec<PackageManager> {
+    pub(crate) fn package_managers(&self) -> Vec<ProviderId> {
         self.observed(runner_core::Kind::PACKAGE_MANAGER)
-            .filter_map(PackageManager::from_label)
+            .filter_map(crate::provider::package_manager)
             .collect()
     }
 
     /// The task runners the root shows in its files.
-    pub(crate) fn task_runners(&self) -> Vec<TaskRunner> {
+    pub(crate) fn task_runners(&self) -> Vec<ProviderId> {
         self.observed(runner_core::Kind::TASK_SOURCE)
-            .filter_map(TaskRunner::from_label)
+            .filter_map(crate::provider::runner)
             .collect()
     }
 
-    /// The Node.js version the root expects.
-    pub(crate) fn node_version(&self) -> Option<NodeVersion> {
-        crate::detect::node_version(&self.root)
+    /// The runtimes the root declares, with an expected or installed version.
+    pub(crate) fn runtime_versions(&self) -> Vec<RuntimeVersion> {
+        self.project
+            .iter()
+            .flat_map(|project| &project.present)
+            .filter(|present| present.scope == runner_core::Scope::Root)
+            .filter(|present| {
+                let kind = runner_providers::REGISTRY.by_id(present.provider).kind;
+                kind.contains(runner_core::Kind::RUNTIME)
+                    && !kind.intersects(runner_core::Kind::PACKAGE_MANAGER)
+            })
+            .map(|present| RuntimeVersion {
+                runtime: present.provider,
+                expected: expected_version(present),
+                current: present.version.as_deref().map(|version| {
+                    let version = version.trim();
+                    version.strip_prefix('v').unwrap_or(version).to_owned()
+                }),
+            })
+            .filter(|runtime| runtime.expected.is_some() || runtime.current.is_some())
+            .collect()
     }
 
-    /// The installed Node.js version, asked of `node` only for a project that
-    /// expects a version or has a Node package manager.
-    pub(crate) fn current_node(&self) -> Option<String> {
-        (self.node_version().is_some() || self.package_managers().iter().any(|pm| pm.is_node()))
-            .then(crate::detect::current_node)
-            .flatten()
-    }
-
-    /// Whether the project is a workspace or run by a monorepo task runner.
-    pub(crate) fn is_monorepo(&self) -> bool {
+    /// Whether the project declares a workspace.
+    pub(crate) const fn is_monorepo(&self) -> bool {
         self.workspace.is_some()
-            || self
-                .task_runners()
-                .iter()
-                .any(|runner| matches!(runner, TaskRunner::Turbo | TaskRunner::Nx))
     }
 
     /// The labels of the providers of `kind` a root file shows, not only a
@@ -683,288 +467,21 @@ impl ProjectContext {
     }
 }
 
-impl PackageManager {
-    /// Returns `true` for Node.js package managers (npm, yarn, pnpm, bun).
-    pub(crate) const fn is_node(self) -> bool {
-        matches!(self, Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun)
-    }
-
-    /// Human-readable CLI name (e.g. `"pnpm"`, `"cargo"`).
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Npm => "npm",
-            Self::Yarn => "yarn",
-            Self::Pnpm => "pnpm",
-            Self::Bun => "bun",
-            Self::Cargo => "cargo",
-            Self::Deno => "deno",
-            Self::Uv => "uv",
-            Self::Poetry => "poetry",
-            Self::Pipenv => "pipenv",
-            Self::Go => "go",
-            Self::Bundler => "bundler",
-            Self::Composer => "composer",
-        }
-    }
-
-    /// Parse a user-supplied label (CLI flag value, env var, config field)
-    /// back into a [`PackageManager`].
-    ///
-    /// Accepts the canonical `label()` for each variant and the common
-    /// `bundle` alias for Ruby's Bundler (which spells its binary `bundle`).
-    /// Surrounding whitespace is trimmed so `" pnpm "` from a padded env
-    /// var or TOML value still parses; resolver-side parsing also trims
-    /// before this is reached but config-loader call sites pass raw
-    /// strings.
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label.trim() {
-            "npm" => Some(Self::Npm),
-            "yarn" => Some(Self::Yarn),
-            "pnpm" => Some(Self::Pnpm),
-            "bun" => Some(Self::Bun),
-            "cargo" => Some(Self::Cargo),
-            "deno" => Some(Self::Deno),
-            "uv" => Some(Self::Uv),
-            "poetry" => Some(Self::Poetry),
-            "pipenv" => Some(Self::Pipenv),
-            "go" => Some(Self::Go),
-            "bundler" | "bundle" => Some(Self::Bundler),
-            "composer" => Some(Self::Composer),
-            _ => None,
-        }
-    }
-
-    /// Every variant of [`PackageManager`] in a fixed order, for help text
-    /// and error messages that need to enumerate the valid values.
-    pub(crate) const fn all() -> &'static [Self] {
-        &[
-            Self::Npm,
-            Self::Yarn,
-            Self::Pnpm,
-            Self::Bun,
-            Self::Cargo,
-            Self::Deno,
-            Self::Uv,
-            Self::Poetry,
-            Self::Pipenv,
-            Self::Go,
-            Self::Bundler,
-            Self::Composer,
-        ]
-    }
-
-    /// The ecosystem this package manager belongs to.
-    pub(crate) const fn ecosystem(self) -> Ecosystem {
-        match self {
-            Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => Ecosystem::Node,
-            Self::Deno => Ecosystem::Deno,
-            Self::Cargo => Ecosystem::Rust,
-            Self::Uv | Self::Poetry | Self::Pipenv => Ecosystem::Python,
-            Self::Go => Ecosystem::Go,
-            Self::Bundler => Ecosystem::Ruby,
-            Self::Composer => Ecosystem::Php,
-        }
-    }
-
-    /// Whether this PM can dispatch a script declared in `package.json`
-    /// `"scripts"`, Node ecosystem (`npm`, `yarn`, `pnpm`, `bun`) plus
-    /// Deno (via `deno run <task>`). Used by both the resolver (to
-    /// scope `--pm` overrides for Node-script resolution) and the
-    /// bun-test fallback path (to answer "did the user pick a
-    /// Node-script PM other than Bun?").
-    pub(crate) const fn can_dispatch_node_scripts(self) -> bool {
-        self.is_node() || matches!(self, Self::Deno)
-    }
-
-    /// The task source(s) this package manager runs natively, most-native
-    /// first. A forced `--pm` / `RUNNER_PM` biases same-name task selection
-    /// toward these, in order, so the chosen task dispatches through the PM
-    /// the user asked for instead of being run *through* it from a foreign
-    /// source (e.g. `RUNNER_PM=deno run check` picks the `deno.json` task
-    /// over a same-named `package.json` script).
-    ///
-    /// npm/yarn/pnpm/bun all run `package.json` `"scripts"`. Deno is
-    /// dual-natured: it owns `deno.json` tasks (`deno task`) *and* also runs
-    /// `package.json` scripts, so it prefers the former and falls back to
-    /// the latter. Cargo, Go, and the Python PMs own their ecosystem's
-    /// source. Bundler and Composer have no task source modeled yet, so
-    /// they bias nothing. Deno is one member of this rule, not a special
-    /// case. The bias is general across every PM.
-    pub(crate) const fn owned_task_sources(self) -> &'static [TaskSource] {
-        match self {
-            Self::Npm | Self::Yarn | Self::Pnpm | Self::Bun => &[TaskSource::PackageJson],
-            Self::Deno => &[TaskSource::DenoJson, TaskSource::PackageJson],
-            Self::Cargo => &[TaskSource::CargoAliases],
-            Self::Go => &[TaskSource::GoPackage],
-            Self::Uv | Self::Poetry | Self::Pipenv => &[TaskSource::PyprojectScripts],
-            Self::Bundler | Self::Composer => &[],
-        }
-    }
-}
-
-impl TaskRunner {
-    /// Human-readable CLI name (e.g. `"turbo"`, `"just"`).
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Turbo => "turbo",
-            Self::Nx => "nx",
-            Self::Make => "make",
-            Self::Just => "just",
-            Self::GoTask => "task",
-            Self::Mise => "mise",
-            Self::Bacon => "bacon",
-        }
-    }
-
-    /// Parse a user-supplied label (CLI flag value, env var, config field)
-    /// back into a [`TaskRunner`].
-    ///
-    /// Accepts the canonical `label()` plus the alias `go-task` for `task`
-    /// to disambiguate from arbitrary task names. Surrounding whitespace is
-    /// trimmed to match [`PackageManager::from_label`].
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label.trim() {
-            "turbo" => Some(Self::Turbo),
-            "nx" => Some(Self::Nx),
-            "make" => Some(Self::Make),
-            "just" => Some(Self::Just),
-            "task" | "go-task" => Some(Self::GoTask),
-            "mise" => Some(Self::Mise),
-            "bacon" => Some(Self::Bacon),
-            _ => None,
-        }
-    }
-
-    /// Every variant of [`TaskRunner`] in a fixed order, for help text and
-    /// error messages that need to enumerate the valid values.
-    pub(crate) const fn all() -> &'static [Self] {
-        &[
-            Self::Turbo,
-            Self::Nx,
-            Self::Make,
-            Self::Just,
-            Self::GoTask,
-            Self::Mise,
-            Self::Bacon,
-        ]
-    }
-
-    /// The [`TaskSource`] that holds this runner's tasks, when extraction
-    /// is implemented for it. Used by completion to dedupe `package.json`
-    /// passthrough wrappers against the underlying runner's task entry.
-    ///
-    /// Returns `None` for runners where task extraction is not yet
-    /// implemented (Nx); a passthrough wrapper still routes to that
-    /// runner at dispatch time, but completion shows the script as its
-    /// own candidate because there is no peer entry to collapse it into.
-    pub(crate) const fn task_source(self) -> Option<TaskSource> {
-        match self {
-            Self::Turbo => Some(TaskSource::TurboJson),
-            Self::Make => Some(TaskSource::Makefile),
-            Self::Just => Some(TaskSource::Justfile),
-            Self::GoTask => Some(TaskSource::Taskfile),
-            Self::Bacon => Some(TaskSource::BaconToml),
-            Self::Mise => Some(TaskSource::MiseToml),
-            Self::Nx => None,
-        }
-    }
-}
-
-impl TaskSource {
-    /// Every task source in display order. Used by renderers and error
-    /// messages so adding a source updates diagnostics from one place.
-    pub(crate) const fn all() -> &'static [Self] {
-        &[
-            Self::PackageJson,
-            Self::Makefile,
-            Self::Justfile,
-            Self::Taskfile,
-            Self::TurboJson,
-            Self::DenoJson,
-            Self::CargoAliases,
-            Self::GoPackage,
-            Self::BaconToml,
-            Self::MiseToml,
-            Self::PyprojectScripts,
-        ]
-    }
-
-    /// Canonical display label shown to the user, the *tool* name where a
-    /// single tool owns the source (`"make"`, `"just"`, `"bacon"`, …), or
-    /// the filename when multiple tools share the source (`"package.json"`
-    /// is read by npm/yarn/pnpm/bun, so there's no single owner to name).
-    ///
-    /// Previously a mix of tool names (`"cargo"`) and filenames
-    /// (`"bacon.toml"`, `"turbo.json"`); the inconsistency made the
-    /// `runner list` column read like a typo. Standardizing on tool
-    /// names also stops cases like `bacon.toml` claiming jobs that
-    /// actually come from `~/.config/bacon/prefs.toml`; the label
-    /// "bacon" is honest about that breadth. The label "bacon.toml"
-    /// isn't.
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::PackageJson => "package.json",
-            Self::Makefile => "make",
-            Self::Justfile => "just",
-            Self::Taskfile => "task",
-            Self::TurboJson => "turbo",
-            Self::DenoJson => "deno",
-            // Synthetic source, aliases merge across the hierarchical
-            // `.cargo/config.toml` chain plus `$CARGO_HOME`, so no single
-            // file name represents it.
-            Self::CargoAliases => "cargo",
-            Self::GoPackage => "go",
-            Self::BaconToml => "bacon",
-            Self::MiseToml => "mise",
-            // Filename, not a tool name: `[project.scripts]` is read by
-            // uv, poetry, and pipenv alike, so no single tool owns it.
-            Self::PyprojectScripts => "pyproject.toml",
-        }
-    }
-
-    /// Parse a source label back to a [`TaskSource`]. Accepts both the
-    /// current canonical [`label`]s and the older filename-style labels
-    /// (`"justfile"`, `"bacon.toml"`, `"turbo.json"`, …) so qualified
-    /// task syntax (`bacon.toml:check`) that users may have in shell
-    /// history, scripts, or muscle memory keeps working unchanged.
-    ///
-    /// [`label`]: TaskSource::label
-    pub(crate) fn from_label(label: &str) -> Option<Self> {
-        match label {
-            "package.json" => Some(Self::PackageJson),
-            "make" | "Makefile" => Some(Self::Makefile),
-            "just" | "justfile" => Some(Self::Justfile),
-            "task" | "Taskfile" | "go-task" => Some(Self::Taskfile),
-            "turbo" | "turbo.json" | "turbo.jsonc" => Some(Self::TurboJson),
-            "deno" | "deno.json" | "deno.jsonc" => Some(Self::DenoJson),
-            // `cargo-alias` is the schema-v3 `kind` label that `doctor
-            // --json` / `why --json` embed in task FQNs; accepting it
-            // here keeps every printed FQN runnable.
-            "cargo" | "cargo-alias" => Some(Self::CargoAliases),
-            "go" | "go.mod" => Some(Self::GoPackage),
-            "bacon" | "bacon.toml" => Some(Self::BaconToml),
-            "mise" | "mise.toml" | ".mise.toml" => Some(Self::MiseToml),
-            "pyproject" | "pyproject.toml" => Some(Self::PyprojectScripts),
-            _ => None,
-        }
-    }
-
-    /// Display order for grouped task listings.
-    pub(crate) const fn display_order(self) -> u8 {
-        match self {
-            Self::PackageJson => 0,
-            Self::Makefile => 1,
-            Self::Justfile => 2,
-            Self::Taskfile => 3,
-            Self::TurboJson => 4,
-            Self::DenoJson => 5,
-            Self::CargoAliases => 6,
-            Self::GoPackage => 7,
-            Self::BaconToml => 8,
-            Self::MiseToml => 9,
-            Self::PyprojectScripts => 10,
-        }
-    }
+/// The strongest version declaration behind `present`, and where it is written.
+fn expected_version(present: &runner_core::Present) -> Option<ExpectedVersion> {
+    let signals = runner_providers::REGISTRY.by_id(present.provider).signals;
+    present.because.iter().find_map(|evidence| {
+        let version = evidence.declared.as_ref()?.version()?;
+        let file = evidence.at.file_name()?.to_string_lossy();
+        let source = match signals.get(evidence.signal?.0)? {
+            runner_core::Signal::ManifestField { path, .. } => format!("{file} {path}"),
+            _ => file.into_owned(),
+        };
+        Some(ExpectedVersion {
+            version: version.to_owned(),
+            source,
+        })
+    })
 }
 
 /// The unified label vocabulary `[tasks].prefer` and `[tasks.overrides]`
@@ -979,13 +496,13 @@ pub(crate) fn task_source_labels() -> Vec<&'static str> {
             out.push(label);
         }
     };
-    for runner in TaskRunner::all() {
+    for runner in crate::provider::runners() {
         push(runner.label());
     }
-    for pm in PackageManager::all() {
+    for pm in crate::provider::package_managers() {
         push(pm.label());
     }
-    for source in TaskSource::all() {
+    for source in crate::provider::task_sources() {
         push(source.label());
     }
     out
@@ -1160,15 +677,10 @@ fn parse_current_version(current: &str) -> Option<semver::Version> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DetectionWarning, PackageManager, TaskDetail, range_matches, version_matches};
+    use super::{DetectionWarning, TaskDetail, range_matches, version_matches};
 
-    /// The serde `kebab-case` renames and the hand-written `label()`
-    /// methods are parallel sources of the same strings; this pins them
-    /// together so a new variant can't silently split the two surfaces
-    /// (the way `TaskRunner::GoTask` would without its explicit rename).
     #[test]
     fn serialized_labels_match_label_methods() {
-        use super::{Ecosystem, TaskRunner};
         use crate::resolver::{FallbackPolicy, MismatchPolicy, ScriptPolicy};
 
         fn json_str<T: serde::Serialize>(value: T) -> String {
@@ -1179,15 +691,6 @@ mod tests {
                 .to_string()
         }
 
-        for eco in Ecosystem::ALL {
-            assert_eq!(json_str(eco), eco.label());
-        }
-        for &pm in PackageManager::all() {
-            assert_eq!(json_str(pm), pm.label());
-        }
-        for &runner in TaskRunner::all() {
-            assert_eq!(json_str(runner), runner.label());
-        }
         for fallback in FallbackPolicy::ALL {
             assert_eq!(json_str(fallback), fallback.label());
         }
@@ -1208,7 +711,7 @@ mod tests {
         use std::path::PathBuf;
         use std::sync::Arc;
 
-        use super::{Task, TaskSource, Workspace, WorkspaceMember};
+        use super::{ProviderId, Task, Workspace, WorkspaceMember};
 
         let mut members = vec![
             WorkspaceMember::new(
@@ -1240,7 +743,7 @@ mod tests {
             .iter()
             .map(|member| Task {
                 name: "build".to_string(),
-                source: TaskSource::PackageJson,
+                source: ProviderId::PackageJson,
                 run_target: None,
                 description: None,
                 alias_of: None,
@@ -1392,18 +895,9 @@ mod tests {
     fn detection_warning_can_be_hashed() {
         use std::collections::HashSet;
 
-        let a = DetectionWarning::Removed {
-            name: "--a",
-            now: "b",
-        };
-        let b = DetectionWarning::Removed {
-            name: "--a",
-            now: "b",
-        };
-        let c = DetectionWarning::Removed {
-            name: "--c",
-            now: "b",
-        };
+        let a = DetectionWarning::UnknownConfigKey { path: "a".into() };
+        let b = DetectionWarning::UnknownConfigKey { path: "a".into() };
+        let c = DetectionWarning::UnknownConfigKey { path: "c".into() };
 
         let mut set = HashSet::new();
         set.insert(a);
@@ -1411,107 +905,5 @@ mod tests {
         set.insert(c);
 
         assert_eq!(set.len(), 2, "equal variants should dedup");
-    }
-}
-
-#[cfg(test)]
-mod registry_drift {
-    use runner_core::ProviderId;
-    use runner_providers::REGISTRY;
-
-    use super::{Ecosystem, JsRuntime, PackageManager, TaskRunner, TaskSource};
-
-    fn entry(label: &str) -> &'static runner_core::Provider {
-        REGISTRY
-            .by_label(label)
-            .unwrap_or_else(|| panic!("registry has no entry labelled {label}"))
-    }
-
-    #[test]
-    fn every_ecosystem_has_a_core_twin_with_the_same_label() {
-        for eco in Ecosystem::ALL {
-            assert!(
-                runner_core::Ecosystem::ALL
-                    .iter()
-                    .any(|twin| twin.label() == eco.label()),
-                "core has no ecosystem labelled {}",
-                eco.label()
-            );
-        }
-    }
-
-    #[test]
-    fn every_package_manager_has_a_registry_entry() {
-        for &pm in PackageManager::all() {
-            let provider = entry(pm.label());
-            assert_eq!(provider.label, pm.label());
-            assert_eq!(provider.ecosystem.label(), pm.ecosystem().label());
-            assert!(
-                provider.kind.contains(runner_core::Kind::PACKAGE_MANAGER),
-                "{} is not a package manager in the registry",
-                pm.label()
-            );
-            assert!(
-                provider.caps.install.is_some(),
-                "{} cannot install",
-                pm.label()
-            );
-        }
-        assert_eq!(entry("bundle").id, ProviderId::Bundler);
-    }
-
-    #[test]
-    fn every_task_runner_has_a_registry_entry() {
-        for &runner in TaskRunner::all() {
-            let provider = entry(runner.label());
-            assert_eq!(provider.label, runner.label());
-            assert!(
-                provider.kind.contains(runner_core::Kind::TASK_SOURCE),
-                "{} is not a task source in the registry",
-                runner.label()
-            );
-        }
-        assert_eq!(entry("go-task").id, ProviderId::Task);
-    }
-
-    #[test]
-    fn every_runtime_has_a_registry_entry() {
-        for &runtime in JsRuntime::all() {
-            let provider = entry(runtime.label());
-            assert_eq!(provider.label, runtime.label());
-            assert!(
-                provider.kind.contains(runner_core::Kind::RUNTIME),
-                "{} is not a runtime in the registry",
-                runtime.label()
-            );
-            assert!(provider.caps.run_file.is_some());
-        }
-    }
-
-    #[test]
-    fn every_task_source_label_names_a_task_source() {
-        for &source in TaskSource::all() {
-            let provider = entry(source.label());
-            assert!(
-                provider.kind.contains(runner_core::Kind::TASK_SOURCE),
-                "{} is not a task source in the registry",
-                source.label()
-            );
-        }
-    }
-
-    #[test]
-    fn registry_labels_the_cli_does_not_know_are_the_planned_additions() {
-        let unknown: Vec<&str> = REGISTRY
-            .iter()
-            .map(|provider| provider.label)
-            .filter(|label| {
-                PackageManager::from_label(label).is_none()
-                    && TaskRunner::from_label(label).is_none()
-                    && JsRuntime::from_label(label).is_none()
-                    && TaskSource::from_label(label).is_none()
-            })
-            .collect();
-        assert_eq!(unknown, ["volta", "python", "powershell"]);
     }
 }

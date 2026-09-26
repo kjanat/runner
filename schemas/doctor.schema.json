@@ -181,7 +181,6 @@
         "name",
         "resolved",
         "scope",
-        "self_executable",
         "source",
         "source_pointer"
       ],
@@ -234,10 +233,6 @@
         "scope": {
           "description": "`root`, or the workspace member name the task belongs to.",
           "type": "string"
-        },
-        "self_executable": {
-          "description": "True when runner can run this task without its source's primary tool. Only deno tasks runner can execute via the embedded task shell (leaf command, no `dependencies`, no `deno` invocation) qualify today; all other sources are false.",
-          "type": "boolean"
         },
         "source": {
           "type": [
@@ -304,7 +299,7 @@
           ]
         },
         "signals": {
-          "description": "Detection evidence. Node carries the full signal set (lockfile/manifest/PATH probe/shim classification, keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
+          "description": "Detection evidence. An ecosystem whose task source package managers dispatch carries that source's signals (lockfile, manifest, PATH probe, shims keyed by tool with the shim manager as data); other ecosystems list their detected package managers."
         }
       },
       "additionalProperties": false
@@ -405,11 +400,6 @@
           "const": "probe"
         },
         {
-          "description": "Legacy: silently default to `npm` so dispatch is attempted even\nwhen nothing is detected. Useful for backwards compatibility.",
-          "type": "string",
-          "const": "npm"
-        },
-        {
           "description": "Refuse to proceed when no signal matches; error out with a list of\nsources that were checked.",
           "type": "string",
           "const": "error"
@@ -441,24 +431,12 @@
       },
       "additionalProperties": false
     },
-    "JsRuntime": {
-      "description": "The JavaScript runtime a task's process tree should execute on.\n\nDistinct from [`PackageManager`]: `--pm bun` says bun installs and runs\nscripts here, while this says which runtime the script and the binaries it\ninvokes see. `bun run build` starts under bun but a `#!/usr/bin/env node`\nbin inside the script still resolves to system Node; `bun --bun run build`\nis what puts that bin on bun too.\n\nEach variant brings its own script runner, file runner and package-exec\nprimitive; no package manager is consulted on this path. Set, it also\noutranks a local file's `#!` line, which is the case the axis exists for.",
-      "oneOf": [
-        {
-          "description": "Node.js, via `node --run <script>` (Node 22+), `node <file>` and `npx`.\n\n`node --run` deliberately skips `pre`/`post` lifecycle scripts, which\n`npm run`, `bun run` and `deno task` all execute; runner warns when the\ntask being dispatched has one.",
-          "type": "string",
-          "const": "node"
-        },
-        {
-          "description": "Bun, via `bun --bun run <script>`, `bun <file>` and `bun x --bun`.",
-          "type": "string",
-          "const": "bun"
-        },
-        {
-          "description": "Deno, via `deno task <script>` (which reads `package.json` scripts as\nwell as `deno.json` tasks), `deno run <file>` and `deno x`.",
-          "type": "string",
-          "const": "deno"
-        }
+    "JsRuntimeLabel": {
+      "type": "string",
+      "enum": [
+        "bun",
+        "deno",
+        "node"
       ]
     },
     "LockfilePolicy": {
@@ -586,7 +564,6 @@
         "failure_policy",
         "fallback",
         "fetch",
-        "install_pms",
         "lockfile",
         "no_warnings",
         "on_collision",
@@ -626,13 +603,6 @@
             "local"
           ]
         },
-        "install_pms": {
-          "description": "The install allowlist. Install has none, so this is always empty.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/PackageManager"
-          }
-        },
         "lockfile": {
           "$ref": "#/$defs/LockfilePolicy"
         },
@@ -654,7 +624,7 @@
         "pm": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             {
               "type": "null"
@@ -665,25 +635,25 @@
           "type": "object",
           "properties": {
             "deno": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             "go": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             "node": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             "php": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             "python": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             "ruby": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             },
             "rust": {
-              "$ref": "#/$defs/PackageManager"
+              "$ref": "#/$defs/PackageManagerLabel"
             }
           },
           "additionalProperties": false
@@ -691,7 +661,7 @@
         "prefer_runners": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/TaskRunner"
+            "$ref": "#/$defs/TaskRunnerLabel"
           }
         },
         "prefer_sources": {
@@ -706,7 +676,7 @@
         "runner": {
           "anyOf": [
             {
-              "$ref": "#/$defs/TaskRunner"
+              "$ref": "#/$defs/TaskRunnerLabel"
             },
             {
               "type": "null"
@@ -716,7 +686,7 @@
         "runtime": {
           "anyOf": [
             {
-              "$ref": "#/$defs/JsRuntime"
+              "$ref": "#/$defs/JsRuntimeLabel"
             },
             {
               "type": "null"
@@ -748,69 +718,21 @@
       },
       "additionalProperties": false
     },
-    "PackageManager": {
-      "description": "A dependency manager detected via lockfile or config presence.",
-      "oneOf": [
-        {
-          "description": "npm, detected via `package-lock.json`.",
-          "type": "string",
-          "const": "npm"
-        },
-        {
-          "description": "Yarn, detected via `yarn.lock`.",
-          "type": "string",
-          "const": "yarn"
-        },
-        {
-          "description": "pnpm, detected via `pnpm-lock.yaml`.",
-          "type": "string",
-          "const": "pnpm"
-        },
-        {
-          "description": "Bun, detected via `bun.lockb` or `bun.lock`.",
-          "type": "string",
-          "const": "bun"
-        },
-        {
-          "description": "Cargo (Rust), detected via `Cargo.toml`.",
-          "type": "string",
-          "const": "cargo"
-        },
-        {
-          "description": "Deno, detected via `deno.json` / `deno.jsonc`.",
-          "type": "string",
-          "const": "deno"
-        },
-        {
-          "description": "uv (Python), detected via `uv.lock`.",
-          "type": "string",
-          "const": "uv"
-        },
-        {
-          "description": "Poetry (Python), detected via `poetry.lock` or Poetry `pyproject.toml` markers.",
-          "type": "string",
-          "const": "poetry"
-        },
-        {
-          "description": "Pipenv (Python), detected via `Pipfile` / `Pipfile.lock`.",
-          "type": "string",
-          "const": "pipenv"
-        },
-        {
-          "description": "Go modules, detected via `go.mod`.",
-          "type": "string",
-          "const": "go"
-        },
-        {
-          "description": "Bundler (Ruby), detected via `Gemfile`.",
-          "type": "string",
-          "const": "bundler"
-        },
-        {
-          "description": "Composer (PHP), detected via `composer.json`.",
-          "type": "string",
-          "const": "composer"
-        }
+    "PackageManagerLabel": {
+      "type": "string",
+      "enum": [
+        "npm",
+        "yarn",
+        "pnpm",
+        "bun",
+        "deno",
+        "cargo",
+        "go",
+        "uv",
+        "poetry",
+        "pipenv",
+        "bundler",
+        "composer"
       ]
     },
     "ProjectInfo": {
@@ -999,56 +921,28 @@
       },
       "additionalProperties": false
     },
-    "TaskRunner": {
-      "description": "A task runner detected via config file presence.",
-      "oneOf": [
-        {
-          "description": "Turborepo, detected via `turbo.json` / `turbo.jsonc`.",
-          "type": "string",
-          "const": "turbo"
-        },
-        {
-          "description": "Nx, detected via `nx.json`.",
-          "type": "string",
-          "const": "nx"
-        },
-        {
-          "description": "GNU Make, detected via `Makefile` / `GNUmakefile` / `makefile`.",
-          "type": "string",
-          "const": "make"
-        },
-        {
-          "description": "just, detected via case-insensitive `justfile` / `.justfile`.",
-          "type": "string",
-          "const": "just"
-        },
-        {
-          "description": "go-task, detected via `Taskfile.yml` and variants.",
-          "type": "string",
-          "const": "task"
-        },
-        {
-          "description": "mise, detected via `mise.toml` / `.mise.toml`.",
-          "type": "string",
-          "const": "mise"
-        },
-        {
-          "description": "bacon, detected via `bacon.toml`.",
-          "type": "string",
-          "const": "bacon"
-        }
+    "TaskRunnerLabel": {
+      "type": "string",
+      "enum": [
+        "turbo",
+        "nx",
+        "make",
+        "just",
+        "task",
+        "mise",
+        "bacon"
       ]
     },
     "TaskSourceLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "package.json",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
-        "cargo-alias",
+        "cargo",
         "go",
         "bacon",
         "mise",

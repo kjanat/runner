@@ -124,73 +124,230 @@ pub const PROVIDER: Provider = Provider {
         MANIFEST[1],
         Signal::Probe("deno"),
     ],
-    writes: crate::node::WRITES,
     caps: Capabilities {
-        task_priority: 5,
-        probe_priority: 4,
-        package_exec: Some(ExecCap {
-            program: None,
-            argv: runner_core::Template(&[
-                runner_core::Piece::Lit("x"),
-                runner_core::Piece::Concat(&[
-                    runner_core::Piece::Lit("npm:"),
-                    runner_core::Piece::Package,
-                    runner_core::Piece::Lit("/"),
-                    runner_core::Piece::Name,
-                ]),
-                runner_core::Piece::Args,
-            ]),
-            reach: Reach::Network,
-            accepts: NameShape::BARE,
-        }),
-        file_interpreters: &["node", "nodejs", "bun", "deno"],
-        install: Some(InstallCap {
-            argv: t!["install", Frozen, Scripts],
-            frozen: Frozen::Flag("--frozen"),
-            scripts: ScriptSupport {
-                deny: ScriptMechanism::Default,
-                allow: ScriptMechanism::Flag("--allow-scripts"),
-            },
-            locked_only_with: &[],
-            lockfiles: Some(Lockfiles::Ask(lockfiles)),
-        }),
-        run_task: Some(RunTaskCap {
-            argv: t!["task", Quiet, Task, Args],
-            sources: &[ProviderId::Deno, ProviderId::PackageJson],
-        }),
-        exec: Some(ExecCap {
-            program: None,
-            argv: t!["x", Name, Args],
-            reach: Reach::Network,
-            accepts: NameShape::BARE
-                .union(NameShape::VERSIONED)
-                .union(NameShape::REGISTRY),
-        }),
-        run_file: Some(RunFileCap {
-            unsupported: &[],
-            program: None,
-            extensions: crate::node::bun::SCRIPT_EXTENSIONS,
-            argv: t!["run", File, Args],
-        }),
-        test: Some(TestCap {
-            program: None,
-            argv: t!["test", Args],
-            discovery: Discovery::Tool,
-            file_flags: None,
-        }),
-        clean: Some(CleanCap {
-            dir_suffixes: &[],
-            framework_dirs: &[],
-            dirs: &[".deno"],
-        }),
-        workspaces: Some(runner_core::WorkspaceCap { declarations }),
-        quiet: QuietSupport::flag(t!["-q"]),
-        ..Capabilities::NONE
+        variants: &[("node_modules", NODE_MODULES)],
+        ..CAPS
     },
     tasks: Some(crate::extract::scripts::deno_tasks),
     version: None,
     hooks: Hooks {
         before_plan: Some(manifest::before_plan),
-        ..Hooks::NONE
+        after_observe: Some(node_modules_variant),
     },
 };
+
+/// Deno materializing a local `node_modules/`.
+const NODE_MODULES: Capabilities = Capabilities {
+    writes: crate::node::WRITES,
+    ..CAPS
+};
+
+const CAPS: Capabilities = Capabilities {
+    task_table: runner_core::TaskTable::Key("tasks"),
+    task_priority: 5,
+    probe_priority: 4,
+    package_exec: Some(ExecCap {
+        program: None,
+        argv: runner_core::Template(&[
+            runner_core::Piece::Lit("x"),
+            runner_core::Piece::Concat(&[
+                runner_core::Piece::Lit("npm:"),
+                runner_core::Piece::Package,
+                runner_core::Piece::Lit("/"),
+                runner_core::Piece::Name,
+            ]),
+            runner_core::Piece::Args,
+        ]),
+        reach: Reach::Network,
+        accepts: NameShape::BARE,
+    }),
+    file_interpreters: &["node", "nodejs", "bun", "deno"],
+    install: Some(InstallCap {
+        argv: t!["install", Frozen, Scripts],
+        frozen: Frozen::Flag("--frozen"),
+        scripts: ScriptSupport {
+            deny: ScriptMechanism::Default,
+            allow: ScriptMechanism::Flag("--allow-scripts"),
+        },
+        locked_only_with: &[],
+        lockfiles: Some(Lockfiles::Ask(lockfiles)),
+    }),
+    run_task: Some(RunTaskCap {
+        argv: t!["task", Quiet, Task, Args],
+        sources: &[ProviderId::Deno, ProviderId::PackageJson],
+    }),
+    exec: Some(ExecCap {
+        program: None,
+        argv: t!["x", Name, Args],
+        reach: Reach::Network,
+        accepts: NameShape::BARE
+            .union(NameShape::VERSIONED)
+            .union(NameShape::REGISTRY),
+    }),
+    run_file: Some(RunFileCap {
+        unsupported: &[],
+        program: None,
+        extensions: crate::node::bun::SCRIPT_EXTENSIONS,
+        argv: t!["run", File, Args],
+    }),
+    test: Some(TestCap {
+        program: None,
+        argv: t!["test", Args],
+        discovery: Discovery::Tool,
+        file_flags: None,
+    }),
+    clean: Some(CleanCap {
+        dir_suffixes: &[],
+        framework_dirs: &[],
+        dirs: &[".deno"],
+    }),
+    workspaces: Some(runner_core::WorkspaceCap { declarations }),
+    quiet: QuietSupport::flag(t!["-q"]),
+    ..Capabilities::NONE
+};
+
+/// A `node_modules` variant for each Deno scope that materializes a local
+/// `node_modules/`: the nearest config's `nodeModulesDir` decides, and
+/// without one a package manifest beside it puts Deno in manual mode.
+fn node_modules_variant(
+    tree: &runner_core::Tree,
+    evidence: &[runner_core::Evidence],
+) -> std::io::Result<Vec<runner_core::Evidence>> {
+    let mut derived: Vec<runner_core::Evidence> = Vec::new();
+    for item in evidence.iter().filter(|item| {
+        item.provider == Some(ProviderId::Deno) && item.weight <= runner_core::Weight::Configured
+    }) {
+        if derived.iter().any(|seen| seen.scope == item.scope) {
+            continue;
+        }
+        let dir = runner_core::scope_dir(tree, &item.scope);
+        if writes_node_modules(&dir, &tree.root)? {
+            derived.push(runner_core::Evidence {
+                provider: Some(ProviderId::Deno),
+                signal: None,
+                at: dir,
+                scope: item.scope.clone(),
+                weight: runner_core::Weight::Probed,
+                declared: Some(Declared::Variant("node_modules".into())),
+            });
+        }
+    }
+    Ok(derived)
+}
+
+/// Whether Deno materializes `node_modules/` in `dir`.
+fn writes_node_modules(dir: &Path, root: &Path) -> std::io::Result<bool> {
+    match declared_node_modules_dir(dir, root) {
+        Some(writes) => Ok(writes),
+        None => Ok(runner_core::read_manifest(dir, crate::node::MANIFESTS)?.is_some()),
+    }
+}
+
+/// The `nodeModulesDir` of the nearest Deno config at or above `dir` within
+/// `root`: `auto`, `manual` and `true` write the directory, `none` and
+/// `false` keep dependencies in Deno's global cache.
+fn declared_node_modules_dir(dir: &Path, root: &Path) -> Option<bool> {
+    let config = dir
+        .ancestors()
+        .take_while(|ancestor| ancestor.starts_with(root))
+        .find_map(|ancestor| {
+            CONFIGS
+                .into_iter()
+                .map(|name| ancestor.join(name))
+                .find(|path| path.is_file())
+        })?;
+    let parsed: serde_json::Value = json5::from_str(&std::fs::read_to_string(config).ok()?).ok()?;
+    match &parsed["nodeModulesDir"] {
+        serde_json::Value::Bool(enabled) => Some(*enabled),
+        serde_json::Value::String(mode) => match mode.as_str() {
+            "auto" | "manual" => Some(true),
+            "none" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::writes_node_modules;
+    use crate::extract::test_support::TempDir;
+
+    fn writes(dir: &TempDir) -> bool {
+        writes_node_modules(dir.path(), dir.path()).expect("readable")
+    }
+
+    #[test]
+    fn node_modules_dir_decides_when_declared() {
+        let cases = [
+            (r#"{ "nodeModulesDir": "auto" }"#, true),
+            (r#"{ "nodeModulesDir": "manual" }"#, true),
+            (r#"{ "nodeModulesDir": "none" }"#, false),
+            (r#"{ "nodeModulesDir": true }"#, true),
+            (r#"{ "nodeModulesDir": false }"#, false),
+            (r#"{ "tasks": {} }"#, false),
+            (r"{ /* jsonc */ }", false),
+        ];
+        for (i, (body, expected)) in cases.iter().enumerate() {
+            let dir = TempDir::new(&format!("deno-nmd-{i}"));
+            fs::write(dir.path().join("deno.json"), body).expect("write config");
+            assert_eq!(writes(&dir), *expected, "body: {body}");
+        }
+    }
+
+    #[test]
+    fn an_undeclared_node_modules_dir_follows_the_package_manifest() {
+        let with_manifest = TempDir::new("deno-nmd-package-json");
+        fs::write(with_manifest.path().join("deno.json"), r#"{ "tasks": {} }"#).expect("config");
+        fs::write(with_manifest.path().join("package.json"), r#"{"name":"x"}"#).expect("manifest");
+        assert!(writes(&with_manifest));
+
+        let opted_out = TempDir::new("deno-nmd-opted-out");
+        fs::write(
+            opted_out.path().join("deno.json"),
+            r#"{ "nodeModulesDir": "none" }"#,
+        )
+        .expect("config");
+        fs::write(opted_out.path().join("package.json"), r#"{"name":"x"}"#).expect("manifest");
+        assert!(!writes(&opted_out));
+
+        for (i, value) in [r#""future-mode""#, "42"].iter().enumerate() {
+            let invalid = TempDir::new(&format!("deno-nmd-invalid-{i}"));
+            fs::write(
+                invalid.path().join("deno.json"),
+                format!(r#"{{ "nodeModulesDir": {value} }}"#),
+            )
+            .expect("config");
+            fs::write(invalid.path().join("package.json"), r#"{"name":"x"}"#).expect("manifest");
+            assert!(writes(&invalid), "value: {value}");
+        }
+    }
+
+    #[test]
+    fn a_config_less_project_writes_node_modules_only_with_a_manifest() {
+        let bare = TempDir::new("deno-no-config");
+        assert!(!writes(&bare));
+
+        let with_manifest = TempDir::new("deno-no-config-package-json");
+        fs::write(with_manifest.path().join("package.json"), r#"{"name":"x"}"#).expect("manifest");
+        assert!(writes(&with_manifest));
+    }
+
+    #[test]
+    fn the_nearest_config_decides_for_a_nested_directory() {
+        let dir = TempDir::new("deno-nmd-nested");
+        let nested = dir.path().join("apps").join("site");
+        fs::create_dir_all(&nested).expect("nested");
+        fs::write(
+            dir.path().join("deno.json"),
+            r#"{ "nodeModulesDir": "auto" }"#,
+        )
+        .expect("root config");
+        assert!(writes_node_modules(&nested, dir.path()).expect("readable"));
+        fs::write(nested.join("deno.json"), r#"{ "nodeModulesDir": "none" }"#)
+            .expect("member config");
+        assert!(!writes_node_modules(&nested, dir.path()).expect("readable"));
+    }
+}

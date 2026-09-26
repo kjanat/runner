@@ -72,11 +72,11 @@
     "TaskSourceLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "package.json",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
         "cargo",
         "go",

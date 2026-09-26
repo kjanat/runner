@@ -100,7 +100,7 @@ l             -- → clippy --all-targets --all-features -- -D warnings -D clipp
 --dir             -- Use this directory instead of the current one
 --pm              -- Override the detected package manager (also reads RUNNER_PM when omitted). Valid: npm, yarn, pnpm, bun, cargo, deno, uv, poetry, pipenv, go, bundler (alias: bundle), composer
 --runner          -- Override the detected task runner (also reads RUNNER_RUNNER when omitted). Valid: turbo, nx, make, just, task (alias: go-task), mise, bacon
---fallback        -- What to do when a task source has no package manager evidence: probe (default, take one from PATH) or error (refuse). npm is accepted and behaves as probe. Also reads RUNNER_FALLBACK when omitted.
+--fallback        -- What to do when a task source has no package manager evidence: probe (default, take one from PATH) or error (refuse). Also reads RUNNER_FALLBACK when omitted.
 --on-mismatch     -- What to do when the manifest declaration disagrees with the lockfile: warn (default), error (exit 2), ignore (silent). Also reads RUNNER_ON_MISMATCH when omitted.
 --explain         -- Print a one-line trace describing how the package manager was resolved. Also enabled when RUNNER_EXPLAIN is set to a truthy value.
 --no-warnings     -- Suppress all non-fatal warnings on stderr. Also enabled when RUNNER_NO_WARNINGS is set to a truthy value.

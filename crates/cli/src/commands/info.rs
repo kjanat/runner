@@ -8,6 +8,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use super::list::print_conflicts;
+use crate::provider::Named;
 use crate::render::list::{print_tasks_grouped, terminal_width};
 use crate::resolver::ResolutionOverrides;
 use crate::schema::Project;
@@ -62,20 +63,24 @@ pub(crate) fn info(
         println!("  {:<20}{}", "Task Runners".dimmed(), trs.join(", "));
     }
 
-    let node_version = ctx.node_version();
-    let current_node = ctx.current_node();
-    if let Some(nv) = &node_version {
-        let mut line = format!("{} ({})", nv.expected, nv.source);
-        if let Some(cur) = &current_node {
-            if version_matches(&nv.expected, cur) {
-                let _ = write!(line, ", current {cur} {}", "(ok)".green());
-            } else {
-                let _ = write!(line, ", current {cur} {}", "(mismatch)".red());
+    let runtimes = ctx.runtime_versions();
+    for runtime in &runtimes {
+        let line = match (&runtime.expected, &runtime.current) {
+            (Some(expected), current) => {
+                let mut line = format!("{} ({})", expected.version, expected.source);
+                if let Some(cur) = current {
+                    if version_matches(&expected.version, cur) {
+                        let _ = write!(line, ", current {cur} {}", "(ok)".green());
+                    } else {
+                        let _ = write!(line, ", current {cur} {}", "(mismatch)".red());
+                    }
+                }
+                line
             }
-        }
-        println!("  {:<20}{}", "Node".dimmed(), line);
-    } else if let Some(cur) = &current_node {
-        println!("  {:<20}{}", "Node".dimmed(), cur);
+            (None, Some(cur)) => cur.clone(),
+            (None, None) => continue,
+        };
+        println!("  {:<20}{}", runtime.runtime.label().dimmed(), line);
     }
 
     let monorepo = ctx.is_monorepo();
@@ -104,14 +109,13 @@ pub(crate) fn info(
         let banner_rows = 2 // title + trailing blank
             + usize::from(!package_managers.is_empty())
             + usize::from(!task_runners.is_empty())
-            + usize::from(node_version.is_some() || current_node.is_some())
+            + runtimes.len()
             + usize::from(monorepo)
             + usize::from(ctx.workspace.is_some())
             + 1; // blank separator before the task list
         let refs: Vec<&crate::types::Task> = ctx.tasks.iter().collect();
         print_tasks_grouped(
             &refs,
-            &ctx.root,
             ctx.current_member().map(std::sync::Arc::as_ref),
             banner_rows,
         );

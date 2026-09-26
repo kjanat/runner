@@ -40,7 +40,6 @@
     "explain": false,
     "fallback": "probe",
     "failure_policy": "fail-fast",
-    "install_pms": [],
     "no_warnings": false,
     "on_collision": "resolve",
     "output_grouping": {
@@ -91,7 +90,12 @@
       "selected_package_manager": "bun",
       "signals": {
         "lockfile_pm": "bun",
-        "manifest_pm": "bun",
+        "manifest_pm": {
+          "pm": "bun",
+          "source": "packageManager",
+          "version": "1.1.0",
+          "on_fail": "ignore"
+        },
         "path_probe": {
           "bun": "/usr/bin/bun",
           "npm": "/usr/bin/npm"
@@ -133,7 +137,6 @@
       "name": "build",
       "resolved": "bun run build",
       "scope": "root",
-      "self_executable": false,
       "source": "/path/to/project/package.json",
       "source_pointer": "scripts.build"
     },
@@ -148,7 +151,6 @@
       "name": "fmt:update",
       "resolved": "bun run fmt:update",
       "scope": "root",
-      "self_executable": false,
       "source": "/path/to/project/package.json",
       "source_pointer": "scripts.fmt:update"
     },
@@ -163,7 +165,6 @@
       "name": "build",
       "resolved": "just build",
       "scope": "root",
-      "self_executable": false,
       "source": "/path/to/project/justfile",
       "source_pointer": "build"
     }

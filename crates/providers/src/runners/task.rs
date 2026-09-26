@@ -23,8 +23,8 @@ pub const PROVIDER: Provider = Provider {
         Signal::File("taskfile.dist.yaml"),
         Signal::Probe("task"),
     ],
-    writes: &[],
     caps: Capabilities {
+        task_table: runner_core::TaskTable::Key("tasks"),
         task_priority: 4,
         run_default: Some(t![Quiet, Args]),
         run_task: Some(RunTaskCap {

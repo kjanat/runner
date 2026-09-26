@@ -2,14 +2,15 @@
 
 use std::fmt::Write as _;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use colored::Colorize;
 use terminal_size::{Height, Width};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::tool;
-use crate::types::{Task, TaskSource, WorkspaceMember};
+use crate::provider::Named;
+use crate::types::{Task, WorkspaceMember};
+use runner_core::ProviderId;
 
 /// How the table is laid out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +61,7 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
     tasks.len()
 }
 
-/// Print tasks grouped by [`TaskSource`], collapsing to compact mode
+/// Print tasks grouped by [`ProviderId`], collapsing to compact mode
 /// when the rich form would overflow the terminal.
 ///
 /// Operates over a borrowed task slice + the project root; the renderer
@@ -76,27 +77,20 @@ const fn predicted_rich_rows(tasks: &[&Task]) -> usize {
 /// `0`.
 pub(crate) fn print_tasks_grouped(
     tasks: &[&Task],
-    root: &Path,
     current: Option<&WorkspaceMember>,
     reserved_rows: usize,
 ) {
-    print_tasks_grouped_with_mode(
-        tasks,
-        root,
-        current,
-        select_render_mode(tasks, reserved_rows),
-    );
+    print_tasks_grouped_with_mode(tasks, current, select_render_mode(tasks, reserved_rows));
 }
 
 fn print_tasks_grouped_with_mode(
     tasks: &[&Task],
-    root: &Path,
     current: Option<&WorkspaceMember>,
     mode: RenderMode,
 ) {
     print!(
         "{}",
-        render_tasks_grouped(tasks, root, mode, std::io::stdout().is_terminal(), current)
+        render_tasks_grouped(tasks, mode, std::io::stdout().is_terminal(), current)
     );
 }
 
@@ -108,16 +102,14 @@ fn print_tasks_grouped_with_mode(
 pub(crate) fn write_tasks_grouped(
     out: &mut crate::render::out::Out<'_>,
     tasks: &[&Task],
-    root: &Path,
     current: Option<&WorkspaceMember>,
 ) -> std::io::Result<()> {
-    let table = render_tasks_grouped(tasks, root, RenderMode::Rich, out.is_terminal(), current);
+    let table = render_tasks_grouped(tasks, RenderMode::Rich, out.is_terminal(), current);
     out.stdout().write_all(table.as_bytes())
 }
 
 fn render_tasks_grouped(
     tasks: &[&Task],
-    root: &Path,
     mode: RenderMode,
     stdout_is_terminal: bool,
     current: Option<&WorkspaceMember>,
@@ -126,7 +118,7 @@ fn render_tasks_grouped(
 
     match mode {
         RenderMode::Rich => {
-            render_tasks_grouped_rich(tasks, root, stdout_is_terminal, terminal_width, current)
+            render_tasks_grouped_rich(tasks, stdout_is_terminal, terminal_width, current)
         }
         RenderMode::Compact => render_tasks_grouped_compact(tasks, stdout_is_terminal, current),
     }
@@ -138,19 +130,24 @@ pub(crate) fn terminal_width() -> Option<usize> {
 
 fn render_tasks_grouped_rich(
     tasks: &[&Task],
-    root: &Path,
     stdout_is_terminal: bool,
     terminal_width: Option<usize>,
     current: Option<&WorkspaceMember>,
 ) -> String {
     let mut out = String::new();
-    for &source in TaskSource::all() {
+    for source in crate::provider::task_sources() {
         let source_tasks = tasks_for_source(tasks, source, current);
         if source_tasks.is_empty() {
             continue;
         }
 
-        let label = source_label(source, root, stdout_is_terminal);
+        let label = source_label(
+            source,
+            source_tasks
+                .first()
+                .and_then(|task| task.detail.source.as_deref()),
+            stdout_is_terminal,
+        );
         let label_width = padded_column_width(source.label(), SOURCE_COL_WIDTH);
         for (task, alias_names) in fold_aliases(&source_tasks) {
             // A folded canonical carries its aliases in the name cell; a
@@ -326,7 +323,7 @@ fn render_tasks_grouped_compact(
     current: Option<&WorkspaceMember>,
 ) -> String {
     let mut out = String::new();
-    for &source in TaskSource::all() {
+    for source in crate::provider::task_sources() {
         let source_tasks = tasks_for_source(tasks, source, current);
         if source_tasks.is_empty() {
             continue;
@@ -348,7 +345,7 @@ fn render_tasks_grouped_compact(
 
 fn tasks_for_source<'a>(
     tasks: &[&'a Task],
-    source: TaskSource,
+    source: ProviderId,
     current: Option<&WorkspaceMember>,
 ) -> Vec<&'a Task> {
     let mut source_tasks: Vec<&Task> = tasks
@@ -414,7 +411,7 @@ fn name_with_aliases(name: &str, aliases: &[&str]) -> String {
     }
 }
 
-fn compact_source_label(source: TaskSource, stdout_is_terminal: bool) -> String {
+fn compact_source_label(source: ProviderId, stdout_is_terminal: bool) -> String {
     let label = pad_visible(
         source.label(),
         padded_column_width(source.label(), SOURCE_COL_WIDTH),
@@ -443,8 +440,8 @@ fn pad_visible(value: &str, width: usize) -> String {
     format!("{value}{}", " ".repeat(padding))
 }
 
-fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> String {
-    // Display text is always the canonical `TaskSource::label()`; using
+fn source_label(source: ProviderId, file: Option<&Path>, stdout_is_terminal: bool) -> String {
+    // Display text is always the canonical `crate::provider::Named::label()`; using
     // `path.file_name()` instead collapses any source whose backing file
     // happens to be named `config.toml` (cargo, uv, pip, rust-toolchain,
     // mise variants, …) into an ambiguous single column. The OSC8 link
@@ -461,10 +458,7 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
         return label;
     }
 
-    let Some(path) = source_path(source, root) else {
-        return label;
-    };
-    let Some(url) = file_uri(&path) else {
+    let Some(url) = file.and_then(file_uri) else {
         return label;
     };
 
@@ -473,32 +467,6 @@ fn source_label(source: TaskSource, root: &Path, stdout_is_terminal: bool) -> St
         osc8_link(&display.bold().to_string(), &url),
         " ".repeat(padding)
     )
-}
-
-fn source_path(source: TaskSource, root: &Path) -> Option<PathBuf> {
-    let path = match source {
-        TaskSource::PackageJson => tool::node::find_manifest_upwards(root),
-        TaskSource::TurboJson => tool::turbo::find_config(root),
-        TaskSource::Makefile => {
-            tool::files::find_first(root, tool::make::FILENAMES).filter(|path| path.is_file())
-        }
-        TaskSource::Justfile => tool::just::find_file(root),
-        TaskSource::Taskfile => {
-            tool::files::find_first(root, tool::go_task::FILENAMES).filter(|path| path.is_file())
-        }
-        TaskSource::DenoJson => tool::deno::find_config_upwards(root),
-        TaskSource::CargoAliases => tool::cargo_aliases::find_anchor(root),
-        TaskSource::GoPackage => tool::go_pm::find_file(root),
-        TaskSource::BaconToml => {
-            tool::files::find_first(root, tool::bacon::FILENAMES).filter(|path| path.is_file())
-        }
-        TaskSource::MiseToml => tool::mise::find_file(root),
-        TaskSource::PyprojectScripts => {
-            tool::python::find_pyproject_upwards(root).filter(|path| path.is_file())
-        }
-    }?;
-
-    Some(path.canonicalize().unwrap_or(path))
 }
 
 fn file_uri(path: &Path) -> Option<String> {
@@ -548,16 +516,16 @@ fn osc8_link(label: &str, url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
 
     use super::{
         RenderMode, file_uri, render_rich_row, render_tasks_grouped, render_tasks_grouped_rich,
-        select_render_mode_for, source_label, source_path,
+        select_render_mode_for, source_label,
     };
     use crate::tool::test_support::TempDir;
-    use crate::types::{Task, TaskSource};
+    use crate::types::Task;
+    use runner_core::ProviderId;
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.into(),
             source,
@@ -571,48 +539,15 @@ mod tests {
     }
 
     #[test]
-    fn source_path_finds_existing_config_variant() {
-        let dir = TempDir::new("list-source-path");
-        fs::write(dir.path().join("deno.jsonc"), "{}").expect("deno.jsonc should be written");
-
-        let path = source_path(TaskSource::DenoJson, dir.path())
-            .expect("deno task source path should be resolved");
-
-        assert!(path.ends_with("deno.jsonc"));
-    }
-
-    #[test]
-    fn source_path_finds_turbo_jsonc_variant() {
-        let dir = TempDir::new("list-source-path-turbo-jsonc");
-        fs::write(dir.path().join("turbo.jsonc"), "{}").expect("turbo.jsonc should be written");
-
-        let path = source_path(TaskSource::TurboJson, dir.path())
-            .expect("turbo task source path should be resolved");
-
-        assert!(path.ends_with("turbo.jsonc"));
-    }
-
-    #[test]
-    fn source_path_supports_taskfile_dist_variants() {
-        let dir = TempDir::new("list-taskfile-dist");
-        fs::write(
-            dir.path().join("Taskfile.dist.yml"),
-            "version: '3'\ntasks: {}\n",
-        )
-        .expect("Taskfile.dist.yml should be written");
-
-        let path = source_path(TaskSource::Taskfile, dir.path())
-            .expect("taskfile path should resolve from dist variant");
-
-        assert!(path.ends_with("Taskfile.dist.yml"));
-    }
-
-    #[test]
     fn source_label_uses_osc8_when_terminal_and_file_exists() {
         let dir = TempDir::new("list-source-label-link");
         fs::write(dir.path().join("package.json"), "{}").expect("package.json should be written");
 
-        let label = source_label(TaskSource::PackageJson, dir.path(), true);
+        let label = source_label(
+            ProviderId::PackageJson,
+            Some(&dir.path().join("package.json")),
+            true,
+        );
 
         assert!(label.contains("\u{1b}]8;;file://"));
         assert!(label.contains("package.json"));
@@ -623,7 +558,11 @@ mod tests {
         let dir = TempDir::new("list-source-label-padding");
         fs::write(dir.path().join("package.json"), "{}").expect("package.json should be written");
 
-        let label = source_label(TaskSource::PackageJson, dir.path(), true);
+        let label = source_label(
+            ProviderId::PackageJson,
+            Some(&dir.path().join("package.json")),
+            true,
+        );
 
         let close = label
             .rfind("\u{1b}]8;;\u{1b}\\")
@@ -635,7 +574,7 @@ mod tests {
 
     #[test]
     fn source_label_uses_canonical_source_label_regardless_of_filename_variant() {
-        // The displayed text is always `TaskSource::label()`, never
+        // The displayed text is always `crate::provider::Named::label()`, never
         // the resolved manifest's filename. Mixing in `file_name()`
         // would collapse the many sources whose config happens to
         // be named `config.toml` (cargo, uv, pip, mise variants, …)
@@ -649,7 +588,11 @@ mod tests {
         )
         .expect("package.yaml should be written");
 
-        let label = source_label(TaskSource::PackageJson, dir.path(), false);
+        let label = source_label(
+            ProviderId::PackageJson,
+            Some(&dir.path().join("package.json")),
+            false,
+        );
 
         assert!(
             label.contains("package.json"),
@@ -666,7 +609,11 @@ mod tests {
         let dir = TempDir::new("list-source-label-plain");
         fs::write(dir.path().join("package.json"), "{}").expect("package.json should be written");
 
-        let label = source_label(TaskSource::PackageJson, dir.path(), false);
+        let label = source_label(
+            ProviderId::PackageJson,
+            Some(&dir.path().join("package.json")),
+            false,
+        );
 
         assert!(label.contains("package.json"));
         assert!(!label.contains("\u{1b}]8;;"));
@@ -685,16 +632,15 @@ mod tests {
     #[test]
     fn fold_groups_rename_alias_under_canonical_sibling() {
         let mut tasks = [
-            task("build", TaskSource::CargoAliases),
-            task("b", TaskSource::CargoAliases),
-            task("lint", TaskSource::CargoAliases),
+            task("build", ProviderId::Cargo),
+            task("b", ProviderId::Cargo),
+            task("lint", ProviderId::Cargo),
         ];
         tasks[1].alias_of = Some("build".into()); // b → build (sibling) folds
         tasks[2].alias_of = Some("clippy --all".into()); // not a sibling → standalone
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered =
-            render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false, None);
+        let rendered = render_tasks_grouped(&refs, RenderMode::Compact, false, None);
 
         assert_eq!(rendered, "  cargo           build (b), lint\n");
     }
@@ -702,16 +648,15 @@ mod tests {
     #[test]
     fn compact_mode_emits_one_line_per_source() {
         let mut tasks = [
-            task("build", TaskSource::Justfile),
-            task("test", TaskSource::Justfile),
-            task("b", TaskSource::CargoAliases),
-            task("lint", TaskSource::CargoAliases),
+            task("build", ProviderId::Just),
+            task("test", ProviderId::Just),
+            task("b", ProviderId::Cargo),
+            task("lint", ProviderId::Cargo),
         ];
         tasks[2].alias_of = Some("build".into());
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered =
-            render_tasks_grouped(&refs, Path::new("."), RenderMode::Compact, false, None);
+        let rendered = render_tasks_grouped(&refs, RenderMode::Compact, false, None);
 
         assert_eq!(
             rendered,
@@ -722,7 +667,7 @@ mod tests {
     #[test]
     fn auto_mode_picks_compact_when_predicted_height_exceeds_terminal() {
         let tasks: Vec<Task> = (0..30)
-            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .map(|idx| task(&format!("task-{idx}"), ProviderId::Just))
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
@@ -738,7 +683,7 @@ mod tests {
         // 5-row banner is reserved, no longer fits (20 + 2 + 5 = 27 >
         // 24 → Compact).
         let tasks: Vec<Task> = (0..20)
-            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .map(|idx| task(&format!("task-{idx}"), ProviderId::Just))
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
@@ -755,7 +700,7 @@ mod tests {
     #[test]
     fn auto_mode_picks_rich_when_terminal_height_fits() {
         let tasks: Vec<Task> = (0..30)
-            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .map(|idx| task(&format!("task-{idx}"), ProviderId::Just))
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
@@ -767,7 +712,7 @@ mod tests {
     #[test]
     fn auto_mode_defaults_rich_on_non_tty() {
         let tasks: Vec<Task> = (0..30)
-            .map(|idx| task(&format!("task-{idx}"), TaskSource::Justfile))
+            .map(|idx| task(&format!("task-{idx}"), ProviderId::Just))
             .collect();
         let refs: Vec<&Task> = tasks.iter().collect();
 
@@ -780,7 +725,7 @@ mod tests {
     fn rich_mode_renders_alias_target_in_value_column() {
         let tasks = [Task {
             name: "b".into(),
-            source: TaskSource::Justfile,
+            source: ProviderId::Just,
             run_target: None,
             description: None,
             alias_of: Some("build".into()),
@@ -790,7 +735,7 @@ mod tests {
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped(&refs, Path::new("."), RenderMode::Rich, false, None);
+        let rendered = render_tasks_grouped(&refs, RenderMode::Rich, false, None);
 
         assert!(rendered.contains('b'));
         assert!(rendered.contains("build"));
@@ -800,7 +745,7 @@ mod tests {
     fn rich_tty_wraps_long_values_with_hanging_indent() {
         let tasks = [Task {
             name: "lint".into(),
-            source: TaskSource::BaconToml,
+            source: ProviderId::Bacon,
             run_target: None,
             description: None,
             alias_of: Some(
@@ -812,7 +757,7 @@ mod tests {
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped_rich(&refs, Path::new("."), true, Some(68), None);
+        let rendered = render_tasks_grouped_rich(&refs, true, Some(68), None);
         let lines: Vec<&str> = rendered.lines().collect();
 
         assert_eq!(lines.len(), 3, "expected wrap, got: {rendered:?}");
@@ -882,19 +827,22 @@ mod tests {
         .expect("bacon.toml should be written");
         let tasks = [Task {
             name: "lint".into(),
-            source: TaskSource::BaconToml,
+            source: ProviderId::Bacon,
             run_target: None,
             description: None,
             alias_of: Some(
                 "cargo clippy --all-targets --all-features --color=always -- -D warnings".into(),
             ),
             passthrough_to: None,
-            detail: crate::types::TaskDetail::default(),
+            detail: crate::types::TaskDetail {
+                source: Some(dir.path().join("bacon.toml")),
+                ..crate::types::TaskDetail::default()
+            },
             member: None,
         }];
         let refs: Vec<&Task> = tasks.iter().collect();
 
-        let rendered = render_tasks_grouped_rich(&refs, dir.path(), true, Some(68), None);
+        let rendered = render_tasks_grouped_rich(&refs, true, Some(68), None);
 
         assert_eq!(rendered.matches("\u{1b}]8;;file://").count(), 1);
         assert_eq!(rendered.matches("\u{1b}]8;;\u{1b}\\").count(), 1);

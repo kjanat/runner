@@ -19,48 +19,65 @@ pub const PROVIDER: Provider = Provider {
         Signal::Lockfile("go.sum"),
         Signal::Probe("go"),
     ],
-    writes: &["vendor"],
     caps: Capabilities {
-        task_priority: 7,
-        file_fallback: true,
-        install: Some(InstallCap {
-            argv: t!["mod", "download"],
-            frozen: Frozen::Unsupported,
-            scripts: ScriptSupport::NONE,
-            locked_only_with: &[],
-            lockfiles: None,
-        }),
-        run_task: Some(RunTaskCap {
-            argv: t!["run", Task, Args],
-            sources: &[ProviderId::Go],
-        }),
-        exec: Some(ExecCap {
-            program: None,
-            argv: t!["run", Name, Args],
-            reach: Reach::Network,
-            accepts: NameShape::PATH_LIKE.union(NameShape::VERSIONED),
-        }),
-        run_file: Some(RunFileCap {
-            unsupported: &[],
-            program: None,
-            extensions: &["go"],
-            argv: t!["run", File, Args],
-        }),
-        test: Some(TestCap {
-            program: None,
-            argv: t!["test", "./...", Args],
-            discovery: Discovery::Tool,
-            file_flags: None,
-        }),
-        clean: Some(CleanCap {
-            dir_suffixes: &[],
-            framework_dirs: &[],
-            dirs: &["vendor"],
-        }),
-        quiet: QuietSupport::unsupported("go run has no host-only quiet mode"),
-        ..Capabilities::NONE
+        variants: &[("vcs", VCS)],
+        ..CAPS
     },
     tasks: Some(crate::extract::go_pm::tasks),
     version: None,
-    hooks: Hooks::NONE,
+    hooks: Hooks {
+        before_plan: None,
+        after_observe: Some(crate::extract::go_pm::vcs_variant),
+    },
+};
+
+/// Go inside a checkout it can stamp.
+const VCS: Capabilities = Capabilities {
+    run_task: Some(RunTaskCap {
+        argv: t!["run", "-buildvcs=true", Task, Args],
+        sources: &[ProviderId::Go],
+    }),
+    ..CAPS
+};
+
+const CAPS: Capabilities = Capabilities {
+    writes: &["vendor"],
+    task_priority: 7,
+    file_fallback: true,
+    install: Some(InstallCap {
+        argv: t!["mod", "download"],
+        frozen: Frozen::Unsupported,
+        scripts: ScriptSupport::NONE,
+        locked_only_with: &[],
+        lockfiles: None,
+    }),
+    run_task: Some(RunTaskCap {
+        argv: t!["run", Task, Args],
+        sources: &[ProviderId::Go],
+    }),
+    exec: Some(ExecCap {
+        program: None,
+        argv: t!["run", Name, Args],
+        reach: Reach::Network,
+        accepts: NameShape::PATH_LIKE.union(NameShape::VERSIONED),
+    }),
+    run_file: Some(RunFileCap {
+        unsupported: &[],
+        program: None,
+        extensions: &["go"],
+        argv: t!["run", File, Args],
+    }),
+    test: Some(TestCap {
+        program: None,
+        argv: t!["test", "./...", Args],
+        discovery: Discovery::Tool,
+        file_flags: None,
+    }),
+    clean: Some(CleanCap {
+        dir_suffixes: &[],
+        framework_dirs: &[],
+        dirs: &["vendor"],
+    }),
+    quiet: QuietSupport::unsupported("go run has no host-only quiet mode"),
+    ..Capabilities::NONE
 };

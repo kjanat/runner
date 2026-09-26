@@ -18,8 +18,8 @@ pub const PROVIDER: Provider = Provider {
         Signal::Lockfile("composer.lock"),
         Signal::Probe("composer"),
     ],
-    writes: &["vendor"],
     caps: Capabilities {
+        writes: &["vendor"],
         install: Some(InstallCap {
             argv: t!["install", Scripts],
             frozen: Frozen::Unsupported,

@@ -112,6 +112,18 @@ fn look(
             })
             .into_iter()
             .collect(),
+        Signal::FileContent { name, parse } => file_in(dir, name)?
+            .map(|at| {
+                let text = std::fs::read_to_string(&at).map_err(|error| {
+                    io::Error::new(error.kind(), format!("{}: {error}", at.display()))
+                })?;
+                Ok::<_, io::Error>(parse(&text).map(|declared| (at, declared)))
+            })
+            .transpose()?
+            .flatten()
+            .map(|(at, declared)| evidence(at, Weight::Configured, Some(declared)))
+            .into_iter()
+            .collect(),
         Signal::ManifestField { files, path, parse } => manifest_field(dir, files, path)?
             .and_then(|(at, manifest, value)| {
                 parse(&crate::signal::Field {

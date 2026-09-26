@@ -7,7 +7,7 @@ pub mod just;
 pub mod make;
 pub mod mise;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub mod turbo;
 
 fn command(program: &str) -> std::process::Command {

@@ -223,7 +223,6 @@ mod tests {
             kind: Kind::PACKAGE_MANAGER,
             program: None,
             signals: &[],
-            writes: &[],
             caps: Capabilities {
                 workspaces: Some(WorkspaceCap {
                     declarations: declared,

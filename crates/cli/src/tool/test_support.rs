@@ -55,20 +55,20 @@ pub(crate) fn project_root() -> PathBuf {
     })
 }
 
-/// Declare the provider labelled `label` in a fixture and observe it again.
-pub(crate) fn declare(ctx: &mut crate::types::ProjectContext, label: &str) {
-    write_signal(&ctx.root, label);
+/// Declare `provider` in a fixture and observe it again.
+pub(crate) fn declare(ctx: &mut crate::types::ProjectContext, provider: runner_core::ProviderId) {
+    write_signal(&ctx.root, provider);
     seed_context(ctx);
 }
 
-/// Write the first file signal of the provider labelled `label` into `root`.
-pub(crate) fn write_signal(root: &Path, label: &str) {
+/// Write the first file signal of `provider` into `root`.
+pub(crate) fn write_signal(root: &Path, provider: runner_core::ProviderId) {
     use runner_core::Signal;
     assert!(
         root.starts_with(std::env::temp_dir()),
         "fixture must be temporary"
     );
-    let provider = runner_providers::REGISTRY.by_label(label).unwrap();
+    let provider = runner_providers::REGISTRY.by_id(provider);
     let Some(name) = provider.signals.iter().find_map(|signal| match signal {
         Signal::File(name)
         | Signal::FileCaseless(name)
@@ -106,7 +106,7 @@ pub(crate) fn seed_context_with(
     overrides: &crate::resolver::ResolutionOverrides,
 ) {
     for task in &ctx.tasks {
-        write_signal(&ctx.root, task.source.label());
+        write_signal(&ctx.root, task.source);
     }
     ctx.project = crate::detect::observe(ctx, overrides)
         .map(|mut project| {

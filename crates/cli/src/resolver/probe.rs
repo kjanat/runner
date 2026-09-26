@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use crate::types::PackageManager;
-
 /// [`runner_core::probe_in`], the search every `PATH` probe shares.
 pub(crate) fn probe_in(
     name: &str,
@@ -13,32 +11,12 @@ pub(crate) fn probe_in(
     runner_core::probe_in(name, path, pathext)
 }
 
-/// The package managers that dispatch `package.json` scripts, in the order
-/// the core probes `PATH` for one.
-pub(crate) fn node_probe_order() -> Vec<PackageManager> {
-    let mut providers: Vec<_> = runner_providers::REGISTRY
-        .iter()
-        .filter(|provider| {
-            provider.kind.contains(runner_core::Kind::PACKAGE_MANAGER)
-                && provider
-                    .caps
-                    .run_task
-                    .is_some_and(|cap| cap.sources.contains(&runner_core::ProviderId::PackageJson))
-        })
-        .collect();
-    providers.sort_by_key(|provider| provider.caps.probe_priority);
-    providers
-        .into_iter()
-        .filter_map(|provider| PackageManager::from_label(provider.label))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
     use std::fs;
 
-    use super::{node_probe_order, probe_in};
+    use super::probe_in;
     use crate::tool::test_support::TempDir;
 
     #[test]
@@ -123,20 +101,6 @@ mod tests {
         // `nested/pnpm` is not a bare name; CreateProcess / execve handle
         // those directly, so the probe declines.
         assert!(probe_in("nested/pnpm", &OsString::from(dir.path()), None).is_none());
-    }
-
-    #[test]
-    fn node_probe_order_is_npm_first() {
-        assert_eq!(
-            node_probe_order(),
-            [
-                crate::types::PackageManager::Npm,
-                crate::types::PackageManager::Bun,
-                crate::types::PackageManager::Pnpm,
-                crate::types::PackageManager::Yarn,
-                crate::types::PackageManager::Deno,
-            ]
-        );
     }
 
     fn executable(path: &std::path::Path) {

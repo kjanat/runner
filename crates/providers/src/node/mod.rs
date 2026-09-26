@@ -4,6 +4,7 @@ pub mod bun;
 pub mod manifest;
 pub mod npm;
 pub mod package_json;
+pub mod packages;
 pub mod pnpm;
 pub mod runtime;
 pub mod workspace;

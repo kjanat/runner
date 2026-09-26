@@ -35,8 +35,11 @@ pub const PROVIDER: Provider = Provider {
         Signal::File(".yarnrc"),
         Signal::Probe("yarn"),
     ],
-    writes: super::WRITES,
     caps: Capabilities {
+        writes: super::WRITES,
+        packages: Some(runner_core::PackagesCap {
+            installed: super::packages::plug_n_play,
+        }),
         probe_priority: 3,
         variants: &[("classic", CLASSIC), ("berry", BERRY)],
         variant_of_version: Some(line_of_version),
@@ -94,6 +97,7 @@ const CLASSIC: Capabilities = Capabilities {
     }),
     test: Some(super::TEST),
     bins: Some(super::BINS),
+    writes: super::WRITES,
     workspaces: Some(WorkspaceCap {
         declarations: super::workspace::declarations,
     }),
@@ -133,6 +137,7 @@ const BERRY: Capabilities = Capabilities {
     variants: &[],
     test: Some(super::TEST),
     bins: Some(super::BINS),
+    writes: super::WRITES,
     workspaces: Some(WorkspaceCap {
         declarations: super::workspace::declarations,
     }),

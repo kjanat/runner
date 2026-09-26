@@ -10,10 +10,12 @@ use anyhow::{Result, anyhow, bail};
 
 use super::decision::PmDecision;
 use super::runtime;
+use crate::provider::Named;
 use crate::render::arrow::print_dispatch_arrow;
 use crate::resolver::ResolutionOverrides;
 use crate::tool;
-use crate::types::{JsRuntime, ProjectContext, Task, TaskSource};
+use crate::types::{ProjectContext, Task};
+use runner_core::ProviderId;
 
 fn print_pm_explain(overrides: &ResolutionOverrides, describe: &str) {
     crate::commands::print_explain(overrides, &format!("resolved: {describe}"));
@@ -60,82 +62,7 @@ fn print_scope_explain(ctx: &ProjectContext, overrides: &ResolutionOverrides, en
     );
 }
 
-/// Refuse a make target, or a package script that is a bare `make <name>`
-/// wrapper, given anything but variable assignments, before the arrow,
-/// since make would take the word as an option or a goal.
-fn check_make_args(entry: &Task, args: &[String]) -> Result<()> {
-    let wraps_make = entry.passthrough_to == Some(crate::types::TaskRunner::Make);
-    if entry.source != TaskSource::Makefile && !wraps_make {
-        return Ok(());
-    }
-    let Some(word) = tool::make::first_non_assignment(args) else {
-        return Ok(());
-    };
-    let subject = if wraps_make {
-        format!(
-            "{} script {:?}, which runs `make {}`,",
-            entry.source.label(),
-            entry.name,
-            entry.name
-        )
-    } else {
-        format!("make target {:?}", entry.name)
-    };
-    bail!(
-        "{subject} cannot take {word:?}: GNU make has no recipe-argument passthrough, so it would \
-         parse the word as its own option or as another goal. Pass `NAME=value` assignments the \
-         Makefile reads as `$(NAME)`, or invoke the command itself by path (`run \
-         ./node_modules/.bin/<command> <args>`), which outranks task lookup"
-    )
-}
-
-/// Refuse a mise task whose spec marks a flag required when that flag is
-/// absent. No-op for every other source, none of which declares a spec.
-///
-/// Runs before the dispatch arrow: without it the failure lands after mise
-/// has started the task and whatever it builds has run, and in a parallel
-/// chain the siblings are already going.
-fn check_mise_usage(
-    ctx: &ProjectContext,
-    overrides: &ResolutionOverrides,
-    entry: &Task,
-    args: &[String],
-    sink: crate::commands::WarningSink<'_>,
-) -> Result<()> {
-    if entry.source != TaskSource::MiseToml {
-        return Ok(());
-    }
-    let task = entry.name.as_str();
-    let spec = match tool::mise::usage_spec(entry.dir(&ctx.root), task) {
-        Ok(Some(spec)) => spec,
-        Ok(None) => return Ok(()),
-        Err(error) => {
-            crate::commands::print_warning_slice(
-                &[crate::types::DetectionWarning::Pipeline(
-                    runner_core::Warning::about(
-                        runner_core::ProviderId::Mise,
-                        format!("{error:#}; required flags were not checked"),
-                    ),
-                )],
-                overrides,
-                sink,
-            );
-            return Ok(());
-        }
-    };
-    let missing = spec.missing_required_flags(args);
-    if missing.is_empty() {
-        return Ok(());
-    }
-    bail!(
-        "{task} requires {}\n  usage: {task} {}",
-        missing.join(", "),
-        spec.signature,
-    )
-}
-
-/// Outcome of resolving a task: a spawnable process, or a deno task to
-/// run in-process via the embedded task shell.
+/// Outcome of resolving a task: a runner builtin or a spawnable process.
 #[derive(Debug)]
 pub(super) enum Dispatch {
     /// A runner verb selected by the first cascade rung.
@@ -333,12 +260,6 @@ fn dispatch_by_package(
     args: &[String],
     sink: crate::commands::WarningSink<'_>,
 ) -> Result<Option<Dispatch>> {
-    if let Some(spec) = bin.strip_prefix("npm:") {
-        bail!(
-            "`npm:{spec}` is not a task: name the package with `--package` and the binary as the \
-             task, e.g. `run --package {spec} <bin>`"
-        );
-    }
     let Some(package) = overrides.package.as_deref() else {
         return Ok(None);
     };
@@ -346,7 +267,7 @@ fn dispatch_by_package(
         print_pm_explain(overrides, &dep.describe);
         return Ok(Some(spawn_plan(overrides, bin, args, dep.plan)?));
     }
-    if let Some(shadow) = project_bin(&ctx.cwd, bin) {
+    if let Some(shadow) = project_bin(ctx, bin) {
         bail!(
             "{package} is not installed, and `{bin}` at {} belongs to another package; a fetched \
              {package} lacking `{bin}` would fall through to that one, so install {package} to \
@@ -356,16 +277,22 @@ fn dispatch_by_package(
     }
 
     let mut prepared = super::core::prepare(ctx, overrides, bin)?;
+    let managed = crate::provider::managed_sources();
     let resolved_pm = match overrides.pm.as_ref() {
-        Some(o) if !o.pm.can_dispatch_node_scripts() => {
+        Some(o)
+            if !managed
+                .iter()
+                .any(|source| o.pm.dispatches().contains(source)) =>
+        {
             print_pm_explain(
                 overrides,
                 &format!("{} {}", o.pm.label(), o.origin.describe_pm_source()),
             );
             Some(o.pm)
         }
-        _ => prepared
-            .decision(runner_core::ProviderId::PackageJson)
+        _ => managed
+            .iter()
+            .find_map(|source| prepared.decision(*source))
             .map(|decision| {
                 crate::commands::print_warning_slice(
                     &decision.warnings(&prepared.project, overrides),
@@ -466,7 +393,6 @@ fn dispatch_plan(
         overrides,
         &Chosen {
             token: task_name,
-            args,
             rung,
             entry,
             key: &task_key,
@@ -516,11 +442,12 @@ fn spawn_diagnostic(
     overrides: &ResolutionOverrides,
     plan: &runner_core::Plan,
 ) -> Result<SpawnDiagnostic> {
-    let managed = match entry.map(|e| e.source) {
-        Some(TaskSource::PackageJson) => overrides.runtime.is_none(),
-        Some(TaskSource::PyprojectScripts) => true,
-        _ => false,
-    };
+    let managed = entry.is_some_and(|entry| {
+        entry.source.is_managed()
+            && overrides
+                .js_runtime()
+                .is_none_or(|runtime| !runtime::honors(entry.source, runtime))
+    });
     if !managed {
         return Ok(SpawnDiagnostic::Passthrough);
     }
@@ -532,7 +459,6 @@ fn spawn_diagnostic(
 /// What the cascade chose for a token, and the `[tasks.<key>]` it answers to.
 pub(super) struct Chosen<'a> {
     pub(super) token: &'a str,
-    pub(super) args: &'a [String],
     pub(super) rung: runner_core::Rung,
     pub(super) entry: Option<&'a Task>,
     pub(super) key: &'a str,
@@ -546,12 +472,9 @@ pub(super) fn complete_plan(
     sink: crate::commands::WarningSink<'_>,
 ) -> Result<()> {
     let entry = chosen.entry;
-    prepare_task(ctx, overrides, entry, chosen.args, plan, sink)?;
+    prepare_task(ctx, overrides, entry, plan, sink)?;
     prepare_host(chosen.token, chosen.rung, plan)?;
     crate::commands::configure_plan(plan, overrides, chosen.key);
-    if entry.is_some_and(|entry| entry.source == TaskSource::GoPackage) {
-        preserve_go_environment(plan, &ctx.root)?;
-    }
     runner_core::execute::command(plan)?;
     Ok(())
 }
@@ -569,7 +492,7 @@ fn prepare_host(
             .run_default
             .is_some()
         && let Some(source) =
-            TaskSource::from_label(runner_providers::REGISTRY.by_id(provider).label)
+            crate::provider::task_source(runner_providers::REGISTRY.by_id(provider).label)
     {
         let stack = crate::commands::push_task_frame(&plan.cwd, source, task_name)?;
         plan.env
@@ -582,40 +505,22 @@ fn prepare_task(
     ctx: &ProjectContext,
     overrides: &ResolutionOverrides,
     entry: Option<&Task>,
-    args: &[String],
     plan: &mut runner_core::Plan,
-    mut sink: crate::commands::WarningSink<'_>,
+    sink: crate::commands::WarningSink<'_>,
 ) -> Result<()> {
     if let Some(entry) = entry {
         print_scope_explain(ctx, overrides, entry);
-        check_mise_usage(ctx, overrides, entry, args, sink.as_deref_mut())?;
-        runtime::report_unhonored(overrides, entry, sink.as_deref_mut());
-        if entry.source == TaskSource::PackageJson
-            && let Some(over) = &overrides.runtime
+        runtime::report_unhonored(overrides, entry, sink);
+        if let Some(over) = &overrides.runtime
+            && runtime::honors(entry.source, over.runtime)
         {
             print_pm_explain(overrides, &over.describe());
-            if over.runtime == JsRuntime::Node {
-                runtime::warn_skipped_lifecycle(ctx, overrides, &entry.name, sink);
-            }
         }
 
-        check_make_args(entry, args)?;
         let stack =
             crate::commands::push_task_frame(entry.dir(&ctx.root), entry.source, &entry.name)?;
         plan.env
             .push((crate::commands::TASK_STACK_ENV.into(), stack));
-    }
-    Ok(())
-}
-
-/// Include the Go toolchain's VCS stamping environment in the plan.
-fn preserve_go_environment(plan: &mut runner_core::Plan, root: &std::path::Path) -> Result<()> {
-    let mut command = runner_core::execute::command(plan)?;
-    tool::go_pm::stamp_vcs(&mut command, root);
-    if let Some((key, Some(value))) = command.get_envs().find(|(key, _)| *key == "GOFLAGS") {
-        plan.env.retain(|(name, _)| name != key);
-        plan.env_remove.retain(|name| name != key);
-        plan.env.push((key.to_owned(), value.to_owned()));
     }
     Ok(())
 }
@@ -661,7 +566,7 @@ fn explain_host(
 
 fn host_quiet(
     project: &runner_core::Project,
-    provider: runner_core::ProviderId,
+    provider: ProviderId,
     scope: &runner_core::Scope,
 ) -> runner_core::QuietSupport {
     runner_providers::REGISTRY
@@ -741,6 +646,15 @@ pub(crate) fn refusal_error(
             super::qualify::selection_error(ctx, refusal)
         }
         Refusal::NotFound { name, tried } => {
+            if runner_core::NameShape::of(name) == runner_core::NameShape::REGISTRY
+                && let Some((_, spec)) = name.split_once(':')
+            {
+                return anyhow!(
+                    "`{name}` is not a task and no present tool executes it: name the package \
+                     with `--package` and the binary as the task, e.g. `run --package {spec} \
+                     <bin>`"
+                );
+            }
             let rungs: Vec<&str> = tried.iter().map(|rung| rung.name).collect();
             anyhow!(
                 "task {name:?} not found; tried {}. Run `runner list` to see available tasks.",
@@ -799,13 +713,13 @@ pub(crate) fn refusal_error(
 }
 
 fn runtime_suggestions(
-    alternatives: &[runner_core::ProviderId],
+    alternatives: &[ProviderId],
     registry: &runner_core::Registry,
 ) -> Vec<String> {
     alternatives
         .iter()
         .filter_map(|id| {
-            JsRuntime::from_label(registry.by_id(*id).label)
+            crate::provider::js_runtime(registry.by_id(*id).label)
                 .map(|runtime| format!("--runtime {}", runtime.label()))
         })
         .collect()
@@ -823,11 +737,19 @@ fn runtime_origin(layer: &runner_core::Layer) -> String {
     }
 }
 
-/// `name` in the project's own `node_modules/.bin` dirs alone.
-fn project_bin(dir: &std::path::Path, name: &str) -> Option<std::path::PathBuf> {
-    let bins = crate::commands::node_bin_dirs(dir);
-    let search = std::env::join_paths(bins).ok()?;
-    crate::resolver::probe::probe_in(name, &search, std::env::var_os("PATHEXT").as_deref())
+/// `name` in the executable directories of the providers present where
+/// runner was started, and nowhere else.
+fn project_bin(ctx: &ProjectContext, name: &str) -> Option<std::path::PathBuf> {
+    let project = ctx.project.as_ref().ok()?;
+    let tree = super::core::tree(ctx);
+    let scope = runner_core::plan::scope_at(&tree, &tree.cwd);
+    let dirs: Vec<std::path::PathBuf> = project
+        .present
+        .iter()
+        .filter(|present| present.scope == scope || present.scope == runner_core::Scope::Root)
+        .flat_map(|present| present.bin_dirs.iter().cloned())
+        .collect();
+    runner_core::probe_in_dirs(name, dirs, std::env::var_os("PATHEXT").as_deref())
 }
 
 #[cfg(test)]
@@ -835,10 +757,11 @@ mod tests {
 
     use std::process::Command;
 
-    use super::{Dispatch, SpawnDispatch, check_make_args};
+    use super::{Dispatch, SpawnDispatch};
     use crate::commands::run::decision::{Observed, PmDecision};
     use crate::resolver::{OverrideOrigin, ResolutionOverrides};
-    use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
 
     #[test]
     fn a_locked_python_project_without_scripts_still_names_its_package_manager() {
@@ -852,9 +775,9 @@ mod tests {
         let ctx = crate::detect::detect(dir.path(), &ResolutionOverrides::default());
         let resolved = Observed::observe(&ctx, &ResolutionOverrides::default())
             .unwrap()
-            .decision(runner_core::ProviderId::Pyproject)
+            .decision(ProviderId::Pyproject)
             .expect("uv.lock names the manager");
-        assert_eq!(resolved.pm, PackageManager::Uv);
+        assert_eq!(resolved.pm, ProviderId::Uv);
         let described = resolved.describe();
         assert!(
             described.starts_with("uv via ") && described.ends_with("uv.lock"),
@@ -866,7 +789,7 @@ mod tests {
     fn a_plan_label_stops_at_the_file_it_found() {
         let found = std::path::PathBuf::from("/project/main.ts");
         let plan = runner_core::Plan {
-            provider: Some(runner_core::ProviderId::Deno),
+            provider: Some(ProviderId::Deno),
             found: Some(found.clone()),
             argv: vec!["deno".into(), "run".into(), found.into(), "secret".into()],
             cwd: "/project".into(),
@@ -886,7 +809,7 @@ mod tests {
 
     fn manifest_decision() -> PmDecision {
         PmDecision {
-            pm: PackageManager::Bun,
+            pm: ProviderId::Bun,
             layer: runner_core::Layer::Manifest("package.json".into()),
             at: "package.json".into(),
             field: Some("packageManager"),
@@ -1033,7 +956,7 @@ mod tests {
     fn justfile_task(name: &str) -> Task {
         Task {
             name: name.to_string(),
-            source: TaskSource::Justfile,
+            source: ProviderId::Just,
             run_target: None,
             description: None,
             alias_of: None,
@@ -1092,13 +1015,11 @@ mod tests {
     }
 
     #[test]
-    fn resolve_dispatch_accepts_v3_cargo_alias_fqn() {
-        // Schema v3 labels cargo alias tasks `cargo-alias`, so doctor/why
-        // print `root:cargo-alias#<name>`; that exact string must run.
+    fn resolve_dispatch_accepts_the_printed_cargo_fqn() {
         let mut ctx = context();
         ctx.tasks.push(Task {
             name: "b".to_string(),
-            source: TaskSource::CargoAliases,
+            source: ProviderId::Cargo,
             run_target: None,
             description: None,
             alias_of: Some("build".to_string()),
@@ -1111,12 +1032,12 @@ mod tests {
             resolve_dispatch(
                 &mut ctx,
                 &ResolutionOverrides::default(),
-                "root:cargo-alias#b",
+                "root:cargo#b",
                 &[],
                 None,
                 true,
             )
-            .expect("v3 cargo-alias FQN should dispatch"),
+            .expect("the FQN doctor and why print should dispatch"),
         );
 
         assert_eq!(command.get_program().to_string_lossy(), "cargo");
@@ -1160,7 +1081,7 @@ mod tests {
     #[test]
     fn resolve_dispatch_reversed_qualifier_beats_runner_constraint() {
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
 
@@ -1173,10 +1094,10 @@ mod tests {
     #[test]
     fn deno_tasks_always_dispatch_through_deno_task() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Deno.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Deno);
         ctx.tasks.push(Task {
             name: "greet".to_string(),
-            source: TaskSource::DenoJson,
+            source: ProviderId::Deno,
             run_target: None,
             description: None,
             alias_of: None,
@@ -1204,10 +1125,10 @@ mod tests {
     #[test]
     fn resolve_dispatch_go_package_uses_recorded_task_source() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Go.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Go);
         ctx.tasks.push(Task {
             name: "serve".to_string(),
-            source: TaskSource::GoPackage,
+            source: ProviderId::Go,
             run_target: Some("./cmd/serve".to_string()),
             description: None,
             alias_of: None,
@@ -1239,10 +1160,10 @@ mod tests {
     #[test]
     fn resolve_dispatch_pyproject_script_uses_uv_run() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Uv.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Uv);
         ctx.tasks.push(Task {
             name: "greenpy".to_string(),
-            source: TaskSource::PyprojectScripts,
+            source: ProviderId::Pyproject,
             run_target: None,
             description: Some("greenpy.main:main".to_string()),
             alias_of: None,
@@ -1271,10 +1192,10 @@ mod tests {
     #[test]
     fn resolve_dispatch_pyproject_script_uses_poetry_run_when_detected() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Poetry.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Poetry);
         ctx.tasks.push(Task {
             name: "greenpy".to_string(),
-            source: TaskSource::PyprojectScripts,
+            source: ProviderId::Pyproject,
             run_target: None,
             description: None,
             alias_of: None,
@@ -1302,10 +1223,10 @@ mod tests {
     #[test]
     fn make_task_forwards_assignments_and_refuses_other_words() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         ctx.tasks.push(Task {
             name: "build".to_string(),
-            source: TaskSource::Makefile,
+            source: ProviderId::Make,
             run_target: None,
             description: None,
             alias_of: None,
@@ -1343,29 +1264,39 @@ mod tests {
 
     #[test]
     fn package_script_wrapping_make_rejects_flags_too() {
-        let wrapper = Task {
+        let mut ctx = context();
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Npm);
+        ctx.tasks.push(Task {
             name: "build".to_string(),
-            source: TaskSource::PackageJson,
+            source: ProviderId::PackageJson,
             run_target: None,
             description: None,
             alias_of: None,
-            passthrough_to: Some(TaskRunner::Make),
+            passthrough_to: Some(ProviderId::Make),
             detail: crate::types::TaskDetail::default(),
             member: None,
+        });
+        let dispatch = |ctx: &mut ProjectContext, arg: &str| {
+            resolve_dispatch(
+                ctx,
+                &ResolutionOverrides::default(),
+                "build",
+                &[String::from(arg)],
+                None,
+                true,
+            )
         };
 
-        check_make_args(&wrapper, &[String::from("CC=clang")]).expect("assignments pass");
-        let err = check_make_args(&wrapper, &[String::from("--help")])
+        dispatch(&mut ctx, "CC=clang").expect("assignments pass");
+        let err = dispatch(&mut ctx, "--help")
             .expect_err("a flag appended by the package manager reaches make's parser");
         let text = format!("{err:#}");
         assert!(text.contains("package.json script \"build\""), "{text}");
         assert!(text.contains("cannot take \"--help\""), "{text}");
 
-        let plain = Task {
-            passthrough_to: None,
-            ..wrapper
-        };
-        check_make_args(&plain, &[String::from("--help")]).expect("a real script forwards flags");
+        ctx.tasks[0].passthrough_to = None;
+        dispatch(&mut ctx, "--help").expect("a real script forwards flags");
     }
 
     #[test]
@@ -1465,7 +1396,7 @@ mod tests {
         let mut ctx = context();
         ctx.cwd = dir.path().to_path_buf();
         ctx.root = dir.path().to_path_buf();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Npm.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Npm);
         let overrides = ResolutionOverrides {
             package: Some("typescript".to_string()),
             ..ResolutionOverrides::default()
@@ -1482,12 +1413,12 @@ mod tests {
     #[test]
     fn a_missing_selected_package_honours_the_runtime_override() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Npm.label());
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Bun.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Npm);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Bun);
         let overrides = ResolutionOverrides {
             package: Some("typescript".to_string()),
             runtime: Some(crate::resolver::RuntimeOverride {
-                runtime: JsRuntime::Bun,
+                runtime: ProviderId::Bun,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -1514,12 +1445,12 @@ mod tests {
     #[test]
     fn a_missing_selected_package_takes_a_non_node_pm_override() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Cargo.label());
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Uv.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Cargo);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Uv);
         let overrides = ResolutionOverrides {
             package: Some("ruff".to_string()),
             pm: Some(crate::resolver::PmOverride {
-                pm: PackageManager::Uv,
+                pm: ProviderId::Uv,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -1568,7 +1499,7 @@ mod tests {
         ));
         let task = |name: &str, member: Option<Arc<crate::types::WorkspaceMember>>| Task {
             name: name.to_string(),
-            source: TaskSource::PackageJson,
+            source: ProviderId::PackageJson,
             run_target: None,
             description: None,
             alias_of: None,
@@ -1579,7 +1510,7 @@ mod tests {
         let mut ctx = context();
         ctx.root = dir.path().to_path_buf();
         ctx.cwd = ctx.root.clone();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Pnpm.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Pnpm);
         ctx.tasks = vec![
             task("root-build", None),
             task("build", Some(Arc::clone(&member))),
@@ -1606,13 +1537,13 @@ mod tests {
         let super::SpawnDiagnostic::PackageManager(decision) = &spawn.diagnostic else {
             panic!("a package.json task carries its manager");
         };
-        assert_eq!(decision.pm, PackageManager::Bun);
+        assert_eq!(decision.pm, ProviderId::Bun);
         assert!(
             sink.iter().any(|warning| matches!(
                 warning,
                 crate::types::DetectionWarning::PmMismatch {
-                    declared: PackageManager::Bun,
-                    lockfile: PackageManager::Npm,
+                    declared: ProviderId::Bun,
+                    lockfile: ProviderId::Npm,
                     ..
                 }
             )),
@@ -1650,7 +1581,7 @@ mod tests {
         let mut ctx = context();
         ctx.root = dir.path().to_path_buf();
         ctx.cwd = members[1].dir.clone();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Npm.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Npm);
         ctx.workspace = Some(crate::types::Workspace {
             root: ctx.root.clone(),
             kinds: vec!["package.json workspaces"],
@@ -1669,7 +1600,7 @@ mod tests {
 
     fn package_command(
         ctx: &mut ProjectContext,
-        pm: Option<PackageManager>,
+        pm: Option<ProviderId>,
         package: &str,
         bin: &str,
         args: &[String],
@@ -1689,42 +1620,24 @@ mod tests {
     #[test]
     fn a_missing_selected_package_goes_to_the_manager_with_its_name() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, PackageManager::Bun.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Bun);
         let args = [String::from("-v")];
-        let command = package_command(
-            &mut ctx,
-            Some(PackageManager::Bun),
-            "typescript",
-            "tsc",
-            &args,
-        )
-        .expect("bun has a package-selecting exec");
+        let command = package_command(&mut ctx, Some(ProviderId::Bun), "typescript", "tsc", &args)
+            .expect("bun has a package-selecting exec");
         assert_eq!(
             command_args(&command),
             ["x", "--package", "typescript", "tsc", "-v"]
         );
 
-        let command = package_command(
-            &mut ctx,
-            Some(PackageManager::Npm),
-            "typescript",
-            "tsc",
-            &args,
-        )
-        .expect("npx has --package");
+        let command = package_command(&mut ctx, Some(ProviderId::Npm), "typescript", "tsc", &args)
+            .expect("npx has --package");
         assert_eq!(
             command_args(&command),
             ["--package", "typescript", "--", "tsc", "-v"]
         );
 
-        let command = package_command(
-            &mut ctx,
-            Some(PackageManager::Pnpm),
-            "typescript",
-            "tsc",
-            &args,
-        )
-        .expect("pnpm dlx has --package");
+        let command = package_command(&mut ctx, Some(ProviderId::Pnpm), "typescript", "tsc", &args)
+            .expect("pnpm dlx has --package");
         assert_eq!(
             command_args(&command),
             ["--package=typescript", "dlx", "tsc", "-v"]
@@ -1732,7 +1645,7 @@ mod tests {
 
         let err = package_command(
             &mut ctx,
-            Some(PackageManager::Cargo),
+            Some(ProviderId::Cargo),
             "typescript",
             "tsc",
             &args,
@@ -1744,7 +1657,7 @@ mod tests {
     #[test]
     fn run_make_invokes_make_with_no_target() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         let args = [String::from("-j4")];
 
         let command = expect_command(
@@ -1766,10 +1679,10 @@ mod tests {
     #[test]
     fn run_make_under_runner_make_constraint_still_invokes_make() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
-                runner: TaskRunner::Make,
+                runner: ProviderId::Make,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -1786,11 +1699,11 @@ mod tests {
     #[test]
     fn run_make_under_a_just_runner_choice_is_refused() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Just.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
         let overrides = ResolutionOverrides {
             runner: Some(crate::resolver::RunnerOverride {
-                runner: TaskRunner::Just,
+                runner: ProviderId::Just,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
@@ -1810,7 +1723,7 @@ mod tests {
         let mut ctx = context();
         ctx.cwd = ctx.root.join("apps/web");
         std::fs::create_dir_all(&ctx.cwd).unwrap();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
 
         let command = expect_command(
             resolve_dispatch(
@@ -1830,10 +1743,10 @@ mod tests {
     #[test]
     fn run_make_under_a_prefer_list_without_make_reaches_the_host_rung() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Just.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
 
@@ -1847,10 +1760,10 @@ mod tests {
     #[test]
     fn run_make_under_a_prefer_list_naming_make_invokes_make() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Just.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
         let listed = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just, TaskRunner::Make],
+            prefer_runners: vec![ProviderId::Just, ProviderId::Make],
             ..ResolutionOverrides::default()
         };
         let command = expect_command(
@@ -1865,7 +1778,7 @@ mod tests {
         use std::ffi::OsStr;
 
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Make.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Make);
         let mut overrides = ResolutionOverrides::default();
         overrides.env.tool.insert(
             "make".to_string(),
@@ -1894,7 +1807,7 @@ mod tests {
     #[test]
     fn a_task_named_after_the_runner_wins_over_the_root_invocation() {
         let mut ctx = context();
-        crate::tool::test_support::declare(&mut ctx, TaskRunner::Just.label());
+        crate::tool::test_support::declare(&mut ctx, ProviderId::Just);
         ctx.tasks.push(justfile_task("just"));
 
         let command = expect_command(

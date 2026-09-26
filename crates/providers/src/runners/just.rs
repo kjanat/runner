@@ -17,8 +17,8 @@ pub const PROVIDER: Provider = Provider {
         Signal::FileCaseless(".justfile"),
         Signal::Probe("just"),
     ],
-    writes: &[],
     caps: Capabilities {
+        task_table: runner_core::TaskTable::Name,
         task_priority: 3,
         run_default: Some(t![Quiet, Args]),
         run_task: Some(RunTaskCap {

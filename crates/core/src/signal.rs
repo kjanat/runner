@@ -18,6 +18,13 @@ pub enum Signal {
     FileCaseless(&'static str),
     /// A file in the scope directory or an ancestor.
     FileUpwards(&'static str),
+    /// A file in the scope directory whose text names the provider.
+    FileContent {
+        /// The file name.
+        name: &'static str,
+        /// Reads the text into a declaration, `None` when it does not name the provider.
+        parse: fn(&str) -> Option<Declared>,
+    },
     /// A file that also pins the provider.
     Lockfile(&'static str),
     /// A manifest field that names or constrains the provider.
@@ -47,7 +54,8 @@ impl Signal {
             | Self::FileUpwards(name)
             | Self::Lockfile(name)
             | Self::EnvVar(name)
-            | Self::Probe(name) => Some(name),
+            | Self::Probe(name)
+            | Self::FileContent { name, .. } => Some(name),
             Self::ManifestField { files, .. } => files.first().copied(),
             Self::Ask(_) => None,
         }
@@ -60,7 +68,8 @@ impl Signal {
             Self::File(name)
             | Self::FileCaseless(name)
             | Self::FileUpwards(name)
-            | Self::Lockfile(name) => vec![name],
+            | Self::Lockfile(name)
+            | Self::FileContent { name, .. } => vec![name],
             Self::ManifestField { files, .. } => files.to_vec(),
             Self::EnvVar(_) | Self::Probe(_) | Self::Ask(_) => Vec::new(),
         }

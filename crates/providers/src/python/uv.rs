@@ -15,8 +15,8 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::PACKAGE_MANAGER,
     program: Some("uv"),
     signals: &[Signal::Lockfile("uv.lock"), Signal::Probe("uv")],
-    writes: &[".venv"],
     caps: Capabilities {
+        writes: &[".venv"],
         package_exec: Some(ExecCap {
             program: Some("uvx"),
             argv: t!["--from", Package, Name, Args],

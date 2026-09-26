@@ -22,9 +22,9 @@
   "selected": {
     "task": {
       "name": "t",
-      "fqn": "root:cargo-alias#t",
+      "fqn": "root:cargo#t",
       "provider": "cargo",
-      "kind": "cargo-alias",
+      "kind": "cargo",
       "source": "/path/to/project/.cargo/config.toml",
       "source_pointer": "alias.t",
       "description": null,
@@ -52,9 +52,9 @@
     {
       "task": {
         "name": "t",
-        "fqn": "root:cargo-alias#t",
+        "fqn": "root:cargo#t",
         "provider": "cargo",
-        "kind": "cargo-alias",
+        "kind": "cargo",
         "source": "/path/to/project/.cargo/config.toml",
         "source_pointer": "alias.t",
         "description": null,

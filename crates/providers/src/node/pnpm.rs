@@ -32,8 +32,8 @@ pub const PROVIDER: Provider = Provider {
         MANIFEST[1],
         Signal::Probe("pnpm"),
     ],
-    writes: super::WRITES,
     caps: Capabilities {
+        writes: super::WRITES,
         probe_priority: 2,
         package_exec: Some(ExecCap {
             program: None,

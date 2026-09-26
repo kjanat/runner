@@ -46,8 +46,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   fallback does, and is refused when another installed package already
   provides the binary. A binary the package does not declare is an error
   naming the ones it has, the multi-binary ambiguity message suggests the
-  `--package` form, and an `npm:` prefix on a task token is refused with the
-  equivalent (#126).
+  `--package` form, and a registry specifier such as `npm:typescript` that no
+  present tool executes is refused with the equivalent (#126).
 
 - `run make`, `run just`, `run task` and `run bacon` invoke the runner's own
   entry point when the project uses it and no task carries that name, so
@@ -214,12 +214,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   it and the runtimes that can run it (`--runtime bun`, `--runtime deno`).
   File extensions match case-insensitively.
 
-- `--fallback npm` and `RUNNER_INSTALL_PMS` are no longer read and are
-  reported as such. A task source with no package manager evidence uses the
-  first one on `PATH`, as with `--fallback probe`; `runner install` uses
-  every detected package manager, and `[tools.<name>].install = false`
-  leaves one out. `[task_runner]` is an unknown section; `[tasks].prefer`
-  is the runner preference.
+- `--fallback` takes `probe` or `error`; `npm` is refused as an unknown
+  policy. `RUNNER_INSTALL_PMS` is not read: `runner install` uses every
+  detected package manager, and `[tools.<name>].install = false` leaves one
+  out. `[task_runner]` is an unknown section; `[tasks].prefer` is the runner
+  preference.
 
 - `schemas/doctor.example.json` is generated from a typed example, and
   `doctor --json` names the lockfile policy (`update` or `frozen`) and the
@@ -260,6 +259,41 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - A `packageManager` value that names no package manager is reported by the
   `package.json` it is in, members included.
+
+- `list --json`, `info --json` and the human `doctor` report the signals and
+  the package-manager decision for every task source package managers
+  dispatch, keyed by the source's label: `signals["package.json"]`,
+  `decisions["pyproject.toml"]`. A source appears when a package manager
+  that dispatches it is detected or the project defines its tasks. Each
+  decision is `{ "pm", "via" }` or `{ "error" }`. PATH-probe hits that are
+  version-manager shims are listed under `shims`, each naming its
+  `manager`. `detected.runtimes` lists each runtime the root declares with
+  its expected version, where it is declared and the installed version,
+  and replaces `node_version` and `current_node`. `doctor --json` carries
+  the same signals for each ecosystem whose source package managers
+  dispatch, and a runtime tool for that ecosystem's interpreter.
+
+- A runtime's expected version is read from `.nvmrc`, `.node-version`, the
+  `nodejs` line of `.tool-versions` and `engines.node`. `info` prints every
+  runtime the root declares, and `runner install` warns for each whose
+  installed version falls outside the declared one. An empty `.nvmrc`
+  declares nothing.
+
+- `[pm]` takes one key per ecosystem whose task source package managers
+  dispatch, `node` and `python`, each accepting a manager that dispatches
+  that source. The schema lists both from the registry, and `[runtime].js`
+  lists every JavaScript runtime.
+
+- Task FQNs use the source's label, so a Cargo alias is `root:cargo#t`.
+  `list` groups sources in task-priority order. `monorepo` is true when the
+  root declares a workspace. `doctor --json` drops `overrides.install_pms`
+  and `tasks[].self_executable`.
+
+- A task that forwards to another runner's same-named task gets that
+  runner's refusals, so any script that is a bare `make <name>` wrapper
+  forwards only variable assignments. Under `--runtime node`, `node --run`
+  names the `pre` and `post` scripts it skips as a `node` warning, and
+  `runner why` reports the runtime's warnings as the runtime note.
 
 ### Fixed
 
@@ -322,14 +356,13 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   elsewhere. A shell named by a Unix path (`#!/bin/sh`) is found on `PATH`
   by its name, since `\bin\sh` exists on no Windows drive (#121).
 
-- `go run` for a `cmd/<name>` task or the Go exec fallback sets
-  `GOFLAGS=-buildvcs=true` when the project sits in a checkout Go can read
-  (Git, Mercurial, Subversion, Bazaar, Fossil), that tool is on `PATH`, and
-  the toolchain is Go 1.18 or newer, so the binary's `debug.ReadBuildInfo`
-  carries the revision instead of `(devel)`. The flag is merged into the
-  `GOFLAGS` the `[env]` layers produce, and a `GOFLAGS` that already decides
-  `-buildvcs` or `--buildvcs` is left alone. A single Go file is never
-  stamped, since Go stamps nothing into `command-line-arguments` (#130).
+- `go run` for a Go task passes `-buildvcs=true` when the project sits in a
+  checkout Go can read (Git, Mercurial, Subversion, Bazaar, Fossil), that
+  tool is on `PATH`, and the toolchain is Go 1.18 or newer, so the binary's
+  `debug.ReadBuildInfo` carries the revision instead of `(devel)`. A
+  `GOFLAGS` in runner's environment that already decides `-buildvcs` or
+  `--buildvcs` is left alone. A single Go file is never stamped, since Go
+  stamps nothing into `command-line-arguments` (#130).
 
 - `runner install` reports which package manager and program it was waiting
   on when `wait()` fails, and stops and reaps the child first, matching the
@@ -345,10 +378,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   own `install` task when one exists, printing the same dispatch line as
   `run install` (#129).
 
-- `runner doctor` prints the Node signals and the `node scripts` decision
-  only when the project has a Node ecosystem (#122). The JSON report is
-  unchanged. The PATH probe lists one manager per line, with a Volta shim's
-  target on a continuation line (#110).
+- `runner doctor` prints signals and a decision only for task sources the
+  project uses (#122). The PATH probe lists one manager per line, with a
+  shim's target on a continuation line (#110).
 
 - `run <name>` with no matching task looks for `<name>` in the project's
   own bin dirs and on `PATH` before any rung that can download, so an

@@ -112,7 +112,7 @@ mod tests {
     use super::collect_targets;
     use crate::tool::test_support::{TempDir, declare, write_signal};
     use crate::types::ProjectContext;
-    use crate::types::{PackageManager, TaskRunner};
+    use runner_core::ProviderId;
 
     fn context(root: &std::path::Path) -> ProjectContext {
         ProjectContext {
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn collect_targets_skips_framework_dirs_by_default() {
         let dir = TempDir::new("clean-node-default");
-        write_signal(dir.path(), PackageManager::Npm.label());
+        write_signal(dir.path(), ProviderId::Npm);
         fs::create_dir(dir.path().join("node_modules")).expect("node_modules should be created");
         fs::create_dir(dir.path().join(".next")).expect(".next should be created");
 
@@ -140,7 +140,7 @@ mod tests {
     #[test]
     fn collect_targets_includes_framework_dirs_on_opt_in() {
         let dir = TempDir::new("clean-node-framework");
-        write_signal(dir.path(), PackageManager::Npm.label());
+        write_signal(dir.path(), ProviderId::Npm);
         fs::create_dir(dir.path().join("node_modules")).expect("node_modules should be created");
         fs::create_dir(dir.path().join(".next")).expect(".next should be created");
 
@@ -155,7 +155,7 @@ mod tests {
         fs::create_dir(dir.path().join(".turbo")).expect(".turbo should be created");
 
         let mut ctx = context(dir.path());
-        declare(&mut ctx, TaskRunner::Turbo.label());
+        declare(&mut ctx, ProviderId::Turbo);
 
         let targets = collect_targets(&mut ctx, false);
 
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn collect_targets_skips_files_named_like_artifact_dirs() {
         let dir = TempDir::new("clean-file-target");
-        write_signal(dir.path(), PackageManager::Npm.label());
+        write_signal(dir.path(), ProviderId::Npm);
         fs::write(dir.path().join("node_modules"), "nope")
             .expect("node_modules file should be written");
 

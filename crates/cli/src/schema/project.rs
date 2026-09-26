@@ -9,10 +9,12 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::labels::FlatSource;
+use super::labels::SourceLabel;
 use crate::commands::run::decision::Observed;
+use crate::provider::Named;
 use crate::resolver::{OverrideOrigin, ResolutionOverrides};
-use crate::types::{DetectionWarning, PackageManager, ProjectContext, TaskSource, Workspace};
+use crate::types::{DetectionWarning, ProjectContext, Workspace};
+use runner_core::ProviderId;
 
 /// The canonical machine-readable view of a project, used by every `--json` surface. Field order is
 /// preserved by `serde_json` so consumers can hand-write `jq` queries without sort surprises.
@@ -36,10 +38,10 @@ pub(crate) struct Project<'a> {
     pub detected: Detected<'a>,
     /// Effective override stack, CLI, env, and config bundled.
     pub overrides: OverridesView,
-    /// Per-ecosystem detection signals: lockfile pick, manifest declaration, PATH probe results.
-    pub signals: Signals,
-    /// The package-manager decision for `package.json` scripts, or why there is none.
-    pub decisions: Decisions,
+    /// Detection signals per task source that package managers dispatch, keyed by source label.
+    pub signals: BTreeMap<&'static str, SourceSignals>,
+    /// The package manager that dispatches each such task source, or why there is none.
+    pub decisions: BTreeMap<&'static str, Decision>,
     /// Full task list. Subcommands that don't care omit this via projection.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskInfo<'a>>,
@@ -65,18 +67,8 @@ impl<'a> Project<'a> {
         resolve_shims: bool,
     ) -> Self {
         let observed = Observed::observe(ctx, overrides);
-        let manifest_pm = observed.as_ref().ok().and_then(|observed| {
-            observed
-                .manifest_declaration(runner_core::ProviderId::PackageJson)
-                .map(|d| ManifestPm {
-                    pm: d.pm.label(),
-                    source: d.field,
-                    version: d.version,
-                    on_fail: d.on_fail.label(),
-                })
-        });
-
-        let (decisions, resolver_warnings) = decisions_for(&observed, overrides);
+        let sources = dispatched_sources(ctx, observed.as_ref().ok());
+        let (decisions, resolver_warnings) = decisions_for(&observed, &sources, overrides);
 
         let warnings = ctx
             .warnings
@@ -90,18 +82,16 @@ impl<'a> Project<'a> {
             .iter()
             .map(|t| TaskInfo {
                 name: &t.name,
-                source: FlatSource(t.source),
+                source: SourceLabel(t.source),
                 member: t.member.as_ref().map(|member| member.name.as_str()),
                 description: t.description.as_deref(),
                 alias_of: t.alias_of.as_deref(),
-                passthrough_to: t.passthrough_to.map(crate::types::TaskRunner::label),
+                passthrough_to: t.passthrough_to.map(Named::label),
                 depends: t.detail.depends.iter().map(String::as_str).collect(),
                 dir: t.detail.dir.as_ref().map(|dir| dir.display().to_string()),
                 usage: t.detail.usage.as_deref(),
             })
             .collect();
-
-        let probes = probe_signals(&ctx.root, resolve_shims);
 
         Self {
             schema: String::new(),
@@ -114,14 +104,15 @@ impl<'a> Project<'a> {
                 .collect(),
             detected: Detected::from_ctx(ctx),
             overrides: OverridesView::from_resolution_overrides(overrides),
-            signals: Signals {
-                node: NodeSignals {
-                    lockfile_pm: ctx.primary_node_pm().map(PackageManager::label),
-                    manifest_pm,
-                    path_probe: probes.path_probe,
-                    volta_shims: probes.volta_shims,
-                },
-            },
+            signals: sources
+                .iter()
+                .map(|&source| {
+                    (
+                        source.label(),
+                        source_signals(ctx, observed.as_ref().ok(), source, resolve_shims),
+                    )
+                })
+                .collect(),
             decisions,
             tasks,
             warnings,
@@ -137,11 +128,11 @@ impl<'a> Project<'a> {
 
     /// Project the full report to a `list`-shaped view: just the tasks (filtered by `source` when set)
     /// plus the schema version and root. Drops resolver state because `list` is purely a directory listing for tasks.
-    pub(crate) fn into_list_view(self, source: Option<TaskSource>) -> TaskListView<'a> {
+    pub(crate) fn into_list_view(self, source: Option<ProviderId>) -> TaskListView<'a> {
         let tasks = self
             .tasks
             .into_iter()
-            .filter(|t| source.is_none_or(|expected| FlatSource(expected) == t.source))
+            .filter(|t| source.is_none_or(|expected| SourceLabel(expected) == t.source))
             .collect();
         TaskListView {
             schema: String::new(),
@@ -184,11 +175,9 @@ pub(crate) struct Detected<'a> {
     pub package_managers: Vec<&'static str>,
     /// Detected task runners.
     pub task_runners: Vec<&'static str>,
-    /// `.nvmrc` / `.node-version` / `engines.node` declaration.
-    pub node_version: Option<NodeVersionInfo>,
-    /// `node --version` output, when the binary is on PATH.
-    pub current_node: Option<String>,
-    /// Whether the project looks like a monorepo (workspace globs, turbo, nx).
+    /// Runtimes the root declares, with their expected and installed versions.
+    pub runtimes: Vec<RuntimeInfo>,
+    /// Whether the project declares a workspace.
     pub monorepo: bool,
     /// Workspace declarations at the root and their members. Additive field
     /// (no schema bump): absent when the root declares no workspace.
@@ -201,11 +190,18 @@ impl<'a> Detected<'a> {
         Self {
             package_managers: ctx.package_managers().iter().map(|pm| pm.label()).collect(),
             task_runners: ctx.task_runners().iter().map(|tr| tr.label()).collect(),
-            node_version: ctx.node_version().map(|nv| NodeVersionInfo {
-                expected: nv.expected,
-                source: nv.source,
-            }),
-            current_node: ctx.current_node(),
+            runtimes: ctx
+                .runtime_versions()
+                .into_iter()
+                .map(|runtime| RuntimeInfo {
+                    name: runtime.runtime.label(),
+                    expected: runtime.expected.map(|expected| ExpectedVersionInfo {
+                        version: expected.version,
+                        source: expected.source,
+                    }),
+                    current: runtime.current,
+                })
+                .collect(),
             monorepo: ctx.is_monorepo(),
             workspace: ctx.workspace.as_ref().map(WorkspaceInfo::from_workspace),
         }
@@ -262,13 +258,24 @@ pub(crate) struct WorkspaceMemberInfo<'a> {
     pub dir: String,
 }
 
-/// Node version declaration plus the file it came from.
+/// A runtime the root declares.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct NodeVersionInfo {
+pub(crate) struct RuntimeInfo {
+    /// Runtime label.
+    pub name: &'static str,
+    /// The version the project declares.
+    pub expected: Option<ExpectedVersionInfo>,
+    /// The installed version.
+    pub current: Option<String>,
+}
+
+/// A declared runtime version plus the file or field that declares it.
+#[derive(schemars::JsonSchema, Debug, Serialize)]
+pub(crate) struct ExpectedVersionInfo {
     /// Version string as written (e.g. `"20.11.0"`, `">=18"`).
-    pub expected: String,
-    /// Source file that declared the version (e.g. `".nvmrc"`).
-    pub source: &'static str,
+    pub version: String,
+    /// Where it is declared (e.g. `".nvmrc"`, `"package.json engines.node"`).
+    pub source: String,
 }
 
 /// Materialised override stack, the inputs that fed into resolver
@@ -342,34 +349,28 @@ pub(crate) struct RunnerOverrideInfo {
     pub origin: String,
 }
 
-/// Per-ecosystem signals, what the resolver had to work with.
+/// What the resolver had to work with for one dispatched task source.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct Signals {
-    /// Node-ecosystem signals. The schema is intentionally node-flat today; other ecosystems get
-    /// peer fields as their resolver paths land.
-    pub node: NodeSignals,
-}
-
-/// Node-ecosystem detection signals: lockfile, manifest, PATH probe.
-#[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct NodeSignals {
-    /// PM inferred from the highest-priority lockfile, if any.
+pub(crate) struct SourceSignals {
+    /// Package manager a lockfile pins, if any.
     pub lockfile_pm: Option<&'static str>,
-    /// Manifest declaration (legacy `packageManager` or `devEngines`).
+    /// Manifest declaration of the package manager.
     pub manifest_pm: Option<ManifestPm>,
-    /// `bun`/`pnpm`/`yarn`/`npm` -> absolute path on `$PATH` (or null).
+    /// Each package manager that dispatches the source -> absolute path on `$PATH` (or null).
     pub path_probe: BTreeMap<&'static str, Option<String>>,
-    /// PATH-probe hits identified as Volta shims, keyed like [`Self::path_probe`]. Additive field
-    /// (no schema bump): absent on hosts without Volta and on surfaces that skip shim resolution.
+    /// PATH-probe hits that are version-manager shims, keyed like [`Self::path_probe`]. Absent
+    /// without shims and on surfaces that skip shim resolution.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
+    pub shims: BTreeMap<&'static str, ShimInfo>,
 }
 
-/// What `volta which` said about one shimmed tool.
+/// What a version manager said about one shimmed tool.
 #[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct VoltaShimInfo {
-    /// Real provisioned binary behind the shim; `null` when Volta has no version of the tool ("not provisioned").
-    /// Shims Volta could not classify at all are omitted from the map instead of guessed.
+pub(crate) struct ShimInfo {
+    /// The version manager that owns the shim.
+    pub manager: &'static str,
+    /// Real provisioned binary behind the shim; `null` when the manager has no version of the
+    /// tool. Shims the manager could not classify are omitted from the map.
     pub resolved: Option<String>,
 }
 
@@ -378,7 +379,7 @@ pub(crate) struct VoltaShimInfo {
 pub(crate) struct ManifestPm {
     /// Declared PM label.
     pub pm: &'static str,
-    /// Either `"packageManager"` or `"devEngines.packageManager"`.
+    /// The manifest field, e.g. `"packageManager"` or `"devEngines.packageManager"`.
     pub source: &'static str,
     /// Version constraint as written, if present.
     pub version: Option<String>,
@@ -386,19 +387,12 @@ pub(crate) struct ManifestPm {
     pub on_fail: &'static str,
 }
 
-/// The decision surface. Consumers branch on which variant is present before reading the inner shape.
-#[derive(schemars::JsonSchema, Debug, Serialize)]
-pub(crate) struct Decisions {
-    /// Node script-dispatch PM decision, or an error message when the resolver bailed.
-    pub node_pm: NodePmDecision,
-}
-
-/// Either a resolved Node PM or the diagnostic string for the failure that prevented one.
+/// Either a resolved package manager or the diagnostic string for the failure that prevented one.
 ///
 /// Untagged so consumers can probe via "is the `pm` field present?".
 #[derive(schemars::JsonSchema, Debug, Serialize)]
 #[serde(untagged)]
-pub(crate) enum NodePmDecision {
+pub(crate) enum Decision {
     /// Successful resolution.
     Resolved {
         /// The chosen PM label.
@@ -406,7 +400,7 @@ pub(crate) enum NodePmDecision {
         /// Human-readable `via` line, the same string `--explain` prints.
         via: String,
     },
-    /// No package manager dispatches `package.json` scripts here, or observation failed.
+    /// No package manager dispatches the source here, or observation failed.
     Error {
         /// One-line description.
         error: String,
@@ -419,7 +413,7 @@ pub(crate) struct TaskInfo<'a> {
     /// Task name as it appears in the config.
     pub name: &'a str,
     /// Label of the task's source.
-    pub source: FlatSource,
+    pub source: SourceLabel,
     /// Workspace member the task belongs to; absent for root tasks.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub member: Option<&'a str>,
@@ -462,39 +456,76 @@ impl WarningInfo {
     }
 }
 
+/// The task sources package managers dispatch that the project uses: a
+/// package manager dispatches them here, or the project defines their tasks.
+pub(crate) fn dispatched_sources(
+    ctx: &ProjectContext,
+    observed: Option<&Observed>,
+) -> Vec<ProviderId> {
+    let pms = ctx.package_managers();
+    crate::provider::managed_sources()
+        .into_iter()
+        .filter(|&source| {
+            observed.is_some_and(|observed| observed.decision(source).is_some())
+                || pms.iter().any(|pm| pm.dispatches().contains(&source))
+                || ctx.tasks.iter().any(|task| task.source == source)
+        })
+        .collect()
+}
+
+/// The lockfile, manifest and `PATH` signals for `source`.
+pub(crate) fn source_signals(
+    ctx: &ProjectContext,
+    observed: Option<&Observed>,
+    source: ProviderId,
+    resolve_shims: bool,
+) -> SourceSignals {
+    let probes = probe_signals(&ctx.root, source, resolve_shims);
+    SourceSignals {
+        lockfile_pm: observed
+            .and_then(|observed| observed.locked(source))
+            .map(Named::label),
+        manifest_pm: observed
+            .and_then(|observed| observed.manifest_declaration(source))
+            .map(|d| ManifestPm {
+                pm: d.pm.label(),
+                source: d.field,
+                version: d.version,
+                on_fail: d.on_fail.label(),
+            }),
+        path_probe: probes.path_probe,
+        shims: probes.shims,
+    }
+}
+
 fn decisions_for(
     observed: &std::io::Result<Observed>,
+    sources: &[ProviderId],
     overrides: &ResolutionOverrides,
-) -> (Decisions, Vec<DetectionWarning>) {
-    let decision = match observed {
-        Ok(observed) => observed
-            .decision(runner_core::ProviderId::PackageJson)
-            .map(|decision| (decision.warnings(&observed.project, overrides), decision))
-            .ok_or_else(|| {
-                "no node package manager detected. Checked: lockfiles, manifest (packageManager + \
-                 devEngines), PATH (host). Pin one with `--pm <name>`, set `RUNNER_PM=<name>`, add \
-                 it to runner.toml, or install a supported PM."
-                    .to_owned()
-            }),
-        Err(error) => Err(error.to_string()),
-    };
-    match decision {
-        Ok((warnings, decision)) => (
-            Decisions {
-                node_pm: NodePmDecision::Resolved {
-                    pm: decision.pm.label(),
-                    via: decision.describe(),
+) -> (BTreeMap<&'static str, Decision>, Vec<DetectionWarning>) {
+    let mut decisions = BTreeMap::new();
+    let mut warnings = Vec::new();
+    for &source in sources {
+        let decision = match observed {
+            Ok(observed) => match observed.decision(source) {
+                Some(decision) => {
+                    warnings.extend(decision.warnings(&observed.project, overrides));
+                    Decision::Resolved {
+                        pm: decision.pm.label(),
+                        via: decision.describe(),
+                    }
+                }
+                None => Decision::Error {
+                    error: crate::provider::no_dispatcher(source),
                 },
             },
-            warnings,
-        ),
-        Err(error) => (
-            Decisions {
-                node_pm: NodePmDecision::Error { error },
+            Err(error) => Decision::Error {
+                error: error.to_string(),
             },
-            Vec::new(),
-        ),
+        };
+        decisions.insert(source.label(), decision);
     }
+    (decisions, warnings)
 }
 
 fn origin_label(origin: &OverrideOrigin) -> String {
@@ -505,91 +536,76 @@ fn origin_label(origin: &OverrideOrigin) -> String {
     }
 }
 
-/// Probe results for the signals section: every PATH hit, plus Volta
-/// shim classification when requested. Shared with the structured doctor
-/// builder ([`super::doctor`]), hence `pub(super)`.
+/// Every `PATH` hit for the package managers that dispatch a source, plus
+/// shim classification when requested.
 pub(super) struct ProbeSignals {
     pub(super) path_probe: BTreeMap<&'static str, Option<String>>,
-    pub(super) volta_shims: BTreeMap<&'static str, VoltaShimInfo>,
+    pub(super) shims: BTreeMap<&'static str, ShimInfo>,
 }
 
-/// Probe each Node PM in [`crate::resolver::node_probe_order`] and report
-/// (binary, path) pairs. Used by the doctor signals section; intentionally
-/// calls the real probe so the output reflects what the resolver would see.
-///
-/// Probes run in parallel via [`std::thread::scope`]: each `probe_path_for_doctor`
-/// call walks the entire `PATH` searching for one binary, which is O(N
-/// entries) of independent `stat` syscalls. Doctor isn't on the hot
-/// path, but four-way fan-out is essentially free and keeps the
-/// rendering snappy on `PATH`s that contain network-mounted directories.
-pub(super) fn probe_signals(root: &std::path::Path, resolve_shims: bool) -> ProbeSignals {
+/// Probe each package manager that dispatches `source` and report
+/// `(label, path)` pairs, one thread per probe.
+pub(super) fn probe_signals(
+    root: &std::path::Path,
+    source: ProviderId,
+    resolve_shims: bool,
+) -> ProbeSignals {
     use std::env;
     use std::thread;
-
-    use crate::tool::volta::{ShimResolution, VoltaInstall};
 
     let path = env::var_os("PATH").unwrap_or_default();
     let pathext = env::var_os("PATHEXT");
     let pathext_ref = pathext.as_deref();
-    // Located once, shared by every probe thread. `None` either means
-    // "no Volta on this host" or "shim resolution not requested",
-    // both collapse to "classify nothing".
-    let volta = if resolve_shims {
-        VoltaInstall::locate()
-    } else {
-        None
-    };
+    let managers: Vec<(&'static str, runner_core::ShimsCap, Vec<std::path::PathBuf>)> =
+        if resolve_shims {
+            runner_providers::REGISTRY
+                .iter()
+                .filter_map(|provider| {
+                    let shims = provider.caps.shims?;
+                    Some((provider.label, shims, (shims.dirs)()))
+                })
+                .filter(|(_, _, dirs)| !dirs.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
 
     thread::scope(|s| {
-        // Spawn all probes first (push, don't lazy-iterate) so they
-        // actually run in parallel; chaining `.map(spawn).map(join)`
-        // without the eager push would serialize: `Iterator::map` is
-        // lazy, so the next `spawn` wouldn't fire until the previous
-        // join returned.
-        let order = crate::resolver::node_probe_order();
+        let order = crate::provider::dispatchers(source);
         let mut handles = Vec::with_capacity(order.len());
         for pm in order {
             let path = &path;
-            let volta = volta.as_ref();
+            let managers = &managers;
             handles.push(s.spawn(move || {
-                let resolved =
-                    crate::resolver::probe_path_for_doctor(pm.label(), path, pathext_ref);
-                // The `volta which` spawn rides the same per-PM thread
-                // as the probe, so shim resolution adds one process
-                // wait of wall time, not four.
-                let shim = resolved
-                    .as_deref()
-                    .filter(|hit| volta.is_some_and(|v| v.is_shim(hit)))
-                    .map(|_| crate::tool::volta::resolve_shim(pm.label(), root));
+                let program = pm.provider().program.unwrap_or_else(|| pm.label());
+                let resolved = crate::resolver::probe_path_for_doctor(program, path, pathext_ref);
+                let shim = resolved.as_deref().and_then(|hit| {
+                    let parent = hit.parent()?;
+                    let parent = parent.canonicalize().unwrap_or_else(|_| parent.to_owned());
+                    let (manager, cap, _) = managers
+                        .iter()
+                        .find(|(_, _, dirs)| dirs.contains(&parent))?;
+                    Some((*manager, (cap.resolve)(program, root)))
+                });
                 (pm.label(), resolved.map(|p| p.display().to_string()), shim)
             }));
         }
 
         let mut path_probe = BTreeMap::new();
-        let mut volta_shims = BTreeMap::new();
+        let mut shims = BTreeMap::new();
         for handle in handles {
             let (label, resolved, shim) = handle.join().expect("path probe thread panicked");
             path_probe.insert(label, resolved);
-            match shim {
-                Some(ShimResolution::Resolved(real)) => {
-                    volta_shims.insert(
-                        label,
-                        VoltaShimInfo {
-                            resolved: Some(real.display().to_string()),
-                        },
-                    );
+            let (manager, resolved) = match shim {
+                Some((manager, runner_core::Shim::Resolved(real))) => {
+                    (manager, Some(real.display().to_string()))
                 }
-                Some(ShimResolution::NotProvisioned) => {
-                    volta_shims.insert(label, VoltaShimInfo { resolved: None });
-                }
-                // Unknown: volta failed to answer, claim nothing.
-                Some(ShimResolution::Unknown) | None => {}
-            }
+                Some((manager, runner_core::Shim::NotProvisioned)) => (manager, None),
+                Some((_, runner_core::Shim::Unknown)) | None => continue,
+            };
+            shims.insert(label, ShimInfo { manager, resolved });
         }
-        ProbeSignals {
-            path_probe,
-            volta_shims,
-        }
+        ProbeSignals { path_probe, shims }
     })
 }
 
@@ -599,11 +615,12 @@ mod tests {
 
     use super::Project;
     use crate::resolver::ResolutionOverrides;
-    use crate::types::{PackageManager, ProjectContext, Task, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
 
     fn pnpm_context() -> ProjectContext {
         let root = crate::tool::test_support::project_root();
-        crate::tool::test_support::write_signal(&root, PackageManager::Pnpm.label());
+        crate::tool::test_support::write_signal(&root, ProviderId::Pnpm);
         let mut ctx = ProjectContext {
             cwd: root.clone(),
             root,
@@ -637,7 +654,7 @@ mod tests {
         let mut ctx = pnpm_context();
         ctx.tasks.push(Task {
             name: "build".to_string(),
-            source: TaskSource::PackageJson,
+            source: ProviderId::PackageJson,
             run_target: None,
             description: None,
             alias_of: None,
@@ -657,7 +674,7 @@ mod tests {
         let mut ctx = pnpm_context();
         ctx.tasks.push(Task {
             name: "build".to_string(),
-            source: TaskSource::PackageJson,
+            source: ProviderId::PackageJson,
             run_target: None,
             description: None,
             alias_of: None,
@@ -667,7 +684,7 @@ mod tests {
         });
         ctx.tasks.push(Task {
             name: "fmt".to_string(),
-            source: TaskSource::Justfile,
+            source: ProviderId::Just,
             run_target: None,
             description: None,
             alias_of: None,
@@ -676,7 +693,7 @@ mod tests {
             member: None,
         });
         let project = Project::build(&ctx, &ResolutionOverrides::default());
-        let view = project.into_list_view(Some(TaskSource::Justfile));
+        let view = project.into_list_view(Some(ProviderId::Just));
 
         assert_eq!(view.tasks.len(), 1);
         assert_eq!(view.tasks[0].name, "fmt");
@@ -689,7 +706,7 @@ mod tests {
             root: PathBuf::from("/tmp/test"),
             tasks: vec![Task {
                 name: "fmt".to_string(),
-                source: TaskSource::Justfile,
+                source: ProviderId::Just,
                 run_target: None,
                 description: None,
                 alias_of: None,

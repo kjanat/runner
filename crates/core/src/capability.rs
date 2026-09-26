@@ -10,6 +10,17 @@ use crate::task::Task;
 use crate::template::Template;
 use crate::warning::Warning;
 
+/// Where a task source's file keeps its tasks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskTable {
+    /// The file has no per-task location.
+    None,
+    /// Tasks sit under this key path.
+    Key(&'static str),
+    /// Each task is a top-level target named after it.
+    Name,
+}
+
 /// Everything a provider can do, each with the parameters policy can turn on.
 #[derive(Clone, Copy)]
 pub struct Capabilities {
@@ -19,6 +30,8 @@ pub struct Capabilities {
     pub file_interpreters: &'static [&'static str],
     /// Default source priority when policy has not ranked a source.
     pub task_priority: u8,
+    /// Where the provider's task file keeps its tasks.
+    pub task_table: TaskTable,
     /// Order among package managers probed on `PATH` for a task source none runs.
     pub probe_priority: u8,
     /// Capability tables selected by variant evidence from observation.
@@ -42,6 +55,12 @@ pub struct Capabilities {
     pub test: Option<TestCap>,
     /// Where installed executables live.
     pub bins: Option<BinsCap>,
+    /// Install directories this provider materialises, relative to the scope.
+    pub writes: &'static [&'static str],
+    /// Installed packages and the binaries they declare.
+    pub packages: Option<PackagesCap>,
+    /// Shims this tool manager puts on `PATH`.
+    pub shims: Option<ShimsCap>,
     /// What `clean` removes.
     pub clean: Option<CleanCap>,
     /// Workspace member discovery.
@@ -64,6 +83,7 @@ impl Capabilities {
         file_fallback: false,
         file_interpreters: &[],
         task_priority: 2,
+        task_table: TaskTable::None,
         probe_priority: 0,
         variants: &[],
         variant_of_version: None,
@@ -75,6 +95,9 @@ impl Capabilities {
         run_file: None,
         test: None,
         bins: None,
+        writes: &[],
+        packages: None,
+        shims: None,
         clean: None,
         workspaces: None,
         health: &[],
@@ -300,6 +323,62 @@ pub struct BinsCap {
     pub dirs: BinDirs,
 }
 
+/// Installed packages and the binaries they declare.
+#[derive(Clone, Copy)]
+pub struct PackagesCap {
+    /// The package `name` as installed for the directory, `None` when it is not.
+    pub installed: fn(&crate::Tree, &Path, &str) -> Result<Option<Installed>, Warning>,
+}
+
+/// A package as installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Installed {
+    /// Where it is installed.
+    pub at: PathBuf,
+    /// The binaries it declares, in declaration order.
+    pub bins: Vec<InstalledBin>,
+    /// The binary named after the package, when it declares one.
+    pub default_bin: Option<String>,
+}
+
+/// One binary an installed package declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledBin {
+    /// The binary name.
+    pub name: String,
+    /// How it runs.
+    pub runs: BinRuns,
+}
+
+/// How an installed binary runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BinRuns {
+    /// Execute this file.
+    File(PathBuf),
+    /// Hand the name to the provider's exec primitive.
+    Exec,
+}
+
+/// Shims a tool manager puts on `PATH` in front of the tools it provisions.
+#[derive(Clone, Copy)]
+pub struct ShimsCap {
+    /// The directories whose executables are shims, from the host environment.
+    pub dirs: fn() -> Vec<PathBuf>,
+    /// What the shim for a tool runs from a project directory.
+    pub resolve: fn(&str, &Path) -> Shim,
+}
+
+/// What a shim runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shim {
+    /// The tool is provisioned; this is the real binary.
+    Resolved(PathBuf),
+    /// The manager has no version of the tool.
+    NotProvisioned,
+    /// The manager did not answer.
+    Unknown,
+}
+
 /// What `clean` removes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CleanCap {
@@ -327,18 +406,11 @@ pub struct HealthCap {
     pub parse: fn(&[u8]) -> Health,
 }
 
-/// A task's argument spec in the tool's own language.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UsageSpec {
-    /// The spec text.
-    pub text: String,
-}
-
 /// Per-task argument specs.
 #[derive(Clone, Copy)]
 pub struct UsageCap {
     /// The spec for a task, when it has one.
-    pub spec: fn(&Present, &Task) -> Result<Option<UsageSpec>, Warning>,
+    pub spec: fn(&crate::Tree, &Present, &Task) -> Result<Option<crate::UsageSpec>, Warning>,
 }
 
 /// The quiet ladder and the stream switch.

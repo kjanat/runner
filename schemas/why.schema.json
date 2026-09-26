@@ -2,6 +2,14 @@
   "$id": "https://kjanat.github.io/runner/schemas/why.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
+    "JsRuntimeLabel": {
+      "type": "string",
+      "enum": [
+        "bun",
+        "deno",
+        "node"
+      ]
+    },
     "PmResolution": {
       "anyOf": [
         {
@@ -42,11 +50,11 @@
     "ProviderLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "node",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
         "cargo",
         "go",
@@ -58,13 +66,13 @@
     "TaskSourceLabel": {
       "type": "string",
       "enum": [
+        "turbo",
         "package.json",
         "make",
         "just",
         "task",
-        "turbo",
         "deno",
-        "cargo-alias",
+        "cargo",
         "go",
         "bacon",
         "mise",
@@ -297,20 +305,15 @@
           ]
         },
         "note": {
-          "description": "Why the runtime did not apply, or the lifecycle scripts `node --run` will skip.",
+          "description": "Why the runtime did not apply, or what the runtime warns about for the selected task.",
           "type": [
             "null",
             "string"
           ]
         },
         "runtime": {
-          "description": "Forced JS runtime label (`node`, `bun`, or `deno`).",
-          "type": "string",
-          "enum": [
-            "node",
-            "bun",
-            "deno"
-          ]
+          "$ref": "#/$defs/JsRuntimeLabel",
+          "description": "Forced JS runtime label."
         },
         "via": {
           "description": "Where the runtime override came from (CLI, env, or config).",
@@ -393,7 +396,7 @@
         },
         "kind": {
           "$ref": "#/$defs/TaskSourceLabel",
-          "description": "Task mechanism label (structured source label, e.g. `cargo-alias`)."
+          "description": "The task source's label, e.g. `cargo`."
         },
         "name": {
           "type": "string"

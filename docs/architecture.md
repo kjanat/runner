@@ -157,7 +157,11 @@ pub enum Signal {
     File(&'static str),         // present in the scope directory
     FileCaseless(&'static str), // present in the scope directory under any ASCII case
     FileUpwards(&'static str),  // present in the scope directory or an ancestor
-    Lockfile(&'static str),     // a File that also pins the provider
+    FileContent {
+        name: &'static str,
+        parse: fn(&str) -> Option<Declared>, // the file's text; None names nothing
+    },
+    Lockfile(&'static str), // a File that also pins the provider
     ManifestField {
         files: &'static [&'static str], // tried in order; JSON, JSON5, YAML or TOML by extension
         path: &'static str,
@@ -209,6 +213,10 @@ lockfile says so) beats `Configured` (a tool config exists) beats `Present`
 (a directory such as `.venv` exists) beats `Probed` (it is on `PATH`). The
 resolver sorts on weight within an ecosystem after policy has had its say.
 
+`Signal::FileContent` reads a plain-text declaration such as `.nvmrc` or a
+`.tool-versions` line into `Declared::Version`, so a runtime's expected
+version is evidence like any manifest field.
+
 `Signal::Ask` exists for tools that own their own truth, such as
 `mise tasks --json`. It receives a directory and nothing else. It cannot see
 policy or the op, so it cannot be turned into execution.
@@ -224,7 +232,6 @@ pub struct Provider {
     pub kind: Kind,
     pub program: &'static str, // the executable name, probed with PATHEXT on Windows
     pub signals: &'static [Signal],
-    pub writes: &'static [&'static str], // install dirs this provider materialises
     pub caps: Capabilities,
     pub tasks: Option<fn(&Present, &Tree) -> Result<Extracted, Warning>>, /* tasks plus partial-read warnings */
     pub version: Option<fn(&Path, &Present) -> Result<String>>, /* queried from the scope directory */
@@ -250,9 +257,15 @@ and each has a narrow reason:
   admitted as much as for one the project named.
 - `hooks.before_plan` for a warning or refusal the core cannot know, such as
   bun and pnpm refusing to re-enable dependency build scripts without a
-  manifest allowlist, or `node --run` refusing a Node older than 22.
+  manifest allowlist, `node --run` refusing a Node older than 22 or naming the
+  lifecycle scripts it skips, make refusing words after a goal, and mise
+  refusing a task run without the flags its usage spec requires. For a task
+  that forwards to another runner's same-named task, the core also runs the
+  forwarded provider's hook, so a `package.json` script `make build` meets
+  make's refusal.
 - `hooks.after_observe` for evidence derived from other evidence, such as
-  yarn classic versus berry from the `packageManager` field.
+  yarn classic versus berry from the `packageManager` field, Go inside a
+  checkout it can stamp, or Deno materializing `node_modules`.
 
 A provider that needs a fourth function is telling you the core is missing a
 capability parameter. Add the parameter.
@@ -269,6 +282,9 @@ pub struct Capabilities {
     pub run_file: Option<RunFileCap>,
     pub test: Option<TestCap>,
     pub bins: Option<BinsCap>,
+    pub writes: &'static [&'static str], // install dirs this provider materialises
+    pub packages: Option<PackagesCap>,
+    pub shims: Option<ShimsCap>,
     pub clean: Option<CleanCap>,
     pub workspaces: Option<WorkspaceCap>,
     pub health: &'static [HealthCap],
@@ -279,7 +295,8 @@ pub struct Capabilities {
     pub file_fallback: bool,
     pub file_interpreters: &'static [&'static str],
     pub task_priority: u8,
-    pub probe_priority: u8, // order among package managers probed on PATH
+    pub task_table: TaskTable, // None | Key("scripts") | Name
+    pub probe_priority: u8,    // order among package managers probed on PATH
 }
 ```
 
@@ -287,7 +304,9 @@ Each capability holds an argv template and the parameters policy can turn on.
 Observation hooks can derive `Declared::Variant` evidence; planning selects the
 matching capability table without branching on provider identity. Yarn uses this
 for Classic and Berry; with neither observed, its base table denies scripts
-through both the Classic flag and the Berry variable. `file_fallback` declares a
+through both the Classic flag and the Berry variable. Go uses it to add
+`-buildvcs=true` inside a checkout, Deno to write `node_modules` only when it
+materializes one; `writes` lives in the table for that reason. `file_fallback` declares a
 default interpreter for a supported file when no project runtime takes it. This
 does not add the runtime to `Project.present`: the resulting plan carries the
 discovered file as evidence. `file_interpreters` identifies shebangs an
@@ -356,7 +375,14 @@ pub struct HealthCap {
     pub parse: fn(&[u8]) -> Health,
 }
 pub struct UsageCap {
-    pub spec: fn(&Present, &Task) -> Result<Option<UsageSpec>>,
+    pub spec: fn(&Tree, &Present, &Task) -> Result<Option<UsageSpec>, Warning>,
+} // UsageSpec { signature, args, flags }: completion, `why` and required-flag checks
+pub struct PackagesCap {
+    pub installed: fn(&Tree, &Path, &str) -> Result<Option<Installed>, Warning>,
+} // Installed { at, bins: [InstalledBin { name, runs: File(PathBuf) | Exec }], default_bin }
+pub struct ShimsCap {
+    pub dirs: fn() -> Vec<PathBuf>, // where the manager's shims live on this host
+    pub resolve: fn(&str, &Path) -> Shim, // Resolved(PathBuf) | NotProvisioned | Unknown
 }
 
 pub struct QuietSupport {
@@ -712,8 +738,8 @@ Provider {
     id: Pnpm, label: "pnpm", aliases: &[], ecosystem: Node, kind: PACKAGE_MANAGER, program: "pnpm",
     signals: &[Lockfile("pnpm-lock.yaml"), ManifestField { files: node::MANIFESTS, path: "packageManager", parse: node::package_manager },
                ManifestField { files: node::MANIFESTS, path: "devEngines.packageManager", parse: node::dev_engines }, Probe("pnpm")],
-    writes: &["node_modules"],
     caps: Capabilities {
+        writes: &["node_modules"],
         install: Some(InstallCap { argv: t!["install"], frozen: Frozen::Flag("--frozen-lockfile"),
                                    scripts: ScriptSupport { deny: Flag("--ignore-scripts"), allow: Warn("needs onlyBuiltDependencies") }, .. }),
         run_task: Some(RunTaskCap { argv: t!["run", Task, Sep("--"), Args], sources: &[PackageJson] }),
@@ -738,23 +764,22 @@ Provider {
     id: Mise, label: "mise", aliases: &["rtx"], ecosystem: Any, kind: TASK_SOURCE | TOOL_MANAGER, program: "mise",
     signals: &[FileUpwards("mise.toml"), FileUpwards(".mise.toml"), FileUpwards("mise.local.toml"),
                FileUpwards(".config/mise/config.toml"), EnvVar("MISE_SHELL"), Ask(mise::tasks_json)],
-    writes: &[],
     caps: Capabilities {
         run_task: Some(RunTaskCap { argv: t![Quiet, "run", Task, Sep("--"), Args], sources: &[Mise] }),
         exec: Some(ExecCap { argv: t!["exec", Sep("--"), Name, Args], reach: Network, accepts: Bare }),
         bins: Some(BinsCap { dirs: Ask(mise::bin_paths) }),
         health: &[HealthCap { argv: t!["tasks", "validate", "--json"], parse: mise::health }],
-        usage: Some(UsageCap { spec: mise::usage_spec }),
+        usage: Some(UsageCap { spec: mise::usage }),
         operations: &["install", "bootstrap"],
         install: Some(InstallCap { argv: t![Op], frozen: Frozen::Flag("--locked"), locked_only_with: &[("mise.toml", "mise.lock")], .. }),
         quiet: QuietSupport { levels: [None, Some(t!["--quiet"]), None, None], stream: None },
         ..Capabilities::NONE
     },
-    tasks: Some(mise::tasks), version: None, hooks: Hooks::NONE,
+    tasks: Some(mise::tasks), version: None, hooks: Hooks { before_plan: Some(mise::before_plan), .. },
 }
 ```
 
-Four functions, each answering a question only mise can answer. Nothing in
+Five functions, each answering a question only mise can answer. Nothing in
 `src/core` names mise.
 
 ## 6. Security and variability
@@ -834,7 +859,9 @@ capability parameter, the core is missing one.
 
 Tool managers add one more axis each: mise, volta, asdf and proto declare
 tools, expose bin dirs, and may or may not be activated in the shell that
-ran runner. That is the `BinsCap::Ask` case plus `EnvVar` signals.
+ran runner. That is the `BinsCap::Ask` case plus `EnvVar` signals, and
+`ShimsCap` for the shims a manager puts on `PATH` in front of a tool it may
+not have provisioned.
 
 ## 7. Core services
 

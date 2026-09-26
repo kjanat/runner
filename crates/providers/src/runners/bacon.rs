@@ -13,8 +13,8 @@ pub const PROVIDER: Provider = Provider {
     kind: Kind::TASK_SOURCE,
     program: Some("bacon"),
     signals: &[Signal::File("bacon.toml"), Signal::Probe("bacon")],
-    writes: &[],
     caps: Capabilities {
+        task_table: runner_core::TaskTable::Key("jobs"),
         task_priority: 8,
         run_default: Some(t![Quiet, Sep("--"), Args]),
         run_task: Some(RunTaskCap {

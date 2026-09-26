@@ -18,8 +18,8 @@ pub const PROVIDER: Provider = Provider {
         Signal::Lockfile("Pipfile.lock"),
         Signal::Probe("pipenv"),
     ],
-    writes: &[".venv"],
     caps: Capabilities {
+        writes: &[".venv"],
         install: Some(InstallCap {
             argv: t!["install"],
             frozen: Frozen::Argv(t!["sync"]),

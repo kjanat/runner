@@ -21,6 +21,7 @@
 //! stdio, [`dispatch_task_piped`] for the parallel chain executor) and
 //! the test module.
 
+use crate::provider::Named;
 use anyhow::Result;
 
 pub(crate) mod core;
@@ -33,9 +34,7 @@ mod runtime;
 pub(crate) use dispatch::refusal_error;
 pub(crate) use qualify::{precheck_task, root_runner};
 
-pub(crate) use runtime::{
-    honors as runtime_honors, lifecycle_scripts as runtime_lifecycle_scripts,
-};
+pub(crate) use runtime::honors as runtime_honors;
 
 use crate::resolver::ResolutionOverrides;
 use crate::types::{ProjectContext, Task};
@@ -142,7 +141,8 @@ mod tests {
     use crate::resolver::{
         OverrideOrigin, PmOverride, ResolutionOverrides, RunnerOverride, RuntimeOverride,
     };
-    use crate::types::{JsRuntime, PackageManager, ProjectContext, Task, TaskRunner, TaskSource};
+    use crate::types::{ProjectContext, Task};
+    use runner_core::ProviderId;
 
     fn context(tasks: Vec<Task>) -> ProjectContext {
         let root = crate::tool::test_support::project_root();
@@ -156,7 +156,7 @@ mod tests {
         }
     }
 
-    fn task(name: &str, source: TaskSource) -> Task {
+    fn task(name: &str, source: ProviderId) -> Task {
         Task {
             name: name.to_string(),
             source,
@@ -170,7 +170,7 @@ mod tests {
     }
 
     /// The source `runner run <name>` selects among `sources` under `overrides`.
-    fn winner(sources: &[TaskSource], name: &str, overrides: &ResolutionOverrides) -> TaskSource {
+    fn winner(sources: &[ProviderId], name: &str, overrides: &ResolutionOverrides) -> ProviderId {
         let mut ctx = context(sources.iter().map(|source| task(name, *source)).collect());
         crate::tool::test_support::seed_context_with(&mut ctx, overrides);
         let tree = super::core::tree(&ctx);
@@ -182,14 +182,14 @@ mod tests {
             .source
     }
 
-    fn pm(pm: PackageManager, origin: OverrideOrigin) -> ResolutionOverrides {
+    fn pm(pm: ProviderId, origin: OverrideOrigin) -> ResolutionOverrides {
         ResolutionOverrides {
             pm: Some(PmOverride { pm, origin }),
             ..ResolutionOverrides::default()
         }
     }
 
-    fn runtime(runtime: JsRuntime) -> ResolutionOverrides {
+    fn runtime(runtime: ProviderId) -> ResolutionOverrides {
         ResolutionOverrides {
             runtime: Some(RuntimeOverride {
                 runtime,
@@ -199,7 +199,7 @@ mod tests {
         }
     }
 
-    fn pinned(name: &str, sources: Vec<TaskSource>) -> ResolutionOverrides {
+    fn pinned(name: &str, sources: Vec<ProviderId>) -> ResolutionOverrides {
         ResolutionOverrides {
             task_source_overrides: BTreeMap::from([(name.to_string(), sources)]),
             ..ResolutionOverrides::default()
@@ -210,11 +210,11 @@ mod tests {
     fn detect_reversed_qualifier_catches_task_colon_source() {
         assert_eq!(
             detect_reversed_qualifier("lint:cargo"),
-            Some((TaskSource::CargoAliases, "lint"))
+            Some((ProviderId::Cargo, "lint"))
         );
         assert_eq!(
             detect_reversed_qualifier("foo:bar:cargo"),
-            Some((TaskSource::CargoAliases, "foo:bar"))
+            Some((ProviderId::Cargo, "foo:bar"))
         );
     }
 
@@ -230,7 +230,7 @@ mod tests {
     fn precheck_reversed_qualifier_beats_runner_constraint() {
         let mut ctx = context(vec![]);
         let overrides = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
         crate::tool::test_support::seed_context_with(&mut ctx, &overrides);
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_real_task_shaped_like_a_reversed_qualifier_still_runs() {
-        let mut ctx = context(vec![task("lint:cargo", TaskSource::Justfile)]);
+        let mut ctx = context(vec![task("lint:cargo", ProviderId::Just)]);
         crate::tool::test_support::seed_context(&mut ctx);
 
         precheck_task(&ctx, &ResolutionOverrides::default(), "lint:cargo")
@@ -254,15 +254,15 @@ mod tests {
     fn the_default_order_ranks_turbo_then_package_json_then_the_rest() {
         let none = ResolutionOverrides::default();
         let order = [
-            TaskSource::TurboJson,
-            TaskSource::PackageJson,
-            TaskSource::Makefile,
-            TaskSource::Justfile,
-            TaskSource::Taskfile,
-            TaskSource::DenoJson,
-            TaskSource::CargoAliases,
-            TaskSource::BaconToml,
-            TaskSource::MiseToml,
+            ProviderId::Turbo,
+            ProviderId::PackageJson,
+            ProviderId::Make,
+            ProviderId::Just,
+            ProviderId::Task,
+            ProviderId::Deno,
+            ProviderId::Cargo,
+            ProviderId::Bacon,
+            ProviderId::Mise,
         ];
         for pair in order.windows(2) {
             assert_eq!(winner(pair, "build", &none), pair[0], "{pair:?}");
@@ -273,64 +273,64 @@ mod tests {
 
     #[test]
     fn a_forced_package_manager_pulls_its_own_sources_forward() {
-        let json_and_deno = [TaskSource::PackageJson, TaskSource::DenoJson];
+        let json_and_deno = [ProviderId::PackageJson, ProviderId::Deno];
         for origin in [OverrideOrigin::CliFlag, OverrideOrigin::EnvVar] {
             assert_eq!(
-                winner(&json_and_deno, "check", &pm(PackageManager::Deno, origin)),
-                TaskSource::DenoJson
+                winner(&json_and_deno, "check", &pm(ProviderId::Deno, origin)),
+                ProviderId::Deno
             );
         }
         assert_eq!(
             winner(
-                &[TaskSource::TurboJson, TaskSource::DenoJson],
+                &[ProviderId::Turbo, ProviderId::Deno],
                 "check",
-                &pm(PackageManager::Deno, OverrideOrigin::EnvVar)
+                &pm(ProviderId::Deno, OverrideOrigin::EnvVar)
             ),
-            TaskSource::DenoJson
+            ProviderId::Deno
         );
         assert_eq!(
             winner(
-                &[TaskSource::TurboJson, TaskSource::PackageJson],
+                &[ProviderId::Turbo, ProviderId::PackageJson],
                 "check",
-                &pm(PackageManager::Bun, OverrideOrigin::CliFlag)
+                &pm(ProviderId::Bun, OverrideOrigin::CliFlag)
             ),
-            TaskSource::PackageJson
+            ProviderId::PackageJson
         );
         assert_eq!(
             winner(
                 &json_and_deno,
                 "check",
-                &pm(PackageManager::Composer, OverrideOrigin::CliFlag)
+                &pm(ProviderId::Composer, OverrideOrigin::CliFlag)
             ),
-            TaskSource::PackageJson,
+            ProviderId::PackageJson,
             "a package manager dispatching neither source reorders nothing"
         );
     }
 
     #[test]
     fn a_forced_runtime_pulls_the_sources_it_dispatches_forward() {
-        let turbo_and_json = [TaskSource::TurboJson, TaskSource::PackageJson];
+        let turbo_and_json = [ProviderId::Turbo, ProviderId::PackageJson];
         assert_eq!(
-            winner(&turbo_and_json, "build", &runtime(JsRuntime::Bun)),
-            TaskSource::PackageJson
+            winner(&turbo_and_json, "build", &runtime(ProviderId::Bun)),
+            ProviderId::PackageJson
         );
         let both = ResolutionOverrides {
             pm: Some(PmOverride {
-                pm: PackageManager::Cargo,
+                pm: ProviderId::Cargo,
                 origin: OverrideOrigin::CliFlag,
             }),
-            ..runtime(JsRuntime::Bun)
+            ..runtime(ProviderId::Bun)
         };
         assert_eq!(
             winner(&turbo_and_json, "build", &both),
-            TaskSource::PackageJson
+            ProviderId::PackageJson
         );
     }
 
     #[test]
     fn the_prefer_list_ranks_and_never_restricts() {
-        let turbo_and_json = [TaskSource::TurboJson, TaskSource::PackageJson];
-        let prefer = |sources: Vec<TaskSource>| ResolutionOverrides {
+        let turbo_and_json = [ProviderId::Turbo, ProviderId::PackageJson];
+        let prefer = |sources: Vec<ProviderId>| ResolutionOverrides {
             prefer_sources: sources,
             ..ResolutionOverrides::default()
         };
@@ -338,37 +338,33 @@ mod tests {
             winner(
                 &turbo_and_json,
                 "build",
-                &prefer(vec![TaskSource::PackageJson, TaskSource::TurboJson])
+                &prefer(vec![ProviderId::PackageJson, ProviderId::Turbo])
             ),
-            TaskSource::PackageJson
+            ProviderId::PackageJson
         );
         assert_eq!(
             winner(
                 &turbo_and_json,
                 "build",
-                &prefer(vec![TaskSource::TurboJson, TaskSource::PackageJson])
+                &prefer(vec![ProviderId::Turbo, ProviderId::PackageJson])
             ),
-            TaskSource::TurboJson
+            ProviderId::Turbo
         );
         assert_eq!(
             winner(
-                &[TaskSource::Makefile],
+                &[ProviderId::Make],
                 "build",
-                &prefer(vec![TaskSource::TurboJson])
+                &prefer(vec![ProviderId::Turbo])
             ),
-            TaskSource::Makefile
+            ProviderId::Make
         );
         let runners = ResolutionOverrides {
-            prefer_runners: vec![TaskRunner::Just],
+            prefer_runners: vec![ProviderId::Just],
             ..ResolutionOverrides::default()
         };
         assert_eq!(
-            winner(
-                &[TaskSource::TurboJson, TaskSource::Justfile],
-                "build",
-                &runners
-            ),
-            TaskSource::Justfile
+            winner(&[ProviderId::Turbo, ProviderId::Just], "build", &runners),
+            ProviderId::Just
         );
     }
 
@@ -376,50 +372,46 @@ mod tests {
     fn a_chosen_runner_selects_its_own_task() {
         let overrides = ResolutionOverrides {
             runner: Some(RunnerOverride {
-                runner: TaskRunner::Just,
+                runner: ProviderId::Just,
                 origin: OverrideOrigin::CliFlag,
             }),
             ..ResolutionOverrides::default()
         };
         assert_eq!(
-            winner(
-                &[TaskSource::TurboJson, TaskSource::Justfile],
-                "build",
-                &overrides
-            ),
-            TaskSource::Justfile
+            winner(&[ProviderId::Turbo, ProviderId::Just], "build", &overrides),
+            ProviderId::Just
         );
     }
 
     #[test]
     fn a_per_task_pin_decides_its_own_name_below_a_forced_package_manager() {
-        let turbo_and_json = [TaskSource::TurboJson, TaskSource::PackageJson];
+        let turbo_and_json = [ProviderId::Turbo, ProviderId::PackageJson];
         assert_eq!(
             winner(
                 &turbo_and_json,
                 "build",
-                &pinned("build", vec![TaskSource::PackageJson])
+                &pinned("build", vec![ProviderId::PackageJson])
             ),
-            TaskSource::PackageJson
+            ProviderId::PackageJson
         );
         assert_eq!(
             winner(
                 &turbo_and_json,
                 "build",
-                &pinned("dev", vec![TaskSource::PackageJson])
+                &pinned("dev", vec![ProviderId::PackageJson])
             ),
-            TaskSource::TurboJson
+            ProviderId::Turbo
         );
         let forced = ResolutionOverrides {
             pm: Some(PmOverride {
-                pm: PackageManager::Bun,
+                pm: ProviderId::Bun,
                 origin: OverrideOrigin::CliFlag,
             }),
-            ..pinned("build", vec![TaskSource::TurboJson])
+            ..pinned("build", vec![ProviderId::Turbo])
         };
         assert_eq!(
             winner(&turbo_and_json, "build", &forced),
-            TaskSource::PackageJson
+            ProviderId::PackageJson
         );
     }
 }

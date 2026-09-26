@@ -1,13 +1,15 @@
 //! Subcommand implementations: info, run, install, clean, list, completions.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};
 
 use colored::Colorize;
 
+use crate::provider::Named;
 use crate::resolver::ResolutionOverrides;
-use crate::types::{DetectionWarning, ProjectContext, TaskSource};
+use crate::types::{DetectionWarning, ProjectContext};
+use runner_core::ProviderId;
 
 mod clean;
 mod completions;
@@ -185,18 +187,6 @@ fn authorize_fetch(overrides: &ResolutionOverrides, name: &str, rung: &str) -> a
     Ok(())
 }
 
-/// Every existing `node_modules/.bin` from `dir` up to the filesystem
-/// root, nearest first, the same set (and order) `npm run` exposes to
-/// `package.json` scripts. Levels without an installed `.bin` are
-/// skipped, so non-Node projects collect nothing and the whole
-/// augmentation becomes a no-op.
-fn node_bin_dirs(dir: &Path) -> Vec<PathBuf> {
-    dir.ancestors()
-        .map(|ancestor| ancestor.join("node_modules").join(".bin"))
-        .filter(|bin| bin.is_dir())
-        .collect()
-}
-
 pub(crate) fn exit_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
@@ -251,7 +241,7 @@ const FIELD_SEP: char = '\u{1f}';
 /// Identify a dispatch by canonical project root plus the qualified task,
 /// so the same task in two workspace members (or reached through a symlink)
 /// stays two distinct frames.
-fn task_frame(root: &Path, source: TaskSource, name: &str) -> String {
+fn task_frame(root: &Path, source: ProviderId, name: &str) -> String {
     let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     format!(
         "{}{FIELD_SEP}{}{FIELD_SEP}{name}",
@@ -286,7 +276,7 @@ fn inherited_task_stack() -> Vec<String> {
 /// never a safety diagnostic.
 pub(crate) fn push_task_frame(
     root: &Path,
-    source: TaskSource,
+    source: ProviderId,
     name: &str,
 ) -> anyhow::Result<OsString> {
     let pushed = admit_frame(inherited_task_stack(), task_frame(root, source, name))?;
@@ -592,7 +582,7 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
-    use super::{GroupSuppression, configure_spawn, group_emission, node_bin_dirs};
+    use super::{GroupSuppression, configure_spawn, group_emission};
     use crate::resolver::ResolutionOverrides;
     use crate::tool::test_support::TempDir;
 
@@ -643,12 +633,12 @@ mod tests {
     #[test]
     fn admit_frame_accepts_distinct_tasks() {
         use super::{admit_frame, task_frame};
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         let root = PathBuf::from("/repo");
-        let stack = admit_frame(Vec::new(), task_frame(&root, TaskSource::PackageJson, "a"))
+        let stack = admit_frame(Vec::new(), task_frame(&root, ProviderId::PackageJson, "a"))
             .expect("first frame");
-        let stack = admit_frame(stack, task_frame(&root, TaskSource::PackageJson, "b"))
+        let stack = admit_frame(stack, task_frame(&root, ProviderId::PackageJson, "b"))
             .expect("a different task is not a cycle");
 
         assert_eq!(stack.len(), 2);
@@ -657,10 +647,10 @@ mod tests {
     #[test]
     fn admit_frame_reports_the_whole_cycle() {
         use super::{admit_frame, task_frame};
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         let root = PathBuf::from("/repo");
-        let frame = |name: &str| task_frame(&root, TaskSource::PackageJson, name);
+        let frame = |name: &str| task_frame(&root, ProviderId::PackageJson, name);
         let stack = admit_frame(Vec::new(), frame("a")).expect("first frame");
         let stack = admit_frame(stack, frame("b")).expect("second frame");
 
@@ -676,13 +666,13 @@ mod tests {
     #[test]
     fn admit_frame_separates_the_same_task_in_two_roots() {
         use super::{admit_frame, task_frame};
-        use crate::types::TaskSource;
+        use runner_core::ProviderId;
 
         // A workspace member dispatching its own `build` from the root's
         // `build` is a normal fan-out, not a loop.
         let stack = admit_frame(
             Vec::new(),
-            task_frame(&PathBuf::from("/repo"), TaskSource::PackageJson, "build"),
+            task_frame(&PathBuf::from("/repo"), ProviderId::PackageJson, "build"),
         )
         .expect("root frame");
 
@@ -691,7 +681,7 @@ mod tests {
                 stack,
                 task_frame(
                     &PathBuf::from("/repo/apps/web"),
-                    TaskSource::PackageJson,
+                    ProviderId::PackageJson,
                     "build",
                 ),
             )
@@ -716,13 +706,13 @@ mod tests {
         use std::path::PathBuf;
 
         use crate::resolver::{OverrideOrigin, RuntimeOverride};
-        use crate::types::JsRuntime;
+        use runner_core::ProviderId;
 
         let dir = std::env::temp_dir();
         let runtime_env = |origin| {
             let overrides = ResolutionOverrides {
                 runtime: Some(RuntimeOverride {
-                    runtime: JsRuntime::Bun,
+                    runtime: ProviderId::Bun,
                     origin,
                 }),
                 ..ResolutionOverrides::default()
@@ -752,38 +742,6 @@ mod tests {
             None,
             "a repo-scoped [runtime].js must not be forced onto a nested project",
         );
-    }
-
-    #[test]
-    fn node_bin_dirs_walks_ancestors_nearest_first() {
-        let dir = TempDir::new("node-bin-walk");
-        let member = dir.path().join("apps").join("web");
-        let member_bin = member.join("node_modules").join(".bin");
-        let root_bin = dir.path().join("node_modules").join(".bin");
-        fs::create_dir_all(&member_bin).expect("member bin should be created");
-        fs::create_dir_all(&root_bin).expect("root bin should be created");
-
-        let bins = node_bin_dirs(&member);
-
-        // `apps/` has no node_modules; levels without an installed
-        // `.bin` are skipped, not invented. Entries past the temp root
-        // (a stray `/tmp/node_modules`) are out of our control, so only
-        // pin the leading order and that nothing else came from inside
-        // the fixture.
-        assert_eq!(&bins[..2], [member_bin, root_bin]);
-        assert!(bins.iter().skip(2).all(|bin| !bin.starts_with(dir.path())));
-    }
-
-    #[test]
-    fn node_bin_dirs_requires_bin_subdir() {
-        // A `node_modules` without `.bin` (no dependencies expose
-        // binaries) must not contribute a phantom PATH entry.
-        let dir = TempDir::new("node-bin-missing");
-        fs::create_dir_all(dir.path().join("node_modules")).expect("dir should be created");
-
-        let bins = node_bin_dirs(dir.path());
-
-        assert!(bins.iter().all(|bin| !bin.starts_with(dir.path())));
     }
 
     fn shim_plan(dir: &std::path::Path, args: &[String]) -> runner_core::Plan {
@@ -878,16 +836,17 @@ mod tests {
     fn no_warnings_suppresses_emission() {
         use super::print_warning_slice;
         use crate::resolver::ResolutionOverrides;
-        use crate::types::{DetectionWarning, PackageManager};
+        use crate::types::DetectionWarning;
+        use runner_core::ProviderId;
 
         // Smoke: print_warning_slice with no_warnings=true must
         // short-circuit before the eprintln. The test asserts no
         // panic / no observable side effects; capturing stderr in
         // cargo test is fiddly and not worth a fixture.
         let warnings = vec![DetectionWarning::PmMismatch {
-            declared: PackageManager::Pnpm,
+            declared: ProviderId::Pnpm,
             field: "packageManager",
-            lockfile: PackageManager::Yarn,
+            lockfile: ProviderId::Yarn,
         }];
         let overrides = ResolutionOverrides {
             no_warnings: true,

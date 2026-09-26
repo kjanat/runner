@@ -18,9 +18,11 @@ use super::types::{
     OverrideOrigin, OverrideSources, ParentMarkers, PmOverride, QuietSource, ResolutionOverrides,
     RunnerOverride, RuntimeOverride, ScriptPolicy, SourceValue,
 };
-use crate::config::{LoadedConfig, parse_node_pm, parse_python_pm};
+use crate::config::{LoadedConfig, parse_pm};
+use crate::provider::Named;
 use crate::tool::{QuietLevel, RunnerOutput, Stream};
-use crate::types::{DetectionWarning, Ecosystem, PackageManager, TaskRunner};
+use crate::types::DetectionWarning;
+use runner_core::{Ecosystem, ProviderId};
 
 impl ResolutionOverrides {
     /// Assemble overrides from CLI flag values (already parsed by clap),
@@ -367,7 +369,7 @@ fn resolve_grouping(sources: &OverrideSources<'_>) -> OutputGrouping {
     }
 }
 
-/// `[pm].node` and `[pm].python`.
+/// `[pm].<ecosystem>`.
 fn config_pm_by_ecosystem(sources: &OverrideSources<'_>) -> Result<HashMap<Ecosystem, PmOverride>> {
     let mut pm_by_ecosystem = HashMap::new();
     let Some(loaded) = sources.config else {
@@ -376,23 +378,16 @@ fn config_pm_by_ecosystem(sources: &OverrideSources<'_>) -> Result<HashMap<Ecosy
     let origin = || OverrideOrigin::ConfigFile {
         path: loaded.path.clone(),
     };
-    if let Some(raw) = loaded.config.pm.node.as_deref() {
-        pm_by_ecosystem.insert(
-            Ecosystem::Node,
-            PmOverride {
-                pm: parse_node_pm(raw)?,
-                origin: origin(),
-            },
-        );
-    }
-    if let Some(raw) = loaded.config.pm.python.as_deref() {
-        pm_by_ecosystem.insert(
-            Ecosystem::Python,
-            PmOverride {
-                pm: parse_python_pm(raw)?,
-                origin: origin(),
-            },
-        );
+    for (ecosystem, raw) in &loaded.config.pm.0 {
+        if let Some((ecosystem, pm)) = parse_pm(ecosystem, raw)? {
+            pm_by_ecosystem.insert(
+                ecosystem,
+                PmOverride {
+                    pm,
+                    origin: origin(),
+                },
+            );
+        }
     }
     Ok(pm_by_ecosystem)
 }
@@ -581,11 +576,11 @@ pub(crate) fn validate_config(loaded: &LoadedConfig) -> Result<()> {
     .map(drop)
 }
 
-fn parse_pm_label(raw: &str) -> Result<PackageManager> {
-    if let Some(pm) = PackageManager::from_label(raw) {
+fn parse_pm_label(raw: &str) -> Result<ProviderId> {
+    if let Some(pm) = crate::provider::package_manager(raw) {
         return Ok(pm);
     }
-    if let Some(runner) = TaskRunner::from_label(raw) {
+    if let Some(runner) = crate::provider::runner(raw) {
         return Err(anyhow!(
             "{:?} is a task runner, not a package manager; use `--runner {}` instead",
             raw,
@@ -596,19 +591,19 @@ fn parse_pm_label(raw: &str) -> Result<PackageManager> {
         "unknown package manager \"{}\"; expected one of {}",
         sanitize_raw_label(raw),
         join_labels(
-            PackageManager::all()
+            crate::provider::package_managers()
                 .iter()
                 .copied()
-                .map(PackageManager::label)
+                .map(Named::label)
         ),
     ))
 }
 
-fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
-    if let Some(runner) = TaskRunner::from_label(raw) {
+fn parse_runner_label(raw: &str) -> Result<ProviderId> {
+    if let Some(runner) = crate::provider::runner(raw) {
         return Ok(runner);
     }
-    if let Some(pm) = PackageManager::from_label(raw) {
+    if let Some(pm) = crate::provider::package_manager(raw) {
         return Err(anyhow!(
             "{:?} is a package manager, not a task runner; use `--pm {}` instead",
             raw,
@@ -618,7 +613,7 @@ fn parse_runner_label(raw: &str) -> Result<TaskRunner> {
     Err(anyhow!(
         "unknown task runner \"{}\"; expected one of {}",
         sanitize_raw_label(raw),
-        join_labels(TaskRunner::all().iter().copied().map(TaskRunner::label)),
+        join_labels(crate::provider::runners().iter().copied().map(Named::label)),
     ))
 }
 
@@ -645,11 +640,6 @@ fn sanitize_raw_label(raw: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{InstallSection, RunnerConfig};
-
-    #[test]
-    fn install_pms_env_has_no_declared_row() {
-        assert!(runner_core::Setting::by_env("RUNNER_INSTALL_PMS").is_none());
-    }
 
     #[test]
     fn script_policy_defaults_when_unset() {
