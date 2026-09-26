@@ -27,8 +27,8 @@ pub mod warning;
 
 pub use capability::{
     BinDirs, BinsCap, Capabilities, CleanCap, Discovery, ExecCap, Frozen, HealthCap, InstallCap,
-    NameShape, QuietSupport, RunFileCap, RunTaskCap, RuntimeCap, ScriptMechanism, ScriptSupport,
-    TestCap, UsageCap, UsageSpec, WorkspaceCap,
+    Lockfiles, NameShape, QuietSupport, RunFileCap, RunTaskCap, RuntimeCap, ScriptMechanism,
+    ScriptSupport, TestCap, UsageCap, UsageSpec, WorkspaceCap,
 };
 pub use cascade::{CASCADE, Cap, Need, Rung};
 pub use declare::{SETTINGS, Setting, SettingKind};
@@ -40,7 +40,7 @@ pub use observe::observe;
 pub use op::Op;
 pub use plan::{
     Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, Trust, Unsafe, decided_by,
-    discover, dispatch, dispatch_from, ecosystem_of, file_plan, has_local_prefix,
+    dependency_plan, discover, dispatch, dispatch_from, ecosystem_of, file_plan, has_local_prefix,
     is_directly_executable, plan, plan_argv, plan_bin, plan_found, plan_with, read_shebang,
     resolve_path, scope_dir, select,
 };

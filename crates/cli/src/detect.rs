@@ -104,37 +104,36 @@ fn holds_caseless(dir: &Path, names: &[&str]) -> bool {
 // Install directories
 
 /// Record which detected package managers write which install directory.
-/// Today the one shared directory is `node_modules`: any node-ecosystem PM
-/// writes it, and Deno joins whenever it materializes a local tree rather than
-/// resolving npm packages from its global cache (see
-/// [`tool::deno::writes_node_modules`]). Whether a shared directory is a
-/// *collision* is an install-time question ([`crate::commands::install`] answers it
-/// against the effective install set), so nothing is judged or warned here.
+/// Whether a shared directory is a *collision* is an install-time question
+/// ([`crate::commands::install`] answers it against the effective install
+/// set), so nothing is judged or warned here.
 fn detect_install_dirs(dir: &Path, ctx: &mut ProjectContext) {
-    let mut node_modules_writers: Vec<PackageManager> = ctx
-        .package_managers
-        .iter()
-        .copied()
-        .filter(|pm| {
-            matches!(
-                pm,
-                PackageManager::Npm
-                    | PackageManager::Yarn
-                    | PackageManager::Pnpm
-                    | PackageManager::Bun
-            )
-        })
-        .collect();
-    if ctx.package_managers.contains(&PackageManager::Deno) && tool::deno::writes_node_modules(dir)
-    {
-        node_modules_writers.push(PackageManager::Deno);
+    ctx.install_dirs = install_dirs(dir, &ctx.package_managers);
+}
+
+/// The install directories `pms` write under `dir`, from each provider's
+/// declared `writes`. Deno writes `node_modules` only when it materializes a
+/// local tree (see [`tool::deno::writes_node_modules`]).
+pub(crate) fn install_dirs(dir: &Path, pms: &[PackageManager]) -> Vec<InstallDir> {
+    let mut dirs: Vec<InstallDir> = Vec::new();
+    for pm in pms {
+        let Some(provider) = runner_providers::REGISTRY.by_label(pm.label()) else {
+            continue;
+        };
+        if *pm == PackageManager::Deno && !tool::deno::writes_node_modules(dir) {
+            continue;
+        }
+        for written in provider.writes {
+            match dirs.iter_mut().find(|entry| entry.dir == *written) {
+                Some(entry) => entry.writers.push(*pm),
+                None => dirs.push(InstallDir {
+                    dir: written,
+                    writers: vec![*pm],
+                }),
+            }
+        }
     }
-    if !node_modules_writers.is_empty() {
-        ctx.install_dirs.push(InstallDir {
-            dir: "node_modules",
-            writers: node_modules_writers,
-        });
-    }
+    dirs
 }
 
 // Package managers

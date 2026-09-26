@@ -25,6 +25,7 @@ pub const PROVIDER: Provider = Provider {
             frozen: Frozen::Unsupported,
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],
+            lockfiles: None,
         }),
         test: Some(TestCap {
             program: Some("rake"),

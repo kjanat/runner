@@ -28,6 +28,7 @@ pub const PROVIDER: Provider = Provider {
             frozen: Frozen::Flag("--frozen"),
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],
+            lockfiles: None,
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Args],

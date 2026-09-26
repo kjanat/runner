@@ -44,6 +44,7 @@ pub const PROVIDER: Provider = Provider {
                 (".config/mise.toml", ".config/mise.lock"),
                 (".config/mise/config.toml", ".config/mise/mise.lock"),
             ],
+            lockfiles: None,
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Sep("--"), Args],

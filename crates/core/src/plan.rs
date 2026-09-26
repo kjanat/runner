@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::capability::{Discovery, Frozen, NameShape, RunTaskCap, ScriptMechanism};
+use crate::capability::{Discovery, Frozen, InstallCap, NameShape, RunTaskCap, ScriptMechanism};
 use crate::cascade::{CASCADE, Cap, Need, Rung};
 use crate::env::project_may_set;
 use crate::evidence::{Evidence, Present, Weight};
@@ -748,7 +748,7 @@ impl<'a> Shaping<'_, 'a> {
                 }
             }
             if locked && !matches!(cap.frozen, Frozen::Unsupported) {
-                self.require_lockfile(&dir)?;
+                self.require_lockfile(cap, &dir)?;
             }
         }
         fill.request.frozen = (self.policy.frozen && locked).then_some(cap.frozen);
@@ -769,24 +769,31 @@ impl<'a> Shaping<'_, 'a> {
         })
     }
 
-    fn require_lockfile(&self, dir: &Path) -> Result<(), Refusal> {
-        let lockfiles: Vec<String> = self
+    fn require_lockfile(&self, cap: InstallCap, dir: &Path) -> Result<(), Refusal> {
+        let mut paths: Vec<PathBuf> = self
             .provider
             .signals
             .iter()
             .filter_map(|signal| match signal {
-                crate::Signal::Lockfile(name) => Some((*name).to_owned()),
+                crate::Signal::Lockfile(name) => Some(dir.join(name)),
                 _ => None,
             })
             .collect();
-        if lockfiles.is_empty() {
+        if paths.is_empty() {
             return Ok(());
         }
-        for name in &lockfiles {
-            if optional_file(&dir.join(name))? {
+        if let Some(also) = cap.lockfiles {
+            paths.extend(also.paths(dir)?);
+        }
+        for path in &paths {
+            if optional_file(path)? {
                 return Ok(());
             }
         }
+        let lockfiles = paths
+            .iter()
+            .map(|path| path.strip_prefix(dir).unwrap_or(path).display().to_string())
+            .collect();
         Err(Refusal::NoLockfile {
             provider: self.provider.id,
             dir: dir.to_path_buf(),
@@ -1433,10 +1440,7 @@ fn rung_dispatch(
             Some(dispatched(file_plan(cascade, &path, args)?))
         }
         Need::InstalledDep => match cascade.dep.map(|ask| ask(token)).transpose()?.flatten() {
-            Some(path) => Some(dispatched(in_invocation_scope(
-                cascade,
-                file_plan(cascade, &path, args)?,
-            ))),
+            Some(path) => Some(dispatched(dependency_plan(cascade, &path, args)?)),
             None => None,
         },
         Need::Cap(Cap::Test) => test_rung(cascade, token, args)?,
@@ -1458,15 +1462,24 @@ fn rung_dispatch(
     })
 }
 
-/// A dependency's binary runs where it was invoked from, whatever directory
-/// hoisting installed it in.
-fn in_invocation_scope(cascade: &Cascade<'_>, mut made: Plan) -> Plan {
+/// The plan for an installed dependency's binary at `path`, which runs where
+/// it was invoked from, whatever directory hoisting installed it in.
+///
+/// # Errors
+///
+/// The refusals of [`file_plan`].
+pub fn dependency_plan(
+    cascade: &Cascade<'_>,
+    path: &Path,
+    args: &[String],
+) -> Result<Plan, Refusal> {
+    let mut made = file_plan(cascade, path, args)?;
     let scope = scope_at(cascade.tree, &cascade.tree.cwd);
     if made.trust == Trust::Project {
         made.path_prepend = bin_dirs(cascade.tree, cascade.project, &scope, cascade.registry);
     }
     made.scope = scope;
-    made
+    Ok(made)
 }
 
 /// Refuse to look past the task rung while a visible task source is unreadable.
@@ -1793,7 +1806,14 @@ fn exec_plan(
         invocation_managers(cascade, &scope, &op)?
     };
     let ordered = if !forced.is_empty() {
-        forced
+        cascade
+            .policy
+            .runtime
+            .as_ref()
+            .and_then(|choice| cascade.project.present_in(choice.id, &scope))
+            .into_iter()
+            .chain(forced)
+            .collect()
     } else if manager {
         cascade
             .project

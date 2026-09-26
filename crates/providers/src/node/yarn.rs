@@ -52,7 +52,15 @@ pub const PROVIDER: Provider = Provider {
                 allow: ScriptMechanism::Default,
             },
             locked_only_with: &[],
+            lockfiles: None,
         }),
+        run_task: Some(RunTaskCap {
+            argv: t!["run", Task, Args],
+            sources: &[ProviderId::PackageJson],
+        }),
+        quiet: QuietSupport::unsupported(
+            "--silent needs Yarn Classic, and the Yarn line is unknown",
+        ),
         ..CLASSIC
     },
     tasks: None,
@@ -72,6 +80,7 @@ const CLASSIC: Capabilities = Capabilities {
             allow: ScriptMechanism::Default,
         },
         locked_only_with: &[],
+        lockfiles: None,
     }),
     run_task: Some(RunTaskCap {
         argv: t![Quiet, Task, Args],
@@ -114,6 +123,7 @@ const BERRY: Capabilities = Capabilities {
             allow: ScriptMechanism::Env("YARN_ENABLE_SCRIPTS", "true"),
         },
         locked_only_with: &[],
+        lockfiles: None,
     }),
     run_task: Some(RunTaskCap {
         argv: t!["run", Task, Args],

@@ -206,9 +206,25 @@ mod tests {
             render(ProviderId::Pnpm, Some("build"), true),
             ["--silent", "--use-stderr", "run", "build", "--", "--flag"]
         );
+        let classic = REGISTRY
+            .by_id(ProviderId::Yarn)
+            .caps
+            .variants
+            .iter()
+            .find_map(|(name, caps)| (*name == "classic").then_some(caps))
+            .unwrap();
+        assert_eq!(
+            words(&classic.run_task.unwrap().argv.render(&Request {
+                task: Some("build"),
+                args: &args,
+                quiet: classic.quiet.at(1),
+                ..Request::default()
+            })),
+            ["--silent", "build", "--flag"]
+        );
         assert_eq!(
             render(ProviderId::Yarn, Some("build"), true),
-            ["--silent", "build", "--flag"]
+            ["run", "build", "--flag"]
         );
         assert_eq!(
             render(ProviderId::Make, Some("build"), true),

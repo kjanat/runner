@@ -57,6 +57,7 @@ pub const PROVIDER: Provider = Provider {
                 allow: ScriptMechanism::Warn("pnpm.onlyBuiltDependencies"),
             },
             locked_only_with: &[],
+            lockfiles: None,
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Sep("--"), Args],

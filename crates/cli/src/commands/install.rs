@@ -11,7 +11,9 @@ use colored::Colorize;
 use runner_core::Provider;
 use runner_providers::REGISTRY;
 
-use crate::chain::mux::{LineSink, StdioSink, prefix_width, render_prefix, spawn_readers};
+use crate::chain::mux::{
+    Delivery, LineSink, StdioSink, prefix_width, render_prefix, spawn_readers,
+};
 use crate::resolver::{
     CollisionPolicy, LockfilePolicy, ResolutionOverrides, ResolveError, ScriptPolicy,
 };
@@ -27,7 +29,7 @@ pub(crate) struct InstallFlags {
     pub no_tools: bool,
 }
 use crate::tool;
-use crate::types::{PackageManager, ProjectContext, TaskRunner, version_matches};
+use crate::types::{InstallDir, PackageManager, ProjectContext, TaskRunner, version_matches};
 
 /// Install dependencies for each detected package manager.
 ///
@@ -543,7 +545,7 @@ pub(crate) fn plan_install(
         collisions: Vec::new(),
     };
 
-    for install_dir in &ctx.install_dirs {
+    for install_dir in &install_dirs(ctx, &detected) {
         let writers: Vec<PackageManager> = install_dir
             .writers
             .iter()
@@ -578,6 +580,25 @@ pub(crate) fn plan_install(
     }
 
     Ok(plan)
+}
+
+/// The detected install directories, joined by the writers `pms` adds to
+/// them.
+fn install_dirs(ctx: &ProjectContext, pms: &[PackageManager]) -> Vec<InstallDir> {
+    let mut dirs = ctx.install_dirs.clone();
+    for found in crate::detect::install_dirs(&ctx.root, pms) {
+        match dirs.iter_mut().find(|dir| dir.dir == found.dir) {
+            Some(dir) => {
+                for writer in found.writers {
+                    if !dir.writers.contains(&writer) {
+                        dir.writers.push(writer);
+                    }
+                }
+            }
+            None => dirs.push(found),
+        }
+    }
+    dirs
 }
 
 /// The warning shown when the install set keeps two or more writers on one
@@ -866,7 +887,8 @@ fn run_lane(
         if let Some(stderr) = child.stderr.take() {
             streams.push((prefix, true, Box::new(stderr)));
         }
-        let readers = spawn_readers(streams, sink);
+        let delivery = Arc::new(Delivery::new(Arc::clone(sink)));
+        let readers = spawn_readers(streams, &(delivery.clone() as Arc<dyn LineSink>));
 
         let waited = wait_or_reap(&mut child);
         for handle in readers {
@@ -875,6 +897,9 @@ fn run_lane(
         let status = waited.map_err(|error| wait_error(*pm, cmd.get_program(), error))?;
         if !status.success() {
             return Ok(Some((*pm, super::exit_code(status))));
+        }
+        if delivery.failed() {
+            return Ok(Some((*pm, 1)));
         }
     }
     Ok(None)

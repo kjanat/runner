@@ -1,9 +1,9 @@
 //! npm.
 
 use runner_core::{
-    Capabilities, Declared, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind, NameShape,
-    Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptMechanism, ScriptSupport, Signal,
-    WorkspaceCap, t,
+    Capabilities, Declared, Ecosystem, ExecCap, Field, Frozen, Hooks, InstallCap, Kind, Lockfiles,
+    NameShape, Provider, ProviderId, QuietSupport, Reach, RunTaskCap, ScriptMechanism,
+    ScriptSupport, Signal, WorkspaceCap, t,
 };
 
 use super::manifest;
@@ -48,6 +48,7 @@ pub const PROVIDER: Provider = Provider {
                 allow: ScriptMechanism::Flag("--no-ignore-scripts"),
             },
             locked_only_with: &[],
+            lockfiles: Some(Lockfiles::Named(&["npm-shrinkwrap.json"])),
         }),
         run_task: Some(RunTaskCap {
             argv: t![Quiet, "run", Task, Sep("--"), Args],

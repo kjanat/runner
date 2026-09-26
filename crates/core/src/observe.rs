@@ -176,12 +176,15 @@ fn file_in_caseless(dir: &Path, name: &str) -> io::Result<Option<PathBuf>> {
     for entry in entries {
         let entry = entry
             .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", dir.display())))?;
-        let matches = entry
-            .file_name()
+        let file_name = entry.file_name();
+        let Some(candidate) = file_name
             .to_str()
-            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name));
-        if matches && entry.path().metadata()?.is_file() {
-            found.push(entry.path());
+            .filter(|candidate| candidate.eq_ignore_ascii_case(name))
+        else {
+            continue;
+        };
+        if let Some(path) = file_in(dir, candidate)? {
+            found.push(path);
         }
     }
     found.sort();
@@ -363,6 +366,13 @@ mod tests {
         assert_eq!(
             super::file_in_caseless(dir.path(), "justfile").unwrap(),
             Some(dir.path().join("Justfile"))
+        );
+        let dangling = TempDir::new("observe-caseless-dangling");
+        std::os::unix::fs::symlink("not-present.just", dangling.path().join("Justfile"))
+            .expect("symlink");
+        assert_eq!(
+            super::file_in_caseless(dangling.path(), "justfile").unwrap(),
+            None
         );
     }
 

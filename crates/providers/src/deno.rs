@@ -2,8 +2,8 @@
 
 use runner_core::{
     Capabilities, CleanCap, Declared, Discovery, Ecosystem, ExecCap, Field, Frozen, Hooks,
-    InstallCap, Kind, NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap, RunTaskCap,
-    ScriptMechanism, ScriptSupport, Signal, TestCap, t,
+    InstallCap, Kind, Lockfiles, NameShape, Provider, ProviderId, QuietSupport, Reach, RunFileCap,
+    RunTaskCap, ScriptMechanism, ScriptSupport, Signal, TestCap, t,
 };
 
 use crate::node::manifest;
@@ -17,6 +17,40 @@ fn dev_engines(field: &Field<'_>) -> Option<Declared> {
 }
 
 const MANIFEST: [Signal; 2] = crate::node::manifest_signals(package_manager, dev_engines);
+
+/// The lockfile the nearest Deno config names with `"lock"`, relative to that config.
+fn lockfiles(dir: &std::path::Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+    #[derive(serde::Deserialize)]
+    struct Config {
+        lock: Option<serde_json::Value>,
+    }
+    let Some(config) = dir.ancestors().find_map(|ancestor| {
+        ["deno.json", "deno.jsonc"]
+            .into_iter()
+            .map(|name| ancestor.join(name))
+            .find(|path| path.is_file())
+    }) else {
+        return Ok(Vec::new());
+    };
+    let text = std::fs::read_to_string(&config)?;
+    let parsed = json5::from_str::<Config>(&text).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {error}", config.display()),
+        )
+    })?;
+    let path = match &parsed.lock {
+        Some(serde_json::Value::String(path)) => Some(path.as_str()),
+        Some(serde_json::Value::Object(lock)) => {
+            lock.get("path").and_then(serde_json::Value::as_str)
+        }
+        _ => None,
+    };
+    Ok(path
+        .zip(config.parent())
+        .map(|(path, base)| vec![base.join(path)])
+        .unwrap_or_default())
+}
 
 /// Deno.
 pub const PROVIDER: Provider = Provider {
@@ -63,6 +97,7 @@ pub const PROVIDER: Provider = Provider {
                 allow: ScriptMechanism::Flag("--allow-scripts"),
             },
             locked_only_with: &[],
+            lockfiles: Some(Lockfiles::Ask(lockfiles)),
         }),
         run_task: Some(RunTaskCap {
             argv: t!["task", Quiet, Task, Args],

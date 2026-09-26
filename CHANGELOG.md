@@ -242,7 +242,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 ### Fixed
 
 - `--frozen` refuses before spawning a package manager whose lockfile is
-  absent, naming the directory and the lockfile it needs. A mise config
+  absent, naming the directory and the lockfiles it accepts: npm takes
+  `npm-shrinkwrap.json` as well, and Deno the file its config names with
+  `"lock"`. A mise config
   without `mise.lock` installs unlocked, since mise lockfiles are opt-in. A
   lifecycle-script policy the manager cannot express is disclosed by
   `runner install` and `--explain`.
@@ -254,14 +256,16 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   member it sits in, and a member's `node_modules/.bin` precedes the
   root's. A dependency's binary or a project bin found from a member runs
   with that member's bin dirs first even when hoisting installed it at the
-  root.
+  root, and so does one `run --package` selects.
 
 - A package manager the `PATH` fallback admits gets the same installed
   version and variant as one the project names, so a `package.json` with
   scripts alone runs Yarn 4 as Berry. A `devEngines` range such as `>=1`
   admits both Yarn lines, so the installed version decides. The version
   query runs in the project directory, so `--dir` sees the Yarn a
-  directory-aware shim serves there.
+  directory-aware shim serves there, and finds a Yarn that only the project's
+  bin dirs or mise's tool dirs hold. A Yarn whose line is still unknown runs
+  scripts as `yarn run <task>` and gets no `--silent`.
 
 - Python test detection looks in the invocation directory and then the
   provider's scope, so `conftest.py` beside the tests and `pytest.ini` at
@@ -285,8 +289,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   settings: `build`, `package.json:build`, `rfc:build` for a member task,
   and `rfc:package.json#build`, least specific first.
 
-- A `packageManager` value that names no known manager voids
-  `devEngines.packageManager` too; the lockfile or `PATH` decides.
+- A `packageManager` value that names no known manager, or ends in an `@`
+  with no version, voids `devEngines.packageManager` too; the lockfile or
+  `PATH` decides.
 
 - On Windows, a file task whose shebang names a POSIX shell (`bash`, `sh`,
   `zsh`, ..., with or without `.exe`) receives its path in the form that
@@ -396,6 +401,26 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   installs through a package manager the `PATH` fallback admits for an
   observed task source, such as npm for a bare `package.json` beside
   `Cargo.toml`. `doctor` reports the same install set.
+
+- `runner install` with two lockfiles that write one install directory,
+  such as `bun.lock` beside `package-lock.json`, runs one installer and
+  reports the other as shadowed, as `[install].on_collision` directs. The
+  install directories come from each package manager's declaration, so uv,
+  Poetry and Pipenv sharing `.venv` collide too.
+
+- `--pm npm --runtime bun run <name>` executes through Bun, as `--runtime
+  bun` alone does.
+
+- A `packageManager` naming Deno dispatches `package.json` scripts through
+  `deno task` when an npm lockfile or a `devEngines.packageManager` naming
+  npm sits beside it.
+
+- A `Justfile` symlink whose target is missing is absent; the other task
+  sources are still read.
+
+- A parallel chain item whose output cannot be written, as with stdout on a
+  full disk, fails with exit 1 in both the prefixed and the grouped mode, and
+  so does a parallel install lane.
 
 ### Security
 

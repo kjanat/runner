@@ -135,7 +135,7 @@ impl ScriptSupport {
 }
 
 /// Install dependencies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct InstallCap {
     /// The argv.
     pub argv: Template,
@@ -145,6 +145,30 @@ pub struct InstallCap {
     pub scripts: ScriptSupport,
     /// Config/lockfile pairs; any existing pair enables frozen mode. Empty is unconditional.
     pub locked_only_with: &'static [(&'static str, &'static str)],
+    /// The lockfiles a scope directory may hold beyond the provider's lockfile signals.
+    pub lockfiles: Option<Lockfiles>,
+}
+
+/// The lockfiles a scope directory may hold beyond the provider's lockfile signals.
+#[derive(Clone, Copy)]
+pub enum Lockfiles {
+    /// Fixed names relative to the scope.
+    Named(&'static [&'static str]),
+    /// Read from the project's configuration.
+    Ask(fn(&Path) -> std::io::Result<Vec<PathBuf>>),
+}
+
+impl Lockfiles {
+    /// The paths under `dir`.
+    ///
+    /// # Errors
+    /// Returns the configuration read failure.
+    pub fn paths(self, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+        match self {
+            Self::Named(names) => Ok(names.iter().map(|name| dir.join(name)).collect()),
+            Self::Ask(ask) => ask(dir),
+        }
+    }
 }
 
 /// Run a declared task.

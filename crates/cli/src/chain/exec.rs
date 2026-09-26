@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 
-use crate::chain::mux::{BufferSink, LineSink};
+use crate::chain::mux::{BufferSink, Delivery, LineSink};
 use crate::chain::{Chain, ChainItem, ChainItemKind, ChainMode, FailurePolicy};
 use crate::resolver::ResolutionOverrides;
 use crate::types::{DetectionWarning, ProjectContext};
@@ -245,13 +245,15 @@ trait ParallelOutput {
         spool: Self::Spool,
     ) -> Self::Task;
     fn job(task: &mut Self::Task) -> &mut Job;
+    /// Record a finished task and return its exit code, a failure when its
+    /// output could not be written.
     fn finished(
         &mut self,
         overrides: &ResolutionOverrides,
         outcomes: &mut Vec<ItemOutcome>,
         task: Self::Task,
         code: i32,
-    );
+    ) -> i32;
     fn kill(
         &mut self,
         overrides: &ResolutionOverrides,
@@ -460,11 +462,12 @@ impl<'a, O: ParallelOutput> Supervisor<'a, O> {
             for mut task in pending.by_ref() {
                 match O::job(&mut task).try_wait() {
                     Ok(Some(code)) => {
+                        let code = self
+                            .output
+                            .finished(self.overrides, self.outcomes, task, code);
                         if code != 0 {
                             self.first_failure.get_or_insert(code);
                         }
-                        self.output
-                            .finished(self.overrides, self.outcomes, task, code);
                     }
                     Ok(None) => {
                         if kill_on_fail && self.first_failure.is_some() {
@@ -523,9 +526,22 @@ impl Streaming {
     }
 }
 
+/// A streaming task, its reader threads, and whether its lines reached
+/// their streams.
+struct StreamingTask {
+    task: SpawnedTask,
+    delivery: Arc<Delivery>,
+    readers: Vec<std::thread::JoinHandle<()>>,
+}
+
+/// `code`, or a failure when a task that succeeded `lost` output.
+const fn delivered(lost: bool, code: i32) -> i32 {
+    if code == 0 && lost { 1 } else { code }
+}
+
 impl ParallelOutput for Streaming {
     type Spool = ();
-    type Task = SpawnedTask;
+    type Task = StreamingTask;
 
     fn spool(&self) -> Result<()> {
         Ok(())
@@ -536,7 +552,7 @@ impl ParallelOutput for Streaming {
         overrides: &ResolutionOverrides,
         mut task: SpawnedTask,
         (): (),
-    ) -> SpawnedTask {
+    ) -> StreamingTask {
         let prefix = if overrides.emits_groups_for(&task.key) {
             crate::chain::mux::render_prefix(&task.name, self.width, self.colorize)
         } else {
@@ -545,29 +561,44 @@ impl ParallelOutput for Streaming {
         let stdout = std::mem::replace(&mut task.stdout, Box::new(std::io::empty()));
         let stderr = std::mem::replace(&mut task.stderr, Box::new(std::io::empty()));
         let (stdout_policy, stderr_policy) = overrides.task_streams_for(&task.key);
-        let sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
-            Arc::clone(&self.base),
-            stdout_policy == crate::tool::TaskStream::Inherit,
-            stderr_policy == crate::tool::TaskStream::Inherit,
-        ));
-        self.readers.extend(crate::chain::mux::spawn_readers(
+        let delivery = Arc::new(Delivery::new(Arc::new(
+            crate::chain::mux::SelectiveSink::new(
+                Arc::clone(&self.base),
+                stdout_policy == crate::tool::TaskStream::Inherit,
+                stderr_policy == crate::tool::TaskStream::Inherit,
+            ),
+        )));
+        let sink: Arc<dyn LineSink> = delivery.clone();
+        let readers = crate::chain::mux::spawn_readers(
             vec![(prefix.clone(), false, stdout), (prefix, true, stderr)],
             &sink,
-        ));
-        task
+        );
+        StreamingTask {
+            task,
+            delivery,
+            readers,
+        }
     }
 
-    fn job(task: &mut SpawnedTask) -> &mut Job {
-        &mut task.job
+    fn job(task: &mut StreamingTask) -> &mut Job {
+        &mut task.task.job
     }
 
     fn finished(
         &mut self,
         overrides: &ResolutionOverrides,
         outcomes: &mut Vec<ItemOutcome>,
-        task: SpawnedTask,
+        task: StreamingTask,
         code: i32,
-    ) {
+    ) -> i32 {
+        let StreamingTask {
+            task,
+            delivery,
+            mut readers,
+        } = task;
+        wait_for_readers(&mut readers, READER_DRAIN_GRACE);
+        self.readers.append(&mut readers);
+        let code = delivered(delivery.failed(), code);
         record_finished(
             &task.key,
             overrides,
@@ -576,21 +607,28 @@ impl ParallelOutput for Streaming {
             task.started.elapsed(),
             code,
         );
+        code
     }
 
     fn kill(
         &mut self,
         overrides: &ResolutionOverrides,
         outcomes: &mut Vec<ItemOutcome>,
-        task: SpawnedTask,
+        task: StreamingTask,
     ) {
-        let SpawnedTask {
-            name,
-            key,
-            started,
-            mut job,
+        let StreamingTask {
+            task:
+                SpawnedTask {
+                    name,
+                    key,
+                    started,
+                    mut job,
+                    ..
+                },
+            readers,
             ..
         } = task;
+        self.readers.extend(readers);
         // Wait so stdio drains fully; a killed sibling still
         // reports timing for the work it managed before SIGKILL.
         // An exit that raced the kill stays a real result.
@@ -607,8 +645,9 @@ impl ParallelOutput for Streaming {
     /// Kill + reap a streaming-chain child that must not outlive an error
     /// return: `Child::drop` does not kill, so every early exit routes
     /// through here.
-    fn abort(&mut self, mut task: SpawnedTask) {
-        task.job.abort();
+    fn abort(&mut self, mut task: StreamingTask) {
+        task.task.job.abort();
+        self.readers.append(&mut task.readers);
     }
 
     /// Bounded drain, not an unbounded join: a reader only EOFs once every
@@ -665,6 +704,7 @@ struct GroupedTask {
     started: Instant,
     job: Job,
     sink: Arc<BufferSink>,
+    delivery: Arc<Delivery>,
     readers: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -719,11 +759,14 @@ impl ParallelOutput for Grouped {
         // infer its generic from the annotation and fail to coerce.
         let base: Arc<dyn LineSink> = sink.clone();
         let (stdout_policy, stderr_policy) = overrides.task_streams_for(&task.key);
-        let dyn_sink: Arc<dyn LineSink> = Arc::new(crate::chain::mux::SelectiveSink::new(
-            base,
-            stdout_policy == crate::tool::TaskStream::Inherit,
-            stderr_policy == crate::tool::TaskStream::Inherit,
-        ));
+        let delivery = Arc::new(Delivery::new(Arc::new(
+            crate::chain::mux::SelectiveSink::new(
+                base,
+                stdout_policy == crate::tool::TaskStream::Inherit,
+                stderr_policy == crate::tool::TaskStream::Inherit,
+            ),
+        )));
+        let dyn_sink: Arc<dyn LineSink> = delivery.clone();
         // No prefix: the group title identifies the task, while the sink
         // preserves stdout/stderr identity for replay.
         let readers = crate::chain::mux::spawn_readers(
@@ -739,6 +782,7 @@ impl ParallelOutput for Grouped {
             started: task.started,
             job: task.job,
             sink,
+            delivery,
             readers,
         }
     }
@@ -756,15 +800,14 @@ impl ParallelOutput for Grouped {
         outcomes: &mut Vec<ItemOutcome>,
         task: GroupedTask,
         code: i32,
-    ) {
-        let footer = record_grouped(overrides, outcomes, &task, code);
-        flush_grouped_task(
+    ) -> i32 {
+        finish_grouped(
+            overrides,
+            outcomes,
             task,
-            self.style,
-            self.in_gha,
-            self.colorize,
-            footer.as_deref(),
-        );
+            code,
+            (self.style, self.in_gha, self.colorize),
+        )
     }
 
     fn kill(
@@ -790,21 +833,28 @@ impl ParallelOutput for Grouped {
     fn drain(&mut self) {}
 }
 
-/// Record a finished grouped task for the end-of-chain summary and return
-/// its block footer. Reads the elapsed time once so the summary row and the
-/// footer report the same duration.
-fn record_grouped(
+/// Flush a finished grouped task's block and record it for the end-of-chain
+/// summary, returning its exit code, a failure when its output was lost.
+/// Reads the elapsed time once so the summary row and the footer report the
+/// same duration.
+fn finish_grouped(
     overrides: &ResolutionOverrides,
     outcomes: &mut Vec<ItemOutcome>,
-    task: &GroupedTask,
+    task: GroupedTask,
     code: i32,
-) -> Option<String> {
+    (style, in_gha, colorize): (BlockStyle, bool, bool),
+) -> i32 {
     let elapsed = task.started.elapsed();
+    let footer = timing_footer(overrides, &task.key, elapsed, code);
+    let name = task.name.clone();
+    let delivery = Arc::clone(&task.delivery);
+    let flushed = flush_grouped_task(task, style, in_gha, colorize, footer.as_deref());
+    let code = delivered(flushed.is_err() || delivery.failed(), code);
     outcomes.push(ItemOutcome {
-        name: task.name.clone(),
+        name,
         status: ItemStatus::Ran { code, elapsed },
     });
-    timing_footer(overrides, &task.key, elapsed, code)
+    code
 }
 
 /// Kill a still-running grouped sibling after a chain failure, record it,
@@ -820,11 +870,12 @@ fn kill_grouped_sibling(
     in_gha: bool,
     colorize: bool,
 ) {
-    let footer = match task.job.kill() {
-        Some(code) => record_grouped(overrides, outcomes, &task, code),
-        None => record_grouped_killed(overrides, outcomes, &task),
-    };
-    flush_grouped_task(task, style, in_gha, colorize, footer.as_deref());
+    if let Some(code) = task.job.kill() {
+        finish_grouped(overrides, outcomes, task, code, (style, in_gha, colorize));
+        return;
+    }
+    let footer = record_grouped_killed(overrides, outcomes, &task);
+    let _ = flush_grouped_task(task, style, in_gha, colorize, footer.as_deref());
 }
 
 /// The exit code of a just-killed sibling that beat the SIGKILL to its own
@@ -876,7 +927,7 @@ fn flush_grouped_task(
     in_gha: bool,
     colorize: bool,
     footer: Option<&str>,
-) {
+) -> std::io::Result<()> {
     flush_task_group(
         &task.name,
         style,
@@ -885,7 +936,7 @@ fn flush_grouped_task(
         &task.sink,
         task.readers,
         footer,
-    );
+    )
 }
 
 /// Give a finished task's reader threads a bounded chance to drain, then
@@ -900,7 +951,7 @@ fn flush_task_group(
     sink: &BufferSink,
     mut readers: Vec<std::thread::JoinHandle<()>>,
     timing_footer: Option<&str>,
-) {
+) -> std::io::Result<()> {
     use std::io::Write as _;
 
     wait_for_readers(&mut readers, READER_DRAIN_GRACE);
@@ -924,8 +975,9 @@ fn flush_task_group(
                 header
             };
             let mut out = std::io::stdout().lock();
-            let _ = writeln!(out, "{header}");
-            let _ = out.flush();
+            let written = writeln!(out, "{header}").and_then(|()| out.flush());
+            drop(out);
+            written?;
             None
         }
         BlockStyle::Bare => None,
@@ -937,9 +989,10 @@ fn flush_task_group(
     // reorders them relative to when they were written, so they would nest
     // in or close a fold early. Elsewhere no interpretation happens, so
     // leave the child's bytes untouched.
-    let _ = sink.replay_to(&mut stdout, &mut stderr, in_gha);
-    write_timing_footer(timing_footer, colorize);
+    let replayed = sink.replay_to(&mut stdout, &mut stderr, in_gha);
+    let footer = write_timing_footer(timing_footer, colorize);
     drop(group);
+    replayed.and(footer)
 }
 
 /// Compute the grouped-mode block footer (`finished in 1.2s (exit 0)`) when
@@ -958,10 +1011,12 @@ fn timing_footer(
 
 /// Write a grouped-task block footer to stdout, dimmed when colorizing.
 /// `None` is a no-op so callers can pass the gated footer through unchanged.
-fn write_timing_footer(footer: Option<&str>, colorize: bool) {
+fn write_timing_footer(footer: Option<&str>, colorize: bool) -> std::io::Result<()> {
     use std::io::Write as _;
 
-    let Some(footer) = footer else { return };
+    let Some(footer) = footer else {
+        return Ok(());
+    };
     let line = if colorize {
         use colored::Colorize as _;
         footer.dimmed().to_string()
@@ -969,8 +1024,8 @@ fn write_timing_footer(footer: Option<&str>, colorize: bool) {
         footer.to_string()
     };
     let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{line}");
-    let _ = out.flush();
+    writeln!(out, "{line}")?;
+    out.flush()
 }
 
 /// Close a multi-task chain with a per-task roll-up on stderr, so the one

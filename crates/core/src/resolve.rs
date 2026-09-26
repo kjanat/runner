@@ -100,6 +100,10 @@ impl Project {
                         .values()
                         .any(|choice| choice.id == present.provider),
                     present.scope != *scope,
+                    present
+                        .because
+                        .first()
+                        .map_or((Weight::Probed, 0), Evidence::strength),
                     self.present.iter().position(|p| std::ptr::eq(p, *present)),
                 )
             })
@@ -208,7 +212,7 @@ pub fn resolve_presence(
     registry: &Registry,
 ) -> std::io::Result<Project> {
     let mut warnings = Vec::new();
-    let mut present = observed_presence(tree, evidence, policy, registry, &mut warnings);
+    let mut present = observed_presence(evidence, policy, registry);
     for choice in choices(policy) {
         if !present.iter().any(|p| p.provider == choice.id) {
             warnings.push(Warning::about(
@@ -241,6 +245,17 @@ pub fn resolve_presence(
         ..Project::default()
     };
     project.refresh_bins(tree, registry);
+    for index in 0..project.present.len() {
+        let search = search_dirs(&project.present, &project.present[index].scope);
+        let provider = registry.by_id(project.present[index].provider);
+        observe_version(
+            tree,
+            provider,
+            &mut project.present[index],
+            &search,
+            &mut project.warnings,
+        );
+    }
     add_task_runners(tree, policy, registry, &mut project);
     Ok(project)
 }
@@ -284,11 +299,9 @@ fn disagreements(present: &[Present], registry: &Registry) -> Vec<Disagreement> 
 
 /// Present providers grouped from evidence, before ordering.
 fn observed_presence(
-    tree: &Tree,
     evidence: Vec<Evidence>,
     policy: &Policy,
     registry: &Registry,
-    warnings: &mut Vec<Warning>,
 ) -> Vec<Present> {
     let mut by_key: BTreeMap<(ProviderId, Scope), Vec<Evidence>> = BTreeMap::new();
     for item in evidence {
@@ -320,25 +333,35 @@ fn observed_presence(
         if strongest == Weight::Probed && chosen_by(policy, id).is_none() {
             continue;
         }
-        let mut observed = Present {
+        present.push(Present {
             provider: id,
             scope,
             version: None,
             bin_dirs: Vec::new(),
             because,
-        };
-        observe_version(tree, provider, &mut observed, warnings);
-        present.push(observed);
+        });
     }
     present
 }
 
-/// Ask the installed executable its version when the provider parses one,
-/// and let that version name the variant when nothing in the project did.
+/// The executable directories every provider present in `scope` or the root
+/// declares.
+fn search_dirs(present: &[Present], scope: &Scope) -> Vec<std::path::PathBuf> {
+    present
+        .iter()
+        .filter(|present| present.scope == *scope || present.scope == Scope::Root)
+        .flat_map(|present| present.bin_dirs.iter().cloned())
+        .collect()
+}
+
+/// Ask the installed executable in `search` or on `PATH` its version when
+/// the provider parses one, and let that version name the variant when
+/// nothing in the project did.
 fn observe_version(
     tree: &Tree,
     provider: &Provider,
     observed: &mut Present,
+    search: &[std::path::PathBuf],
     warnings: &mut Vec<Warning>,
 ) {
     let wants_variant = provider.caps.variant_of_version.is_some()
@@ -349,7 +372,11 @@ fn observe_version(
     if let Some(version) = provider.version
         && (provider.caps.variant_of_version.is_none() || wants_variant)
     {
-        match version(&crate::plan::scope_dir(tree, &observed.scope), observed) {
+        let queried = Present {
+            bin_dirs: search.to_vec(),
+            ..observed.clone()
+        };
+        match version(&crate::plan::scope_dir(tree, &observed.scope), &queried) {
             Ok(value) => observed.version = Some(value),
             Err(warning) => warnings.push(warning),
         }
@@ -366,8 +393,7 @@ fn observe_version(
                 .iter()
                 .position(|signal| matches!(signal, crate::Signal::Probe(name) if *name == program))
                 .map(crate::SignalId),
-            at: crate::probe::probe_with(program, &observed.bin_dirs)
-                .unwrap_or_else(|| program.into()),
+            at: crate::probe::probe_with(program, search).unwrap_or_else(|| program.into()),
             scope: observed.scope.clone(),
             weight: Weight::Probed,
             declared: Some(crate::Declared::Variant(name.into())),
@@ -471,12 +497,7 @@ fn add_task_runners(tree: &Tree, policy: &Policy, registry: &Registry, project: 
         {
             continue;
         }
-        let bins: Vec<_> = project
-            .present
-            .iter()
-            .filter(|present| present.scope == scope || present.scope == Scope::Root)
-            .flat_map(|present| present.bin_dirs.iter().cloned())
-            .collect();
+        let bins = search_dirs(&project.present, &scope);
         let mut candidates: Vec<_> = registry.iter().filter(|p| supports(p)).collect();
         candidates.sort_by_key(|provider| provider.caps.probe_priority);
         let Some((provider, at, signal)) = candidates.into_iter().find_map(|provider| {
@@ -507,7 +528,15 @@ fn add_task_runners(tree: &Tree, policy: &Policy, registry: &Registry, project: 
             Ok(dirs) => synthesised.bin_dirs = dirs,
             Err(warning) => project.warnings.push(warning),
         }
-        observe_version(tree, provider, &mut synthesised, &mut project.warnings);
+        let mut search = synthesised.bin_dirs.clone();
+        search.extend(bins);
+        observe_version(
+            tree,
+            provider,
+            &mut synthesised,
+            &search,
+            &mut project.warnings,
+        );
         project.present.push(synthesised);
     }
 }
@@ -766,6 +795,43 @@ mod tests {
         assert_eq!(project.warnings, []);
         let absent = resolve(&tree(), Vec::new(), &policy, &registry).unwrap();
         assert_eq!(absent.warnings.len(), 1);
+    }
+
+    #[test]
+    fn an_observed_package_manager_is_versioned_through_the_project_bin_dirs() {
+        fn version(
+            _: &std::path::Path,
+            present: &crate::Present,
+        ) -> Result<String, crate::Warning> {
+            present
+                .bin_dirs
+                .iter()
+                .any(|dir| dir.join("yarn").is_file())
+                .then(|| "4.1.0".to_owned())
+                .ok_or_else(|| crate::Warning::about(present.provider, "not in the bin dirs"))
+        }
+        static VERSIONED: &[Provider] = &[Provider {
+            version: Some(version),
+            ..fake(ProviderId::Yarn, "yarn", Ecosystem::Node)
+        }];
+        let dir = crate::probe::tests::TempDir::new("resolve-observed-version");
+        let bin = dir.path().join("node_modules").join(".bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("yarn"), "").unwrap();
+        let tree = Tree {
+            cwd: dir.path().to_path_buf(),
+            root: dir.path().to_path_buf(),
+            members: Vec::new(),
+        };
+        let project = resolve(
+            &tree,
+            vec![found(ProviderId::Yarn, Weight::Locked)],
+            &Policy::default(),
+            &Registry(VERSIONED),
+        )
+        .unwrap();
+        assert_eq!(project.warnings, []);
+        assert_eq!(project.present[0].version.as_deref(), Some("4.1.0"));
     }
 
     #[cfg(unix)]

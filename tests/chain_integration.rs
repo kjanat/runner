@@ -1260,3 +1260,25 @@ fn group_output_opt_out_drops_annotations_but_keeps_the_summary() {
         "the roll-up does not follow group_output. stderr: {stderr}",
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn parallel_builtins_fail_when_their_output_cannot_be_written() {
+    for project in ["chain-parallel-fail", "parallel-grouped"] {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .expect("/dev/full opens");
+        let output = runner_command()
+            .arg("--dir")
+            .arg(fixture(project))
+            .args(["run", "-p", "list", "list"])
+            .env_remove("GITHUB_ACTIONS")
+            .stdout(full)
+            .output()
+            .expect("runner binary spawns");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{project}: {stderr}");
+        assert!(stderr.contains("2 failed"), "{project}: {stderr}");
+    }
+}

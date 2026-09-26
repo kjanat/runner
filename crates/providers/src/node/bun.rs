@@ -54,6 +54,7 @@ pub const PROVIDER: Provider = Provider {
                 allow: ScriptMechanism::Warn("trustedDependencies"),
             },
             locked_only_with: &[],
+            lockfiles: None,
         }),
         run_task: Some(RunTaskCap {
             argv: t!["run", Quiet, Task, Args],

@@ -472,6 +472,36 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_deno_outranks_npm_evidence() {
+        for (name, files) in [
+            (
+                "decision-deno-over-lockfile",
+                &[
+                    (
+                        "package.json",
+                        r#"{ "packageManager": "deno@2.8.0", "scripts": { "build": "x" } }"#,
+                    ),
+                    ("package-lock.json", "{}"),
+                ][..],
+            ),
+            (
+                "decision-deno-over-dev-engines",
+                &[(
+                    "package.json",
+                    r#"{ "packageManager": "deno@2.8.0", "devEngines": { "packageManager": { "name": "npm" } } }"#,
+                )],
+            ),
+        ] {
+            let dir = project(name, files);
+            let ctx = crate::detect::detect(dir.path());
+            let decision = Observed::observe(&ctx, &ResolutionOverrides::default())
+                .expect("observation")
+                .decision(ProviderId::PackageJson);
+            assert_eq!(decision.map(|d| d.pm), Some(PackageManager::Deno), "{name}");
+        }
+    }
+
+    #[test]
     fn dev_engines_used_when_package_manager_absent() {
         let dir = project(
             "decision-dev-engines",

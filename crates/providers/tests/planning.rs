@@ -177,7 +177,11 @@ fn a_frozen_install_refuses_until_the_lockfile_it_would_pin_exists() {
     let install = Op::Install { operations: &[] };
     let project = Project::default();
     for (id, lockfiles, frozen_form) in [
-        (ProviderId::Npm, &["package-lock.json"][..], "ci"),
+        (
+            ProviderId::Npm,
+            &["package-lock.json", "npm-shrinkwrap.json"][..],
+            "ci",
+        ),
         (ProviderId::Pnpm, &["pnpm-lock.yaml"], "--frozen-lockfile"),
         (
             ProviderId::Bun,
@@ -227,6 +231,65 @@ fn a_frozen_install_refuses_until_the_lockfile_it_would_pin_exists() {
         plan_with(&fixture.0, &project, &frozen, &present, &install, &REGISTRY)
             .unwrap_or_else(|refusal| panic!("{id:?}: {refusal:?}"));
     }
+}
+
+#[test]
+fn a_frozen_install_accepts_alternative_and_configured_lockfiles() {
+    let frozen = Policy {
+        frozen: true,
+        ..Policy::default()
+    };
+    let install = Op::Install { operations: &[] };
+    let project = Project::default();
+    for (id, files, frozen_form) in [
+        (ProviderId::Npm, &[("npm-shrinkwrap.json", "{}")][..], "ci"),
+        (
+            ProviderId::Deno,
+            &[
+                (
+                    "deno.jsonc",
+                    r#"{ /* pinned */ "lock": { "path": "deps.lock" } }"#,
+                ),
+                ("deps.lock", "{}"),
+            ],
+            "--frozen",
+        ),
+        (
+            ProviderId::Deno,
+            &[
+                ("deno.json", r#"{ "lock": "deps.lock" }"#),
+                ("deps.lock", "{}"),
+            ],
+            "--frozen",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        for (name, body) in files {
+            std::fs::write(fixture.0.root.join(name), body).unwrap();
+        }
+        let present = fixture.present(id);
+        let locked = plan_with(&fixture.0, &project, &frozen, &present, &install, &REGISTRY)
+            .unwrap_or_else(|refusal| panic!("{id:?}: {refusal:?}"));
+        assert!(
+            locked.argv.contains(&frozen_form.into()),
+            "{id:?}: {locked:?}"
+        );
+    }
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("deno.json"),
+        r#"{ "lock": "deps.lock" }"#,
+    )
+    .unwrap();
+    let present = fixture.present(ProviderId::Deno);
+    assert_eq!(
+        plan_with(&fixture.0, &project, &frozen, &present, &install, &REGISTRY),
+        Err(Refusal::NoLockfile {
+            provider: ProviderId::Deno,
+            dir: fixture.0.root.clone(),
+            lockfiles: vec!["deno.lock".to_owned(), "deps.lock".to_owned()],
+        })
+    );
 }
 
 #[test]
@@ -1205,6 +1268,49 @@ fn a_runner_choice_refuses_another_runners_default_entry() {
     };
     assert_eq!(rung.name, "host");
     assert_eq!(plan.provider, Some(ProviderId::Make));
+}
+
+#[test]
+fn an_invocation_package_manager_keeps_the_chosen_runtime_first() {
+    let fixture = Fixture::new();
+    let project = Project {
+        present: vec![
+            fixture.present(ProviderId::Npm),
+            fixture.present(ProviderId::Bun),
+        ],
+        ..Project::default()
+    };
+    let mut policy = Policy {
+        reach: ReachPolicy::Allow,
+        runtime: Some(runner_core::Choice {
+            id: ProviderId::Bun,
+            from: runner_core::Layer::Cli,
+        }),
+        ..Policy::default()
+    };
+    policy.pm.0.insert(
+        runner_core::Ecosystem::Node,
+        runner_core::Choice {
+            id: ProviderId::Npm,
+            from: runner_core::Layer::Cli,
+        },
+    );
+    let cascade = Cascade {
+        tree: &fixture.0,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: None,
+        confirm: None,
+    };
+    let (rung, Dispatch::Plan(plan)) =
+        runner_core::dispatch(&cascade, "runner-audit-no-such-tool", &[]).unwrap()
+    else {
+        panic!("the runtime executes the tool");
+    };
+    assert_eq!(rung.name, "exec");
+    assert_eq!(plan.provider, Some(ProviderId::Bun));
 }
 
 #[test]
@@ -2307,6 +2413,9 @@ fn a_hoisted_binary_runs_in_the_invoking_member_scope() {
         assert!(plan.path_prepend.contains(&root_bin), "{expected_rung}");
         cascade.dep = None;
     }
+    let selected = runner_core::dependency_plan(&cascade, &tool, &[]).unwrap();
+    assert_eq!(selected.scope, member);
+    assert_eq!(selected.path_prepend.first(), Some(&member_bin));
 }
 
 #[test]

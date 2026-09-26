@@ -28,6 +28,7 @@ pub const PROVIDER: Provider = Provider {
                 allow: ScriptMechanism::Default,
             },
             locked_only_with: &[],
+            lockfiles: None,
         }),
         quiet: QuietSupport::NONE,
         ..Capabilities::NONE

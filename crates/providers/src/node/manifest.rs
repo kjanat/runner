@@ -39,14 +39,21 @@ fn trimmed(version: Option<&str>) -> Option<&str> {
 /// Read the legacy `packageManager` string, `name@version`, for `own`.
 #[must_use]
 pub fn package_manager(field: &Field<'_>, own: ProviderId) -> Option<Declared> {
-    let raw = field.value.as_str()?.trim();
-    let (name, version) = raw.split_once('@').map_or((raw, None), |(name, version)| {
-        (
-            name,
-            Some(version.split_once('+').map_or(version, |(v, _)| v)),
-        )
-    });
+    let (name, version) = legacy(field.value.as_str()?)?;
     declaration(name, version, own)
+}
+
+/// The name and version of a `packageManager` string, `None` when an `@`
+/// is followed by no version.
+fn legacy(raw: &str) -> Option<(&str, Option<&str>)> {
+    let raw = raw.trim();
+    match raw.split_once('@') {
+        None => Some((raw, None)),
+        Some((name, version)) => {
+            let version = version.split_once('+').map_or(version, |(v, _)| v).trim();
+            (!version.is_empty()).then_some((name, Some(version)))
+        }
+    }
 }
 
 /// Read `devEngines.packageManager`, one object or a list of them, for `own`.
@@ -103,8 +110,7 @@ fn legacy_field_is_unreadable(manifest: &Value) -> bool {
         .and_then(Value::as_str)
         .map(str::trim)
         .is_some_and(|raw| {
-            !raw.is_empty()
-                && provider_named(raw.split_once('@').map_or(raw, |(name, _)| name)).is_none()
+            !raw.is_empty() && legacy(raw).is_none_or(|(name, _)| provider_named(name).is_none())
         })
 }
 
@@ -244,6 +250,15 @@ mod tests {
             manifest: &manifest,
         };
         assert_eq!(super::dev_engines(&field, ProviderId::Yarn), None);
+        let trailing = json!({
+            "packageManager": "pnpm@",
+            "devEngines": { "packageManager": { "name": "yarn", "onFail": "ignore" } }
+        });
+        let field = Field {
+            value: &trailing["devEngines"]["packageManager"],
+            manifest: &trailing,
+        };
+        assert_eq!(super::dev_engines(&field, ProviderId::Yarn), None);
         let empty = json!({
             "packageManager": "  ",
             "devEngines": { "packageManager": { "name": "yarn", "onFail": "ignore" } }
@@ -276,6 +291,8 @@ mod tests {
             Some(Declared::Named)
         );
         assert_eq!(package_manager(&json!("pnpmm@9"), ProviderId::Pnpm), None);
+        assert_eq!(package_manager(&json!("pnpm@"), ProviderId::Pnpm), None);
+        assert_eq!(package_manager(&json!("pnpm@ "), ProviderId::Pnpm), None);
         assert_eq!(package_manager(&json!(9), ProviderId::Pnpm), None);
     }
 

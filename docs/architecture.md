@@ -312,6 +312,7 @@ pub struct InstallCap {
     pub frozen: Frozen, /* Flag("--frozen-lockfile") | Subcommand("ci") | Env("UV_FROZEN","1") | Unsupported */
     pub scripts: ScriptSupport, /* deny: Flag("--ignore-scripts"), allow: Flag("--no-ignore-scripts") | Env(..) | FlagAndEnv(..) | Default | Unsupported */
     pub locked_only_with: &'static [(&'static str, &'static str)], /* config/lockfile pairs; empty is unconditional */
+    pub lockfiles: Option<Lockfiles>, /* Named(&["npm-shrinkwrap.json"]) | Ask(fn(&Path) -> io::Result<Vec<PathBuf>>) */
 }
 
 pub struct RunTaskCap {
@@ -527,7 +528,7 @@ pub enum Refusal {
     NoLockfile {
         provider: ProviderId,
         dir: PathBuf,
-        lockfiles: Vec<String>, // the provider's `Signal::Lockfile` names
+        lockfiles: Vec<String>, // the `Signal::Lockfile` names, then `InstallCap::lockfiles`
     },
     Mismatch(Disagreement), // the manifest and a lockfile in one scope name different managers
     Unsafe(Unsafe),
@@ -542,7 +543,9 @@ answers to `name`, `source:name`, `member:name` for a member task and the
 and stream settings use.
 
 A frozen install refuses as `NoLockfile` when none of the provider's
-`Signal::Lockfile` names exists in its scope, before the manager is spawned.
+`Signal::Lockfile` names exists in its scope, nor any path its
+`InstallCap::lockfiles` adds (`npm-shrinkwrap.json`, the file a Deno config
+names with `"lock"`), before the manager is spawned.
 `locked_only_with` is the exception for a provider whose lockfile is opt-in:
 its frozen form is dropped, and nothing is refused, when no config/lockfile
 pair exists. `Mismatch` is raised by `plan_with` for any op that selects a package manager,

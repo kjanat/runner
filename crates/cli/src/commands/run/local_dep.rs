@@ -84,7 +84,7 @@ pub(super) fn try_selected_package(
     }
     let prepared = super::core::prepare(ctx, overrides, bin)?;
     let dep = |_: &str| Ok(None);
-    let plan = runner_core::file_plan(&prepared.cascade(&dep, None), &path, args)
+    let plan = runner_core::dependency_plan(&prepared.cascade(&dep, None), &path, args)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     Ok(Some(ResolvedBin {
         describe: format!("{bin} from {} (package {package})", dir.display()),

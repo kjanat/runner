@@ -214,3 +214,38 @@ fn on_collision_error_installs_nothing() {
     );
     assert!(stderr.contains("node_modules"), "stderr: {stderr}");
 }
+
+/// bun and npm lockfiles side by side, where npm reaches the install set
+/// through the core resolver alone.
+fn two_lockfile_project(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("runner-collision-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("fakebin")).expect("create project dir");
+    std::fs::write(dir.join("package.json"), r#"{"name":"collide"}"#).expect("package.json");
+    std::fs::write(dir.join("bun.lock"), "").expect("bun.lock");
+    std::fs::write(dir.join("package-lock.json"), "{}").expect("package-lock.json");
+    for pm in ["bun", "npm"] {
+        fake_pm(&dir, pm);
+    }
+    dir
+}
+
+#[test]
+fn a_resolver_found_writer_joins_the_shared_tree() {
+    let dir = two_lockfile_project("resolver-writer");
+    let (output, log) = install_in(&dir, &[]);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let (refused, refused_log) = install_in(&dir, &[("RUNNER_INSTALL_ON_COLLISION", "error")]);
+    let refused_stderr = String::from_utf8_lossy(&refused.stderr).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "install failed: {stderr}");
+    assert_eq!(
+        log.lines().count(),
+        2,
+        "one writer owns node_modules: {log}"
+    );
+    assert!(stderr.contains("shadowed"), "stderr: {stderr}");
+    assert_eq!(refused.status.code(), Some(2), "stderr: {refused_stderr}");
+    assert!(refused_log.is_empty(), "log: {refused_log}");
+}
