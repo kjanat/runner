@@ -47,7 +47,7 @@ pub const PROVIDER: Provider = Provider {
         }),
         file_interpreters: &["node", "nodejs", "bun", "deno"],
         install: Some(InstallCap {
-            argv: t!["install", Frozen, Scripts],
+            argv: t!["install", Quiet, Frozen, Scripts],
             frozen: Frozen::Flag("--frozen-lockfile"),
             scripts: ScriptSupport {
                 deny: ScriptMechanism::Flag("--ignore-scripts"),

@@ -863,6 +863,47 @@ fn why_reports_the_runtime_a_task_table_selects() {
 
 #[cfg(unix)]
 #[test]
+fn a_task_table_reaches_a_script_with_a_hash_in_its_name() {
+    let mut project = TempProject::new("task-hash-name")
+        .file(
+            "package.json",
+            r#"{ "scripts": { "build#prod": "true", "build": "true", "just#x": "true", "a:package.json#b": "true" } }"#,
+        )
+        .file("package-lock.json", "{}\n")
+        .file(
+            "runner.toml",
+            "[tasks.\"build#prod\".runtime]\njavascript = \"bun\"\n\n\
+             [tasks.\"just#x\".runtime]\njavascript = \"bun\"\n\n\
+             [tasks.\"a:package.json#b\".runtime]\njavascript = \"bun\"\n",
+        );
+    for tool in ["npm", "node", "bun"] {
+        project = project.executable(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
+    }
+    let stderr = dry_run_in(&project, &["run", "build#prod"]);
+    assert!(
+        stderr.contains(r#"argv: ["bun", "--bun", "run", "build#prod"]"#),
+        "{stderr}"
+    );
+    for name in ["just#x", "a:package.json#b"] {
+        let stderr = dry_run_in(&project, &["run", name]);
+        assert!(
+            stderr.contains(&format!(r#"argv: ["bun", "--bun", "run", "{name}"]"#)),
+            "{name}: {stderr}"
+        );
+    }
+    let stderr = dry_run_in(&project, &["run", "build"]);
+    assert!(
+        stderr.contains(r#"argv: ["npm", "run", "build"]"#),
+        "{stderr}"
+    );
+    let why: serde_json::Value =
+        serde_json::from_str(&report_in(&project, &["why", "build#prod", "--json"]))
+            .expect("why json");
+    assert_eq!(why["runtime"]["runtime"], "bun", "{why}");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_runtime_leaves_a_python_projects_exec_to_its_package_manager() {
     let mut project = TempProject::new("uv-exec")
         .file(

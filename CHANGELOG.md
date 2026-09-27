@@ -58,7 +58,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   --package= dlx`, `yarn dlx --package`, `deno x npm:<name>/<bin>`, `uvx
   --from`), honouring `--runtime` and a non-Node `--pm` like the bare-binary
   fallback does, and is refused when another installed package already
-  provides the binary. A binary the package does not declare is an error
+  provides the binary or when the binary is a path such as `./tool`. A
+  binary the package does not declare is an error
   naming the ones it has, the multi-binary ambiguity message suggests the
   `--package` form, and a registry specifier such as `npm:typescript` that no
   present tool executes is refused with the equivalent (#126).
@@ -347,6 +348,15 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   finds no test files. A Go module with a `package.json` runs `go test ./...`
   instead of refusing for want of `*.test.js` files.
 
+- `runner install -qq` passes the package manager its quiet flag, as `run`
+  does: `npm --silent install`, `npm --silent ci`, `cargo -q fetch`, `uv
+  --quiet sync`, and the same for pnpm, Yarn Classic, Bun, Deno, Poetry and
+  Pipenv.
+
+- `runner install --frozen` in a Bundler project sets `BUNDLE_FROZEN=true`
+  and refuses without `Gemfile.lock`, so Bundler fails instead of rewriting
+  the lockfile.
+
 - `--frozen` refuses before spawning a package manager whose lockfile is
   absent, naming the directory and the lockfiles it accepts: npm takes
   `npm-shrinkwrap.json` as well, and Deno the file its config names with
@@ -413,6 +423,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `[tasks.<key>].env` matches the same keys as `[tasks.<key>.output]`:
   `build`, `package.json:build`, `rfc:build` for a member task,
   and `rfc:package.json#build`, least specific first.
+
+- A task whose name contains `#`, such as the script `build#prod`, keeps its
+  `[tasks."build#prod"]` settings. Its pm, runtime, source and output
+  settings used to be dropped once the task was selected.
 
 - A `packageManager` value that names no known manager, or ends in an `@`
   with no version, voids `devEngines.packageManager` too; the lockfile or

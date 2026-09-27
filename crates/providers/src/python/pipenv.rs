@@ -21,8 +21,8 @@ pub const PROVIDER: Provider = Provider {
     caps: Capabilities {
         writes: &[".venv"],
         install: Some(InstallCap {
-            argv: t!["install"],
-            frozen: Frozen::Argv(t!["sync"]),
+            argv: t![Quiet, "install"],
+            frozen: Frozen::Argv(t![Quiet, "sync"]),
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],
             lockfiles: None,

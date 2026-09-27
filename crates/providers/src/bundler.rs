@@ -20,8 +20,8 @@ pub const PROVIDER: Provider = Provider {
     ],
     caps: Capabilities {
         install: Some(InstallCap {
-            argv: t!["install"],
-            frozen: Frozen::Unsupported,
+            argv: t!["install", Frozen],
+            frozen: Frozen::Env("BUNDLE_FROZEN", "true"),
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],
             lockfiles: None,

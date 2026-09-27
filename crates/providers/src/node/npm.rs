@@ -41,8 +41,8 @@ pub const PROVIDER: Provider = Provider {
             accepts: NameShape::BARE,
         }),
         install: Some(InstallCap {
-            argv: t!["install", Scripts],
-            frozen: Frozen::Argv(t!["ci", Scripts]),
+            argv: t![Quiet, "install", Scripts],
+            frozen: Frozen::Argv(t![Quiet, "ci", Scripts]),
             scripts: ScriptSupport {
                 deny: ScriptMechanism::Flag("--ignore-scripts"),
                 allow: ScriptMechanism::Flag("--no-ignore-scripts"),

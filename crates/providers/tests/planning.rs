@@ -252,17 +252,48 @@ fn a_frozen_install_refuses_until_the_lockfile_it_would_pin_exists() {
             "{id:?}: {locked:?}"
         );
     }
-    for id in [
-        ProviderId::Composer,
-        ProviderId::Go,
-        ProviderId::Bundler,
-        ProviderId::Poetry,
-    ] {
+    for id in [ProviderId::Composer, ProviderId::Go, ProviderId::Poetry] {
         let fixture = Fixture::new();
         let present = fixture.present(id);
         plan_with(&fixture.0, &project, &frozen, &present, &install, &REGISTRY)
             .unwrap_or_else(|refusal| panic!("{id:?}: {refusal:?}"));
     }
+}
+
+#[test]
+fn a_frozen_bundler_install_sets_bundle_frozen() {
+    let fixture = Fixture::new();
+    let frozen = Policy {
+        frozen: true,
+        ..Policy::default()
+    };
+    let install = Op::Install { operations: &[] };
+    let project = Project::default();
+    let present = fixture.present(ProviderId::Bundler);
+    let planned =
+        |policy: &Policy| plan_with(&fixture.0, &project, policy, &present, &install, &REGISTRY);
+    assert_eq!(
+        planned(&frozen),
+        Err(Refusal::NoLockfile {
+            provider: ProviderId::Bundler,
+            dir: fixture.0.root.clone(),
+            lockfiles: vec!["Gemfile.lock".to_owned()],
+        })
+    );
+    std::fs::write(fixture.0.root.join("Gemfile.lock"), "").unwrap();
+    let locked = planned(&frozen).unwrap();
+    assert_eq!(locked.argv, ["bundle", "install"]);
+    assert!(
+        locked
+            .env
+            .contains(&("BUNDLE_FROZEN".into(), "true".into())),
+        "{locked:?}"
+    );
+    let unfrozen = planned(&Policy::default()).unwrap();
+    assert!(
+        unfrozen.env.iter().all(|(key, _)| key != "BUNDLE_FROZEN"),
+        "{unfrozen:?}"
+    );
 }
 
 #[test]

@@ -24,7 +24,7 @@ pub const PROVIDER: Provider = Provider {
             accepts: NameShape::BARE,
         }),
         install: Some(InstallCap {
-            argv: t!["sync", Frozen],
+            argv: t![Quiet, "sync", Frozen],
             frozen: Frozen::Flag("--frozen"),
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],

@@ -76,7 +76,7 @@ pub const PROVIDER: Provider = Provider {
 
 const CLASSIC: Capabilities = Capabilities {
     install: Some(InstallCap {
-        argv: t!["install", Frozen, Scripts],
+        argv: t![Quiet, "install", Frozen, Scripts],
         frozen: Frozen::Flag("--frozen-lockfile"),
         scripts: ScriptSupport {
             deny: ScriptMechanism::Flag("--ignore-scripts"),

@@ -50,7 +50,7 @@ pub const PROVIDER: Provider = Provider {
             accepts: NameShape::BARE,
         }),
         install: Some(InstallCap {
-            argv: t!["install", Frozen, Scripts],
+            argv: t![Quiet, "install", Frozen, Scripts],
             frozen: Frozen::Flag("--frozen-lockfile"),
             scripts: ScriptSupport {
                 deny: ScriptMechanism::Flag("--ignore-scripts"),

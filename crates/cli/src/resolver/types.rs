@@ -304,11 +304,13 @@ impl<'a> TaskIdentity<'a> {
     fn parse(task: &'a str) -> Option<Self> {
         if let Some((prefix, name)) = task.split_once('#') {
             let (scope, source) = prefix.rsplit_once(':').unwrap_or(("root", prefix));
-            return crate::provider::task_source(source).map(|source| Self {
-                scope,
-                source,
-                name,
-            });
+            if let Some(source) = crate::provider::task_source(source) {
+                return Some(Self {
+                    scope,
+                    source,
+                    name,
+                });
+            }
         }
         let (source, name) = task.split_once(':')?;
         crate::provider::task_source(source).map(|source| Self {

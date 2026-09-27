@@ -513,4 +513,22 @@ mod tests {
         assert_eq!(task.pm, Some(ProviderId::Npm));
         assert_eq!(task.source, Some(ProviderId::PackageJson));
     }
+
+    #[test]
+    fn a_hash_in_a_root_task_name_keeps_its_bare_table() {
+        let resolved = resolve(
+            &Invocation::default(),
+            "[tasks.\"build#prod\"]\npm = \"yarn\"\nruntime.javascript = \"bun\"\n",
+        );
+        assert_eq!(
+            resolved.task("package.json:build#prod").pm,
+            Some(ProviderId::Yarn)
+        );
+        assert_eq!(
+            resolved
+                .runtime_for("package.json:build#prod")
+                .map(|over| over.runtime),
+            Some(ProviderId::Bun)
+        );
+    }
 }

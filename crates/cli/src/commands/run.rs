@@ -21,7 +21,6 @@
 //! stdio, [`dispatch_task_piped`] for the parallel chain executor) and
 //! the test module.
 
-use crate::provider::Named;
 use anyhow::Result;
 
 pub(crate) mod core;
@@ -39,14 +38,11 @@ pub(crate) use runtime::honors as runtime_honors;
 use crate::resolver::ResolutionOverrides;
 use crate::types::{ProjectContext, Task};
 
-/// The identity `[tasks.<key>]` config is matched against: `source:name`
-/// for root tasks, the full `member:source#name` FQN for member tasks.
+/// The identity `[tasks.<key>]` config is matched against: the task's
+/// `scope:source#name` FQN, whose part before the first `#` never comes from
+/// the task name.
 pub(crate) fn task_output_key(task: &Task) -> String {
-    if task.member.is_some() {
-        crate::schema::labels::fqn(task)
-    } else {
-        format!("{}:{}", task.source.label(), task.name)
-    }
+    crate::schema::labels::fqn(task)
 }
 
 /// Resolve `task` and run it with inherited stdio, returning the exit

@@ -162,7 +162,7 @@ const CAPS: Capabilities = Capabilities {
     }),
     file_interpreters: &["node", "nodejs", "bun", "deno"],
     install: Some(InstallCap {
-        argv: t!["install", Frozen, Scripts],
+        argv: t!["install", Quiet, Frozen, Scripts],
         frozen: Frozen::Flag("--frozen"),
         scripts: ScriptSupport {
             deny: ScriptMechanism::Default,

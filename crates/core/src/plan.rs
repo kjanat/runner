@@ -775,6 +775,12 @@ impl<'a> Shaping<'_, 'a> {
                     .caps
                     .package_exec
                     .ok_or_else(|| self.refuse())?;
+                if !cap.accepts.contains(NameShape::of(bin)) {
+                    return Err(Refusal::Unsafe(Unsafe::NameShape {
+                        name: bin.to_owned(),
+                        provider: self.provider.id,
+                    }));
+                }
                 fill.request.package = Some(package);
                 fill.request.name = Some(bin);
                 fill.request.args = args;
@@ -2707,6 +2713,12 @@ mod tests {
                     reach: Reach::Network,
                     accepts: NameShape::BARE.union(NameShape::VERSIONED),
                 }),
+                package_exec: Some(ExecCap {
+                    program: Some("npx"),
+                    argv: t!["--package", Package, "--", Name, Args],
+                    reach: Reach::Network,
+                    accepts: NameShape::BARE,
+                }),
                 test: Some(TestCap {
                     program: Some("node"),
                     argv: t!["--test", Args, Files],
@@ -3459,6 +3471,52 @@ mod tests {
                     provider: ProviderId::Go,
                 })
             );
+        }
+    }
+
+    #[test]
+    fn a_selected_package_takes_only_a_bare_binary_name() {
+        let registry = Registry(FAKES);
+        let project = Project {
+            present: vec![present(ProviderId::Npm, Weight::Locked)],
+            tasks: Vec::new(),
+            ..Project::default()
+        };
+        for bin in ["./tool", "../x/tool", "/usr/bin/true", "bin/tool", "C:\\x"] {
+            let refusal = plan(
+                &tree(),
+                &project,
+                &Policy::default(),
+                &Op::ExecPackage {
+                    package: "typescript",
+                    bin,
+                    args: &[],
+                },
+                &registry,
+            )
+            .expect_err("npx --package never sees a path");
+            assert_eq!(
+                refusal,
+                Refusal::Unsafe(Unsafe::NameShape {
+                    name: bin.to_owned(),
+                    provider: ProviderId::Npm,
+                })
+            );
+        }
+        for bin in ["tsc", "@scope/bin"] {
+            let made = plan(
+                &tree(),
+                &project,
+                &Policy::default(),
+                &Op::ExecPackage {
+                    package: "typescript",
+                    bin,
+                    args: &[],
+                },
+                &registry,
+            )
+            .expect("a bare binary name");
+            assert_eq!(words(&made), ["npx", "--package", "typescript", "--", bin]);
         }
     }
 

@@ -863,7 +863,7 @@ capability parameter, the core is missing one.
 | PM declaration | `packageManager`, `devEngines`      | n/a               | `[tool.uv]`, `[tool.poetry]`             | n/a                  | n/a                | n/a                     | n/a             |
 | Lockfile       | four, one per PM                    | `deno.lock`       | `uv.lock`, `poetry.lock`, `Pipfile.lock` | `Cargo.lock`         | `go.sum`           | `Gemfile.lock`          | `composer.lock` |
 | Workspace      | `workspaces`, `pnpm-workspace.yaml` | `workspace`       | `[tool.uv.workspace]`                    | `[workspace]`        | `go.work`          | n/a                     | n/a             |
-| Frozen install | flag, or `npm ci`                   | `--frozen`        | `--frozen`, `--no-update`, `--deploy`    | `--locked`           | n/a                | `--frozen`              | n/a             |
+| Frozen install | flag, or `npm ci`                   | `--frozen`        | `--frozen`, `--no-update`, `--deploy`    | `--locked`           | n/a                | `BUNDLE_FROZEN=true`    | n/a             |
 | Script policy  | flag or env, PM specific            | `--allow-scripts` | n/a                                      | n/a                  | n/a                | n/a                     | `--no-scripts`  |
 | Exec primitive | `npx`, `bun x`, `pnpm exec`         | `deno x`          | `uvx`, `poetry run`                      | `cargo run --bin`    | `go run mod@ver`   | `bundle exec`           | `composer exec` |
 | Exec reach     | network                             | network           | network for `uvx`                        | local                | network for `@ver` | local                   | local           |

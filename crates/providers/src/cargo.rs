@@ -81,7 +81,7 @@ pub const PROVIDER: Provider = Provider {
         task_priority: 6,
         workspaces: Some(runner_core::WorkspaceCap { declarations }),
         install: Some(InstallCap {
-            argv: t!["fetch", Frozen],
+            argv: t![Quiet, "fetch", Frozen],
             frozen: Frozen::Flag("--locked"),
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],

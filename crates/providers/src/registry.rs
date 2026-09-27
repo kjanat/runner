@@ -38,7 +38,10 @@ pub static REGISTRY: Registry = Registry(PROVIDERS);
 mod tests {
     use std::collections::HashSet;
 
-    use runner_core::{Kind, NameShape, Piece, ProviderId, Reach, Request, ScriptRequest, Signal};
+    use runner_core::{
+        Capabilities, Frozen, Kind, NameShape, Piece, ProviderId, Reach, Request, ScriptRequest,
+        Signal,
+    };
 
     use super::{PROVIDERS, REGISTRY};
 
@@ -120,22 +123,59 @@ mod tests {
         }
     }
 
+    fn every_caps() -> impl Iterator<Item = (String, &'static Capabilities)> {
+        PROVIDERS.iter().flat_map(|provider| {
+            std::iter::once((provider.label.to_owned(), &provider.caps)).chain(
+                provider
+                    .caps
+                    .variants
+                    .iter()
+                    .map(move |(name, caps)| (format!("{} {name}", provider.label), caps)),
+            )
+        })
+    }
+
     #[test]
     fn quiet_pieces_only_appear_where_a_ladder_exists() {
-        for provider in PROVIDERS {
+        for (label, caps) in every_caps() {
+            let frozen_argv = caps.install.and_then(|cap| match cap.frozen {
+                Frozen::Argv(template) => Some(template),
+                _ => None,
+            });
             let mentions_quiet = [
-                provider.caps.run_task.map(|cap| cap.argv),
-                provider.caps.install.map(|cap| cap.argv),
+                caps.run_task.map(|cap| cap.argv),
+                caps.install.map(|cap| cap.argv),
+                frozen_argv,
             ]
             .into_iter()
             .flatten()
             .any(|template| template.0.contains(&Piece::Quiet));
-            let has_ladder = provider.caps.quiet.strongest() > 0;
+            let has_ladder = caps.quiet.strongest() > 0;
             assert_eq!(
                 mentions_quiet, has_ladder,
-                "{}: quiet piece and quiet ladder disagree",
-                provider.label
+                "{label}: quiet piece and quiet ladder disagree"
             );
+        }
+    }
+
+    #[test]
+    fn every_install_with_a_quiet_ladder_passes_its_flag() {
+        for (label, caps) in every_caps() {
+            let (Some(install), Some(quiet)) = (caps.install, caps.quiet.at(1)) else {
+                continue;
+            };
+            let flag = words(&quiet.render(&Request::default()));
+            for frozen in [None, Some(install.frozen)] {
+                let rendered = words(&install.argv.render(&Request {
+                    frozen,
+                    quiet: Some(quiet),
+                    ..Request::default()
+                }));
+                assert!(
+                    rendered.windows(flag.len()).any(|window| window == flag),
+                    "{label} install {rendered:?} drops {flag:?}"
+                );
+            }
         }
     }
 

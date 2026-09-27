@@ -703,6 +703,26 @@ fn explain_reports_exact_applied_host_args() {
 }
 
 #[test]
+fn very_quiet_install_passes_the_tool_its_quiet_flag() {
+    if !tool_available("npm") {
+        eprintln!("skipping: `npm` not found on PATH");
+        return;
+    }
+    let proj = npm_project("install-quiet");
+    for (frozen, argv) in [
+        (&[][..], r#"argv: ["npm", "--silent", "install"]"#),
+        (&["--frozen"][..], r#"argv: ["npm", "--silent", "ci"]"#),
+    ] {
+        let mut args = vec!["--dry-run", "install", "-qq", "--no-tools"];
+        args.extend(frozen);
+        let output = runner_in(proj.path(), &[], &args);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "stderr: {stderr}");
+        assert!(stderr.contains(argv), "want {argv}. stderr: {stderr}");
+    }
+}
+
+#[test]
 fn explain_reports_output_policy_for_local_files_without_running_them() {
     if !tool_available("python3") {
         eprintln!("skipping: `python3` not found on PATH");

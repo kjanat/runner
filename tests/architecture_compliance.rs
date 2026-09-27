@@ -276,6 +276,30 @@ fn selected_package_obeys_download_and_dry_run() {
 }
 
 #[test]
+fn selected_package_refuses_a_path_as_its_binary() {
+    let fixture = Fixture::new();
+    fixture.program("npx");
+    fixture.executable("audit-tool", "#!/bin/sh\necho local >> \"$AUDIT_LOG\"\n");
+    for args in [
+        &[
+            "--dry-run",
+            "run",
+            "--package",
+            "audit-missing",
+            "./audit-tool",
+        ][..],
+        &["run", "--package", "audit-missing", "./audit-tool"][..],
+    ] {
+        let output = fixture.run(args, "true");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("cannot take"), "{stderr}");
+        assert!(!stderr.contains("npx"), "{stderr}");
+        fixture.assert_not_executed();
+    }
+}
+
+#[test]
 fn explain_clean_keeps_every_target_even_with_yes() {
     let fixture = Fixture::new();
     std::fs::create_dir_all(fixture.0.join("node_modules")).unwrap();

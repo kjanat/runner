@@ -43,7 +43,7 @@ pub const PROVIDER: Provider = Provider {
     caps: Capabilities {
         writes: &[".venv"],
         install: Some(InstallCap {
-            argv: t!["install"],
+            argv: t![Quiet, "install"],
             frozen: Frozen::Unsupported,
             scripts: ScriptSupport::NONE,
             locked_only_with: &[],

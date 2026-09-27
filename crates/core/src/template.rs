@@ -259,6 +259,19 @@ mod tests {
     }
 
     #[test]
+    fn frozen_env_sets_a_variable_at_the_frozen_piece() {
+        let rendered = t!["install", Frozen].render(&Request {
+            frozen: Some(Frozen::Env("BUNDLE_FROZEN", "true")),
+            ..Request::default()
+        });
+        assert_eq!(words(&rendered), ["install"]);
+        assert_eq!(
+            rendered.env,
+            vec![(OsString::from("BUNDLE_FROZEN"), OsString::from("true"))]
+        );
+    }
+
+    #[test]
     fn env_mechanisms_set_variables_instead_of_flags() {
         let template = t!["install", Frozen, Scripts];
         let rendered = template.render(&Request {
