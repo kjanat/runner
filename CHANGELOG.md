@@ -20,6 +20,14 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 ### Added
 
+- The GitHub Action takes a `version-file` input: a `.tool-versions` file whose
+  `runner` line (or `runner-run`, or a mise backend such as
+  `github:kjanat/runner` or `npm:runner-run`) sets the version to install.
+  `version` wins when both are set, and a file with no such line fails the
+  step. `version` no longer declares `latest` as its default, so an unset
+  `version` can defer to the file; it still installs `latest` when neither is
+  set.
+
 - `--package <name>` selects an npm package, and the task token names one of
   the binaries its manifest declares: `run --package typescript tsc`. An
   installed package resolves from its own `package.json`, or from `yarn bin`
