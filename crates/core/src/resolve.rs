@@ -130,14 +130,7 @@ impl Project {
                 .collect();
             for mut present in admitted {
                 present.bin_dirs = bin_dirs(tree, registry, &present).unwrap_or_default();
-                let search = search_dirs(&self.present, &present.scope);
-                observe_version(
-                    tree,
-                    registry.by_id(id),
-                    &mut present,
-                    &search,
-                    &mut self.warnings,
-                );
+                observe_version(tree, registry.by_id(id), &mut present, &mut self.warnings);
                 self.present.push(present);
             }
         }
@@ -317,13 +310,11 @@ pub fn resolve_presence(
     };
     project.refresh_bins(tree, registry);
     for index in 0..project.present.len() {
-        let search = search_dirs(&project.present, &project.present[index].scope);
         let provider = registry.by_id(project.present[index].provider);
         observe_version(
             tree,
             provider,
             &mut project.present[index],
-            &search,
             &mut project.warnings,
         );
     }
@@ -428,14 +419,13 @@ fn search_dirs(present: &[Present], scope: &Scope) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-/// Ask the installed executable in `search` or on `PATH` its version when
-/// the provider parses one, and let that version name the variant when
-/// nothing in the project did.
+/// Ask the executable on the host `PATH` its version when the provider
+/// parses one, and let that version name the variant when nothing in the
+/// project did.
 fn observe_version(
     tree: &Tree,
     provider: &Provider,
     observed: &mut Present,
-    search: &[std::path::PathBuf],
     warnings: &mut Vec<Warning>,
 ) {
     let wants_variant = provider.caps.variant_of_version.is_some()
@@ -447,7 +437,7 @@ fn observe_version(
         && (provider.caps.variant_of_version.is_none() || wants_variant)
     {
         let queried = Present {
-            bin_dirs: search.to_vec(),
+            bin_dirs: Vec::new(),
             ..observed.clone()
         };
         match version(&crate::plan::scope_dir(tree, &observed.scope), &queried) {
@@ -467,7 +457,7 @@ fn observe_version(
                 .iter()
                 .position(|signal| matches!(signal, crate::Signal::Probe(name) if *name == program))
                 .map(crate::SignalId),
-            at: crate::probe::probe_with(program, search).unwrap_or_else(|| program.into()),
+            at: crate::probe::probe_with(program, &[]).unwrap_or_else(|| program.into()),
             scope: observed.scope.clone(),
             weight: Weight::Probed,
             declared: Some(crate::Declared::Variant(name.into())),
@@ -601,15 +591,7 @@ fn add_task_runners(tree: &Tree, policy: &Policy, registry: &Registry, project: 
             Ok(dirs) => synthesised.bin_dirs = dirs,
             Err(warning) => project.warnings.push(warning),
         }
-        let mut search = synthesised.bin_dirs.clone();
-        search.extend(bins);
-        observe_version(
-            tree,
-            provider,
-            &mut synthesised,
-            &search,
-            &mut project.warnings,
-        );
+        observe_version(tree, provider, &mut synthesised, &mut project.warnings);
         project.present.push(synthesised);
     }
 }
@@ -995,17 +977,16 @@ mod tests {
     }
 
     #[test]
-    fn an_observed_package_manager_is_versioned_through_the_project_bin_dirs() {
+    fn an_observed_package_manager_is_versioned_without_the_project_bin_dirs() {
         fn version(
             _: &std::path::Path,
             present: &crate::Present,
         ) -> Result<String, crate::Warning> {
             present
                 .bin_dirs
-                .iter()
-                .any(|dir| dir.join("yarn").is_file())
+                .is_empty()
                 .then(|| "4.1.0".to_owned())
-                .ok_or_else(|| crate::Warning::about(present.provider, "not in the bin dirs"))
+                .ok_or_else(|| crate::Warning::about(present.provider, "given project bin dirs"))
         }
         static VERSIONED: &[Provider] = &[Provider {
             version: Some(version),

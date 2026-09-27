@@ -356,6 +356,39 @@ fn a_frozen_install_accepts_alternative_and_configured_lockfiles() {
 }
 
 #[test]
+fn a_frozen_deno_install_ignores_a_lockfile_above_the_tree_root() {
+    let outer = Fixture::new();
+    std::fs::write(outer.0.root.join("deno.json"), r#"{ "lock": "deno.lock" }"#).unwrap();
+    std::fs::write(outer.0.root.join("deno.lock"), "{}").unwrap();
+    let root = outer.0.root.join("inner");
+    std::fs::create_dir_all(&root).unwrap();
+    let inner = Fixture(Tree {
+        cwd: root.clone(),
+        root: root.clone(),
+        members: vec![],
+    });
+    let frozen = Policy {
+        frozen: true,
+        ..Policy::default()
+    };
+    assert_eq!(
+        plan_with(
+            &inner.0,
+            &Project::default(),
+            &frozen,
+            &inner.present(ProviderId::Deno),
+            &Op::Install { operations: &[] },
+            &REGISTRY,
+        ),
+        Err(Refusal::NoLockfile {
+            provider: ProviderId::Deno,
+            dir: root,
+            lockfiles: vec!["deno.lock".to_owned()],
+        })
+    );
+}
+
+#[test]
 fn unsupported_and_allowlist_script_policies_are_clamped() {
     let fixture = Fixture::new();
     for (id, scripts, clamped) in [
@@ -457,6 +490,13 @@ fn a_malformed_manifest_is_no_evidence_and_keeps_other_providers() {
             .filter(|item| item.provider == Some(ProviderId::Poetry))
             .all(|item| item.weight == Weight::Probed),
         "a package manager gains nothing from a manifest it cannot parse"
+    );
+    assert!(
+        evidence
+            .iter()
+            .filter(|item| item.provider == Some(ProviderId::Deno))
+            .all(|item| item.weight == Weight::Probed),
+        "a malformed package.json names no deno"
     );
     let project =
         runner_core::resolve(&fixture.0, evidence, &Policy::default(), &REGISTRY).unwrap();

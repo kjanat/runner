@@ -344,6 +344,41 @@ fn a_host_manager_plan_cannot_resolve_to_a_project_shim() {
 }
 
 #[test]
+fn observation_never_runs_a_project_bin_for_a_version() {
+    for (manifest, lockfile, program) in [
+        (r#"{"name":"audit"}"#, "yarn.lock", "yarn"),
+        (
+            r#"{"name":"audit","engines":{"node":">=20"}}"#,
+            "package-lock.json",
+            "node",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.file("package.json", manifest);
+        std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
+        fixture.file(lockfile, "");
+        std::fs::create_dir_all(fixture.0.join("node_modules/.bin")).unwrap();
+        fixture.executable(
+            &format!("node_modules/.bin/{program}"),
+            "#!/bin/sh\nprintf '%s %s\\n' \"$0\" \"$*\" >> \"$AUDIT_LOG\"\necho 4.0.0\n",
+        );
+        for command in ["list", "info", "doctor"] {
+            let output = fixture.run(&[command], "false");
+            assert!(
+                !fixture.0.join("executed").exists(),
+                "{program} {command}: {}",
+                std::fs::read_to_string(fixture.0.join("executed")).unwrap_or_default()
+            );
+            assert!(
+                output.status.success(),
+                "{program} {command}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
 fn go_task_stamps_vcs_inside_a_checkout() {
     let fixture = Fixture::new();
     fixture.file("go.mod", "module example.com/auditgo\n\ngo 1.24\n");

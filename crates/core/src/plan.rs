@@ -1000,7 +1000,7 @@ impl<'a> Shaping<'_, 'a> {
             return Ok(());
         }
         if let Some(also) = cap.lockfiles {
-            paths.extend(also.paths(dir)?);
+            paths.extend(also.paths(dir, &self.tree.root)?);
         }
         for path in &paths {
             if optional_file(path)? {

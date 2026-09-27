@@ -127,7 +127,7 @@ fn look(
             .collect(),
         Signal::ManifestField { files, path, parse } => match manifest_field(dir, files, path) {
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                if provider.kind.contains(Kind::TASK_SOURCE) {
+                if provider.kind == Kind::TASK_SOURCE {
                     first_file(dir, files)?
                         .map(|at| evidence(at, Weight::Configured, None))
                         .into_iter()

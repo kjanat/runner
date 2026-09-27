@@ -181,19 +181,19 @@ pub struct InstallCap {
 pub enum Lockfiles {
     /// Fixed names relative to the scope.
     Named(&'static [&'static str]),
-    /// Read from the project's configuration.
-    Ask(fn(&Path) -> std::io::Result<Vec<PathBuf>>),
+    /// Read from the project's configuration at or above the scope, within the root.
+    Ask(fn(&Path, &Path) -> std::io::Result<Vec<PathBuf>>),
 }
 
 impl Lockfiles {
-    /// The paths under `dir`.
+    /// The paths for the scope `dir` of the tree at `root`.
     ///
     /// # Errors
     /// Returns the configuration read failure.
-    pub fn paths(self, dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    pub fn paths(self, dir: &Path, root: &Path) -> std::io::Result<Vec<PathBuf>> {
         match self {
             Self::Named(names) => Ok(names.iter().map(|name| dir.join(name)).collect()),
-            Self::Ask(ask) => ask(dir),
+            Self::Ask(ask) => ask(dir, root),
         }
     }
 }

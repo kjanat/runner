@@ -254,7 +254,8 @@ and each has a narrow reason:
 - `tasks` when the task format is the tool's own (justfile parsing, `mise
   tasks --json`, `[[bin]]` in `Cargo.toml`, `cmd/<name>` in Go).
 - `version` when `<program> --version` output needs a tool-specific parse.
-  It runs in the present's scope directory, so a directory-aware shim
+  It resolves `<program>` from the host `PATH` and never from a project bin
+  dir. It runs in the present's scope directory, so a directory-aware shim
   answers for that project, and it runs for a manager the `PATH` fallback
   admitted as much as for one the project named.
 - `hooks.before_plan` for a warning or refusal the core cannot know, such as
@@ -572,8 +573,9 @@ and stream settings use.
 
 A frozen install refuses as `NoLockfile` when none of the provider's
 `Signal::Lockfile` names exists in its scope, nor any path its
-`InstallCap::lockfiles` adds (`npm-shrinkwrap.json`, the file a Deno config
-names with `"lock"`), before the manager is spawned.
+`InstallCap::lockfiles` adds (`npm-shrinkwrap.json`, the file the nearest
+Deno config between the scope and the tree root names with `"lock"`), before
+the manager is spawned.
 `locked_only_with` is the exception for a provider whose lockfile is opt-in:
 its frozen form is dropped, and nothing is refused, when no config/lockfile
 pair exists. When the manifest and a lockfile in one scope name different

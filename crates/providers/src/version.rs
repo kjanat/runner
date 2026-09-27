@@ -14,7 +14,7 @@ pub(crate) fn read(
     let program = provider
         .program
         .ok_or_else(|| error("no executable to query".to_owned()))?;
-    let program = runner_core::probe_with(program, &present.bin_dirs)
+    let program = runner_core::probe_with(program, &[])
         .ok_or_else(|| error(format!("{} is not on PATH", provider.label)))?;
     let output = std::process::Command::new(program)
         .arg("--version")
@@ -57,27 +57,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_query_runs_in_the_given_directory_through_the_present_bin_dirs() {
-        let dir = std::env::temp_dir().join(format!("runner-version-dir-{}", std::process::id()));
+    fn the_query_never_runs_an_executable_from_the_present_bin_dirs() {
+        let dir = std::env::temp_dir().join(format!("runner-version-bins-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let bin = dir.join("bin");
         let project = dir.join("project");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&project).unwrap();
-        let yarn = bin.join("yarn");
-        write_executable(&yarn, "#!/bin/sh\npwd -P\n");
+        write_executable(
+            &bin.join("yarn"),
+            "#!/bin/sh\ntouch \"$(dirname \"$0\")/ran\"\necho 9.9.9\n",
+        );
         let present = runner_core::Present {
             provider: runner_core::ProviderId::Yarn,
             scope: runner_core::Scope::Root,
             version: None,
-            bin_dirs: vec![bin],
+            bin_dirs: vec![bin.clone()],
             because: Vec::new(),
         };
-        let reported = super::read(&project, &present).unwrap();
-        assert_eq!(
-            std::path::PathBuf::from(reported).canonicalize().unwrap(),
-            project.canonicalize().unwrap()
-        );
+        let reported = super::read(&project, &present);
+        assert!(!bin.join("ran").exists(), "{reported:?}");
+        assert_ne!(reported.ok().as_deref(), Some("9.9.9"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

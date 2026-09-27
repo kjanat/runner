@@ -72,18 +72,23 @@ fn member_name(dir: &Path) -> Result<Manifest, runner_core::Warning> {
         .map_or(Manifest::Absent, |(_, document)| name(&document)))
 }
 
-/// The lockfile the nearest Deno config names with `"lock"`, relative to that config.
-fn lockfiles(dir: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
+/// The lockfile the nearest Deno config at or above `dir` within `root` names
+/// with `"lock"`, relative to that config.
+fn lockfiles(dir: &Path, root: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
     #[derive(serde::Deserialize)]
     struct Config {
         lock: Option<serde_json::Value>,
     }
-    let Some(config) = dir.ancestors().find_map(|ancestor| {
-        ["deno.json", "deno.jsonc"]
-            .into_iter()
-            .map(|name| ancestor.join(name))
-            .find(|path| path.is_file())
-    }) else {
+    let Some(config) = dir
+        .ancestors()
+        .take_while(|ancestor| ancestor.starts_with(root))
+        .find_map(|ancestor| {
+            CONFIGS
+                .into_iter()
+                .map(|name| ancestor.join(name))
+                .find(|path| path.is_file())
+        })
+    else {
         return Ok(Vec::new());
     };
     let text = std::fs::read_to_string(&config)?;
@@ -283,7 +288,7 @@ fn declared_node_modules_dir(dir: &Path, root: &Path) -> Option<bool> {
 mod tests {
     use std::fs;
 
-    use super::writes_node_modules;
+    use super::{lockfiles, writes_node_modules};
     use crate::extract::test_support::TempDir;
 
     fn writes(dir: &TempDir) -> bool {
@@ -342,6 +347,23 @@ mod tests {
         fs::write(dir.path().join("deno.json"), r#"{ "tasks": {} }"#).expect("config");
         fs::write(dir.path().join("package.json"), r#"{"name": "#).expect("manifest");
         assert!(writes(&dir));
+    }
+
+    #[test]
+    fn the_lockfile_walk_stops_at_the_root() {
+        let top = TempDir::new("deno-lock-walk");
+        fs::write(top.path().join("deno.json"), r#"{ "lock": "deno.lock" }"#).expect("config");
+        fs::write(top.path().join("deno.lock"), "{}").expect("lock");
+        let inner = top.path().join("inner");
+        fs::create_dir_all(&inner).expect("inner");
+        assert_eq!(
+            lockfiles(&inner, &inner).expect("inner root"),
+            Vec::<std::path::PathBuf>::new()
+        );
+        assert_eq!(
+            lockfiles(&inner, top.path()).expect("outer root"),
+            [top.path().join("deno.lock")]
+        );
     }
 
     #[test]

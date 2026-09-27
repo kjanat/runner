@@ -359,8 +359,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - `--frozen` refuses before spawning a package manager whose lockfile is
   absent, naming the directory and the lockfiles it accepts: npm takes
-  `npm-shrinkwrap.json` as well, and Deno the file its config names with
-  `"lock"`. A mise config
+  `npm-shrinkwrap.json` as well, and Deno the file named with `"lock"` by
+  the nearest Deno config inside the project tree. A mise config
   without `mise.lock` installs unlocked, since mise lockfiles are opt-in. A
   lifecycle-script policy the manager cannot express is disclosed by
   `runner install` and `--dry-run`.
@@ -394,10 +394,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   version and variant as one the project names, so a `package.json` with
   scripts alone runs Yarn 4 as Berry. A `devEngines` range such as `>=1`
   admits both Yarn lines, so the installed version decides. The version
-  query runs in the project directory, so `--dir` sees the Yarn a
-  directory-aware shim serves there, and finds a Yarn that only the project's
-  bin dirs or mise's tool dirs hold. A Yarn whose line is still unknown runs
-  scripts as `yarn run <task>` and gets no `--silent`.
+  query runs the Yarn on the host `PATH` in the project directory, so
+  `--dir` sees the Yarn a directory-aware shim serves there. A
+  `node_modules/.bin/yarn` or `node_modules/.bin/node` never runs to report a
+  version. A Yarn whose line is still unknown runs scripts as
+  `yarn run <task>` and gets no `--silent`.
 
 - Python test detection looks in the invocation directory and then the
   provider's scope, so `conftest.py` beside the tests and `pytest.ini` at
