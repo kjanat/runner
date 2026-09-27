@@ -35,15 +35,11 @@ impl TempProject {
 
     #[cfg(unix)]
     fn executable(self, name: &str, contents: &str) -> Self {
-        use std::os::unix::fs::PermissionsExt;
-
         let path = self.path.join(name);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create executable parent");
         }
-        std::fs::write(&path, contents).expect("write executable");
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-            .expect("mark executable");
+        write_executable(&path, contents);
         self
     }
 
@@ -56,6 +52,24 @@ impl Drop for TempProject {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
 }
 
 fn runner_binary() -> PathBuf {

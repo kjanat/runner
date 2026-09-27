@@ -43,14 +43,19 @@ impl TempProject {
     /// Write a file and mark it executable, so dispatch sees the exec bit and
     /// the `#!` line the real-world cases carry.
     fn executable(self, name: &str, contents: &str) -> Self {
-        let this = self.file(name, contents);
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(this.path.join(name), std::fs::Permissions::from_mode(0o755))
-                .expect("chmod +x");
+            let path = self.path.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dir");
+            }
+            write_executable(&path, contents);
+            self
         }
-        this
+        #[cfg(not(unix))]
+        {
+            self.file(name, contents)
+        }
     }
 
     fn path(&self) -> &Path {
@@ -62,6 +67,24 @@ impl Drop for TempProject {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
     }
+}
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
 }
 
 fn run_binary() -> PathBuf {
@@ -165,14 +188,10 @@ fn arrow_only_with(dir: &Path, args: &[&str], envs: &[(&str, &str)]) -> Output {
     std::fs::create_dir_all(&tools).unwrap();
     #[cfg(unix)]
     for name in ["node", "bun", "deno", "npx"] {
-        use std::os::unix::fs::PermissionsExt;
-        let file = tools.join(name);
-        std::fs::write(
-            &file,
+        write_executable(
+            &tools.join(name),
             "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 26.0.0; else exit 127; fi\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
     }
     cmd.env(
         "PATH",
@@ -625,8 +644,6 @@ fn runtime_node_warns_about_the_lifecycle_scripts_it_skips() {
 /// alone, the given `runner.toml`, and a lockfile when `locked`.
 #[cfg(unix)]
 fn fake_tool_project(tag: &str, config: &str, locked: bool) -> TempProject {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let mut project = TempProject::new(tag)
         .file(
             "package.json",
@@ -638,12 +655,7 @@ fn fake_tool_project(tag: &str, config: &str, locked: bool) -> TempProject {
         project = project.file("package-lock.json", "{}\n");
     }
     for tool in ["npm", "node", "bun", "deno"] {
-        project = project.file(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
-        std::fs::set_permissions(
-            project.path().join("bin").join(tool),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .expect("chmod +x");
+        project = project.executable(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
     }
     project
 }
@@ -755,6 +767,34 @@ fn a_task_table_package_manager_that_cannot_run_the_task_refuses_it() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_task_table_node_runtime_runs_the_task_through_node() {
+    let project = fake_tool_project(
+        "task-runtime-node-spawn",
+        "[tasks.build.runtime]\njavascript = \"node\"\n",
+        true,
+    );
+    write_executable(
+        &project.path().join("bin").join("node"),
+        "#!/bin/sh\necho v22.0.0\n",
+    );
+    let output = support::command(env!("CARGO_BIN_EXE_runner"))
+        .env("PATH", project.path().join("bin"))
+        .arg("--dir")
+        .arg(project.path())
+        .args(["run", "build"])
+        .output()
+        .expect("runner should execute");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    let stderr = dry_run_in(&project, &["run", "build"]);
+    assert!(
+        stderr.contains(r#"argv: ["node", "--run", "build"]"#),
+        "{stderr}"
+    );
+}
+
 /// `runner` with `args` in `project`, its stdout.
 #[cfg(unix)]
 fn report_in(project: &TempProject, args: &[&str]) -> String {
@@ -824,8 +864,6 @@ fn why_reports_the_runtime_a_task_table_selects() {
 #[cfg(unix)]
 #[test]
 fn a_runtime_leaves_a_python_projects_exec_to_its_package_manager() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let mut project = TempProject::new("uv-exec")
         .file(
             "pyproject.toml",
@@ -833,12 +871,7 @@ fn a_runtime_leaves_a_python_projects_exec_to_its_package_manager() {
         )
         .file("uv.lock", "");
     for tool in ["uv", "uvx", "bun", "node", "npx"] {
-        project = project.file(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
-        std::fs::set_permissions(
-            project.path().join("bin").join(tool),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .expect("chmod +x");
+        project = project.executable(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
     }
     for args in [
         &["--pm", "uv", "--runtime", "bun", "run", "ruff"][..],

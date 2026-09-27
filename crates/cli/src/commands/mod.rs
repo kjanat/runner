@@ -807,10 +807,26 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn write_executable(path: &std::path::Path, contents: &str) {
+        use std::io::Write as _;
+        let mut child = Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh writes the executable");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(contents.as_bytes())
+            .expect("contents written");
+        assert!(child.wait().expect("sh exits").success());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn spawn_resolves_dev_dependency_binary_via_child_path() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         // End-to-end pin for the mechanism the PATH fix relies on: the
         // OS-level bare-name lookup must honor the PATH set on the
         // child Command (std documents this on `Command::new`). A
@@ -822,9 +838,7 @@ mod tests {
         let bin = dir.path().join("node_modules").join(".bin");
         fs::create_dir_all(&bin).expect("bin dir should be created");
         let shim = bin.join("runner-test-shim");
-        fs::write(&shim, "#!/bin/sh\nexit 42\n").expect("shim should be written");
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755))
-            .expect("shim should be marked executable");
+        write_executable(&shim, "#!/bin/sh\nexit 42\n");
 
         let plan = shim_plan(dir.path(), &[]);
         let mut command = runner_core::execute::command(&plan).unwrap();

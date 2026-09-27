@@ -38,10 +38,26 @@ pub(crate) fn read(
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
+    fn write_executable(path: &std::path::Path, contents: &str) {
+        use std::io::Write as _;
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+            .arg(path)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("sh writes the executable");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(contents.as_bytes())
+            .expect("contents written");
+        assert!(child.wait().expect("sh exits").success());
+    }
+
+    #[cfg(unix)]
     #[test]
     fn the_query_runs_in_the_given_directory_through_the_present_bin_dirs() {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let dir = std::env::temp_dir().join(format!("runner-version-dir-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let bin = dir.join("bin");
@@ -49,8 +65,7 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&project).unwrap();
         let yarn = bin.join("yarn");
-        std::fs::write(&yarn, "#!/bin/sh\npwd -P\n").unwrap();
-        std::fs::set_permissions(&yarn, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&yarn, "#!/bin/sh\npwd -P\n");
         let present = runner_core::Present {
             provider: runner_core::ProviderId::Yarn,
             scope: runner_core::Scope::Root,

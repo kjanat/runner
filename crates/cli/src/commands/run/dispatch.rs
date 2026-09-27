@@ -430,7 +430,7 @@ fn dispatch_plan(
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
     crate::commands::print_output_explain(overrides, &task_key);
     crate::commands::set_task_stdio(&mut cmd, stdout, stderr);
-    let diagnostic = spawn_diagnostic(entry, overrides, &plan, policy)?;
+    let diagnostic = spawn_diagnostic(entry, overrides, &task_key, &plan, policy)?;
     let spawn = SpawnDispatch {
         task_key,
         command: cmd,
@@ -444,14 +444,15 @@ fn dispatch_plan(
 fn spawn_diagnostic(
     entry: Option<&Task>,
     overrides: &ResolutionOverrides,
+    key: &str,
     plan: &runner_core::Plan,
     policy: &runner_core::Policy,
 ) -> Result<SpawnDiagnostic> {
     let managed = entry.is_some_and(|entry| {
         entry.source.is_managed()
             && overrides
-                .js_runtime()
-                .is_none_or(|runtime| !runtime::honors(entry.source, runtime))
+                .runtime_for(key)
+                .is_none_or(|chosen| !runtime::honors(entry.source, chosen.runtime))
     });
     if !managed {
         return Ok(SpawnDiagnostic::Passthrough);

@@ -48,20 +48,28 @@ fn colliding_project(name: &str, extra_pms: &[&str]) -> PathBuf {
 /// installs interleave in the log and serialized ones cannot.
 fn fake_pm(dir: &Path, pm: &str) {
     let script = dir.join("fakebin").join(pm);
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.0.0; exit 0; fi\necho '{pm} \
-             start' >> \"$RUNNER_TEST_LOG\"\nsleep 0.3\necho '{pm} end' >> \"$RUNNER_TEST_LOG\"\n"
-        ),
-    )
-    .expect("write fake pm");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod fake pm");
-    }
+    let contents = format!(
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 1.0.0; exit 0; fi\necho '{pm} start' \
+         >> \"$RUNNER_TEST_LOG\"\nsleep 0.3\necho '{pm} end' >> \"$RUNNER_TEST_LOG\"\n"
+    );
+    write_executable(&script, &contents);
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
 }
 
 fn install_in(dir: &Path, env: &[(&str, &str)]) -> (Output, String) {

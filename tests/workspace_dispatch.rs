@@ -60,6 +60,24 @@ impl Drop for TempWorkspace {
     }
 }
 
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
+}
+
 fn runner_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_runner"))
 }
@@ -535,16 +553,10 @@ fn fully_qualified_tasks_work_from_any_directory() {
 #[cfg(unix)]
 #[test]
 fn the_root_config_applies_from_a_subdirectory_and_a_member() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let ws = workspace("root-config")
         .file("runner.toml", "[tasks.hello]\npm = \"deno\"\n")
-        .file("tools/deno", "#!/bin/sh\necho 1.0.0\n");
-    std::fs::set_permissions(
-        ws.path().join("tools/deno"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .expect("chmod +x");
+        .dir("tools");
+    write_executable(&ws.path().join("tools/deno"), "#!/bin/sh\necho 1.0.0\n");
     let config = ws.path().join("runner.toml");
     for from in [ws.path().join("docs"), ws.path().join("rfc")] {
         let output = support::command(runner_binary())

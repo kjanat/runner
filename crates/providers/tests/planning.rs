@@ -1314,20 +1314,35 @@ fn clean_skips_a_member_symlinked_outside_the_root() {
     assert!(sentinel.is_file());
 }
 
+#[cfg(unix)]
+fn write_executable(path: &std::path::Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
+}
+
 #[test]
 #[cfg(unix)]
 fn declared_health_checks_report_findings_and_query_failures() {
-    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
     let program = fixture.0.root.join("health-tool");
-    std::fs::write(
+    write_executable(
         &program,
         "#!/bin/sh\nif [ \"$1\" = ls ]; then printf '%s' \
          '{\"node\":[{\"version\":\"22\",\"installed\":false}]}'; else echo broken >&2; exit 7; \
          fi\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let mut providers = REGISTRY.0.to_vec();
     providers
         .iter_mut()

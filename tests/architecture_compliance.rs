@@ -5,11 +5,28 @@
 mod support;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use actions_rs::env::vars::{CI, GITHUB_ACTIONS};
+
+fn write_executable(path: &Path, contents: &str) {
+    use std::io::Write as _;
+    let mut child = Command::new("sh")
+        .args(["-c", "cat > \"$1\" && chmod 755 \"$1\"", "sh"])
+        .arg(path)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh writes the executable");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(contents.as_bytes())
+        .expect("contents written");
+    assert!(child.wait().expect("sh exits").success());
+}
 
 struct Fixture(PathBuf);
 
@@ -33,15 +50,16 @@ impl Fixture {
         std::fs::write(self.0.join(name), text).unwrap();
     }
 
+    fn executable(&self, name: &str, text: &str) {
+        write_executable(&self.0.join(name), text);
+    }
+
     fn program(&self, name: &str) {
-        let path = self.0.join("bin").join(name);
-        std::fs::write(
-            &path,
+        write_executable(
+            &self.0.join("bin").join(name),
             "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 11.0.0; exit 0; fi\nprintf '%s\\n' \
              \"$*\" >> \"$AUDIT_LOG\"\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
     }
 
     fn run(&self, args: &[&str], download: &str) -> Output {
@@ -127,7 +145,7 @@ fn without_a_terminal_the_default_downloads_and_an_explicit_ask_refuses() {
 fn on_a_terminal_the_default_asks_unless_ci_or_github_actions_says_otherwise() {
     let Some(script) = ["/usr/bin/script", "/bin/script"]
         .into_iter()
-        .map(std::path::Path::new)
+        .map(Path::new)
         .find(|path| path.is_file())
     else {
         eprintln!("skipping: `script` not found");
@@ -279,26 +297,16 @@ fn a_host_manager_plan_cannot_resolve_to_a_project_shim() {
     let fixture = Fixture::new();
     fixture.file("mise.toml", "[tools]\n");
     // Observation gets harmless, valid answers; only exec produces the marker.
-    fixture.file(
+    fixture.executable(
         "bin/mise",
         "#!/bin/sh\ncase \"$1\" in\n tasks) echo '{}';;\n bin-paths) :;;\n exec) echo host >> \
          \"$AUDIT_LOG\";;\n *) echo 11.0.0;;\nesac\n",
     );
-    std::fs::set_permissions(
-        fixture.0.join("bin/mise"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
     std::fs::create_dir_all(fixture.0.join("node_modules/.bin")).unwrap();
-    fixture.file(
+    fixture.executable(
         "node_modules/.bin/mise",
         "#!/bin/sh\necho project >> \"$AUDIT_LOG\"\n",
     );
-    std::fs::set_permissions(
-        fixture.0.join("node_modules/.bin/mise"),
-        std::fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
     let output = fixture.run(&["run", "audit-package-not-installed"], "true");
     assert!(
         output.status.success(),
@@ -319,7 +327,7 @@ fn go_task_stamps_vcs_inside_a_checkout() {
     std::fs::create_dir(fixture.0.join(".git")).unwrap();
     fixture.program("git");
     fixture.program("go");
-    fixture.file(
+    fixture.executable(
         "bin/go",
         "#!/bin/sh\ncase \"$1\" in\n version) echo 'go version go1.24.0 linux/amd64';;\n run) \
          printf '%s\\n' \"$2\" >> \"$AUDIT_LOG\";;\nesac\n",
@@ -765,7 +773,7 @@ fn yarn_install_preview_and_execution_share_the_registry_variant() {
         std::fs::remove_file(fixture.0.join("package-lock.json")).unwrap();
         fixture.file("yarn.lock", "");
         fixture.program("yarn");
-        fixture.file(
+        fixture.executable(
             "bin/yarn",
             "#!/bin/sh\nprintf '%s|%s\\n' \"$YARN_ENABLE_SCRIPTS\" \"$*\" >> \"$AUDIT_LOG\"\n",
         );
@@ -834,7 +842,7 @@ fn tool_install_refreshes_declared_bin_paths_before_the_package_manager_starts()
     fixture.program("mise");
     std::fs::create_dir(fixture.0.join("managed")).unwrap();
     std::fs::rename(fixture.0.join("bin/npm"), fixture.0.join("managed/npm")).unwrap();
-    fixture.file(
+    fixture.executable(
         "bin/mise",
         r#"#!/bin/sh
 case "$1" in
@@ -903,9 +911,10 @@ fn member_bin_precedes_root_bin() {
     for (root, value) in [(&fixture.0, "root"), (&member, "member")] {
         let bin = root.join("node_modules/.bin");
         std::fs::create_dir_all(&bin).unwrap();
-        let path = bin.join("audit-local");
-        std::fs::write(&path, format!("#!/bin/sh\necho {value}\n")).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(
+            &bin.join("audit-local"),
+            &format!("#!/bin/sh\necho {value}\n"),
+        );
     }
     let output = fixture.run(
         &["--dir", member.to_str().unwrap(), "run", "audit-local"],
@@ -927,7 +936,7 @@ fn qualified_task_environment_overrides_the_bare_task() {
         "[tasks.first.env]\nAUDIT_VALUE = \
          'bare'\n[tasks.\"root:package.json#first\".env]\nAUDIT_VALUE = 'qualified'\n",
     );
-    fixture.file(
+    fixture.executable(
         "bin/npm",
         "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 11.0.0; else printf '%s' \
          \"$AUDIT_VALUE\"; fi\n",
@@ -945,7 +954,7 @@ fn qualified_task_environment_overrides_the_bare_task() {
 fn why_and_run_both_refuse_an_old_node_task_runtime() {
     let fixture = Fixture::new();
     fixture.program("node");
-    fixture.file("bin/node", "#!/bin/sh\necho v20.0.0\n");
+    fixture.executable("bin/node", "#!/bin/sh\necho v20.0.0\n");
     for verb in ["why", "run"] {
         let output = fixture.run(&["--runtime", "node", verb, "first"], "false");
         let text = format!(
@@ -965,9 +974,7 @@ fn path_search_skips_a_nonexecutable_file() {
     fixture.file("bin/audit-host", "not executable");
     let later = fixture.0.join("later");
     std::fs::create_dir_all(&later).unwrap();
-    let path = later.join("audit-host");
-    std::fs::write(&path, "#!/bin/sh\necho executable\n").unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&later.join("audit-host"), "#!/bin/sh\necho executable\n");
     let output = support::command(env!("CARGO_BIN_EXE_runner"))
         .env_clear()
         .env("HOME", &fixture.0)
@@ -1014,9 +1021,7 @@ fn unrepresentable_project_path_never_hides_a_local_binary() {
     let fixture = Fixture(moved);
     let bin = fixture.0.join("node_modules/.bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let program = bin.join("audit-local");
-    std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
-    std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_executable(&bin.join("audit-local"), "#!/bin/sh\nexit 0\n");
     let output = fixture.run(&["--dry-run", "run", "audit-local"], "true");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
@@ -1049,7 +1054,7 @@ fn a_disabled_tools_step_never_runs_mise() {
     fixture.file("mise.toml", "");
     fixture.file("runner.toml", "[install]\ntools = false\n");
     fixture.program("mise");
-    fixture.file(
+    fixture.executable(
         "bin/mise",
         "#!/bin/sh\ncase \"$1\" in tasks) echo '[]';; bin-paths) :;; *) echo mise >> \
          \"$AUDIT_LOG\";; esac\n",
@@ -1078,16 +1083,13 @@ fn plug_n_play_packages_resolve_in_the_invoking_member() {
     let member = fixture.0.join("packages").join("web");
     std::fs::create_dir_all(&member).unwrap();
     fixture.file("packages/web/package.json", r#"{"name":"web"}"#);
-    let yarn = fixture.0.join("bin").join("yarn");
-    std::fs::write(
-        &yarn,
+    write_executable(
+        &fixture.0.join("bin").join("yarn"),
         "#!/bin/sh\ncase \"$1\" in\n --version) echo 4.0.0;;\n bin) printf 'bin %s\\n' \"$(pwd \
          -P)\" >> \"$AUDIT_LOG\"; echo \
          '{\"name\":\"tsc\",\"source\":\"typescript\",\"path\":\"/x/tsc\"}';;\n *) printf '%s\\n' \
          \"$*\" >> \"$AUDIT_LOG\";;\nesac\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&yarn, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let output = support::command(env!("CARGO_BIN_EXE_runner"))
         .env_clear()
         .env("PATH", fixture.0.join("bin"))
