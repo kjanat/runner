@@ -531,3 +531,44 @@ fn fully_qualified_tasks_work_from_any_directory() {
         assert_runs_in(&from, "root:package.json#hello", ws.path());
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn the_root_config_applies_from_a_subdirectory_and_a_member() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let ws = workspace("root-config")
+        .file("runner.toml", "[tasks.hello]\npm = \"deno\"\n")
+        .file("tools/deno", "#!/bin/sh\necho 1.0.0\n");
+    std::fs::set_permissions(
+        ws.path().join("tools/deno"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod +x");
+    let config = ws.path().join("runner.toml");
+    for from in [ws.path().join("docs"), ws.path().join("rfc")] {
+        let output = support::command(runner_binary())
+            .env("PATH", ws.path().join("tools"))
+            .current_dir(&from)
+            .args(["--dry-run", "run", "hello"])
+            .output()
+            .expect("runner should execute");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stderr.contains(r#"argv: ["deno", "task", "hello"]"#),
+            "{}: {stderr}",
+            from.display()
+        );
+        let output = support::command(runner_binary())
+            .current_dir(&from)
+            .args(["config", "path"])
+            .output()
+            .expect("runner should execute");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            config.display().to_string(),
+            "{}",
+            from.display()
+        );
+    }
+}

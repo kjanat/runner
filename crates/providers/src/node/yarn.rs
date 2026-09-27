@@ -193,22 +193,18 @@ struct Hint {
 /// declaration, then `yarn.lock`'s header, then `.yarnrc.yml`, which only
 /// Berry writes.
 ///
-/// Every source is read before any is trusted, so a broken file is an error
-/// even when a stronger source answers.
+/// Every source is read before any is trusted, so an unreadable file is an
+/// error even when a stronger source answers. A manifest that does not parse
+/// declares nothing.
 fn variant_of(
     dir: &std::path::Path,
     evidence: &[runner_core::Evidence],
     item: &runner_core::Evidence,
 ) -> std::io::Result<Option<Hint>> {
     let manifest = dir.join("package.json");
-    let from_manifest = match read_optional(&manifest)? {
-        Some(text) => {
-            let document = serde_json::from_str::<Value>(&text).map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("{}: {error}", manifest.display()),
-                )
-            })?;
+    let from_manifest = read_optional(&manifest)?
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|document| {
             document
                 .get("packageManager")
                 .and_then(|value| {
@@ -219,9 +215,7 @@ fn variant_of(
                 })
                 .as_ref()
                 .and_then(line)
-        }
-        None => None,
-    };
+        });
     let config = dir.join(".yarnrc.yml");
     let configured = match std::fs::metadata(&config) {
         Ok(metadata) => metadata.is_file(),

@@ -287,25 +287,55 @@ mod tests {
     }
 
     #[test]
-    fn no_provider_grants_deno_permissions_or_invokes_a_shell() {
+    fn only_a_deno_file_run_grants_permissions_and_no_template_invokes_a_shell() {
+        const FILE_GRANT: [&str; 6] = [
+            "--allow-read",
+            "--allow-write",
+            "--allow-net",
+            "--allow-env",
+            "--allow-run",
+            "--allow-sys",
+        ];
         for provider in PROVIDERS {
+            let run_file = provider.caps.run_file.map(|cap| cap.argv);
             for template in [
                 provider.caps.install.map(|cap| cap.argv),
                 provider.caps.run_task.map(|cap| cap.argv),
                 provider.caps.exec.map(|cap| cap.argv),
-                provider.caps.run_file.map(|cap| cap.argv),
+                run_file,
                 provider.caps.test.map(|cap| cap.argv),
             ]
             .into_iter()
             .flatten()
             {
+                let grants: Vec<&str> = template
+                    .0
+                    .iter()
+                    .filter_map(|piece| match piece {
+                        Piece::Lit(word)
+                            if word.starts_with("--allow-") || matches!(*word, "-A" | "-P") =>
+                        {
+                            Some(*word)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let deno_file = provider.id == ProviderId::Deno
+                    && run_file.is_some_and(|file| file == template);
+                if deno_file {
+                    assert_eq!(
+                        grants, FILE_GRANT,
+                        "deno's file run grants exactly the narrow set"
+                    );
+                } else {
+                    assert!(
+                        grants.is_empty(),
+                        "{} grants deno permissions: {grants:?}",
+                        provider.label
+                    );
+                }
                 for piece in template.0 {
                     if let Piece::Lit(word) = piece {
-                        assert!(
-                            !word.starts_with("--allow-") && *word != "-A",
-                            "{} grants a deno permission: {word}",
-                            provider.label
-                        );
                         assert!(
                             !matches!(*word, "-c" | "/c" | "-Command"),
                             "{} hands a command line to a shell: {word}",
@@ -449,7 +479,7 @@ mod tests {
             (ProviderId::Deno, &["deno", "test"]),
             (ProviderId::Cargo, &["cargo", "test"]),
             (ProviderId::Go, &["go", "test", "./..."]),
-            (ProviderId::Bundler, &["rake", "test"]),
+            (ProviderId::Bundler, &["bundle", "exec", "rake", "test"]),
         ];
         for (id, argv) in expected {
             let provider = REGISTRY.by_id(*id);

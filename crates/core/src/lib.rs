@@ -40,8 +40,8 @@ pub use health::Health;
 pub use observe::{observe, read_manifest};
 pub use op::Op;
 pub use plan::{
-    Cascade, Clamp, ConfirmFn, DepFn, Dispatch, Plan, Refusal, Shebang, StandIn, TaskRank, Trust,
-    Unsafe, decided_by, dependency_plan, discover, dispatch, dispatch_from, ecosystem_of,
+    Cascade, Clamp, ConfirmFn, DepBin, DepFn, Dispatch, Plan, Refusal, Shebang, StandIn, TaskRank,
+    Trust, Unsafe, decided_by, dependency_plan, discover, dispatch, dispatch_from, ecosystem_of,
     file_plan, has_local_prefix, is_directly_executable, plan, plan_argv, plan_bin, plan_found,
     plan_with, ranked_tasks, read_shebang, resolve_path, scope_dir, select,
 };

@@ -403,6 +403,43 @@ fn failed_read_only_queries_are_errors_with_provider_and_scope() {
 }
 
 #[test]
+fn a_malformed_manifest_is_no_evidence_and_keeps_other_providers() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.root.join("justfile"), "hello:\n\techo hi\n").unwrap();
+    std::fs::write(fixture.0.root.join("package.json"), r#"{"name": "x", "#).unwrap();
+    std::fs::write(fixture.0.root.join("pyproject.toml"), "[project\nname = ").unwrap();
+    let evidence = runner_core::observe(&fixture.0, &REGISTRY).unwrap();
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item.provider == Some(ProviderId::Just))
+    );
+    assert!(evidence.iter().all(|item| item.weight != Weight::Declared));
+    let pyproject = evidence
+        .iter()
+        .find(|item| item.provider == Some(ProviderId::Pyproject))
+        .expect("an unparsable task manifest keeps its source present");
+    assert_eq!(pyproject.weight, Weight::Configured);
+    assert!(
+        evidence
+            .iter()
+            .filter(|item| item.provider == Some(ProviderId::Poetry))
+            .all(|item| item.weight == Weight::Probed),
+        "a package manager gains nothing from a manifest it cannot parse"
+    );
+    let project =
+        runner_core::resolve(&fixture.0, evidence, &Policy::default(), &REGISTRY).unwrap();
+    assert!(
+        project
+            .unread
+            .iter()
+            .any(|unread| unread.provider == ProviderId::Pyproject),
+        "{:?}",
+        project.unread
+    );
+}
+
+#[test]
 fn yarn_observation_selects_classic_or_berry_local_exec() {
     for (lock, expected) in [
         ("# yarn lockfile v1\n", "run"),
@@ -434,6 +471,47 @@ fn yarn_observation_selects_classic_or_berry_local_exec() {
         assert_eq!(plan.argv[0], "yarn");
         assert_eq!(plan.argv[1], expected);
     }
+}
+
+#[test]
+fn a_plug_n_play_dependency_runs_its_default_bin_through_yarn_exec() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("yarn.lock"),
+        "__metadata:\n  version: 8\n",
+    )
+    .unwrap();
+    let policy = Policy {
+        download: Download::Refuse,
+        ..Policy::default()
+    };
+    let evidence = runner_core::observe(&fixture.0, &REGISTRY).unwrap();
+    let project = runner_core::resolve(&fixture.0, evidence, &policy, &REGISTRY).unwrap();
+    let dep = |name: &str| -> Result<Option<runner_core::DepBin>, Refusal> {
+        Ok((name == "@angular/cli").then(|| runner_core::DepBin::Exec {
+            provider: ProviderId::Yarn,
+            bin: "ng".to_owned(),
+        }))
+    };
+    let cascade = Cascade {
+        tree: &fixture.0,
+        project: &project,
+        policy: &policy,
+        registry: &REGISTRY,
+        builtins: &[],
+        dep: Some(&dep),
+        confirm: None,
+    };
+    let (rung, Dispatch::Plan(plan)) =
+        runner_core::dispatch(&cascade, "@angular/cli", &["new".to_owned()]).unwrap()
+    else {
+        panic!("expected plan")
+    };
+    assert_eq!(rung.name, "dep");
+    assert_eq!(
+        plan.argv,
+        ["yarn", "exec", "ng", "new"].map(std::ffi::OsString::from)
+    );
 }
 
 #[test]
@@ -469,11 +547,10 @@ fn file_fallback_is_selected_from_registry_without_inventing_project_presence() 
 }
 
 #[test]
-fn yarn_derived_observations_preserve_read_and_parse_errors() {
+fn yarn_derived_observations_preserve_read_errors() {
     for (name, content) in [
         ("package.json", None),
         ("yarn.lock", None),
-        ("package.json", Some(b"not json".as_slice())),
         ("yarn.lock", Some(b"\xff".as_slice())),
     ] {
         let fixture = Fixture::new();
@@ -496,6 +573,19 @@ fn yarn_derived_observations_preserve_read_and_parse_errors() {
 }
 
 #[test]
+fn a_malformed_manifest_declares_no_yarn_line() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.root.join("package.json"), "not json").unwrap();
+    let mut evidence = fixture.present(ProviderId::Yarn).because;
+    runner_core::observe::derive(&fixture.0, &REGISTRY, &mut evidence).unwrap();
+    assert!(
+        evidence
+            .iter()
+            .all(|e| !matches!(e.declared, Some(runner_core::Declared::Variant(_))))
+    );
+}
+
+#[test]
 fn yarn_missing_optional_files_are_classic_and_berry_evidence_names_its_file() {
     let fixture = Fixture::new();
     let mut evidence = fixture.present(ProviderId::Yarn).because;
@@ -515,7 +605,20 @@ fn registered_runtimes_plan_supported_sources_and_forward_arguments() {
         (ProviderId::Node, "main.js", vec!["node"]),
         (ProviderId::Node, "main.MTS", vec!["node"]),
         (ProviderId::Bun, "view.tsx", vec!["bun"]),
-        (ProviderId::Deno, "view.jsx", vec!["deno", "run"]),
+        (
+            ProviderId::Deno,
+            "view.jsx",
+            vec![
+                "deno",
+                "run",
+                "--allow-read",
+                "--allow-write",
+                "--allow-net",
+                "--allow-env",
+                "--allow-run",
+                "--allow-sys",
+            ],
+        ),
         (ProviderId::Go, "main.go", vec!["go", "run"]),
         (ProviderId::Uv, "main.py", vec!["uv", "run"]),
         (
@@ -577,13 +680,16 @@ fn directories_and_remote_specs_reach_the_provider_exec_rung() {
         dep: None,
         confirm: None,
     };
-    for token in ["./cmd/tool", "github.com/acme/missing-tool@v1"] {
+    for (token, expected) in [
+        ("./cmd/tool", "local-exec"),
+        ("github.com/acme/missing-tool@v1", "exec"),
+    ] {
         let (rung, Dispatch::Plan(plan)) =
             runner_core::dispatch(&cascade, token, &["a b".into()]).unwrap()
         else {
             panic!("expected a provider plan");
         };
-        assert_eq!(rung.name, "exec");
+        assert_eq!(rung.name, expected);
         assert_eq!(plan.provider, Some(ProviderId::Go));
         assert_eq!(
             plan.argv,
@@ -1553,6 +1659,57 @@ fn an_unreadable_task_source_stops_the_cascade_at_the_task_rung() {
 }
 
 #[test]
+fn a_source_choice_ignores_another_sources_unread_tasks() {
+    let fixture = Fixture::new();
+    let unread = |provider: ProviderId| runner_core::Unread {
+        provider,
+        scope: Scope::Root,
+        message: "unexpected token".into(),
+    };
+    let choose = |id: ProviderId| Policy {
+        source: Some(runner_core::Choice {
+            id,
+            from: runner_core::Layer::Cli,
+        }),
+        ..Policy::default()
+    };
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Just)],
+        unread: vec![unread(ProviderId::Turbo)],
+        ..Project::default()
+    };
+    let refused = runner_core::dispatch(
+        &cascade(&fixture, &project, &choose(ProviderId::Just)),
+        "missing",
+        &[],
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(Refusal::NoSourceTask {
+                source: ProviderId::Just,
+                name,
+            }) if name == "missing"
+        ),
+        "{refused:?}"
+    );
+    let project = Project {
+        present: vec![fixture.present(ProviderId::Just)],
+        unread: vec![unread(ProviderId::Just)],
+        ..Project::default()
+    };
+    let refused = runner_core::dispatch(
+        &cascade(&fixture, &project, &choose(ProviderId::Just)),
+        "missing",
+        &[],
+    );
+    assert!(
+        matches!(&refused, Err(Refusal::Invalid(message)) if message.contains("just tasks in root could not be read")),
+        "{refused:?}"
+    );
+}
+
+#[test]
 fn a_turbo_key_for_an_unknown_member_is_a_warning_beside_the_other_tasks() {
     let fixture = Fixture::new();
     std::fs::write(
@@ -2458,8 +2615,8 @@ fn a_hoisted_binary_runs_in_the_invoking_member_scope() {
         ..Project::default()
     };
     let policy = Policy::default();
-    let dep = |name: &str| -> Result<Option<std::path::PathBuf>, Refusal> {
-        Ok((name == "tool").then(|| tool.clone()))
+    let dep = |name: &str| -> Result<Option<runner_core::DepBin>, Refusal> {
+        Ok((name == "tool").then(|| runner_core::DepBin::File(tool.clone())))
     };
     let mut cascade = Cascade {
         tree: &tree,

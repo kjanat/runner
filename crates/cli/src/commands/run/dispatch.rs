@@ -349,10 +349,13 @@ fn dispatch_plan(
     args: &[String],
     mut sink: crate::commands::WarningSink<'_>,
 ) -> Result<Dispatch> {
-    let prepared = super::core::prepare(ctx, overrides, task_name)?;
+    let mut prepared = super::core::prepare(ctx, overrides, task_name)?;
     let selected = prepared.selected(ctx, task_name).ok().flatten();
     let decision = prepared.decision_for(selected);
     let resolved_pm = decision.as_ref().map(|decision| decision.pm);
+    if !runtime::replaces_exec(resolved_pm) {
+        prepared.clear_runtime();
+    }
     let requested = prepared.requested;
     let policy = &prepared.policy;
     let project = &prepared.project;
@@ -403,8 +406,13 @@ fn dispatch_plan(
     crate::commands::print_core_warnings(&plan.warnings, overrides, sink);
     explain_host(overrides, &plan, project, requested, policy.verbosity);
     crate::render::explain::print_plan(overrides, &plan);
+    let ran = if rung.name == "dep" && plan.found.is_none() {
+        exec_name(&plan, args).unwrap_or_else(|| task_name.to_owned())
+    } else {
+        task_name.to_owned()
+    };
     let label = entry.map_or_else(
-        || plan_label(&plan, task_name),
+        || plan_label(&plan, &ran),
         |entry| entry.source.label().to_string(),
     );
     if rung.name == "dep"
@@ -416,11 +424,7 @@ fn dispatch_plan(
             &format!("{bin} from {} (local dependency)", found.display()),
         );
     }
-    let arrow_name = if rung.name == "test" {
-        "test"
-    } else {
-        task_name
-    };
+    let arrow_name = if rung.name == "test" { "test" } else { &ran };
     print_dispatch_arrow(overrides, task_name, &label, arrow_name, args);
     let mut cmd = runner_core::execute::command(&plan)?;
     let (stdout, stderr) = overrides.task_streams_for(&task_key);
@@ -573,6 +577,14 @@ fn host_quiet(
         .effective(provider, project, scope)
         .caps
         .quiet
+}
+
+/// The word an exec plan runs: the one before the forwarded `args`.
+fn exec_name(plan: &runner_core::Plan, args: &[String]) -> Option<String> {
+    let at = plan.argv.len().checked_sub(args.len() + 1)?;
+    plan.argv
+        .get(at)
+        .map(|word| word.to_string_lossy().into_owned())
 }
 
 /// The arrow label for a plan: the program plus the literal words it puts
@@ -812,6 +824,30 @@ mod tests {
             stand_in: None,
         };
         assert_eq!(super::plan_label(&plan, "main.ts"), "deno run");
+    }
+
+    #[test]
+    fn an_exec_plan_names_the_binary_it_runs_before_the_forwarded_args() {
+        let plan = runner_core::Plan {
+            provider: Some(ProviderId::Yarn),
+            found: None,
+            argv: vec!["yarn".into(), "exec".into(), "ng".into(), "new".into()],
+            cwd: "/project".into(),
+            env: Vec::new(),
+            env_remove: Vec::new(),
+            path_prepend: Vec::new(),
+            trust: runner_core::Trust::Project,
+            reach: runner_core::Reach::Local,
+            clamps: Vec::new(),
+            warnings: Vec::new(),
+            because: Vec::new(),
+            decided_by: Vec::new(),
+            scope: runner_core::Scope::Root,
+            stand_in: None,
+        };
+        let name = super::exec_name(&plan, &["new".to_owned()]).expect("a name");
+        assert_eq!(name, "ng");
+        assert_eq!(super::plan_label(&plan, &name), "yarn exec");
     }
 
     fn manifest_decision() -> PmDecision {

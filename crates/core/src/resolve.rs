@@ -114,15 +114,18 @@ impl Project {
     /// Admit the probed providers `policy` chooses, for a plan made under
     /// that policy.
     pub fn admit(&mut self, tree: &Tree, policy: &Policy, registry: &Registry) {
-        let chosen: Vec<ProviderId> = choices(policy)
-            .map(|choice| choice.id)
-            .filter(|id| !self.present.iter().any(|p| p.provider == *id))
-            .collect();
+        let chosen: Vec<ProviderId> = choices(policy).map(|choice| choice.id).collect();
         for id in chosen {
             let admitted: Vec<Present> = self
                 .probed
                 .iter()
-                .filter(|probed| probed.provider == id)
+                .filter(|probed| {
+                    probed.provider == id
+                        && !self
+                            .present
+                            .iter()
+                            .any(|p| p.provider == id && p.scope == probed.scope)
+                })
                 .cloned()
                 .collect();
             for mut present in admitted {
@@ -949,6 +952,46 @@ mod tests {
         let mut unchanged = project;
         unchanged.admit(&tree(), &Policy::default(), &registry);
         assert_eq!(ids(&unchanged), [ProviderId::Pnpm]);
+    }
+
+    #[test]
+    fn a_probe_is_admitted_at_the_root_when_its_provider_is_present_only_in_a_member() {
+        let registry = Registry(FAKES);
+        let member = Scope::Member {
+            name: "a".into(),
+            dir: PathBuf::from("/p/a"),
+        };
+        let mut locked = found(ProviderId::Pnpm, Weight::Locked);
+        locked.scope = member.clone();
+        let evidence = vec![found(ProviderId::Pnpm, Weight::Probed), locked];
+        let mut project = resolve(&tree(), evidence, &Policy::default(), &registry).unwrap();
+        let mut chosen = Policy::default();
+        chosen.pm.0.insert(
+            Ecosystem::Node,
+            Choice {
+                id: ProviderId::Pnpm,
+                from: Layer::ConfigFile("runner.toml".into()),
+            },
+        );
+        project.admit(&tree(), &chosen, &registry);
+        let pnpm: Vec<&Scope> = project
+            .present
+            .iter()
+            .filter(|p| p.provider == ProviderId::Pnpm)
+            .map(|p| &p.scope)
+            .collect();
+        assert_eq!(pnpm.len(), 2, "{pnpm:?}");
+        assert!(pnpm.contains(&&Scope::Root), "{pnpm:?}");
+        assert!(pnpm.contains(&&member), "{pnpm:?}");
+        project.admit(&tree(), &chosen, &registry);
+        assert_eq!(
+            project
+                .present
+                .iter()
+                .filter(|p| p.provider == ProviderId::Pnpm)
+                .count(),
+            2
+        );
     }
 
     #[test]

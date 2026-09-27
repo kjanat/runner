@@ -821,8 +821,11 @@ Rules that follow:
 5. **Tool manager trust is the tool manager's.** runner never runs
    `mise trust`. An untrusted config is evidence with a warning and
    `doctor` relays the tool's own message.
-6. **Deno permissions are the project's.** runner never adds `-A` or any
-   `--allow-*`. The plan passes what `deno.json` or the task declares.
+6. **Deno permissions are the project's.** A task gets what `deno.json`
+   or the task declares. A local file runs with `--allow-read`,
+   `--allow-write`, `--allow-net`, `--allow-env`, `--allow-run` and
+   `--allow-sys`, the access node and bun give it. runner never adds `-A`,
+   `--allow-import` or `--allow-ffi`.
 7. **Symlinks do not escape.** Scope assignment canonicalises paths before
    comparing them to the root, so a task file symlinked in from outside is
    `Scope::Root` only when it really resolves under the root.
@@ -839,24 +842,24 @@ Rules that follow:
 The table is the checklist for a new provider. If a row has no matching
 capability parameter, the core is missing one.
 
-| Axis           | Node                                | Deno              | Python                                   | Rust                 | Go                 | Ruby               | PHP             |
-| -------------- | ----------------------------------- | ----------------- | ---------------------------------------- | -------------------- | ------------------ | ------------------ | --------------- |
-| Manifest       | `package.json`                      | `deno.json(c)`    | `pyproject.toml`                         | `Cargo.toml`         | `go.mod`           | `Gemfile`          | `composer.json` |
-| PM declaration | `packageManager`, `devEngines`      | n/a               | `[tool.uv]`, `[tool.poetry]`             | n/a                  | n/a                | n/a                | n/a             |
-| Lockfile       | four, one per PM                    | `deno.lock`       | `uv.lock`, `poetry.lock`, `Pipfile.lock` | `Cargo.lock`         | `go.sum`           | `Gemfile.lock`     | `composer.lock` |
-| Workspace      | `workspaces`, `pnpm-workspace.yaml` | `workspace`       | `[tool.uv.workspace]`                    | `[workspace]`        | `go.work`          | n/a                | n/a             |
-| Frozen install | flag, or `npm ci`                   | `--frozen`        | `--frozen`, `--no-update`, `--deploy`    | `--locked`           | n/a                | `--frozen`         | n/a             |
-| Script policy  | flag or env, PM specific            | `--allow-scripts` | n/a                                      | n/a                  | n/a                | n/a                | `--no-scripts`  |
-| Exec primitive | `npx`, `bun x`, `pnpm exec`         | `deno x`          | `uvx`, `poetry run`                      | `cargo run --bin`    | `go run mod@ver`   | `bundle exec`      | `composer exec` |
-| Exec reach     | network                             | network           | network for `uvx`                        | local                | network for `@ver` | local              | local           |
-| Run file       | `node`, `bun`, `tsx`                | `deno run`        | `python`                                 | n/a                  | `go run file.go`   | `ruby`             | `php`           |
-| Built-in test  | `node --test` with discovery        | `deno test`       | detect: pytest, nose2, …                 | `cargo test`         | `go test ./...`    | `rake test`        | n/a             |
-| Task source    | `scripts`                           | `tasks`           | `[project.scripts]`                      | `[alias]`, `[[bin]]` | `cmd/<name>`       | n/a                | `scripts`       |
-| Bin dirs       | `node_modules/.bin`                 | n/a               | `.venv/bin`, `Scripts/`                  | `target/…`           | `$GOBIN`           | `bin/` via bundler | `vendor/bin`    |
-| Version scheme | npm semver                          | npm semver        | PEP 440                                  | cargo semver         | go module          | rubygems           | composer        |
-| Runtime split  | node, bun, deno                     | itself            | interpreter per venv                     | n/a                  | n/a                | n/a                | n/a             |
-| Quiet ladder   | `--silent`, `--loglevel`            | `-q`              | `-q`, `-qq`                              | `-q`                 | n/a                | `--quiet`          | `-q`, `-qq`     |
-| Windows shim   | `.cmd`                              | `.exe`            | `.exe` in `Scripts/`                     | `.exe`               | `.exe`             | `.bat`             | `.bat`          |
+| Axis           | Node                                | Deno              | Python                                   | Rust                 | Go                 | Ruby                    | PHP             |
+| -------------- | ----------------------------------- | ----------------- | ---------------------------------------- | -------------------- | ------------------ | ----------------------- | --------------- |
+| Manifest       | `package.json`                      | `deno.json(c)`    | `pyproject.toml`                         | `Cargo.toml`         | `go.mod`           | `Gemfile`               | `composer.json` |
+| PM declaration | `packageManager`, `devEngines`      | n/a               | `[tool.uv]`, `[tool.poetry]`             | n/a                  | n/a                | n/a                     | n/a             |
+| Lockfile       | four, one per PM                    | `deno.lock`       | `uv.lock`, `poetry.lock`, `Pipfile.lock` | `Cargo.lock`         | `go.sum`           | `Gemfile.lock`          | `composer.lock` |
+| Workspace      | `workspaces`, `pnpm-workspace.yaml` | `workspace`       | `[tool.uv.workspace]`                    | `[workspace]`        | `go.work`          | n/a                     | n/a             |
+| Frozen install | flag, or `npm ci`                   | `--frozen`        | `--frozen`, `--no-update`, `--deploy`    | `--locked`           | n/a                | `--frozen`              | n/a             |
+| Script policy  | flag or env, PM specific            | `--allow-scripts` | n/a                                      | n/a                  | n/a                | n/a                     | `--no-scripts`  |
+| Exec primitive | `npx`, `bun x`, `pnpm exec`         | `deno x`          | `uvx`, `poetry run`                      | `cargo run --bin`    | `go run mod@ver`   | `bundle exec`           | `composer exec` |
+| Exec reach     | network                             | network           | network for `uvx`                        | local                | network for `@ver` | local                   | local           |
+| Run file       | `node`, `bun`, `tsx`                | `deno run`        | `python`                                 | n/a                  | `go run file.go`   | `ruby`                  | `php`           |
+| Built-in test  | `node --test` with discovery        | `deno test`       | detect: pytest, nose2, …                 | `cargo test`         | `go test ./...`    | `bundle exec rake test` | n/a             |
+| Task source    | `scripts`                           | `tasks`           | `[project.scripts]`                      | `[alias]`, `[[bin]]` | `cmd/<name>`       | n/a                     | `scripts`       |
+| Bin dirs       | `node_modules/.bin`                 | n/a               | `.venv/bin`, `Scripts/`                  | `target/…`           | `$GOBIN`           | `bin/` via bundler      | `vendor/bin`    |
+| Version scheme | npm semver                          | npm semver        | PEP 440                                  | cargo semver         | go module          | rubygems                | composer        |
+| Runtime split  | node, bun, deno                     | itself            | interpreter per venv                     | n/a                  | n/a                | n/a                     | n/a             |
+| Quiet ladder   | `--silent`, `--loglevel`            | `-q`              | `-q`, `-qq`                              | `-q`                 | n/a                | `--quiet`               | `-q`, `-qq`     |
+| Windows shim   | `.cmd`                              | `.exe`            | `.exe` in `Scripts/`                     | `.exe`               | `.exe`             | `.bat`                  | `.bat`          |
 
 Tool managers add one more axis each: mise, volta, asdf and proto declare
 tools, expose bin dirs, and may or may not be activated in the shell that

@@ -1230,7 +1230,9 @@ fn dispatch(
     env_warnings: Vec<types::DetectionWarning>,
     dir: &Path,
 ) -> Result<i32> {
-    let (loaded_config, load_warnings) = load_config(dir, cli.command.as_ref())?;
+    let anchored = detect::anchored(dir);
+    let config_dir = anchored.root.clone();
+    let (loaded_config, load_warnings) = load_config(&config_dir, cli.command.as_ref())?;
     let settings = invocation::settings(&cli.global, cli.command.as_ref(), origins);
     let (mut overrides, config_warnings) = match cli.command {
         Some(args::Command::Doctor { .. }) => {
@@ -1245,7 +1247,7 @@ fn dispatch(
             Vec::new(),
         ),
     };
-    let mut ctx = detect::detect(dir, &overrides);
+    let mut ctx = detect::detect_anchored(dir, anchored, &overrides);
     if let Some(loaded) = &loaded_config {
         ctx.warnings.extend(loaded.warnings.iter().cloned());
     }
@@ -1291,7 +1293,7 @@ fn dispatch(
             commands::doctor(&ctx, &overrides, json)?;
             Ok(0)
         }
-        Some(args::Command::Config { action }) => commands::config(dir, action),
+        Some(args::Command::Config { action }) => commands::config(&config_dir, action),
         Some(args::Command::Why { task, json }) => {
             schema_version_for_json(json, cli.global.schema_version)?;
             commands::why(&ctx, &overrides, &task, json)?;

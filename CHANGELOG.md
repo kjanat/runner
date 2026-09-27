@@ -339,6 +339,22 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - A name reaches an exec primitive only when the primitive takes its shape:
   `npx` refuses `user/repo#ref` and `go run` refuses a bare name.
 
+- `go run` of a directory such as `./cmd/tool` or `.` is local and runs
+  under `--no-download`; only a module path such as `example.com/tool@v1`
+  counts as a download.
+
+- `go run` refuses git and URL specs such as `user/repo#ref` and
+  `github:owner/repo`, so a project with both `go.mod` and `package.json`
+  no longer hands them to Go.
+
+- `run .` and `run ..` with a `node_modules/` present no longer read
+  `node_modules/./package.json` or the parent's `package.json` as an
+  installed dependency. A name segment starting with `.` is never a package.
+
+- `run <package>` for a Yarn Plug'n'Play dependency runs the binary named
+  after the package through `yarn exec`, so `run @angular/cli` runs
+  `yarn exec ng` instead of `yarn exec @angular/cli`.
+
 - A plan for a file a rung found carries the bin dirs of the workspace
   member it sits in, and a member's `node_modules/.bin` precedes the
   root's. A dependency's binary or a project bin found from a member runs
@@ -568,6 +584,35 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - The name-conflict footer of `runner list` and the `doctor` conflicts name
   the task `runner run` selects under a `--source`, `--pm` or `--runtime`
   choice.
+
+- Inside a workspace member nested in another member, the inner member is
+  the current one. A bare task name both define runs the inner member's
+  task, and `runner install` and `runner list` treat the inner member's tasks
+  as local.
+
+- A package manager a task's `pm` chooses is admitted from `PATH` at the
+  root when only another workspace member shows it, so a member's
+  `pm = "pnpm"` task runs when a sibling holds `pnpm-lock.yaml`.
+
+- A `--runtime` choice leaves `runner run <name>` in a Python, Go or Rust
+  project to that project's exec primitive, so `--runtime bun ruff` in a uv
+  project runs `uvx ruff` and warns that the runtime was not applied, with or
+  without `--pm uv`.
+
+- `runner.toml` is read from the project or workspace root, so its settings
+  apply when runner runs from a subdirectory or a member, and `runner config`
+  reads, writes and prints the root's file.
+
+- Bundler's built-in test runner is `bundle exec rake test`, so `runner test`
+  runs `rake` inside the bundle.
+
+- A `package.json` or `pyproject.toml` that does not parse declares no
+  package manager, and the other task sources still list and run. A broken
+  `package.json` is reported as unreadable.
+
+- Under `--source`, a task the chosen source lacks is refused as missing from
+  that source even when another source, such as `turbo.json` or `deno.json`,
+  cannot be read. The chosen source being unreadable still stops the run.
 
 ### Security
 

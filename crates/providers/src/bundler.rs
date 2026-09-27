@@ -27,8 +27,8 @@ pub const PROVIDER: Provider = Provider {
             lockfiles: None,
         }),
         test: Some(TestCap {
-            program: Some("rake"),
-            argv: t!["test", Args],
+            program: None,
+            argv: t!["exec", "rake", "test", Args],
             discovery: Discovery::Tool,
             file_flags: None,
         }),

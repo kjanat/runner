@@ -131,7 +131,7 @@ pub const PROVIDER: Provider = Provider {
     version: None,
     hooks: Hooks {
         before_plan: Some(manifest::before_plan),
-        after_observe: Some(node_modules_variant),
+        after_observe: Some(|tree, evidence| Ok(node_modules_variant(tree, evidence))),
     },
 };
 
@@ -187,7 +187,17 @@ const CAPS: Capabilities = Capabilities {
         unsupported: &[],
         program: None,
         extensions: crate::node::bun::SCRIPT_EXTENSIONS,
-        argv: t!["run", File, Args],
+        argv: t![
+            "run",
+            "--allow-read",
+            "--allow-write",
+            "--allow-net",
+            "--allow-env",
+            "--allow-run",
+            "--allow-sys",
+            File,
+            Args
+        ],
     }),
     test: Some(TestCap {
         program: None,
@@ -212,7 +222,7 @@ const CAPS: Capabilities = Capabilities {
 fn node_modules_variant(
     tree: &runner_core::Tree,
     evidence: &[runner_core::Evidence],
-) -> std::io::Result<Vec<runner_core::Evidence>> {
+) -> Vec<runner_core::Evidence> {
     let mut derived: Vec<runner_core::Evidence> = Vec::new();
     for item in evidence.iter().filter(|item| {
         item.provider == Some(ProviderId::Deno) && item.weight <= runner_core::Weight::Configured
@@ -221,7 +231,7 @@ fn node_modules_variant(
             continue;
         }
         let dir = runner_core::scope_dir(tree, &item.scope);
-        if writes_node_modules(&dir, &tree.root)? {
+        if writes_node_modules(&dir, &tree.root) {
             derived.push(runner_core::Evidence {
                 provider: Some(ProviderId::Deno),
                 signal: None,
@@ -232,15 +242,16 @@ fn node_modules_variant(
             });
         }
     }
-    Ok(derived)
+    derived
 }
 
 /// Whether Deno materializes `node_modules/` in `dir`.
-fn writes_node_modules(dir: &Path, root: &Path) -> std::io::Result<bool> {
-    match declared_node_modules_dir(dir, root) {
-        Some(writes) => Ok(writes),
-        None => Ok(runner_core::read_manifest(dir, crate::node::MANIFESTS)?.is_some()),
-    }
+fn writes_node_modules(dir: &Path, root: &Path) -> bool {
+    declared_node_modules_dir(dir, root).unwrap_or_else(|| {
+        crate::node::MANIFESTS
+            .iter()
+            .any(|name| dir.join(name).is_file())
+    })
 }
 
 /// The `nodeModulesDir` of the nearest Deno config at or above `dir` within
@@ -276,7 +287,7 @@ mod tests {
     use crate::extract::test_support::TempDir;
 
     fn writes(dir: &TempDir) -> bool {
-        writes_node_modules(dir.path(), dir.path()).expect("readable")
+        writes_node_modules(dir.path(), dir.path())
     }
 
     #[test]
@@ -326,6 +337,14 @@ mod tests {
     }
 
     #[test]
+    fn a_malformed_package_manifest_still_counts_as_present() {
+        let dir = TempDir::new("deno-nmd-malformed-package-json");
+        fs::write(dir.path().join("deno.json"), r#"{ "tasks": {} }"#).expect("config");
+        fs::write(dir.path().join("package.json"), r#"{"name": "#).expect("manifest");
+        assert!(writes(&dir));
+    }
+
+    #[test]
     fn a_config_less_project_writes_node_modules_only_with_a_manifest() {
         let bare = TempDir::new("deno-no-config");
         assert!(!writes(&bare));
@@ -345,9 +364,9 @@ mod tests {
             r#"{ "nodeModulesDir": "auto" }"#,
         )
         .expect("root config");
-        assert!(writes_node_modules(&nested, dir.path()).expect("readable"));
+        assert!(writes_node_modules(&nested, dir.path()));
         fs::write(nested.join("deno.json"), r#"{ "nodeModulesDir": "none" }"#)
             .expect("member config");
-        assert!(!writes_node_modules(&nested, dir.path()).expect("readable"));
+        assert!(!writes_node_modules(&nested, dir.path()));
     }
 }

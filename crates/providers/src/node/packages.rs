@@ -156,11 +156,13 @@ fn declared(name: &str, at: &Path, manifest: &Value) -> Result<Installed, Warnin
 fn is_package_name(token: &str) -> bool {
     let scoped = token.starts_with('@');
     let body = token.strip_prefix('@').unwrap_or(token);
-    !body.is_empty()
-        && !body.contains('@')
+    !body.contains('@')
         && !body.contains('#')
         && !body.contains('\\')
         && body.matches('/').count() == usize::from(scoped)
+        && body
+            .split('/')
+            .all(|segment| !segment.is_empty() && !segment.starts_with('.'))
 }
 
 /// The name without its `@scope/`, the name npm links into `node_modules/.bin`.
@@ -198,6 +200,12 @@ mod tests {
         assert!(!is_package_name("github.com/foo/tool"));
         assert!(!is_package_name(""));
         assert!(!is_package_name("@"));
+        assert!(!is_package_name("."));
+        assert!(!is_package_name(".."));
+        assert!(!is_package_name("@scope/.."));
+        assert!(!is_package_name("@./pkg"));
+        assert!(!is_package_name("@scope/"));
+        assert!(!is_package_name(".bin"));
     }
 
     #[test]

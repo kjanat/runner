@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
-use runner_core::{BinRuns, Installed, InstalledBin, ProviderId};
+use runner_core::{BinRuns, DepBin, Installed, InstalledBin, ProviderId};
 
 use crate::provider::Named;
 use crate::resolver::ResolutionOverrides;
@@ -39,16 +39,19 @@ fn installed(ctx: &ProjectContext, name: &str) -> Result<Option<(ProviderId, Ins
     Ok(None)
 }
 
-/// The file an installed package's own binary runs, without choosing how.
-pub(super) fn installed_binary(ctx: &ProjectContext, token: &str) -> Result<Option<PathBuf>> {
-    let Some((_, package)) = installed(ctx, token)? else {
+/// How an installed package's own binary runs.
+pub(super) fn installed_binary(ctx: &ProjectContext, token: &str) -> Result<Option<DepBin>> {
+    let Some((provider, package)) = installed(ctx, token)? else {
         return Ok(None);
     };
     let bin = default_bin(token, &package)?;
-    match &bin.runs {
-        BinRuns::File(path) => existing(token, bin, path).map(Some),
-        BinRuns::Exec => Ok(None),
-    }
+    Ok(Some(match &bin.runs {
+        BinRuns::File(path) => DepBin::File(existing(token, bin, path)?),
+        BinRuns::Exec => DepBin::Exec {
+            provider,
+            bin: bin.name.clone(),
+        },
+    }))
 }
 
 /// `--package <package> <bin>`: the binary `bin` that the installed

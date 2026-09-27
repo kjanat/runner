@@ -3,7 +3,9 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use crate::capability::{Discovery, Frozen, InstallCap, NameShape, RunTaskCap, ScriptMechanism};
+use crate::capability::{
+    Discovery, ExecCap, Frozen, InstallCap, NameShape, RunTaskCap, ScriptMechanism,
+};
 use crate::cascade::{CASCADE, Cap, Need, Rung};
 use crate::env::project_may_set;
 use crate::evidence::{Evidence, Present, Weight};
@@ -309,6 +311,9 @@ impl NameShape {
         if name.starts_with("jsr:") || name.starts_with("npm:") {
             return Self::REGISTRY;
         }
+        if name.contains('#') || has_scheme(name) {
+            return Self::REMOTE;
+        }
         let rest = name
             .strip_prefix('@')
             .and_then(|scoped| scoped.split_once('/'))
@@ -321,6 +326,16 @@ impl NameShape {
             Self::BARE
         }
     }
+}
+
+fn has_scheme(name: &str) -> bool {
+    name.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.len() > 1
+            && scheme.starts_with(|first: char| first.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|part| part.is_ascii_alphanumeric() || matches!(part, '+' | '-' | '.'))
+    })
 }
 
 /// Turn one request into one command, choosing the provider.
@@ -738,7 +753,7 @@ impl<'a> Shaping<'_, 'a> {
                 .and_then(|runtime| runtime.exec)
                 .filter(|_| self.chosen_as_runtime)
                 .unwrap_or(cap.argv),
-            reach: cap.reach,
+            reach: exec_reach(&cap, name),
             trust: self.trust(),
             cwd: self.tree.cwd.clone(),
         })
@@ -1363,8 +1378,22 @@ pub enum Dispatch {
     Plan(Box<Plan>),
 }
 
+/// How an installed dependency's binary runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepBin {
+    /// The file the dependency declares.
+    File(PathBuf),
+    /// A binary only the installing provider's exec primitive can reach.
+    Exec {
+        /// The provider that installed the dependency.
+        provider: ProviderId,
+        /// The binary's name.
+        bin: String,
+    },
+}
+
 /// The binary an installed dependency declares.
-pub type DepFn<'a> = dyn Fn(&str) -> Result<Option<PathBuf>, Refusal> + 'a;
+pub type DepFn<'a> = dyn Fn(&str) -> Result<Option<DepBin>, Refusal> + 'a;
 
 /// Asks the user whether a rung may fetch.
 pub type ConfirmFn<'a> = dyn Fn(&str, &str) -> bool + 'a;
@@ -1499,7 +1528,27 @@ fn rung_dispatch(
             Some(dispatched(file_plan(cascade, &path, args)?))
         }
         Need::InstalledDep => match cascade.dep.map(|ask| ask(token)).transpose()?.flatten() {
-            Some(path) => Some(dispatched(dependency_plan(cascade, &path, args)?)),
+            Some(DepBin::File(path)) => Some(dispatched(dependency_plan(cascade, &path, args)?)),
+            Some(DepBin::Exec { provider, bin }) => {
+                let scope = scope_at(cascade.tree, &cascade.tree.cwd);
+                let present = cascade
+                    .project
+                    .present_in(provider, &scope)
+                    .ok_or_else(|| {
+                        Refusal::Invalid(format!(
+                            "{token} is installed through {}, which was not observed",
+                            cascade.registry.by_id(provider).label
+                        ))
+                    })?;
+                Some(dispatched(plan_with(
+                    cascade.tree,
+                    cascade.project,
+                    cascade.policy,
+                    present,
+                    &Op::Exec { name: &bin, args },
+                    cascade.registry,
+                )?))
+            }
             None => None,
         },
         Need::Cap(Cap::Test) => test_rung(cascade, token, args)?,
@@ -1544,12 +1593,14 @@ pub fn dependency_plan(
 /// Refuse to look past the task rung while a visible task source is unreadable.
 fn unread_source(cascade: &Cascade<'_>) -> Result<(), Refusal> {
     let scope = scope_at(cascade.tree, &cascade.tree.cwd);
-    let Some(unread) = cascade
-        .project
-        .unread
-        .iter()
-        .find(|unread| unread.scope == Scope::Root || unread.scope == scope)
-    else {
+    let Some(unread) = cascade.project.unread.iter().find(|unread| {
+        (unread.scope == Scope::Root || unread.scope == scope)
+            && cascade
+                .policy
+                .source
+                .as_ref()
+                .is_none_or(|choice| unread.provider == choice.id)
+    }) else {
         return Ok(());
     };
     Err(Refusal::Invalid(format!(
@@ -1733,9 +1784,10 @@ pub fn ranked_tasks<'a>(
             });
         }
     }
+    let current = scope_at(cascade.tree, &cascade.tree.cwd);
     let Some(nearest) = found
         .iter()
-        .map(|task| scope_rank(cascade.tree, &task.scope))
+        .map(|task| scope_rank(&current, &task.scope))
         .min()
     else {
         return if source.is_some() || scope.is_some() {
@@ -1750,7 +1802,7 @@ pub fn ranked_tasks<'a>(
     };
     let mut ranked: Vec<(&Task, TaskRank)> = found
         .into_iter()
-        .filter(|task| scope_rank(cascade.tree, &task.scope) == nearest)
+        .filter(|task| scope_rank(&current, &task.scope) == nearest)
         .map(|task| {
             (
                 task,
@@ -1845,12 +1897,12 @@ fn task_address<'a>(
     (None, None, token)
 }
 
-/// How far a scope is from the invocation directory: the member holding it,
-/// then the root, then every other member.
-fn scope_rank(tree: &Tree, scope: &Scope) -> u8 {
+/// How far a scope is from the invocation directory: the deepest member
+/// holding it, then the root, then every other member.
+fn scope_rank(current: &Scope, scope: &Scope) -> u8 {
     match scope {
-        Scope::Member { dir, .. } if tree.cwd.starts_with(dir) => 0,
         Scope::Root => 1,
+        member if member == current => 0,
         Scope::Member { .. } => 2,
     }
 }
@@ -1987,7 +2039,11 @@ fn exec_plan(
         if provider.kind.contains(Kind::TOOL_MANAGER) != manager {
             continue;
         }
-        if provider.caps.exec.is_none_or(|cap| cap.reach != rung.reach) {
+        if provider
+            .caps
+            .exec
+            .is_none_or(|cap| exec_reach(&cap, name) != rung.reach)
+        {
             continue;
         }
         match plan_with(
@@ -2004,6 +2060,14 @@ fn exec_plan(
         }
     }
     Ok(None)
+}
+
+fn exec_reach(cap: &ExecCap, name: &str) -> Reach {
+    if has_local_prefix(name) || name == "." || name == ".." {
+        Reach::Local
+    } else {
+        cap.reach
+    }
 }
 
 /// The package managers the user chose for `scope`.
@@ -3118,7 +3182,11 @@ mod tests {
         assert_eq!(NameShape::of("@scope/pkg"), NameShape::BARE);
         assert_eq!(NameShape::of("eslint@9"), NameShape::VERSIONED);
         assert_eq!(NameShape::of("@scope/pkg@1"), NameShape::VERSIONED);
-        assert_eq!(NameShape::of("user/repo#ref"), NameShape::PATH_LIKE);
+        assert_eq!(NameShape::of("user/repo#ref"), NameShape::REMOTE);
+        assert_eq!(NameShape::of("github:owner/repo"), NameShape::REMOTE);
+        assert_eq!(NameShape::of("git+ssh://host/repo"), NameShape::REMOTE);
+        assert_eq!(NameShape::of("C:\\tools\\x"), NameShape::PATH_LIKE);
+        assert_eq!(NameShape::of("C:/tools/x"), NameShape::PATH_LIKE);
         assert_eq!(NameShape::of("./cmd/foo"), NameShape::PATH_LIKE);
         assert_eq!(
             NameShape::of("golang.org/x/tools/cmd/godoc@latest"),
@@ -3258,6 +3326,48 @@ mod tests {
             words(&made),
             ["go", "run", "golang.org/x/tools/cmd/godoc@latest"]
         );
+        assert_eq!(made.reach, Reach::Network);
+        for spec in ["user/repo#ref", "github:owner/repo"] {
+            let refusal = plan(
+                &tree(),
+                &go,
+                &Policy::default(),
+                &Op::Exec {
+                    name: spec,
+                    args: &[],
+                },
+                &registry,
+            )
+            .expect_err("go run never sees a git spec");
+            assert_eq!(
+                refusal,
+                Refusal::Unsafe(Unsafe::NameShape {
+                    name: spec.to_owned(),
+                    provider: ProviderId::Go,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn go_run_of_a_filesystem_path_stays_local() {
+        let registry = Registry(FAKES);
+        let go = Project {
+            present: vec![present(ProviderId::Go, Weight::Locked)],
+            tasks: Vec::new(),
+            ..Project::default()
+        };
+        for name in ["./cmd/tool", ".", ".."] {
+            let made = plan(
+                &tree(),
+                &go,
+                &Policy::default(),
+                &Op::Exec { name, args: &[] },
+                &registry,
+            )
+            .expect("go run takes a path");
+            assert_eq!(made.reach, Reach::Local, "{name}");
+        }
     }
 
     #[test]
@@ -3574,6 +3684,33 @@ mod tests {
     }
 
     #[test]
+    fn a_local_go_package_runs_under_a_refusing_download_policy() {
+        let dir = TempDir::new("go-local");
+        fs::create_dir_all(dir.path().join("cmd/tool")).expect("dirs");
+        let registry = Registry(FAKES);
+        let tree = Tree {
+            cwd: dir.path().to_path_buf(),
+            root: dir.path().to_path_buf(),
+            members: Vec::new(),
+        };
+        let project = Project {
+            present: vec![present(ProviderId::Go, Weight::Locked)],
+            tasks: Vec::new(),
+            ..Project::default()
+        };
+        let local = Policy {
+            download: Download::Refuse,
+            ..Policy::default()
+        };
+        for name in ["./cmd/tool", "."] {
+            let found = dispatch(&cascade(&tree, &project, &local, &registry), name, &[])
+                .expect("a local package needs no download");
+            assert_eq!(rung_of(&found), "local-exec", "{name}");
+            assert_eq!(argv(&found), ["go", "run", name]);
+        }
+    }
+
+    #[test]
     fn a_root_task_is_visible_from_a_member_and_the_member_wins_its_own_name() {
         let registry = Registry(FAKES);
         let policy = Policy::default();
@@ -3650,6 +3787,44 @@ mod tests {
             panic!("a tie is ambiguous");
         };
         assert_eq!(candidates.len(), 2);
+    }
+
+    #[test]
+    fn a_nested_member_wins_a_name_its_enclosing_member_shares() {
+        let registry = Registry(FAKES);
+        let policy = Policy::default();
+        let outer = Scope::Member {
+            name: "outer".to_owned(),
+            dir: PathBuf::from("/p/packages/outer"),
+        };
+        let inner = Scope::Member {
+            name: "inner".to_owned(),
+            dir: PathBuf::from("/p/packages/outer/inner"),
+        };
+        let tree = Tree {
+            cwd: PathBuf::from("/p/packages/outer/inner"),
+            root: PathBuf::from("/p"),
+            members: vec![outer.clone(), inner.clone()],
+        };
+        let project = Project {
+            present: vec![present(ProviderId::Npm, Weight::Locked)],
+            tasks: vec![
+                Task {
+                    scope: outer,
+                    ..task("hello")
+                },
+                Task {
+                    scope: inner.clone(),
+                    ..task("hello")
+                },
+            ],
+            ..Project::default()
+        };
+        let cascade = cascade(&tree, &project, &policy, &registry);
+        let selected = super::select(&cascade, "hello")
+            .expect("the innermost member wins")
+            .expect("a task");
+        assert_eq!(selected.scope, inner);
     }
 
     #[cfg(unix)]

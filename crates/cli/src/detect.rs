@@ -8,26 +8,52 @@ use crate::provider::Named;
 use crate::tool;
 use crate::types::{DetectionWarning, ProjectContext, Task, Workspace, WorkspaceMember};
 
+/// The workspace or project root a directory is anchored in.
+pub(crate) struct Anchored {
+    workspace: Option<Workspace>,
+    warning: Option<runner_core::Warning>,
+    pub root: std::path::PathBuf,
+}
+
+/// Anchor `dir` in its workspace or project root.
+pub(crate) fn anchored(dir: &Path) -> Anchored {
+    let (workspace, warning) = anchor(dir);
+    let root = workspace
+        .as_ref()
+        .map_or_else(|| project_root(dir), |workspace| workspace.root.clone());
+    Anchored {
+        workspace,
+        warning,
+        root,
+    }
+}
+
 /// Anchor `dir` in its workspace or project root, then observe and resolve
 /// that tree under `overrides`.
 pub(crate) fn detect(
     dir: &Path,
     overrides: &crate::resolver::ResolutionOverrides,
 ) -> ProjectContext {
-    let (workspace, workspace_warning) = anchor(dir);
-    let root = workspace
-        .as_ref()
-        .map_or_else(|| project_root(dir), |workspace| workspace.root.clone());
+    detect_anchored(dir, anchored(dir), overrides)
+}
+
+/// Observe and resolve the tree `anchored` roots, invoked from `dir`, under
+/// `overrides`.
+pub(crate) fn detect_anchored(
+    dir: &Path,
+    anchored: Anchored,
+    overrides: &crate::resolver::ResolutionOverrides,
+) -> ProjectContext {
     let mut ctx = ProjectContext {
         cwd: dir.to_path_buf(),
-        root,
+        root: anchored.root,
         tasks: Vec::new(),
-        workspace,
+        workspace: anchored.workspace,
         warnings: Vec::new(),
         project: Ok(runner_core::Project::default()),
     };
     ctx.warnings
-        .extend(workspace_warning.map(DetectionWarning::Pipeline));
+        .extend(anchored.warning.map(DetectionWarning::Pipeline));
     resolve(&mut ctx, overrides);
 
     let mut tasks = std::mem::take(&mut ctx.tasks);

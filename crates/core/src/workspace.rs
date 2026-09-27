@@ -142,7 +142,10 @@ pub fn anchor(
         workspace.current = workspace
             .members
             .iter()
-            .position(|member| dir.starts_with(&member.dir));
+            .enumerate()
+            .filter(|(_, member)| dir.starts_with(&member.dir))
+            .max_by_key(|(_, member)| member.dir.components().count())
+            .map(|(index, _)| index);
         if workspace.current.is_none() && standalone {
             continue;
         }
@@ -199,7 +202,7 @@ mod tests {
         if !root.join("ws").is_file() {
             return Ok(Vec::new());
         }
-        let members = ["apps/web", "tools/web", "libs/core"]
+        let members = ["apps/web", "tools/web", "libs/core", "libs/core/inner"]
             .into_iter()
             .map(|path| root.join(path))
             .filter(|dir| dir.is_dir())
@@ -274,6 +277,17 @@ mod tests {
             .unwrap();
         assert_eq!(loose.root, PathBuf::from(dir.path()));
         assert_eq!(loose.current, None);
+    }
+
+    #[test]
+    fn a_nested_member_directory_anchors_to_the_innermost_member() {
+        let dir = fixture("workspace-nested");
+        let inner = dir.path().join("libs/core/inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        let workspace = anchor(&inner, Some(dir.path()), true, &Registry(PROVIDERS))
+            .unwrap()
+            .unwrap();
+        assert_eq!(workspace.current().map(|m| m.name.as_str()), Some("inner"));
     }
 
     #[test]

@@ -820,3 +820,36 @@ fn why_reports_the_runtime_a_task_table_selects() {
         );
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn a_runtime_leaves_a_python_projects_exec_to_its_package_manager() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut project = TempProject::new("uv-exec")
+        .file(
+            "pyproject.toml",
+            "[project]\nname = \"x\"\nversion = \"0\"\n",
+        )
+        .file("uv.lock", "");
+    for tool in ["uv", "uvx", "bun", "node", "npx"] {
+        project = project.file(&format!("bin/{tool}"), "#!/bin/sh\necho 1.0.0\n");
+        std::fs::set_permissions(
+            project.path().join("bin").join(tool),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .expect("chmod +x");
+    }
+    for args in [
+        &["--pm", "uv", "--runtime", "bun", "run", "ruff"][..],
+        &["--pm", "uv", "--runtime", "node", "run", "ruff"],
+        &["--runtime", "bun", "run", "ruff"],
+    ] {
+        let stderr = dry_run_in(&project, args);
+        assert!(
+            stderr.contains(r#"argv: ["uvx", "ruff"]"#)
+                && stderr.contains("not applied: exec runs through uv"),
+            "{args:?}: {stderr}"
+        );
+    }
+}

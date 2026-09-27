@@ -219,6 +219,8 @@ bitflags::bitflags! {
         const VERSIONED = 4;
         /// A registry specifier such as `jsr:@std/http` or `npm:cowsay`.
         const REGISTRY = 8;
+        /// A git or URL spec such as `user/repo#ref` or `github:owner/repo`.
+        const REMOTE = 16;
     }
 }
 

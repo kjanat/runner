@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::evidence::{Evidence, Weight};
 use crate::probe::Prober;
+use crate::provider::Kind;
 use crate::registry::{Provider, Registry};
 use crate::scope::Scope;
 use crate::signal::{Declared, Signal, SignalId};
@@ -124,17 +125,29 @@ fn look(
             .map(|(at, declared)| evidence(at, Weight::Configured, Some(declared)))
             .into_iter()
             .collect(),
-        Signal::ManifestField { files, path, parse } => manifest_field(dir, files, path)?
-            .and_then(|(at, manifest, value)| {
-                parse(&crate::signal::Field {
-                    value: &value,
-                    manifest: &manifest,
+        Signal::ManifestField { files, path, parse } => match manifest_field(dir, files, path) {
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                if provider.kind.contains(Kind::TASK_SOURCE) {
+                    first_file(dir, files)?
+                        .map(|at| evidence(at, Weight::Configured, None))
+                        .into_iter()
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            field => field?
+                .and_then(|(at, manifest, value)| {
+                    parse(&crate::signal::Field {
+                        value: &value,
+                        manifest: &manifest,
+                    })
+                    .map(|declared| (at, declared))
                 })
-                .map(|declared| (at, declared))
-            })
-            .map(|(at, declared)| evidence(at, Weight::Declared, Some(declared)))
-            .into_iter()
-            .collect(),
+                .map(|(at, declared)| evidence(at, Weight::Declared, Some(declared)))
+                .into_iter()
+                .collect(),
+        },
         Signal::EnvVar(name) => {
             if *scope != Scope::Root {
                 return Ok(Vec::new());
@@ -210,6 +223,15 @@ fn file_upwards(dir: &Path, root: &Path, name: &str) -> io::Result<Option<PathBu
     {
         if let Some(path) = file_in(ancestor, name)? {
             return Ok(Some(path));
+        }
+    }
+    Ok(None)
+}
+
+fn first_file(dir: &Path, files: &[&str]) -> io::Result<Option<PathBuf>> {
+    for name in files {
+        if let Some(at) = file_in(dir, name)? {
+            return Ok(Some(at));
         }
     }
     Ok(None)

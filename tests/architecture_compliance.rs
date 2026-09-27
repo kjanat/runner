@@ -566,7 +566,19 @@ fn cli_refuses_node_jsx_but_allows_capable_runtimes() {
             let logged = std::fs::read_to_string(fixture.0.join("executed")).unwrap();
             assert!(logged.contains(&file));
             if runtime == "deno" {
-                assert!(!logged.contains("--allow") && !logged.contains("-A"));
+                for flag in [
+                    "--allow-read",
+                    "--allow-write",
+                    "--allow-net",
+                    "--allow-env",
+                    "--allow-run",
+                    "--allow-sys",
+                ] {
+                    assert!(logged.contains(flag), "{flag}: {logged}");
+                }
+                for flag in ["-A ", "--allow-all", "--allow-import", "--allow-ffi"] {
+                    assert!(!logged.contains(flag), "{flag}: {logged}");
+                }
             }
             std::fs::remove_file(fixture.0.join("executed")).unwrap();
         }

@@ -279,7 +279,9 @@ impl Prepared {
 
     /// The package manager that dispatches `selected` in its own scope when
     /// package managers dispatch its source, else the first one that
-    /// dispatches a managed source in that scope.
+    /// dispatches a managed source, sources a chosen package manager
+    /// dispatches first. A runtime choice alone decides only for a source
+    /// the scope shows.
     pub(crate) fn decision_for(
         &self,
         selected: Option<&Task>,
@@ -294,9 +296,24 @@ impl Prepared {
         {
             return self.decision_in(task.source, &scope);
         }
-        crate::provider::managed_sources()
-            .into_iter()
-            .find_map(|source| self.decision_in(source, &scope))
+        let mut sources = crate::provider::managed_sources();
+        sources.sort_by_key(|source| {
+            !self
+                .policy
+                .pm
+                .0
+                .values()
+                .any(|choice| choice.id.dispatches().contains(source))
+        });
+        sources.into_iter().find_map(|source| {
+            self.decision_in(source, &scope).filter(|decision| {
+                self.policy
+                    .runtime
+                    .as_ref()
+                    .is_none_or(|runtime| runtime.id != decision.pm)
+                    || self.project.present_in(source, &scope).is_some()
+            })
+        })
     }
 
     /// The package manager that dispatches `source` in `scope`.
@@ -364,6 +381,27 @@ impl Prepared {
             })?;
         }
         Ok((rung, dispatch))
+    }
+
+    /// Drop the runtime choice and the providers only it admitted.
+    pub(crate) fn clear_runtime(&mut self) {
+        let Some(runtime) = self.policy.runtime.take() else {
+            return;
+        };
+        if self.policy.pm.0.values().any(|pm| pm.id == runtime.id) {
+            return;
+        }
+        let (released, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.project.present)
+            .into_iter()
+            .partition(|present| {
+                present.provider == runtime.id
+                    && present
+                        .because
+                        .first()
+                        .is_none_or(|evidence| evidence.weight == runner_core::Weight::Probed)
+            });
+        self.project.present = kept;
+        self.project.probed.extend(released);
     }
 
     pub(crate) fn cascade<'a>(
