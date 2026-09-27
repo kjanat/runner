@@ -173,8 +173,8 @@ yay -S runner-run
 
 ```dockerfile
 # Container image, for build stages that run `run`-form package scripts:
-COPY --from=ghcr.io/kjanat/runner:0.26.2 /run /usr/local/bin/run
-COPY --from=ghcr.io/kjanat/runner:0.26.2 /runner /usr/local/bin/runner
+COPY --from=ghcr.io/kjanat/runner:0.27.0 /run /usr/local/bin/run
+COPY --from=ghcr.io/kjanat/runner:0.27.0 /runner /usr/local/bin/runner
 ```
 
 Also on Docker Hub as [`kjanat/runner`][dockerhub]. The image is `scratch` plus
@@ -183,7 +183,7 @@ two musl-static binaries, so one tag serves Alpine and Debian stages alike.
 It also runs directly, if you'd like:
 
 ```sh
-docker run --rm kjanat/runner:0.26.2 --version
+docker run --rm kjanat/runner:0.27.0 --version
 docker run --rm --entrypoint /run -v "$PWD:/w" kjanat/runner build
 ```
 

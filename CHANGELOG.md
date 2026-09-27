@@ -19,6 +19,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - [ ] Minor bumps: after publish, raise the `runner-run` catalog range to `^0.Y` and refresh `bun.lock`; `@latest` breaks `--frozen-lockfile`.
 - [ ] First release with `runner-run-core`, `runner-run-schemes` and `runner-run-providers`: add a `CARGO_REGISTRY_TOKEN` secret to the `crates-io` environment, release, then add a trusted publisher for each (workflow `release.yml`, environment `crates-io`) and delete the secret.
 
+## [0.27.0] - 2026-09-27
+
 ### Added
 
 - `--download[=true|false|ask]`, `--no-download`, `RUNNER_DOWNLOAD` and a
@@ -2804,7 +2806,8 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 - `run` alias binary for shorter invocation.
 - Unified commands for task run/list, dependency install, clean, and exec.
 
-[Unreleased]: https://github.com/kjanat/runner/compare/v0.26.2...HEAD
+[Unreleased]: https://github.com/kjanat/runner/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/kjanat/runner/compare/v0.26.2...v0.27.0
 [0.26.2]: https://github.com/kjanat/runner/compare/v0.26.1...v0.26.2
 [0.26.1]: https://github.com/kjanat/runner/compare/v0.26.0...v0.26.1
 [0.26.0]: https://github.com/kjanat/runner/compare/v0.25.1...v0.26.0
