@@ -25,5 +25,8 @@ yaml-rust2.workspace = true
 workspace = true
 features  = ["parse", "serde"]
 
+[target.'cfg(target_os = "freebsd")'.dependencies]
+num_cpus.workspace = true
+
 [lints]
 workspace = true

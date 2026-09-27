@@ -33,6 +33,7 @@ glob          = "0.3"
 json5         = "1"
 lsp-server    = "0.10"
 lsp-types     = "0.97"
+num_cpus      = "1.17"
 regress       = "0.12"
 rustix        = { version = "1", default-features = false, features = ["process", "std"] }
 schemars      = "1.2"

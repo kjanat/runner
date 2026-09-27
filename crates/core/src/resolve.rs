@@ -233,10 +233,7 @@ fn extract_all(
             done.push((index, extract(present, tree)));
         }
     };
-    let workers = std::thread::available_parallelism()
-        .map_or(2, std::num::NonZero::get)
-        .max(2)
-        .min(jobs.len());
+    let workers = extractor_threads().min(jobs.len());
     let mut outcomes: Vec<_> = std::thread::scope(|threads| {
         let handles: Vec<_> = (1..workers)
             .filter_map(|_| std::thread::Builder::new().spawn_scoped(threads, work).ok())
@@ -253,6 +250,16 @@ fn extract_all(
     });
     outcomes.sort_by_key(|(index, _)| *index);
     outcomes.into_iter().map(|(_, outcome)| outcome).collect()
+}
+
+/// How many extractors run at once, at least two.
+fn extractor_threads() -> usize {
+    #[cfg(not(target_os = "freebsd"))]
+    let host = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
+    // std's `available_parallelism` links `sched_getaffinity`, which FreeBSD 12 lacks.
+    #[cfg(target_os = "freebsd")]
+    let host = num_cpus::get();
+    host.max(2)
 }
 
 /// Turn evidence into present providers.
@@ -768,16 +775,11 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         static RUNNING: AtomicUsize = AtomicUsize::new(0);
-        fn bound() -> usize {
-            std::thread::available_parallelism()
-                .map_or(2, std::num::NonZero::get)
-                .max(2)
-        }
         fn count(present: &crate::Present, _: &Tree) -> Result<crate::Extracted, crate::Warning> {
             let running = RUNNING.fetch_add(1, Ordering::SeqCst) + 1;
             std::thread::sleep(std::time::Duration::from_millis(2));
             RUNNING.fetch_sub(1, Ordering::SeqCst);
-            if running > bound() {
+            if running > super::extractor_threads() {
                 return Err(crate::Warning::about(
                     present.provider,
                     format!("{running} extractors at once"),
