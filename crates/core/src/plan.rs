@@ -1159,12 +1159,15 @@ pub fn plan_with(
     let mut argv = Vec::with_capacity(rendered.args.len() + 1);
     argv.push(OsString::from(program));
     argv.extend(rendered.args);
-    let mut env = rendered.env;
-    env.extend(env_layers(
+    let mut env = env_layers(
         policy,
         Some(provider.id),
         &task_env_keys(op, &provider, registry),
-    )?);
+    )?;
+    for (key, value) in rendered.env {
+        env.retain(|(seen, _)| *seen != key);
+        env.push((key, value));
+    }
     let scope = match op {
         Op::Run { task, .. } => task.scope.clone(),
         Op::RunFile { file, .. } => scope_at(tree, file),
@@ -2655,6 +2658,7 @@ fn runs_file(cascade: &Cascade<'_>, path: &Path) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::PathBuf;
 
@@ -2667,6 +2671,7 @@ mod tests {
         RuntimeCap, TestCap,
     };
     use crate::cascade::{CASCADE, Rung};
+    use crate::env::{EnvLayers, EnvTable};
     use crate::evidence::{Evidence, Present, Weight};
     use crate::op::Op;
     use crate::policy::{Choice, Download, Layer, Policy};
@@ -3622,6 +3627,53 @@ mod tests {
         )
         .expect("user trust may set anything");
         assert_eq!(made.env.len(), 1);
+    }
+
+    #[test]
+    fn every_project_trust_env_layer_refuses_bash_env() {
+        let registry = Registry(FAKES);
+        let project = Project {
+            present: vec![present(ProviderId::Npm, Weight::Locked)],
+            tasks: vec![task("build")],
+            ..Project::default()
+        };
+        let hook = || EnvTable::from([("BASH_ENV".to_owned(), "hook.sh".to_owned())]);
+        for env in [
+            EnvLayers {
+                project: hook(),
+                ..EnvLayers::default()
+            },
+            EnvLayers {
+                tool: BTreeMap::from([(ProviderId::Npm, hook())]),
+                ..EnvLayers::default()
+            },
+            EnvLayers {
+                task: BTreeMap::from([("build".to_owned(), hook())]),
+                ..EnvLayers::default()
+            },
+        ] {
+            let policy = Policy {
+                env,
+                ..Policy::default()
+            };
+            let refusal = plan(
+                &tree(),
+                &project,
+                &policy,
+                &Op::Run {
+                    task: &project.tasks[0],
+                    args: &[],
+                },
+                &registry,
+            )
+            .expect_err("BASH_ENV is refused");
+            assert_eq!(
+                refusal,
+                Refusal::Unsafe(Unsafe::LoaderHook {
+                    name: "BASH_ENV".to_owned()
+                })
+            );
+        }
     }
 
     fn cascade<'a>(

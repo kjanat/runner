@@ -60,6 +60,10 @@ name = "chain_integration"
 path = "../../tests/chain_integration.rs"
 
 [[test]]
+name = "config_command"
+path = "../../tests/config_command.rs"
+
+[[test]]
 name = "doctor_env"
 path = "../../tests/doctor_env.rs"
 

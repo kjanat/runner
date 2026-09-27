@@ -24,19 +24,23 @@ pub(crate) fn config(dir: &Path, action: ConfigAction) -> Result<i32> {
     }
 }
 
-/// `runner config init`, write the commented starter template to
-/// `<dir>/runner.toml`. Refuses to clobber an existing file unless `force`.
+/// `runner config init`, write the commented starter template to the config
+/// file `dir` already holds, or `<dir>/runner.toml`. Refuses to clobber an
+/// existing file unless `force`.
 fn init(dir: &Path, force: bool) -> Result<i32> {
-    let target = dir.join(CONFIG_FILENAME);
-    if target.exists() && !force {
+    let existing = config::config_file(dir);
+    if let Some(found) = &existing
+        && !force
+    {
         eprintln!(
             "{} {} already exists; pass {} to overwrite",
             "error:".red().bold(),
-            target.display(),
+            found.display(),
             "--force".cyan(),
         );
         return Ok(2);
     }
+    let target = existing.unwrap_or_else(|| dir.join(CONFIG_FILENAME));
     let contents = crate::commands::schema::render_init();
     fs::write(&target, contents)
         .with_context(|| format!("failed to write {}", target.display()))?;
@@ -48,8 +52,10 @@ fn init(dir: &Path, force: bool) -> Result<i32> {
 /// with built-in defaults) as TOML, or JSON with `--json`. Propagates parse
 /// errors; use `validate` for a non-fatal diagnostic.
 fn show(dir: &Path, json: bool) -> Result<i32> {
-    let target = dir.join(CONFIG_FILENAME);
     let loaded = config::load(dir)?;
+    let target = loaded
+        .as_ref()
+        .map_or_else(|| dir.join(CONFIG_FILENAME), |l| l.path.clone());
     let cfg = loaded
         .as_ref()
         .map_or_else(RunnerConfig::default, |l| l.config.clone());
@@ -81,7 +87,6 @@ fn show(dir: &Path, json: bool) -> Result<i32> {
 /// failure-policy checks a live dispatch applies. Returns the exit code:
 /// `0` when valid (or absent), `2` on any parse or policy error.
 fn validate(dir: &Path) -> i32 {
-    let target = dir.join(CONFIG_FILENAME);
     let loaded = match config::load(dir) {
         Ok(Some(loaded)) => loaded,
         Ok(None) => {
@@ -109,14 +114,20 @@ fn validate(dir: &Path) -> i32 {
         eprintln!("{} {:#}", "invalid:".red().bold(), e);
         return 2;
     }
-    println!("{} {} is valid", "ok:".green().bold(), target.display());
+    println!(
+        "{} {} is valid",
+        "ok:".green().bold(),
+        loaded.path.display()
+    );
     0
 }
 
-/// `runner config path`, print the resolved `runner.toml` path (whether or
-/// not it exists), one line, for scripting. Always succeeds.
+/// `runner config path`, print the config file `dir` holds, or
+/// `<dir>/runner.toml` when it holds none, one line, for scripting. Always
+/// succeeds.
 fn path(dir: &Path) -> i32 {
-    println!("{}", dir.join(CONFIG_FILENAME).display());
+    let target = config::config_file(dir).unwrap_or_else(|| dir.join(CONFIG_FILENAME));
+    println!("{}", target.display());
     0
 }
 

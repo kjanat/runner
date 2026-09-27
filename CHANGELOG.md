@@ -250,8 +250,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - Package managers are probed on `PATH` in one declared order (npm, bun,
   pnpm, yarn, deno) wherever a task source has no manager of its own.
-  Project roots stop at the VCS root, so an unrelated outer lockfile is never
-  adopted.
+  Project roots and workspaces stop at the VCS root, so an unrelated outer
+  lockfile is never adopted. Outside a repository they stop below the home
+  directory or the filesystem root. Inside or outside one, they never climb
+  into an ancestor directory another user owns or can write to, such as
+  `/tmp`, so a `.git` or manifest planted there is ignored.
 
 - Node refuses a `.jsx` or `.tsx` file with the runtime choice that forced
   it and the runtimes that can run it (`--runtime bun`, `--runtime deno`).
@@ -331,6 +334,10 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   `runner why` reports the runtime's warnings as the runtime note.
 
 ### Fixed
+
+- `--no-scripts` and `--scripts` win over `[env]`, `[tools.<name>].env` and
+  `[tasks.<name>].env`. A repository `YARN_ENABLE_SCRIPTS = "true"` no longer
+  runs lifecycle scripts under `runner install --no-scripts` on Yarn Berry.
 
 - A workspace member symlinked to a directory outside the workspace root is
   no member, and `clean` never removes a directory that resolves outside the
@@ -615,7 +622,11 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
 
 - `runner.toml` is read from the project or workspace root, so its settings
   apply when runner runs from a subdirectory or a member, and `runner config`
-  reads, writes and prints the root's file.
+  reads, writes and prints the root's file. A `runner.toml` or
+  `.runner.toml`, in the directory or its `.config/`, marks the root on its
+  own. `runner config path`, `show` and `validate` name the file that was
+  loaded, and `runner config init` refuses when any of those files exists and
+  overwrites that file under `--force`.
 
 - Bundler's built-in test runner is `bundle exec rake test`, so `runner test`
   runs `rake` inside the bundle.
@@ -640,13 +651,28 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   ecosystems still run their own tests, so `RUNNER_PM=npm runner test` in a
   Cargo project runs `cargo test`.
 
+- A task in a workspace member that calls `runner` again no longer repeats the
+  workspace's detection and config warnings.
+
 ### Security
 
 - `[env]`, `[tools.<name>].env` and `[tasks.<name>].env` in a repository
-  `runner.toml` may not set `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`,
-  `NODE_OPTIONS`, `PYTHONSTARTUP`, `RUBYOPT`, `PERL5OPT`, `GOFLAGS` or
-  `CARGO_BUILD_RUSTC`. A layer that does is refused before anything spawns,
-  naming the variable, so a checkout cannot choose what code a tool loads.
+  `runner.toml` may not set `PATH`, `BASH_ENV`, `ENV`, `LD_PRELOAD`,
+  `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_*`, `NODE_OPTIONS`, `BUN_OPTIONS`,
+  `npm_config_node_options`, `npm_config_script_shell`, `PYTHONSTARTUP`,
+  `PYTHONPATH`, `PYTHONHOME`, `PYTHONUSERBASE`, `RUBYOPT`, `RUBYLIB`,
+  `PERL5OPT`, `PERL5LIB`, `PERLLIB`, `PERL5DB`, `GOFLAGS`, `RUSTC`,
+  `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER`, `CARGO_BUILD_RUSTC`,
+  `CARGO_BUILD_RUSTC_WRAPPER`, `CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER`,
+  `CARGO_TARGET_<triple>_RUNNER`, `CARGO_TARGET_<triple>_LINKER`,
+  `GIT_CONFIG*`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`,
+  `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_PROXY_COMMAND`, `GIT_TEMPLATE_DIR`,
+  `BASH_FUNC_*`, `MAKEFILES`, `npm_config_userconfig`,
+  `npm_config_globalconfig`, `YARN_RC_FILENAME`, `YARN_YARN_PATH`,
+  `GCONV_PATH`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS` or `_JAVA_OPTIONS`.
+  npm config names match in any case. A layer that does is refused before
+  anything spawns, naming the variable, so a checkout cannot choose what code
+  a tool loads.
 
 - The toolchain step resolves `mise` from the host `PATH`. It was spawned with
   the project's own bin directories front-loaded, so an executable committed

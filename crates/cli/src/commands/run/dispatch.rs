@@ -229,12 +229,13 @@ pub(super) fn resolve_dispatch(
 /// Print the arrow for a local file or installed binary and configure its
 /// process for the project.
 fn spawn_plan(
+    root: &std::path::Path,
     overrides: &ResolutionOverrides,
     token: &str,
     args: &[String],
     mut plan: runner_core::Plan,
 ) -> Result<Dispatch> {
-    crate::commands::configure_plan(&mut plan, overrides, token)?;
+    crate::commands::configure_plan(&mut plan, root, overrides, token)?;
     crate::render::explain::print_plan(overrides, &plan);
     print_dispatch_arrow(overrides, token, &plan_label(&plan, token), token, args);
     let mut command = runner_core::execute::command(&plan)?;
@@ -265,7 +266,7 @@ fn dispatch_by_package(
     };
     if let Some(dep) = super::local_dep::try_selected_package(ctx, overrides, package, bin, args)? {
         print_pm_explain(overrides, &dep.describe);
-        return Ok(Some(spawn_plan(overrides, bin, args, dep.plan)?));
+        return Ok(Some(spawn_plan(&ctx.root, overrides, bin, args, dep.plan)?));
     }
     if let Some(shadow) = project_bin(ctx, bin) {
         bail!(
@@ -338,7 +339,7 @@ fn dispatch_by_package(
         other => refusal_error(ctx, bin, &other),
     })?;
     crate::commands::authorize_fetch(overrides, &format!("{package} ({bin})"), "exec-package")?;
-    Ok(Some(spawn_plan(overrides, bin, args, plan)?))
+    Ok(Some(spawn_plan(&ctx.root, overrides, bin, args, plan)?))
 }
 
 /// Walk the complete core cascade and configure the selected plan for execution.
@@ -480,7 +481,7 @@ pub(super) fn complete_plan(
     let entry = chosen.entry;
     prepare_task(ctx, overrides, entry, chosen.key, plan, sink)?;
     prepare_host(chosen.token, chosen.rung, plan)?;
-    crate::commands::configure_plan(plan, overrides, chosen.key)?;
+    crate::commands::configure_plan(plan, &ctx.root, overrides, chosen.key)?;
     runner_core::execute::command(plan)?;
     Ok(())
 }

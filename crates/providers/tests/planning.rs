@@ -3,9 +3,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use runner_core::{
-    Cascade, Dispatch, Download, Evidence, Op, Policy, Present, Project, ProviderId, Refusal,
-    Scope, ScriptPolicy, SignalId, Tree, TrustPolicy, Unsafe, Weight, dispatch_from, plan_found,
-    plan_with,
+    Cascade, Dispatch, Download, EnvLayers, EnvTable, Evidence, Op, Policy, Present, Project,
+    ProviderId, Refusal, Scope, ScriptPolicy, SignalId, Tree, TrustPolicy, Unsafe, Weight,
+    dispatch_from, plan_found, plan_with,
 };
 use runner_providers::REGISTRY;
 
@@ -3099,4 +3099,55 @@ fn task_environment_keys_follow_the_documented_spellings() {
             "RFC_PACKAGE_JSON_SITE=fqn",
         ]
     );
+}
+
+#[test]
+fn yarn_script_policy_env_overrides_project_env() {
+    let fixture = Fixture::new();
+    std::fs::write(
+        fixture.0.root.join("package.json"),
+        r#"{"packageManager":"yarn@4.1.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(fixture.0.root.join("yarn.lock"), "").unwrap();
+    let mut present = fixture.present(ProviderId::Yarn);
+    let mut evidence = present.because.clone();
+    runner_core::observe::derive(&fixture.0, &REGISTRY, &mut evidence).unwrap();
+    present.because = evidence;
+    let project = Project {
+        present: vec![present],
+        ..Project::default()
+    };
+    for (scripts, configured, expected) in [
+        (ScriptPolicy::Deny, "true", "false"),
+        (ScriptPolicy::Allow, "false", "true"),
+        (ScriptPolicy::Default, "false", "false"),
+    ] {
+        let table = EnvTable::from([("YARN_ENABLE_SCRIPTS".to_owned(), configured.to_owned())]);
+        let policy = Policy {
+            scripts,
+            env: EnvLayers {
+                project: table.clone(),
+                tool: [(ProviderId::Yarn, table)].into(),
+                ..EnvLayers::default()
+            },
+            ..Policy::default()
+        };
+        let plan = plan_with(
+            &fixture.0,
+            &project,
+            &policy,
+            &project.present[0],
+            &Op::Install { operations: &[] },
+            &REGISTRY,
+        )
+        .unwrap();
+        let values: Vec<_> = plan
+            .env
+            .iter()
+            .filter(|(key, _)| key == "YARN_ENABLE_SCRIPTS")
+            .map(|(_, value)| value.to_str().unwrap())
+            .collect();
+        assert_eq!(values, [expected], "{scripts:?}");
+    }
 }

@@ -1093,7 +1093,7 @@ fn plug_n_play_packages_resolve_in_the_invoking_member() {
     let output = support::command(env!("CARGO_BIN_EXE_runner"))
         .env_clear()
         .env("PATH", fixture.0.join("bin"))
-        .env("HOME", &fixture.0)
+        .env("HOME", fixture.0.join("bin"))
         .env("AUDIT_LOG", fixture.0.join("executed"))
         .env("RUNNER_DOWNLOAD", "false")
         .current_dir(&member)

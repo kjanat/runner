@@ -808,8 +808,19 @@ Rules that follow:
    become the mise that installs the toolchain.
 2. **Env layers from project trust cannot replace the loader.** `[env]` in a
    repository `runner.toml` may add variables. It may not set `PATH`,
-   `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `NODE_OPTIONS`,
-   `PYTHONSTARTUP`, `RUBYOPT`, `PERL5OPT`, `GOFLAGS`, `CARGO_BUILD_RUSTC`
+   `BASH_ENV`, `ENV`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
+   `DYLD_*`, `NODE_OPTIONS`, `BUN_OPTIONS`, `npm_config_node_options`,
+   `npm_config_script_shell`, `PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONHOME`,
+   `PYTHONUSERBASE`, `RUBYOPT`, `RUBYLIB`, `PERL5OPT`, `PERL5LIB`,
+   `PERLLIB`, `PERL5DB`, `GOFLAGS`, `RUSTC`, `RUSTC_WRAPPER`,
+   `RUSTC_WORKSPACE_WRAPPER`, `CARGO_BUILD_RUSTC`,
+   `CARGO_BUILD_RUSTC_WRAPPER`, `CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER`,
+   `CARGO_TARGET_<triple>_RUNNER`, `CARGO_TARGET_<triple>_LINKER`,
+   `GIT_CONFIG*`, `GIT_SSH`, `GIT_SSH_COMMAND`, `GIT_EXEC_PATH`,
+   `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_PROXY_COMMAND`, `GIT_TEMPLATE_DIR`,
+   `BASH_FUNC_*`, `MAKEFILES`, `npm_config_userconfig`,
+   `npm_config_globalconfig`, `YARN_RC_FILENAME`, `YARN_YARN_PATH`,
+   `GCONV_PATH`, `JAVA_TOOL_OPTIONS`, `JDK_JAVA_OPTIONS`, `_JAVA_OPTIONS`
    or any variable a tool documents as a code-loading hook. The core holds
    the denylist. A user-trust config may set anything.
 3. **Network is a flag, and the flag has a policy.** Every rung and every

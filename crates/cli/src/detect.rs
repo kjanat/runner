@@ -17,10 +17,18 @@ pub(crate) struct Anchored {
 
 /// Anchor `dir` in its workspace or project root.
 pub(crate) fn anchored(dir: &Path) -> Anchored {
-    let (workspace, warning) = anchor(dir);
-    let root = workspace
-        .as_ref()
-        .map_or_else(|| project_root(dir), |workspace| workspace.root.clone());
+    anchored_below(dir, crate::home_dir().as_deref())
+}
+
+/// Anchor `dir` in its workspace or project root, searching no higher than
+/// its repository or, outside one, than the directory below `home` or `/`.
+fn anchored_below(dir: &Path, home: Option<&Path>) -> Anchored {
+    let boundary = boundary(dir, home);
+    let (workspace, warning) = anchor(dir, &boundary);
+    let root = workspace.as_ref().map_or_else(
+        || project_root(dir, &boundary),
+        |workspace| workspace.root.clone(),
+    );
     Anchored {
         workspace,
         warning,
@@ -73,12 +81,56 @@ pub(crate) fn detect_anchored(
     ctx
 }
 
-/// The nearest ancestor inside the enclosing repository that holds a file
-/// any provider's signals name, else `dir`.
-fn project_root(dir: &Path) -> std::path::PathBuf {
-    let Some(boundary) = tool::files::vcs_root(dir) else {
-        return dir.to_owned();
+/// The enclosing repository, else the highest ancestor of `dir` strictly
+/// below `home` or the filesystem root that is reached through owned
+/// directories no one else can write.
+fn boundary(dir: &Path, home: Option<&Path>) -> std::path::PathBuf {
+    let repository = tool::files::vcs_root(dir);
+    let home = home.and_then(|home| home.canonicalize().ok());
+    let stops = |path: &Path| {
+        repository.as_ref().map_or_else(
+            || {
+                path.parent().is_none()
+                    || home
+                        .as_deref()
+                        .is_some_and(|home| path.canonicalize().is_ok_and(|path| path == home))
+            },
+            |repository| !path.starts_with(repository),
+        )
     };
+    let mut walk = dir.ancestors().take_while(|ancestor| !stops(ancestor));
+    walk.next()
+        .map_or(dir, |start| {
+            walk.take_while(|ancestor| private(ancestor))
+                .last()
+                .unwrap_or(start)
+        })
+        .to_path_buf()
+}
+
+/// Whether the current user owns `dir` and only the user, or the user's own
+/// group, can write to it.
+#[cfg(unix)]
+fn private(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    std::fs::metadata(dir).is_ok_and(|meta| {
+        meta.uid() == rustix::process::geteuid().as_raw()
+            && meta.mode() & 0o002 == 0
+            && (meta.mode() & 0o020 == 0 || meta.gid() == rustix::process::getegid().as_raw())
+    })
+}
+
+/// Whether the current user owns `dir` and only the user, or the user's own
+/// group, can write to it.
+#[cfg(not(unix))]
+fn private(_dir: &Path) -> bool {
+    true
+}
+
+/// The nearest ancestor inside `boundary` that holds a file any provider's
+/// signals name or a config file, else `dir`.
+fn project_root(dir: &Path, boundary: &Path) -> std::path::PathBuf {
     let signals = || runner_providers::REGISTRY.iter().flat_map(|p| p.signals);
     let exact: Vec<&str> = signals()
         .flat_map(runner_core::Signal::file_names)
@@ -90,19 +142,20 @@ fn project_root(dir: &Path) -> std::path::PathBuf {
         })
         .collect();
     dir.ancestors()
-        .take_while(|ancestor| ancestor.starts_with(&boundary))
+        .take_while(|ancestor| ancestor.starts_with(boundary))
         .find(|ancestor| {
             exact.iter().any(|name| ancestor.join(name).is_file())
                 || holds_caseless(ancestor, &caseless)
+                || crate::config::holds_config(ancestor)
         })
         .map_or_else(|| dir.to_owned(), Path::to_path_buf)
 }
 
 /// The workspace `dir` belongs to, and the declaration that could not be read.
-fn anchor(dir: &Path) -> (Option<Workspace>, Option<runner_core::Warning>) {
+fn anchor(dir: &Path, boundary: &Path) -> (Option<Workspace>, Option<runner_core::Warning>) {
     match runner_core::workspace::anchor(
         dir,
-        tool::files::vcs_root(dir).as_deref(),
+        Some(boundary),
         holds_project_files(dir),
         &runner_providers::REGISTRY,
     ) {
@@ -136,12 +189,11 @@ fn workspace_view(workspace: runner_core::Workspace) -> Workspace {
     }
 }
 
-/// Whether `dir` holds a file a provider signals, or a `runner.toml`.
+/// Whether `dir` holds a file a provider signals, or a config file.
 fn holds_project_files(dir: &Path) -> bool {
     let signals = || runner_providers::REGISTRY.iter().flat_map(|p| p.signals);
     let exact: Vec<&str> = signals()
         .flat_map(runner_core::Signal::file_names)
-        .chain(["runner.toml"])
         .collect();
     let caseless: Vec<&str> = signals()
         .filter_map(|signal| match signal {
@@ -149,7 +201,9 @@ fn holds_project_files(dir: &Path) -> bool {
             _ => None,
         })
         .collect();
-    exact.iter().any(|name| dir.join(name).is_file()) || holds_caseless(dir, &caseless)
+    exact.iter().any(|name| dir.join(name).is_file())
+        || holds_caseless(dir, &caseless)
+        || crate::config::holds_config(dir)
 }
 
 /// Whether `dir` holds a file spelled like one of `names` in any ASCII case.
@@ -634,6 +688,36 @@ mod tests {
     }
 
     #[test]
+    fn a_config_file_alone_marks_the_project_root() {
+        for name in [
+            "runner.toml",
+            ".runner.toml",
+            ".config/runner.toml",
+            ".config/.runner.toml",
+        ] {
+            let dir = TempDir::new("detect-root-config");
+            fs::create_dir_all(dir.path().join(".config")).expect(".config");
+            fs::write(dir.path().join(name), "download = false\n").expect("config");
+            let src = dir.path().join("src");
+            fs::create_dir_all(&src).expect("src");
+            if !commit_in(dir.path(), &[name]) {
+                eprintln!("skipping: git unavailable");
+                return;
+            }
+            let root = crate::detect::anchored(&src).root;
+            assert_eq!(root, dir.path(), "{name}");
+            let loaded = crate::config::load(&root)
+                .expect("parses")
+                .expect("present");
+            assert!(
+                loaded.path.ends_with(name),
+                "{name}: {}",
+                loaded.path.display()
+            );
+        }
+    }
+
+    #[test]
     fn detect_uses_nearest_deno_sources_from_nested_dir() {
         let dir = TempDir::new("detect-deno-nearest");
         let nested = dir.path().join("apps").join("site").join("src");
@@ -717,11 +801,11 @@ mod tests {
     }
 
     #[test]
-    fn outside_a_repository_the_root_is_the_invoked_directory() {
+    fn outside_a_repository_an_ancestor_manifest_is_the_root() {
         let dir = TempDir::new("detect-no-repository");
         fs::write(
             dir.path().join("package.json"),
-            r#"{ "scripts": { "home": "echo" } }"#,
+            r#"{ "scripts": { "parent": "echo" } }"#,
         )
         .expect("ancestor package.json should be written");
         let sub = dir.path().join("sub");
@@ -729,8 +813,139 @@ mod tests {
 
         let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
 
+        assert_eq!(ctx.root, dir.path());
+        assert!(
+            ctx.tasks
+                .iter()
+                .any(|task| task.name == "parent" && task.member.is_none())
+        );
+    }
+
+    #[test]
+    fn outside_a_repository_an_ancestor_pyproject_is_the_root() {
+        let dir = TempDir::new("detect-no-repository-pyproject");
+        fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"demo\"\n\n[project.scripts]\nserve = \"demo:main\"\n",
+        )
+        .expect("ancestor pyproject.toml should be written");
+        let sub = dir.path().join("src").join("demo");
+        fs::create_dir_all(&sub).expect("subdir should be created");
+
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.root, dir.path());
+        assert!(ctx.tasks.iter().any(|task| task.name == "serve"));
+    }
+
+    #[test]
+    fn outside_a_repository_the_walk_stops_below_home() {
+        let home = TempDir::new("detect-no-repository-home");
+        fs::write(
+            home.path().join("package.json"),
+            r#"{ "scripts": { "home": "echo" } }"#,
+        )
+        .expect("home package.json should be written");
+        fs::write(
+            home.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - \"*\"\n",
+        )
+        .expect("home workspace should be written");
+        let sub = home.path().join("proj").join("sub");
+        fs::create_dir_all(&sub).expect("subdir should be created");
+
+        let ctx = super::detect_anchored(
+            &sub,
+            super::anchored_below(&sub, Some(home.path())),
+            &crate::resolver::ResolutionOverrides::default(),
+        );
+
         assert_eq!(ctx.root, sub);
+        assert!(ctx.workspace.is_none());
         assert!(ctx.tasks.iter().all(|task| task.name != "home"));
+    }
+
+    #[cfg(unix)]
+    fn parent_with_mode(prefix: &str, mode: u32) -> (TempDir, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let parent = TempDir::new(prefix);
+        fs::write(
+            parent.path().join("package.json"),
+            r#"{ "scripts": { "parent": "echo" } }"#,
+        )
+        .expect("parent package.json should be written");
+        fs::write(
+            parent.path().join("pnpm-workspace.yaml"),
+            "packages:\n  - \"*\"\n",
+        )
+        .expect("parent workspace should be written");
+        fs::set_permissions(parent.path(), fs::Permissions::from_mode(mode))
+            .expect("parent mode should be set");
+        let sub = parent.path().join("child").join("sub");
+        fs::create_dir_all(&sub).expect("subdir should be created");
+        (parent, sub)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn outside_a_repository_a_world_writable_ancestor_is_never_the_root() {
+        let (_parent, sub) = parent_with_mode("detect-no-repository-shared", 0o777);
+
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.root, sub);
+        assert!(ctx.workspace.is_none());
+        assert!(ctx.tasks.iter().all(|task| task.name != "parent"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn outside_a_repository_a_private_ancestor_is_the_root() {
+        let (parent, sub) = parent_with_mode("detect-no-repository-private", 0o755);
+
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.root, parent.path());
+        assert!(ctx.tasks.iter().any(|task| task.name == "parent"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_repository_in_a_world_writable_dir_is_never_the_root() {
+        let (parent, sub) = parent_with_mode("detect-repository-shared", 0o777);
+        fs::create_dir_all(parent.path().join(".git")).expect("git dir should be created");
+
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.root, sub);
+        assert!(ctx.workspace.is_none());
+        assert!(ctx.tasks.iter().all(|task| task.name != "parent"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_ancestor_only_the_users_own_group_can_write_is_the_root() {
+        let (parent, sub) = parent_with_mode("detect-no-repository-own-group", 0o775);
+
+        let ctx = detect(&sub, &crate::resolver::ResolutionOverrides::default());
+
+        assert_eq!(ctx.root, parent.path());
+        assert!(ctx.tasks.iter().any(|task| task.name == "parent"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_world_writable_invocation_dir_is_still_its_own_root() {
+        let (parent, _sub) = parent_with_mode("detect-no-repository-shared-cwd", 0o777);
+
+        let ctx = detect(
+            parent.path(),
+            &crate::resolver::ResolutionOverrides::default(),
+        );
+
+        assert_eq!(ctx.root, parent.path());
+        assert!(ctx.tasks.iter().any(|task| task.name == "parent"));
     }
 
     #[test]

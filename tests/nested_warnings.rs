@@ -110,3 +110,59 @@ fn a_nested_runner_over_a_different_root_still_warns() {
         "a marker for another project must not silence this one: {stderr}",
     );
 }
+
+fn npm_available() -> bool {
+    Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
+#[test]
+fn a_nested_runner_in_a_workspace_member_does_not_repeat_root_warnings() {
+    if !npm_available() {
+        eprintln!("skipping: `npm` not on PATH");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("runner-nested-member-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let member = dir.join("packages/a");
+    std::fs::create_dir_all(&member).expect("create member dir");
+    std::fs::write(dir.join("runner.toml"), "[bogus]\nkey = 1\n").expect("runner.toml");
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"root","private":true,"workspaces":["packages/*"]}"#,
+    )
+    .expect("root package.json");
+    std::fs::write(
+        member.join("package.json"),
+        r#"{"name":"a","scripts":{"outer":"runner run inner","inner":"echo inner-ran"}}"#,
+    )
+    .expect("member package.json");
+    let bin_dir = runner_binary()
+        .parent()
+        .expect("binary lives in a directory")
+        .to_path_buf();
+    let mut paths = vec![bin_dir];
+    if let Some(path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&path));
+    }
+    let path = std::env::join_paths(paths).expect("test PATH entries are valid");
+
+    let output = support::command(runner_binary())
+        .arg("run")
+        .arg("outer")
+        .current_dir(&member)
+        .env("PATH", path)
+        .env_remove("RUNNER_WARNED_ROOT")
+        .env_remove("RUNNER_WARNINGS")
+        .output()
+        .expect("run runner");
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    assert!(output.status.success(), "run failed: {stderr}");
+    assert!(stdout.contains("inner-ran"), "{stdout}");
+    assert_eq!(stderr.matches("unknown key").count(), 1, "{stderr}");
+}

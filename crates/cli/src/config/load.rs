@@ -440,29 +440,44 @@ pub(crate) fn load(dir: &Path) -> Result<Option<LoadedConfig>> {
     }))
 }
 
-/// Read the first config file that exists, searching each [`CONFIG_DIRS`]
-/// directory for the plain then dotted [`CONFIG_FILENAME`].
+/// Every config path under `dir`, highest precedence first: each
+/// [`CONFIG_DIRS`] directory's plain then dotted [`CONFIG_FILENAME`].
+fn candidates(dir: &Path) -> Vec<PathBuf> {
+    let dotted = format!(".{CONFIG_FILENAME}");
+    CONFIG_DIRS
+        .into_iter()
+        .map(|subdir| {
+            if subdir.is_empty() {
+                dir.to_path_buf()
+            } else {
+                dir.join(subdir)
+            }
+        })
+        .flat_map(|base| [base.join(CONFIG_FILENAME), base.join(&dotted)])
+        .collect()
+}
+
+/// Whether `dir` holds a config file.
+pub(crate) fn holds_config(dir: &Path) -> bool {
+    config_file(dir).is_some()
+}
+
+pub(crate) fn config_file(dir: &Path) -> Option<PathBuf> {
+    candidates(dir).into_iter().find(|path| path.is_file())
+}
+
+/// Read the first config file that exists among [`candidates`].
 ///
 /// # Errors
 ///
 /// Propagates any read error other than "not found".
 fn read_first_candidate(dir: &Path) -> Result<Option<(PathBuf, String)>> {
-    let dotted = format!(".{CONFIG_FILENAME}");
-    let filenames = [CONFIG_FILENAME, dotted.as_str()];
-    for subdir in CONFIG_DIRS {
-        let base = if subdir.is_empty() {
-            dir.to_path_buf()
-        } else {
-            dir.join(subdir)
-        };
-        for filename in filenames {
-            let path = base.join(filename);
-            match fs::read_to_string(&path) {
-                Ok(content) => return Ok(Some((path, content))),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(e).with_context(|| format!("failed to read {}", path.display()));
-                }
+    for path in candidates(dir) {
+        match fs::read_to_string(&path) {
+            Ok(content) => return Ok(Some((path, content))),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("failed to read {}", path.display()));
             }
         }
     }

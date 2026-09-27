@@ -40,7 +40,12 @@ pub(crate) use schema::write_schema;
 pub(crate) use why::why;
 
 /// Invocation metadata inherited by children.
-fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOverrides) {
+fn configure_spawn(
+    command: &mut Command,
+    dir: &Path,
+    root: &Path,
+    overrides: &ResolutionOverrides,
+) {
     command
         .current_dir(dir)
         .stdin(Stdio::inherit())
@@ -54,9 +59,9 @@ fn configure_spawn(command: &mut Command, dir: &Path, overrides: &ResolutionOver
         command.env(GROUP_ACTIVE_ENV, "1");
     }
     // Same idea for warnings: this process has already printed (or suppressed)
-    // everything detection found for `dir` by the time it spawns anything, so a
+    // everything detection found for `root` by the time it spawns anything, so a
     // nested runner over the same root stays quiet instead of repeating it.
-    command.env(WARNED_ROOT_ENV, dir);
+    command.env(WARNED_ROOT_ENV, root);
     // A nested runner inherits the invocation's `-q` count, never a task's
     // own output settings.
     if overrides.quiet_level != crate::tool::QuietLevel::Off {
@@ -87,6 +92,7 @@ fn configure_task_streams(command: &mut Command, overrides: &ResolutionOverrides
 /// When a stand-in runtime cannot be linked under the program name it replaces.
 fn configure_plan(
     plan: &mut runner_core::Plan,
+    root: &Path,
     overrides: &ResolutionOverrides,
     task: &str,
 ) -> anyhow::Result<()> {
@@ -94,7 +100,7 @@ fn configure_plan(
         link_stand_in(plan)?;
     }
     let mut metadata = Command::new("runner");
-    configure_spawn(&mut metadata, &plan.cwd, overrides);
+    configure_spawn(&mut metadata, &plan.cwd, root, overrides);
     if emits_group(overrides) && !overrides.emits_groups_for(task) {
         metadata.env_remove(GROUP_ACTIVE_ENV);
     }
@@ -721,11 +727,38 @@ mod tests {
     }
 
     #[test]
+    fn warned_root_marks_the_project_root_for_a_member_task() {
+        use std::ffi::OsStr;
+
+        let root = std::env::temp_dir();
+        let member = root.join("packages/a");
+        let mut plan = runner_core::Plan {
+            cwd: member.clone(),
+            ..shim_plan(&root, &[])
+        };
+
+        super::configure_plan(&mut plan, &root, &ResolutionOverrides::default(), "t").unwrap();
+
+        assert_eq!(plan.cwd, member);
+        let marked = plan
+            .env
+            .iter()
+            .find(|(key, _)| key == OsStr::new("RUNNER_WARNED_ROOT"))
+            .map(|(_, value)| value.clone());
+        assert_eq!(marked, Some(root.into_os_string()));
+    }
+
+    #[test]
     fn invocation_metadata_sets_current_dir() {
         let dir = std::env::temp_dir();
         let mut command = Command::new("runner-test-command");
 
-        configure_spawn(&mut command, dir.as_path(), &ResolutionOverrides::default());
+        configure_spawn(
+            &mut command,
+            dir.as_path(),
+            dir.as_path(),
+            &ResolutionOverrides::default(),
+        );
 
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
     }
@@ -748,7 +781,7 @@ mod tests {
                 ..ResolutionOverrides::default()
             };
             let mut command = Command::new("runner-test-command");
-            configure_spawn(&mut command, dir.as_path(), &overrides);
+            configure_spawn(&mut command, dir.as_path(), dir.as_path(), &overrides);
             command
                 .get_envs()
                 .find(|(key, _)| *key == OsStr::new("RUNNER_RUNTIME"))
@@ -802,7 +835,7 @@ mod tests {
                 .collect(),
         )
         .unwrap();
-        super::configure_plan(&mut plan, &ResolutionOverrides::default(), "test").unwrap();
+        super::configure_plan(&mut plan, dir, &ResolutionOverrides::default(), "test").unwrap();
         plan
     }
 
