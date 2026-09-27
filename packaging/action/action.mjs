@@ -4,8 +4,8 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { EOL } from "node:os";
-import { join } from "node:path";
-import { arch, env, exit, platform, stdout } from "node:process";
+import { join, resolve as resolvePath } from "node:path";
+import { arch, cwd, env, exit, platform, stdout } from "node:process";
 
 const REGISTRY = env.RUNNER_NPM_REGISTRY || "https://registry.npmjs.org";
 const GITHUB_API = env.GITHUB_API_URL || "https://api.github.com";
@@ -104,9 +104,53 @@ async function withRetry(fn, backoffsMs) {
 	}
 }
 
+/**
+ * Whether a `.tool-versions` tool name means runner: the bare `runner` or
+ * `runner-run`, or a mise backend pointing at the repo (`github:kjanat/runner`,
+ * `ubi:`, `aqua:`) or the published package (`npm:runner-run`, `cargo:`),
+ * with or without backend options (`github:kjanat/runner[exe=runner]`).
+ * @param {string} tool
+ * @returns {boolean}
+ */
+function isRunnerTool(tool) {
+	const name = tool.replace(/\[[^\]]*\]$/, "").toLowerCase();
+	const colon = name.indexOf(":");
+	if (colon === -1) return name === "runner" || name === "runner-run";
+	const id = name.slice(colon + 1);
+	return id === REPO || id === "runner-run";
+}
+
+/**
+ * Read the runner version an asdf/mise `.tool-versions` file pins. The first
+ * version on the line wins, as it does for asdf; the rest are fallbacks.
+ * @param {string} file path as given, relative to the workspace
+ * @returns {string}
+ */
+function readToolVersions(file) {
+	const path = resolvePath(env.GITHUB_WORKSPACE || cwd(), file);
+	let content;
+	try {
+		content = readFileSync(path, "utf8");
+	} catch (err) {
+		throw new Error(`could not read version-file (${err instanceof Error ? err.message : String(err)})`);
+	}
+	for (const line of content.split(/\r?\n/)) {
+		const [tool, version] = line.replace(/#.*/, "").trim().split(/\s+/);
+		if (tool && version && isRunnerTool(tool)) return version;
+	}
+	throw new Error(`${file} has no runner entry (expected a line like \`runner 0.26.0\`)`);
+}
+
 /** @returns {string} */
 function resolveSpec() {
-	const requested = env.INPUT_VERSION || "";
+	let requested = env.INPUT_VERSION || "";
+	const versionFile = (env["INPUT_VERSION-FILE"] || "").trim();
+	if (versionFile !== "" && requested !== "") {
+		warn("both 'version' and 'version-file' are set, ignoring 'version-file'");
+	} else if (versionFile !== "") {
+		requested = readToolVersions(versionFile);
+		console.log(`version-file: ${versionFile} pins '${requested}'`);
+	}
 	if (requested === "" || requested === "latest") {
 		console.log("version: latest");
 		return "latest";

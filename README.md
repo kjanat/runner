@@ -239,6 +239,19 @@ a missing attestation fatal; `verify: off` skips the check.
   with: { version: "0.26", verify: require }
 ```
 
+`version-file` reads the version from a `.tool-versions` file instead, so the
+pin asdf and mise use locally is the one CI installs:
+
+```yaml
+- uses: kjanat/runner@master
+  with: { version-file: .tool-versions }
+```
+
+The first line naming `runner`, `runner-run`, or a mise backend for either
+(`github:kjanat/runner 0.26`, `npm:runner-run latest`) supplies the version,
+which takes the same forms as `version`. A file without such a line fails the
+step. `version` wins when both are set.
+
 `runner install` is not a task; it runs the project's toolchain command(s)
 (`npm ci`, `cargo fetch`, `uv sync`, …), then chains the listed tasks
 (`test`, then `build`) sequentially. When the project has a mise config,
