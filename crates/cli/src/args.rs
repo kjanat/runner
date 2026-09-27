@@ -1632,6 +1632,27 @@ mod tests {
     }
 
     #[test]
+    fn a_short_flag_after_its_negation_wins() {
+        let cli = crate::invocation::Origin::Cli;
+        let settings = |argv: &[&str]| {
+            let parsed = parse(argv).expect("parses");
+            crate::invocation::settings(
+                &parsed.cli.global,
+                parsed.cli.command.as_ref(),
+                &parsed.origins,
+            )
+        };
+        for (argv, expected) in [
+            (&["runner", "install", "--no-frozen", "-f"][..], true),
+            (&["runner", "install", "-f", "--no-frozen"], false),
+            (&["runner", "-q", "install", "--no-frozen", "-qf"], true),
+            (&["runner", "install", "-fq", "--no-frozen"], false),
+        ] {
+            assert_eq!(settings(argv).frozen, Some((expected, cli)), "{argv:?}");
+        }
+    }
+
+    #[test]
     fn download_takes_an_optional_value() {
         let origin = crate::invocation::Origin::Cli;
         for (argv, expected) in [

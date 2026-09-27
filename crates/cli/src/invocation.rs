@@ -79,34 +79,68 @@ impl Origins {
             .is_some_and(|negation| self.last.get(id).is_none_or(|positive| positive < negation))
     }
 
-    /// Record where each long flag last appears in `args` before any `--`;
-    /// clap's own indices restart at each subcommand.
+    /// Record where each flag last appears in `args` before any `--`, long
+    /// or short, including each flag of a short cluster; clap's own indices
+    /// restart at each subcommand.
     fn order(&mut self, args: &[OsString], command: &Command) {
-        fn longs<'a>(command: &'a Command, out: &mut HashMap<&'a str, &'a str>) {
+        #[derive(Default)]
+        struct Names<'a> {
+            long: HashMap<&'a str, Vec<&'a str>>,
+            short: HashMap<char, Vec<(&'a str, bool)>>,
+        }
+        fn names<'a>(command: &'a Command, out: &mut Names<'a>) {
             for arg in command.get_arguments() {
+                let id = arg.get_id().as_str();
                 for long in arg.get_long_and_visible_aliases().unwrap_or_default() {
-                    out.insert(long, arg.get_id().as_str());
+                    out.long.entry(long).or_default().push(id);
+                }
+                for short in arg.get_short_and_visible_aliases().unwrap_or_default() {
+                    out.short
+                        .entry(short)
+                        .or_default()
+                        .push((id, arg.get_action().takes_values()));
                 }
             }
             for sub in command.get_subcommands() {
-                longs(sub, out);
+                names(sub, out);
             }
         }
-        let mut ids = HashMap::new();
-        longs(command, &mut ids);
+        let mut known = Names::default();
+        names(command, &mut known);
         for (position, word) in args.iter().enumerate().skip(1) {
+            let Some(word) = word.to_str() else {
+                continue;
+            };
             if word == "--" {
                 break;
             }
-            let Some(name) = word
-                .to_str()
-                .and_then(|word| word.strip_prefix("--"))
-                .map(|flag| flag.split_once('=').map_or(flag, |(name, _)| name))
-            else {
-                continue;
-            };
-            if let Some(id) = ids.get(name).filter(|id| self.is_cli(id)) {
-                self.last.insert((*id).to_owned(), position);
+            let mut seen: Vec<&str> = Vec::new();
+            if let Some(flag) = word.strip_prefix("--") {
+                let name = flag.split_once('=').map_or(flag, |(name, _)| name);
+                seen.extend(known.long.get(name).into_iter().flatten().copied());
+            } else if let Some(cluster) = word.strip_prefix('-') {
+                for short in cluster.chars() {
+                    let given: Vec<(&str, bool)> = known
+                        .short
+                        .get(&short)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .filter(|(id, _)| self.is_cli(id))
+                        .collect();
+                    if given.is_empty() {
+                        break;
+                    }
+                    seen.extend(given.iter().map(|(id, _)| *id));
+                    if given.iter().any(|(_, takes_value)| *takes_value) {
+                        break;
+                    }
+                }
+            }
+            for id in seen {
+                if self.is_cli(id) {
+                    self.last.insert(id.to_owned(), position);
+                }
             }
         }
     }

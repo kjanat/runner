@@ -562,7 +562,9 @@ The format is based on [Keep a Changelog], and this project adheres to [Semantic
   selects, as `run` uses them.
 
 - `--no-download` or `--no-warnings` after a subcommand overrides the
-  positive flag before it, and the reverse.
+  positive flag before it, and the reverse. A short spelling counts by its
+  position too, alone or in a cluster: `install --no-frozen -f` and
+  `install --no-frozen -qqf` install frozen.
 
 - A valid command-line value overrides an invalid `RUNNER_*` value for the
   same setting: `RUNNER_PM=bogus runner --pm npm` runs with npm.
